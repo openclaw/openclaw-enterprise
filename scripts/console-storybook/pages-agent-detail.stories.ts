@@ -43,6 +43,7 @@ export const GatewaySafetyStrict = story("gatewaySafetyStrict");
 export const GatewaySafetyRejectSteering = story("gatewaySafetyRejectSteering");
 export const GatewaySafetyReader = story("gatewaySafetyReader");
 export const PluginsDraft = story("pluginsDraft");
+export const NotionCredentials = story("notionCredentials");
 export const SlackMcpTools = {
   ...story("slackMcpTools"),
   name: "Choose tools for a connected Slack account",

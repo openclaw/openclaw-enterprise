@@ -1,0 +1,18 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "oce-notion",
+  "version": "1.0.0",
+  "description": "Use Notion MCP tools with a workspace MCP token or a connected Notion OAuth account.",
+  "author": { "name": "OpenClaw Enterprise" },
+  "homepage": "https://developers.notion.com/guides/mcp/get-started-with-mcp",
+  "repository": "https://github.com/openclaw/openclaw-enterprise",
+  "license": "MIT",
+  "extensions": {
+    "ai.openclaw.oce": {
+      "id": "occ-plugin:notion",
+      "displayName": "Notion",
+      "policyScope": "enablement_only",
+      "release": "./ai.openclaw.oce/release.json"
+    }
+  }
+}

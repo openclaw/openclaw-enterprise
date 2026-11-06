@@ -8,10 +8,15 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { Locator } from "playwright";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { responseTo } from "./console-action-helpers.ts";
 import type { PluginFieldCatalog } from "../../apps/controller/src/console/agents/plugin-fields.mjs";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
-import type { PluginApprovers, SecretMetadata } from "../../packages/contracts/src/index.ts";
+import type {
+  Namespace,
+  PluginApprovers,
+  SecretMetadata,
+} from "../../packages/contracts/src/index.ts";
 
 import {
   CodexPluginDriver,
@@ -20,6 +25,7 @@ import {
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import {
   apiRequests,
   detailUrl,
@@ -121,6 +127,93 @@ declare global {
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
+
+test("A lost MCP token registration response can be recovered and saved without registering twice", async (t) => {
+  const { backend, sandboxDriver, driverConfigurations } = openShellSandbox(t);
+  const gateway = new OpenShellCredentialGatewayDriver(
+    { binaries: ["/usr/local/bin/openclaw"], toolBinaries: ["/usr/local/bin/node"] },
+    { id: "workspace-openshell-credentials", backend },
+  );
+  // Only the external OpenShell RPCs are simulated. OCC registers the source and saves the Agent.
+  const client = backend.client.clientForNamespace("token-recovery");
+  t.mock.method(client, "getProvider", async () => undefined);
+  t.mock.method(client, "getProviderProfile", async () => undefined);
+  t.mock.method(client, "importProviderProfile", async () => {});
+  t.mock.method(client, "createProvider", async () => {});
+  const { fixture, namespace: ns } = await createReadyConsoleNamespace(t, "Token recovery", {
+    provisionedPeople: [],
+    computeImplementation: "kubernetes-local",
+    sandboxDriver,
+    credentialGatewayDriver: gateway,
+    driverConfigurations,
+    resolveSandboxNamespace: async (namespace: Namespace) => ({
+      ...namespace,
+      name: "token-recovery",
+    }),
+  });
+  const namespace = entity(ns);
+  for (const driver of [gateway, new OCCPluginDriver()]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
+  const agent = agentEntity(
+    await fixture.createAgent(namespace.id, "Token Agent", nativeValues("token"), {
+      executionMode: "dedicated",
+      harnessAuth: null,
+    }),
+  );
+  const secret = secretEntity(
+    await fixture.createSecret(namespace.id, "Workspace token", "test-value"),
+  );
+  const sourcePath = `/namespaces/${namespace.id}/credential-sources`;
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  let sourceId: string | undefined;
+  await page.route(`**${sourcePath}`, async (route) => {
+    if (route.request().method() !== "POST") {
+      return route.fallback();
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 201, await response.text());
+    sourceId = entity(responseData(await response.json())).id;
+    await route.abort("connectionreset");
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "Configure plugins" });
+  await editor.getByRole("button", { name: "Notion", exact: true }).click();
+  await editor.getByRole("button", { name: "Add Notion", exact: true }).click();
+  await editor.getByRole("button", { name: "Add MCP token" }).click();
+  const dialog = page.getByRole("dialog", { name: "Add MCP token" });
+  await dialog.getByLabel("Token name").fill("Research workspace");
+  await selectSecret(dialog, "Token Secret", secret);
+  await dialog.getByRole("button", { name: "Register token" }).click();
+  const check = dialog.getByRole("button", { name: "Check registration" });
+  await check.waitFor();
+  assert.equal(await dialog.getByLabel("Token name").isDisabled(), true);
+  const recovered = responseTo(page, "GET", new URL(sourcePath, fixture.origin).href);
+  await check.click();
+  assert.equal((await recovered).status(), 200);
+  await dialog.getByRole("button", { name: "Done" }).click();
+  assert.ok(sourceId);
+  assert.equal(await editor.getByLabel("Notion account", { exact: true }).inputValue(), sourceId);
+  await editor.getByText("Save plugin selections before loading tools with this token.").waitFor();
+  const loadTools = editor.getByRole("button", { name: "Load tools for Notion", exact: true });
+  assert.equal(await loadTools.count(), 0);
+  assert.equal(pathRequests(requests, "POST", sourcePath).length, 1);
+  assert.equal(pathRequests(requests, "PATCH", agentPath).length, 0);
+  await editor.getByRole("button", { name: "Done", exact: true }).click();
+  const saved = responseTo(page, "PATCH", new URL(agentPath, fixture.origin).href);
+  await page.getByRole("button", { name: "Save plugin selections" }).click();
+  const response = await saved;
+  assert.equal(response.status(), 200, await response.text());
+  await page.reload();
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await editor.getByRole("button", { name: "Notion", exact: true }).click();
+  await waitForEnabled(loadTools);
+  assert.equal(await editor.getByLabel("Notion account", { exact: true }).inputValue(), sourceId);
+});
 
 test("A dedicated OpenClaw Agent can enable and disable Google Workspace without a connection", async (t) => {
   const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-05
-last_updated_session: authoring-run/ead82952-8ee4-4f4a-82fe-148da7fa2edc
+updated: 2026-11-06
+last_updated_session: authoring-run/1381d80f-123b-4959-bae2-cd110a39e51d
 ---
 
 # Agent Plugin Deployment Flow
@@ -134,10 +134,10 @@ Read capabilities from `GET /installation` or `GET .../plugins/capabilities`
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC snapshots the Configuration, Driver and selections. Before cutover the worker checks the pinned Driver against the Harness. Gateway and worker each verify their assets from Compute’s package descriptors.
+OCC snapshots Configuration, Driver and selections. Before cutover, the worker checks Harness compatibility. Gateway and worker verify assets against Compute’s descriptors.
 
-- **CLI packages.** The Gateway loads skills. The Harness runs the pinned executable. The guard checks operation and credential restrictions before injection.
-- **Hosted MCP packages.** An account lets the worker advertise selected tools. The Gateway grants same-node execution per turn. Calls requiring Gateway hooks or another node return structured results or policy denials through the Gateway to Code Mode. The credential driver attaches the source. Sandbox supplies its placeholder and scopes worker and script requests. OpenShell enforces exact tool names and rejects overlapping routes.
+- **CLI packages.** The Gateway loads skills. The Harness runs the pinned executable. The guard enforces operation and credential limits before injection.
+- **Hosted MCP packages.** The [Notion slot](../../apps/controller/plugins/oce-notion/ai.openclaw.oce/release.json) accepts a workspace token or saved OAuth account. Saving binds the source and grants Agent access. The worker advertises selected tools. Gateway grants same-node execution per turn and returns cross-node and hook results to Code Mode. Sandbox supplies the placeholder. OpenShell enforces exact worker and script tool names and rejects overlapping routes.
 - **Native runtime plugins.** Startup installs packages and verifies tool policy.
 
 Withdrawal removes credential injection. Recovery preserves other attachments.
@@ -368,6 +368,8 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 07:51: Trace Notion token and OAuth setup. (authoring-run/1381d80f-123b-4959-bae2-cd110a39e51d - 61f124ee9589065ff9e60d3f76a94d80bf0b1648)
 
 - 2026-11-05 21:02: Trace plugin JSON refusal. (authoring-run/ead82952-8ee4-4f4a-82fe-148da7fa2edc - 3768cfd0d640f450f485cb334b6753ac1e5ea1c3)
 

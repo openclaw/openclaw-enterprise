@@ -146,6 +146,12 @@ export type ManagedCliInstall = ReturnType<typeof loadManagedCliInstall>;
 const mcpSlot = Type.Object(
   {
     label: Type.String({ minLength: 1 }),
+    sourceTypes: Type.Optional(
+      Type.Array(Type.Union([Type.Literal("bearer-token"), Type.Literal("oauth2-refresh-token")]), {
+        minItems: 1,
+        uniqueItems: true,
+      }),
+    ),
     issuer: Type.String({ minLength: 1 }),
     delivery: credentialSlot.properties.delivery,
     mcp: Type.Object({
@@ -216,6 +222,7 @@ function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
     endpoint: { host: url.hostname, port: Number(url.port || 443), path: url.pathname },
     credentialEnvironment: slot.delivery.env,
     credentialLabel: slot.label,
+    sourceTypes: slot.sourceTypes ?? (["bearer-token", "oauth2-refresh-token"] as const),
     binaryPath: "/usr/local/bin/node",
     mcpVersions: Object.freeze(versions),
   } as const;
@@ -383,7 +390,8 @@ export function managedMcpInstallForSourceConfig(
     return undefined;
   }
   return managedMcpInstalls.find(
-    ({ credentialEnvironment, endpoint }) =>
+    ({ credentialEnvironment, endpoint, sourceTypes }) =>
+      sourceTypes.includes("bearer-token") &&
       config.host === endpoint.host &&
       Number(config.port ?? 443) === endpoint.port &&
       config.path === endpoint.path &&
@@ -488,9 +496,13 @@ export function managedPluginAccountSlot(
   const bindings = asRecord(policy?.credentials);
   const current = bindings?.[slotId];
   const slot = install.credentials[slotId]!;
+  const issuers =
+    install.kind === "mcp" && !install.sourceTypes.includes("oauth2-refresh-token")
+      ? []
+      : [slot.issuer];
   function acceptsRecipient(target: PluginAccountTarget) {
     const { destinations, mcp } = target;
-    if (target.issuer !== slot.issuer) {
+    if (!issuers.includes(target.issuer)) {
       return false;
     }
     if (install.kind === "mcp") {
@@ -514,7 +526,7 @@ export function managedPluginAccountSlot(
   return {
     releaseSha256: install.releaseSha256,
     credentialSourceId: typeof current === "string" ? current : null,
-    issuers: [slot.issuer],
+    issuers,
     ...(install.kind === "mcp" && { mcpServerUrl: install.url }),
     acceptsRecipient,
     authorizeRequest(
@@ -578,6 +590,16 @@ export const managedPluginCredentials = {
         id,
         label: slot.label,
         ...(install.kind === "mcp" && { toolDiscovery: true as const }),
+        ...(install.kind === "mcp" &&
+          install.credentials[id]!.sourceTypes?.includes("bearer-token") && {
+            tokenSourceConfig: {
+              protocol: "mcp" as const,
+              host: install.endpoint.host,
+              port: String(install.endpoint.port),
+              path: install.endpoint.path,
+              env_var: install.credentialEnvironment,
+            },
+          }),
         sources: sources
           .filter((source) =>
             install.kind === "mcp"
@@ -608,6 +630,7 @@ export const managedPluginCredentials = {
       if (
         source?.ownerCapability === "token_service" &&
         source.type === "oauth2-refresh-token" &&
+        (install.kind !== "mcp" || install.sourceTypes.includes(source.type)) &&
         source.state === "ready" &&
         source.id !== modelSourceId
       ) {

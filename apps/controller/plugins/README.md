@@ -5,11 +5,13 @@ Each package has a [plugin.json](./oce-google-workspace/plugin.json) at its root
 `ai.openclaw.oce` extension points to the release that OCE deploys.
 
 - **CLI packages** pin skills and worker executables, such as [Google Workspace](./oce-google-workspace/ai.openclaw.oce/release.json) with its ClawHub skill and Linux `gog` binaries. The release declares the executable’s `runtimeDirectory` and artifact hashes.
-- **Hosted MCP packages** declare a remote server, such as [Slack](./oce-slack/mcp.json) with its [Slack MCP endpoint](https://docs.slack.dev/ai/slack-mcp-server/).
+- **Hosted MCP packages** declare a remote server, such as [Slack](./oce-slack/mcp.json) or [Notion](./oce-notion/mcp.json). The [Notion release](./oce-notion/ai.openclaw.oce/release.json) accepts a Secret-backed MCP token (`bearer-token`) or a saved OAuth account (`oauth2-refresh-token`) in its `account` slot. It pins `https://mcp.notion.com` as the issuer and `https://mcp.notion.com/mcp` as the resource and server endpoint.
 
 To bundle another managed MCP server, add its package to the marketplace index. Its `mcp.json` declares one Streamable HTTP server with a fixed HTTPS endpoint. Its [release](./oce-slack/ai.openclaw.oce/release.json) pins the descriptor hash and declares the credential slot, bearer placeholder, and MCP protocol versions. The controller and runtime images ship the reviewed package together. OCE discovers tools with the selected account, and the operator selects tools in the Agent configuration. The Sandbox translates those names into request policy; the bundled OpenShell implementation enforces them before credential injection. Newly discovered tools require selection and deployment before calls are allowed.
 
 The Plugin Driver registers each package by version. Publish changed release bytes under a new version so existing Agent selections continue to identify the reviewed release.
+
+A hosted MCP slot can declare its accepted credential source types in `sourceTypes`. Declaring `bearer-token` lets an Installation administrator register a token from the Agent's Plugins page with the release's endpoint and placeholder. Declaring `oauth2-refresh-token` allows a saved account for the release's issuer and resource. Releases that omit `sourceTypes` accept a provisioned bearer or saved OAuth account.
 
 The package’s OCE extension declares `policyScope: "enablement_only"`. The Plugin Driver advertises this scope for the versioned plugin ID so the Console can render the same enable switch as a Codex plugin before catalog discovery completes. OCC refuses tool approvals, reviewers, and per-tool overrides for these packages.
 

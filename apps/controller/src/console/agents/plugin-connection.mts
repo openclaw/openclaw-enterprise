@@ -1,6 +1,11 @@
-import type { AgentPluginCredentialSlot } from "@openclaw-enterprise/contracts";
-import { button, element } from "../dom.mjs";
+import type { AgentPluginCredentialSlot, SecretReference } from "@openclaw-enterprise/contracts";
 import { requestFailure } from "../api-client.mjs";
+import { button, dismissOnBackdrop, element, field, validateFields } from "../dom.mjs";
+import { namespaceNameProblem } from "../namespaces.mjs";
+import { type CredentialRegistration, credentialRegistrationResult } from "./credential-access.mjs";
+import { describeFailure, namespacePath } from "./list.mjs";
+import type { PluginDiscoveryContext } from "./plugin-discovery.mjs";
+import { createSecretReferenceField } from "./secret-picker.mjs";
 
 export interface SlotTemplate {
   id: string;
@@ -13,6 +18,11 @@ export interface SlotTemplate {
 }
 
 export interface SlotConnection {
+  addToken?(
+    slot: AgentPluginCredentialSlot,
+    owner: HTMLDialogElement,
+    select: (id: string) => void,
+  ): void;
   unavailable(slot: AgentPluginCredentialSlot): string | undefined;
   list(slot: AgentPluginCredentialSlot): Promise<readonly SlotTemplate[]>;
   start(
@@ -111,12 +121,13 @@ export function pluginConnectionControl(
   const notice = element("p", { className: "hint", role: "status" });
   const panel = element("div");
   let busy = false;
+  const connect = slot.tokenSourceConfig ? "Connect with OAuth" : "Choose a connection template";
   const open = button(
     needsConsent
       ? "Authorize for this server"
       : currentName
         ? "Connect a different account"
-        : "Choose a connection template",
+        : connect,
     () => void choose(),
     {
       tone: "secondary",
@@ -234,4 +245,167 @@ export function pluginConnectionControl(
     }
   }
   return root;
+}
+
+export function openPluginTokenDialog(
+  context: PluginDiscoveryContext,
+  owner: HTMLDialogElement,
+  slot: AgentPluginCredentialSlot,
+  onRegistered: (id: string) => void,
+  canEdit: () => boolean,
+) {
+  const config = slot.tokenSourceConfig;
+  if (!config || !canEdit()) {
+    return;
+  }
+  const dialog = element("dialog", { className: "dialog", "aria-label": "Add MCP token" });
+  const name = element("input", {
+    id: "plugin-token-name",
+    type: "text",
+    required: "",
+    "data-trim": "",
+    autocomplete: "off",
+  });
+  let secret: SecretReference | undefined;
+  const picker = createSecretReferenceField({
+    context,
+    id: "plugin-token-secret",
+    label: "Token Secret",
+    getCurrentSource: () => secret,
+    onSecretSelected: (selected) => {
+      secret = selected.ref;
+    },
+    createSecretName: () => name.value.trim() || slot.label,
+    createDialogTitle: "Create token Secret",
+    metadataLabel: "View token Secret metadata",
+    noSecretLabel: "Choose a Secret",
+    stagedHint: "Register the token to use this Secret.",
+    required: true,
+  });
+  const notice = element("p", { className: "hint", role: "status" });
+  const cancel = button("Cancel", () => dialog.close());
+  const submit = element(
+    "button",
+    { type: "submit", className: "button button--primary" },
+    "Register token",
+  );
+  const form = element(
+    "form",
+    { className: "stack", novalidate: "" },
+    element("h2", {}, "Add MCP token"),
+    field({ label: "Token name", control: name }),
+    picker.field,
+    notice,
+    element("div", { className: "dialog-actions" }, cancel, submit),
+  );
+  dialog.append(form);
+  owner.append(dialog);
+  dismissOnBackdrop(dialog);
+  let pending = false;
+  let unconfirmed: CredentialRegistration | undefined;
+  dialog.addEventListener("cancel", (event) => {
+    if (pending) {
+      event.preventDefault();
+    }
+  });
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (pending || submit.hidden || !dialog.open || !context.isCurrent()) {
+      return;
+    }
+    if (!canEdit()) {
+      notice.textContent = "Reopen the editable plugin draft to add a token.";
+      return;
+    }
+    name.setCustomValidity(namespaceNameProblem(name.value));
+    if (!unconfirmed && (!validateFields(form.elements) || !secret)) {
+      return;
+    }
+    const registration = unconfirmed ?? {
+      name: name.value.trim(),
+      type: "bearer-token",
+      config,
+      secrets: { token: secret! },
+    };
+    const checking = Boolean(unconfirmed);
+    const path = `${namespacePath(context.namespaceId)}/credential-sources`;
+    pending = true;
+    submit.disabled = true;
+    cancel.disabled = true;
+    name.disabled = true;
+    picker.setDisabled(true);
+    notice.textContent = checking ? "Checking registration…" : "Registering token…";
+    try {
+      let result;
+      if (checking) {
+        const sources = await context.request(path);
+        if (!Array.isArray(sources)) {
+          throw new Error("Invalid credential source list.");
+        }
+        result = sources.find((source) => source?.name === registration.name);
+        if (!result) {
+          notice.textContent =
+            "No credential source with that name is visible. Check again, or close and retry with the same name.";
+          return;
+        }
+      } else {
+        result = await context.request(path, {
+          method: "POST",
+          expectedStatus: 201,
+          showsOutcome: true,
+          body: registration,
+        });
+      }
+      if (!dialog.open || !context.isCurrent()) {
+        return;
+      }
+      const source = credentialRegistrationResult(result, context.namespaceId, registration);
+      if (!source) {
+        throw new Error("Credential registration unconfirmed.");
+      }
+      if (source.state !== "ready") {
+        unconfirmed = registration;
+        submit.textContent = "Check registration";
+        notice.textContent = `The credential source is ${source.state}. Check its status before selecting it.`;
+        return;
+      }
+      submit.hidden = true;
+      cancel.textContent = "Done";
+      if (canEdit()) {
+        onRegistered(source.id);
+        notice.textContent = "Token registered. Save plugin selections to attach it to this Agent.";
+      } else {
+        notice.textContent = "Token registered. Reopen the editable plugin draft to select it.";
+      }
+    } catch (error) {
+      if (!dialog.open || !context.isCurrent()) {
+        return;
+      }
+      const { status } = requestFailure(error);
+      if (status === 401) {
+        context.onExpired();
+        return;
+      }
+      if (checking || ![400, 403, 404, 409, 429, 501].includes(status ?? 0)) {
+        unconfirmed = registration;
+        submit.textContent = "Check registration";
+        notice.textContent =
+          "Registration could not be confirmed. Check the saved credential sources before trying again.";
+      } else {
+        notice.textContent = describeFailure(error, { mutation: true, form: true });
+      }
+    } finally {
+      pending = false;
+      submit.disabled = false;
+      cancel.disabled = false;
+      name.disabled = submit.hidden || Boolean(unconfirmed);
+      picker.setDisabled(name.disabled);
+      if (submit.hidden && dialog.open) {
+        cancel.focus();
+      }
+    }
+  });
+  dialog.showModal();
+  name.focus();
 }

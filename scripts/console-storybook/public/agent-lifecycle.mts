@@ -702,9 +702,13 @@ export function createAgentLifecycle(
   return {
     serve,
     seedAgent: (): Readonly<StoredAgent> => ({ ...agent }),
-    lookupAgent: (id: string): Readonly<{ activeRevisionId: unknown }> | undefined => {
+    lookupAgent: (
+      id: string,
+    ): Readonly<Pick<StoredAgent, "activeRevisionId" | "plugins">> | undefined => {
       const saved = agents.get(id);
-      return saved === undefined ? undefined : { activeRevisionId: saved.activeRevisionId };
+      return saved === undefined
+        ? undefined
+        : { activeRevisionId: saved.activeRevisionId, plugins: saved.plugins };
     },
     hasAgentRevision: (agentId: string, revisionId: string) =>
       revisions.get(revisionId)?.agentId === agentId,
