@@ -177,7 +177,7 @@ Install OpenShell's Gateway separately. Required `gateway.workspaceMode` accepts
 
 The [development profile](../../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile) installs one Gateway with workspace resources disabled in `oce-system` (Kubernetes-only) or `openshell-system` (Compose). Agent Sandbox runs in `agent-sandbox-system`. The launcher renders `openshell-workspace` once into trusted Installation configuration. The Driver applies it before each OCC Namespace's Workspace creation, without per-Namespace Helm releases.
 
-Kubernetes-only installations enable Gateway TLS, mTLS and authentication; static inference requires explicit opt-in. Compose permits unauthenticated Gateway access, sharing control-plane RPCs and Harness traffic on one port. NetworkPolicies cannot give Agent Gateways service-only authority. Use Compose only in owned disposable development clusters, never production.
+Kubernetes-only installations enable Gateway TLS, mTLS and authentication; static inference requires explicit opt-in. The Compose-backed OpenShell profile permits unauthenticated Gateway access. Control-plane RPCs and Harness traffic share one port. NetworkPolicies cannot give Agent Gateways service-only authority. Use this profile only in owned disposable development clusters.
 
 `gateway.operatorWorkspaceResources` takes the workspace chart's ServiceAccount, Role, RoleBinding, and NetworkPolicy manifests; `gateway.networkPolicyResources` takes namespaced provider networking manifests. In `operator` mode, `ensureNamespace` server-side applies both to the Compute-owned namespace with OCC ownership metadata; `preprovisionedNamespace` only compares them. Startup rejects Secrets, NetworkPolicy ingress `_from` (use `from`), and fields the Kubernetes client drops or changes (misspelled selector keys, LimitRange `default`). Neither list permits OpenShell credentials or cluster-scoped objects.
 
@@ -357,7 +357,7 @@ Errors include:
 
 ### Private CAs for Gateway peers
 
-Peer trust uses `pkiInitJob.enabled` or `certManager.enabled`. When both are `false`, configure a Gateway CA absent from container roots:
+If both `pkiInitJob.enabled` and `certManager.enabled` are false and the Gateway container does not trust the issuing CA, set:
 
 ```yaml
 server:
@@ -366,7 +366,7 @@ server:
       value: /etc/openshell-tls/server/ca.crt
 ```
 
-Supply public `ca.crt` in `server.tls.certSecretName`, mounted at this path. Gateway-to-Gateway TLS is separate from middleware `tls_ca_cert_path`.
+Include the public `ca.crt` in the Secret named by `server.tls.certSecretName`. Middleware uses `tls_ca_cert_path` separately.
 
 ### Gateway identity and removal
 
