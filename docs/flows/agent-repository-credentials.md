@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-11-05"
-last_updated_session: authoring-run/97c319f2-8bb0-4db4-9cfb-50478db52fdb
+updated: "2026-11-06"
+last_updated_session: authoring-run/b722f746-1774-4354-b82c-00dfe10fb371
 ---
 
 # Agent repository credential flow
@@ -316,18 +316,19 @@ standing delivery requires one binding.
 After mandatory-hook acknowledgement, the [OpenShell observer](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
 rechecks expired predecessor policy and recipient for renewal, never authorizing expired
 requests, unacknowledged launches or observed-only previews.
+[Cold verification](../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts)
+checks workload and durable launch hash. [Launch evidence](../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts)
+accepts aggregate `WITHHELD/CREDENTIAL_EXPIRED` only as predecessor identity,
+with matching generation, session, process and network, observed within 30 seconds.
+New installations and post-detach model completion require ready credentials.
 
-Prepared native Git issues its first token after activation. Deployment runs
-`apps/controller/src/worker.ts:ControllerWorker.assertRepositoryGitMaterial`
-(`PreparedRepositoryGitStore.revisionMaterial`) and waits at `REPOSITORY_GIT_MATERIAL_PENDING`
-until each open session has a committed token and fails with `REPOSITORY_GIT_TOKEN_QUARANTINED`
-when an attempt is quarantined. For an existing Agent (`activatedEarlierRevision`),
-`continueRevisionWithoutGit` fails the deployment with `continuingRevision` and queues maintenance
-in one transaction under Namespace then Agent locks, so the version keeps running. A token still
-pending at the convergence deadline takes the same path with `REPOSITORY_GIT_TOKEN_PENDING`;
-maintenance accepts only these two failure codes. Otherwise the
-version is retired like any failed repository version
-([reference](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token)).
+Prepared native Git issues tokens after activation.
+`ControllerWorker.assertRepositoryGitMaterial` waits at `REPOSITORY_GIT_MATERIAL_PENDING`;
+quarantine fails with `REPOSITORY_GIT_TOKEN_QUARANTINED`, convergence timeout with
+`REPOSITORY_GIT_TOKEN_PENDING`. For existing Agents, `continueRevisionWithoutGit`
+atomically records `continuingRevision` and queues maintenance under Namespace then
+Agent locks. Only these two failures preserve the running version for maintenance;
+others retire it ([reference](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token)).
 
 Without standing evidence, Git stays closed. The worker observes the Harness without preparation
 or activation, rechecking model authority, withdrawal, stop and replacement within five seconds.
@@ -391,6 +392,8 @@ denial before provider contact, and continued chat on the team installation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 20:36: Document expired predecessor evidence. (authoring-run/b722f746-1774-4354-b82c-00dfe10fb371 - 7e80c3a05be9b84bb1c2fd502675111ca7621d54)
 
 - 2026-11-05 15:33: Document profile wire defaults. (authoring-run/6cd890b4-603a-482b-85a1-f9f601ae5c3c - 821ce63ee1)
 - 2026-11-05 14:57: Bind selected-repository standing approval to exact permissions and recheck delivery. (authoring-run/97c319f2-8bb0-4db4-9cfb-50478db52fdb - a383313636fc348a2325c0b1f6e05ae80327fd30)

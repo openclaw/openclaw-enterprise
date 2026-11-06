@@ -167,7 +167,8 @@ export async function gitExpiryGateway(
     const name = req.provider;
     const git = name === gitName;
     const removed = world.detaches.length !== 0;
-    const expired = git && !removed && Date.now() >= world.gitExpiresAt;
+    // Stock readiness describes the shared provider environment, including expired Git.
+    const expired = !removed && Date.now() >= world.gitExpiresAt;
     const absent = git && removed;
     const profileChanged = retainedProfile.resource_version === "2";
     const snapshot = {
@@ -192,13 +193,16 @@ export async function gitExpiryGateway(
     const desiredEnvironment = receiptEnvironments.get(receiptId) ?? snapshot.provider_env_revision;
     receiptEnvironments.set(receiptId, desiredEnvironment);
     const metadata = providers[name].metadata;
-    const state = absent
-      ? "REVOKED"
-      : expired || (!git && world.modelFailed)
-        ? "FAILED"
-        : supervisor && desiredEnvironment !== snapshot.provider_env_revision
-          ? "SUPERSEDED"
-          : "READY";
+    let state = "READY";
+    if (absent) {
+      state = "REVOKED";
+    } else if (expired) {
+      state = "WITHHELD";
+    } else if (!git && world.modelFailed) {
+      state = "FAILED";
+    } else if (supervisor && desiredEnvironment !== snapshot.provider_env_revision) {
+      state = "SUPERSEDED";
+    }
     // Only the Sandbox resourceVersion changes between the expiry owner's first two reads.
     if (expired && world.version === 13) {
       world.version = 14;
@@ -245,6 +249,7 @@ export async function gitExpiryGateway(
           session_id: "same-supervisor",
           process_instance_id: repositoryGitRecipient.processInstanceId,
           credentials_installed: !expired,
+          ...(expired && { reason: "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED" }),
           launch_environment_installed: !expired,
           policy_active: true,
         },

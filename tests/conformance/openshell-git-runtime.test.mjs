@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import { witnessOpenShellGitLaunch } from "../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts";
 import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
 import {
   OpenShellGitRouteBlockedError,
@@ -2015,7 +2016,7 @@ test("Git expiry observes the original model in the reduced stock installation, 
       const removed = !box.spec.providers.includes(git);
       const isGit = provider === git;
       const absent = removed && isGit;
-      const oldExpired = !removed && isGit && expiry;
+      const oldExpired = !removed && expiry;
       const status = absent ? "REVOKED" : "READY";
       const epoch = box.spec.provider_attachment_epoch;
       const snapshot = {
@@ -2029,7 +2030,7 @@ test("Git expiry observes the original model in the reduced stock installation, 
         box.resourceVersion = "14";
       }
       const result = {
-        state: "PROVIDER_READINESS_STATE_" + (oldExpired ? "FAILED" : status),
+        state: "PROVIDER_READINESS_STATE_" + (oldExpired ? "WITHHELD" : status),
         reason: oldExpired ? "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED" : undefined,
         receipt: {
           workspace,
@@ -2052,12 +2053,16 @@ test("Git expiry observes the original model in the reduced stock installation, 
           credentialsInstalled: !oldExpired,
           launchEnvironmentInstalled: !oldExpired,
           policyActive: true,
-          reason: "",
+          reason: oldExpired ? "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED" : "",
         },
         networkInstanceId: sv.networkInstanceId,
         observedTime: new Date().toISOString(),
         evaluatedTime: new Date().toISOString(),
       };
+      if (oldExpired && pass && fault === "stale expired observation") {
+        // A fresh gateway evaluation cannot renew an expired supervisor observation.
+        result.observedTime = new Date(Date.now() - 31_000).toISOString();
+      }
       if (absent) {
         trace.push(receiptId ?? "OBSERVE");
         if (fault === "different generation") {
@@ -2071,6 +2076,13 @@ test("Git expiry observes the original model in the reduced stock installation, 
       if (removed && !isGit) {
         if (fault === "failed model") {
           result.state = "PROVIDER_READINESS_STATE_FAILED";
+        }
+        if (fault === "expired model") {
+          result.state = "PROVIDER_READINESS_STATE_WITHHELD";
+          result.reason = "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED";
+          result.observed.reason = result.reason;
+          result.observed.credentialsInstalled = false;
+          result.observed.launchEnvironmentInstalled = false;
         }
         if (fault === "other process") {
           result.observed.processInstanceId = "replacement";
@@ -2179,6 +2191,22 @@ test("Git expiry observes the original model in the reduced stock installation, 
     await f.reconcile();
     assert.ok(await f.lookup(), "Git works on witnessed installation");
     expiry = true;
+    if (fault === "success") {
+      // The same expired environment cannot establish a new ready installation.
+      await assert.rejects(
+        witnessOpenShellGitLaunch(
+          client,
+          owner,
+          box,
+          entry.supervisor,
+          AbortSignal.timeout(5_000),
+          {
+            kind: "installation",
+          },
+        ),
+        /cannot retain this execution after Git expiry/,
+      );
+    }
     f.revision.repositoryCredentials.deadlineWallMs = Date.now() - 1;
     await f.reconcile();
     assert.equal(await f.lookup(), undefined, "Git denied at its own deadline before withdrawal");
@@ -2218,7 +2246,11 @@ test("Git expiry observes the original model in the reduced stock installation, 
       }[fault] ?? [];
     if (expectedFirst === "retire-runtime") {
       assert.deepEqual(failures(), expectedFailures);
-      if (["replacement Pod", "Git profile scope changed"].includes(fault)) {
+      if (
+        ["replacement Pod", "Git profile scope changed", "stale expired observation"].includes(
+          fault,
+        )
+      ) {
         assert.equal(sends, 0);
       }
       assert.deepEqual(violations, []);
@@ -2298,6 +2330,8 @@ test("Git expiry observes the original model in the reduced stock installation, 
     ["unsupported stock", "retire-runtime"],
     ["other process", "retire-runtime"],
     ["failed model", "retire-runtime"],
+    ["expired model", "retire-runtime"],
+    ["stale expired observation", "retire-runtime"],
   ]) {
     await t.test(fault, () => exercise(fault, first, cold));
   }
