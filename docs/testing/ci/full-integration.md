@@ -18,7 +18,7 @@ clusters, and provider services. The workflow collects the selected results in
 ## Trigger
 
 Pushes to `main` select `all`. Manual dispatch selects one supported `lane` or
-`all` on `main` and requires the dispatcher's [team approval](configuration.md#environments).
+`all` on `main` and requires the dispatcher to [approve their own run](#approve-your-dispatch).
 A scheduled advisory run does not run the Full Integration workflow.
 
 ## Scenarios
@@ -71,16 +71,35 @@ commit, then dispatch the selected lane or `all` on `main`:
 gh workflow run full-integration.yml --ref main -f lane=all
 ```
 
+After dispatch, [approve your run](#approve-your-dispatch) to start the selected lanes.
+
 ### Run the hosted local installation lane
 
 ```sh
 gh workflow run full-integration.yml --ref main -f lane=dev-up-k3d
 ```
 
+After dispatch, [approve your run](#approve-your-dispatch).
 Check `headSha` and `full-results-dev-up-k3d`; every case must pass without skips.
-The 180-minute job budget includes setup/cleanup. Manual runs require the same
-team approval as credentialed lanes. Start a new approved dispatch to retry a manual run.
-Jobs triggered by a main push can retry at the original commit.
+The 180-minute job budget includes setup/cleanup.
+
+### Approve your dispatch
+
+The dispatcher must belong to `@openclaw/maintainers-oce` and approve the run
+with the same GitHub account used to dispatch it. Another maintainer's approval
+does not satisfy preflight. Follow the [environment configuration](configuration.md#environments)
+before dispatching.
+
+1. Open your run under **Actions → Full Integration**. Confirm its commit matches
+   the `main` commit you intended to test.
+2. When **Approve manual integration** waits for review, select **Review deployments**.
+3. Select `integration-main-approval`, then **Approve and deploy**.
+4. Confirm **Dispatch Preflight** passes, then inspect the selected lanes and
+   **Full Integration Aggregate**.
+
+If approval or preflight fails, inspect the failed job and correct the cause.
+Start a new dispatch and approve it; manual reruns are refused. Jobs triggered
+by a push to `main` skip this approval step and can retry at the original commit.
 
 ## Results and limits
 
