@@ -8388,9 +8388,10 @@ export function registerProviderLifecycleTest(workflow) {
     async (testContext) => {
       // Finding 1711: every cleanup this test registers runs, last-registered first, each bounded.
       const policyCase = workflow === "policy" || networkPolicyOnly;
+      const reportFixtureOutcome = policyCase || workflow === "credentials";
       const teardown = boundedTeardown(testContext, {
         label: "OpenShell integration teardown",
-        onOutcome: policyCase
+        onOutcome: reportFixtureOutcome
           ? (outcome) => {
               testContext.diagnostic(
                 "openclaw-ci-measurement " +
