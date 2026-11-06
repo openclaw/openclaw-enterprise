@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import https from "node:https";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -126,39 +126,7 @@ export function keycloakInstructions(stdout) {
   return { consoleUrl, caFiles: [consoleCA, keycloakCA], hosts: [{ address, host }] };
 }
 
-// Launch sandboxed Chromium the way a person's browser would trust the
-// profile: a fresh NSS database under a private HOME holds the printed CA
-// files as trust anchors, and a resolver rule stands in for the printed hosts
-// line. It passes no certificate-error bypass, so an untrusted chain fails.
-export async function launchTrustingBrowser(chromium, root, instructions) {
-  const home = join(root, "browser-home");
-  const database = join(home, ".pki", "nssdb");
-  await mkdir(database, { recursive: true, mode: 0o700 });
-  await execute("certutil", ["-N", "--empty-password", "-d", `sql:${database}`]);
-  for (const [index, file] of instructions.caFiles.entries()) {
-    await execute("certutil", [
-      "-A",
-      "-d",
-      `sql:${database}`,
-      "-n",
-      `oce-dev-keycloak-${index}`,
-      "-t",
-      "C,,",
-      "-i",
-      file,
-    ]);
-  }
-  const rules = instructions.hosts.map(({ address, host }) => `MAP ${host} ${address}`);
-  return chromium.launch({
-    headless: true,
-    chromiumSandbox: true,
-    env: { HOME: home, PATH: process.env.PATH, TMPDIR: root },
-    args: ["--no-proxy-server", `--host-resolver-rules=${rules.join(", ")}`],
-    ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
-      ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
-      : {}),
-  });
-}
+export { launchTrustingBrowser } from "./trusted-chromium.ts";
 
 // Dial the owned publication while verifying its real DNS identity and CA.
 // No host-file edits or global trust changes are needed for this automation.

@@ -14,7 +14,7 @@ import {
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
@@ -41,6 +41,7 @@ import {
   saveConfigurationUntilReady,
   settledView,
   storeRefusedConfiguration,
+  assertConfigurationValues,
   versionChooser,
   versionOption,
   waitForChosenVersion,
@@ -60,7 +61,7 @@ import {
   replyWithDifferentAgentId,
   configurationPatchRequests,
   nativeAdminValues,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   AGENT_SAVE_DENIED,
   CONFIGURATION_EDITS_PENDING,
@@ -1675,16 +1676,20 @@ test("A member without Agent create sends no Compute preflight for a plugin entr
   );
   const agent = await fixture.createAgent(namespace.id, "Entry key member", values);
   // The row as a release before the Kubernetes save rule stored it.
-  await configurationDriver.update({
-    ...configurationDriver.stored({ namespaceId: namespace.id, id: agent.configurationId }),
-    values: {
-      ...structuredClone(values),
-      plugins: {
-        ...values.plugins,
-        entries: { ...values.plugins.entries, "File-Transfer": { enabled: true } },
-      },
-    },
+  const stored = configurationDriver.stored({
+    namespaceId: namespace.id,
+    id: agent.configurationId,
   });
+  assert.ok(stored, "Expected the stored Configuration");
+  const storedValues = {
+    ...structuredClone(values),
+    plugins: {
+      ...values.plugins,
+      entries: { ...values.plugins.entries, "File-Transfer": { enabled: true } },
+    },
+  };
+  assertConfigurationValues(storedValues);
+  await configurationDriver.update({ ...stored, values: storedValues });
   const member = await fixture.createNamespaceMember(
     "entry-key-member",
     namespace.id,

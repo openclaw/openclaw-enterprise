@@ -38,5 +38,5 @@ policy.networkPolicies = policy.networkPolicies.filter((r) => r !== rule);
 // Model and Linear access stay on the Gateway. The repository binding supplies native Git.
 drivers.plugin.find((entry) => entry.id === "codex-plugin").configuration.catalogSource =
   "openai-curated";
-// Save the file that Helm will load from the new versioned Secret.
+// Save the proposed file for the operator session’s Installation update.
 writeFileSync(file, dumpYaml(config), { mode: 0o600 });

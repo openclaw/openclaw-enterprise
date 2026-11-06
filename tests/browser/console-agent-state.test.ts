@@ -55,7 +55,7 @@ import {
   openFailureDetails,
   showDeploymentTab,
 } from "./console-deployment-activity-helpers.ts";
-import { agentDeleteRequests, agentStopRequests } from "./console-agents-test-support.mjs";
+import { agentDeleteRequests, agentStopRequests } from "./console-agents-test-support.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   ACCESS_TAB_UNAVAILABLE,
@@ -1369,7 +1369,7 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
     .getByText("Accepted startup values are unavailable for this Driver.", { exact: true })
     .waitFor();
   assert.equal(await secret.locator("pre").count(), 0);
-  // Both columns belong to one document scroll; the profile reaches the long page's bottom.
+  // Long Settings content scrolls while the account control stays within the viewport.
   const desktop = await page.evaluate(() => {
     const shellElement = globalThis.document.querySelector(".shell");
     const sidebarElement = globalThis.document.querySelector(".sidebar");
@@ -1389,9 +1389,13 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
     };
   });
   assert.ok(desktop.shellHeight > desktop.viewport * 1.5, "exercise a genuinely long page");
-  assert.ok(desktop.sidebarHeight >= desktop.shellHeight - 1, JSON.stringify(desktop));
+  assert.ok(Math.abs(desktop.sidebarHeight - desktop.viewport) <= 1, JSON.stringify(desktop));
   assert.ok(desktop.bottomGap >= 0 && desktop.bottomGap <= 32, JSON.stringify(desktop));
   assert.equal(desktop.fits, true);
+  await page.evaluate(() => globalThis.window.scrollTo(0, document.body.scrollHeight));
+  const account = await page.locator(".sidebar .account-toggle").boundingBox();
+  assert.ok(account);
+  assert.ok(account.y >= 0 && account.y + account.height <= desktop.viewport);
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(
     await page.evaluate(
@@ -1417,11 +1421,11 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
   );
 });
 
-// Settings shows the Installation Driver configuration heading while its configuration read is still in
-// flight. An administrator's Settings page has settled once the values are listed; a revoke
-// before then reaches that read and the API refuses and audits it (finding 2654).
+// Settle all the Installation reads on Settings before revoking the administrator. A pending
+// template, OAuth client, or Driver configuration read would exercise a different race.
 async function waitForDriverConfigurations(page: Page) {
   await page.getByText(/^Inspect startup values accepted by the selected Drivers\./).waitFor();
+  await waitForIdleFetches(page);
 }
 
 // Finding D760. An administrator revoked while signed in keeps the tab's settled answer, so the
@@ -1456,7 +1460,7 @@ test("Installation-administration reads after a revoke are refused and audited o
   const adminDenials = () =>
     authorizationDenials(
       fixture.auditSink,
-      /^openclaw\.(observability|backends|iam|secrets|installation)\./,
+      /^openclaw\.(observability|backends|iam|secrets|installation|connection_templates|oauth_clients)\./,
     );
   const settingsUrl = `${fixture.origin}/console/settings?namespace=${namespace.id}`;
   const agentUrl = String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
@@ -1481,6 +1485,15 @@ test("Installation-administration reads after a revoke are refused and audited o
       assert.equal(await driverSchemas.count(), 0);
       assert.equal(await page.getByRole("alert").count(), 0);
     },
+    templates: async () => {
+      const before = reads("/connection-templates") + reads("/oauth-clients");
+      await page.goto(`${fixture.origin}/console/credentials/connection-templates`);
+      await page
+        .getByRole("heading", { name: "Installation administrator access required" })
+        .waitFor();
+      assert.equal(await page.getByRole("link", { name: "Connection templates" }).count(), 0);
+      assert.equal(reads("/connection-templates") + reads("/oauth-clients"), before);
+    },
     backends: async () => {
       const refused = reads("/backends");
       await page.goto(`${fixture.origin}/console/backends?namespace=${namespace.id}`);
@@ -1504,7 +1517,7 @@ test("Installation-administration reads after a revoke are refused and audited o
     await pages[first]();
     assert.equal(await observability.count(), 0, first);
     assert.equal(adminDenials().length, round + 1, first);
-    for (const other of ["access", "agent", "settings", "backends"] as const) {
+    for (const other of ["access", "agent", "settings", "backends", "templates"] as const) {
       await pages[other]();
     }
     assert.equal(adminDenials().length, round + 1, first);

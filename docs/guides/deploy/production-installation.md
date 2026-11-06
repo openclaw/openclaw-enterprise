@@ -6,7 +6,8 @@ tags: [nolimit]
 
 For an OpenShell cluster, start with [Kubernetes setup](kubernetes-setup.md) or
 [Amazon EKS setup](eks-openshell-setup.md), then [deploy your first Agent](deploy-first-agent.md)
-in the same operator shell.
+in the same operator shell. Those OpenShell workflows support development and
+evaluation; [production qualification remains incomplete](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
 
 Use this guide for a custom Helm installation. Choose the [published images](#use-published-images),
 [generate the profile configuration](#recommended-generate-profile-configuration), and
@@ -630,6 +631,10 @@ Keep `auth.github` configured. Never [roll back](production-upgrade-recovery.md#
 
 Restart the API after secret rotation. Keeping the client ID preserves attachments. Changing it ends old-instance sessions:
 reattach under the new ID before detaching old methods.
+
+For automatic first-login accounts, configure [GitHub team enrollment](../../reference/authentication/team-enrollment.md)
+with an existing IAM Group and the App's email-read permission. Otherwise, follow
+the manual attachment procedure below.
 
 [Enroll skipped accounts](../../reference/authentication/external-sign-in.md#session-and-recovery-controls) first.
 Through the site’s identity process, an Installation administrator verifies the intended GitHub user owns the enrolled local OCE account.

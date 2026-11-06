@@ -77,7 +77,7 @@ export async function startServiceListeners(
   },
 ) {
   const [{ createCredentialService }, { startListeners }] = await Promise.all([
-    appModule("drivers/repo/credentials/service"),
+    import("./service.ts"),
     appModule("drivers/repo/credentials/server"),
   ]);
   const service = createCredentialService({ config, factory, clock });

@@ -228,12 +228,20 @@
                         "label": "Authorization"
                       },
                       {
+                        "page": "reference/authorization/default-users",
+                        "label": "Default Users"
+                      },
+                      {
                         "page": "reference/service-accounts",
                         "label": "Service Accounts"
                       },
                       {
                         "page": "reference/authentication/external-sign-in",
                         "label": "External Sign-In"
+                      },
+                      {
+                        "page": "reference/authentication/team-enrollment",
+                        "label": "GitHub Team Enrollment"
                       },
                       {
                         "page": "reference/authentication/service-api-keys",
@@ -258,8 +266,16 @@
                     "label": "Credential Proxy"
                   },
                   {
+                    "page": "design/credential-proxy-architecture",
+                    "label": "Credential Proxy Architecture"
+                  },
+                  {
                     "page": "reference/security/credential-proxy",
                     "label": "Credential Proxy Threat Model"
+                  },
+                  {
+                    "page": "reference/connection-templates",
+                    "label": "Connection Templates"
                   },
                   {
                     "page": "reference/credential-sources",
@@ -1227,6 +1243,7 @@
               "flows/harness-execution-topology",
               "flows/compute-driver-lifecycle-hooks",
               "flows/openshell-sandbox-provisioning",
+              "flows/connection-templates",
               "flows/credential-source-lifecycle",
               "flows/credential-source-refresh",
               "flows/driver-plugin-loading",

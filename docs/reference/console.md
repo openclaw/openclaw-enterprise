@@ -39,14 +39,14 @@ colors with a mounted [theme bundle](console/theming.md). See
 
 ## Identify the control-plane build
 
-With `debug=true`, the sidebar wordmark shows the first eight characters of the
+With **Debug mode** enabled in Settings, the sidebar wordmark shows the first eight characters of the
 running OCC image's source commit, or **dev** for builds without metadata; hover
 for the full commit. Published images bake their source commit into the console
 HTML.
 
 ## Browse and select a Namespace
 
-The sidebar opens **Agents**, **Secrets**, or **Namespaces**; **Refresh** repeats the read.
+The sidebar opens **Agents**, **Credentials**, or **Namespaces**. **Credentials** opens the Secrets tab for the selected Namespace. Installation administrators can also open [Connection templates](connection-templates.md). **Refresh** repeats the read.
 Configure models during creation. [Experimental Backends](backends.md) stay
 hidden. Namespace rows open their Agents.
 
@@ -108,12 +108,11 @@ scope; global pages stay open. The selector cannot broaden API authorization.
 
 ## Inspect build and runtime images
 
-Append `debug=true` to the console URL, for example
-`/console/agents?debug=true` (or `&debug=true` after an existing query).
+Open **Settings → Browser preferences** and turn on **Debug mode**.
 The sidebar shows the full OCE source commit and per-container image
-observations for readable Agents in the selected Namespace. Navigation preserves
-the flag; remove it to hide diagnostics and stop these reads. **Refresh**
-retries unavailable metadata and updates the snapshot.
+observations for readable Agents in the selected Namespace. Turn it off in
+Settings to hide diagnostics and stop new image reads. **Refresh** retries
+unavailable metadata and updates the snapshot.
 [Debug sidebar fields](console/debug-fields.md) defines every field, Docker and
 Kubernetes differences, inspection scope, and unavailable states.
 

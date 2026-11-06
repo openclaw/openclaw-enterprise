@@ -778,6 +778,8 @@ test("hosted discovery DNS failures revoke stale deployment artifacts", async (t
   const preflight = JSON.parse(readFileSync(join(dns.directory, "preflight.json"), "utf8"));
   assert.equal(preflight.ok, false);
   assert.ok(preflight.errors.join("\n").includes("IPv4 addresses for chatgpt.com."));
+  // One host must resolve so a broken DNS fixture cannot satisfy the refusal case.
+  assert.doesNotMatch(preflight.errors.join("\n"), /IPv4 addresses for auth\.openai\.com\./);
   assert.match(preflight.errors.join("\n"), /modelDiscoveryCidrs/);
   assert.match(preflight.errors.join("\n"), /retry|re-?render|supply|set|provide|configure/i);
   assert.equal(existsSync(join(dns.directory, "values.yaml")), false);
@@ -2044,6 +2046,25 @@ test(
       allowlistManifests,
       /name: OCC_AUTH_GITHUB_ALLOWED_TEAMS\n\s+value: "other\/platform"/,
     );
+    const enrolling = await render(
+      "openclaw",
+      externalSignInInput({
+        trustedProxy,
+        github: { allowedTeams: ["acme/platform"], autoEnrollGroupId: "team.platform" },
+      }),
+    );
+    assert.equal(enrolling.summary.ok, true, enrolling.preflight.errors.join("\n"));
+    assert.match(
+      helmTemplate(enrolling),
+      /name: OCC_AUTH_GITHUB_AUTO_ENROLL_GROUP_ID\n\s+value: "team.platform"/,
+    );
+    await assertPreflightFailure(
+      "openclaw",
+      externalSignInInput({
+        github: { allowedTeams: ["acme/platform"], autoEnrollGroupId: "\uFEFF " },
+      }),
+      /autoEnrollGroupId must be a nonempty string/,
+    );
     // Password sign-in stays open to every account unless recovery-only is chosen.
     assert.doesNotMatch(github.values, /passwordSignIn/);
     assert.doesNotMatch(manifests, /OCC_AUTH_PASSWORD_SIGN_IN/);
@@ -2245,6 +2266,20 @@ test("preflight rejects external sign-in Secret names Kubernetes refuses", async
 });
 
 test("preflight rejects external sign-in and trusted proxy inputs Helm would reject", async () => {
+  for (const github of [
+    { autoEnrollGroupId: "team.platform" },
+    {
+      autoEnrollGroupId: "team.platform",
+      allowedTeams: ["acme/platform"],
+      allowedOrgs: ["acme"],
+    },
+  ]) {
+    await assertPreflightFailure(
+      "openclaw",
+      externalSignInInput({ github }),
+      /autoEnrollGroupId requires allowedTeams and no allowedOrgs/,
+    );
+  }
   await assertPreflightFailure(
     "openclaw",
     externalSignInInput({ github: { allowedTeams: ["platform"] } }),

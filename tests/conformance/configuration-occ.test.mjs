@@ -22,7 +22,7 @@ import {
   resolveConfiguredHarnessId,
 } from "../../packages/occ/src/index.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import {
   createDevelopmentComputeDriver,
   registerAndSelectDrivers,
