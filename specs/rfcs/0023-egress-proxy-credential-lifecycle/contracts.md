@@ -177,34 +177,37 @@ receives only committed material for the authorized operation.
 
 | Lifecycle owner interface                                   | Responsibility                                                                                                                                                                                                                                          |
 | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CredentialRefreshDriver.configureRefresh`, `refreshStatus` | Admit family, single owner, issuer, input authority, grant keys, renewal lead and minimum validity. Report configuration, eligibility, current attempt, activity, next renewal and required recovery separately.                                        |
+| `TokenService.configureRefresh`, `refreshStatus`             | Admit family, single owner, issuer, input authority, grant keys, renewal lead and minimum validity. Report configuration, eligibility, current attempt, activity, next renewal and required recovery separately.                                        |
 | `prepare`, `removeRefresh`                                  | Separately authorized management may ensure readiness or request rotation. Removal stops preparation and settles owned artifacts. Retain a family while another admitted source or grant depends on it.                                                 |
 | `CredentialIssuer.issue`, `inspect`, `retire`               | Bind attempt, input version, grant, family, epoch and deadline. Distinguish known refusal, no dispatch, candidate and uncertain exchange. Inspect without repeating issuance. Retire exact custody and report provider revocation only where supported. |
 
-OCC and its trusted callers use two Token Service operations for OCE-managed dynamic credentials.
+OCE’s built-in **Token Service** owns the warm reader, encrypted custody and fenced issuer
+attempts. OCC uses it for setup, status, rotation and removal. The worker uses it for background
+preparation. OCE offers a credential family for enrollment when its issuer is configured.
 
-- `register` takes an explicit `kind` and returns a stable reference with the same kind. The installed owner must support that kind and the registered provider identity. The `github_app_installation` owner
-  accepts an installation, the permitted repositories and permissions, and authority to read the
-  App signing key. It mints an installation token within those limits. For a saved OAuth
-  account, OCC registers `oauth_refresh_token` with the approved template version, client registration, refresh grant and first access token from consent.
-  The OAuth owner keeps that grant and uses the approved client registration for renewal.
-- `resolve` selects the owner by the reference’s kind and uses the registered grant, the caller’s authority, minimum remaining validity and
-  original deadline. If the current token meets those limits, it returns immediately. When
-  renewal is due, the owner starts or joins background work for that grant. If the token is
-  missing, expired or too close to expiry for this request, the owner starts or joins preparation
-  for the exact grant. The caller waits only within its remaining time. An unsuccessful or
-  cancelled wait releases no material.
+- `register` takes an explicit `kind` and returns a stable reference with the same kind. The
+  installed issuer must support that kind and the registered provider identity. For
+  `github_app_installation`, OCC registers the installation, its permitted repositories and
+  permissions, and authority to read the App signing key. For `oauth_refresh_token`, OCC
+  registers the approved template version, client registration, refresh grant and first access
+  token from consent. The OAuth issuer uses that client registration for renewal.
+- `resolve` selects the issuer by the reference’s kind. It uses the registered grant, the
+  caller’s authority, minimum remaining validity and original deadline. It returns a usable
+  committed token immediately and starts or joins background work when renewal is due. If
+  the token is missing, expired or too close to expiry for this request, it starts or joins
+  preparation for that grant. The caller waits only within its remaining time. An unsuccessful
+  or cancelled wait releases no material.
 
-The Credential Proxy may request preparation only for a captured operation that OCC has
-authorized. The native Git broker continues to use its existing preparation authority.
-Scheduled and request-triggered renewals share the same owner and durable attempt. A caller may
-tighten its validity requirement within policy. It cannot change the grant through resolution.
-The trusted sender must still prove that the selected attempt and value version are current.
-See the [request protocol](protocol.md#dynamic-material) for the authorization checks surrounding
-a wait and the [renewal protocol](protocol.md#prepare-and-renew-credentials) for uncertain outcomes.
+The Credential Proxy may trigger preparation only for a captured operation that OCC has authorized.
+The native Git broker uses its existing preparation authority. Scheduled and request-triggered renewals
+share the same owner and durable attempt. An issuer outage prevents issuance or renewal. The sender
+may still receive a committed token while it meets the grant’s [eligibility rules](protocol.md#dynamic-material).
+The authorizer checks the selected attempt and value version without reading the token. The issuer
+distinguishes confirmed retirement, expiry without confirmed revocation, and an unknown outcome.
+See the [renewal protocol](protocol.md#prepare-and-renew-credentials) for recovery.
 
 These interfaces can run in one process. [Protected Git](github-installation-access.md#let-a-team-keep-git-access-until-it-removes-approval)
-uses this owner. OpenShell can remain the lifecycle owner for a different credential family.
+uses this owner. A family whose grant stays in OpenShell can use an issuer adapter that delegates renewal to OpenShell. Only one component renews a given grant.
 
 ## Control operation recovery
 

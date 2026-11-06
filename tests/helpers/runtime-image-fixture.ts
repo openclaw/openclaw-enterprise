@@ -1,17 +1,60 @@
 import { readFile, rename, rm, writeFile } from "node:fs/promises";
 
+type CommandResult = { stdout: string };
+type CommandExecution<R> = Promise<R> & { child?: { pid?: number | undefined } };
+type Execute<R> = (
+  command: string,
+  args: (string | undefined)[],
+  options: { env: NodeJS.ProcessEnv; detached: boolean; maxBuffer: number },
+) => CommandExecution<R>;
+type Disposition = {
+  started: number;
+  settled: number;
+  unknown: number;
+  escapedDescendants: string;
+};
+type Docker = ((...args: (string | undefined)[]) => Promise<CommandResult>) & {
+  disposition?: () => Disposition;
+};
+type ReceiptEntry = { operation: string; status: string; reference?: string | undefined };
+
+function property(value: unknown, key: string): unknown {
+  const boxed: unknown = Object.prototype.valueOf.call(value);
+  if ((typeof boxed === "object" && boxed !== null) || typeof boxed === "function") {
+    return Reflect.get(boxed, key, value);
+  }
+  throw new TypeError("Cannot access property");
+}
+
+function optionalProperty(value: unknown, key: string): unknown {
+  return value == null ? undefined : property(value, key);
+}
+
+function isUnknownArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
 const imageIdPattern = /^sha256:[a-f0-9]{64}$/;
 const containerIdPattern = /^[a-f0-9]{64}$/;
 
-export function assertProcessGroupSettled(pid) {
-  if (!Number.isSafeInteger(pid) || pid <= 0 || process.platform === "win32") {
+export function assertProcessGroupSettled(pid: number | undefined) {
+  if (
+    typeof pid !== "number" ||
+    !Number.isSafeInteger(pid) ||
+    pid <= 0 ||
+    process.platform === "win32"
+  ) {
     throw new Error("Docker command process group cannot be observed");
   }
   try {
     process.kill(-pid, 0);
   } catch (error) {
-    if (error.code === "ESRCH") {
-      return;
+    const boxed: unknown = Object.prototype.valueOf.call(error);
+    if ((typeof boxed === "object" && boxed !== null) || typeof boxed === "function") {
+      const code: unknown = Reflect.get(boxed, "code", error);
+      if (code === "ESRCH") {
+        return;
+      }
     }
     throw error;
   }
@@ -20,10 +63,10 @@ export function assertProcessGroupSettled(pid) {
 
 // DockerComputeDriver uses this Unix socket directly. Remove inherited endpoint
 // and TLS overrides so the fixture CLI cannot silently target another engine.
-export function localDockerCli(
-  execute,
-  inheritedEnv = process.env,
-  observeGroup = assertProcessGroupSettled,
+export function localDockerCli<R>(
+  execute: Execute<R>,
+  inheritedEnv: NodeJS.ProcessEnv = process.env,
+  observeGroup: (pid: number | undefined) => void | Promise<void> = assertProcessGroupSettled,
 ) {
   const env = { ...inheritedEnv };
   for (const name of [
@@ -37,7 +80,7 @@ export function localDockerCli(
     delete env[name];
   }
   const disposition = { started: 0, settled: 0, unknown: 0 };
-  const docker = async (...args) => {
+  const docker = async (...args: (string | undefined)[]) => {
     if (disposition.unknown) {
       throw new Error("Refusing Docker commands after an unsettled process group");
     }
@@ -53,14 +96,11 @@ export function localDockerCli(
       disposition.unknown += 1;
       throw error;
     }
-    let result;
-    let commandError;
-    let failed = false;
+    let outcome: { failed: false; result: Awaited<R> } | { failed: true; error: unknown };
     try {
-      result = await execution;
+      outcome = { failed: false, result: await execution };
     } catch (error) {
-      commandError = error;
-      failed = true;
+      outcome = { failed: true, error };
     }
     try {
       await observeGroup(execution.child?.pid);
@@ -68,15 +108,15 @@ export function localDockerCli(
     } catch (error) {
       disposition.unknown += 1;
       throw new AggregateError(
-        failed ? [commandError, error] : [error],
+        outcome.failed ? [outcome.error, error] : [error],
         "Docker command process group did not settle",
         { cause: error },
       );
     }
-    if (failed) {
-      throw commandError;
+    if (outcome.failed) {
+      throw outcome.error;
     }
-    return result;
+    return outcome.result;
   };
   docker.disposition = () => ({
     ...disposition,
@@ -87,7 +127,7 @@ export function localDockerCli(
 
 // This only selects the dedicated workflow route. It is not an attestation of
 // engine ownership; that boundary comes from the job and its execution order.
-export function isRuntimeImageJob(env) {
+export function isRuntimeImageJob(env: NodeJS.ProcessEnv) {
   return (
     env.GITHUB_ACTIONS === "true" &&
     env.RUNNER_ENVIRONMENT === "github-hosted" &&
@@ -98,19 +138,37 @@ export function isRuntimeImageJob(env) {
 
 // The caller supplies unique tags and build inputs. A failed Docker command can
 // have an unknown effect; names or labels alone never authorize cleanup.
-export async function withRuntimeImageFixture(docker, directory, run, { receiptPath } = {}) {
-  const images = new Map();
-  const tags = new Map();
-  const containers = new Set();
-  const uncertain = [];
-  const cleanupErrors = [];
-  const history = [];
-  let primary;
-  let primaryFailed = false;
-  let value;
-  let pending;
+type RuntimeImageFixture = {
+  build(tag: string, iidfile: string, nonce: string, baseId: string): Promise<string>;
+  buildRuntimeBase(
+    tag: string,
+    iidfile: string,
+    dockerfile: string,
+    context: string,
+  ): Promise<string>;
+  inspectImage(ref: string): Promise<unknown>;
+  create(name: string, args: string[]): Promise<string>;
+  startAttached(id: string): Promise<void>;
+  removeContainer(id: string): Promise<void>;
+  retag(id: string, tag: string): Promise<void>;
+};
 
-  async function receipt(operation, status, reference) {
+export async function withRuntimeImageFixture<T>(
+  docker: Docker,
+  directory: string | undefined,
+  run: (fixture: RuntimeImageFixture) => T | Promise<T>,
+  { receiptPath }: { receiptPath?: string | undefined } = {},
+) {
+  const images = new Map<string, boolean>();
+  const tags = new Map<string, string>();
+  const containers = new Set<string>();
+  const uncertain: string[] = [];
+  const cleanupErrors: unknown[] = [];
+  const history: ReceiptEntry[] = [];
+  let outcome: { failed: false; value: Awaited<T> } | { failed: true; error: unknown };
+  let pending: { operation: string; reference?: string | undefined } | undefined;
+
+  async function receipt(operation: string, status: string, reference?: string) {
     if (!receiptPath) {
       return;
     }
@@ -130,25 +188,28 @@ export async function withRuntimeImageFixture(docker, directory, run, { receiptP
     await rename(temp, receiptPath);
   }
 
-  async function inspect(ref) {
-    const parsed = JSON.parse((await docker("image", "inspect", ref)).stdout);
+  async function inspect(ref: string): Promise<unknown> {
+    const parsed: unknown = JSON.parse((await docker("image", "inspect", ref)).stdout);
     if (
-      !Array.isArray(parsed) ||
+      !isUnknownArray(parsed) ||
       parsed.length !== 1 ||
-      typeof parsed[0]?.Id !== "string" ||
-      !imageIdPattern.test(parsed[0].Id)
+      typeof optionalProperty(parsed[0], "Id") !== "string" ||
+      !Reflect.apply(RegExp.prototype.test, imageIdPattern, [property(parsed[0], "Id")])
     ) {
       throw new Error(`Docker returned invalid image identity for ${ref}`);
     }
     return parsed[0];
   }
 
-  function references(image, id) {
-    if (!Object.hasOwn(image, "RepoTags") || !Object.hasOwn(image, "RepoDigests")) {
+  function references(image: unknown, id: string) {
+    if (
+      !Object.hasOwn(Object.prototype.valueOf.call(image), "RepoTags") ||
+      !Object.hasOwn(Object.prototype.valueOf.call(image), "RepoDigests")
+    ) {
       throw new Error(`Docker omitted reference information for ${id}`);
     }
-    const repoTags = image.RepoTags ?? [];
-    const repoDigests = image.RepoDigests ?? [];
+    const repoTags = property(image, "RepoTags") ?? [];
+    const repoDigests = property(image, "RepoDigests") ?? [];
     if (
       !Array.isArray(repoTags) ||
       !repoTags.every((tag) => typeof tag === "string") ||
@@ -166,11 +227,16 @@ export async function withRuntimeImageFixture(docker, directory, run, { receiptP
     return { repoTags, foreignDigests: repoDigests.filter((digest) => !derived.has(digest)) };
   }
 
-  async function ensureUnusedTag(tag) {
+  async function ensureUnusedTag(tag: string) {
     try {
       await docker("image", "inspect", tag);
     } catch (error) {
-      if (/No such image/i.test(error?.stderr ?? error?.message ?? "")) {
+      const stderr: unknown =
+        error == null ? undefined : Reflect.get(Object(error), "stderr", error);
+      const message: unknown =
+        stderr == null && error != null ? Reflect.get(Object(error), "message", error) : undefined;
+      const detail = stderr ?? message ?? "";
+      if (Reflect.apply(RegExp.prototype.test, /No such image/i, [detail])) {
         return;
       }
       throw error;
@@ -185,7 +251,7 @@ export async function withRuntimeImageFixture(docker, directory, run, { receiptP
   }
 
   const fixture = {
-    async build(tag, iidfile, nonce, baseId) {
+    async build(tag: string, iidfile: string, nonce: string, baseId: string) {
       requireKnownEffects();
       await ensureUnusedTag(tag);
       try {
@@ -216,7 +282,7 @@ export async function withRuntimeImageFixture(docker, directory, run, { receiptP
         throw error;
       }
     },
-    async buildRuntimeBase(tag, iidfile, dockerfile, context) {
+    async buildRuntimeBase(tag: string, iidfile: string, dockerfile: string, context: string) {
       requireKnownEffects();
       await ensureUnusedTag(tag);
       try {
@@ -248,11 +314,11 @@ export async function withRuntimeImageFixture(docker, directory, run, { receiptP
         throw error;
       }
     },
-    async inspectImage(ref) {
+    async inspectImage(ref: string) {
       requireKnownEffects();
       return inspect(ref);
     },
-    async create(name, args) {
+    async create(name: string, args: string[]) {
       requireKnownEffects();
       try {
         await receipt("container-create", "pending", name);
@@ -268,7 +334,7 @@ export async function withRuntimeImageFixture(docker, directory, run, { receiptP
         throw error;
       }
     },
-    async startAttached(id) {
+    async startAttached(id: string) {
       requireKnownEffects();
       if (!containers.has(id)) {
         throw new Error(`Refusing to start an unowned container ${id}`);
@@ -282,7 +348,7 @@ export async function withRuntimeImageFixture(docker, directory, run, { receiptP
         throw error;
       }
     },
-    async removeContainer(id) {
+    async removeContainer(id: string) {
       requireKnownEffects();
       if (!containers.has(id)) {
         throw new Error(`Refusing to remove an unowned container ${id}`);
@@ -298,12 +364,12 @@ export async function withRuntimeImageFixture(docker, directory, run, { receiptP
         throw error;
       }
     },
-    async retag(id, tag) {
+    async retag(id: string, tag: string) {
       requireKnownEffects();
       if (!images.has(id) || !tags.has(tag)) {
         throw new Error("Refusing to retag an unowned fixture image or tag");
       }
-      if ((await inspect(tag)).Id !== tags.get(tag)) {
+      if (property(await inspect(tag), "Id") !== tags.get(tag)) {
         throw new Error(`Refusing to retarget changed tag: ${tag}`);
       }
       try {
@@ -320,10 +386,9 @@ export async function withRuntimeImageFixture(docker, directory, run, { receiptP
 
   try {
     await receipt("fixture", "started");
-    value = await run(fixture);
+    outcome = { failed: false, value: await run(fixture) };
   } catch (error) {
-    primary = error;
-    primaryFailed = true;
+    outcome = { failed: true, error };
   }
 
   if (docker.disposition?.().unknown) {
@@ -345,7 +410,7 @@ export async function withRuntimeImageFixture(docker, directory, run, { receiptP
   if (uncertain.length === 0 && cleanupErrors.length === 0) {
     try {
       for (const [tag, expected] of tags) {
-        if ((await inspect(tag)).Id !== expected) {
+        if (property(await inspect(tag), "Id") !== expected) {
           throw new Error(`Tag changed: ${tag}`);
         }
       }
@@ -353,7 +418,7 @@ export async function withRuntimeImageFixture(docker, directory, run, { receiptP
         const image = await inspect(id);
         const { repoTags, foreignDigests } = references(image, id);
         if (
-          image.Id !== id ||
+          property(image, "Id") !== id ||
           foreignDigests.length ||
           repoTags.some((tag) => tags.get(tag) !== id) ||
           [...tags].some(([tag, target]) => target === id && !repoTags.includes(tag))
@@ -388,7 +453,7 @@ export async function withRuntimeImageFixture(docker, directory, run, { receiptP
         }
         const image = await inspect(id);
         const { repoTags, foreignDigests } = references(image, id);
-        if (image.Id !== id || repoTags.length || foreignDigests.length) {
+        if (property(image, "Id") !== id || repoTags.length || foreignDigests.length) {
           throw new Error(`Image ${id} still has references`);
         }
         await receipt("image-remove", "pending", id);
@@ -427,12 +492,12 @@ export async function withRuntimeImageFixture(docker, directory, run, { receiptP
   }
   if (cleanupErrors.length) {
     throw new AggregateError(
-      primaryFailed ? [primary, ...cleanupErrors] : cleanupErrors,
+      outcome.failed ? [outcome.error, ...cleanupErrors] : cleanupErrors,
       "Runtime image fixture and cleanup failed",
     );
   }
-  if (primaryFailed) {
-    throw primary;
+  if (outcome.failed) {
+    throw outcome.error;
   }
-  return value;
+  return outcome.value;
 }

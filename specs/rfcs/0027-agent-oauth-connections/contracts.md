@@ -8,13 +8,15 @@ This companion defines the platform contracts, failure behavior, and required
 outcomes for [RFC-0027](index.md). The RFC owns the decision, connection
 templates, consent rules, and Agent attachment boundary.
 
-## OAuth connections
+<a id="credential-refresh-driver"></a>
+
+## Token Service and OAuth enrollment
 
 ### Browser authorization
 
 OCC owns browser consent for connection templates. An Installation can connect
 an account and renew it with the Credential Refresh Driver and OpenShell
-unconfigured. A Credential Gateway is needed when an Agent uses a prepared token.
+unconfigured.
 
 1. OCC validates the requested scopes against the template. It generates a
    random `state` and a PKCE verifier and stores the attempt in private
@@ -30,7 +32,7 @@ unconfigured. A Credential Gateway is needed when an Agent uses a prepared token
    commits them. An uncertain handoff leaves the source `registering`.
 
 The Token Service serializes renewals per source and commits the new access
-token and any replacement refresh token together. The selected Credential Gateway
+token and any replacement refresh token together. The Credential Proxy
 presents an eligible prepared token for an authorized Agent request.
 [Credential access and lifecycle](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle)
 
@@ -161,10 +163,7 @@ administrators, who hold every action through the built-in administrator role.
 ## Update a running sender
 
 The worker compares the current delivery policy with the policy installed for that
-Agent. If it changes, the Credential Gateway withholds usable token material while
-Compute and the Sandbox Driver update the sender. Compute confirms the effective
-request policy before asking OCC to release a prepared token for that revision
-and policy. OCC rechecks the grant, template and Agent binding before release.
+Agent. Before changing the recipients, Credential Proxy disables use of the affected binding, including its installed token. Once withdrawal is confirmed, the paired Sandbox applies the updated policy and prevents direct egress. Compute verifies the installed policy for that revision. OCC then rechecks the grant, template and Agent binding before allowing the proxy to use a token prepared by Token Service.
 A failed or superseded update leaves that sender without a usable token until
 reconciliation succeeds. A different Agent can keep using its own sender.
 
@@ -226,7 +225,7 @@ issue seven-day refresh tokens.
   Keep codes and tokens out of responses, logs and audit.
 - **Manual destination changes.** Replace a host for a running Agent. After
   reconciliation, verify delivery to the new host and no bearer at the old
-  one. Change the default client: refresh still uses the original registration.
+  one. Attempt a call between withholding the token and confirming the new policy. Verify that neither host receives a bearer and that another Agent using an unaffected template can still use its account. Change the default client: refresh still uses the original registration.
   Change the issuer and verify delivery stops.
 - **Refresh ownership.** For manual OAuth and MCP, observe background issuer
   refresh. With the same worker placeholder, OpenShell presents the new token.

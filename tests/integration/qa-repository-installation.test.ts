@@ -98,6 +98,7 @@ async function startWorkerOwner(loaded: LoadedInstallation) {
   return startPreparedGitHubGitOwner({
     ...owner,
     ...prepared,
+    repositoryGitCustody: { kind: "unavailable" },
     // Startup validates before it touches the database; maintenance stays off.
     pool: {} as Parameters<typeof startPreparedGitHubGitOwner>[0]["pool"],
     startWorker: false,

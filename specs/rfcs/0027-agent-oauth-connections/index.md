@@ -219,10 +219,9 @@ These changes require review of this RFC before implementation. The
    kind, and an optional Namespace context on authorization requests.
 
 Browser connections use the existing `oauth2-refresh-token` source type. For a
-template-created source, OCC records Token Service ownership at creation. The
-Token Service owns renewal for that account. The selected Credential Gateway
-delivers its prepared access tokens to authorized Agent requests. Manual source
-registration keeps its existing Secret-backed path.
+template-created source, OCC records the Token Service as its sole refresh owner.
+The Credential Proxy uses its prepared tokens for authorized requests. Manual
+sources retain their Secret-backed inputs. [Credential lifecycle and issuer ownership](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle)
 
 ### Console and API flow
 
@@ -230,8 +229,8 @@ registration keeps its existing Secret-backed path.
 sequenceDiagram
   participant User as Owner browser
   participant API as OCC API and console
-  participant Issuer as OAuth issuer
   participant Tokens as OCE Token Service
+  participant Issuer as OAuth issuer
   User->>API: Connect an account in the Namespace
   API->>API: Save session, state and PKCE verifier
   API-->>User: Consent URL with PKCE challenge
@@ -307,6 +306,7 @@ integration, real-cluster, and live-provider outcomes.
   an Installation to configure a Driver before a user could connect an account.
   The template and client registration already give OCC the information it
   needs for consent. The Token Service takes over once OCC obtains the grant.
+- **Store the refresh token as an ordinary OCC Secret.** Each provider rotation would require OCC to replace that Secret and coordinate the update with the saved account. Token Service already owns that operation.
 - **Store OAuth client secrets in a Credential Gateway.** This would require a Gateway before an administrator could configure a template. OCC can hold a private reference in the Installation's existing Secret Driver. The Token Service takes custody when a user connects an account.
 - **A Google-specific Gateway type.** Each new provider would need an OCE release.
 - **Executable-specific consent.** RFC-0023 authenticates the execution. A
@@ -319,7 +319,7 @@ integration, real-cluster, and live-provider outcomes.
 ## References
 
 - [Credential sources](../../../docs/reference/credential-sources.md)
-- [CredentialRefreshDriver contract](../../../docs/reference/drivers/credential-refresh.md)
+- [Current Credential Refresh Driver contract](../../../docs/reference/drivers/credential-refresh.md)
 - [OpenShell Credential Gateway](../../../docs/reference/drivers/openshell-credential-gateway.md)
 - [Console Agent creation](../../../docs/reference/console/create-and-deploy.md)
 - [Per-Agent sandbox policies](../../../docs/reference/sandbox-policies.md)
