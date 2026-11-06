@@ -380,6 +380,8 @@ export function nativeAdminLaunchSchema(confirm: boolean): FastifySchema {
       403: { description: "Forbidden", ...nativeAdminErrorSchema },
       404: { description: "Not Found", ...nativeAdminErrorSchema },
       409: { description: "Conflict", ...nativeAdminErrorSchema },
+      413: { description: "Payload Too Large", ...nativeAdminErrorSchema },
+      415: { description: "Unsupported Media Type", ...nativeAdminErrorSchema },
       503: { description: "Service Unavailable", ...nativeAdminErrorSchema },
     },
   } as FastifySchema;
