@@ -23,8 +23,13 @@ if (process.env.PR_STATUS_RESPONSE && args[0] === "pr") {
   process.stdout.write(process.env.PR_STATUS_RESPONSE);
   process.exit(0);
 }
-if (process.env.PR_STATUS_FAIL && args[0] === "pr") {
+if ((process.env.PR_STATUS_FAIL === "pr" && args[0] === "pr") ||
+    (process.env.PR_STATUS_FAIL === "base" && args[0] === "api" && args[1] !== "user")) {
   console.error("private-token-example");
+  process.exit(1);
+}
+if (args[0] === "api" && args[1] === "user" && process.env.PR_STATUS_USER_UNAVAILABLE) {
+  console.error("gh: Resource not accessible by integration (HTTP 403); private-token-example");
   process.exit(1);
 }
 if (args[0] === "api" && args[1] === "user") console.log(JSON.stringify({ login: "alice" }));
@@ -70,16 +75,48 @@ test("reports observed PR and target separately without asserting merge readines
   );
 });
 
-test("reports a failed read without exposing upstream diagnostics", (t) => {
-  const { env } = setup(t);
+test("reports PR status with unknown ownership when the user lookup is unavailable", (t) => {
+  const { env, log } = setup(t);
+  // A denied user endpoint must not hide repository observations or imply an actor identity.
   const result = spawnSync(process.execPath, [script, "12", "example/project"], {
-    env: { ...env, PR_STATUS_FAIL: "1" },
+    env: { ...env, PR_STATUS_USER_UNAVAILABLE: "1" },
     encoding: "utf8",
   });
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /Could not read pull request/);
-  assert.doesNotMatch(result.stderr, /private-token-example/);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Actor: unknown; author: alice; same account: unknown/);
+  assert.match(
+    result.stdout,
+    /Authenticated user unavailable; verify publishing authority separately/,
+  );
+  assert.match(result.stdout, /Target: main current-base/);
+  assert.match(result.stdout, /CI Required: SUCCESS/);
+  assert.match(result.stdout, /Native: SKIPPED/);
+  assert.match(result.stdout, /does not decide merge readiness/);
+  assert.doesNotMatch(
+    result.stdout + result.stderr,
+    /private-token-example|HTTP 403|same account: (yes|no)/,
+  );
+  assert.deepEqual(
+    readJsonLinesSync(log).map((call) => call[0]),
+    ["api", "pr", "api"],
+  );
 });
+
+for (const [failedRead, label] of [
+  ["pr", "pull request"],
+  ["base", "target branch"],
+]) {
+  test(`reports a failed ${label} read without exposing upstream diagnostics`, (t) => {
+    const { env } = setup(t);
+    const result = spawnSync(process.execPath, [script, "12", "example/project"], {
+      env: { ...env, PR_STATUS_USER_UNAVAILABLE: "1", PR_STATUS_FAIL: failedRead },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr.includes(`Could not read ${label}`));
+    assert.doesNotMatch(result.stderr, /private-token-example/);
+  });
+}
 
 test("rejects a malformed PR number before invoking gh", (t) => {
   const { env, log } = setup(t);
