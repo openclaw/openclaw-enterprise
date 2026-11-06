@@ -96,11 +96,6 @@ Native AMD64 and ARM64 image checks and real deployment verification remain
 separate requirements. Schema acceptance alone does not prove placement,
 enrollment, containment, workspace access, or model execution.
 
-The bridge tests and typechecks write temporary compiler artifacts to disk, not
-`tmpfs`, so the generated files do not compete with compiler processes for RAM.
-Each verification step starts with an empty artifact directory and removes it
-before the layer is committed; the test selection and final runtime are unchanged.
-
 | Input                                                 | Selection                                                                                                         |
 | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | Build base                                            | `docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a` |

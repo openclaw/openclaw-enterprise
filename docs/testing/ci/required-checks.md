@@ -61,6 +61,11 @@ use the linked suite guide and exact manifest in the table; prerequisites differ
 between browser, PostgreSQL, container, and Kubernetes lanes. Follow the shared
 [prepare, run, and cleanup procedure](run-lanes.md#results-and-cleanup).
 
+Runtime-image bridge tests and typechecks write temporary compiler artifacts to
+disk so memory pressure can reclaim their page cache. Each verification step
+starts with an empty artifact directory and removes it before committing the
+layer. Test selection and the final runtime remain unchanged.
+
 To inspect a run, replace the example PR number with yours:
 
 ```sh
