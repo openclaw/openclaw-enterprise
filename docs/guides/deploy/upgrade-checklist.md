@@ -32,7 +32,7 @@ command; use this page as its migration inventory.
       [split-layout tenant](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations));
       the image helper's preflight stops before quiescence.
 - [ ] Before the window, render the candidate chart with your live values
-      (`helm template`) and
+      (`helm template --is-upgrade`) and
       [correct any value it refuses](production-upgrade-recovery.md#correct-values-the-candidate-refuses).
       The image helper renders again and runs its startup preflight before
       stopping anything.

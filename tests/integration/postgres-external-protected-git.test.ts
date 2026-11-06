@@ -17,6 +17,7 @@ import type {
 import {
   loadInstallationConfiguration,
   readPublicCaBundle,
+  type InstallationRuntimeDrivers,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
 import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
@@ -560,15 +561,28 @@ function externalGitJourney(
       });
     const apiPackage = await protectedDriverPackage(t, id, "repository-git");
     const apiDrivers = (await load(apiPackage.directory))!;
-    const loadedDrivers = (await load(directory))!;
-    const drivers = modelGateway
-      ? {
-          ...loadedDrivers,
+    const loadWorkerDrivers = async (
+      liveSender?: InstallationRuntimeDrivers["repositoryGitDriver"],
+    ) => {
+      const loaded = (await load(directory))!;
+      if (liveSender) {
+        // The worker restarts, but the external sandbox still has its original policy and material.
+        assert.deepEqual(loaded.repositoryGitDriver?.ref, liveSender.ref);
+      }
+      return {
+        ...loaded,
+        ...(liveSender && {
+          protectedDriver: liveSender,
+          repositoryGitDriver: liveSender,
+          sandboxDriver: liveSender.require("sandbox"),
+          proxyDriver: liveSender.require("credential_proxy"),
+        }),
+        ...(modelGateway && {
           credentialGatewayDriver: modelGateway,
           installation: {
-            ...loadedDrivers.installation,
+            ...loaded.installation,
             drivers: {
-              ...loadedDrivers.installation.drivers,
+              ...loaded.installation.drivers,
               credential_gateway: {
                 id: modelGateway.id,
                 implementation: modelGateway.implementation,
@@ -577,8 +591,10 @@ function externalGitJourney(
               },
             },
           },
-        }
-      : loadedDrivers;
+        }),
+      };
+    };
+    let drivers = await loadWorkerDrivers();
     const { repositoryOwner, repositoryRegistry, repositoryGitDriver: owner } = drivers;
     assert.ok(owner && repositoryOwner && repositoryRegistry && drivers.preparedRepositoryGit);
     assert.equal(repositoryOwner.controlSocket, undefined);
@@ -1097,10 +1113,8 @@ function externalGitJourney(
     }
     const ref = { ...key, revisionId: revision.id };
     t.diagnostic("journey revision " + revision.id);
-    // Queue cadences are not under test here: waits on a worker pass make this revision's
-    // queued passes due.
-    try {
-      await f.start(compute, {
+    const startWorker = () =>
+      f.start(compute, {
         emit,
         transformDrivers: () => ({
           ...drivers,
@@ -1108,6 +1122,10 @@ function externalGitJourney(
           configurationDriver: controller.selectedDriver("configuration"),
         }),
       });
+    // Queue cadences are not under test here: waits on a worker pass make this revision's
+    // queued passes due.
+    try {
+      await startWorker();
       await waitForRevisionPass(
         "worker's standing execution",
         f,
@@ -1668,6 +1686,7 @@ function externalGitJourney(
           await f.stop();
           await transport!.close();
           await prepared.close();
+          drivers = await loadWorkerDrivers(owner);
           prepared = await startOwner();
           transport = await bindRepositoryGitTransport(
             drivers,
@@ -1677,14 +1696,7 @@ function externalGitJourney(
             transportOptions,
           );
           await expireStoppedClaims(f, revision);
-          await f.start(compute, {
-            emit,
-            transformDrivers: () => ({
-              ...drivers,
-              computeDriver: compute,
-              configurationDriver: controller.selectedDriver("configuration"),
-            }),
-          });
+          await startWorker();
           const replacementPasses = peer.delivery.reconciliations;
           await waitFor(
             "replacement observes hidden B without dispatch",
@@ -1755,15 +1767,9 @@ function externalGitJourney(
           assert.deepEqual((await readReduction()).records, []);
           peer.reduction.loseReply = true;
           peer.reduction.hideObservation = true;
+          drivers = await loadWorkerDrivers(owner);
           await expireStoppedClaims(f, revision);
-          await f.start(compute, {
-            emit,
-            transformDrivers: () => ({
-              ...drivers,
-              computeDriver: compute,
-              configurationDriver: controller.selectedDriver("configuration"),
-            }),
-          });
+          await startWorker();
           const original = await waitFor(
             "original withdrawal applies despite its lost reply",
             async () => {
@@ -1967,6 +1973,7 @@ function externalGitJourney(
         peer.reduction.hideObservation = false;
         await transport!.close();
         await prepared.close();
+        drivers = await loadWorkerDrivers(owner);
         prepared = await startOwner();
         transport = await bindRepositoryGitTransport(
           drivers,
@@ -1976,14 +1983,7 @@ function externalGitJourney(
           transportOptions,
         );
         await expireStoppedClaims(f, revision);
-        await f.start(compute, {
-          emit,
-          transformDrivers: () => ({
-            ...drivers,
-            computeDriver: compute,
-            configurationDriver: controller.selectedDriver("configuration"),
-          }),
-        });
+        await startWorker();
         // Cleanup retries after the lost reply on its 30-second cadence.
         await waitForRevisionPass(
           "replacement worker observes the original reduction",

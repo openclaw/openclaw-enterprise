@@ -1903,10 +1903,48 @@ test(
       "occ.agent.id": agentId,
       "occ.revision.id": revisionId,
     };
-    const cases = codeFieldCases({ canary, identity, exportedIdentity }).map((entry) => ({
-      ...entry,
-      requestId: `req_${randomUUID()}`,
+    // Probe diagnostics survive Pod cleanup through this real Collector pipeline.
+    // Only the two fixed reasons and a process-failure curl exit code may escape.
+    const probeCases = [
+      ...[1, 56, 99].map((code) => ({
+        reason: "probe_process_failed",
+        code,
+        exported: {
+          "occ.git_probe.reason": "probe_process_failed",
+          "occ.git_probe.exit_code": String(code),
+        },
+      })),
+      ...[undefined, -1, 0, 100, 1.5, "56", "E_FAILURE", true, { code: 56 }].map((code) => ({
+        reason: "probe_process_failed",
+        code,
+        exported: { "occ.git_probe.reason": "probe_process_failed" },
+      })),
+      {
+        reason: "probe_response_invalid",
+        code: 56,
+        exported: { "occ.git_probe.reason": "probe_response_invalid" },
+      },
+      ...[canary, "probe_process_failed_extra", 56, null].map((reason) => ({
+        reason,
+        code: 56,
+        exported: {},
+      })),
+    ].map(({ reason, code, exported }) => ({
+      record: {
+        event: "worker.openshell-git-probe-failed",
+        ...identity,
+        reason,
+        code,
+        stdout: canary,
+        stderr: canary,
+        proof: canary,
+        url: canary,
+      },
+      exported: { ...exportedIdentity, ...exported },
     }));
+    const cases = [...codeFieldCases({ canary, identity, exportedIdentity }), ...probeCases].map(
+      (entry) => ({ ...entry, requestId: `req_${randomUUID()}` }),
+    );
     const line = (record) => ({
       timeUnixNano: String(BigInt(Date.now()) * 1000000n),
       body: {
@@ -1937,6 +1975,7 @@ test(
               ...cases.map(({ record, requestId }) => line({ ...record, requestId })),
               // Near-matches of the reviewed names are still dropped.
               line({ event: "worker.openshell-git-expiry-unreviewed", check: "model-provider" }),
+              line({ event: "worker.openshell-git-probe-failed-unreviewed" }),
               line({ event: "worker.repository-delivery-pending-unreviewed" }),
             ],
           },
@@ -1973,6 +2012,10 @@ test(
         // A fence is exported as an integer, never a double or string.
         const fence = actual.record.attributes.find(({ key }) => key === "occ.fence");
         assert.equal(String(fence.value.intValue), fields["occ.fence"]);
+      }
+      if (fields["occ.git_probe.exit_code"] !== undefined) {
+        const code = actual.record.attributes.find(({ key }) => key === "occ.git_probe.exit_code");
+        assert.equal(String(code.value.intValue), fields["occ.git_probe.exit_code"]);
       }
       assert.deepEqual(
         actual.fields,
