@@ -19,6 +19,7 @@ const MiB = 1024 * 1024;
 const inflate = promisify(gunzip);
 const schema = "https://agent-plugins.org/schemas/1.0.0/";
 const packageName = /^[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/u;
+const claudePackageName = /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,62}[A-Za-z0-9])?$/u;
 const identifier = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u;
 const skillName = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u;
 const paths = ["commands", "agents", "skills", "hooks", "outputStyles", "themes"] as const;
@@ -129,7 +130,9 @@ function schemaRoot(files: Files): string {
 function selectedEntry(files: Files, root: string, selected?: string) {
   const claude = files.has(root + ".claude-plugin/marketplace.json");
   if (!selected) {
-    if (claude || files.has(root + "marketplace.json")) {
+    const hasRootManifest =
+      files.has(root + ".claude-plugin/plugin.json") || files.has(root + "plugin.json");
+    if (!hasRootManifest && (claude || files.has(root + "marketplace.json"))) {
       invalid("Choose one entry from this marketplace.");
     }
     return { root, entry: undefined };
@@ -335,7 +338,7 @@ function inspectContents(files: Files, marketplaceEntry?: string) {
   const name = manifest.name ?? entry?.name ?? posix.basename(root);
   if (
     typeof name !== "string" ||
-    !packageName.test(name) ||
+    !(claude ? claudePackageName : packageName).test(name) ||
     name.includes("--") ||
     name.includes("..")
   ) {

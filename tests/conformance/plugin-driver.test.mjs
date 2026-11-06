@@ -2114,6 +2114,52 @@ test("Claude marketplace inspection follows the selected entry and resolves the 
   );
 });
 
+test("a root Claude plugin can also publish a marketplace that points to a remote repository", async () => {
+  const driver = new OCCPluginDriver();
+  const archive = await packagedFiles([
+    [
+      "repo/.claude-plugin/plugin.json",
+      JSON.stringify({ name: "Notes", skills: "./skills/notes/" }),
+    ],
+    [
+      "repo/.claude-plugin/marketplace.json",
+      JSON.stringify({
+        plugins: [{ name: "notes", source: { source: "github", repo: "example/notes" } }],
+      }),
+    ],
+    ["repo/skills/notes/summarize/SKILL.md", "---\nname: summarize\n---\nSummarize these notes."],
+    [
+      "repo/.mcp.json",
+      JSON.stringify({
+        mcpServers: { notes: { type: "http", url: "https://notes.example.com/mcp" } },
+      }),
+    ],
+  ]);
+  const release = await driver.inspectPackage(archive);
+  assert.equal(release.name, "Notes");
+  assert.equal(release.marketplaceEntry, undefined);
+  assert.deepEqual(
+    release.skills.map(({ name }) => name),
+    ["summarize"],
+  );
+  assert.deepEqual(release.mcpServers, [{ name: "notes", url: "https://notes.example.com/mcp" }]);
+  await assert.rejects(driver.inspectPackage(archive, "notes"), /requires a separate package/u);
+});
+
+test("Claude and Agent Plugins retain their own package name limits", async () => {
+  const driver = new OCCPluginDriver();
+  for (const [path, manifest] of [
+    [".claude-plugin/plugin.json", { name: "../Notes" }],
+    [
+      "plugin.json",
+      { $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "Notes" },
+    ],
+  ]) {
+    const archive = await packagedFiles([[path, JSON.stringify(manifest)]]);
+    await assert.rejects(driver.inspectPackage(archive), /Invalid or missing plugin name/u);
+  }
+});
+
 test("inspection rejects escaping archive entries, links and oversized worker files", async () => {
   const driver = new OCCPluginDriver();
   const json = JSON.stringify({ name: "chosen" });
