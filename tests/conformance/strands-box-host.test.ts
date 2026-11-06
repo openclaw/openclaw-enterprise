@@ -229,6 +229,11 @@ test(
       boxBin,
       "#!/bin/sh\nprintf '%s' 'strands-box: error: policy load failed: ' >&2\n" +
         "printf '%s\\n' 'fixture-private-diagnostic-credential' >&2\n" +
+        "printf '%s\\n' \"strands-box: error: trusted Box executable /private/fixture-private-box cannot inventory mounted executable aliases: invalid mount table for trusted executable aliases\" >&2\n" +
+        "printf '%s\\n' \"strands-box: error: containment setup failed during target exec: fixture-private-exec (os error 13)\" >&2\n" +
+        "printf '%s\\n' \"strands-box-contain-trampoline: containment apply failed: backend linux-namespace failed to apply: making the mount tree private: Operation not permitted (os error 1)\" >&2\n" +
+        "printf '%s\\n' \"strands-box: namespace reaper could not build the view: creating the staging root '/tmp/.strands-box-view.0123456789abcdef': fixture-private-tmp\" >&2\n" +
+        "printf '%s\\n' \"Error [ERR_MODULE_NOT_FOUND]: Cannot find module /private/fixture-private-module\" >&2\n" +
         "printf '%s\\n' 'strands-box: error: unknown fixture-private-diagnostic-reason' >&2\n" +
         "printf '%s\\n' 'fixture-private-stdout'\nsleep 0.1\nexit 2\n",
       { mode: 0o700 },
@@ -264,6 +269,14 @@ test(
     }
     const output = observed.join("");
     assert.match(output, /strands-box-diagnostic source=box stage=policy reason=refused/);
+    assert.match(
+      output,
+      /strands-box-diagnostic source=box stage=filesystem reason=executable-mount-table/,
+    );
+    assert.match(output, /strands-box-diagnostic source=box stage=exec reason=setup-exec/);
+    assert.match(output, /strands-box-diagnostic source=box stage=namespace reason=mount-private/);
+    assert.match(output, /strands-box-diagnostic source=box stage=namespace reason=staging-root/);
+    assert.match(output, /strands-box-diagnostic source=box stage=exec reason=node-module/);
     assert.match(output, /strands-box-diagnostic source=box stage=stderr reason=unrecognized/);
     assert.match(output, /strands-box-diagnostic source=box stage=exit reason=nonzero/);
     assert(!output.includes("fixture-private"));

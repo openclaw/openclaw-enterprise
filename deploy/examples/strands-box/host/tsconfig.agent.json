@@ -6,5 +6,5 @@
     "rootDir": ".",
     "outDir": "../../../../.build/strands-box-agent"
   },
-  "files": ["box-agent.ts", "transport.ts"]
+  "files": ["box-agent.ts", "launch.ts", "transport.ts"]
 }

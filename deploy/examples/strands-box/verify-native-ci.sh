@@ -39,7 +39,7 @@ cleanup() {
   if [[ "$status" != 0 ]]; then
     printf 'strands-box-native-ci: stopped at %s\n' "$phase" >&2
     if [[ -n "$run_root" && -f "$run_root/host.log" ]]; then
-      grep -E '^strands-box-(host: startup refused (at )?[a-zA-Z0-9:_-]+|diagnostic source=[a-zA-Z0-9_-]+ stage=[a-zA-Z0-9_-]+ reason=[a-zA-Z0-9:_-]+)$' "$run_root/host.log" | head -10 >&2 || true
+      grep -E '^strands-box-(host: startup refused (at [a-zA-Z0-9:_-]+|phase=[a-zA-Z0-9:_-]+ reason=[a-zA-Z0-9:_-]+)|diagnostic source=[a-zA-Z0-9_-]+ stage=[a-zA-Z0-9_-]+ reason=[a-zA-Z0-9:_-]+)$' "$run_root/host.log" | tail -18 >&2 || true
     fi
     if [[ -n "$run_root" && -f "$run_root/verify.log" ]]; then
       grep -E '^strands-box-verify: refused at [a-zA-Z0-9 /]+$' "$run_root/verify.log" | head -2 >&2 || true
@@ -60,7 +60,7 @@ expected_sha=${1:?Provide the exact checked-out source SHA}
 [[ "$(uname -s)" = Linux && "$(uname -m)" = aarch64 && "$EUID" != 0 ]]
 [[ "$(node --version)" = v24.22.1 ]]
 grep -Eq '^CapEff:[[:space:]]+0+$' /proc/self/status
-for tool in corepack curl file git jq realpath sha256sum tar timeout unshare; do
+for tool in corepack curl file git jq realpath sha256sum stat tar timeout unshare; do
   command -v "$tool" >/dev/null
 done
 # Probe the existing runner policy without changing any host setting. This
@@ -70,6 +70,13 @@ if ! timeout 8s unshare --user --map-current-user --mount --pid --fork --ipc --u
   echo 'strands-box-native-ci: this runner refused nonroot namespace creation' >&2
   exit 1
 fi
+
+# Box 0.2.1 constructs its isolated view below the host /tmp. Verify the
+# ordinary sticky directory and the runner's access without changing either.
+phase=runner-temporary-directory
+[[ -d /tmp && ! -L /tmp && "$(stat -c '%u:%a' /tmp)" = 0:1777 ]]
+tmp_probe="$(mktemp -d /tmp/.occbox-preflight.XXXXXXXX)"
+rmdir -- "$tmp_probe"
 
 phase=artifact-verification
 host_home="$(realpath -e "$HOME")"
@@ -109,6 +116,19 @@ timeout --kill-after=5s 180s corepack pnpm install --frozen-lockfile --ignore-sc
 phase=host-compile
 timeout --kill-after=5s 120s corepack pnpm exec tsc -p deploy/examples/strands-box/host/tsconfig.agent.json \
   --outDir "$run_root/agent"
+# These are public build artifacts under the private run root. The in-Box
+# entry receives only its three individual read grants.
+chmod 0644 "$run_root/agent"/{box-agent,diagnostics,egress,launch,transport}.js
+
+phase=compiled-agent-entry
+agent_status=0
+timeout --kill-after=2s 8s "${sanitized[@]}" "$node_bin" --jitless \
+  "$run_root/agent/box-agent.js" > "$run_root/agent-preflight.log" 2>&1 || agent_status=$?
+# With no input the actual compiled entry reports input/entered and refuses.
+# No Box or workload is started, and the underlying log is never exported.
+[[ "$agent_status" = 1 ]]
+grep -Fxq 'strands-box-diagnostic source=inner stage=input reason=entered' "$run_root/agent-preflight.log"
+
 config="$run_root/smoke.json"
 jq -n --arg root "$run_root" --arg node "$node_bin" --arg shell "$verify_shell" '{
   linuxPreview: true,
@@ -122,8 +142,13 @@ jq -n --arg root "$run_root" --arg node "$node_bin" --arg shell "$verify_shell" 
 }' > "$config"
 printf 'strands-box-held\n' > "$run_root/held/probe"
 
+phase=host-preflight
+timeout --kill-after=2s 8s "${sanitized[@]}" "$node_bin" --jitless \
+  "$run_root/agent/launch.js" --preflight "$config" > "$run_root/host.log" 2>&1
+grep -Fxq 'strands-box-host: preflight ready' "$run_root/host.log"
+
 phase=host-start
-"${sanitized[@]}" "$node_bin" deploy/examples/strands-box/host/launch.ts "$config" \
+"${sanitized[@]}" "$node_bin" --jitless "$run_root/agent/launch.js" "$config" \
   > "$run_root/host.log" 2>&1 &
 owner_pid=$!
 ready=false

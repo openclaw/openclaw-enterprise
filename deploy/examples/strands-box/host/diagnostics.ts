@@ -43,6 +43,19 @@ const reasons = [
   "unknown-signal",
   "dynamic-loader",
   "jit-memory",
+  "node-module",
+  "executable-mount-table",
+  "helper-installation",
+  "setup-channel",
+  "setup-config",
+  "setup-apply",
+  "setup-environment",
+  "setup-exec",
+  "namespace-unavailable",
+  "mount-private",
+  "staging-root",
+  "mount-view",
+  "exec-dependency",
 ] as const;
 
 type Source = (typeof sources)[number];
@@ -82,18 +95,60 @@ export function report(source: Source, stage: Stage, reason: Reason): void {
   process.stderr.write(`strands-box-diagnostic source=${source} stage=${stage} reason=${reason}\n`);
 }
 
+function runtimeFailure(line: string, source: "box" | "command"): Event | undefined {
+  if (/^[^:\r\n]+: error while loading shared libraries: /.test(line))
+    return { source, stage: "exec", reason: "dynamic-loader" };
+  if (
+    /^(?:#\s*)?Fatal process out of memory: (?:CodeRange|Failed to reserve virtual memory for CodeRange)/.test(
+      line,
+    ) ||
+    /^# Check failed: it->second\.Size\(\) > offset\.$/.test(line)
+  )
+    return { source, stage: "exec", reason: "jit-memory" };
+  if (/^Error(?: \[ERR_MODULE_NOT_FOUND\])?: Cannot find (?:module|package) /.test(line))
+    return { source, stage: "exec", reason: "node-module" };
+  return undefined;
+}
+
+function linuxSetupFailure(detail: string): Reason {
+  // Stable prefixes from the released Linux backend. Details, including
+  // file names and arbitrary diagnostics, are never part of the event.
+  if (/making the mount tree private:/.test(detail)) return "mount-private";
+  if (/creating the staging root '\/tmp\/\.strands-box-view\.[a-f0-9]{16}':/.test(detail))
+    return "staging-root";
+  if (
+    /creating (?:a user|a PID|the mount, IPC, UTS(?:, and network)?) namespace|denying setgroups:|writing the [UG]ID map:|namespace launcher unavailable:/.test(
+      detail,
+    )
+  )
+    return "namespace-unavailable";
+  if (
+    /dependencies? lack(?:s)? read access|resolving ELF dependenc|needs the shared library|writable dependency /.test(
+      detail,
+    )
+  )
+    return "exec-dependency";
+  if (/mounting a fresh |remounting |pivot_root into the view:|binding the mount /.test(detail))
+    return "mount-view";
+  return "setup-apply";
+}
+
 function fromLine(line: string, source: "box" | "command"): Event | undefined {
-  if (source === "command") {
-    if (/: error while loading shared libraries: /.test(line))
-      return { source, stage: "exec", reason: "dynamic-loader" };
+  const runtime = runtimeFailure(line, source);
+  if (source === "command" || runtime !== undefined) return runtime;
+  if (line.startsWith("strands-box-contain-trampoline: ")) {
+    const detail = line.slice("strands-box-contain-trampoline: ".length);
+    if (detail.startsWith("containment apply failed: "))
+      return { source, stage: "namespace", reason: linuxSetupFailure(detail) };
     if (
-      /^(?:#\s*)?Fatal process out of memory: (?:CodeRange|Failed to reserve virtual memory for CodeRange)/.test(
-        line,
+      /^platform Linux unsupported: backend 'namespace' reports it cannot enforce on this host: Linux namespace launcher unavailable:/.test(
+        detail,
       )
     )
-      return { source, stage: "exec", reason: "jit-memory" };
-    return undefined;
+      return { source, stage: "namespace", reason: "namespace-unavailable" };
   }
+  if (line.startsWith("strands-box: namespace reaper could not build the view: "))
+    return { source, stage: "namespace", reason: linuxSetupFailure(line) };
   const forwarded =
     /^strands-box-diagnostic source=([a-z]+) stage=([a-z-]+) reason=([A-Za-z-]+)$/.exec(line);
   const [, origin, stage, reason] = forwarded ?? [];
@@ -109,6 +164,28 @@ function fromLine(line: string, source: "box" | "command"): Event | undefined {
     return { source: origin, stage, reason };
   if (!line.startsWith("strands-box: error: ")) return undefined;
   const problem = line.slice("strands-box: error: ".length);
+  if (/^trusted Box executable .+ cannot inventory mounted executable aliases: /.test(problem))
+    return { source, stage: "filesystem", reason: "executable-mount-table" };
+  if (
+    /^(?:trusted Box executable |cannot locate the trusted Box executable:|strands-box-contain-trampoline |strands-box-sock-alias |cannot securely open containment executable |invalid containment executable )/.test(
+      problem,
+    )
+  )
+    return { source, stage: "exec", reason: "helper-installation" };
+  if (
+    /^(?:create containment setup status pipe:|read containment setup status:|containment setup channel closed before completion|invalid containment setup status protocol:)/.test(
+      problem,
+    )
+  )
+    return { source, stage: "namespace", reason: "setup-channel" };
+  if (/^containment setup failed during config (?:read|validation)(?::|$)/.test(problem))
+    return { source, stage: "config", reason: "setup-config" };
+  if (/^containment setup failed during containment apply(?::|$)/.test(problem))
+    return { source, stage: "namespace", reason: linuxSetupFailure(problem) };
+  if (/^containment setup failed during target environment(?::|$)/.test(problem))
+    return { source, stage: "input", reason: "setup-environment" };
+  if (/^containment setup failed during target exec(?::|$)/.test(problem))
+    return { source, stage: "exec", reason: "setup-exec" };
   if (
     /^(?:policy load failed:|policy staging failed:|cannot read policy file |policy file .+ will not load:)/.test(
       problem,
