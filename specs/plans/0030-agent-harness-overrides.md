@@ -100,7 +100,9 @@ reference. No documentation length exception was added.
 ## Merge verification
 
 The history-preserving merge integrates main at
-`5b92f4c6e1a5dc409b9c9bc9eae538adf50cf4e2`. Saved OAuth connections retain migration
+`5b92f4c6e1a5dc409b9c9bc9eae538adf50cf4e2`, followed by
+`aebb804bd209c0e7e8d6ba7e062b0b767849affa` (Gateway transport validation moves into
+the OpenShell adapter). Saved OAuth connections retain migration
 0070; Harness settings move to 0071. Both first-deployment recovery and OAuth
 callback routes retain their query parameters. The Token Service and Proxy use
 the merged contracts without changing the immutable Harness snapshots.
@@ -113,15 +115,20 @@ the merged contracts without changing the immutable Harness snapshots.
   restore case then passed. Fresh, populated-prefix, and restored catalog
   fingerprints were qualified against actual PostgreSQL, including the new
   pre-Harness boundary. No schema or privilege mismatch is silently accepted.
+- The later transport/startup batch passed 258 cases, with one refusal fixture
+  then repaired and passed separately. Its native initializer case skipped because
+  no pinned runtime image was selected; that skip is not a pass. Public-CA fixtures
+  used a secure `022` umask, preserving the production file-permission check.
 - Typecheck, lint, formatting, workspace boundary, generated API, and CI suite
   audit passed on the merged source.
 - Main changed the sticky sidebar. Storybook was rebuilt and the desktop
   walkthrough and screenshots were refreshed. Preview, deployment, denial,
-  loading and retry recovery passed. Native GitHub upload is pending: the DevBox
-  has no authenticated browser session or attachment-upload connector operation.
+  loading and retry recovery passed. Native GitHub screenshots and a 16-second
+  video are uploaded in the [PR Verification section](https://github.com/openclaw/openclaw-enterprise/pull/4866)
+  and were opened in authenticated Chrome.
 
 The independent-review authentication gap and live model prerequisites remain
-open. Neither the earlier review nor earlier media qualifies the merged head.
+open. The earlier RFC-only review does not qualify this implementation.
 
 ## Manual Notes
 
