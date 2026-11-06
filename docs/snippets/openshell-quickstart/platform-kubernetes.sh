@@ -25,7 +25,8 @@ deployment_network() {
   if [[ -n $git_service ]]; then git_option=--repository-credentials; fi
   for ((i=0;i<120;i++)); do
     if rendered=$(python3 "$RUN_DIR/kubernetes/service-policies.py" --tenant "$TENANT_NAMESPACE" \
-      --namespace-id "$namespace" --agent-id "$agent" ${git_option:+"$git_option"}); then
+      --namespace-id "$namespace" --agent-id "$agent" \
+      --openshell-namespace "${OPENSHELL_NAMESPACE:-oce-system}" ${git_option:+"$git_option"}); then
       apply_service_peers "$rendered"
       return $?
     fi
@@ -37,6 +38,7 @@ deployment_network() {
 repository_network() {
   local rendered
   rendered=$(python3 "$RUN_DIR/kubernetes/service-policies.py" --tenant "$TENANT_NAMESPACE" \
-    --namespace-id "$namespace" --repository-credentials) || return 1
+    --namespace-id "$namespace" --openshell-namespace "${OPENSHELL_NAMESPACE:-oce-system}" \
+    --repository-credentials) || return 1
   apply_service_peers "$rendered"
 }
