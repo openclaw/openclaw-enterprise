@@ -12,6 +12,12 @@ import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/driv
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { OpenShellProviderAlreadyExistsError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
+import { listManagedMcpToolNames } from "../../apps/controller/src/connections/mcp-tool-discovery.ts";
+import { discoverMcpAuthorization } from "../../apps/controller/src/connections/mcp-discovery.ts";
+import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { createProviderSandboxDriver } from "../helpers/runtime-logs.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -80,6 +86,8 @@ async function fixture(
   t,
   {
     toolSources = false,
+    toolBinaries = ["/usr/bin/curl"],
+    appOptions,
     persistedIam = false,
     gateway = { endpoint: "http://127.0.0.1:1" },
     modelProvider,
@@ -146,7 +154,7 @@ async function fixture(
   const driver = new OpenShellCredentialGatewayDriver(
     {
       binaries: ["/app/bin/codex"],
-      ...(toolSources ? { toolBinaries: ["/usr/bin/curl"] } : {}),
+      ...(toolSources ? { toolBinaries } : {}),
     },
     {
       id: "openshell-credentials",
@@ -163,6 +171,7 @@ async function fixture(
   };
   const secretDriver = createTestSecretDriver();
   const app = await createConsoleAppFixture(t, {
+    ...appOptions,
     now: () => new Date(now),
     ...(persistedIam ? { provisionedPeople: [] } : {}),
     computeDriver,
@@ -343,6 +352,333 @@ test("old source routing records cannot deliver credentials and remain readable 
   assert.equal((await f.request("GET", f.path + "/" + stored.id)).status, 200);
   f.passRegistrationFence();
   assert.equal((await f.request("DELETE", f.path + "/" + stored.id)).status, 204);
+});
+
+async function createManagedMcpAgent(t, appOptions) {
+  const f = await fixture(t, {
+    appOptions,
+    toolSources: true,
+    toolBinaries: ["/usr/local/bin/node"],
+    persistedIam: true,
+  });
+  const compute = createTestKubernetesComputeDriver("plugin-compute");
+  compute.resolveSandboxNamespace = async (namespace) => namespace;
+  for (const driver of [new OCCPluginDriver(), compute, createProviderSandboxDriver().driver]) {
+    f.controller.registerDriver(driver);
+    f.controller.selectDriver(driver.capability, driver.id);
+  }
+  const agent = await f.createAgent(
+    f.namespace.id,
+    "MCP Agent",
+    createHarnessConfiguration("openclaw", "gpt-5"),
+    {
+      harnessAuth: null,
+      executionMode: "dedicated",
+    },
+  );
+  const path = `/namespaces/${f.namespace.id}/agents/${agent.id}`;
+  return { f, path, agent };
+}
+
+test("GitHub and Work IQ tokens can be registered and bound only to their own MCP slots", async (t) => {
+  const { f, path, agent } = await createManagedMcpAgent(t);
+  const save = (plugins) =>
+    f.request("PATCH", path, { body: { configurationId: agent.configurationId, plugins } });
+  const github = "occ-plugin:github@1.0.0";
+  const workiq = "occ-plugin:workiq@1.0.0";
+  const notion = "occ-plugin:notion@1.0.0";
+  const enabled = {
+    [github]: { enabled: true },
+    [workiq]: { enabled: true },
+    [notion]: { enabled: true },
+  };
+  const initial = await save(enabled);
+  assert.equal(initial.status, 200, JSON.stringify(initial.body));
+  const capabilities = await f.request("GET", path + "/plugins/capabilities");
+  assert.equal(capabilities.status, 200, JSON.stringify(capabilities.body));
+  const slot = (id) =>
+    capabilities.data.credentialSlots.find((s) => s.pluginId === id && s.id === "account");
+  // GitHub and Notion also offer saved accounts. Work IQ takes a tenant-issued bearer token.
+  assert.equal(slot(notion).connectAccount, true);
+  assert.equal(slot(github).connectAccount, true);
+  assert.equal(slot(workiq).connectAccount, undefined);
+  async function register(id, host, route, envVar) {
+    const account = slot(id);
+    assert.deepEqual(account.tokenSourceConfig, {
+      protocol: "mcp",
+      host,
+      port: "443",
+      path: route,
+      env_var: envVar,
+    });
+    const created = await f.saveTool("bearer-token", account.tokenSourceConfig, envVar);
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    return created.data.id;
+  }
+  const githubToken = await register(github, "api.githubcopilot.com", "/mcp/", "GITHUB_MCP_TOKEN");
+  const workiqToken = await register(
+    workiq,
+    "workiq.svc.cloud.microsoft",
+    "/mcp",
+    "WORKIQ_MCP_TOKEN",
+  );
+  const selected = (id, sourceId) => ({
+    enabled: true,
+    driverPolicy: {
+      releaseSha256: slot(id).releaseSha256,
+      credentials: { account: sourceId },
+      toolNames: [],
+    },
+  });
+  // A valid first selection cannot grant either token to this Agent if the other slot
+  // reuses the wrong provider. The subsequent valid selection can grant both together.
+  const denied = await save({
+    [github]: selected(github, githubToken),
+    [workiq]: selected(workiq, githubToken),
+  });
+  assert.equal(denied.status, 409, JSON.stringify(denied.body));
+  const canUse = async (sourceId) =>
+    (
+      await f.iamDriver.authorize({
+        principalId: agent.servicePrincipalId,
+        action: "operate",
+        resource: { kind: "credential_source", namespaceId: f.namespace.id, id: sourceId },
+      })
+    ).allowed;
+  assert.equal(await canUse(githubToken), false);
+  const valid = {
+    [github]: selected(github, githubToken),
+    [workiq]: selected(workiq, workiqToken),
+  };
+  const bound = await save(valid);
+  assert.equal(bound.status, 200, JSON.stringify(bound.body));
+  assert.equal(await canUse(githubToken), true);
+  assert.equal(await canUse(workiqToken), true);
+  assert.deepEqual(bound.data.plugins, valid);
+  assert.deepEqual(
+    new Set(bound.data.credentialSources.map(({ sourceId }) => sourceId)),
+    new Set([githubToken, workiqToken]),
+  );
+});
+
+test("GitHub slot consent attaches a renewable user account and discovers tools with its current bearer", async (t) => {
+  const serverUrl = "https://api.githubcopilot.com/mcp/";
+  const resourceMetadata =
+    "https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp/";
+  const issuer = "https://github.com/login/oauth";
+  const tokenUrl = issuer + "/access_token";
+  const preparedTokens = new TokenService();
+  let currentBearer;
+  const resolveHost = async () => [{ address: "8.8.8.8", family: 4 }];
+  // Supply GitHub-shaped wire responses to the real MCP discovery SDK. The protected resource
+  // offers API permissions; offline_access is an authorization-server scope for renewal.
+  const metadata = async (url) => {
+    if (url.href === serverUrl) {
+      return new Response(null, {
+        status: 401,
+        headers: { "WWW-Authenticate": `Bearer resource_metadata="${resourceMetadata}"` },
+      });
+    }
+    if (url.href === resourceMetadata) {
+      return Response.json({
+        resource: serverUrl,
+        authorization_servers: [issuer],
+        scopes_supported: ["repo", "read:org"],
+      });
+    }
+    assert.equal(url.href, "https://github.com/.well-known/oauth-authorization-server/login/oauth");
+    return Response.json({
+      issuer,
+      authorization_endpoint: issuer + "/authorize",
+      token_endpoint: tokenUrl,
+      response_types_supported: ["code"],
+      grant_types_supported: ["authorization_code", "refresh_token"],
+      code_challenge_methods_supported: ["S256"],
+      scopes_supported: ["offline_access"],
+      authorization_response_iss_parameter_supported: true,
+    });
+  };
+  const { f, path, agent } = await createManagedMcpAgent(t, {
+    publicOrigin: "https://console.example.test",
+    preparedTokens,
+    discoverMcpAuthorization: (server, selectedIssuer, signal) =>
+      discoverMcpAuthorization(server, selectedIssuer, signal, {
+        resolveHost,
+        fetchMetadata: metadata,
+      }),
+    readManagedMcpToolNames: (endpoint, bearer, signal) =>
+      listManagedMcpToolNames(endpoint, bearer, signal, {
+        resolveHost,
+        async fetch(url, init) {
+          assert.equal(String(url), serverUrl);
+          assert.equal(new Headers(init.headers).get("authorization"), "Bearer " + currentBearer);
+          if (init.method !== "POST") {
+            return new Response(null, { status: 405 });
+          }
+          const { method, id } = JSON.parse(init.body);
+          if (method === "notifications/initialized") {
+            return new Response(null, { status: 202 });
+          }
+          assert.ok(["initialize", "tools/list"].includes(method));
+          const result =
+            method === "initialize"
+              ? {
+                  protocolVersion: "2025-11-25",
+                  capabilities: { tools: {} },
+                  serverInfo: { name: "GitHub fixture", version: "1" },
+                }
+              : { tools: [{ name: "issue_read", inputSchema: { type: "object" } }] };
+          return Response.json({ jsonrpc: "2.0", id, result });
+        },
+      }),
+  });
+  preparedTokens.registerIssuer(
+    new OAuthAccountTokens(
+      f.platformState,
+      f.secretDriver,
+      f.controller.resolveConnectionClient.bind(f.controller),
+    ),
+  );
+  const template = await f.request("POST", "/connection-templates", {
+    body: {
+      namespaceId: f.namespace.id,
+      displayName: "GitHub",
+      mode: "mcp_discovery",
+      serverUrl,
+      issuer,
+      scopes: ["repo", "offline_access"],
+    },
+  });
+  assert.equal(template.status, 201, JSON.stringify(template.body));
+  const clientSecret = randomUUID();
+  const client = await f.request("POST", "/oauth-clients", {
+    body: {
+      connectionTemplateId: template.data.id,
+      connectionTemplateVersion: template.data.current.version,
+      displayName: "GitHub App",
+      clientId: "github-test",
+      clientSecret,
+      tokenEndpointAuthMethod: "client_secret_basic",
+    },
+  });
+  assert.equal(client.status, 201, JSON.stringify(client.body));
+  const pluginId = "occ-plugin:github@1.0.0";
+  const enabled = await f.request("PATCH", path, {
+    body: { configurationId: agent.configurationId, plugins: { [pluginId]: { enabled: true } } },
+  });
+  assert.equal(enabled.status, 200, JSON.stringify(enabled.body));
+  const capabilities = await f.request("GET", path + "/plugins/capabilities");
+  assert.equal(capabilities.status, 200, JSON.stringify(capabilities.body));
+  const slot = capabilities.data.credentialSlots.find(({ pluginId: id }) => id === pluginId);
+  const templates = await f.request(
+    "GET",
+    `${path}/plugins/${pluginId}/credentials/account/connection-templates`,
+  );
+  assert.equal(templates.status, 200, JSON.stringify(templates.body));
+  const offered = templates.data.find(({ id }) => id === template.data.id);
+  assert.ok(offered);
+  assert.deepEqual(offered.offeredScopes, ["repo", "read:org", "offline_access"]);
+  const session = await f.signIn();
+  const start = await f.request("POST", path + "/connections", {
+    session,
+    body: {
+      connectionTemplateId: offered.id,
+      connectionTemplateVersion: offered.version,
+      selectedScopes: ["offline_access"],
+      pluginId,
+      slotId: "account",
+      releaseSha256: slot.releaseSha256,
+      expectedCredentialSourceId: null,
+    },
+  });
+  assert.equal(start.status, 201, JSON.stringify(start.body));
+  const authorization = new URL(start.data.authorizationUrl);
+  assert.equal(authorization.origin + authorization.pathname, issuer + "/authorize");
+  assert.equal(authorization.searchParams.get("scope"), "offline_access");
+  assert.equal(authorization.searchParams.get("resource"), serverUrl);
+  const sourceId = start.data.credentialSourceId;
+  const fetch = globalThis.fetch;
+  const refreshToken = randomUUID();
+  const exchanges = [];
+  let revoked = false;
+  // Only the provider token endpoint is controlled. Registration, callback, custody,
+  // authorization and renewal run through Fastify, OCC, and the real Token Service.
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    if (String(url) !== tokenUrl) {
+      assert.equal(new URL(url instanceof Request ? url.url : url).origin, f.origin);
+      return fetch(url, init);
+    }
+    assert.equal(
+      init.headers.get("Authorization"),
+      "Basic " + Buffer.from("github-test:" + clientSecret).toString("base64"),
+    );
+    assert.equal(init.body.get("resource"), serverUrl);
+    const grantType = init.body.get("grant_type");
+    exchanges.push(grantType);
+    if (grantType === "authorization_code") {
+      assert.equal(init.body.get("code"), "fixture-code");
+    } else {
+      assert.equal(init.body.get("refresh_token"), refreshToken);
+      assert.equal(init.body.has("scope"), false);
+      if (revoked) {
+        return Response.json({ error: "bad_refresh_token" }, { status: 400 });
+      }
+    }
+    currentBearer = randomUUID();
+    return Response.json({
+      token_type: "bearer",
+      access_token: currentBearer,
+      refresh_token: refreshToken,
+      scope: "",
+      expires_in: 28800,
+    });
+  });
+  const callback = new URLSearchParams({
+    state: authorization.searchParams.get("state"),
+    code: "fixture-code",
+    iss: issuer,
+  });
+  const completed = await f.app.inject({
+    method: "GET",
+    url: "/oauth/callback?" + callback,
+    headers: { host: new URL(f.origin).host, ...authenticatedHeaders(session) },
+  });
+  assert.equal(completed.statusCode, 303, completed.body);
+  assert.match(completed.headers.location, /connection=attached/);
+  const draft = await f.request("GET", path);
+  assert.deepEqual(draft.data.plugins[pluginId].driverPolicy.credentials, { account: sourceId });
+  assert.ok(
+    (
+      await f.iamDriver.authorize({
+        principalId: agent.servicePrincipalId,
+        action: "operate",
+        resource: { kind: "credential_source", namespaceId: f.namespace.id, id: sourceId },
+      })
+    ).allowed,
+  );
+  const discover = async () => {
+    const details = await f.request("POST", path + "/plugins/details", {
+      body: { pluginId, managedConnection: { slot: "account", sourceId } },
+    });
+    assert.equal(details.status, 200, JSON.stringify(details.body));
+    assert.deepEqual(
+      details.data.tools.map(({ id }) => id),
+      ["issue_read"],
+    );
+  };
+  await discover();
+  const initialBearer = currentBearer;
+  const renewed = await f.request("POST", f.path + "/" + sourceId + "/rotate");
+  assert.equal(renewed.status, 200, JSON.stringify(renewed.body));
+  assert.notEqual(initialBearer, currentBearer);
+  assert.deepEqual(exchanges, ["authorization_code", "refresh_token"]);
+  await discover();
+  // An expired or revoked GitHub refresh token needs a new user sign-in.
+  revoked = true;
+  const refused = await f.request("POST", f.path + "/" + sourceId + "/rotate");
+  assert.equal(refused.status, 503, JSON.stringify(refused.body));
+  const status = await f.request("GET", f.path + "/" + sourceId);
+  assert.equal(status.data.status.refresh.recoveryAction, "reauthorize");
 });
 
 test("the saved Agent picker and binding use the granted source and the same reviewed release", async (t) => {

@@ -1,0 +1,23 @@
+{
+  "release": "notion-mcp-v1",
+  "placement": {
+    "harnessId": "openclaw",
+    "mode": "dedicated",
+    "computeImplementations": ["occ/kubernetes", "kubernetes-local"]
+  },
+  "capabilities": { "gateway": [], "harness": ["mcp"] },
+  "mcpServersSha256": "1b80b1199ea7514771df42217e0fb33b171ec0f39209ed9dcaae63621283c723",
+  "credentials": {
+    "account": {
+      "label": "Notion account",
+      "sourceTypes": ["bearer-token", "oauth2-refresh-token"],
+      "issuer": "https://mcp.notion.com",
+      "delivery": { "role": "harness", "env": "NOTION_MCP_TOKEN", "presentation": "bearer" },
+      "mcp": {
+        "server": "notion",
+        "resource": "https://mcp.notion.com/mcp",
+        "versions": ["2025-03-26", "2025-06-18", "2025-11-25"]
+      }
+    }
+  }
+}

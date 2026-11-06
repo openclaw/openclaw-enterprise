@@ -28159,12 +28159,25 @@
                                       "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                       "type": "string"
                                     },
-                                    "name": { "type": "string" }
+                                    "name": { "type": "string" },
+                                    "requiresAttachment": { "const": true, "type": "boolean" }
                                   },
                                   "required": ["id", "name"],
                                   "type": "object"
                                 },
                                 "type": "array"
+                              },
+                              "tokenSourceConfig": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "env_var": { "type": "string" },
+                                  "host": { "type": "string" },
+                                  "path": { "type": "string" },
+                                  "port": { "type": "string" },
+                                  "protocol": { "const": "mcp", "type": "string" }
+                                },
+                                "required": ["protocol", "host", "port", "path", "env_var"],
+                                "type": "object"
                               },
                               "toolDiscovery": { "const": true, "type": "boolean" }
                             },

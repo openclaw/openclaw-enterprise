@@ -261,12 +261,25 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
                 label: Type.String(),
                 toolDiscovery: Type.Optional(Type.Literal(true)),
                 connectAccount: Type.Optional(Type.Literal(true)),
+                tokenSourceConfig: Type.Optional(
+                  Type.Object(
+                    {
+                      protocol: Type.Literal("mcp"),
+                      host: Type.String(),
+                      port: Type.String(),
+                      path: Type.String(),
+                      env_var: Type.String(),
+                    },
+                    { additionalProperties: false },
+                  ),
+                ),
                 sources: Type.Array(
                   Type.Object(
                     {
                       id: CredentialSourceId,
                       name: Type.String(),
                       authorization: Type.Optional(Type.Literal("required")),
+                      requiresAttachment: Type.Optional(Type.Literal(true)),
                     },
                     { additionalProperties: false },
                   ),

@@ -71,7 +71,7 @@ the Agent may call. The worker advertises those tools; the Sandbox enforces the
 selection for both worker and script calls.
 [Managed MCP plugins](../../reference/agent-plugins.md#current-support)
 
-The bundled credentialed path uses the OpenShell Sandbox and Credential Gateway
+The static bearer path uses the OpenShell Sandbox and Credential Gateway
 Drivers. Configure `/usr/local/bin/node` in `toolBinaries`, then register a
 `bearer-token` source with the package's MCP host, port, path and placeholder name.
 Reference the saved access token as its `token` Secret and set `protocol: mcp`.
@@ -100,6 +100,10 @@ it. Inspect its worker server and tool filter:
 ```sh
 OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.oce_mcp_slack --json
 ```
+
+<a id="connect-notion"></a>
+
+For [GitHub](plugins-hosted-mcp.md#github), [Microsoft 365 Work IQ](plugins-hosted-mcp.md#microsoft-365-work-iq), or [Notion](plugins-hosted-mcp.md#notion), follow the provider's setup steps.
 
 ## Before you start
 

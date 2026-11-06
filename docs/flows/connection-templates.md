@@ -1,7 +1,7 @@
 ---
 created: "2026-11-04"
-updated: "2026-11-05"
-last_updated_session: codex/01a1aad6-adec-7fa0-802a-50b5e0486319
+updated: "2026-11-06"
+last_updated_session: authoring-run/3684e372-3b5a-4406-976a-fd9139627799
 ---
 
 # How OCC saves an OAuth connection template
@@ -69,7 +69,9 @@ OCC verifies the person's Namespace permission and pins the selected template ve
 
 On callback, OCC consumes the matching attempt once and rechecks the person's session and authority. It checks a returned issuer against the pinned issuer. If another issuer has a registered client at consent start or callback, OCC requires the issuer in the response. OCC sends the code and verifier to the pinned token endpoint, includes the MCP resource when applicable, and reads the current client secret if the registration requires one. If the exchange times out, the person starts a new attempt.
 
-At startup, the API and worker each install an `oauth_refresh_token` issuer in their Token Service. After exchange, OCC registers the grant with that kind, naming the pending source, approved template version and selected OAuth client. The service checks that approval against the source and reads the issuer, token endpoint, authentication method and MCP resource from the stored configuration. It stores the access token and refresh grant in a private Secret. OCC records the approved recipient, reported scopes and template version, marks the account ready and grants its owner access. When the provider omits scopes after a provider-default request, the receipt records an empty list.
+At startup, the API and worker each install an `oauth_refresh_token` issuer in their Token Service. After exchange, OCC registers the grant with that kind, naming the pending source, approved template version and selected OAuth client. The service checks that approval against the source and reads the issuer, token endpoint, authentication method and MCP resource from the stored configuration. It stores the access token and refresh grant in a private Secret. OCC records the approved recipient, reported scopes and template version, marks the account ready and grants its owner access.
+
+Code exchange and refresh both use `packages/occ/src/oauth-token-endpoint.ts:requestOAuthTokens`. At exchange, OCC passes the scopes the person requested. At refresh, the Token Service passes the scopes from the last grant. See [granted scopes](../reference/connection-templates.md#granted-scopes).
 
 ### 5. Resolve current destinations and renew the grant
 
@@ -80,6 +82,8 @@ When listing a manual account, OCC returns the current destinations from the sam
 OCC registers the returned grant under the Namespace and credential source ID. The worker renews due accounts. A trusted consumer resolves the same reference with a deadline and required remaining lifetime. If it needs a fresher token, the Token Service starts or joins renewal for that account. It rechecks that the account is active before releasing the committed token. On renewal, the Token Service checks the saved grant against its registration and reads the current client secret through OCC when required. A conditional write protects against concurrent renewal or disconnect. OCC records the next renewal and any narrower grant.
 
 ### 6. Bind a saved account to a plugin
+
+`packages/occ/src/index.ts:getSavedAgentPluginPolicyCapabilities` and `packages/occ/src/index.ts:listAgentPluginConnectionTemplates`
 
 OCC reads the Agent’s Configuration and selects the Plugin Driver for its Harness. That Driver identifies the named accounts in the selected release. OCC lists ready accounts the caller can operate in the Namespace whose issuer the slot accepts. It marks an account for new authorization when the approved protected resource or destination differs. A grant's scopes are available to the provider and the request policy.
 
@@ -109,5 +113,7 @@ OCC records the selected Driver registration and saved source IDs on the Agent r
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 08:51: Trace scope selection, exchange and refresh for GitHub sign-in. (authoring-run/3684e372-3b5a-4406-976a-fd9139627799 - 378edb4b7)
 
 - 2026-11-05 21:47: Traced administrator setup, OCC browser consent and Token Service custody with the accompanying ownership change. (codex/01a1aad6-adec-7fa0-802a-50b5e0486319 - d32f76579)

@@ -205,6 +205,14 @@ export function createAgentDetailScenarios({
   const slackSourceId = "cs_00000000-0000-4000-8000-000000000001";
 
   const slackEntry = { id: slackPluginId, name: "Slack", tools: [] };
+  const notionPluginId = "occ-plugin:notion@1.0.0";
+  const notionEntry = {
+    id: notionPluginId,
+    name: "Notion",
+    description:
+      "Use Notion MCP tools with a workspace MCP token or a connected Notion OAuth account.",
+    tools: [],
+  };
 
   const slackTool = {
     id: "slack_search_public",
@@ -1122,6 +1130,59 @@ export function createAgentDetailScenarios({
           "Close and reopen the picker. Calendar's saved policy is unchanged. Repeat from Reset story to inspect the skipped prefetch again.",
         ],
         gap: "Catalog responses and the saved Agent are simulated. This verifies Console recovery, not plugin installation or a live runtime.",
+      },
+      notionCredentials: {
+        group: "Pages/Agent detail",
+        name: "Set up a Notion credential",
+        path: `${draft}&tab=plugins`,
+        harnessId: "openclaw",
+        deployed: true,
+        agentPlugins: { [notionPluginId]: { enabled: true } },
+        pluginDiscoveryCredential: "none",
+        pluginCapabilities: {
+          driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+          approvers: { agent: false, plugin: false, tools: false },
+          toolDefaults: { enabled: false, approval: [], reviewer: [] },
+          tools: { enabled: false, approval: [], reviewer: [] },
+          driverPolicySchema: { type: "object", properties: {} },
+          policyScopeByPlugin: { [notionPluginId]: "enablement_only" },
+          credentialSlots: [
+            {
+              pluginId: notionPluginId,
+              releaseSha256: "b".repeat(64),
+              id: "account",
+              label: "Notion account",
+              toolDiscovery: true,
+              connectAccount: true,
+              tokenSourceConfig: {
+                protocol: "mcp",
+                host: "mcp.notion.com",
+                port: "443",
+                path: "/mcp",
+                env_var: "NOTION_MCP_TOKEN",
+              },
+              sources: [
+                { id: "cs_00000000-0000-4000-8000-000000000028", name: "Notion OAuth account" },
+              ],
+            },
+          ],
+        },
+        pluginDiscovery: {
+          pages: { initial: { plugins: [notionEntry], nextCursor: null } },
+          details: { [notionPluginId]: notionEntry },
+        },
+        actions: [
+          click("Configure plugins"),
+          { selector: 'button[aria-label="Notion"]', click: true },
+        ],
+        description:
+          "Configure a Notion workspace MCP token or select a saved OAuth account for this Agent.",
+        steps: [
+          "Choose Add MCP token. Name the credential and select or create its Secret, then register the token.",
+          "After registration, confirm the draft asks you to save before loading tools. Save the plugin selections, then reopen Notion to see Load tools.",
+          "Reset the story to select the saved OAuth account instead.",
+        ],
+        gap: "Credential storage, the Agent and the provider are simulated in this preview.",
       },
       slackMcpTools: {
         group: "Pages/Agent detail",

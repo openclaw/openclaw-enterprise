@@ -994,39 +994,41 @@ export function createPluginFields({
           if (stale) {
             options.push(["stale", "Release changed — select an account again", true]);
           }
+          const chooseSource = (sourceId: string) =>
+            updateSelection(entry.id, (selection) => {
+              const bindings = selection.driverPolicy?.credentials;
+              if (sourceId) {
+                selection.driverPolicy = {
+                  ...selection.driverPolicy,
+                  releaseSha256: slot.releaseSha256,
+                  credentials: {
+                    ...(isObject(bindings) && !stale ? bindings : {}),
+                    [slot.id]: sourceId,
+                  },
+                };
+              } else if (selection.driverPolicy && isObject(bindings)) {
+                const credentials = { ...bindings };
+                delete credentials[slot.id];
+                const {
+                  credentials: _old,
+                  releaseSha256: _release,
+                  ...otherPolicy
+                } = selection.driverPolicy;
+                if (Object.keys(credentials).length) {
+                  selection.driverPolicy = { ...selection.driverPolicy, credentials };
+                } else if (Object.keys(otherPolicy).length) {
+                  selection.driverPolicy = otherPolicy;
+                } else {
+                  delete selection.driverPolicy;
+                }
+              }
+            });
           details.append(
             select(
               slot.label,
               stale ? "stale" : typeof current === "string" ? current : "",
               options,
-              (sourceId) =>
-                updateSelection(entry.id, (selection) => {
-                  if (sourceId) {
-                    selection.driverPolicy = {
-                      ...selection.driverPolicy,
-                      releaseSha256: slot.releaseSha256,
-                      credentials: {
-                        ...(isObject(bindings) && !stale ? bindings : {}),
-                        [slot.id]: sourceId,
-                      },
-                    };
-                  } else if (selection.driverPolicy && isObject(bindings)) {
-                    const credentials = { ...bindings };
-                    delete credentials[slot.id];
-                    const {
-                      credentials: _old,
-                      releaseSha256: _release,
-                      ...otherPolicy
-                    } = selection.driverPolicy;
-                    if (Object.keys(credentials).length) {
-                      selection.driverPolicy = { ...selection.driverPolicy, credentials };
-                    } else if (Object.keys(otherPolicy).length) {
-                      selection.driverPolicy = otherPolicy;
-                    } else {
-                      delete selection.driverPolicy;
-                    }
-                  }
-                }),
+              chooseSource,
             ),
           );
           if (slotConnection && !stale) {
@@ -1038,8 +1040,26 @@ export function createPluginFields({
             if (control) {
               details.append(control);
             }
+            if (slot.tokenSourceConfig && slotConnection.addToken) {
+              const addToken = slotConnection.addToken;
+              details.append(
+                button("Add MCP token", () => addToken(slot, dialog, chooseSource), {
+                  tone: "secondary",
+                  size: "sm",
+                }),
+              );
+            }
           }
-          if (slot.sources.some((source) => !source.authorization)) {
+          const selectedSource = slot.sources.find(({ id }) => id === current);
+          if (selectedSource?.requiresAttachment) {
+            details.append(
+              element(
+                "p",
+                { className: "hint" },
+                "Save plugin selections before loading tools with this token.",
+              ),
+            );
+          } else if (slot.sources.some((source) => !source.authorization)) {
             details.append(
               element(
                 "p",
@@ -1068,7 +1088,9 @@ export function createPluginFields({
             slot.toolDiscovery &&
             !stale &&
             typeof current === "string" &&
-            slot.sources.some(({ id, authorization }) => id === current && !authorization)
+            selectedSource &&
+            !selectedSource.authorization &&
+            !selectedSource.requiresAttachment
           ) {
             details.append(managedToolPicker(entry, slot, current, selected));
           }

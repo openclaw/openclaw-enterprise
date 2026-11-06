@@ -538,7 +538,7 @@ test(
           authorization_endpoint: issuer + "/authorize",
           token_endpoint: issuer + "/token?tenant=acme",
           response_types_supported: ["code"],
-          scopes_supported: ["messages.read", "messages.write"],
+          scopes_supported: ["offline_access", "other-api.admin"],
           token_endpoint_auth_methods_supported: ["none"],
         });
       },
@@ -560,14 +560,14 @@ test(
     });
     assert.equal(choice.statusCode, 400, choice.body);
     const config = { mode: "mcp_discovery", displayName: "Team messaging", serverUrl, issuer };
-    assert.equal(
-      (await inject("POST", "/connection-templates", { ...config, scopes: ["unadvertised"] }))
-        .statusCode,
-      400,
-    );
+    // The issuer can serve other APIs. Its other resource's scopes do not belong in this template.
+    for (const scopes of [["messages.read", "other-api.admin"], ["messages.write"]]) {
+      const refused = await inject("POST", "/connection-templates", { ...config, scopes });
+      assert.equal(refused.statusCode, 400, refused.body);
+    }
     const result = await inject("POST", "/connection-templates", {
       ...config,
-      scopes: ["messages.read"],
+      scopes: ["messages.read", "offline_access"],
     });
     assert.equal(result.statusCode, 201, result.body);
     const unrestricted = await inject("PATCH", `/connection-templates/${result.json().data.id}`, {
@@ -578,7 +578,7 @@ test(
     assert.deepEqual(unrestricted.json().data.current.scopes, []);
     assert.deepEqual(unrestricted.json().data.current.observed.requestedScopes, ["messages.read"]);
     const { current } = result.json().data;
-    assert.deepEqual(current.scopes, ["messages.read"]);
+    assert.deepEqual(current.scopes, ["messages.read", "offline_access"]);
     assert.deepEqual(current.observed.resourceScopes, ["messages.read", "messages.write"]);
     assert.deepEqual(current.destinations, [{ host: "mcp.example.test", port: 443, path: "/mcp" }]);
     assert.deepEqual(current.mcp, { serverUrl, resource });

@@ -126,6 +126,8 @@ type StoredCredentialSource = Pick<
   "id" | "namespaceId" | "ref" | "state"
 > & {
   config: unknown;
+  name?: string;
+  type?: string;
   driverId: string;
   createdAt: string;
 };
@@ -734,7 +736,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           // Only config's existing nullish default is interpreted here.
           const input: object = Object(body);
           const uncertain = scenario.credentialRegistrationOutcome && !credentialRegistrationFailed;
-          const id = nextId("csr");
+          const id = nextId("type" in input && input.type === "bearer-token" ? "cs" : "csr");
           const saved: StoredCredentialSource = {
             ...input,
             id,
@@ -829,8 +831,39 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           return policyReply;
         }
         if (suffix === "/plugins/capabilities" && method === "GET" && scenario.pluginCapabilities) {
+          const capabilities = scenario.pluginCapabilities;
+          const slots = capabilities.credentialSlots?.map((slot) => {
+            if (!slot.tokenSourceConfig) {
+              return slot;
+            }
+            const savedSelection =
+              saved.plugins && typeof saved.plugins === "object"
+                ? Reflect.get(saved.plugins, slot.pluginId)
+                : undefined;
+            const selectedId = savedSelection?.driverPolicy?.credentials?.[slot.id];
+            const required = Object.entries(slot.tokenSourceConfig);
+            const registered = Array.from(credentialSources.values()).flatMap((source) => {
+              const { config, name } = source;
+              return source.type === "bearer-token" &&
+                source.state === "ready" &&
+                name &&
+                config !== null &&
+                typeof config === "object" &&
+                required.every(([key, value]) => Reflect.get(config, key) === value)
+                ? [
+                    {
+                      id: source.id,
+                      name,
+                      ...(source.id !== selectedId && { requiresAttachment: true as const }),
+                    },
+                  ]
+                : [];
+            });
+            return { ...slot, sources: [...slot.sources, ...registered] };
+          });
           return response({
-            ...scenario.pluginCapabilities,
+            ...capabilities,
+            ...(slots && { credentialSlots: slots }),
             discoveryCredential: scenario.pluginDiscoveryCredential ?? "required",
           });
         }

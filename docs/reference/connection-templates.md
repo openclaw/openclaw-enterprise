@@ -27,7 +27,7 @@ A new template starts with **No template limit** (`scopes: []`). Select **Limit 
 Use `POST /connection-templates` with one of these setup methods.
 
 - With `mode: manual`, supply the issuer, OAuth URLs, scopes and a nonempty `destinations` array. Each object has a host, port and path, for example `{"host":"mail.example.test","port":443,"path":"/inbox/**"}`. A credentialed request must match all three in one row. The plugin and deployed request policy determine the allowed operations.
-- With `mode: mcp_discovery`, preview metadata with `POST /connection-templates/discover`. Send the MCP server URL. When the resource advertises several issuers, select one and repeat discovery. The response includes the protected resource, advertised capabilities and scopes. Choose the scopes allowed for this template. OCC repeats discovery when saving and pins the approved issuer, resource and exact MCP server URL. Discovery can report a registration endpoint. Register the client separately.
+- With `mode: mcp_discovery`, preview metadata with `POST /connection-templates/discover`. Send the MCP server URL. When the resource advertises several issuers, select one and repeat discovery. The response includes the protected resource, advertised capabilities and scopes. Choose the scopes allowed for this template from those advertised by the resource. You can also approve `offline_access` when the issuer advertises it. If the resource supplies no scopes, OCE uses the issuer’s list. OCC repeats discovery when saving and pins the approved issuer, resource and exact MCP server URL. Discovery can report a registration endpoint. Register the client separately.
 
 A template may be saved before a client exists. Associate a compatible `oauthClientId` before using it for consent. Use `PATCH /connection-templates/{connectionTemplateId}` with the full configuration to change its approved values. This creates an immutable version. Changing only `displayName` renames the template. To remove a template, select the trash icon beside it in **Credentials → Connection templates**. Check its name and availability, then choose **Delete connection template**. Its OAuth client stays registered.
 
@@ -70,6 +70,12 @@ refresh grant, the user reconnects.
 Use `DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}` to
 disconnect the account. OCC records the request before retiring the credential
 and the worker can finish an interrupted disconnect.
+
+### Granted scopes
+
+If the provider omits `scope` from its token response, OCE records the requested scopes at code exchange and keeps the last granted scopes at refresh. An explicit `"scope": ""` records zero named scopes. The provider can still authorize access through account or app permissions.
+
+OCE reads scope names separated by spaces. At GitHub.com’s token endpoint (`https://github.com/login/oauth/access_token`), it also accepts comma-separated names such as `repo,gist`. At other endpoints a comma is part of the scope name. OCE rejects a refresh response that reports a scope outside the previous grant.
 
 ## Use a saved account in an Agent plugin
 

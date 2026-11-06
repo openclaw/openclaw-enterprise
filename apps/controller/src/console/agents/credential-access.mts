@@ -1,10 +1,12 @@
 import type {
   Agent,
+  CredentialSourceMetadata,
   CredentialSourceReference,
   Permission,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
 import { INSTALLATION_ADMINISTRATION, responseFields } from "../api-client.mjs";
+import { sameValue } from "../carry.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
 import { namespacePath } from "./list.mjs";
 
@@ -277,4 +279,56 @@ export async function credentialOperateGrants(
     grants.set(id, granted);
   }
   return grants;
+}
+
+export type CredentialRegistration = Pick<
+  CredentialSourceMetadata,
+  "name" | "secrets" | "type" | "config"
+>;
+export type RegisteredCredential = Pick<CredentialSourceMetadata, "id" | "state">;
+
+// Both a create response and a later registration check must identify the source we requested.
+// A conflicting record under that name is not absence.
+export function credentialRegistrationResult(
+  value: unknown,
+  namespaceId: string,
+  expected: CredentialRegistration,
+): RegisteredCredential | null {
+  const source = responseFields(value);
+  if (source.name !== expected.name) {
+    return null;
+  }
+  const { id, state } = source;
+  const config = responseFields(source.config);
+  const configMatches =
+    source.config !== null &&
+    typeof source.config === "object" &&
+    !Array.isArray(source.config) &&
+    Object.keys(config).length === Object.keys(expected.config).length &&
+    Object.entries(expected.config).every(([name, value]) => {
+      const actual = config[name];
+      if (actual === value) {
+        return true;
+      }
+      // Drivers can canonicalize URLs during registration; compare their parsed destination.
+      return (
+        typeof actual === "string" &&
+        URL.canParse(value) &&
+        URL.canParse(actual) &&
+        new URL(value).href.replace(/\/$/, "") === new URL(actual).href.replace(/\/$/, "")
+      );
+    });
+  if (
+    typeof id !== "string" ||
+    !id.trim() ||
+    source.namespaceId !== namespaceId ||
+    source.type !== expected.type ||
+    !configMatches ||
+    !sameValue(source.secrets, expected.secrets) ||
+    !sameValue(source.ref, { kind: "credential_source", namespaceId, id }) ||
+    (state !== "ready" && state !== "registering" && state !== "deleting")
+  ) {
+    throw new Error("The response did not identify the requested credential registration.");
+  }
+  return { id, state };
 }

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "oce-workiq",
+  "version": "1.0.0",
+  "description": "Use Microsoft 365 Work IQ tools with a delegated Work IQ access token. Replace the token when it expires.",
+  "author": { "name": "OpenClaw Enterprise" },
+  "homepage": "https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/work-iq/mcp/overview",
+  "repository": "https://github.com/openclaw/openclaw-enterprise",
+  "license": "MIT",
+  "extensions": {
+    "ai.openclaw.oce": {
+      "id": "occ-plugin:workiq",
+      "displayName": "Microsoft 365 Work IQ",
+      "policyScope": "enablement_only",
+      "release": "./ai.openclaw.oce/release.json"
+    }
+  }
+}

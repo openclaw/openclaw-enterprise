@@ -1063,6 +1063,19 @@ type TemplateInput = ApprovedTemplateSettings &
       }
     | { readonly mode: "mcp_discovery"; readonly serverUrl: string; readonly issuer: string }
   );
+function advertisedMcpScopes(observed: McpAuthorizationMetadata): readonly string[] {
+  const scopes = new Set([...observed.requestedScopes, ...(observed.resourceScopes ?? [])]);
+  if (!scopes.size) {
+    return observed.supportedScopes ?? [];
+  }
+  // The resource advertises its API scopes. RFC 8414 permits the issuer to omit them.
+  // offline_access requests renewal from the issuer, independent of resource permissions.
+  if (observed.supportedScopes?.includes("offline_access")) {
+    scopes.add("offline_access");
+  }
+  return [...scopes];
+}
+
 function templateAcceptsAuthMethod(
   observed: McpAuthorizationMetadata | undefined,
   method: OAuthClient["tokenEndpointAuthMethod"],
@@ -4668,16 +4681,18 @@ export class OpenClawController {
     if (!plugins || !credentials?.connectionSlot) {
       return [];
     }
-    return credentials.choices(eligibleSources ?? []).flatMap(({ pluginId, id, sources }) => {
-      const slot =
-        plugins[pluginId]?.enabled && credentials.connectionSlot?.(plugins, pluginId, id);
-      if (eligibleSources && slot && !sources.some(({ id }) => id === slot.credentialSourceId)) {
-        return [];
-      }
-      return slot && slot.credentialSourceId
-        ? [{ pluginId, id, sourceId: slot.credentialSourceId, slot }]
-        : [];
-    });
+    return credentials
+      .choices(eligibleSources ?? [])
+      .flatMap(({ pluginId, id, sources, tokenSourceConfig }) => {
+        const slot =
+          plugins[pluginId]?.enabled && credentials.connectionSlot?.(plugins, pluginId, id);
+        if (eligibleSources && slot && !sources.some(({ id }) => id === slot.credentialSourceId)) {
+          return [];
+        }
+        return slot && slot.credentialSourceId
+          ? [{ pluginId, id, sourceId: slot.credentialSourceId, slot, tokenSourceConfig }]
+          : [];
+      });
   }
 
   private async savedPluginSlot(
@@ -4765,8 +4780,7 @@ export class OpenClawController {
             mode: current.mode,
             scopes: current.scopes,
             requiredScopes: current.observed?.requestedScopes ?? [],
-            offeredScopes:
-              current.observed?.resourceScopes ?? current.observed?.supportedScopes ?? [],
+            offeredScopes: current.observed ? advertisedMcpScopes(current.observed) : [],
           }));
       },
     );
@@ -5667,9 +5681,7 @@ export class OpenClawController {
           "Choose a verified issuer for this MCP server.",
         );
       }
-      const offered = [...observed.requestedScopes, ...(observed.resourceScopes ?? [])];
-      const allowed = new Set(offered.length ? offered : observed.supportedScopes);
-      const supported = observed.supportedScopes && new Set(observed.supportedScopes);
+      const allowed = new Set(advertisedMcpScopes(observed));
       const approved = new Set(settings.scopes);
       if (approved.size && observed.requestedScopes.some((scope) => !approved.has(scope))) {
         throw new ConnectionTemplateValidationError(
@@ -5677,9 +5689,7 @@ export class OpenClawController {
           "Include the scopes required by the MCP server or choose no template limit.",
         );
       }
-      if (
-        settings.scopes.some((scope) => !allowed.has(scope) || (supported && !supported.has(scope)))
-      ) {
+      if (settings.scopes.some((scope) => !allowed.has(scope))) {
         throw new ConnectionTemplateValidationError(
           "scopes",
           "Choose only scopes advertised for this MCP resource.",
@@ -10768,6 +10778,21 @@ export class OpenClawController {
     );
   }
 
+  private async canAdministerNamespaceIAM(
+    principalId: string,
+    namespaceId: string,
+  ): Promise<boolean> {
+    return (
+      (
+        await this.authorizationDecision(principalId, "administer", {
+          kind: "installation",
+          id: this.installation.id,
+        })
+      ).decision.allowed &&
+      (await this.canRead(principalId, { kind: "namespace", id: namespaceId, namespaceId }))
+    );
+  }
+
   async getSavedAgentPluginPolicyCapabilities(
     principalId: string,
     namespaceId: string,
@@ -10779,23 +10804,54 @@ export class OpenClawController {
       agentId,
       async ({ state, agent, driver }) => {
         const credentials = agent.executionMode === "dedicated" ? driver.credentials : undefined;
+        const canAttachToken =
+          credentials?.choices([]).some((choice) => choice.tokenSourceConfig) &&
+          (await this.canAdministerNamespaceIAM(principalId, namespaceId));
         const sources: CredentialSource[] = [];
+        const attachableTokenIds = new Set<string>();
         if (credentials) {
-          for (const { sourceId } of agent.credentialSources ?? []) {
-            const ref = { kind: "credential_source" as const, namespaceId, id: sourceId };
-            if (
-              (await this.canRead(principalId, ref)) &&
-              (await this.authorizationDecision(principalId, "operate", ref)).decision.allowed &&
+          const bindings = agent.credentialSources ?? [];
+          const attached = new Set(bindings.map(({ sourceId }) => sourceId));
+          // An administrator may select a Namespace token and grant its use on save.
+          // Other callers can select only a source this Agent already has permission to use.
+          const candidates = canAttachToken
+            ? await state.credentialSources.listCredentialSources(namespaceId)
+            : bindings;
+          for (const candidate of candidates) {
+            const source =
+              "sourceId" in candidate
+                ? await state.credentialSources.findCredentialSource(
+                    namespaceId,
+                    candidate.sourceId,
+                  )
+                : candidate;
+            if (!source || source.state !== "ready" || source.ownerCapability === "token_service") {
+              continue;
+            }
+            const ref = { kind: "credential_source" as const, namespaceId, id: source.id };
+            const granted =
+              attached.has(source.id) &&
               (await this.authorizationDecision(agent.servicePrincipalId, "operate", ref)).decision
-                .allowed
+                .allowed;
+            if (
+              !granted &&
+              !(
+                canAttachToken &&
+                source.type === "bearer-token" &&
+                source.ownerCapability === "credential_gateway"
+              )
             ) {
-              const source = await state.credentialSources.findCredentialSource(
-                namespaceId,
-                sourceId,
-              );
-              if (source?.state === "ready" && source.ownerCapability !== "token_service") {
-                sources.push(source);
-              }
+              continue;
+            }
+            if (
+              !(await this.canRead(principalId, ref)) ||
+              !(await this.authorizationDecision(principalId, "operate", ref)).decision.allowed
+            ) {
+              continue;
+            }
+            sources.push(source);
+            if (!granted) {
+              attachableTokenIds.add(source.id);
             }
           }
         }
@@ -10835,33 +10891,70 @@ export class OpenClawController {
               namespaceId,
             })
           ).decision.allowed;
-        const credentialSlots = credentials?.choices(sources).map((choice) => {
-          const slot = credentials.connectionSlot?.(
-            agent.plugins ?? {},
-            choice.pluginId,
-            choice.id,
-          );
-          if (!slot) {
-            return choice;
-          }
-          const candidates = accounts
-            .filter(({ account }) => slot.issuers.includes(account.issuer))
-            .map(({ account, target, name }) => ({
-              id: account.credentialSourceId,
-              name,
-              ...(!slot.acceptsRecipient(target) && {
-                authorization: "required" as const,
-              }),
-            }));
-          return {
-            ...choice,
-            sources: [...choice.sources, ...candidates],
-            ...(canConnect &&
-              agent.plugins?.[choice.pluginId]?.enabled && {
-                connectAccount: true as const,
-              }),
-          };
-        });
+        const gateway =
+          canAttachToken &&
+          canConnect &&
+          this.selections.has("credential_gateway") &&
+          !this.selections.has("credential_proxy")
+            ? this.credentialGatewayDriver()
+            : undefined;
+        const bearerType =
+          gateway &&
+          (await this.credentialSourceType(gateway, "bearer-token").catch(() => undefined));
+        const credentialSlots = credentials
+          ?.choices(sources)
+          .map(({ tokenSourceConfig, ...choice }) => {
+            const slot = credentials.connectionSlot?.(
+              agent.plugins ?? {},
+              choice.pluginId,
+              choice.id,
+            );
+            const visibleSources = choice.sources.flatMap((source) => {
+              if (!attachableTokenIds.has(source.id)) {
+                return [source];
+              }
+              // Saving an unchanged slot must preserve a revoked Agent grant.
+              if (!tokenSourceConfig || slot?.credentialSourceId === source.id) {
+                return [];
+              }
+              return [{ ...source, requiresAttachment: true as const }];
+            });
+            if (!slot) {
+              return { ...choice, sources: visibleSources };
+            }
+            const candidates = accounts
+              .filter(({ account }) => slot.issuers.includes(account.issuer))
+              .map(({ account, target, name }) => ({
+                id: account.credentialSourceId,
+                name,
+                ...(!slot.acceptsRecipient(target) && {
+                  authorization: "required" as const,
+                }),
+              }));
+            let allowedTokenConfig;
+            if (gateway && bearerType && tokenSourceConfig) {
+              try {
+                credentialSourceFieldsMatch(bearerType, "config", tokenSourceConfig);
+                credentialSourceFieldsMatch(bearerType, "secrets", { token: true });
+                gateway.validateSourceConfig({ type: bearerType.type, config: tokenSourceConfig });
+                allowedTokenConfig = tokenSourceConfig;
+              } catch (error) {
+                if (!(error instanceof CredentialSourceConfigError)) {
+                  throw error;
+                }
+              }
+            }
+            return {
+              ...choice,
+              sources: [...visibleSources, ...candidates],
+              ...(allowedTokenConfig && { tokenSourceConfig: allowedTokenConfig }),
+              ...(canConnect &&
+                slot.issuers.length > 0 &&
+                agent.plugins?.[choice.pluginId]?.enabled && {
+                  connectAccount: true as const,
+                }),
+            };
+          });
         return immutableCopy({
           driver: { id: driver.id, implementation: driver.implementation },
           ...driver.policyCapabilities,
@@ -12594,12 +12687,16 @@ export class OpenClawController {
         agent,
         plugins === undefined ? "stored" : "request",
       );
+      const pluginCredentialGrants: CredentialSourceReference[] = [];
       if (plugins) {
         const previous = this.pluginAccountBindings(driver, agent.plugins);
-        for (const { pluginId, id, sourceId, slot } of this.pluginAccountBindings(
-          driver,
-          plugins,
-        )) {
+        for (const {
+          pluginId,
+          id,
+          sourceId,
+          slot,
+          tokenSourceConfig,
+        } of this.pluginAccountBindings(driver, plugins)) {
           if (
             previous.some((b) => b.pluginId === pluginId && b.id === id && b.sourceId === sourceId)
           ) {
@@ -12612,32 +12709,68 @@ export class OpenClawController {
           };
           await this.authorize(principalId, "operate", resource);
           const account = await state.savedConnections.findSavedConnection(namespace.id, sourceId);
-          if (!account) {
-            continue; // Ordinary Gateway sources must already be listed on the Agent.
-          }
-          await this.authorize(principalId, "read", resource);
-          if (
-            account.revocationRequestedBy ||
-            !slot.issuers.includes(account.issuer) ||
-            !slot.acceptsRecipient(await this.accountTarget(state, account))
-          ) {
-            throw new ResourceStateConflictError(
-              "Authorize an account for this plugin server before binding it.",
-            );
-          }
-          if (!attached.has(sourceId)) {
-            const bindings = resultingSources ?? agent.credentialSources ?? [];
-            if (!bindings.some((b) => b.sourceId === sourceId)) {
-              if (bindings.length >= MAX_AGENT_CREDENTIAL_SOURCES) {
-                throw new ResourceStateConflictError(
-                  `The Agent already lists ${MAX_AGENT_CREDENTIAL_SOURCES} credential sources.`,
-                );
-              }
-              resultingSources = [...bindings, { sourceId }];
+          const bindings = resultingSources ?? agent.credentialSources ?? [];
+          const listed = bindings.some((binding) => binding.sourceId === sourceId);
+          if (account) {
+            await this.authorize(principalId, "read", resource);
+            if (
+              account.revocationRequestedBy ||
+              !slot.issuers.includes(account.issuer) ||
+              !slot.acceptsRecipient(await this.accountTarget(state, account))
+            ) {
+              throw new ResourceStateConflictError(
+                "Authorize an account for this plugin server before binding it.",
+              );
             }
-            await this.ensureAgentOperateGrants(state, namespace.id, agent, [resource]);
+            if (attached.has(sourceId)) {
+              continue;
+            }
             attached.add(sourceId);
+          } else {
+            if (!tokenSourceConfig) {
+              continue; // Other Gateway sources must already be listed on the Agent.
+            }
+            // Existing bindings may be selected without conferring new IAM authority.
+            if (
+              listed &&
+              ((await this.authorizationDecision(agent.servicePrincipalId, "operate", resource))
+                .decision.allowed ||
+                !(await this.canAdministerNamespaceIAM(principalId, namespace.id)))
+            ) {
+              continue;
+            }
+            await this.holdIAMPolicyAuthority(state, principalId, namespace.id, resource);
+            const source = await state.credentialSources.findCredentialSource(
+              namespace.id,
+              sourceId,
+            );
+            const eligible =
+              source?.ownerCapability === "credential_gateway" &&
+              source.type === "bearer-token" &&
+              source.state === "ready" &&
+              driver?.credentials
+                ?.choices([source])
+                .some(
+                  (choice) =>
+                    choice.pluginId === pluginId &&
+                    choice.id === id &&
+                    choice.sources.some((candidate) => candidate.id === sourceId),
+                );
+            if (!eligible) {
+              throw new ResourceStateConflictError(
+                "Choose a ready token source for this plugin slot.",
+              );
+            }
           }
+          if (!listed) {
+            if (bindings.length >= MAX_AGENT_CREDENTIAL_SOURCES) {
+              throw new ResourceStateConflictError(
+                `The Agent already lists ${MAX_AGENT_CREDENTIAL_SOURCES} credential sources.`,
+              );
+            }
+            resultingSources = [...bindings, { sourceId }];
+          }
+          pluginCredentialGrants.push(resource);
         }
       }
       if (
@@ -12696,6 +12829,7 @@ export class OpenClawController {
         },
         savedConfiguration,
       );
+      await this.ensureAgentOperateGrants(state, namespace.id, agent, pluginCredentialGrants);
       // The reverse of the policy save's check: a binding added beside a saved grant that
       // reaches the repository hosts (finding 2144).
       if ((repositoryBindings ?? agent.repositoryBindings ?? []).length > 0) {

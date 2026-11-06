@@ -7073,6 +7073,13 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 | `data.credentialSlots[].sources[].authorization` | `"required"` | No | — |
 | `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.credentialSlots[].sources[].name` | `string` | Yes | — |
+| `data.credentialSlots[].sources[].requiresAttachment` | `true` | No | — |
+| `data.credentialSlots[].tokenSourceConfig` | `object` | No | — |
+| `data.credentialSlots[].tokenSourceConfig.env_var` | `string` | Yes | — |
+| `data.credentialSlots[].tokenSourceConfig.host` | `string` | Yes | — |
+| `data.credentialSlots[].tokenSourceConfig.path` | `string` | Yes | — |
+| `data.credentialSlots[].tokenSourceConfig.port` | `string` | Yes | — |
+| `data.credentialSlots[].tokenSourceConfig.protocol` | `"mcp"` | Yes | — |
 | `data.credentialSlots[].toolDiscovery` | `true` | No | — |
 | `data.discoveryCredential` | `"required" or "none"` | Yes | — |
 | `data.driver` | `PluginDriverIdentity` | Yes | — |

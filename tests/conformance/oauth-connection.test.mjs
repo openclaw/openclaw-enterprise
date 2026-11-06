@@ -28,13 +28,14 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
   });
   assert.equal(new URL(started.authorizationUrl).searchParams.get("resource"), request.resource);
   let responseScope;
+  let expectedRefreshScope = null;
   t.mock.method(globalThis, "fetch", async (_url, init) => {
     assert.equal(init.headers.has("authorization"), false);
     assert.equal(init.body.get("client_id"), request.clientId);
     assert.equal(init.body.has("client_secret"), false);
     assert.equal(init.body.get("resource"), request.resource);
     if (init.body.get("grant_type") === "refresh_token") {
-      assert.equal(init.body.has("scope"), false);
+      assert.equal(init.body.get("scope"), expectedRefreshScope);
     }
     return Response.json({
       access_token: randomUUID(),
@@ -44,9 +45,9 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
       scope: responseScope,
     });
   });
-  const exchange = (scopes = request.scopes) =>
+  const exchange = (scopes = request.scopes, tokenUrl = request.tokenUrl) =>
     exchangeAuthorizationCode(
-      { ...request, scopes },
+      { ...request, scopes, tokenUrl },
       "test-verifier",
       "test-code",
       undefined,
@@ -56,7 +57,15 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
   assert.deepEqual((await exchange()).grantedScopes, ["read", "write"]);
   responseScope = "read";
   assert.deepEqual((await exchange()).grantedScopes, ["read"]);
-  for (responseScope of ["read admin", ["read"], ""]) {
+  // An issuer can report no granted scopes even when the browser asked for read and write.
+  responseScope = "";
+  const empty = await exchange();
+  assert.deepEqual(empty.grantedScopes, []);
+  responseScope = "read";
+  await assert.rejects(refreshPinnedOAuthGrant({ ...request, ...empty }, t.signal, undefined), {
+    code: "grant_scope_mismatch",
+  });
+  for (responseScope of ["read admin", ["read"]]) {
     await assert.rejects(exchange(), {
       name: "BrowserAuthorizationError",
       code: "grant_scope_mismatch",
@@ -72,13 +81,40 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
   assert.deepEqual(unreported.grantedScopes, []);
   const renewed = await refreshPinnedOAuthGrant({ ...request, ...unreported }, t.signal, undefined);
   assert.deepEqual(renewed.grantedScopes, []);
-  responseScope = "later.addition";
-  await assert.rejects(
-    refreshPinnedOAuthGrant({ ...request, ...unreported }, t.signal, undefined),
-    {
-      code: "grant_scope_mismatch",
-    },
-  );
+
+  // RFC scope tokens may contain a literal comma. The requested ceiling cannot decide
+  // whether the issuer uses commas as separators, even when it includes both readings.
+  const githubTokenUrl = "https://github.com/login/oauth/access_token";
+  responseScope = "read,write";
+  assert.deepEqual((await exchange([])).grantedScopes, ["read,write"]);
+  assert.deepEqual((await exchange(["read", "write", "read,write"])).grantedScopes, ["read,write"]);
+  for (const tokenUrl of [request.tokenUrl, githubTokenUrl + "/other"]) {
+    await assert.rejects(exchange(request.scopes, tokenUrl), { code: "grant_scope_mismatch" });
+  }
+  responseScope = "read,write audit";
+  assert.deepEqual((await exchange(["read,write", "audit"])).grantedScopes, [
+    "read,write",
+    "audit",
+  ]);
+
+  // GitHub's token endpoint uses comma-separated scope names. Renewal must enforce
+  // the grant it returned, including for an initial request that used provider defaults.
+  responseScope = "read,write";
+  await assert.rejects(exchange(["read,write"], githubTokenUrl), { code: "grant_scope_mismatch" });
+  const githubGrant = await exchange([], githubTokenUrl);
+  assert.deepEqual(githubGrant.grantedScopes, ["read", "write"]);
+  expectedRefreshScope = "read write";
+  const refreshGitHub = () =>
+    refreshPinnedOAuthGrant(
+      { ...request, ...githubGrant, tokenUrl: githubTokenUrl },
+      t.signal,
+      undefined,
+    );
+  responseScope = "write, read";
+  assert.deepEqual((await refreshGitHub()).grantedScopes, ["write", "read"]);
+  for (responseScope of ["read,admin", "read,,write"]) {
+    await assert.rejects(refreshGitHub(), { code: "grant_scope_mismatch" });
+  }
 });
 
 async function oauthCustody() {

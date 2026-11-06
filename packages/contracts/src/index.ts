@@ -802,11 +802,21 @@ export interface AgentPluginCredentialSlot {
   readonly toolDiscovery?: true;
   /** OCC permits this caller to connect an account to the saved slot. */
   readonly connectAccount?: true;
+  /** Reviewed bearer source settings for an administrator setting up a token for this slot. */
+  readonly tokenSourceConfig?: {
+    readonly protocol: "mcp";
+    readonly host: string;
+    readonly port: string;
+    readonly path: string;
+    readonly env_var: string;
+  };
   readonly sources: readonly {
     readonly id: string;
     readonly name: string;
     /** Same issuer, but a new grant is needed for this receiver. */
     readonly authorization?: "required";
+    /** Save this selection to attach the token before discovering its tools. */
+    readonly requiresAttachment?: true;
   }[];
 }
 

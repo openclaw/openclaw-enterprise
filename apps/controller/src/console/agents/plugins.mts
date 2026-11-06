@@ -22,7 +22,7 @@ import {
 } from "../dom.mjs";
 import { type PluginDiscoveryContext, createPluginDiscovery } from "./plugin-discovery.mjs";
 import { isPluginSelections } from "./plugin-fields.mjs";
-import { type SlotTemplate } from "./plugin-connection.mjs";
+import { openPluginTokenDialog, type SlotTemplate } from "./plugin-connection.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import {
   SAVE_REFUSALS,
@@ -228,6 +228,18 @@ export function renderAgentPlugins(
     input,
     catalogPath: `${path}/plugins`,
     slotConnection: {
+      addToken(slot, owner, select) {
+        openPluginTokenDialog(
+          context,
+          owner,
+          slot,
+          (id) => {
+            select(id);
+            readCapabilities();
+          },
+          () => !pending && !updateDenied && !outcomeUnknown && !reloadRequired,
+        );
+      },
       unavailable(slot) {
         if (updateDenied) {
           return "You need permission to update this Agent to attach an account.";

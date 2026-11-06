@@ -3,7 +3,6 @@ import type {
   AgentCredentialSourceBinding,
   AgentDeploymentStatusWire,
   Configuration,
-  CredentialSourceMetadata,
   CredentialSourceReference,
   CredentialSourceType,
   HarnessAuthBinding,
@@ -45,7 +44,13 @@ import {
   notIncluded,
 } from "./access-reasons.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
-import { ensureCredentialOperateBinding, secretOperateAnswer } from "./credential-access.mjs";
+import {
+  type CredentialRegistration,
+  type RegisteredCredential,
+  credentialRegistrationResult,
+  ensureCredentialOperateBinding,
+  secretOperateAnswer,
+} from "./credential-access.mjs";
 import {
   createSecretReferenceField,
   NEW_SECRET_OPERATE_DENIED,
@@ -92,11 +97,6 @@ type CreateRequest = (
 ) => Promise<unknown>;
 type CredentialReference = SecretReference | CredentialSourceReference;
 type Repositories = ReturnType<typeof createRepositoryFields>;
-type CredentialRegistration = Pick<
-  CredentialSourceMetadata,
-  "name" | "secrets" | "type" | "config"
->;
-type RegisteredCredential = Pick<CredentialSourceMetadata, "id" | "state">;
 type SavedAgent = Pick<Agent, "id" | "name" | "configurationId">;
 type SavedConfiguration = Pick<Configuration, "id" | "secretBindings">;
 
@@ -346,52 +346,6 @@ function selectedHarnessAuth(
     return { method, source };
   }
   throw new Error("Choose a model credential for the selected authentication method.");
-}
-
-// Both a create response and a later registration check must identify the source we requested.
-// The name includes our unique request ID. A conflicting record under that name is not absence.
-function credentialRegistrationResult(
-  value: unknown,
-  namespaceId: string,
-  expected: CredentialRegistration,
-): RegisteredCredential | null {
-  const source = responseFields(value);
-  if (source.name !== expected.name) {
-    return null;
-  }
-  const { id, state } = source;
-  const config = responseFields(source.config);
-  const configMatches =
-    source.config !== null &&
-    typeof source.config === "object" &&
-    !Array.isArray(source.config) &&
-    Object.keys(config).length === Object.keys(expected.config).length &&
-    Object.entries(expected.config).every(([name, value]) => {
-      const actual = config[name];
-      if (actual === value) {
-        return true;
-      }
-      // Drivers can canonicalize URLs during registration; compare their parsed destination.
-      return (
-        typeof actual === "string" &&
-        URL.canParse(value) &&
-        URL.canParse(actual) &&
-        new URL(value).href.replace(/\/$/, "") === new URL(actual).href.replace(/\/$/, "")
-      );
-    });
-  if (
-    typeof id !== "string" ||
-    !id.trim() ||
-    source.namespaceId !== namespaceId ||
-    source.type !== expected.type ||
-    !configMatches ||
-    !sameValue(source.secrets, expected.secrets) ||
-    !sameValue(source.ref, { kind: "credential_source", namespaceId, id }) ||
-    (state !== "ready" && state !== "registering" && state !== "deleting")
-  ) {
-    throw new Error("The response did not identify the requested credential registration.");
-  }
-  return { id, state };
 }
 
 // Why removing a failed credential registration failed and the next step (finding 2538): a

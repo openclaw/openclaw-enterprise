@@ -2,6 +2,7 @@ import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.mjs";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
+import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { validateModelCredentialReferences } from "../../apps/controller/src/drivers/configuration/model-auth.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -17,6 +18,8 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { AuthAccountRoleNotFoundError } from "../../apps/controller/src/auth/index.ts";
 import {
   CodexPluginDriver,
@@ -34,6 +37,7 @@ import {
   ConfigurationHarnessError,
   DependencyUnavailableError,
   InMemoryPlatformState,
+  InstalledDriver,
   OpenClawController,
   ResourceStateConflictError,
   ScopeViolationError,
@@ -48,6 +52,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.t
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import {
   AGENT_DELETING,
   AGENT_NAME_CONFLICT,
@@ -517,6 +522,8 @@ async function createInjectedFixture(options = {}) {
                   : stateWithDeploymentWork(baseState, options.deploymentWorks);
               controller = new OpenClawController(installation, {
                 state: platformState,
+                preparedTokens: options.preparedTokens,
+                driverConfigurations: options.driverConfigurations,
                 recordOperations: options.recordOperations ?? false,
                 ...(options.backends === undefined ? {} : { backends: options.backends }),
               });
@@ -11280,7 +11287,7 @@ test("managed MCP discovery refuses private DNS answers and redirects", async ()
   );
 });
 
-test("deploying Google Workspace and Slack together freezes both selections and preserves independent credentials", async (t) => {
+test("deploying Google Workspace, Slack and Notion freezes their selections and preserves independent credentials", async (t) => {
   const sourceConfig = {
     protocol: "mcp",
     host: "mcp.slack.com",
@@ -11294,6 +11301,8 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     assert.fail("the admission fixture must not access credential material");
   }
   const token = "fixture-slack-discovery-token";
+  const notionToken = "fixture-notion-discovery-token";
+  let expectedNotionToken = notionToken;
   const upstream = [];
   let tokenReads = 0;
   let beforeTokenUse = () => {};
@@ -11307,9 +11316,13 @@ test("deploying Google Workspace and Slack together freezes both selections and 
       }
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
       const method = body?.method ?? request.method;
-      const authenticated = request.headers.authorization === `Bearer ${token}`;
+      const isNotion = request.url === "/mcp.notion.com/mcp";
+      if (!isNotion) {
+        assert.equal(request.url, "/mcp.slack.com/mcp");
+      }
+      const authenticated =
+        request.headers.authorization === `Bearer ${isNotion ? expectedNotionToken : token}`;
       upstream.push({ method, authenticated });
-      assert.equal(request.url, "/mcp");
       assert.equal(authenticated, true);
       if (method === "GET" || method === "DELETE") {
         response.writeHead(405).end();
@@ -11331,11 +11344,10 @@ test("deploying Google Workspace and Slack together freezes both selections and 
               serverInfo: { name: "Managed MCP HTTP fixture", version: "1" },
             }
           : {
-              tools: [
-                "slack_search_public",
-                "slack_send_message",
-                ...(echoToken ? [token] : []),
-              ].map((name) => ({ name, inputSchema: { type: "object" } })),
+              tools: (isNotion
+                ? ["notion-search", "notion-fetch"]
+                : ["slack_search_public", "slack_send_message", ...(echoToken ? [token] : [])]
+              ).map((name) => ({ name, inputSchema: { type: "object" } })),
             };
       response
         .writeHead(200, {
@@ -11355,7 +11367,7 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   });
   peer.listen(0, "127.0.0.1");
   await once(peer, "listening");
-  const peerUrl = `http://127.0.0.1:${peer.address().port}/mcp`;
+  const peerUrl = `http://127.0.0.1:${peer.address().port}`;
   const secretDriver = createTestSecretDriver({ id: "secret-slack-admission" });
   const readValue = secretDriver.withValue;
   secretDriver.withValue = (secret, use) =>
@@ -11416,20 +11428,26 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   });
   compute.resolveSandboxNamespace = async (namespace) => namespace;
   compute.getAgentRuntimeCredentialStatus = async () => ({ transportConfigured: true });
+  const preparedTokens = new TokenService();
+  const { backend, sandboxDriver, driverConfigurations } = openShellSandbox(t);
   const controller = await configuredController({
+    preparedTokens,
+    driverConfigurations,
     computeDriver: compute,
     secretDriver,
     readManagedMcpToolNames(endpoint, accessToken, signal) {
       return listManagedMcpToolNames(endpoint, accessToken, signal, {
         async resolveHost(host) {
-          assert.equal(host, "mcp.slack.com");
+          assert.ok(["mcp.slack.com", "mcp.notion.com"].includes(host));
           return [{ address: "8.8.8.8", family: 4 }];
         },
         fetch(target, request) {
-          assert.equal(target.href, "https://mcp.slack.com/mcp");
-          // The real reader and MCP SDK send HTTP to this counted peer. Only DNS/routing
-          // are controlled: this does not qualify public DNS, TLS, or live Slack access.
-          return fetch(peerUrl, { ...request, dispatcher: undefined });
+          // Route each reviewed endpoint to its own path on the controlled peer so it
+          // can reject the other provider's bearer. The real MCP client owns the session.
+          return fetch(`${peerUrl}/${target.host}${target.pathname}`, {
+            ...request,
+            dispatcher: undefined,
+          });
         },
       });
     },
@@ -11447,19 +11465,28 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
   );
   const base = `/namespaces/${namespace.id}`;
-  const secret = await controller.request("POST", `${base}/secrets`, {
-    body: { name: "Slack access token", value: token },
+  async function registerAccount(name, value, config) {
+    const secret = await controller.request("POST", `${base}/secrets`, {
+      body: { name: `${name} access token`, value },
+    });
+    assert.equal(secret.status, 201, JSON.stringify(secret.body));
+    const source = await controller.request("POST", `${base}/credential-sources`, {
+      body: {
+        name: `${name} account`,
+        type: "bearer-token",
+        config,
+        secrets: { token: { kind: "secret", id: secret.data.id, namespaceId: namespace.id } },
+      },
+    });
+    assert.equal(source.status, 201, JSON.stringify(source.body));
+    return source.data;
+  }
+  const slackSource = await registerAccount("Slack", token, sourceConfig);
+  const notionSource = await registerAccount("Notion", notionToken, {
+    ...sourceConfig,
+    host: "mcp.notion.com",
+    env_var: "NOTION_MCP_TOKEN",
   });
-  assert.equal(secret.status, 201, JSON.stringify(secret.body));
-  const source = await controller.request("POST", `${base}/credential-sources`, {
-    body: {
-      name: "Slack account",
-      type: "bearer-token",
-      config: sourceConfig,
-      secrets: { token: { kind: "secret", id: secret.data.id, namespaceId: namespace.id } },
-    },
-  });
-  assert.equal(source.status, 201, JSON.stringify(source.body));
   tokenReads = 0;
   const model = await controller.request("POST", `${base}/credential-sources`, {
     body: { name: "Model account", type: "openai" },
@@ -11470,7 +11497,9 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     namespace.id,
     createHarnessConfiguration("openclaw", "gpt-5.1"),
   );
-  const credentialSources = [{ sourceId: model.data.id }, { sourceId: source.data.id }];
+  const credentialSources = [model.data, notionSource, slackSource].map(({ id }) => ({
+    sourceId: id,
+  }));
   const created = await controller.request("POST", `${base}/agents`, {
     body: {
       name: "Slack Agent",
@@ -11508,7 +11537,7 @@ test("deploying Google Workspace and Slack together freezes both selections and 
 
   const agentPath = `${base}/agents/${created.data.id}`;
   const pluginId = "occ-plugin:slack@1.0.0";
-  const discovery = { pluginId, managedConnection: { slot: "account", sourceId: source.data.id } };
+  const discovery = { pluginId, managedConnection: { slot: "account", sourceId: slackSource.id } };
   const discover = (body = discovery) =>
     controller.request("POST", `${agentPath}/plugins/details`, { body });
   const detail = await discover();
@@ -11529,6 +11558,23 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   assert.equal(tokenReads, 1);
   upstream.length = 0;
   tokenReads = 0;
+
+  const notionId = "occ-plugin:notion@1.0.0";
+  const notionDetail = await discover({
+    pluginId: notionId,
+    managedConnection: { slot: "account", sourceId: notionSource.id },
+  });
+  assert.equal(notionDetail.status, 200, JSON.stringify(notionDetail.body));
+  assert.deepEqual(notionDetail.data.tools.map(({ id }) => id).sort(), [
+    "notion-fetch",
+    "notion-search",
+  ]);
+  upstream.length = 0;
+  tokenReads = 0;
+  // Both credentials are attached to the Agent, but only matching slots may read them.
+  assertApiError(await discover({ ...discovery, pluginId: notionId }), 409, "RESOURCE_CONFLICT");
+  assert.equal(tokenReads, 0);
+  assert.deepEqual(upstream, []);
 
   const editor = await controller.fixture.createAuthPrincipal("managed-mcp-editor");
   state.identities.push(editor.principal);
@@ -11563,7 +11609,7 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     subjectId: editor.principal.id,
     roleId,
     resourceKind: "credential_source",
-    resourceId: source.data.id,
+    resourceId: slackSource.id,
   };
   state.bindings.push(editorSource);
   const { configurationDriver } = controller.fixture;
@@ -11588,7 +11634,7 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   state.bindings.pop();
 
   const agentBinding = state.bindings.pop();
-  assert.equal(agentBinding.resourceId, source.data.id);
+  assert.equal(agentBinding.resourceId, slackSource.id);
   assertApiError(await discover(), 403, "FORBIDDEN");
   assert.equal(tokenReads, 0);
   assert.deepEqual(upstream, []);
@@ -11607,7 +11653,7 @@ test("deploying Google Workspace and Slack together freezes both selections and 
       ...discovery,
       credentialSource: {
         kind: "credential_source",
-        id: source.data.id,
+        id: slackSource.id,
         namespaceId: namespace.id,
       },
     }),
@@ -11645,19 +11691,118 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   assertApiError(echoed, 503, "PLUGIN_DISCOVERY_INVALID_RESPONSE");
   assert.equal(JSON.stringify(echoed.body).includes(token), false);
   echoToken = false;
+
+  // The fixture supplies provider metadata and tokens. OCC and the Token Service save both
+  // accounts through the normal connection workflow. Only one covers Notion’s protected resource.
+  const { controller: occ, platformState, principal } = controller.fixture;
+  preparedTokens.registerIssuer(
+    new OAuthAccountTokens(platformState, secretDriver, occ.resolveConnectionClient.bind(occ)),
+  );
+  const issuer = "https://mcp.notion.com";
+  const serverUrl = issuer + "/mcp";
+  async function connectNotionAccount(resource, accessToken) {
+    const template = await occ.createConnectionTemplate(
+      principal.id,
+      {
+        mode: "mcp_discovery",
+        issuer,
+        serverUrl,
+        namespaceId: namespace.id,
+        displayName: resource,
+        scopes: ["default"],
+      },
+      async () => ({
+        issuer,
+        issuers: [issuer],
+        serverUrl,
+        resource,
+        requestedScopes: ["default"],
+        authorizationUrl: issuer + "/authorize",
+        tokenUrl: issuer + "/token",
+        tokenEndpointAuthMethods: ["none"],
+      }),
+    );
+    await occ.createOAuthClient(principal.id, {
+      displayName: "Test client",
+      clientId: randomUUID(),
+      tokenEndpointAuthMethod: "none",
+      connectionTemplateId: template.id,
+      connectionTemplateVersion: template.current.version,
+    });
+    const sessionId = randomUUID();
+    const started = await occ.startNamespaceConnection(principal.id, {
+      connectionTemplateId: template.id,
+      namespaceId: namespace.id,
+      sessionId,
+      selectedScopes: ["default"],
+      redirectUri: "https://console.example.test/oauth/callback",
+    });
+    const tokenEndpoint = t.mock.method(globalThis, "fetch", async (url, init) => {
+      assert.equal(url, issuer + "/token");
+      assert.equal(init.body.get("resource"), resource);
+      return Response.json({
+        access_token: accessToken,
+        refresh_token: randomUUID(),
+        token_type: "Bearer",
+        expires_in: 3600,
+      });
+    });
+    try {
+      return await occ.completeNamespaceConnection(principal.id, {
+        sessionId,
+        state: new URL(started.authorizationUrl).searchParams.get("state"),
+        iss: issuer,
+        code: randomUUID(),
+      });
+    } finally {
+      tokenEndpoint.mock.restore();
+    }
+  }
+  const savedBearer = randomUUID();
+  const connected = await connectNotionAccount(serverUrl, savedBearer);
+  const otherResource = await connectNotionAccount(issuer + "/other", randomUUID());
+  // The MCP peer now accepts only the token issued for this saved account.
+  expectedNotionToken = savedBearer;
+  const savedDiscovery = await discover({
+    pluginId: notionId,
+    managedConnection: { slot: "account", sourceId: connected.credentialSourceId },
+  });
+  assert.equal(savedDiscovery.status, 200, JSON.stringify(savedDiscovery.body));
+  assert.deepEqual(savedDiscovery.data.tools, notionDetail.data.tools);
   const capabilities = await controller.request("GET", `${agentPath}/plugins/capabilities`);
   assert.equal(capabilities.status, 200, JSON.stringify(capabilities.body));
   const slot = capabilities.data.credentialSlots.find((entry) => entry.pluginId === pluginId);
-  assert.deepEqual(slot.sources, [{ id: source.data.id, name: "Slack account" }]);
+  assert.deepEqual(slot.sources, [{ id: slackSource.id, name: "Slack account" }]);
   assert.equal(slot.toolDiscovery, true);
-  const google = { "occ-plugin:google@1.0.0": { enabled: true } };
+  const notionSlot = capabilities.data.credentialSlots.find((entry) => entry.pluginId === notionId);
+  assert.equal(notionSlot.id, "account");
+  assert.deepEqual(
+    new Map(notionSlot.sources.map(({ id, authorization }) => [id, authorization])),
+    new Map([
+      [notionSource.id, undefined],
+      [connected.credentialSourceId, undefined],
+      [otherResource.credentialSourceId, "required"],
+    ]),
+  );
+  const withNotionAccount = (sourceId) => ({
+    "occ-plugin:google@1.0.0": { enabled: true },
+    [notionId]: {
+      enabled: true,
+      driverPolicy: {
+        releaseSha256: notionSlot.releaseSha256,
+        credentials: { account: sourceId },
+        toolNames: ["notion-search"],
+      },
+    },
+  });
+  const retained = withNotionAccount(notionSource.id);
   const pluginsFor = (toolNames) => ({
-    ...google,
+    ...retained,
     [pluginId]: {
       enabled: true,
       driverPolicy: {
         releaseSha256: slot.releaseSha256,
-        credentials: { account: source.data.id },
+        credentials: { account: slackSource.id },
         toolNames,
       },
     },
@@ -11676,7 +11821,7 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     id: "private-slack-source",
     namespaceId: namespace.id,
     resourceKind: "credential_source",
-    resourceId: source.data.id,
+    resourceId: slackSource.id,
     action: "read",
     effect: "deny",
   });
@@ -11689,13 +11834,171 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   assert.deepEqual(deployed.data.plugins.plugins, approved);
   assert.deepEqual(deployed.data.credentialSources, credentialSources);
 
-  const cleared = await save(google);
+  // Clearing Slack from the draft preserves Notion's independent source and tool selection.
+  const cleared = await save(retained);
   assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
-  assert.deepEqual(cleared.data.plugins, google);
+  assert.deepEqual(cleared.data.plugins, retained);
   assert.deepEqual(cleared.data.credentialSources, credentialSources);
   const revision = await controller.request("GET", `${agentPath}/revisions/${deployed.data.id}`);
   assert.equal(revision.status, 200, JSON.stringify(revision.body));
   assert.deepEqual(revision.data.plugins.plugins, approved);
+
+  // A caller can write either saved source ID into the same slot. OCC must reject the
+  // wrong resource and attach the account for the correct resource to this Agent.
+  assertApiError(
+    await save(withNotionAccount(otherResource.credentialSourceId)),
+    409,
+    "RESOURCE_CONFLICT",
+  );
+  const bound = await save(withNotionAccount(connected.credentialSourceId));
+  assert.equal(bound.status, 200, JSON.stringify(bound.body));
+  const reloaded = await controller.request("GET", agentPath);
+  assert.equal(reloaded.status, 200, JSON.stringify(reloaded.body));
+  assert.equal(
+    reloaded.data.plugins[notionId].driverPolicy.credentials.account,
+    connected.credentialSourceId,
+  );
+  assert.deepEqual(
+    new Set(reloaded.data.credentialSources.map(({ sourceId }) => sourceId)),
+    new Set([...credentialSources.map(({ sourceId }) => sourceId), connected.credentialSourceId]),
+  );
+
+  // The plugin supplies the exact Gateway contract before a token exists. Registering
+  // through the Secrets and credential-source routes alone must not grant Agent access.
+  assert.deepEqual(notionSlot.tokenSourceConfig, {
+    protocol: "mcp",
+    host: "mcp.notion.com",
+    port: "443",
+    path: "/mcp",
+    env_var: "NOTION_MCP_TOKEN",
+  });
+  const registered = await registerAccount(
+    "Notion support",
+    randomUUID(),
+    notionSlot.tokenSourceConfig,
+  );
+  const otherToken = await registerAccount("Slack support", randomUUID(), sourceConfig);
+  const readNotionSlot = async () => {
+    const result = await controller.request("GET", `${agentPath}/plugins/capabilities`);
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    return result.data.credentialSlots.find(
+      ({ pluginId: id, id: slotId }) => id === notionId && slotId === "account",
+    );
+  };
+  const agentGrants = async () => {
+    const result = await controller.request("GET", `${base}/iam/access-bindings`);
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    return result.data.filter(
+      (binding) =>
+        binding.subjectId === created.data.servicePrincipalId &&
+        [registered.id, otherToken.id].includes(binding.resourceId),
+    );
+  };
+  const offeredTokens = (await readNotionSlot()).sources;
+  assert.equal(offeredTokens.find(({ id }) => id === registered.id)?.requiresAttachment, true);
+  assert.equal(
+    offeredTokens.some(({ id }) => id === otherToken.id),
+    false,
+  );
+  assert.deepEqual(await agentGrants(), []);
+
+  // Keep the operator's existing Agent and source permissions while withdrawing their
+  // authority to grant access to another principal. A hand-written selection cannot bypass it.
+  state.restrictions.push({
+    id: "deny-installation-administration",
+    resourceKind: "installation",
+    resourceId: controller.fixture.installationId,
+    action: "administer",
+    effect: "deny",
+  });
+  const restricted = await readNotionSlot();
+  assert.equal(restricted.tokenSourceConfig, undefined);
+  assert.equal(
+    restricted.sources.some(({ id }) => id === registered.id),
+    false,
+  );
+  assertApiError(await save(withNotionAccount(registered.id)), 403, "FORBIDDEN");
+  state.restrictions.pop();
+  assertApiError(await save(withNotionAccount(otherToken.id)), 409, "RESOURCE_CONFLICT");
+  assert.deepEqual(await agentGrants(), []);
+  const unchanged = await controller.request("GET", agentPath);
+  assert.equal(unchanged.status, 200, JSON.stringify(unchanged.body));
+  assert.deepEqual(unchanged.data.credentialSources, reloaded.data.credentialSources);
+  assert.deepEqual(unchanged.data.plugins, reloaded.data.plugins);
+
+  // A single Agent save binds the compatible token, appends its source to the Agent,
+  // and grants this service principal operate on that source.
+  const attachedToken = await save(withNotionAccount(registered.id));
+  assert.equal(attachedToken.status, 200, JSON.stringify(attachedToken.body));
+  assert.equal(
+    attachedToken.data.plugins[notionId].driverPolicy.credentials.account,
+    registered.id,
+  );
+  assert.deepEqual(attachedToken.data.credentialSources, [
+    ...reloaded.data.credentialSources,
+    { sourceId: registered.id },
+  ]);
+  const grants = await agentGrants();
+  assert.equal(grants.length, 1);
+  assert.equal(grants[0].resourceKind, "credential_source");
+  assert.equal(grants[0].resourceId, registered.id);
+  const grantedRole = await controller.request("GET", `${base}/iam/roles/${grants[0].roleId}`);
+  assert.equal(grantedRole.status, 200, JSON.stringify(grantedRole.body));
+  assert.deepEqual(grantedRole.data.permissions, [
+    { resourceKind: "credential_source", action: "operate" },
+  ]);
+  // Feed the committed IAM records to the fixture's separate policy reader, as in PostgreSQL.
+  state.roles.push(grantedRole.data);
+  state.bindings.push(grants[0]);
+  const readyToken = (await readNotionSlot()).sources.find(({ id }) => id === registered.id);
+  assert.deepEqual(readyToken, { id: registered.id, name: registered.name });
+  // Revoking the selected token's grant must not offer an unchanged save as a way to restore it.
+  const revokedGrant = await controller.request(
+    "DELETE",
+    `${base}/iam/access-bindings/${grants[0].id}`,
+  );
+  assert.equal(revokedGrant.status, 204, JSON.stringify(revokedGrant.body));
+  state.bindings = state.bindings.filter(({ id }) => id !== grants[0].id);
+  assert.equal(
+    (await readNotionSlot()).sources.some(({ id }) => id === registered.id),
+    false,
+  );
+
+  // The selected Credential Proxy admits every new static source. The stock provider
+  // catalog has no hosted MCP bearer profile; saved OAuth remains a separate choice.
+  const proxyOptions = { middlewareName: "notion-proxy", authorityScope: "execution" };
+  const proxy = new OpenShellCredentialProxyDriver(proxyOptions, {
+    id: sandboxDriver.id,
+    sandbox: sandboxDriver,
+    backend,
+  });
+  controller.fixture.controller.installDriver(
+    new InstalledDriver(
+      {
+        id: sandboxDriver.id,
+        implementation: sandboxDriver.implementation,
+        configuration: proxyOptions,
+      },
+      { capabilities: { sandbox: sandboxDriver, credential_proxy: proxy } },
+    ),
+    ["sandbox", "credential_proxy"],
+  );
+  const proxySlot = await readNotionSlot();
+  assert.equal(proxySlot.tokenSourceConfig, undefined);
+  assert.equal(proxySlot.connectAccount, true);
+  assert.ok(proxySlot.sources.some(({ id }) => id === connected.credentialSourceId));
+  tokenReads = 0;
+  const unprotected = await controller.request("POST", `${base}/credential-sources`, {
+    body: {
+      name: "New Notion bearer",
+      type: "bearer-token",
+      config: notionSlot.tokenSourceConfig,
+      secrets: registered.secrets,
+    },
+  });
+  assertApiError(unprotected, 409, "RESOURCE_CONFLICT");
+  assert.match(unprotected.body.error.message, /Credential Proxy cannot protect bearer-token/);
+  assert.equal(tokenReads, 0);
 });
 
 test("saved-Agent discovery offers managed packages only where Agent save admits them", async () => {
@@ -11750,10 +12053,13 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
   // A dedicated OpenClaw Agent on Kubernetes Compute is offered the package and may save it.
   const offered = await discoverAndSave();
   assert.equal(offered.catalog.status, 200);
-  assert.deepEqual(
-    offered.catalog.data.plugins.map((entry) => entry.id),
-    ["occ-plugin:google@1.0.0", packageId],
-  );
+  assert.deepEqual(offered.catalog.data.plugins.map((entry) => entry.id).sort(), [
+    "occ-plugin:github@1.0.0",
+    "occ-plugin:google@1.0.0",
+    "occ-plugin:notion@1.0.0",
+    packageId,
+    "occ-plugin:workiq@1.0.0",
+  ]);
   assert.equal(offered.details.status, 200, JSON.stringify(offered.details.body));
   assert.equal(offered.details.data.id, packageId);
   assert.equal(offered.save.status, 200, JSON.stringify(offered.save.body));
