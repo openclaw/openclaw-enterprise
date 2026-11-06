@@ -390,6 +390,11 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       if (state.api !== 0 || state.worker !== 0) {
         return fail(2, "old writers were not stopped");
       }
+      state.helmSubmissions = (state.helmSubmissions ?? 0) + 1;
+      save();
+      if (take("reject-helm-submission")) {
+        return fail(9);
+      }
       log("migration");
       state.version += 1;
       copyFileSync(fileArg("--values"), join(root, "live-values"));
@@ -1910,12 +1915,129 @@ test("resume recognizes a committed Helm release without rerunning its migration
       assert.equal(state.helmStatus, "deployed");
       assert.equal(state.api, 1);
       assert.equal(state.worker, 1);
-      assert.equal(await readFile(join(f.evidence, "helm-started"), "utf8"), "");
+      assert.deepEqual(JSON.parse(await readFile(join(f.evidence, "helm-started"), "utf8")), {
+        previousRevision: 1,
+        expectedRevision: 2,
+      });
       await f.run("--resume");
       await assertPrivateReceipt(path, receipt);
       assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
     });
   }
+});
+
+test("resume refuses an intervening same-values Helm revision even with checked history", async (t) => {
+  const f = await fixture(t);
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  const state = await f.state();
+  assert.equal(state.version, 2);
+  // Another operator submits identical values after the accepted request. Its
+  // revision must not be credited to this interrupted submission.
+  state.version += 1;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  const events = await f.events();
+  await assert.rejects(f.run("--resume", "--migration-history-checked"), /outside this submission/);
+  assert.deepEqual(await f.events(), events);
+  assert.equal((await f.state()).helmSubmissions, 1);
+  assert.equal(existsSync(join(f.evidence, "completed")), false);
+});
+
+test("resume refuses missing, empty or malformed Helm submission evidence", async (t) => {
+  const f = await fixture(t);
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  const events = await f.events();
+  const path = join(f.evidence, "helm-started");
+  // Evidence loss must not turn a newer deployed release into an attributed success.
+  await rm(path);
+  await assert.rejects(f.run("--resume", "--migration-history-checked"), /revision changed/);
+  for (const intent of [
+    "",
+    "{",
+    JSON.stringify({ previousRevision: 0, expectedRevision: 1 }),
+    JSON.stringify({ previousRevision: 1.5, expectedRevision: 2.5 }),
+    JSON.stringify({ previousRevision: 1, expectedRevision: 3 }),
+    JSON.stringify({ previousRevision: 1, expectedRevision: 2 }) + "\n{}",
+  ]) {
+    await writeFile(path, intent, { mode: 0o600 });
+    await assert.rejects(f.run("--resume", "--migration-history-checked"), /submission intent/);
+  }
+  assert.deepEqual(await f.events(), events);
+  assert.equal(existsSync(join(f.evidence, "completed")), false);
+});
+
+test("resume rejects invalid intent paths before any new submission", async (t) => {
+  const f = await fixture(t);
+  await f.failNext("fail-scale-worker");
+  await assert.rejects(f.run(), injectedFault);
+  const events = await f.events();
+  const path = join(f.evidence, "helm-started");
+  // No Helm request exists at revision 1. A directory must not look absent,
+  // or mv can publish inside it and continue without an authoritative intent.
+  for (const kind of ["directory", "symlink", "public-file"]) {
+    if (kind === "directory") {
+      await mkdir(path);
+    } else if (kind === "symlink") {
+      symlinkSync(join(f.evidence, "before-helm-status.json"), path);
+    } else {
+      await writeFile(path, JSON.stringify({ previousRevision: 1, expectedRevision: 2 }));
+      await chmod(path, 0o644);
+    }
+    const failure = await f.run("--resume").catch((error) => error);
+    assert.equal((await f.state()).helmSubmissions ?? 0, 0);
+    assert.deepEqual(await f.events(), events);
+    assert.equal(existsSync(join(f.evidence, "completed")), false);
+    assert.match(failure.stderr, /regular file|group or other permissions/);
+    await rm(path, { recursive: true });
+  }
+});
+
+test("resume refuses deployed candidate drift rather than retrying Helm", async (t) => {
+  for (const changed of ["values", "installation"]) {
+    await t.test(changed, async (t) => {
+      const f = await fixture(t, { candidates: true });
+      const before = await f.state();
+      await f.failNext("lost-helm-response");
+      await assert.rejects(f.run(), injectedFault);
+      const events = await f.events();
+      // Returning either object to its accepted baseline still conflicts with
+      // the deployed candidate; checked history cannot authorize another Helm.
+      if (changed === "values") {
+        await cp(join(f.evidence, "before-live-values.yaml"), join(f.directory, "live-values"));
+      } else {
+        const current = await f.state();
+        current.secret.data = before.secret.data;
+        await writeFile(join(f.directory, "state.json"), JSON.stringify(current));
+      }
+      await assert.rejects(
+        f.run("--resume", "--migration-history-checked"),
+        changed === "values"
+          ? /does not match the candidate values/
+          : /live Installation Secret does not/,
+      );
+      assert.deepEqual(await f.events(), events);
+      assert.equal((await f.state()).helmSubmissions, 1);
+      assert.equal(existsSync(join(f.evidence, "completed")), false);
+    });
+  }
+});
+
+test("a nonaccepted Helm submission retries the same successor after checked history", async (t) => {
+  const f = await fixture(t);
+  await f.failNext("reject-helm-submission");
+  await assert.rejects(f.run(), injectedFault);
+  assert.equal((await f.state()).version, 1);
+  await assert.rejects(f.run("--resume"), /migration --check/);
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
+  assert.deepEqual(JSON.parse(await readFile(join(f.evidence, "helm-started"), "utf8")), {
+    previousRevision: 1,
+    expectedRevision: 2,
+  });
+  await f.run("--resume");
+  assert.equal((await f.state()).version, 2);
+  assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
 });
 
 test("an interrupted quiescence never starts migration while the worker still runs", async (t) => {
@@ -2054,7 +2176,16 @@ test("failed Helm migration keeps old writers stopped and requires checked histo
   );
   state.initActive = false;
   await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-  await f.run("--resume", "--migration-history-checked");
+  // The accepted failure consumed revision 2. A retry must bind revision 3;
+  // losing its response must still resume without a third submission.
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
+  assert.deepEqual(JSON.parse(await readFile(join(f.evidence, "helm-started"), "utf8")), {
+    previousRevision: 2,
+    expectedRevision: 3,
+  });
+  await f.run("--resume");
+  assert.equal((await f.state()).version, 3);
   assert.equal((await f.events()).filter((event) => event === "migration").length, 2);
 });
 
