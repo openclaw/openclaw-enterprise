@@ -66,7 +66,7 @@ test("measurement records rounded finite values and leaves absent values null", 
   recordModelProbeMeasurement({ diagnostic: (line) => lines.push(line) }, "case", {
     setupMs: 1.6,
     snapshot: {
-      probe: { code: "READY", elapsedMs: 2.5, capMs: Infinity },
+      probe: { code: "READY", elapsedMs: 2.5, capMs: Infinity, cpuWaitMs: null },
       phases: [{ phase: "model-probe", sinceStartMs: 5.2 }],
       events: [{ event: "observe", key: "ready", value: true, ms: 8.7 }],
     },

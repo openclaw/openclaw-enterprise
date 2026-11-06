@@ -16,7 +16,7 @@ interface Probe {
   code?: unknown;
   capMs?: number | undefined;
   elapsedMs?: number | undefined;
-  cpuWaitMs?: number | undefined;
+  cpuWaitMs?: number | null | undefined;
 }
 
 interface Snapshot extends DiagnosticSnapshot {
@@ -81,7 +81,7 @@ export function recordModelProbeMeasurement(
   },
 ) {
   const { probe = {}, phases = [], events = [] } = run.snapshot;
-  const at = (value: number | undefined) =>
+  const at = (value: number | null | undefined) =>
     Number.isFinite(value) ? Math.round(Number(value)) : null;
   t.diagnostic(
     `openclaw-ci-measurement ${JSON.stringify({
