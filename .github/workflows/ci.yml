@@ -326,7 +326,7 @@ jobs:
         if: ${{ always() }}
         run: |
           # Print to the log too: step summaries are not readable through the API.
-          report=$(node scripts/ci/pnpm-impact.mjs --summary) || report='Affected workspace packages: unavailable.'
+          report=$(node scripts/ci/pnpm-impact.ts --summary) || report='Affected workspace packages: unavailable.'
           printf '%s\n' "$report"
           if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
             printf '%s\n' "$report" >> "$GITHUB_STEP_SUMMARY" || true
