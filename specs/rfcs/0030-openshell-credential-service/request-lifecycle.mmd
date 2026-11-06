@@ -1,5 +1,5 @@
 ---
-title: Proposed v1 credential renewal and use
+title: Proposed credential renewal and online use
 config:
   theme: base
   themeVariables:
@@ -34,7 +34,7 @@ sequenceDiagram
     I->>P: Exchange refresh token
     P-->>I: New token set
     Note over I: Commit successor and<br/>access token together
-    Note over A,P: Send a protected request
+    Note over A,P: Send a protected request (TTL zero)
     A->>S: Request
     S->>O: Authorize and resolve
     Note over O: Check execution,<br/>target and operation
