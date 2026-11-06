@@ -1749,7 +1749,7 @@ export function createAgentDetailScenarios({
       agentHeader: {
         group: "Pages/Agent detail",
         name: "Page header with a long name",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         agentName: "Quarterly release review and signoff bot",
         description:
@@ -1765,7 +1765,7 @@ export function createAgentDetailScenarios({
       agentHeaderMobile: {
         group: "Pages/Agent detail",
         name: "Page header at 390px",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         mobile: true,
         description:
@@ -1778,7 +1778,7 @@ export function createAgentDetailScenarios({
       agentHeaderNoClipboard: {
         group: "Pages/Agent detail",
         name: "Copy Agent ID without clipboard access",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         clipboard: "unavailable",
         actions: [{ selector: ".page-meta-copy", click: true }],
