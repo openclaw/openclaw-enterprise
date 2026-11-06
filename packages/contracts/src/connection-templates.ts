@@ -4,6 +4,11 @@ export function isOAuthScopeToken(value: unknown): value is string {
   return typeof value === "string" && value.length <= 512 && oauthScopeTokenPattern.test(value);
 }
 
+/** Some MCP issuers separate bearer-token segments with colons. */
+export function isOAuthBearerToken(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9._~+/:-]+=*$/.test(value);
+}
+
 /** Where a connected credential may be sent; the Credential Gateway releases it nowhere else. */
 export interface ConnectionEndpoint {
   readonly host: string;

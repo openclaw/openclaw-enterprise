@@ -169,6 +169,7 @@ export {
   ConnectionTemplateValidationError,
   connectionValuesChanged,
   isFlowOwnedOAuthParameter,
+  isOAuthBearerToken,
   isOAuthScopeToken,
   normalizeConnectionDestinations,
   validateConnectionTemplateAuthorization,

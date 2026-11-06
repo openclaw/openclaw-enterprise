@@ -343,7 +343,7 @@ test("Compute preparation diagnostics keep reviewed context and reject secret-be
     code: "KUBERNETES_PREPARATION_FAILED",
     step: "sandbox_provision",
     candidatePreparationReached: "token-that-must-not-log",
-    message: "Bearer token-that-must-not-log",
+    message: "Bearer :token-that-must-not-log",
   });
 
   assert.equal(output.lines.length, 2);

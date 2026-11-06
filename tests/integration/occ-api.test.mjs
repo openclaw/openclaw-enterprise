@@ -11337,7 +11337,7 @@ test("Slack validation with no Slack proxy names the setting at provision and de
 
 test("managed MCP discovery reads tool names using one pinned authenticated session", async () => {
   const url = "https://tools.example/api/mcp/v1";
-  const token = "fixture-mcp-discovery-token";
+  const token = ["fixture-user", "fixture-grant", randomUUID()].join(":");
   const calls = [];
   const result = await listManagedMcpToolNames(url, token, undefined, {
     async resolveHost(host) {

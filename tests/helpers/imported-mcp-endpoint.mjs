@@ -95,7 +95,7 @@ export async function startImportedMcpEndpoint(context, kubectl, image) {
   // resolves publicly, while this release's proxy connects only to the in-Pod receiver.
   const host = "example.com";
   const marker = "PROVIDER_RESULT_" + randomUUID();
-  const token = randomUUID();
+  const token = ["fixture-user", "fixture-grant", randomUUID()].join(":");
   const directory = await mkdtemp(join(tmpdir(), "oce-import-mcp-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const { caPem } = await issueServingCertificate(directory, host);
