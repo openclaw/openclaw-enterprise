@@ -153,8 +153,9 @@ export interface OpenShellProviderProfileEndpoint {
   readonly protocol: string;
   readonly path?: string;
   readonly access?: "NETWORK_ACCESS_PRESET_FULL" | "NETWORK_ACCESS_PRESET_READ_WRITE";
+  readonly mcp?: { readonly strict_tool_names: boolean; readonly versions: readonly string[] };
   readonly rules?: readonly {
-    readonly allow: { readonly method: string; readonly path: string };
+    readonly allow: { readonly method: string; readonly path?: string };
   }[];
 }
 
@@ -2023,7 +2024,8 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     if (typeof profile?.id !== "string" || profile.id !== id) {
       throw new OpenShellGatewayFailure("OpenShell GetProviderProfile returned another profile.");
     }
-    return storedProviderProfile(profile, profile.id);
+    // Protobuf omits empty repeated fields. Preserve every field that was returned.
+    return storedProviderProfile({ endpoints: [], credentials: [], ...profile }, profile.id);
   }
 
   async listProviderProfiles(

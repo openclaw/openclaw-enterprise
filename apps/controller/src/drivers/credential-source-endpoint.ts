@@ -21,7 +21,7 @@ const SOURCE_ENDPOINT_REQUIREMENTS =
 export function validateOpenAiSourceBaseUrl(
   value: string,
 ): { baseUrl: string; error?: never } | { baseUrl?: never; error: string } {
-  const spelling = openAiBaseUrlSpellingMessage("The openai base_url", value);
+  const spelling = openAiBaseUrlSpellingMessage("The openai authorized_base_url", value);
   if (spelling !== undefined) {
     return { error: spelling };
   }
@@ -40,7 +40,7 @@ export function validateOpenAiSourceBaseUrl(
     return { error: SOURCE_ENDPOINT_REQUIREMENTS };
   }
   if (!exactDnsName(hostname)) {
-    return { error: "The openai base_url host must be an exact DNS name." };
+    return { error: "The openai authorized_base_url host must be an exact DNS name." };
   }
   return { baseUrl };
 }

@@ -8,13 +8,13 @@ import { buffer } from "node:stream/consumers";
 import test from "node:test";
 import { createSecureContext } from "node:tls";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
-import type { PreparedRepositoryBackendFactory } from "../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
+import type { BoundPreparedRepositoryBackendFactory } from "../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
 import {
   createControlAdmission,
   handleControl,
 } from "../../apps/controller/src/drivers/repo/credentials/control.ts";
-import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
+import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { createAgentHandler } from "../../apps/controller/src/drivers/repo/credentials/transport/agent.ts";
 import { createGatewayAuthentication } from "../../apps/controller/src/drivers/repo/github/credentials/gateway-authentication.ts";
 import { planDraftPull } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-draft-pull.ts";
@@ -149,7 +149,7 @@ for (const [delivery, settle] of [
         }),
       },
     });
-    const admissions = createControlAdmission(service, config, clock, true, true);
+    const admissions = createControlAdmission(service, config, clock, true);
     resources.after(() => admissions.dispose());
     service.observeDisposal(admissions.observe);
     const server = createServer((incoming, response) => {
@@ -337,9 +337,9 @@ for (const stage of ["reserved", "authorizing", "dispatch"] as const) {
     };
     let authorizations = 0;
     const settlements: unknown[] = [];
-    const factory: PreparedRepositoryBackendFactory = {
+    const factory: BoundPreparedRepositoryBackendFactory = {
       ...createGatewayAuthentication({ isGitRoute: () => false }),
-      resolve: () => ({
+      resolveBound: () => ({
         binding,
         client: {
           gatewayOrigin: "https://credentials.example",
@@ -388,11 +388,55 @@ for (const stage of ["reserved", "authorizing", "dispatch"] as const) {
     };
     const config = validateServiceConfig(serviceConfigurationData({ gateway: { controlSocket } }));
     const service = createCredentialService({ config, factory, clock });
-    const opened = service.open({ durationSeconds: 30, profile: "git-write" });
+    const opened = service.open({
+      durationSeconds: 30,
+      profile: "git-write",
+      namespaceId: "namespace",
+      repositoryRef: "project",
+      expectedBinding: binding,
+      deadlineWallMs: startWall + 30_000,
+      preparedOnly: true,
+    });
+    assert.deepEqual(opened.session.binding, binding);
+    assert.equal(opened.session.deadlineWallMs, startWall + 30_000);
     resources.after(() => service.close(opened.session.sessionId));
+    if (stage === "dispatch") {
+      // Invalid digest syntax must stop before either owner authorization or sender entry.
+      let senderEntries = 0;
+      for (const digest of [undefined, "", "a".repeat(63), "A".repeat(64), "g".repeat(64)]) {
+        const exchange = service.reserve(
+          opened.bearer,
+          {
+            method: "POST",
+            rawTarget: "/repos/a/b/pulls",
+            headers: { "x-oce-operation-id": operationId, "content-type": "application/json" },
+            receivedMonoMs: clock.monotonicNow(),
+            contentEncoding: "identity",
+            framing: { kind: "none", bytes: undefined },
+          },
+          new AbortController().signal,
+        );
+        assert.ok(!("kind" in exchange));
+        const outcome = await service.execute(
+          exchange,
+          async () => {
+            senderEntries++;
+            assert.fail("invalid digest reached the sender");
+          },
+          digest,
+        );
+        assert.equal(outcome.kind, "not-dispatched");
+        assert.equal(senderEntries, 0, "invalid digest entered the sender");
+        assert.equal(authorizations, 0);
+      }
+      assert.equal(authorizations, 0);
+      assert.equal(originRequests, 0);
+      assert.deepEqual(settlements, []);
+    }
     let disposals = 0;
     service.observeDisposal(() => disposals++);
-    const admissions = createControlAdmission(service, config, clock, false, true);
+    // This fixture reads local status only; it never opens a durable control admission.
+    const admissions = createControlAdmission(service, config, clock, true);
     resources.after(() => admissions.dispose());
     const control = createServer((incoming, response) => {
       void handleControl(incoming, response, config, clock, admissions);

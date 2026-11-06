@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-01
-last_updated_session: authoring-run/66929759-4566-4a73-bb19-97213ee54faf
+updated: 2026-11-03
+last_updated_session: authoring-run/0b5d9b57-4ffe-4be0-a3b2-23bcb0922ad2
 ---
 
 # Console Agent stop and deletion
@@ -67,13 +67,16 @@ For a stopped Agent, **Request Stop again** confirms a new stop intent, even wit
 version; the Console cannot inspect history or candidate cleanup. Its confirmation says the
 Agent is already requested to stop and that this sends the request again. With no selected version
 and no readable versions yet (`setNoReadableVersions`), the Stop row is hidden unless the viewer
-just used it. A running Agent with no selected version hides the row only when the latest
-deployment the page read failed (`setLatestDeployment`). A queued or in-progress one keeps Stop,
-and the confirmation says Stop cancels that deployment. An unreadable deployment or a failed read
-keeps Stop with a confirmation that names both outcomes; a succeeded one read before the Agent
-reread keeps the running-gateway text. A failed readable deployment alone does not hide Stop
-on the Agents list; a newer deployment may be unreadable. The overview's **Runtime** row reports
-a requested stop.
+just used it. A running Agent keeps Stop regardless of the latest readable deployment outcome
+(`setLatestDeployment`), as on the Agents list: a failed readable deployment can hide newer queued
+work. Agent `operate` still controls access. The latest readable outcome supplies confirmation
+text, not visibility. A queued or in-progress one says Stop cancels that deployment. An unreadable
+deployment or a failed read keeps the confirmation that names both outcomes; a succeeded one read
+before the Agent reread keeps the running-gateway text. The overview's **Runtime** row reports
+a requested stop. After an accepted Stop during a first deployment, the Stop row reports
+**Deployment cancellation requested**, not deployment or runtime completion. `applyAgent` clears
+that local result when either Stop readback or a detail-page update observes a running request
+or a selected version. An unchanged stopped read with no selected version keeps it.
 
 Refresh reads desired state and selected version, not live health. Denial stays inline; changed
 state updates panels in place. If the read finds deletion in progress, Agent detail switches to
@@ -160,7 +163,9 @@ the row is gone.
 
 ## Changelog
 
+- 2026-11-03 20:31: Merge main into the detail Stop fix: keep Stop after a failed readable deployment beside main's refusal handling and Configuration-only Danger zone. (authoring-run/0b5d9b57-4ffe-4be0-a3b2-23bcb0922ad2 - 2323a30cd6ec2514d2348a25ffe4f24da9445664)
 - 2026-11-01 18:19: Limit the Danger zone to Configuration and preserve standalone deletion recovery in the accompanying change. (authoring-run/66929759-4566-4a73-bb19-97213ee54faf - 7bb67ab81e65bfcea35aeddf2a9f02c4f258b138)
+- 2026-10-28 21:55: Scope first-deployment Stop feedback to the observed lifecycle and distinguish requested cancellation from completion in the accompanying fix. (authoring-run/4b2306f4-4b43-4bec-b246-0e4b1f9819fb - 3b5e7834b9111ea31e22766811e228a43d4aa537)
 
 - 2026-10-20 08:02: Trace Stop and Delete from Agents list rows, moved from the Agent editing flow, in the accompanying merge. (8b95a6fb-7095-4556-9028-0723f32cc534 - a8fb50b1babb68f3eb759841f92b042da039248e)
 - 2026-10-20 07:57: Describe deletion discovered by a stop-status read in the accompanying change. (authoring-run/28365356-ae7e-47dc-9790-888c3592251f - 6aedac546aad8308b4e9954648268f14545e39b2)

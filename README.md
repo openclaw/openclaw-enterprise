@@ -10,7 +10,7 @@ Start with [Getting Started](docs/README.md) to use the platform, [Deploy & Oper
 
 ## Getting started
 
-Choose one OpenShell installation path: [local k3d](docs/guides/deploy/local-setup.md), [Kubernetes](docs/guides/deploy/kubernetes-setup.md), or [Amazon EKS](docs/guides/deploy/eks-openshell-setup.md). Each finishes with a running, onboarded Codex Agent and the same operator session for [Add Git](docs/guides/repository-credentials/openshell-git-push.md), [Add Plugin](docs/guides/integrations/codex-plugins.md), and [Delete Agent](docs/guides/deploy/quickstart-delete-agent.md). For the [local quickstart without OpenShell](docs/guides/quickstart.md), run from the repository root:
+Choose one OpenShell installation path: [local k3d](docs/guides/deploy/local-setup.md), [Kubernetes](docs/guides/deploy/kubernetes-setup.md), or [Amazon EKS](docs/guides/deploy/eks-openshell-setup.md). Then [deploy your first Agent](docs/guides/deploy/deploy-first-agent.md) and use its saved operator session for [Add Git](docs/guides/repository-credentials/openshell-git-push.md), [Add Plugin](docs/guides/integrations/codex-plugins.md), and [Delete Agent](docs/guides/deploy/quickstart-delete-agent.md). For the [local quickstart without OpenShell](docs/guides/quickstart.md), run from the repository root:
 
 ```bash
 go build -trimpath -o bin/occ ./cmd/occ
@@ -26,7 +26,7 @@ Agents.
 
 You need Docker Engine or Podman, k3d, kubectl, Helm, Bash, Python 3, Go (the version in [`go.mod`](go.mod)), Node.js 24.22.1 or newer, and the pnpm version in [`package.json`](package.json). The quickstart covers installation checks, the local API credentials, and cleanup.
 
-For a dedicated OpenShell Codex Agent, follow the [local k3d quickstart](docs/guides/deploy/local-setup.md) through deployment and browser onboarding. For an existing installation, [deploy and verify an Agent](docs/guides/deploy/production-agents.md).
+For a dedicated OpenShell Codex Agent, complete [local k3d setup](docs/guides/deploy/local-setup.md), then [deploy and onboard your Agent](docs/guides/deploy/deploy-first-agent.md). For an existing installation, [deploy and verify an Agent](docs/guides/deploy/production-agents.md).
 
 Reuse settings with [Agent Presets](docs/guides/topics/agent-presets.md), then fill variables and review the copied draft in the console.
 

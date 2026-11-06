@@ -219,6 +219,7 @@ test(
         ["prepared_github_attempts", "prepared_github_attempts_expired_check"],
         ["agent_revisions", "agent_revisions_admitted_snapshot"],
         ["agent_revisions", "agent_revisions_execution_admission"],
+        ["agent_revisions", "agent_revisions_first_deployment_digest"],
         ["repository_session_attempts", "repository_session_attempts_broker_protocol_valid"],
       ]) {
         const create = `CREATE TABLE "occ"."${table}"`;
@@ -1366,6 +1367,7 @@ async function assertCompletedHistory(db, previous = []) {
     WHERE n.nspname='occ' AND p.prosecdef ORDER BY identity`)
     ).rows,
     [
+      ["occ.check_connection_registration_scope()", false, "search_path=pg_catalog, pg_temp"],
       // The app records a standing execution; only the Agent lifecycle trigger can close it.
       ["occ.close_repository_standing_execution()", false],
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
@@ -1727,20 +1729,22 @@ async function assertUpgradedAuthentication(db) {
 const legacyExecutionAdmission = { version: 2, mode: "unprotected" };
 
 // A revision admitted before 0060 carries no execution admission. The upgrade records
-// the unprotected decision it was admitted under; every other stored field stays identical.
+// the unprotected decision it was admitted under. Existing revisions have no first-deployment
+// recovery binding; every other stored field stays identical.
 function upgradedCanonicalData(data) {
   return {
     ...data,
     agent_revisions: data.agent_revisions.map(({ value }) => ({
-      value: Object.hasOwn(value.admitted_spec, "execution_admission")
-        ? value
-        : {
-            ...value,
-            admitted_spec: {
+      value: {
+        ...value,
+        first_deployment_digest: null,
+        admitted_spec: Object.hasOwn(value.admitted_spec, "execution_admission")
+          ? value.admitted_spec
+          : {
               ...value.admitted_spec,
               execution_admission: legacyExecutionAdmission,
             },
-          },
+      },
     })),
   };
 }
@@ -1851,6 +1855,7 @@ async function canonicalData(db) {
       "repository_access",
       "harness_auth_credential_source_id",
       "plugin_approvers",
+      "plugin_driver",
       "credential_sources",
       "sandbox_policy_editing",
       "gateway_managed_mode",
@@ -1992,6 +1997,11 @@ test(
       [62, "prePreparedAttemptSettlement"],
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
+      [65, "preAgentDeployIntent"],
+      [66, "preAgentCredentialSourceLimit"],
+      [67, "preAgentPluginDriver"],
+      [68, "preConnectionTemplates"],
+      [69, "preSavedConnections"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2016,7 +2026,48 @@ test(
         await assertCompletedHistory(db, receipts);
         await assertUpgradedRevisionReadable(db);
         assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
+        // Upgrading an existing revision must never invent a recoverable first-deployment intent.
+        const existingBindings = await db.app.query(
+          "SELECT first_deployment_digest FROM occ.agent_revisions",
+        );
+        assert.ok(existingBindings.rows.length > 0);
+        assert.ok(existingBindings.rows.every((row) => row.first_deployment_digest === null));
         await assertUpgradedAuthentication(db);
+        if (history === "preConnectionTemplates") {
+          // An Installation-wide template cannot present a Namespace client's credentials,
+          // even when an application-role writer bypasses OCC.
+          const templateId = `ctp_${randomUUID()}`;
+          const registrationId = `ccr_${randomUUID()}`;
+          await db.app.query("BEGIN");
+          try {
+            await db.app.query(
+              `INSERT INTO occ.oauth_clients
+                 (id,namespace_id,display_name,issuer,client_id,token_url,token_endpoint_auth_method,created_at)
+               VALUES ($1,$2,'Namespace client','https://issuer.example.test','shared-client','https://issuer.example.test/token','none',now())`,
+              [registrationId, namespaceId],
+            );
+            await db.app.query(
+              `INSERT INTO occ.connection_templates
+                 (id, namespace_id, display_name, current_version, created_at)
+               VALUES ($1, NULL, 'Installation template', 1, now())`,
+              [templateId],
+            );
+            await assert.rejects(
+              db.app.query(
+                `INSERT INTO occ.oauth_connection_template_versions
+                   (template_id, version, oauth_client_id, issuer, mode, authorization_url,
+                    token_url, scopes, authorization_parameters, destinations, created_at)
+                 VALUES ($1, 1, $2, 'https://issuer.example.test', 'manual',
+                    'https://issuer.example.test/auth', 'https://issuer.example.test/token',
+                    ARRAY['read'], '{}', '[{"host":"api.example.test","port":443,"path":"/"}]', now())`,
+                [templateId, registrationId],
+              ),
+              { code: "23514", message: /registration must belong to the template scope/ },
+            );
+          } finally {
+            await db.app.query("ROLLBACK");
+          }
+        }
         if (history === "preGatewayManagedMode") {
           await db.app.query(
             `INSERT INTO occ.agent_revisions

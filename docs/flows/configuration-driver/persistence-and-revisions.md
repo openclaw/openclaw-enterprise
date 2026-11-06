@@ -200,6 +200,90 @@ them; safe earlier cleanup is deferred. Production workers also reconcile
 embedded OpenClaw and dedicated Codex Agent revisions, connecting each
 Agent-owned gateway only to its own active workload.
 
+## Guarded first admission
+
+`apps/controller/src/http/agents.ts:createAgentHandlers` handles `deployAgentFirst` and
+`recoverAgentFirstDeployment`. The POST accepts an intent; the GET carries the same
+key, reviewed Configuration ID, and generation in path parameters. Both use the
+authenticated caller. The [deployment reference](../../reference/agents/deployment.md#guarded-first-deployment)
+owns the contract; the [Agent revisions guide](../../guides/topics/agent-revisions.md#guarded-first-deployment-and-receipt-recovery)
+owns operator commands.
+
+```mermaid
+graph TD
+  A["Capture original request<br/>and authorize receipt access"] --> B{"Receipt exists?"}
+  B -->|yes| R["Return original receipt<br/>without new work"]
+  B -->|no, recovery GET| N["Return null<br/>outcome remains uncertain"]
+  B -->|no, deployment POST| C{"Active and stopped Agent,<br/>no history, reviewed Configuration?"}
+  C -->|no| X["Refuse fresh admission"]
+  C -->|yes| D["Prepare channels<br/>outside transaction"]
+  D --> E["Lock Agent, reauthorize,<br/>look up receipt again"]
+  E -->|match| R
+  E -->|miss| F{"Preparation and current<br/>admission checks pass?"}
+  F -->|no| X
+  F -->|yes| G["Commit revision 1,<br/>receipt digest, and work"]
+```
+
+`packages/occ/src/index.ts:OpenClawController.deployAgentFirst` and
+`OpenClawController.recoverAgentFirstDeployment` capture the Namespace, Agent, key, Configuration ID, and
+generation on entry. They use those values for the digest and each permission check.
+The first admission read checks exact receipt authority through
+`authorizeFirstDeploymentReceipt`, then reads
+the receipt, matching draft metadata, and history in one snapshot. PostgreSQL uses
+REPEATABLE READ. On a receipt miss, an Agent without `active` lifecycle status
+returns `409 AGENT_DELETING` before channel preparation. A changed Agent binding
+refuses fresh admission without reading or
+authorizing a different Configuration. A stale tuple, existing history, or read error
+ends the request from that snapshot. Only preparation after a valid fresh tuple can
+fall back to locked recovery.
+
+`prepareDeploymentChannels` shares ordinary deployment's Configuration and Channel
+validation outside the transaction. It captures the Namespace, Agent, and reviewed
+Configuration IDs before asynchronous work. `validateChannelCredentials` enforces
+exact Secret scope. Before `withValue` reads the backend and again before its value
+callback dispatches to the provider, OCC rechecks exact Agent `deploy`, reviewed
+Configuration `read`, and Secret `operate`. Revocation at either boundary prevents
+the next credential operation. Ordinary deployment uses the same checks and
+credential reader. Concurrent fresh submissions can repeat preparation.
+
+The private `admitAgentDeployment` reuses ordinary admission's Namespace and Agent
+locks. Under the Agent lock it rechecks current exact receipt permissions and performs
+one receipt lookup, before fresh-only dependencies or a saved preparation error can
+refuse the request. A match returns the minimal receipt without decoding the revision
+or calling Secrets, providers, models, or work. A contender may already have performed
+preparation before this lookup; observing a match adds no fresh work. A different actor
+cannot match. A match remains recoverable after Agent deletion starts.
+
+On a locked miss, admission checks `active` lifecycle status before propagating a
+saved preparation error; deletion returns `409 AGENT_DELETING`. It then checks stopped desired state, empty history, binding,
+generation, and equality with the validated Configuration. It rechecks Secret and
+other ordinary admission permissions. `assertPreparedDeploymentDrivers` checks the
+actual selected Configuration and Channel instances after locking and immediately
+before revision insertion: database locks do not freeze process-local selections.
+Any drift refuses admission and queues no work.
+
+`packages/occ/src/state/postgres-state.ts` stores a SHA-256 digest of the versioned operation,
+Installation, actor, Namespace, Agent, key, and expected Configuration tuple in
+`agent_revisions.first_deployment_digest`. The digest commits with revision 1 and
+its reconcile work. It is separate from the admitted snapshot and is never projected
+to workers or normal revision responses. The GET reads the original minimal receipt
+without consulting the Agent's current Configuration binding or admitting work.
+Absence is an observation, not a cancellation or proof of failure. Conflict
+responses direct the operator to recover the original receipt after uncertainty,
+then inspect current binding, Configuration, or deployment state. Existing history
+requires a deliberate later deployment through ordinary `deploy`, not a blind retry.
+
+`internal/occcli/cli.go:application.firstDeploymentRecoveryNotice` preserves the
+original POST error and prints a read-only recovery command for an uncertain
+transport result, invalid receipt, HTTP `408`, or `5xx`. A typed network dial
+failure omits this hint. `internal/occclient/client.go:validateFirstDeploymentReceipt`
+validates the receipt's
+six fields and matches its Namespace, Agent, Configuration, and generation to the
+request for POST and non-null recovery GET replies. A null GET remains a receipt
+miss. The command retains the original request and connection options; the
+service-key file must still identify the original caller. The helper sends no
+request.
+
 ## Related
 
 - [Return to the parent flow](../configuration-driver.md).

@@ -14,7 +14,7 @@ import {
   firstAgentRevisionValuesMatch,
 } from "../../scripts/first-agent-model.mjs";
 import { listen } from "../helpers/listen.mjs";
-import { commandPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { servedAs } from "../helpers/agent-identity.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
@@ -113,6 +113,7 @@ test("first-Agent starts without installed workspace dependencies", async (t) =>
     "scripts/first-agent.mjs",
     "scripts/first-agent-database.mjs",
     "scripts/first-agent-model.mjs",
+    "scripts/lib/private-owned-path.mjs",
     "packages/contracts/src/api/plain-text.ts",
     "packages/occ/src/gateway-security-defaults.ts",
     "apps/controller/src",

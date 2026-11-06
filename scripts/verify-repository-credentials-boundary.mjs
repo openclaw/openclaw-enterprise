@@ -79,8 +79,9 @@ const reviewedImports = {
     "node:util": ["parseArgs"],
   },
   "drivers/repo/github/credentials/client/commands.ts": { "node:child_process": ["spawnSync"] },
+  // chmod restores 0700/0600 after umask. It does not read credential material.
   "drivers/repo/github/credentials/client/config.ts": {
-    "node:fs/promises": ["lstat", "mkdir", "mkdtemp", "open", "rename", "rm"],
+    "node:fs/promises": ["chmod", "lstat", "mkdir", "mkdtemp", "open", "rename", "rm"],
   },
   "drivers/repo/github/credentials/client/launch.ts": {
     "node:child_process": ["spawn"],
@@ -126,8 +127,11 @@ const reviewedImports = {
   // Bounded, descriptor-checked PEM from the Installation's read-only public CA projection.
   "composition/repository-credentials/public-ca.ts": {
     "node:fs": ["constants"],
-    "node:fs/promises": ["open", "stat"],
+    "node:fs/promises": ["open"],
     "node:tls": ["createSecureContext"],
+  },
+  "composition/repository-credentials/public-file.ts": {
+    "node:fs/promises": ["stat"],
   },
   "composition/repository-credentials/projected-inputs.ts": {
     "node:crypto": ["X509Certificate"],
@@ -138,12 +142,25 @@ const reviewedImports = {
   "backends/repository-credentials/control-client.ts": { "node:http": ["request"] },
   "composition/repository-credentials/registry.ts": {
     "node:fs": ["constants"],
-    "node:fs/promises": ["open", "stat"],
+    "node:fs/promises": ["open"],
   },
   "drivers/repo/github/credentials/registry.ts": {
     "node:crypto": ["createHash"],
     // Compare the complete resolved binding before proposing standing scope; no I/O.
     "node:util": ["isDeepStrictEqual"],
+  },
+  // The OAuth grant's private CAS record pins client, endpoint, and scope. Only the
+  // refresh adapter can POST that grant. The Token Service receives no general HTTP capability.
+  "backends/token-service/oauth-connection.ts": {
+    "node:crypto": ["randomUUID"],
+    "node:timers/promises": ["setTimeout"],
+    "@openclaw-enterprise/contracts": ["isOAuthScopeToken"],
+    "@openclaw-enterprise/occ": [
+      "BrowserAuthorizationError",
+      "ResourceStateConflictError",
+      "refreshPinnedOAuthGrant",
+    ],
+    "@openclaw-enterprise/utils": ["asRecord", "isNonEmptyString"],
   },
   // Token Service compares complete admissions. Provider I/O remains in the existing adapter.
   "backends/token-service/custody.ts": { "node:util": ["isDeepStrictEqual"] },
@@ -154,6 +171,8 @@ const reviewedImports = {
   // The prepared owner reads only the Installation custody mount. The App issuer comes
   // through the admitted Secret Driver; grant hashing, comparison, claims and signing-key import stay here.
   "drivers/repo/github/credentials/prepared-lifecycle.ts": {
+    // Wait for an existing issuance claim within this request’s deadline.
+    "node:timers/promises": ["setTimeout"],
     "node:crypto": ["createHash", "createPrivateKey", "randomUUID"],
     "node:fs/promises": ["readFile"],
     "node:util": ["isDeepStrictEqual"],
@@ -270,6 +289,10 @@ const capabilityConsumers = {
   "composition/repository-credentials/public-ca.ts": {
     "composition/repository-credentials/config.ts": ["loadPublicCa"],
     "composition/repository-credentials/platform.ts": ["loadPublicCa"],
+  },
+  "composition/repository-credentials/public-file.ts": {
+    "composition/repository-credentials/public-ca.ts": ["readPublicFile"],
+    "composition/repository-credentials/registry.ts": ["readPublicFile"],
   },
   "backends/repository-credentials/private-request-server.ts": {
     "backends/repository-credentials/receipt-server.ts": ["servePrivateRepositoryRequest"],

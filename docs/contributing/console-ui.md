@@ -15,8 +15,9 @@ JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
 - **Structure.** Let the [shell](../../apps/controller/src/console/shell.mts)
   supply the page title, Namespace, and navigation. Use a `.section` with an
   `h2` to group related content. Add a `.card` when the group needs its own surface.
-  Desktop pages scroll as one document: the sidebar stretches to the page bottom,
-  with the account control at its end. The phone drawer retains its own viewport.
+  Desktop page content scrolls as one document. The sidebar stays in the viewport,
+  with the account control at its bottom. Diagnostics scroll within the sidebar;
+  short viewports can scroll the sidebar itself. The phone drawer retains its own viewport.
 - **Collections.** Agents and Secrets put search and the primary action in a
   `.collection-toolbar`. Give the search input an accessible name. It comes
   first in markup and in tab order, even when the action wraps below it.
@@ -47,7 +48,7 @@ Use the named roles in `:root`: `--color-link` for links, `--color-accent` for
 the primary action, and `--focus-ring` for keyboard focus. Inherit the body
 font, pair type sizes with their line heights (for example, `--text-md` with
 `--text-md--line-height`), and use the spacing and radius scales.
-The [token checks](../../tests/conformance/console-design-tokens.test.mjs)
+The [token checks](../../tests/conformance/console-design-tokens.test.ts)
 cover these scales and the supported breakpoints.
 
 Navigation pairs the wordmark with a
@@ -62,7 +63,7 @@ Keep a one-page layout with that page. When another page needs the same
 pattern, move the shared rule next to the component it extends and use it in
 both places. Register new assets in the
 [controller's allowlist](../../apps/controller/src/console-assets.ts).
-[Storybook](../../scripts/console-storybook/prepare-assets.mjs) prepares its preview
+[Storybook](../../scripts/console-storybook/prepare-assets.ts) prepares its preview
 with the same list and asset reader, then simulates API responses for each story.
 
 ## Review the result
@@ -76,3 +77,8 @@ Check that new assets load and the interaction works with the actual API. Follow
 [visual review instructions](../../AGENTS.md#console-storybook) for screenshots and video.
 Record the interaction with [pr-walkthrough](../../.agents/skills/pr-walkthrough/SKILL.md)
 so reviewers can read the starting state, follow the action, and see the result.
+
+Use [`responseTo`](../../tests/browser/console-action-helpers.ts) to wait for a response
+to the exact request method and URL. Start listening before triggering the action,
+then assert the status separately. An unexpected 500 fails the assertion immediately
+instead of making the test time out while waiting for a 403 or 503.

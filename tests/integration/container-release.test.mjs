@@ -26,8 +26,8 @@ import {
   stageReleaseChart,
   validateImageReceipt,
 } from "../../scripts/ci/chart-release.mjs";
-import { setEnvironment } from "../helpers/environment.mjs";
-import { writeCommand } from "../helpers/fake-commands.mjs";
+import { setEnvironment } from "../helpers/environment.ts";
+import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const sourceSha = "a".repeat(40);

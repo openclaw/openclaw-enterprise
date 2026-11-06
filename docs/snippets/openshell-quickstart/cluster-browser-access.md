@@ -11,7 +11,9 @@ Continue in the same operator shell. The laptop needs OpenSSL, jq and kubectl, p
 After the Helm initialization Job succeeds, mount its output claim read-only. Use a fresh private output directory. Kubernetes permission to read this claim is privileged. The one-use reader must run in the claim’s volume topology on a control node with access to the chosen storage.
 
 ```bash
-jq -n --arg image "$CONTROLLER_IMAGE" -f "$assets/bootstrap-reader.jq" |
+jq -n --arg image "$CONTROLLER_IMAGE" --arg namespace "$PLATFORM_NS" \
+  --arg claim occ-bootstrap-admin-password --argjson nodeSelector '{"oce-role":"control"}' \
+  -f "$assets/bootstrap-reader.jq" |
   kubectl --context "$CONTEXT" create -f -
 kubectl -n "$PLATFORM_NS" wait --for=condition=Ready pod/oce-owner-bootstrap-reader --timeout=3m
 for file in initial-admin-password initial-admin-service-key.json; do

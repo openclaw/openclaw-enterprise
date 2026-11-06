@@ -36,14 +36,9 @@ export class GitHubNativeRepositorySender implements NativeRepositorySender {
   static readonly configurationSchema: JSONSchema = Object.freeze({
     type: "object",
     additionalProperties: false,
-    required: ["sessionDurationSeconds", "controlSocket", "publicCaPath"],
+    required: ["controlSocket", "publicCaPath"],
     properties: {
       controlSocket: { type: "string", minLength: 1, maxLength: 103 },
-      sessionDurationSeconds: {
-        type: "integer",
-        minimum: 1,
-        maximum: Math.floor(Number.MAX_SAFE_INTEGER / 1000),
-      },
       publicCaPath: { type: "string", minLength: 1 },
     },
   });
@@ -62,9 +57,12 @@ export class GitHubNativeRepositorySender implements NativeRepositorySender {
       ) {
         return [
           {
-            path: "",
+            path: `/${field}`,
             code: "INVALID_VALUE",
-            message: "Configuration violates the Driver's constraints.",
+            message:
+              field === "controlSocket"
+                ? "repository.nativeSender.controlSocket must be a canonical absolute path without ASCII control characters, at most 103 UTF-8 bytes."
+                : "repository.nativeSender.publicCaPath must be a canonical absolute path without ASCII control characters.",
           },
         ];
       }

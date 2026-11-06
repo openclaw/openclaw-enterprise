@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { get } from "node:https";
 import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/credentials/origin.ts";
 import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts";
-import { createGitHubWarmReader } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-reader.ts";
+import { createWarmTokenReader } from "../../apps/controller/src/backends/token-service/warm-reader.ts";
 import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/credentials/material.ts";
 import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.mjs";
 import {
@@ -85,7 +85,7 @@ async function setup(t, options = {}) {
         return key;
       },
     });
-  const reader = createGitHubWarmReader({ readCurrent: store.readCurrent }, clock.wallNow);
+  const reader = createWarmTokenReader({ readCurrent: store.readCurrent }, clock.wallNow);
   const bounds = () => ({
     signal: new AbortController().signal,
     deadlineMonoMs: clock.monotonicNow() + 30000,
@@ -385,7 +385,7 @@ test("warm reader wipes its detached selection when it cannot return it", async 
     await t.test(failure, async () => {
       let selected;
       let selectedLiveBytes;
-      const interrupted = createGitHubWarmReader(
+      const interrupted = createWarmTokenReader(
         {
           async readCurrent(familyId, select) {
             selected = await store.readCurrent(familyId, select);

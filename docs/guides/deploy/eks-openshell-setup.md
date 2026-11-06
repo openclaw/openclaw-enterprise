@@ -1,12 +1,17 @@
 ---
 tags: [human_verified, nolimit]
+# Backfilled from the verification tag recorded in a66a9cdfd.
+last_verified: "2026-11-02"
 ---
 
-# Run a dedicated OpenShell Agent on EKS
+# Set up OCE on Amazon EKS
 
-Install OpenClaw Enterprise (OCE), configure browser access, and onboard a dedicated OpenShell Codex Agent on Amazon Elastic Kubernetes Service (EKS). Start in the matching OCE checkout on the operator’s laptop. Use Bash, AWS CLI, version-compatible kubectl, Helm, OpenSSL, jq, Node.js 24.22.1 or newer, Python 3, yq v4, PostgreSQL client tools and the [OCC CLI](../cli.md). Image selection needs Git and Docker; builds also need Buildx. Select compatible source, chart and image revisions.
+Install OpenClaw Enterprise (OCE), configure browser access, on Amazon Elastic Kubernetes Service (EKS). Start in the matching OCE checkout on the operator’s laptop. Use Bash, AWS CLI, version-compatible kubectl, Helm, OpenSSL, jq, Node.js 24.22.1 or newer, Python 3, yq v4, PostgreSQL client tools and the [OCC CLI](../cli.md). Image selection needs Git and Docker; builds also need Buildx. Select compatible source, chart and image revisions.
 
-[Create your first Agent](#5-create-the-configuration-and-agent) after installation. Git and plugins are optional.
+This OpenShell workflow supports development and evaluation.
+[OpenShell production qualification remains incomplete](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
+
+After installation, [deploy your first Agent](deploy-first-agent.md). Git and plugins are optional.
 
 ## Before you start
 
@@ -26,13 +31,17 @@ The prior validated configuration used EKS 1.36, AL2023, kernel 6.18, VPC CNI 1.
 
 ### Configure network enforcement and storage
 
-Enable Amazon VPC CNI NetworkPolicy support with `NETWORK_POLICY_ENFORCING_MODE=strict` in the managed add-on configuration. Strict mode denies traffic while policies initialize. Prepare DNS and system-service policies first, then verify allowed and denied paths using [AWS’s setup procedure](https://docs.aws.amazon.com/eks/latest/userguide/cni-network-policy-configure.html). Enforcement can be unreliable for standalone Pods: if the bootstrap volume helper’s isolation cannot be verified, use the storage-administrator preparation path in [production installation](production-installation.md#provision-system-secrets-and-install).
+Enable Amazon VPC CNI NetworkPolicy support with `NETWORK_POLICY_ENFORCING_MODE=strict` in the managed add-on configuration. Strict mode denies traffic while policies initialize. Prepare DNS and system-service policies first, then verify allowed and denied paths using [AWS’s setup procedure](https://docs.aws.amazon.com/eks/latest/userguide/cni-network-policy-configure.html).
+
+[Enforcement can be unreliable for standalone Pods without controller ownership](https://docs.aws.amazon.com/eks/latest/userguide/cni-network-policy.html). Use controller-owned Jobs for temporary maintenance and upgrade clients that mount database or recovery credentials; matching policy labels alone is insufficient. See [sign-in maintenance](auth-maintenance.md#run-the-command). If the bootstrap volume helper’s isolation cannot be verified, use the storage-administrator preparation path in [production installation](production-installation.md#provision-system-secrets-and-install).
 
 Install the [EBS CSI driver](https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.html). Allow its controller to reach Kubernetes, DNS and regional EC2, STS and credential endpoints. The node plugin needs Kubernetes and DNS when instance metadata is unavailable. Keep workload access to instance metadata disabled. Require ready CSI Pods and topology labels on every eligible node before creating claims.
 
 Create encrypted `encrypted-gp3` RWO filesystem storage with `WaitForFirstConsumer` for Gateway and bootstrap claims. Configure a default StorageClass that supports dedicated Agents’ `40Gi` RWO claims and UID/GID 1000; review other workloads before changing the default. Keep eligible capacity in the claim’s availability zone. Replacement stops the predecessor before disk reattachment, so allow downtime. Validate storage failover and node fencing separately. See the [storage contract](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
 
 ### Enable Console workspace files
+
+Private gateway routing is enabled by default. Prepare its controllers, CRDs, GatewayClass and service-key Secret before installing OCC; the Helm chart does not install these prerequisites.
 
 Install cert-manager, Gateway API, Envoy Gateway and the matching Agent Sandbox controller on the control pool. Before rollout, prepare policies for controllers and certificate Jobs: DNS and API Service VIPs, API EndpointSlice addresses, API-server admission to webhooks and Envoy data-plane access to xDS. Match installed labels and ports on both sides. Include all private EKS control-plane interface addresses for webhook callers; one Service endpoint or public DNS answer may omit them. Require ready controllers before installing OCE.
 
@@ -145,6 +154,22 @@ kubectl --context "$CONTEXT" get gatewayclass eg -o json |
 kubectl --context "$CONTEXT" wait gatewayclass/eg --for=condition=Accepted --timeout=3m
 ```
 
+### Check the prepared resources
+
+Run [prerequisite diagnosis](prerequisite-diagnosis.md) after preparing the target
+namespace and controllers. Save its plan as `$RUN_DIR/prerequisites.json`, using
+`$KUBECONFIG`, `$CONTEXT`, `$PLATFORM_NS`, the installed controller names, and the
+reviewed API/webhook CIDRs above. Set `peakAdditional` from the candidate chart
+and put the intended cluster ARN in `eks.clusterArn`.
+
+```bash
+node scripts/diagnose-kubernetes-prerequisites.mjs --config "$RUN_DIR/prerequisites.json"
+```
+
+Resolve failed and unknown checks before installing. Matching address inventory
+does not prove that deployed NetworkPolicies or admission webhooks work; retain
+the network and certificate checks above.
+
 <a id="configure-the-protected-copies-and-install"></a>
 
 Confirm the database endpoint from your infrastructure outputs; EKS does not select RDS automatically. For RDS, obtain its [approved CA bundle](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/PostgreSQL.Concepts.General.SSL.html). The templates use Secret `occ-database-ca`, key `ca.pem`, mounted at `/etc/openclaw/database-ca`. Both database URLs must use the database hostname and `sslmode=verify-full&sslrootcert=/etc/openclaw/database-ca/ca.pem`. Use the provider’s verified CA for other PostgreSQL services. Keep exact database and API egress addresses current through failover; security groups do not replace NetworkPolicies.
@@ -154,17 +179,9 @@ Confirm the database endpoint from your infrastructure outputs; EKS does not sel
 <a id="4-enroll-linear-and-protected-git"></a>
 <a id="5-deploy-and-open-the-owners-agent"></a>
 
-## 4. Connect to the API and register the model credential
+## 4. Prepare the operator session
 
-Set `CODEX_TOKEN_FILE` to the private service-account PAT file and `MODEL` to the authorized native model ID. A Linear connection and GitHub App are not needed for installation setup. The [operator session reference](quickstart-session.md) defines the shared inputs and helpers.
-
-```bash
-export CODEX_TOKEN_FILE=/secure/oce/codex-token
-export MODEL=gpt-5.4
-test -r "$CODEX_TOKEN_FILE" && test -s "$CODEX_TOKEN_FILE"
-```
-
-<Snippet file="../../snippets/openshell-quickstart/agent-setup.md" />
+Continue in the same Bash shell to [Deploy your first Agent](deploy-first-agent.md).
 
 ## Verify workspace routing
 
@@ -174,4 +191,4 @@ In the Console **Workspace files** tab, read all four paths, save and reload a h
 
 For later upgrades, use [Upgrade production images](production-upgrade.md), its [checklist](upgrade-checklist.md) and [baseline](upgrade-baseline.md). Helm rollback does not undo committed migrations or restore Agent-volume data; use [upgrade recovery](production-upgrade-recovery.md) after a failure.
 
-Continue to [Add Git](../repository-credentials/openshell-git-push.md) or [Add Plugin](../integrations/codex-plugins.md). To finish, [delete the Agent](quickstart-delete-agent.md), then clean up the installation with [Amazon EKS cleanup](eks-cleanup.md).
+To finish, [delete the Agent](quickstart-delete-agent.md), then clean up the installation with [Amazon EKS cleanup](eks-cleanup.md).

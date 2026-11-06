@@ -113,7 +113,7 @@ function clearSecretInputs(dialog: HTMLDialogElement) {
 }
 
 // The API's Secret value rule (SecretValue in packages/contracts/src/api/common.ts): nonempty
-// UTF-8 without NUL, at most 65,536 UTF-8 bytes. tests/conformance/console-namespace-name.test.mjs
+// UTF-8 without NUL, at most 65,536 UTF-8 bytes. tests/conformance/console-namespace-name.test.ts
 // keeps the two equal.
 export const SECRET_VALUE_MAX_BYTES = 65536;
 
@@ -564,9 +564,7 @@ export function renderSecrets(
     const references = element(
       "p",
       referenced ? { id: "secret-delete-blocked" } : {},
-      referenced
-        ? "Deletion is blocked while references remain. Remove them from their owning resources first."
-        : "No current consumers were found. Deletion checks references again.",
+      referenced ? "This Secret is referenced." : "No current consumers were found.",
     );
     current.body.append(references);
     // The read's advisory answer disables what the API would refuse, with the reason, instead of

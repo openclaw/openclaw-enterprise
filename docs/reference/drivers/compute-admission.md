@@ -110,6 +110,16 @@ Agent that fails a check still reads; its next update must fix the pair.
   after it (`409`); provisioning applies the rule through
   `validateAgentProvisioning` (`409`). Either way a dedicated Agent's running
   revision keeps serving. A Preset save leaves a setting that waits on a variable to the launch.
+- once the model policy selects Codex, a missing `gateway.auth.password` when
+  the Installation sets `runtime`, `gatewayRouting` and
+  `network.pluginStatusProxySourceCidrs`. The Gateway then applies the Agent's
+  workspace node at runtime and confirms it through its own Gateway client,
+  which signs in with the
+  [generated password](kubernetes-compute/storage-and-credentials.md#runtime-credentials);
+  without it every activation failed with `AGENT_GATEWAY_UNAUTHORIZED` after
+  the running revision stopped. Deployment refuses a stored one with the same
+  `400` before any revision. OpenClaw Agents, and Installations without private
+  status (the node is then in the pod spec), need no password.
 
 This Compute delivers channel credentials only from Configuration Secret
 bindings. OCC, not a Driver member, refuses at Configuration create and update,

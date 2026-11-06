@@ -249,12 +249,12 @@ test("Gateway device login saves a source-backed Agent and reuses discovery afte
   assert.equal(JSON.stringify(stored).includes(DEVICE_ACCESS_TOKEN), false);
 
   const list = await fixture.request("POST", fixture.pluginsPath, {
-    body: { credentialSource: ready.source, q: "knowledge" },
+    body: { harnessId: "codex", credentialSource: ready.source, q: "knowledge" },
   });
   assert.equal(list.status, 200, JSON.stringify(list.body));
   assert.equal(list.data.plugins[0].remoteId, plugin.id);
   const details = await fixture.request("POST", `${fixture.pluginsPath}/details`, {
-    body: { credentialSource: ready.source, pluginId: plugin.id },
+    body: { harnessId: "codex", credentialSource: ready.source, pluginId: plugin.id },
   });
   assert.equal(details.status, 200, JSON.stringify(details.body));
   assert.equal(details.data.tools[0].id, "fixture-app/search");
@@ -389,7 +389,7 @@ test("login handles are actor and Agent scoped while source discovery uses exact
     (
       await fixture.request("POST", fixture.pluginsPath, {
         session: otherSession,
-        body: { credentialSource: login.source, q: "knowledge" },
+        body: { harnessId: "codex", credentialSource: login.source, q: "knowledge" },
       })
     ).status,
     200,
@@ -404,7 +404,7 @@ test("login handles are actor and Agent scoped while source discovery uses exact
   });
   const denied = await fixture.request("POST", fixture.pluginsPath, {
     session: otherSession,
-    body: { credentialSource: login.source, q: "knowledge" },
+    body: { harnessId: "codex", credentialSource: login.source, q: "knowledge" },
   });
   assert.equal(denied.status, 403, JSON.stringify(denied.body));
 
@@ -413,7 +413,7 @@ test("login handles are actor and Agent scoped while source discovery uses exact
     [{ ...login.source, id: `cs_${crypto.randomUUID()}` }, 409],
   ]) {
     const refused = await fixture.request("POST", fixture.pluginsPath, {
-      body: { credentialSource, q: "knowledge" },
+      body: { harnessId: "codex", credentialSource, q: "knowledge" },
     });
     assert.equal(refused.status, status, JSON.stringify(refused.body));
   }
@@ -631,7 +631,7 @@ test("expiry closes the login handle without removing the ready source or its di
   assert.equal(stored.phase, "cancelled");
   assert.equal(stored.privateState, undefined);
   const discovery = await fixture.request("POST", fixture.pluginsPath, {
-    body: { credentialSource: login.source, q: "knowledge" },
+    body: { harnessId: "codex", credentialSource: login.source, q: "knowledge" },
   });
   assert.equal(discovery.status, 200, JSON.stringify(discovery.body));
   // Explicit source deletion, unlike session closure, invokes external removal.
@@ -643,7 +643,7 @@ test("expiry closes the login handle without removing the ready source or its di
   assert.equal(
     (
       await fixture.request("POST", fixture.pluginsPath, {
-        body: { credentialSource: login.source, q: "knowledge" },
+        body: { harnessId: "codex", credentialSource: login.source, q: "knowledge" },
       })
     ).status,
     409,

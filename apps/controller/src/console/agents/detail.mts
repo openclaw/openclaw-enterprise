@@ -35,7 +35,7 @@ import {
   fieldError,
   focusSaveOutcome,
   isUnavailable,
-  jsonObjectProblem,
+  jsonObjectDiagnostic,
   revealStatus,
   setHidden,
   setStatusTone,
@@ -48,6 +48,7 @@ import {
 } from "../dom.mjs";
 import {
   configuredHarnessId,
+  configuredModel,
   createHarnessAuthFields,
   harnessAuthDescription,
   renderHarnessAuthSummary,
@@ -140,6 +141,7 @@ import {
 } from "./deployment-evidence.mjs";
 import {
   createDeploymentRecovery,
+  modelUnavailable,
   credentialFixAccess,
   credentialRejectedAsk,
 } from "./deployment-recovery.mjs";
@@ -413,8 +415,7 @@ function summary(
   values: OpenClawConfigurationDocument,
   details: [string, string | Node | null | undefined][],
 ) {
-  const { model } = responseFields(responseFields(values.agents).defaults);
-  const primary = typeof model === "string" ? model : responseFields(model).primary;
+  const primary = configuredModel(values);
   const list = element("dl", { className: "configuration-summary" });
   for (const [name, value] of [
     ["Model", typeof primary === "string" ? primary : "Not specified"],
@@ -516,10 +517,10 @@ const NEUTRAL_VERSION_NOTICES: Record<NeutralOutcome, string> = {
   stopped:
     "Stopped version · read-only admitted snapshot. The Agent was stopped before its deployment finished.",
 };
-// Versions this tab's own Deploy created, keyed like failedVersions, with their version numbers.
+// Version numbers accepted by this tab's Deploy, indexed by Agent path and revision ID.
 // The API accepted each, so a deployer who cannot read one is told it exists and was accepted,
 // not that a link may name a version that does not exist (finding D751).
-const deployedVersions = new Map<string, number>();
+const deployedVersions = new Map<string, Map<string, number>>();
 
 // A recovery link opens a version tab far below the banner it sits in. Only the URL changed and
 // the page stayed at the top, so the link looked dead (finding 1586). The page the link opens,
@@ -1212,8 +1213,7 @@ export async function renderAgentDetail(
     // Until every page is loaded, an unlisted version may simply be older than those shown.
     return unlisted(revisionId) && olderCursor === null;
   }
-  const deployedHere = (revisionId: string) =>
-    deployedVersions.has(failedVersionKey(path, revisionId));
+  const deployedHere = (revisionId: string) => deployedVersions.get(path)?.has(revisionId) ?? false;
   // Versions this page showed as selected for service. Each exists, so a viewed one the reader
   // cannot read is named in words once a stop or another version takes its place (finding 3000).
   const formerCurrent = new Set<string>();
@@ -1223,14 +1223,8 @@ export async function renderAgentDetail(
   // fully loaded (finding 2615).
   function acceptedHiddenVersion(newestListed: number) {
     let accepted: { id: string; revision: number } | undefined;
-    for (const [key, revision] of deployedVersions) {
-      const [agentPath, id] = JSON.parse(key) as [string, string];
-      if (
-        agentPath === path &&
-        revision > newestListed &&
-        revision > (accepted?.revision ?? 0) &&
-        unlisted(id)
-      ) {
+    for (const [id, revision] of deployedVersions.get(path) ?? []) {
+      if (revision > newestListed && revision > (accepted?.revision ?? 0) && unlisted(id)) {
         accepted = { id, revision };
       }
     }
@@ -2272,7 +2266,7 @@ export async function renderAgentDetail(
   function renderVersions(
     revisions: Revision[],
     snapshot: Snapshot | null,
-    historyError: unknown = null,
+    revisionResult: RevisionResult,
   ) {
     let focus: string | null = null;
     if (selector.contains(document.activeElement)) {
@@ -2343,7 +2337,7 @@ export async function renderAgentDetail(
       history.append(revisionChoice(selected, `v${snapshot.revision}`, "Viewed revision"));
     }
     const older =
-      olderCursor && !historyError
+      olderCursor && revisionResult.status === "fulfilled"
         ? button(
             olderLoading ? "Loading older versions…" : "Load older versions",
             () => void loadOlderRevisions(),
@@ -2379,10 +2373,16 @@ export async function renderAgentDetail(
       ...(olderError
         ? [statusBlock("danger", null, `Older versions unavailable. ${message(olderError)}`)]
         : []),
-      ...(historyError
-        ? [statusBlock("danger", null, `Version history unavailable. ${message(historyError)}`)]
+      ...(revisionResult.status === "rejected"
+        ? [
+            statusBlock(
+              "danger",
+              null,
+              `Version history unavailable. ${message(revisionResult.reason)}`,
+            ),
+          ]
         : []),
-      ...(!historyError && !revisions.length
+      ...(revisionResult.status === "fulfilled" && !revisions.length
         ? [
             element(
               "p",
@@ -2703,9 +2703,10 @@ export async function renderAgentDetail(
     // listed latest outcome is an earlier version's, whichever entry is viewed (finding D751).
     const acceptedId = acceptedHiddenVersion(latest.revision);
     const acceptedHidden = acceptedId !== undefined;
-    // Stop hides only for a failed first deployment, and says it cancels one still queued or in
-    // progress (findings 2385, 2580, D691). A failed read is unknown, not failed, and so is a
-    // newer deployment the caller cannot read.
+    // The latest readable outcome sets only Stop's confirmation copy: it says Stop cancels a first
+    // deployment still queued or in progress (findings 2385, 2580, D691). A failed one can hide
+    // newer queued work, so Stop stays (finding 2764). A failed read is unknown, not failed, and
+    // so is a newer deployment the caller cannot read.
     stopPanel.setLatestDeployment(acceptedHidden ? null : latestDeploymentStatus);
     const label = latestDeploymentStatus ? outcomeLabel(latestDeploymentStatus) : undefined;
     // A superseded or stopped deployment is neutral: it raises no banner and says nothing about
@@ -2837,6 +2838,10 @@ export async function renderAgentDetail(
         : {
             latest,
             record: latestDeploymentRecord,
+            failedModel:
+              latestRevisionDetail?.id === latest.id && "configuration" in latestRevisionDetail
+                ? configuredModel(latestRevisionDetail.configuration)
+                : undefined,
             agent: currentAgent,
             permissions: callerPermissions,
             currentLabel,
@@ -2885,8 +2890,7 @@ export async function renderAgentDetail(
     }
     versionRecord?.rerender();
   }
-  // List summaries omit the credential binding a revision was admitted with, so the
-  // rejected-credential hint reads the newest revision once.
+  // Read the failed version’s model or credential binding. The draft may already have changed.
   async function readLatestRevisionDetail(revision: Revision) {
     if (latestRevisionDetail?.id === revision.id || latestRevisionDetailReading === revision.id) {
       return;
@@ -2905,7 +2909,7 @@ export async function renderAgentDetail(
       }
       latestRevisionDetail = detail;
       refreshDeployControls();
-      rerenderRecordedFailures();
+      renderLatestDeployment();
     } catch {
       // Without the detail the hint stays generic; the deployment status still shows.
     } finally {
@@ -2975,11 +2979,7 @@ export async function renderAgentDetail(
     );
     renderCurrentVersion();
     nativeAdmin.updateTarget();
-    renderVersions(
-      revisions,
-      snapshot,
-      revisionResult.status === "rejected" ? revisionResult.reason : null,
-    );
+    renderVersions(revisions, snapshot, revisionResult);
     const mostRecent = revisions[0];
     if (activityRevisionId !== (mostRecent?.id ?? null)) {
       activityRevisionId = mostRecent?.id ?? null;
@@ -3058,10 +3058,14 @@ export async function renderAgentDetail(
               latestOverviewUnavailable = overviewUnavailable;
               latestDeploymentUnavailable = readFailed;
               latestDeploymentReadError = readError;
-              if (record?.error?.code === "RUNTIME_AUTHENTICATION_FAILED") {
+              // An already viewed version can update the recovery banner synchronously.
+              latestDeploymentRecord = record;
+              if (
+                record?.error?.code === "RUNTIME_AUTHENTICATION_FAILED" ||
+                modelUnavailable(record?.error)
+              ) {
                 void readLatestRevisionDetail(mostRecent);
               }
-              latestDeploymentRecord = record;
               if (mostRecent.id === selected) {
                 // Share success and failure only with this same selected version.
                 if (record) {
@@ -3128,7 +3132,10 @@ export async function renderAgentDetail(
     if (!context.isCurrent() || deleting) {
       return;
     }
-    if (revisionResult.status === "rejected" && revisionResult.reason.status === 401) {
+    if (
+      revisionResult.status === "rejected" &&
+      requestFailure(revisionResult.reason).status === 401
+    ) {
       context.onExpired();
       return;
     }
@@ -3159,7 +3166,7 @@ export async function renderAgentDetail(
   // caller may not read: the list returns only readable versions, newest first, and it is newer
   // than each listed one. Its read would only be refused and audited (finding D758).
   async function deployedVersionUnlisted() {
-    const deployed = deployedVersions.get(failedVersionKey(path, selected));
+    const deployed = deployedVersions.get(path)?.get(selected);
     if (deployed === undefined) {
       return false;
     }
@@ -3223,7 +3230,11 @@ export async function renderAgentDetail(
     if (!context.isCurrent() || deleting) {
       return;
     }
-    if (results.some((result) => result.status === "rejected" && result.reason.status === 401)) {
+    if (
+      results.some(
+        (result) => result.status === "rejected" && requestFailure(result.reason).status === 401,
+      )
+    ) {
       context.onExpired();
       return;
     }
@@ -4079,7 +4090,12 @@ export async function renderAgentDetail(
           ) {
             throw new Error("The admitted version could not be confirmed for this Configuration.");
           }
-          deployedVersions.set(failedVersionKey(path, revision.id), revision.revision);
+          let deployedForPath = deployedVersions.get(path);
+          if (deployedForPath === undefined) {
+            deployedForPath = new Map<string, number>();
+            deployedVersions.set(path, deployedForPath);
+          }
+          deployedForPath.set(revision.id, revision.revision);
           if (context.isCurrent()) {
             deployInFlight = false;
             content.toggleAttribute("inert", false);
@@ -6322,13 +6338,13 @@ export async function renderAgentDetail(
     }
 
     function parseEditor(reportInvalid = false) {
-      const problem = jsonObjectProblem(editor.value);
-      if (problem === undefined) {
-        return JSON.parse(editor.value) as OpenClawConfigurationDocument;
+      const diagnostic = jsonObjectDiagnostic(editor.value);
+      if (diagnostic.kind === "valid") {
+        return diagnostic.value;
       }
       if (reportInvalid) {
         // One message, under the editor, which keeps focus so the JSON can be fixed in place.
-        editorError.show(problem);
+        editorError.show(diagnostic.message);
         feedback.textContent = "";
         feedbackLocked = true;
         editor.focus();
@@ -6506,9 +6522,20 @@ export async function renderAgentDetail(
         if (context.isCurrent()) {
           pending = false;
           updateState();
-          render();
+          // A conflict keeps the same editor. Rebuilding it detaches a reader's focused
+          // textarea and deactivates its selection before recovery can check focus.
+          if (reloadRequired && body.contains(editor)) {
+            cancel.after(reload);
+          } else {
+            render();
+          }
           const refused = feedback.dataset.tone === "danger";
           feedback.setAttribute("role", refused ? "alert" : "status");
+          const focusMoved =
+            reloadRequired &&
+            document.activeElement?.isConnected &&
+            document.activeElement !== document.body &&
+            document.activeElement !== feedback;
           if (refusedInEditor && container.isConnected) {
             editor.focus({ preventScroll: true });
             editor.scrollIntoView({ block: "nearest" });
@@ -6516,7 +6543,7 @@ export async function renderAgentDetail(
             // A refusal Reload cannot fix (a 403, say) is an alert that takes focus and comes
             // into view; under the fold, nothing seemed to happen (finding 1991).
             revealStatus(feedback, container);
-          } else if (container.isConnected) {
+          } else if (container.isConnected && !focusMoved) {
             // A conflict or failure leaves Reload draft (or Save again) as the next step
             // (finding 1481).
             focusSaveOutcome(container, [reload, save], feedback);

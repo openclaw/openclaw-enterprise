@@ -183,6 +183,7 @@ function validGoogleRequest(
   if (
     reportedScheme !== "https" ||
     port !== 443 ||
+    path.includes("#") ||
     new Set(names).size !== names.length ||
     names.some((name) => !clientHeaders.has(name))
   ) {
@@ -199,7 +200,7 @@ function validGoogleRequest(
           !part ||
           part === "." ||
           part === ".." ||
-          /[/%\\;#?]/.test(part) ||
+          /[/%\\;?]/.test(part) ||
           hasControlCharacter(part),
       )
   ) {
@@ -234,6 +235,18 @@ function validGoogleRequest(
         return false;
       }
       const operation = googleCatalog.operations[id]!;
+      // An encoded hash is data only in the released Calendar ID placeholder, never
+      // in another identifier (such as eventId) or a literal route segment.
+      const segments = operation.path.split("/");
+      if (
+        decoded.some(
+          (part, index) =>
+            part.includes("#") &&
+            (!id.startsWith("calendar:v3/") || segments[index] !== "{calendarId}"),
+        )
+      ) {
+        return false;
+      }
       const grants = operation.scopes.filter((s) => scope.scopes.includes(s));
       if (!grants.length) {
         return false;

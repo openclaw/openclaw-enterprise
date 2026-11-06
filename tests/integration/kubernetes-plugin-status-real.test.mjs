@@ -164,6 +164,7 @@ function computeConfiguration({ nodeSelector } = {}) {
     },
     servicePrincipalCredentials: { mode: "disabled" },
     runtime: {
+      modelProvider: { protocol: "openai-responses", baseUrl: "https://model.stub.invalid/v1" },
       transportSecretPrefix,
       gatewayStorageClassName: "local-path",
       ...(nodeSelector === undefined ? {} : { nodeSelector }),
@@ -199,7 +200,7 @@ function pluginRevisionState() {
 }
 
 function revision(driver, owner, agentId, number, harnessAuth) {
-  return {
+  const candidate = {
     id: `rev_${randomUUID()}`,
     namespaceId: owner.id,
     agentId,
@@ -225,6 +226,8 @@ function revision(driver, owner, agentId, number, harnessAuth) {
     servicePrincipalId: `service-agent-${agentId}`,
     createdAt: new Date().toISOString(),
   };
+  candidate.compute.admission = driver.admitRevision(candidate);
+  return candidate;
 }
 
 async function prepareNamespace(driver, owner) {

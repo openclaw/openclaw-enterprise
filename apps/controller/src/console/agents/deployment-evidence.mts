@@ -264,6 +264,11 @@ function transientReadError(error: unknown) {
   return status === undefined || status < 400 || status >= 500 || status === 408 || status === 429;
 }
 
+function fitsVertically(node: HTMLElement): boolean {
+  const { top, bottom, height } = node.getBoundingClientRect();
+  return height > 0 && top >= 0 && bottom <= window.innerHeight;
+}
+
 export function deploymentPending(status: string | null | undefined) {
   return status === "queued" || status === "running";
 }
@@ -514,18 +519,15 @@ export function createDeploymentStatusPanel(
   }
 
   function publish(poll: boolean, freshRecord = false) {
-    // Revealing a final refusal can push the next focused control off screen.
-    // Keep it visible only if the reader could see it before the poll completed.
+    // Automatically revealing evidence can push the next focused control off screen.
+    // Keep it visible only if the reader could see it before the disclosure opened.
     const focused = document.activeElement;
-    const position =
+    const keepFocusVisible =
       poll &&
-      error &&
-      !transientReadError(error) &&
       !details.open &&
       focused instanceof HTMLElement &&
-      section.parentElement?.contains(focused)
-        ? focused.getBoundingClientRect()
-        : null;
+      section.parentElement?.contains(focused) &&
+      fitsVertically(focused);
     render(freshRecord);
     onStatusChange({
       outcome: record ? deploymentOutcome(record) : null,
@@ -536,13 +538,11 @@ export function createDeploymentStatusPanel(
       overviewUnavailable,
     });
     if (
-      position &&
-      position.height > 0 &&
-      position.top >= 0 &&
-      position.bottom <= window.innerHeight &&
+      keepFocusVisible &&
       details.open &&
-      focused instanceof HTMLElement &&
-      document.activeElement === focused
+      focused.isConnected &&
+      document.activeElement === focused &&
+      !fitsVertically(focused)
     ) {
       focused.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
     }

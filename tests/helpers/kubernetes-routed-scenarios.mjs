@@ -89,7 +89,7 @@ export function routedOptions(overrides = {}) {
 }
 
 export function routedRevision(driver, overrides = {}) {
-  return {
+  const revision = {
     id: "revision-routed-1",
     executionAdmission: { version: 2, mode: "unprotected" },
     namespaceId: tenant.id,
@@ -127,6 +127,11 @@ export function routedRevision(driver, overrides = {}) {
     createdAt: tenant.createdAt,
     ...overrides,
   };
+  // Mirror OCC admission for fixtures using the shared provider before deployment.
+  if (driver.options?.runtime?.modelProvider !== undefined) {
+    revision.compute.admission = driver.admitRevision(revision);
+  }
+  return revision;
 }
 
 /** The labels an equality-only Kubernetes `labelSelector` string ("key=value,key=value") names. */

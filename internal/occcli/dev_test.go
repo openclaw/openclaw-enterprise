@@ -103,17 +103,23 @@ func TestDevUpProtectedProfileEntrypoints(t *testing.T) {
 		want     string
 	}{
 		{"unset", nil, ""},
+		{"empty", []string{"OCC_DEVELOPMENT_PROTECTED_EGRESS="}, ""},
 		{"disabled", []string{"OCC_DEVELOPMENT_PROTECTED_EGRESS=0"}, ""},
-		{"enabled", []string{"OCC_DEVELOPMENT_PROTECTED_EGRESS=1"}, "protected egress requires"},
+		{"enabled", []string{"OCC_DEVELOPMENT_PROTECTED_EGRESS=1"}, "OCC_DEVELOPMENT_PROTECTED_EGRESS=1 is retired; unset it or set it to 0 for ordinary development. This does not convert an existing installation; use occ dev down for cleanup."},
 		{"invalid", []string{"OCC_DEVELOPMENT_PROTECTED_EGRESS=true"}, "OCC_DEVELOPMENT_PROTECTED_EGRESS must be 0 or 1"},
 		{"database", []string{"OCC_DEVELOPMENT_DATABASE_NAME=openclaw_k8s_owned"}, "OCC_DEVELOPMENT_DATABASE_NAME requires"},
 		{"empty-database", []string{"OCC_DEVELOPMENT_DATABASE_NAME="}, "OCC_DEVELOPMENT_DATABASE_NAME requires"},
-		{"host-gateway", []string{"OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP=172.30.42.1"}, "OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP requires"},
-		{"empty-host-gateway", []string{"OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP="}, "OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP requires"},
+		{"host-gateway", []string{"OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP=172.30.42.1"}, "OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP is retired; remove this setting"},
+		{"empty-host-gateway", []string{"OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP="}, "OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP is retired; remove this setting"},
 	}
 	for _, entrypoint := range []string{"cli", "script"} {
-		for _, compute := range []string{"default", "docker"} {
+		for _, compute := range []string{"default", "docker", "kubernetes"} {
 			for _, scenario := range cases {
+				// Database and ordinary-launch controls below exercise Docker;
+				// Kubernetes additionally covers the formerly supported profile.
+				if compute == "kubernetes" && (scenario.want == "" || strings.Contains(scenario.name, "database")) {
+					continue
+				}
 				t.Run(entrypoint+"/"+compute+"/"+scenario.name, func(t *testing.T) {
 					directory := t.TempDir()
 					// The real launcher requires a private bootstrap-key parent,
@@ -135,8 +141,11 @@ func TestDevUpProtectedProfileEntrypoints(t *testing.T) {
 						"ENGINE_LOG=" + engineLog, "DISPATCH_LOG=" + dispatchLog,
 						"OCC_DEVELOPMENT_CONTAINER_ENGINE=docker",
 					}, scenario.settings...)
-					if compute == "docker" {
-						command.Env = append(command.Env, "OCC_DEVELOPMENT_COMPUTE_DRIVER=docker")
+					if compute != "default" {
+						command.Env = append(command.Env, "OCC_DEVELOPMENT_COMPUTE_DRIVER="+compute)
+					}
+					if compute == "kubernetes" {
+						command.Env = append(command.Env, "OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes", "OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell")
 					}
 					output, err := command.CombinedOutput()
 					t.Logf("exit: %v; output: %s", err, output)

@@ -87,7 +87,17 @@ Select `repositoryCredentials.authority: prepared-git` in the chart and
 `repository.preparedGitHub` in the Installation. Select the policy ID and session duration
 under `repository.id` and `repository.configuration.sessionDurationSeconds`. Select
 `repository.nativeSender.controlSocket` and `repository.nativeSender.publicCaPath`
-explicitly. Keep the Backend’s `drivers.repo` policy ID equal to `repository.id`.
+explicitly. Both paths must be absolute and canonical: remove dot segments,
+repeated separators, trailing separators and ASCII control characters
+(`U+0000`–`U+001F` and `U+007F`). The socket path
+must fit in 103 UTF-8 bytes; non-ASCII characters can use more than one byte.
+Native sender validation rejects invalid paths before reading the registry or
+public CA, naming the field without printing its value. Correct that field in the
+Installation; shorten the socket path if it exceeds the byte limit. If startup
+reports only a generic failure, check that both path settings contain nonblank
+strings: the initial Installation reader rejects blank values before native
+sender validation.
+Keep the Backend’s `drivers.repo` policy ID equal to `repository.id`.
 Omit the Installation’s `drivers.repo`, Sandbox and Credential Proxy selections. Mount the signing and custody
 keys in the worker; do not copy them to the Agent or broker. OCE must be able to
 bind this repository session to the admitted revision and restrict broker ingress.

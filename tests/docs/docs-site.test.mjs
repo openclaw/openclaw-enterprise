@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import test from "node:test";
-import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.mjs";
+import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.ts";
 import {
   buildDocs,
   createDocsFixture,

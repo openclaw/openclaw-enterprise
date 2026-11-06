@@ -1,3 +1,4 @@
+import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
@@ -248,12 +249,16 @@ export async function composePostgresDevelopment(
     };
 
     const loggingLevel = config.logging?.level ?? drivers?.installation.logging.level;
+    const channelDriver = new SlackChannelDriver();
     const controller = OpenClawController.forInstallation(
       persistedInstallation,
       {
         ...installationControllerOptions(drivers?.installation),
         state,
         ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
+        ...(drivers?.pluginSourceReader === undefined
+          ? {}
+          : { pluginSourceReader: drivers.pluginSourceReader }),
         recordOperations: true,
         defaultPresets: drivers?.defaultPresets ?? [],
         bundledPresetVersions: drivers?.bundledPresetVersions ?? [],
@@ -267,7 +272,6 @@ export async function composePostgresDevelopment(
     controller.selectDriver("iam", driverId);
     controller.registerDriver(computeDriver);
     controller.selectDriver("compute", computeDriver.id);
-    const channelDriver = new SlackChannelDriver();
     controller.registerDriver(channelDriver);
     controller.selectDriver("channel", channelDriver.id);
     if (protectedDriver !== undefined) {
@@ -289,13 +293,17 @@ export async function composePostgresDevelopment(
       controller.selectDriver("configuration", configurationDriver.id);
     }
     if (drivers?.secretDriver !== undefined) {
+      drivers.tokenService?.registerIssuer(
+        new OAuthAccountTokens(
+          state,
+          drivers.secretDriver,
+          controller.resolveConnectionClient.bind(controller),
+        ),
+      );
       controller.registerDriver(drivers.secretDriver);
       controller.selectDriver("secret", drivers.secretDriver.id);
     }
-    if (drivers?.pluginDriver !== undefined) {
-      controller.registerDriver(drivers.pluginDriver);
-      controller.selectDriver("plugin", drivers.pluginDriver.id);
-    }
+    controller.installPluginDrivers(drivers?.pluginDrivers ?? []);
     if (drivers?.repositoryPolicy !== undefined) {
       const driver = drivers.repositoryPolicy;
       controller.registerDriver(driver);

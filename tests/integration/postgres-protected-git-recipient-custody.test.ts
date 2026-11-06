@@ -46,7 +46,10 @@ test(
     const other = await protectedOwner({
       repositoryGitCustody: selectRegisteredRepositoryGitCustody(otherDriver),
     });
-    const legacy = await f.startOwner({ controlSocket: undefined });
+    const legacy = await f.startOwner({
+      controlSocket: undefined,
+      repositoryGitCustody: { kind: "unavailable" },
+    });
     const mine = owner.protectedGit!;
     const notMine = other.protectedGit!;
     await disposeNativeSession(f);
@@ -576,9 +579,10 @@ test(
       controlSocket: undefined,
       repositoryGitCustody: selectBundledRepositoryGitCustody(driver),
     });
+    assert.ok(owner.protectedGit, "the protected Git authority is selected");
     await owner.maintain();
     const selectedRoute = { revisionId, fence: 1, observed };
-    const selected = await owner.readOpenShellMaterial(revisionId, t.signal, selectedRoute);
+    const selected = await owner.protectedGit.readMaterial(selectedRoute, t.signal);
     assert.ok(
       selected && !("absent" in selected),
       "the real prepared owner selects committed material",
@@ -589,12 +593,12 @@ test(
     };
     assert.equal(await routes.writing(revisionId, 1, "rotate", a), 2);
     assert.deepEqual(
-      await owner.readOpenShellMaterial(revisionId, t.signal, selectedRoute),
+      await owner.protectedGit.readMaterial(selectedRoute, t.signal),
       { absent: "unprepared" },
       "the real custody reader refuses the pre-reservation fence",
     );
     assert.deepEqual(
-      await owner.readOpenShellMaterial(revisionId, t.signal, { ...selectedRoute, fence: 2 }),
+      await owner.protectedGit.readMaterial({ ...selectedRoute, fence: 2 }, t.signal),
       selected,
       "the real custody reader preserves the material and recipient at the reservation fence",
     );
@@ -1230,6 +1234,7 @@ for (const lostAck of [false, true]) {
         Buffer.alloc(32),
         "unused",
         () => undefined,
+        { kind: "unavailable" },
       );
       const guard = { message: "Prepared GitHub custody transaction did not complete (guard)." };
       await assert.rejects(store.finishPull(randomUUID(), "not-submitted"), guard);

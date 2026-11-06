@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-10-25
-last_updated_session: fix-2469
+updated: 2026-11-05
+last_updated_session: authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9
 ---
 
 # Console Agent creation
@@ -41,7 +41,7 @@ graph TD
 `agents/plugin-fields.mjs:createPluginFields` edits Agent `plugins` separately
 from Configuration. Invalid JSON and untouched fields survive; clearing overrides
 restores inheritance. Submission, uncertain outcomes, or invalid JSON lock editing.
-`capabilities.pluginPolicies` gates policy edits; unsupported reviewers remain clearable.
+The selected Harness's entry in `capabilities.pluginCatalogs` defines the policy controls.
 A credential/access reminder sits beside the expandable
 **Access and credential setup** disclosure. Instructions, list, and details
 scroll within the dialog; search and pagination remain reachable.
@@ -72,10 +72,34 @@ none before any answer.
 `updateControls`. Manual mode preserves `model.value` and clears the dropdown.
 `resetModelChoices` restores the current provider's list, including Configuration
 JSON changes, retaining only listed models; otherwise both inputs clear.
-Provider/authentication changes retain no model. Submission matches the primary
-Configuration model to `model.value`. `updateControls` sets the button label,
-visibility, and required input; the toggle moves focus. Returning preserves credentials and unrelated
-Configuration; saved-Configuration and pending-request locks govern both directions.
+Provider and authentication changes normally reset the model. `updateControls`
+sets the button label, visibility, and required input; the toggle moves focus.
+Returning preserves credentials and unrelated Configuration. Saved Configuration
+and pending requests lock the toggle.
+
+If a change needs to update `plugins.allow` for Codex and the field is malformed,
+the form keeps the JSON as typed and focuses **Configuration JSON**. Use an
+array of strings or remove the field. A refused model selection, provider change,
+or Harness change keeps the last applied model, provider, Harness, and execution
+mode. The authentication method can still change: the form clears the prior
+credential and shows the new method's fields without changing the model or JSON.
+
+Before merging a model selection, `canMergeModelCatalog` checks the provider list
+that the selection would update. If the list is malformed, the form keeps the
+draft JSON as typed, opens **Advanced settings**, and focuses **Configuration JSON**.
+The warning names the affected `models.providers.<provider>.models` field. The
+edit sends no write request. [Correct the list and retry](../../reference/console/create-and-deploy.md#create-an-agent)
+to apply the model.
+
+Before a model change rewrites the JSON, `readModelConfiguration` rejects values
+that parse as infinity, including nested numbers such as `1e400`. Serialization
+would otherwise replace them with `null`. The form skips the rewrite, keeps the
+raw draft, and focuses **Configuration JSON** with an inline error. The same
+number check stops **Create Agent** before any writes. Replace the value with a
+number closer to zero and retry the action.
+
+Submission still matches the primary Configuration model to `model.value` and
+uses the normal server validation.
 
 `configurationTemplate` enables Control UI with loopback origins on port 18789.
 Compute supplies gateway authentication; Presets replace the starter unchanged.
@@ -174,6 +198,8 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-05 18:37: Explain the Configuration number range refusal on Create. (authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9 - 5fd3fde4911e1640c354d69bb09f6f3d72445a05)
+- 2026-11-04 22:06: Explain which Create Agent settings stay in place when an invalid plugin list blocks a Codex change. (authoring-run/386aa943-15cf-49cd-b53e-05831b4a7da0 - e109eba64ea0e81c02513f81f9c892a832dc1b69)
 - 2026-10-25: The per-Secret `operate` remedy names an exact-Secret grant; the Agents list gives Create Agent's next step when Agent create is denied. (findings 2507, 2508)
 - 2026-10-25: Refuse a typed model key, and disable the Preset's **Create new Secret**, where `operate` is denied on a readable Secret. (fix-2492, finding 2492)
 - 2026-10-25: An inline Secret create rereads the `operate` answer before staging. (finding 2486)

@@ -23,7 +23,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { startupPhaseHelper } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import {
   PLUGIN_RUNTIME_CODEX_CONFIG,
   PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT,
@@ -2562,7 +2562,12 @@ test("every Configuration save refuses the non-text plugins.allow and deny items
       runOpenClawRuntimeHelper({ manifest: googleOnly }, [], {
         baseConfig: configuration,
         env: {
-          OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID: managedGoogleInstall.id,
+          OPENCLAW_MANAGED_PLUGIN_JSON: JSON.stringify({
+            kind: "cli",
+            id: managedGoogleInstall.id,
+            packageName: managedGoogleInstall.packageName,
+            slotId: "account",
+          }),
           OPENCLAW_PLUGIN_RUNTIME_JSON: JSON.stringify({ manifest: googleOnly }),
         },
         workspaceNodeBindingPath: true,
@@ -3265,7 +3270,7 @@ test("gateway runtime status maps native Slack channel status without provider d
             return false;
           },
           lstatSync() {
-            return { isDirectory: () => true };
+            throw Object.assign(new Error("File not found"), { code: "ENOENT" });
           },
           mkdirSync() {},
           readFileSync() {
@@ -3771,6 +3776,12 @@ test("Codex gateway supervisor waits for its Harness plugin status without a dea
           existsSync(path) {
             return files.has(path);
           },
+          lstatSync(path) {
+            if (!files.has(path)) {
+              throw Object.assign(new Error("File not found"), { code: "ENOENT" });
+            }
+            return { isFile: () => true, mode: 0o600 };
+          },
           mkdirSync() {},
           readFileSync(path) {
             if (!files.has(path)) {
@@ -4010,6 +4021,12 @@ async function startCodexGatewaySupervisor(
       if (specifier === "node:fs") {
         return {
           existsSync: (path) => fixture.files.has(path),
+          lstatSync(path) {
+            if (!fixture.files.has(path)) {
+              throw Object.assign(new Error("File not found"), { code: "ENOENT" });
+            }
+            return { isFile: () => true, mode: 0o600 };
+          },
           mkdirSync() {},
           readFileSync(path) {
             if (!fixture.files.has(path)) {
@@ -5025,6 +5042,12 @@ for (const [dedicated, withBroker, proxyEnabled] of [
             existsSync(path) {
               return files.has(path);
             },
+            lstatSync(path) {
+              if (!files.has(path)) {
+                throw Object.assign(new Error("File not found"), { code: "ENOENT" });
+              }
+              return { isFile: () => true, mode: 0o600 };
+            },
             mkdirSync() {},
             readFileSync(path) {
               if (!files.has(path)) {
@@ -5253,74 +5276,17 @@ for (const withBroker of [false, true]) {
   });
 }
 
-test("Kubernetes embedded OpenClaw gateway mounts broker-only Codex bridge runtime", async () => {
-  const driver = createKubernetesComputeDriver(kubernetesOptions());
-  const candidate = revision({
-    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
-    plugins: codexNoPluginState(),
-  });
-  const runtime = pluginRuntimeSpecForRevision(candidate, {
-    host: "git.oce.svc",
-    domains: {},
-  });
-  const deployment = driver.deployment(
-    "gateway-plugin-compute-rev",
-    {
-      namespaceId: tenant.id,
-      agentId: agent.id,
-      revisionId: "revision-plugin-compute-1",
-    },
-    { name: "oce-plugin-compute", plane: "execution" },
-    "openclaw-enterprise/gateway-fixture:local",
-    "gateway-plugin-compute",
-    "gateway",
-    {},
-    "info",
-    driver.gatewayConfiguration(candidate, undefined, {
-      name: "oce-plugin-compute",
-      plane: "execution",
-    }),
-    true,
-    candidate.servicePrincipalId,
-    driver.harnessAuthForRevision(
-      candidate,
-      {
-        harnessAuth: {
-          ...candidate.harnessAuth,
-          backendRef: {
-            namespaceName: "oce-plugin-compute",
-            name: "plugin-model-key",
-            key: "value",
-            uid: "plugin-model-key-uid",
-          },
-        },
-      },
-      { name: "oce-plugin-compute", plane: "execution" },
-    ),
-    [],
-    [],
-    { name: "plugin-runtime-gateway-plugin-compute", runtime },
-  );
-
-  const pod = deployment.spec.template.spec;
-  assert.equal(
-    pod.volumes.some(
-      (volume) => volume.configMap?.name === "plugin-runtime-gateway-plugin-compute",
-    ),
-    true,
-  );
-  const container = pod.containers[0];
-  assert.equal(
-    container.env.some((variable) => variable.name === PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT),
-    true,
-  );
-  assert.equal(
-    container.env.some((variable) => variable.name === PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT),
-    false,
-  );
-  assert.equal(
-    container.env.some((variable) => variable.name === PLUGIN_RUNTIME_READY_MARKER_ENVIRONMENT),
-    false,
+test("an embedded OpenClaw revision cannot mount a historical broker-only Codex bridge", () => {
+  assert.throws(
+    () =>
+      pluginRuntimeSpecForRevision(
+        revision({
+          harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+          plugins: codexNoPluginState(),
+        }),
+        { host: "git.oce.svc", domains: {} },
+      ),
+    /a dedicated Codex Harness/,
   );
 });
 

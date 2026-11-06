@@ -70,6 +70,67 @@ The commands below also use `jq`.
    A succeeded deployment does not prove that the model responds; use the
    [runtime verification guide](../deploy/production-agents.md#verify-production-workloads).
 
+## Guarded first deployment and receipt recovery
+
+To deploy a saved Agent only at its reviewed Configuration ID and generation, use:
+
+```sh
+occ --namespace NAMESPACE_ID agent deploy-first AGENT_ID \
+  --configuration CONFIGURATION_ID --generation 1 --key review-1
+```
+
+Use the Configuration ID and generation you reviewed; `1` above is an example.
+The key must start with a letter or digit and contain 1–128 ASCII letters, digits, `.`,
+`_`, `~`, or `-`. Write the generation as decimal digits from `1` through
+`9007199254740991`, without leading zeros.
+Keep the nonsecret key with those values, the Namespace and Agent IDs, and the
+caller identity. Fresh admission requires an active, stopped Agent with no revision history
+and the same saved Configuration binding and generation. The
+[deployment reference](../../reference/agents/deployment.md#guarded-first-deployment)
+defines permissions and receipt behavior.
+
+If the reply is lost or its outcome is uncertain, recover with the same caller and
+all the original values. Do not substitute the Agent's current Configuration or a
+new key:
+
+```sh
+occ --namespace NAMESPACE_ID agent recover-first-deployment AGENT_ID \
+  --configuration CONFIGURATION_ID --generation 1 --key review-1
+```
+
+If `deploy-first` loses its reply, receives an invalid or mismatched receipt, or
+receives HTTP `408` or `5xx`, the CLI keeps the original error and prints a
+read-only recovery command to stderr.
+It preserves the connection options and original request values; it sends no
+automatic request. Use the same caller: the printed service-key file path must
+still identify that caller. Completed `3xx` and other `4xx` responses omit this
+uncertainty hint; follow the reported refusal or redirect guidance. A definite
+network dial failure also omits the hint because no request reached the server.
+
+A matching receipt identifies the original Agent revision. Check that revision's
+deployment status as described above; a receipt proves admission, not workload
+readiness. Recovery does not start or repeat deployment work and still works after
+a later deployment, a change to the Agent's Configuration, or the start of Agent deletion.
+
+A missing receipt (`null`) does not prove that an in-flight request failed. Do not
+resend, change the key, or use ordinary `deploy` to resolve that uncertainty. Repeat
+the read-only recovery with the original values and inspect deployment status when
+a receipt becomes available.
+
+After a first-deployment conflict, recover the original request before choosing a
+new action:
+
+- If the binding or generation changed, review the current Configuration and the
+  Agent's binding before deciding whether to deploy it.
+- If revision history exists, inspect it and the deployment status. Use ordinary
+  `deploy` only when you deliberately want a later version.
+- If the Agent is no longer stopped, inspect its deployment status before proceeding.
+
+An empty revision list is not proof of failure: it can hide versions you lack
+permission to read. Ask an administrator to inspect the result if receipt recovery
+or status access is denied. See the [admission flow](../../flows/configuration-driver/persistence-and-revisions.md#guarded-first-admission)
+for the concurrency and persistence boundaries.
+
 <span id="inspect-an-earlier-revision" class="anchor-alias"></span>
 
 ## Inspect an earlier version

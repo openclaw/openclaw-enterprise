@@ -11,7 +11,7 @@ import {
 } from "../../scripts/lib/codex-seccomp-profile.mjs";
 
 import { prepareCodexSeccompProfile } from "../../scripts/lib/codex-seccomp-k3d.mjs";
-import { writeCommand } from "../helpers/fake-commands.mjs";
+import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -784,6 +784,7 @@ test("relocated preparation entrypoints require and deliver the local shell asse
   for (const path of [
     "ci/codex-seccomp.mjs",
     "lib/codex-seccomp-k3d.mjs",
+    "lib/private-owned-path.mjs",
     "lib/codex-seccomp-profile.mjs",
     "lib/codex-seccomp-profile.ts",
     "prepare-development-codex-seccomp.mjs",

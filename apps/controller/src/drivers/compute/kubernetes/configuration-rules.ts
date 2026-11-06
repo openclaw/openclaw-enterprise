@@ -96,6 +96,38 @@ export function usesGatewayPasswordEnvironment(
   return true;
 }
 
+/**
+ * A Dedicated Codex Gateway that applies its workspace node at runtime (the controller reads its
+ * private status) confirms the node through OpenClaw's own Gateway client, which signs in with
+ * the generated gateway password: trusted-proxy authentication admits nothing else from inside
+ * the Pod. Without `gateway.auth.password` the Gateway refuses that client and activation fails
+ * with AGENT_GATEWAY_UNAUTHORIZED after the deployment stopped the running revision (finding
+ * 3132). Kubernetes Compute's validateConfiguration applies this rule, so Configuration and Preset
+ * save, Create Agent's preflight, provisioning and deploy admission refuse the missing password
+ * first. A password that is set is left to usesGatewayPasswordEnvironment and the save rules; a
+ * `gateway` or `gateway.auth` that is not an object (a Preset variable, or a value other rules
+ * refuse) is checked once filled or by those rules.
+ */
+export function requireWorkspaceNodeGatewayPassword(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  createError: SettingError,
+): void {
+  const gateway = configuration.gateway;
+  const auth = asRecord(gateway)?.auth;
+  if (
+    (gateway !== undefined && asRecord(gateway) === undefined) ||
+    (auth !== undefined && asRecord(auth) === undefined) ||
+    asRecord(auth)?.password !== undefined
+  ) {
+    return;
+  }
+  const generated = generatedGatewayPasswordReference(configuration.secrets);
+  throw createError(
+    "gateway.auth.password",
+    `must be the environment reference {source: "env", provider: "${generated.provider}", id: "${OPENCLAW_GATEWAY_PASSWORD}"} on a Dedicated Codex Agent: its Gateway uses it to apply the workspace node`,
+  );
+}
+
 const FILE_TRANSFER_PLUGIN = "file-transfer";
 
 /**

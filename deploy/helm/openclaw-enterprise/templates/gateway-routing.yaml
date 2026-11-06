@@ -2,7 +2,7 @@
 {{- $routing := .Values.gatewayRouting }}
 {{- $gatewayName := include "openclaw.gatewayRouting.gatewayName" . }}
 {{- $serviceName := include "openclaw.gatewayRouting.serviceName" . }}
-{{- $hostname := default (printf "%s.%s.svc" $serviceName $routing.envoyNamespace) $routing.hostname }}
+{{- $hostname := include "openclaw.gatewayRouting.hostname" . }}
 {{- $tlsSecretName := include "openclaw.gatewayRouting.tlsSecretName" . }}
 {{- $routeNamespaceLabel := include "openclaw.gatewayRouting.routeNamespaceLabel" . }}
 {{- $rootSecretName := include "openclaw.gatewayRouting.rootSecretName" . }}

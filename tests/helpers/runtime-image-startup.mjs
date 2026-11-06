@@ -8,7 +8,7 @@
 // runtime-image-managed-files.test.mjs,
 // runtime-image-native-listener.test.mjs and
 // runtime-image-gateway-workspace.test.mjs).
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -18,7 +18,7 @@ import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { cpuScaledImageTimeoutMs, imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
-import { followContainer } from "./docker-follow.mjs";
+import { followContainer } from "./docker-follow.ts";
 import { withTestOwnerLabel } from "./docker-test-owner.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";

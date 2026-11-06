@@ -55,9 +55,10 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 ./scripts/dev-up
 ```
 
-This profile uses the pinned K3s image, installs PostgreSQL and OCE (not
-OpenShell) in `oce-system`, and writes a generated administrator password and
-service key to the private state directory.
+The launcher installs PostgreSQL and OCE, without OpenShell, on pinned K3s in
+`oce-system` and writes the administrator password and service key to private state.
+It prepares [routing prerequisites](workspace-routing.md#requirements)
+and matching Helm/Installation settings before bootstrap.
 
 Before bootstrapping, startup checks the Codex `0.164.0` sandbox with
 its exact imported runtime image. If the node's `RuntimeDefault` blocks it, the
@@ -261,9 +262,7 @@ Verify directory search and gateway Socket Mode using the
 
 ## Verify the local boundary
 
-Startup prints the API, kubeconfig, HTTPS Console URL and public browser CA. See [Local Setup](../quickstart.md#open-the-platform-console), the [shared session boundary](../../reference/agent-native-admin.md#shared-session-boundary) and [OpenShell browser access](local-setup.md).
-
-Use the printed paths with other tools:
+Use the printed API and kubeconfig paths:
 
 ```bash
 export KUBECONFIG="<Kubeconfig path printed by scripts/dev-up>"
@@ -296,8 +295,7 @@ must authenticate through a [credential source](../../reference/credential-sourc
 to register a key and bind it to an Agent, follow
 [Use a credential source on the local OpenShell profile](openshell-credential-sources.md).
 
-The profile also selects the curated Codex Plugin Driver for managed Codex
-plugin selections. See [Agent plugins](../../reference/agent-plugins.md).
+The profile supports [managed Codex plugins](../../reference/agent-plugins.md).
 
 The Kubernetes-only OpenShell Gateway requires TLS, mTLS and authentication.
 Static-inference enforcement is separate and off by default; it is not required
@@ -361,6 +359,10 @@ backing directory. Nothing here backs up Agent workspaces. Long-lived demos need
 a durable private state directory, not `/tmp`.
 
 ## Rebuild after a source edit
+
+Controller builds record Git `HEAD`; read it with **Debug mode** in Console
+Settings. See [controller image builds](../../contributing/local-development.md#build-a-controller-image)
+for standalone builds and source metadata limits.
 
 The environment registers immutable image digests, so running containers do not
 pick up source edits. Recreate it after controller, runtime, migration, Helm, or

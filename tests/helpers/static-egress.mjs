@@ -439,7 +439,8 @@ export async function staticEgressFixture(
     : preparedGitHub;
   const preparedProvider = configurePreparedTokens?.(preparedTokens);
   if (preparedGitHub) {
-    preparedTokens.register({
+    preparedTokens.registerIssuer({
+      tokenKind: "github_app_installation",
       provider: preparedGitHubProviderRef,
       sourceFromRoute: preparedGitHubSourceFromRoute,
       issuerInput: "private_key",
@@ -448,12 +449,39 @@ export async function staticEgressFixture(
         return { origin: owner.apiOrigin, grant: githubMetadataGrant(config), schemaVersion: 2 };
       },
       configure: (...args) => owner.configure(...args),
-      readWarm: (...args) => owner.readWarm(...args),
+      resolve: (...args) => owner.resolve(...args),
       ready: (...args) => owner.ready(...args),
       withdraw: (...args) => owner.withdraw(...args),
     });
   }
+  const providerRequests = [];
+  let providerResponse = { status: 200, body: { output: "fixture answer" } };
+  const createProvider = providerServer === undefined ? createHttpsServer : providerServer;
+  const provider = createProvider({ key, cert }, async (request, response) => {
+    const bytes = await buffer(request);
+    providerRequests.push({
+      method: request.method,
+      path: request.url,
+      authorization: request.headers.authorization,
+      body: bytes.length ? JSON.parse(bytes) : undefined,
+      headers: request.headers,
+    });
+    response.writeHead(providerResponse.status, {
+      "content-type": providerResponse.contentType ?? "application/json",
+    });
+    response.write(providerResponse.rawBody ?? JSON.stringify(providerResponse.body));
+    if (providerResponse.trailers) {
+      response.addTrailers(providerResponse.trailers);
+    }
+    response.end();
+  });
+  const providerPort = await listen(t, provider);
+  const modelProvider = {
+    protocol: "openai-responses",
+    baseUrl: `https://provider.example.test:${providerPort}/v1`,
+  };
   const egress = new OpenShellCredentialProxyDriver(egressOptions, {
+    modelProvider,
     id: proxyDriverId,
     preparedProviders: preparedProvider
       ? [preparedProvider]
@@ -465,7 +493,7 @@ export async function staticEgressFixture(
   });
   const catalog = new OpenShellCredentialGatewayDriver(
     { binaries: ["/usr/bin/model-client"] },
-    { id: "openshell-credentials", backend },
+    { id: "openshell-credentials", backend, modelProvider },
   );
   const placement = createTestKubernetesComputeDriver("placement", {
     authentication: { mode: "kubeconfig", kubeconfigPath, context: "fixture" },
@@ -518,33 +546,12 @@ export async function staticEgressFixture(
   };
   const secret = await post("secrets", { name: "provider-key", value: "synthetic-key-initial" });
   const path = `/namespaces/${namespace.id}/credential-sources`;
-  const providerRequests = [];
-  let providerResponse = { status: 200, body: { output: "fixture answer" } };
-  const createProvider = providerServer === undefined ? createHttpsServer : providerServer;
-  const provider = createProvider({ key, cert }, async (request, response) => {
-    const bytes = await buffer(request);
-    providerRequests.push({
-      method: request.method,
-      path: request.url,
-      authorization: request.headers.authorization,
-      body: bytes.length ? JSON.parse(bytes) : undefined,
-      headers: request.headers,
-    });
-    response.writeHead(providerResponse.status, {
-      "content-type": providerResponse.contentType ?? "application/json",
-    });
-    response.write(providerResponse.rawBody ?? JSON.stringify(providerResponse.body));
-    if (providerResponse.trailers) {
-      response.addTrailers(providerResponse.trailers);
-    }
-    response.end();
-  });
-  const providerPort = await listen(t, provider);
   let legacySource;
   if (includeLegacy) {
     legacySource = await post("credential-sources", {
       name: "approved-copy",
       type: "openai",
+      config: { authorized_base_url: modelProvider.baseUrl },
       secrets: { api_key: secret.ref },
     });
   }
@@ -554,7 +561,7 @@ export async function staticEgressFixture(
     : await post("credential-sources", {
         name: "inference",
         type: "openai",
-        config: { base_url: `https://provider.example.test:${providerPort}/v1` },
+        config: { authorized_base_url: `https://provider.example.test:${providerPort}/v1` },
         secrets: { api_key: secret.ref },
       });
   const config = await app.createConfiguration(namespace.id, {
@@ -607,7 +614,7 @@ export async function staticEgressFixture(
     resourceId: source.id,
   });
   if (!admitRevision) {
-    return { ...app, namespace, agent, source, grant };
+    return { ...app, namespace, agent, source, grant, modelProvider };
   }
   const revisionMetadata = await app.deployAgent(namespace.id, agent.id);
   const revision = await app.controller.transact((unit) =>
@@ -984,6 +991,7 @@ export async function staticEgressFixture(
     ...app,
     namespace,
     runtimeNamespace,
+    modelProvider,
     refusalCode,
     secret,
     source,
@@ -1090,8 +1098,9 @@ export async function syntheticDispatchFixture(t, receipts) {
   const { createServer, connect } = await import("node:net");
   const { once } = await import("node:events");
   const { CredentialProxy } = await import("../../packages/occ/src/credential-proxy.ts");
-  const { openAiStaticProvider } =
+  const { createOpenAiStaticProvider } =
     await import("../../apps/controller/src/drivers/egress-proxy/openai-provider.ts");
+  const openAiStaticProvider = createOpenAiStaticProvider();
   const ref = () => ({ id: randomUUID(), generation: 1 });
   const now = Date.now();
   const deadlineAt = new Date(now + 25_000).toISOString();

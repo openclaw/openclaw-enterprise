@@ -41,6 +41,16 @@ export const PluginsConfigured = {
 };
 export const PluginsCurated = story("createPluginsCurated");
 export const PluginsDiscovered = story("createPluginsDiscovered");
+export const PluginsShortWindow = {
+  ...story("createPluginsDiscovered", {
+    name: "Short window plugin picker",
+    frameWidth: "1440px",
+    frameHeight: "480px",
+    instructions:
+      "Scroll the catalog browser with setup collapsed and expanded, choose Calendar, and reach pagination.",
+  }),
+  name: "Short window plugin picker",
+};
 export const PluginsPrefetch = story("createPluginsPrefetch");
 export const PluginsSearchLoading = story("createPluginsSearchLoading");
 export const PluginsToolsLoading = story("createPluginsToolsLoading");
@@ -100,6 +110,8 @@ export const CreateDeploymentSuperseded = {
   name: "A newer deployment took over",
 };
 export const CreateDeploymentFailed = story("createDeploymentFailed");
+export const CreateMalformedProvisioningRevision = story("createMalformedProvisioningRevision");
+export const CreateMalformedProvisioningMessage = story("createMalformedProvisioningMessage");
 export const CreateDeploymentStopped = story("createDeploymentStopped");
 export const CreateProvisioningStopped = story("createProvisioningStopped");
 export const CreateUnsupportedProvisioning = {
@@ -155,6 +167,7 @@ export const RepositoryDetails = story("createRepositoriesDetails");
 export const RepositoryDescriptionsPending = story("createRepositoriesDescriptionsPending");
 export const RepositoryHiddenCharacters = story("createRepositoriesHiddenCharacters");
 export const RepositoryLocaleSearch = story("createRepositoriesLocaleSearch");
+export const RepositoryNoMatches = story("createRepositoriesNoMatches");
 export const RepositoryContributor = {
   ...story("createRepositoriesContributor"),
   name: "Contributor without issue management",
@@ -195,6 +208,10 @@ export const CreateBoundCredentialPreset = {
 export const CreatePresetInvalidField = {
   ...story("createPresetInvalidField"),
   name: "Preset with an invalid field",
+};
+export const CreatePresetNonTextPrimary = {
+  ...story("createPresetNonTextPrimary"),
+  name: "Preset with a non-text primary",
 };
 export const CreateCapabilitiesDenied = {
   ...story("createCapabilitiesDenied"),
@@ -369,3 +386,13 @@ export const PasswordSecretConflictPat = story("createPasswordSecretConflictPat"
 export const PasswordSecretConflictOAuth = story("createPasswordSecretConflictOAuth");
 
 export const CreateOAuthStartNavigation = story("createOAuthStartNavigation");
+
+export const SharedModelDestination = {
+  ...story("createSharedModelProviderSource"),
+  name: "Authorize shared model destination",
+};
+
+export const SharedModelDestinationRefusal = {
+  ...story("createSharedModelProviderRefusal"),
+  name: "Destination authorization refusal",
+};

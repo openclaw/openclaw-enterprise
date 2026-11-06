@@ -228,7 +228,7 @@ A prepared repository App key that cannot sign stops the worker with
 - **`KUBERNETES_API_UNAVAILABLE` at startup:** The Compute preflight got no
   answer from the Kubernetes API server in the event's `host` and `port`.
   Confirm the API and worker egress policy still allows that address (Helm
-  `cluster.cidrs`) and that the server is running.
+  `cluster.cidrs` and `cluster.port`) and that the server is running.
 - **`AUTH_SECRET_INVALID` or `AUTH_BASE_URL_INVALID` at startup:** The API
   and the initialization Job refuse a missing `OCC_AUTH_SECRET` or one under 32
   characters (`AUTH_SECRET_INVALID`), and an `OCC_AUTH_BASE_URL` that is not an
