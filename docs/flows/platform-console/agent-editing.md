@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-05
-last_updated_session: authoring-run/17947441-42c1-43df-93a6-339dac4803dc
+updated: 2026-11-06
+last_updated_session: authoring-run/8cf75a48-1fad-48a2-b275-4defc211389a
 ---
 
 # Console Agent editing and runtime requests
@@ -66,10 +66,15 @@ Browsing: `packages/occ/src/index.ts:listAgents`, `listRevisions`,
 `getAgentForBrowsing`, and `getRevisionForBrowsing`.
 `packages/occ/src/state/postgres-state.ts:browseSavedConfiguration` returns metadata
 plus `configurationReadError` on decode failure. Operational reads and queries stay strict. Unreadable drafts block editing and deployment without defaults.
-**Selected for service** uses `activeRevisionId`.
-**Viewing version** switches `revision=draft`/`revision=<id>` without activation.
-**Load older versions** appends, keeps selection and focuses the picker after the last page.
-`deploymentStatus`/`deploymentErrorCode` mark failures after reload, excluding superseded/stopped.
+**Selected for service** uses `activeRevisionId`; browsing never activates.
+`detail.mts:renderAgentDetail` separates **Revisions** from Agent-wide **Workspace files**
+and **Access**. Returning opens Configuration; switches preserve scroll.
+`renderVersions` puts history beside details; at 1,100 px or less, **Viewing version**
+replaces it. `renderDetailHeading` shows **Revision vN**, **Build next revision**, or
+**Next revision draft** with read-only scope. Permission responses update labels.
+Switching retains supported tabs; draft Logs opens Configuration.
+**Load older versions** appends, preserves selection, and returns focus to a visible control.
+`deploymentStatus`/`deploymentErrorCode` mark failures, excluding superseded/stopped.
 
 **Deployment** mounts activity, the selected record, and diagnostics
 (`agents/deployment-evidence.mts`). Polling continues across tabs.
@@ -164,12 +169,11 @@ reads prevent the bodyless deploy POST. Success opens the version. Read history
 before retrying an uncertain POST. Browser reads are separate from admission.
 
 `apps/controller/src/console/drafts.mts:createDraftStore` holds document-local drafts.
-`console.mjs:resetReads` and `detail.mjs:renderTab` capture fields before teardown,
-excluding passwords. Namespace and Agent keys isolate drafts; session expiry,
-user change, logout, exit, and reload clear them. Nothing enters browser storage
-or URLs. Configuration, authentication, and channel baselines prevent stale saves;
-channel snapshots include controls and staged Secret metadata. Reload draft reapplies
-only the reader's edits, naming overlaps and skipped choices. Save and Cancel
+`console.mjs:resetReads` and `detail.mjs:renderTab` capture fields except passwords.
+Namespace and Agent keys isolate drafts; session expiry, user change, logout,
+exit, and reload clear them. Nothing enters browser storage or URLs. Baselines
+prevent stale saves; channel captures include staged Secret metadata.
+Reload draft reapplies edits, naming overlaps and skipped choices. Save and Cancel
 clear captures; pending saves retain recovery guards.
 
 `dom.mts:dismissOnBackdrop` requires press and click outside the topmost editor.
@@ -190,7 +194,7 @@ without audited exact-read denials (2619). Successful reads show names and IDs.
 Names link to metadata and consumers at `/console/secrets?secret=<id>`.
 Secret fields link listed Secrets. Unlisted Secrets show the same unavailable text (D757).
 Absent, loading, and unavailable states stay distinct. Failures retain IDs.
-Stale responses are ignored. Current 401s expire the session. Summaries need neither
+Stale responses are ignored. Current 401s expire the session. Refused exact reads are audited denials. Summaries need neither
 collection permission nor Secret values.
 
 `apps/controller/src/console/channels/slack.mjs:appendFields` separates channel
@@ -199,12 +203,11 @@ everyone**; explicit IDs fill the mutually exclusive input. Mention
 requirements remain independent. `updatedSlack` replaces selected channels'
 `users`, preserving DM and group policies, unrelated settings, and bindings.
 
-The DM selector preserves omitted policies on existing configurations; new setup
-starts with Allowlist. `validate` rejects empty/wildcard DM allowlists and
-unsupported organization-wide policies. Selecting Open writes `allowFrom: ["*"]`;
-leaving it for Allowlist or Pairing clears the wildcard input. Untouched lists
-and native `dm.enabled` remain unchanged. Configuration save persists the
-selection; redeployment applies it. See
+The DM selector preserves omitted policies; new setup starts with Allowlist.
+`validate` rejects empty/wildcard allowlists and unsupported organization-wide
+policies. Open writes `allowFrom: ["*"]`; Allowlist or Pairing clears that wildcard.
+Untouched lists and `dm.enabled` remain unchanged. Saving persists the selection;
+redeployment applies it. See
 [Slack policies](../../reference/configuration/secrets.md#native-channel-configuration).
 
 `apps/controller/src/console/agents/detail.mts:renderAgentDetail` supplies Namespace,
@@ -226,11 +229,11 @@ Any listed denial means per-Secret operate: new Secrets have none, disabling pic
 creation with reasons and existing-only hints. Failed rereads keep prior answers.
 
 `apps/controller/src/console/agents/secret-picker.mjs:openCreateSecretDialog` shows
-an editable Agent-prefixed Name, the Secrets page's `secretValueControl` (CRLF becomes LF),
-and optional fixed Slack key. Both meet the API's rules before POST, which stores the Secret
-and stages returned metadata; cancellation never deletes it. Conflicts retain inputs.
-Readiness errors differ from name/backend conflicts. Success, cancellation, and uncertain outcomes clear values;
-uncertain outcomes block retries until refresh. The
+an editable Agent-prefixed Name, `secretValueControl` (CRLF becomes LF), and optional
+fixed Slack key. API validation precedes POST; success stages metadata and cancellation
+never deletes the Secret. Conflicts retain inputs; readiness errors remain distinct.
+Success, cancellation, and uncertain outcomes clear values; uncertainty blocks retries
+until refresh. The
 [Secret storage flow](../secret-storage-and-delivery.md) owns persistence and
 recovery. Metadata and Credentials links open new tabs, preserving edits.
 Values are never retrieved.
@@ -299,8 +302,6 @@ generic deploy `403` rereads the answer and names them in its alert. A caller wi
 requiring readable version history and an unchanged draft. API authorization and
 Driver compatibility remain authoritative.
 
-**Open draft** shows bound Slack Secrets without proving live health.
-
 `OpenClawController.deployAgent` checks transport credentials before admission.
 Before the first version, Agent `read`/`operate` plus `deploy` authorize Compute
 to check ownership/workloads and create missing whole Secrets, preserving matching
@@ -354,10 +355,6 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
-- 2026-11-05 19:05: Preserve conflict focus and selection. (authoring-run/17947441-42c1-43df-93a6-339dac4803dc - 0ecbe50bfe0df315fda06a90274b9e218b48d96c)
-- 2026-11-05 18:37: Explain the Configuration number range refusal on Save. (authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9 - 5fd3fde4911e1640c354d69bb09f6f3d72445a05)
-- 2026-11-05 01:51: Guard pending-save history. (authoring-run/19e029b0-7ee3-4034-8e3b-e403265ff746 - 516ee6d87dea5326df70e647b17e2a141392cd0c)
-- 2026-11-05 01:03: Document read failures. (authoring-run/68de7101-f5b0-459f-8861-9ec3e614dcb2 - 8ee2e630)
-- 2026-10-31 21:30: Hide the password button when save would refuse it. (fix-3064)
+- 2026-11-06 11:00: Reconcile revision workspace documentation with current read failures and draft guards. (authoring-run/8cf75a48-1fad-48a2-b275-4defc211389a - 21f2c86919a0748e887eae5e58a780de08cfa301)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.

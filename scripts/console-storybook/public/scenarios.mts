@@ -2033,7 +2033,7 @@ const authoredScenarios = {
       "Edit saved settings while the current version stays unchanged; deploy a new immutable version.",
     steps: [
       "Open Edit Slack, paste CNEW123 into Channels and press Enter, then Save configuration.",
-      "Choose v1 in Viewing version and open Channels: it still has the original settings.",
+      "Choose v1 in revision history, or Viewing version at phone width, and open Channels: it still has the original settings.",
       "Select Open draft, then Deploy new version. The saved draft is deployed, not the viewed snapshot.",
       "Refresh deployment and inspect the new version. The prior snapshot remains readable.",
       "Workspace file edits are separate: they save immediately without a new revision.",

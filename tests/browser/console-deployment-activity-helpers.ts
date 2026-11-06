@@ -32,6 +32,9 @@ export const deploymentRecordUrl = (
 
 export async function showDeploymentTab(page: Page) {
   const tab = page.getByRole("tab", { name: "Deployment", exact: true });
+  if (!(await tab.isVisible())) {
+    await page.getByRole("tab", { name: "Revisions", exact: true }).click();
+  }
   await tab.waitFor();
   if ((await tab.getAttribute("aria-selected")) !== "true") {
     await tab.click();

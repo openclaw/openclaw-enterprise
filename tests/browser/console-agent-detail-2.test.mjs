@@ -8,6 +8,7 @@ import { fileConsoleApp } from "../helpers/console-app.mjs";
 import { createNativeConsoleFixture, nativeBrowserSupported } from "./console-native-ingress.ts";
 
 import {
+  chooseRevision,
   apiRequests,
   detailUrl,
   holdRequests,
@@ -260,7 +261,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.match(new URL(expectedAccess.data.url).hostname, new RegExp(`\\.${nativeDomain}$`));
 
   // Viewing an older configuration snapshot must still open the current active gateway.
-  await page.getByLabel("Viewing version").selectOption(historicalRevisionId);
+  await chooseRevision(page, historicalRevisionId);
   await page.getByRole("link", { name: "Open Agent UI" }).waitFor();
   assertRevisionUrl(page, historicalRevisionId);
   assert.equal(

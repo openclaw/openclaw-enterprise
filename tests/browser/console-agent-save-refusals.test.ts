@@ -844,6 +844,7 @@ async function expectOperateControls(page: Page, allowed: boolean) {
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
   await stopRow.waitFor({ state: allowed ? "visible" : "hidden" });
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByRole("tab", { name: "Deployment", exact: true }).click();
   const run = page.getByRole("button", { name: "Run diagnostics for this version", exact: true });
   await run.waitFor();
@@ -932,6 +933,7 @@ async function operateScenario(t: TestContext, name: string) {
     },
     // The first Logs visit records the status denial without a fresh permission read.
     async rememberStatusDenial() {
+      await page.getByRole("tab", { name: "Revisions", exact: true }).click();
       await page.getByRole("tab", { name: "Logs", exact: true }).click();
       await page.getByText(/Runtime status requires Agent operate/).waitFor();
       await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
@@ -944,6 +946,7 @@ async function operateScenario(t: TestContext, name: string) {
           response.request().method() === "GET" &&
           response.status() === 200,
       );
+      await page.getByRole("tab", { name: "Revisions", exact: true }).click();
       await page.getByRole("tab", { name: "Logs", exact: true }).click();
       await answered;
       await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
@@ -994,6 +997,7 @@ test("an operate answer that arrives while Workspace is shown applies to it", as
     method: "GET",
     afterServer: true,
   });
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByRole("tab", { name: "Logs", exact: true }).click();
   await reread.requested;
   // The restored Workspace is the retained one (every file loaded first): a rebuilt tab would

@@ -157,7 +157,7 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
     .selectOption("AGENTS.md");
   assert.equal(await file.inputValue(), "# Unsaved instructions\n");
   await page.setViewportSize({ width: 1200, height: 800 });
-  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   await waitForWorkspaceEditors(page, ["AGENTS.md", "USER.md"]);
   assert.equal(await file.inputValue(), "# Unsaved instructions\n");
@@ -897,6 +897,7 @@ test("an Agent read answered after deletion was requested leaves the Workspace f
   const poll = await makeCurrent({ waitForPoll: false });
   await agentRead.requested;
   await page.clock.resume();
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("button", { name: "Delete Agent" }).click();
   await page

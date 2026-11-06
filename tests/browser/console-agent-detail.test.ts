@@ -1410,7 +1410,10 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
   assert.equal(await page.getByRole("button", { name: "Save Configuration" }).isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   await page.getByRole("button", { name: "Reload draft" }).click();
-  await page.getByText(/generation 2/).waitFor();
+  await page
+    .locator(".agent-draft-actions")
+    .getByText(/generation 2/)
+    .waitFor();
   await revealNativeConfiguration(page, "View native Configuration");
   await page.getByText('"marker": "after-unknown"').waitFor();
   assert.equal(interceptedPatches, 1);
@@ -1467,6 +1470,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
     detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace"),
   );
   await page.getByRole("heading", { name: "Stop Candidate" }).waitFor();
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   // A slow permission answer reveals the page at FIRST_ACTIVITY_WAIT_MS, before the native admin
   // status read it gates is sent. Clear the log only after that first read, so the reread below
@@ -1572,6 +1576,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   assert.ok(cleared);
   assert.equal(cleared.desiredRuntimeState, "stopped");
   assert.equal(cleared.activeRevisionId, undefined);
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("button", { name: "Refresh stop status" }).click();
   await page
@@ -1598,7 +1603,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   await page.getByText(STOPPED_NO_VERSION).waitFor();
   assert.equal(await page.getByText(/deployment in progress is cancelled/).count(), 0);
 
-  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByRole("button", { name: "Open draft", exact: true }).last().click();
   await page.getByRole("button", { name: "Deploy new version" }).click();
   await page.waitForURL(/revision=rev_/);
@@ -1697,6 +1702,7 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
   await workspace.click();
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
   await file.fill(draft);
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
 
   // The worker clears the current version; Refresh stop status shows it without a reload too.
@@ -1720,8 +1726,8 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   assert.equal(
     await page
-      .getByRole("combobox", { name: "Viewing version", exact: true })
-      .getByRole("option")
+      .getByRole("combobox", { name: "Viewing version", exact: true, includeHidden: true })
+      .getByRole("option", { includeHidden: true })
       .filter({ hasText: "Selected for service" })
       .count(),
     0,
@@ -1733,6 +1739,7 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
   // Files are live Agent data, not a revision snapshot. A later serving revision restores
   // the unsaved draft, but must not silently write it to the workspace.
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await stopRegion.getByRole("button", { name: "Refresh stop status" }).click();
   await workspace.click();
@@ -2248,14 +2255,16 @@ for (const viewport of [
     const zone = page.getByRole("region", { name: "Danger zone", exact: true });
     await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
     assert.equal(await zone.count(), 0);
+    await page.getByRole("tab", { name: "Revisions", exact: true }).click();
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await zone.waitFor();
-    const tabs = page.getByRole("tablist", { name: "Agent configuration views" });
+    const tabs = page.getByRole("tablist", { name: "Selected revision details" });
     for (const name of await tabs.getByRole("tab", { selected: false }).allTextContents()) {
       await tabs.getByRole("tab", { name, exact: true }).click();
       await tabs.getByRole("tab", { name, selected: true, exact: true }).waitFor();
       assert.equal(await zone.count(), 0, name);
     }
+    await page.getByRole("tab", { name: "Revisions", exact: true }).click();
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await waitForDangerZoneRows(page, { stop: true, delete: true });
     assert.equal(await page.locator(".card--danger").count(), 1);
@@ -2543,7 +2552,7 @@ test("a version editor without Agent update can recover a failed deployment from
   // The held answer keeps the page behind its stand-in until the overview's bounded wait runs
   // out; run it out rather than wait for it.
   await page.clock.fastForward(FIRST_ACTIVITY_WAIT_MS);
-  await versionChooser(page).waitFor();
+  await versionChooser(page).waitFor({ state: "attached" });
   const summary = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
   firstPermissions.release();
   const response = await summary;
@@ -2709,6 +2718,14 @@ test("a reader without update views the version draft read-only", async (t) => {
     0,
   );
   await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
+  const context = page.locator(".agent-revision-context");
+  await context.getByRole("heading", { name: "Next revision draft", exact: true }).waitFor();
+  assert.equal(await context.locator(".agent-revision-state").textContent(), "Draft · Read-only");
+  assert.equal(await context.locator(".eyebrow").textContent(), "Read-only Configuration");
+  assert.equal(
+    await context.locator(".agent-revision-scope").textContent(),
+    "Read-only draft. These tabs describe the saved settings for the next revision.",
+  );
   assert.equal(await page.getByText(/New version\. Changes affect/).count(), 0);
   // The draft card names the draft; Deploy says why it is disabled, with no editor's steps.
   await page
@@ -2806,6 +2823,10 @@ test("a late permission answer relabels a reader's version entry and skips plugi
   assert.deepEqual(capabilities(), []);
   secondAnswer.release();
   await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
+  await page
+    .locator(".agent-revision-context .agent-revision-state")
+    .filter({ hasText: "Draft · Read-only" })
+    .waitFor();
   assert.deepEqual(capabilities(), []);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
@@ -2859,6 +2880,13 @@ test("an Agent editor without Configuration update sees the Configuration read-o
   assert.equal(
     await page.locator("#revision-selector option[value=draft]").textContent(),
     "Draft · Read-only Configuration",
+  );
+  const context = page.locator(".agent-revision-context");
+  assert.equal(await context.locator(".eyebrow").textContent(), "Read-only Configuration");
+  assert.equal(await context.locator(".agent-revision-state").textContent(), "Draft");
+  assert.equal(
+    await context.locator(".agent-revision-scope").textContent(),
+    "Configuration is read-only. Other draft settings follow your permissions.",
   );
   // Agent update alone keeps the draft a member can change, so the notice is not a reader's.
   await page

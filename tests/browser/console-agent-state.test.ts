@@ -2352,13 +2352,12 @@ test("A return to the Access tab after a revoke shows the member notice, audited
     account.credentials,
   );
   const accessTab = page.getByRole("tab", { name: "Access", exact: true });
-  const configurationTab = page.getByRole("tab", { name: "Configuration", exact: true });
   const loaded = page.getByText("Current policy loaded.", { exact: true });
   const remove = page.getByRole("button", { name: "Remove binding", exact: true });
   await accessTab.click();
   await loaded.waitFor();
   await waitForEnabled(remove.first());
-  await configurationTab.click();
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await waitForIdleFetches(page);
   // An administrator's return reads the policy again and shows it as before.
   let sent = requests.length;
@@ -2377,7 +2376,7 @@ test("A return to the Access tab after a revoke shows the member notice, audited
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
   await shared.waitFor();
-  await configurationTab.click();
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await waitForIdleFetches(page);
   sent = requests.length;
   await accessTab.click();
@@ -2386,7 +2385,7 @@ test("A return to the Access tab after a revoke shows the member notice, audited
   assert.equal(policyReads(sent).length, 2);
   assert.equal(await shared.isVisible(), true);
   assert.equal(await loaded.count(), 0);
-  await configurationTab.click();
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await waitForIdleFetches(page);
   assert.deepEqual(iamDenials(), []);
 
@@ -2668,7 +2667,7 @@ test("A revoke the Access tab settles takes away administrator controls without 
   await waitForEnabled(remove);
   await accessTab.click();
   await page.getByText("Current policy loaded.", { exact: true }).waitFor();
-  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await waitForIdleFetches(page);
 
   revoke();
@@ -3181,7 +3180,7 @@ test("A Restriction refusal after confirmed administration keeps an administrato
     "GET",
     `${fixture.origin}/namespaces/${namespace.id}/secrets/${secret.id}`,
   );
-  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   assert.equal((await refusal).status(), 403);
   await page.getByText(BOUND_SECRET_READ_REFUSED, { exact: true }).waitFor();
   await waitForIdleFetches(page);
@@ -3309,10 +3308,14 @@ test("Back to a refused Access tab opens Configuration", async (t) => {
   await page.getByRole("heading", { name: "Left Agent" }).waitFor();
   await page.getByRole("tab", { name: "Access", exact: true }).click();
   await read.requested;
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.waitForURL((current) => current.searchParams.get("tab") === "plugins");
   read.release();
   await page.getByRole("tab", { name: "Access" }).waitFor({ state: "detached" });
+  await page.goBack();
+  await page.waitForURL((current) => current.searchParams.get("tab") === "configuration");
+  // Revisions added a Configuration entry; the next Back targets the refused Access entry.
   await page.goBack();
   await page.waitForURL((current) => current.searchParams.get("tab") === "configuration");
   await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
@@ -4066,7 +4069,7 @@ test("Agent detail does not move shown sections when Deployment activity first s
   await page.locator(".agent-detail-pending").waitFor({ state: "attached" });
   // The version's own reads finish while Deployment activity's first read is still held.
   await page
-    .locator(".agent-version-heading", { hasText: "Version v1" })
+    .locator(".agent-version-heading", { hasText: "Revision v1" })
     .waitFor({ state: "attached" });
   assert.equal(await page.locator(".agent-detail-pending").count(), 1);
   assert.equal(await page.locator(".agent-version-layout").isVisible(), false);

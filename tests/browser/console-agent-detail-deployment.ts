@@ -20,6 +20,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import {
   deploymentStatusResponse,
   authorizationDenials,
+  chooseRevision,
   apiRequests,
   detailUrl,
   draftActions,
@@ -321,7 +322,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
   });
   const url = detailUrl(fixture, namespace.id, agent.id, current.revision.id, "configuration");
   await login(page, fixture, url);
-  await versionChooser(page).waitFor();
+  await versionChooser(page).waitFor({ state: "attached" });
   await waitForChosenVersion(page);
   const overview = page.locator(".agent-current-summary > div");
   await overview.nth(0).getByText("v1", { exact: true }).waitFor();
@@ -524,7 +525,8 @@ test("Agent detail separates the current version, viewed version, and latest dep
     ).length >= 1,
   );
 
-  await versionChooser(page).selectOption(
+  await chooseRevision(
+    page,
     await page
       .locator("#revision-selector option")
       .filter({ hasText: /^v2(?: ·|$)/ })
@@ -535,7 +537,8 @@ test("Agent detail separates the current version, viewed version, and latest dep
     .filter({ hasText: pending.id })
     .waitFor({ state: "attached" });
   await overview.nth(0).getByText("v1", { exact: true }).waitFor();
-  await versionChooser(page).selectOption(
+  await chooseRevision(
+    page,
     await page
       .locator("#revision-selector option")
       .filter({ hasText: /^v1(?: ·|$)/ })
@@ -706,7 +709,8 @@ for (const unreadable of ["draft", "revision"]) {
         ).length,
         0,
       );
-      await versionChooser(page).selectOption(
+      await chooseRevision(
+        page,
         await page
           .locator("#revision-selector option")
           .filter({ hasText: /^v1(?: ·|$)/ })
@@ -1228,7 +1232,7 @@ test("Gateway password access saves the generated reference without changing adm
     first.revision.id,
   );
   assert.equal(nonAuthWriteRequests(requests).length, 1);
-  await page.getByLabel("Viewing version").selectOption(first.revision.id);
+  await chooseRevision(page, first.revision.id);
   await page.getByRole("button", { name: "Edit current Configuration", exact: true }).waitFor();
   assert.equal(await enable.count(), 0);
 
@@ -2016,14 +2020,15 @@ test("Agent detail preserves admitted revision history while draft edits change 
   requests.length = 0;
 
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
-  await page.getByLabel("Viewing version").selectOption(first.revision.id);
+  await chooseRevision(page, first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
   await expectNoText(page, /"marker": "rev-two"|"marker": "draft-current"/, () =>
     waitForIdleFetches(page),
   );
 
-  await versionChooser(page).selectOption(
+  await chooseRevision(
+    page,
     await page
       .locator("#revision-selector option")
       .filter({ hasText: /^v2(?: ·|$)/ })
@@ -2037,7 +2042,8 @@ test("Agent detail preserves admitted revision history while draft edits change 
   );
   assertRevisionUrl(page, second.revision.id);
 
-  await versionChooser(page).selectOption(
+  await chooseRevision(
+    page,
     await page
       .locator("#revision-selector option")
       .filter({ hasText: /^v1(?: ·|$)/ })
@@ -2162,7 +2168,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   assert.deepEqual(JSON.parse(await editor.inputValue()), editedValues);
-  await page.getByLabel("Viewing version").selectOption(second.revision.id);
+  await chooseRevision(page, second.revision.id);
   const requestedMode = page.locator(".configuration-summary dt", {
     hasText: "Requested Gateway managed mode",
   });
@@ -2185,7 +2191,10 @@ test("Agent detail preserves admitted revision history while draft edits change 
   );
   await page.getByRole("button", { name: "Save Configuration" }).click();
   assert.equal((await savedConfiguration).status(), 200);
-  await page.getByText(/generation 5/).waitFor();
+  await page
+    .locator(".agent-draft-actions")
+    .getByText(/generation 5/)
+    .waitFor();
   const patched = configurationPatchRequests(requests, namespace.id, agent.configurationId);
   assert.deepEqual(
     patched.map((request) => request.body),
@@ -2200,7 +2209,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   assert.deepEqual(asObject(currentConfiguration.data).values, editedValues);
   assert.deepEqual(asObject(currentConfiguration.data).secretBindings, secretBindings);
 
-  await page.getByLabel("Viewing version").selectOption(first.revision.id);
+  await chooseRevision(page, first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
   await expectNoText(page, /"marker": "draft-edited"|"marker": "stale-server"/, () =>
@@ -2234,7 +2243,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
     .waitFor();
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(asObject(current.data).harnessAuth, null);
-  await page.getByLabel("Viewing version").selectOption(first.revision.id);
+  await chooseRevision(page, first.revision.id);
   await page
     .getByRole("link", {
       name: "Auth Revisioned Agent",
@@ -2258,7 +2267,10 @@ test("Agent detail preserves admitted revision history while draft edits change 
   assert.match(await editor.inputValue(), /"marker": "cancel-server"/);
   await editor.fill(JSON.stringify(nativeValues("after-cancel")));
   await page.getByRole("button", { name: "Save Configuration" }).click();
-  await page.getByText(/generation 7/).waitFor();
+  await page
+    .locator(".agent-draft-actions")
+    .getByText(/generation 7/)
+    .waitFor();
 
   // Saving an Agent setting preserves both an unsaved editor and a concurrent reassignment.
   await page.getByRole("button", { name: "Edit Configuration" }).click();
@@ -2662,7 +2674,7 @@ test("Agent detail saves plugin changes for the next revision without changing a
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByRole("heading", { name: "Plugin selections snapshot" }).waitFor();
   assert.deepEqual(JSON.parse(text(await page.locator("pre").textContent())), editedPlugins);
-  await page.getByLabel("Viewing version").selectOption(first.revision.id);
+  await chooseRevision(page, first.revision.id);
   await page.waitForURL((current) => current.searchParams.get("revision") === first.revision.id);
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByRole("heading", { name: "Plugin selections snapshot" }).waitFor();

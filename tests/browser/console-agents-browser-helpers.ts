@@ -649,6 +649,17 @@ export async function revealNativeConfiguration(page: Page, label: string) {
   await page.getByText(label).click();
 }
 
+export async function chooseRevision(page: Page, revisionId: string | null) {
+  assert.ok(revisionId, "Expected a revision option value");
+  const selector = page.locator("#revision-selector");
+  await selector.waitFor({ state: "attached" });
+  if (await selector.isVisible()) {
+    await selector.selectOption(revisionId);
+  } else {
+    await page.locator(".agent-revision-list").locator(`[data-revision="${revisionId}"]`).click();
+  }
+}
+
 export function detailUrl(
   fixture: Pick<Fixture, "origin">,
   namespaceId: string,
@@ -1186,7 +1197,7 @@ const versionName = (n: number) => new RegExp(`^v${n}(?: ·|$)`);
 // Version `n`'s option in the chooser.
 
 export const versionOption = (scope: Scope, n: number) =>
-  versionChooser(scope).getByRole("option", { name: versionName(n) });
+  versionChooser(scope).getByRole("option", { includeHidden: true, name: versionName(n) });
 
 // Waits until the chooser has a selected version, or until version `n` is the selected one.
 export function waitForChosenVersion(scope: Scope, n?: number) {
@@ -1194,7 +1205,7 @@ export function waitForChosenVersion(scope: Scope, n?: number) {
     n === undefined
       ? versionChooser(scope).locator("option:checked")
       : versionChooser(scope)
-          .getByRole("option", { selected: true })
+          .getByRole("option", { includeHidden: true, selected: true })
           .filter({ hasText: versionName(n) });
   return chosen.waitFor({ state: "attached" });
 }

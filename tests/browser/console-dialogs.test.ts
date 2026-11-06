@@ -294,7 +294,9 @@ test("Stop, row Stop and Namespace deletion dialogs keep focus that moved on bef
     .click();
   await cancelKeeps(
     "Stop this Agent?",
-    page.getByRole("tab", { selected: true }),
+    page
+      .getByRole("tablist", { name: "Selected revision details" })
+      .getByRole("tab", { selected: true }),
     "Agent detail Stop keeps focus on the tab",
   );
 

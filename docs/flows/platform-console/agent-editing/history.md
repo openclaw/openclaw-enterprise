@@ -8,12 +8,20 @@ This record preserves the dated changes to the Console Agent editing flow. See t
 
 ## Changelog
 
+- 2026-11-05 19:05: Preserve conflict focus and selection. (authoring-run/17947441-42c1-43df-93a6-339dac4803dc - 0ecbe50bfe0df315fda06a90274b9e218b48d96c)
+- 2026-11-05 18:37: Explain the Configuration number range refusal on Save. (authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9 - 5fd3fde4911e1640c354d69bb09f6f3d72445a05)
+- 2026-11-05 01:51: Guard pending-save history. (authoring-run/19e029b0-7ee3-4034-8e3b-e403265ff746 - 516ee6d87dea5326df70e647b17e2a141392cd0c)
+- 2026-11-05 01:03: Document read failures. (authoring-run/68de7101-f5b0-459f-8861-9ec3e614dcb2 - 8ee2e630)
+- 2026-11-03 12:59: Reconcile revision navigation with current permission and deployment behavior. (authoring-run/8eb58bdf-15cb-49b7-bc56-93030b0c09b7 - a17112643095dc92712e62bd9ae17f8690f5b8cc)
+- 2026-10-31 21:30: Hide the password button when save would refuse it. (fix-3064)
+
 - 2026-10-31 09:00: Confirm access when the read after Reload draft finds no grant outstanding. (fix-3030)
 - 2026-10-31 08:00: Name the save after a refused Retry. (fix-offers-1031)
 - 2026-10-31 07:30: Word an unconfirmed Retry without a Configuration save; clear it on Reload draft. (fix-3023)
 - 2026-10-31 03:45: Say what a Slack-off Retry did and keep its focus. (fix-slackoff-copy)
 - 2026-10-31 01:00: Check and retry bound Secrets' grants with Slack off. (fix-3018)
 - 2026-10-30 23:30: Keep the version's record in place when deployment activity settles. (fix-3016)
+- 2026-10-29 14:11: Document section scroll and read-only draft labels. (authoring-run/996aef3b-91d0-4c2c-a7d1-a99d01be54e2 - 29e94513d2e982015bd641ae9a5dd1788c96714c)
 - 2026-10-29 12:43: Preserve overlapping overview and record reads. (authoring-run/22e56d10-b3c5-43f9-b088-c060fbfbe64f - 4af87e8139aafb7469b60cf38846935c1266baed)
 - 2026-10-29 12:23: Retire denied Save views. (authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25 - 5d8c060238a58)
 - 2026-10-29 11:50: Track terminal overview reconciliation. (terminal-regrant - 1a16ee6c8ff11aaa0b8ea2451aabbc5445d8a72c)
@@ -27,6 +35,7 @@ This record preserves the dated changes to the Console Agent editing flow. See t
 - 2026-10-28 11:48: Quiet refresh (uncommitted). (authoring-run/4573d808-e28c-4e0f-8c52-faacba26092a - 8b5bee3ef01644cf7731f68794fe87d6b4b1d265)
 - 2026-10-28 10:57: Clarify keyboard focus during record refresh. (authoring-run/7832bcaa-29cd-4303-99ce-edf549ad55d6 - e7f7c242158627219f6ce9d398c5cc034d721f7e)
 - 2026-10-27: Credentials follows the default Slack account's keys and every bound Secret's grant; Deploy waits for grant reads. (findings 2526, 2529, 2540-2542, 2554, 2558, 2575)
+- 2026-10-27 20:22: Document revision workspace and Agent section changes. (authoring-run/13203092-b2e5-47f0-8e91-9f45bf9ae3c0 - 222d2266842db457415e146b70a30abf430480aa)
 - 2026-10-27 13:55: Document Deployment snapshot-read recovery; uncommitted changes. (authoring-run/99997d03-9533-4cff-b942-8fe773c472db - b1e6d83d1cde4741d6f0b857e30e473ec1f97a18)
 - 2026-10-27 09:30: Document the Agent detail version picker, Deployment tab, and direct Agent UI access. Accompanying uncommitted changes. (authoring-run/f3434faa-8624-4f34-83a2-521047f80329 - 24a35dff22e1efb2a9b7058f5c90d6d9e2f9caf7)
 - 2026-10-25: Move step 6 (workspace files) to [its own trace](../agent-workspace-files.md); move older entries to history. (finding 2488)
