@@ -30,6 +30,12 @@ import {
 } from "./diagnostics.ts";
 import type { EgressRoute } from "./egress.ts";
 import {
+  WORKSPACE_VERIFIER,
+  verifyWorkspaceVerifier,
+  workspaceVerifierPolicy,
+  workspaceVerifierTool,
+} from "./workspace-verifier.ts";
+import {
   bridge,
   INVALID_CAPABILITY,
   listen,
@@ -65,6 +71,7 @@ const startupMessages = new Set([
   "runtime_workspace_separation",
   "compiled_agent_missing",
   "grant_covers_private_runtime",
+  "workspace_verifier_refused",
   "owner_config_file",
   "linux_arm64_required",
   "runtime_already_used",
@@ -156,6 +163,7 @@ export interface HostConfig {
   read: string[];
   exec: string[];
   linuxPreview: true;
+  workspaceVerifierSha256?: string;
 }
 
 export interface StartInput {
@@ -274,6 +282,7 @@ const hostKeys = [
   "read",
   "exec",
   "linuxPreview",
+  "workspaceVerifierSha256",
 ];
 export function hostConfig(input: unknown, additionalKeys: readonly string[] = []): HostConfig {
   const data = checked("config-shape", () => {
@@ -320,6 +329,13 @@ export function hostConfig(input: unknown, additionalKeys: readonly string[] = [
     exec: checked("exec-grants", () => grants(data.exec)),
     linuxPreview: true,
   };
+  if (data.workspaceVerifierSha256 !== undefined) {
+    config.workspaceVerifierSha256 = checked("grant-layout", () => {
+      const sha = string(data.workspaceVerifierSha256);
+      verifyWorkspaceVerifier(sha, workspace);
+      return sha;
+    });
+  }
   const grantsAndBins = [
     config.agentBuildDir,
     config.boxBin,
@@ -327,6 +343,7 @@ export function hostConfig(input: unknown, additionalKeys: readonly string[] = [
     config.codexBin,
     ...config.read,
     ...config.exec,
+    ...(config.workspaceVerifierSha256 === undefined ? [] : [WORKSPACE_VERIFIER]),
   ];
   for (const path of grantsAndBins) {
     if (
@@ -531,7 +548,27 @@ export function start(
         }),
         ownerOnly,
       );
-      writeFileSync(policyFile, policy(input.egress ?? []), ownerOnly);
+      const verifier = config.workspaceVerifierSha256;
+      if (verifier !== undefined) {
+        if (
+          [
+            ...config.read,
+            ...config.exec,
+            config.nodeBin,
+            config.codexBin,
+            ...readOnly,
+            ...writable,
+          ].some((path) => pathWithin(path, WORKSPACE_VERIFIER))
+        )
+          throw new Error("workspace_verifier_refused");
+        verifyWorkspaceVerifier(verifier, config.workspace);
+      }
+      writeFileSync(
+        policyFile,
+        policy(input.egress ?? []) +
+          (verifier === undefined ? "" : workspaceVerifierPolicy(config.workspace)),
+        ownerOnly,
+      );
       // Box excludes its own box.toml and policy directory from every native grant.
       // Stage the Node input separately: the authority directory is never mounted.
       const visibleAgentInput = join(staging, "agent.json");
@@ -569,7 +606,11 @@ export function start(
         ),
         "",
       ].join("\n");
-      writeFileSync(boxFile, configText, ownerOnly);
+      writeFileSync(
+        boxFile,
+        configText + (verifier === undefined ? "" : "\n" + workspaceVerifierTool(config.workspace)),
+        ownerOnly,
+      );
       if (input.workspaceNodeSetupCode !== undefined) {
         if (
           input.workspaceNodeSetupExpiresAt === undefined ||

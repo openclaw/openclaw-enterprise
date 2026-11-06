@@ -100,6 +100,10 @@ bytes must stay unchanged. Success prints the workspace filename and
 stay out of the output. Stop terminal 1 with Ctrl-C when finished. This check
 does not exercise an OCE Agent turn, workspace-node enrollment or GitHub.
 
+The [optional Shell Calls workspace verifier](workspace-verifier/README.md)
+exercises one narrowly permitted read through the Box broker. It is a separate
+check from the native startup verifier above.
+
 ## Connect the installation
 
 **Enrollment gate:** Box v0.2.1's HTTP egress proxy
