@@ -137,6 +137,12 @@ export interface InstallationRepository extends InstallationReadRepository {
   holdPrincipalAccount(principalId: string): Promise<boolean>;
   /** Holds the user/session through COMMIT and validates expiry at commit; authentication validates its profile. */
   holdAuthenticationSession(sessionId: string, userId: string): Promise<boolean>;
+  /**
+   * Holds the Installation's IAM configuration lock until COMMIT: shared before a write of
+   * durable authority (an Owner binding, a deploy-time grant, or a Group membership), exclusive
+   * while OCC applies the `iam` configuration, so the two commit one after the other.
+   */
+  holdIAMConfiguration(mode: "shared" | "exclusive"): Promise<void>;
 }
 
 export interface NamespaceReadRepository {
@@ -1805,6 +1811,8 @@ function repositories(
     holdPrincipalAccount: async () => true,
     // Memory authentication owns its sessions outside platform State.
     holdAuthenticationSession: async () => false,
+    // One in-process State applies each unit of work alone; there is nothing to serialize with.
+    holdIAMConfiguration: async () => undefined,
   };
 
   const namespaces: NamespaceRepository = {
@@ -4057,6 +4065,28 @@ function repositories(
     },
     deleteAccessBinding: async (namespaceId, bindingId) =>
       snapshot.bindings.delete(iamPolicyKey(namespaceId, bindingId)),
+    // In-memory State is no Native IAM Driver's policy source, so OCC writes no configured
+    // policy or Owner bindings here (OpenClawController.occBindingDriver).
+    listConfiguredPolicy: async () =>
+      Object.freeze({ roles: Object.freeze([]), groups: Object.freeze([]), bindings: [] }),
+    putConfiguredRole: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store configured Roles.");
+    },
+    deleteConfiguredRole: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store configured Roles.");
+    },
+    createConfiguredGroup: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store configured Groups.");
+    },
+    deleteConfiguredGroup: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store configured Groups.");
+    },
+    createOCCBinding: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store OCC bindings.");
+    },
+    deleteConfiguredBinding: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store OCC bindings.");
+    },
     listServicePrincipals: async (namespaceId) =>
       Object.freeze(
         Array.from(snapshot.servicePrincipals.values()).filter(
