@@ -2,18 +2,14 @@ package occdev
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json/v2"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"math"
-	"math/big"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -26,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openclaw/openclaw-enterprise/internal/devtls"
 	"github.com/openclaw/openclaw-enterprise/internal/occclient"
 	"go.yaml.in/yaml/v3"
 )
@@ -353,7 +350,7 @@ func writeDevelopmentRepositoryTLS(directory, hostname string) error {
 // The CA key never reaches disk: it signs the leaf in memory and is dropped, so
 // a CA that developers trust in their browser cannot sign anything else later.
 func writeDevelopmentTLS(directory, prefix, subject string, hostnames []string) error {
-	files, _, err := generateDevelopmentTLS(prefix, subject, hostnames)
+	files, _, err := devtls.Generate(prefix, subject, hostnames)
 	if err != nil {
 		return err
 	}
@@ -363,71 +360,6 @@ func writeDevelopmentTLS(directory, prefix, subject string, hostnames []string) 
 		}
 	}
 	return nil
-}
-
-// developmentTLSPermittedDomains names the DNS subtrees the CA may vouch for:
-// the leaf's names, with a leading wildcard label removed.
-func developmentTLSPermittedDomains(hostnames []string) []string {
-	domains := make([]string, 0, len(hostnames))
-	for _, hostname := range hostnames {
-		domains = append(domains, strings.TrimPrefix(hostname, "*."))
-	}
-	return domains
-}
-
-// generateDevelopmentTLS returns the PEM files to write and, for tests only, the
-// CA key. The CA is name-constrained to the leaf's DNS names and lives no
-// longer than the leaf.
-func generateDevelopmentTLS(prefix, subject string, hostnames []string) (map[string][]byte, *ecdsa.PrivateKey, error) {
-	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, nil, err
-	}
-	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, nil, err
-	}
-	serial := func() (*big.Int, error) { return rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128)) }
-	caSerial, err := serial()
-	if err != nil {
-		return nil, nil, err
-	}
-	leafSerial, err := serial()
-	if err != nil {
-		return nil, nil, err
-	}
-	now := time.Now()
-	notBefore, notAfter := now.Add(-5*time.Minute), now.AddDate(0, 3, 0)
-	ca := &x509.Certificate{
-		SerialNumber:                caSerial,
-		Subject:                     pkix.Name{CommonName: subject},
-		NotBefore:                   notBefore,
-		NotAfter:                    notAfter,
-		IsCA:                        true,
-		BasicConstraintsValid:       true,
-		MaxPathLenZero:              true,
-		KeyUsage:                    x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
-		PermittedDNSDomainsCritical: true,
-		PermittedDNSDomains:         developmentTLSPermittedDomains(hostnames),
-	}
-	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &caKey.PublicKey, caKey)
-	if err != nil {
-		return nil, nil, err
-	}
-	leaf := &x509.Certificate{SerialNumber: leafSerial, DNSNames: hostnames, NotBefore: notBefore, NotAfter: notAfter, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
-	leafDER, err := x509.CreateCertificate(rand.Reader, leaf, ca, &leafKey.PublicKey, caKey)
-	if err != nil {
-		return nil, nil, err
-	}
-	leafPrivate, err := x509.MarshalPKCS8PrivateKey(leafKey)
-	if err != nil {
-		return nil, nil, err
-	}
-	return map[string][]byte{
-		prefix + "-ca.crt":  pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}),
-		prefix + "-tls.crt": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}),
-		prefix + "-tls.key": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: leafPrivate}),
-	}, caKey, nil
 }
 
 func replaceDevelopmentFile(path string, data []byte) error {
