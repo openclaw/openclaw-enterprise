@@ -81,8 +81,7 @@ export function recordModelProbeMeasurement(
   },
 ) {
   const { probe = {}, phases = [], events = [] } = run.snapshot;
-  const at = (value: unknown) =>
-    Number.isFinite(value) ? Math.round(Number(value)) : null;
+  const at = (value: unknown) => (Number.isFinite(value) ? Math.round(Number(value)) : null);
   t.diagnostic(
     `openclaw-ci-measurement ${JSON.stringify({
       kind: "runtime-model-probe",
