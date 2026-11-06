@@ -170,13 +170,13 @@ Detaching removes the Agent’s grant. Other Agents keep their grants.
 
 ## Protected egress
 
-The sender supplies the execution, installed binding ID and final request.
-The selected Driver verifies the recipient. OpenShell owns its middleware
-registration and audience. OCC resolves the slot and checks the grant and operation.
-Credential Proxy resolves the access token through Token Service, rechecks
-authorization, then returns the bearer and send deadline. OpenShell strips
-caller credentials, injects the bearer once and discards it. A reviewed public
-discovery request needs explicit permission to send without credentials.
+The sender supplies the execution, binding and request. OCC authorizes the operation.
+For stock OpenShell, the Gateway-authenticated middleware approves one request ID.
+The supervisor uses its SPIFFE identity to redeem that approval for the same Sandbox
+and binding. OCC rechecks the grant and policy across Token Service resolution.
+OpenShell uses `cache_ttl: 0s` to obtain a bearer on each credentialed request.
+OCC limits the time to redeem the approval. A send already authorized can finish.
+Public discovery requires separate approval to proceed without credentials.
 [RFC-0023 admission and sender contracts](../0023-egress-proxy-credential-lifecycle/contracts.md)
 
 For manual OAuth, OCC reads the current rows from the same manual template and
