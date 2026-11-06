@@ -24,6 +24,7 @@ import {
   fixtureRepositoryId,
   fixtureRepository,
 } from "../fixtures/repository-credentials/github.mjs";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
 import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts";
@@ -51,10 +52,15 @@ test(
     assert.deepEqual(reference, { kind: "github_app_installation", key: source.key });
     const readsBeforeRefusal = f.secretReads;
     const registration = { source, secret: fixture.issuer };
-    for (const invalid of [registration, { ...registration, kind: "prepared_source" }]) {
-      await assert.rejects(tokens.register(invalid, t.signal), {
-        message: /provider does not support this token kind/,
-      });
+    for (const [invalid, message] of [
+      [registration, /unknown token registration kind/i],
+      [{ ...registration, kind: "prepared_source" }, /provider does not support this token kind/],
+      [
+        { ...registration, kind: "oauth_refresh_token" },
+        /requires an account, approved template and grant/,
+      ],
+    ]) {
+      await assert.rejects(tokens.register(invalid, t.signal), { message });
     }
     assert.equal(
       f.secretReads,
@@ -64,15 +70,25 @@ test(
 
     const refuseOtherKinds = async () => {
       const dispatch = t.mock.method(fixture.lifecycle, "resolve");
+      const accountReads = t.mock.method(f.state, "read");
       try {
         const options = {
           signal: t.signal,
           deadlineAt: new Date(Date.now() + 20_000).toISOString(),
           minimumValidityMs: 1_000,
         };
-        for (const invalid of [source.key, { kind: "prepared_source", key: reference.key }]) {
+        for (const invalid of [
+          source.key,
+          { ...reference, kind: "prepared_source" },
+          { ...reference, kind: "oauth_refresh_token" },
+        ]) {
           assert.equal(await tokens.resolve(invalid, options), undefined);
         }
+        assert.equal(
+          accountReads.mock.callCount(),
+          0,
+          "a relabeled GitHub handle cannot read an OAuth account",
+        );
         assert.equal(
           dispatch.mock.callCount(),
           0,
@@ -80,6 +96,7 @@ test(
         );
       } finally {
         dispatch.mock.restore();
+        accountReads.mock.restore();
       }
     };
     await refuseOtherKinds();
@@ -1478,6 +1495,14 @@ async function preparedLifecycleFixture(t, githubOptions = {}, now = undefined) 
         ...opts,
         poolOptions: { max: 1, connectionTimeoutMillis: 2000 },
       });
+      // Production can register saved OAuth accounts and the GitHub issuer on the same Token Service.
+      tokens.registerIssuer(
+        new OAuthAccountTokens(
+          app.state,
+          secretDriver,
+          app.controller.resolveConnectionClient.bind(app.controller),
+        ),
+      );
       await lifecycle.connect(app.pool);
       t.after(() => lifecycle.close());
       return app;

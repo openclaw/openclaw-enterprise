@@ -131,7 +131,7 @@ export function chromiumTrustArg(certs) {
  * A TLS ingress on 127.0.0.1:`port` that forwards every request to the HTTP listener on
  * 127.0.0.1:`upstreamPort`, as a production ingress would. `tls` ({ key, cert }, PEM) is the
  * leaf to serve; without it a one-day self-signed leaf for `originHost` is made with openssl.
- * Returns the leaf, the Chromium flag that trusts it, and close().
+ * Returns the leaf and close().
  */
 export async function startHttpsIngress({
   port,
@@ -194,7 +194,6 @@ export async function startHttpsIngress({
   await once(ingress, "listening");
   return {
     cert,
-    browserArg: chromiumTrustArg([cert]),
     async close() {
       ingress.closeAllConnections();
       await new Promise((resolve, reject) =>
@@ -228,7 +227,7 @@ export function fileConsoleApp(options = {}) {
  * Keep object-typed wrappers and keyed options extracted with Parameters compatible.
  * @param {import("./console-file-app.ts").CleanupRegistrar} t
  * @template {object | Record<string, unknown>} [Options=object]
- * @param {Options & {auditSink?: InMemoryAuditSink}} [options]
+ * @param {Options & {auditSink?: InMemoryAuditSink, https?: boolean, ingressTLS?: {key: Buffer, cert: Buffer}}} [options]
  */
 export async function createConsoleAppFixture(t, options = {}) {
   const auditSink = options.auditSink ?? new InMemoryAuditSink();
@@ -526,6 +525,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   if (options.https === true) {
     // Exercise browser Secure/Domain cookies through a real TLS ingress to the HTTP API.
     const ingress = await startHttpsIngress({
+      tls: options.ingressTLS,
       port: browserPort,
       upstreamPort: port,
       originHost,
@@ -533,7 +533,9 @@ export async function createConsoleAppFixture(t, options = {}) {
     });
     await browserReservation.release();
     cleanupBeforeAppClose.push(ingress.close);
-    browserArgs.push(ingress.browserArg);
+    if (options.ingressTLS === undefined) {
+      browserArgs.push(chromiumTrustArg([ingress.cert]));
+    }
   }
 
   function parseJson(result) {
@@ -916,35 +918,4 @@ export function grantMember(fixture, label, grants) {
   );
 }
 
-// The authorization denials an InMemoryAuditSink recorded: all of them, or those for `action`,
-// an exact action name or a RegExp for a family of actions.
-/**
- * @param {Pick<InMemoryAuditSink, "list">} auditSink
- * @param {string | RegExp} [action]
- */
-export function authorizationDenials(auditSink, action) {
-  const matches =
-    action === undefined
-      ? () => true
-      : typeof action === "string"
-        ? (name) => name === action
-        : (name) => action.test(name);
-  return auditSink
-    .list()
-    .filter((event) => event.kind === "authorization_denial" && matches(event.action));
-}
-
-// Runs `send` and returns its response with the checks its authorization denials name, as
-// { action, kind, id }, so a refusal can be shown to be audited once, for its own target.
-export async function denialsDuring(auditSink, send) {
-  const before = authorizationDenials(auditSink).length;
-  const response = await send();
-  const denials = authorizationDenials(auditSink)
-    .slice(before)
-    .map(({ authorization: { action, resource } }) => ({
-      action,
-      kind: resource.kind,
-      id: resource.id,
-    }));
-  return { response, denials };
-}
+export { authorizationDenials, denialsDuring } from "./console-audit-denials.ts";

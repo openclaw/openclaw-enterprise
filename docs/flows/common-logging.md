@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-11-04
-last_updated_session: authoring-run/07eb6957-9eeb-45ad-9f95-abc240f6e218
+updated: 2026-11-05
+last_updated_session: authoring-run/3c7815cf-f818-421f-879b-2b2fe90deac5
 ---
 
 # Common Operational Logging Flow
@@ -192,6 +192,10 @@ the replaced owner settings stay in `occ agent logs`.
 `worker.openshell-git-continuity-refused` keeps `occ.check`, a SHA-256
 `occ.continuity.key_hash`, and `occ.continuity.result`: a boolean, a count from
 0 to 2,147,483,647, or the fixed value `invalid`. Other values are discarded.
+`worker.openshell-git-probe-failed` keeps `occ.git_probe.reason` only for
+`probe_process_failed` or `probe_response_invalid`. A process failure also keeps
+`occ.git_probe.exit_code` when `code` is an integer from 1 to 99. Other reasons,
+invalid exit codes, process output, response bodies, URLs and proofs are discarded.
 Kubernetes resources drop the `latest` image tag that metadata extraction reports
 for a digest-only image. For retained records it keeps allowlisted
 attributes and replaces the body with the event name, stripping arbitrary content;
@@ -322,6 +326,8 @@ covers credentials, supervision, queue storage and backend verification.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 20:53: Export held Git probe failure categories and bounded curl exit codes through the Collector. (authoring-run/3c7815cf-f818-421f-879b-2b2fe90deac5 - 0a9351b645)
 
 - 2026-11-04 23:10: Trace worker exits during kubelet backoff and watch closure. (authoring-run/07eb6957-9eeb-45ad-9f95-abc240f6e218 - e8ae41a62e9b480db3b67b894611b3d7fe340342)
 

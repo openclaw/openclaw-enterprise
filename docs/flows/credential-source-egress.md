@@ -106,24 +106,23 @@ fence refuses; legacy observations cannot substitute. The gateway compares unkno
 fields too. The local fingerprint covers both hashes and full policies, but is neither
 a canonical supplier hash nor supervisor attestation.
 
-Compute adds `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` from the immutable admitted
-revision only to protected provider Harness requirements. Before opening its authenticated
-listener on the existing service port, the generated helper requires the literal to equal
-the manifest's enrollment execution revision; missing or mismatched values refuse.
-Compute suppresses its private status revision, port, container name and Pod UID; the
-provider receives the transport verifier, not the raw transport token.
+For protected provider Harnesses, Compute sets `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID`
+from the admitted revision. The helper requires a match with the manifest's enrollment
+revision before opening the authenticated listener on the service port. Compute withholds its private status
+revision, port, container name and Pod UID. The provider receives only the transport verifier.
 
-Before the first model probe, the Harness waits on this listener. Compute awaits the
-installation commit, requeries current evidence and calls the selected Sandbox Driver,
-which checks the exact Sandbox and service and reads the execution/plan challenge.
-Compute signs its fresh process nonce and current installation with a control-plane-only
-key. The listener closes before Codex starts. Restart creates a new challenge; stale
-release cannot unlock the replacement. After 180 seconds, startup fails closed and remains held.
-Reconciliation may repeat readiness exchanges, but enrollment neither
-resolves material nor retries business requests. The worker's active-revision branch can
-repeat this sequence when work is queued. Default Kubernetes has no periodic maintenance
-interval, so Harness-only restart recovery is not automatic;
-see the [supported recovery boundary](../reference/credential-sources/protected-inference.md#installation-configuration).
+The Harness waits before its first model probe. Compute awaits installation commit, rechecks evidence
+and calls the Sandbox Driver. The Driver verifies the Sandbox and service and reads
+the execution/plan challenge. Compute signs the fresh process nonce and current
+installation with its control-plane key. The listener closes before Codex starts.
+Restart invalidates the old release. After 180 seconds startup fails closed and remains held.
+Reconciliation can repeat readiness checks without resolving material or retrying
+business requests. Active revisions require queued work; default Kubernetes has
+no periodic maintenance for [Harness-only restarts](../reference/credential-sources/protected-inference.md#installation-configuration).
+
+During held Git enrollment, `openshell-git-runtime.ts:observeHeldPreview` logs
+[curl and response failures](../reference/repository-credentials/protected-openshell-git.md#worker-log).
+An unconfirmed one-shot probe blocks the route with `bootstrap_failed` before credential delivery or release.
 
 `openshell-git-installation.ts:observeOpenShellGitInstallation` completes a model
 OBSERVE per active environment for observed Git routes, including rotations.
@@ -332,7 +331,11 @@ None.
 
 - 2026-11-06 02:38: Refuse historical Git issuance and session renewal while preserving original detach recovery. (authoring-run/96255fab-cb34-45d9-b940-d3055029e29f - 37b81d16bbbb3f0c864fc652060075c06eb4dc52)
 
+- 2026-11-06 02:36: Preserve request-time token resolution and held-probe diagnostics when merging the current flow. (authoring-run/c13df234-5a0d-4e3c-b254-cc806ee046e7 - 585e7ac2c6673611ec29a3c76ca507e61308fa6f)
+
 - 2026-11-05 23:21: Trace request-time token resolution and the permission check before releasing a credential header. (codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676 - 614169814)
+
+- 2026-11-05 20:36: Trace one-shot Git enrollment probe failures to the worker log. (authoring-run/5e3df28f-4382-449e-a9db-e26d5347994e - b1da9eddd3a594982ce36639610d1e3480a9e1f7)
 
 - 2026-11-05 11:50: Retain historical cleanup without legacy live recovery. (authoring-run/8ffac278-3c9e-4308-aec7-96da3b06d9d4 - 8389365da2b59206fb8727901a64f6cf1311a3b7)
 

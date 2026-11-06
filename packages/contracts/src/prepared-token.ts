@@ -1,3 +1,4 @@
+import type { CredentialRefreshStatus } from "./drivers/credential-refresh/index.ts";
 import type { Secret } from "./index.ts";
 import type {
   CredentialReadLifetime,
@@ -113,10 +114,97 @@ export interface PreparedTokenRef {
 
 /** Registration binds an immutable grant to its issuer secret. Its reference survives renewal. */
 export interface TokenService {
+  register(
+    registration: OAuthRefreshTokenRegistration,
+    signal: AbortSignal,
+  ): Promise<OAuthAccountRef>;
   register(registration: PreparedTokenRegistration, signal: AbortSignal): Promise<PreparedTokenRef>;
+  resolve(
+    reference: OAuthAccountRef,
+    options: TokenResolveOptions,
+  ): Promise<OAuthConnectionAccessToken | undefined>;
   resolve(
     reference: PreparedTokenRef,
     options: TokenResolveOptions,
   ): Promise<PreparedTokenSelection | undefined>;
+  resolve(
+    reference: PreparedTokenRef | OAuthAccountRef,
+    options: TokenResolveOptions,
+  ): Promise<ResolvedToken | undefined>;
+  issuer(
+    kind: OAuthAccountRef["kind"],
+  ): Pick<OAuthRefreshTokenIssuer, "status" | "maintain" | "retire"> | undefined;
   issuer(provider: EgressRef): Omit<PreparedTokenIssuer, "configure" | "resolve"> | undefined;
 }
+
+/** Stable reference to a saved account. Its private grant can rotate between resolutions. */
+export interface OAuthAccountRef {
+  readonly kind: "oauth_refresh_token";
+  readonly namespaceId: string;
+  readonly sourceId: string;
+}
+
+/** OCC supplies the template version and the client registration the person approved at consent. */
+export interface OAuthRefreshTokenRegistration extends OAuthAccountRef {
+  readonly approval: {
+    readonly connectionTemplateId: string;
+    readonly connectionTemplateVersion: number;
+    readonly oauthClientId: string;
+  };
+  readonly grant: OAuthConnectionGrant;
+}
+
+/** The installed owner of saved OAuth grants. OCC and the worker use its lifecycle operations. */
+export interface OAuthRefreshTokenIssuer {
+  readonly tokenKind: OAuthAccountRef["kind"];
+  register(
+    registration: OAuthRefreshTokenRegistration,
+    signal: AbortSignal,
+  ): Promise<OAuthAccountRef>;
+  resolve(
+    ref: OAuthAccountRef,
+    options: TokenResolveOptions,
+  ): Promise<OAuthConnectionAccessToken | undefined>;
+  status(ref: OAuthAccountRef, signal: AbortSignal): Promise<OAuthConnectionStatus>;
+  maintain(ref: OAuthAccountRef, signal: AbortSignal): Promise<OAuthConnectionStatus | undefined>;
+  retire(ref: OAuthAccountRef, signal: AbortSignal): Promise<void>;
+}
+
+/** The client and provider destination pinned when the account was connected. */
+export interface OAuthConnectionRegistration {
+  readonly issuer: string;
+  readonly tokenUrl: string;
+  readonly oauthClientId: string;
+  readonly tokenEndpointAuthMethod: "none" | "client_secret_post" | "client_secret_basic";
+  readonly resource?: string;
+  readonly clientId: string;
+}
+
+/** Server-owned registration and its private credential reader, resolved for one account. */
+export interface OAuthConnectionClient {
+  readonly registration: OAuthConnectionRegistration;
+  readonly readSecret?: (signal: AbortSignal) => Promise<string>;
+}
+
+/** Trusted handoff from code exchange. The Token Service retains the reusable grant. */
+export interface OAuthConnectionGrant extends ResolvedToken {
+  readonly requestedScopes: readonly string[];
+  /** Scopes the provider granted. An empty list means no scopes were reported or requested. */
+  readonly grantedScopes: readonly string[];
+  readonly refreshToken: string;
+}
+
+/** The only credential the trusted delivery path may install, with a deadline for its use. */
+export interface OAuthConnectionAccessToken extends ResolvedToken {
+  readonly grantedScopes: readonly string[];
+  readonly nextRefreshAt: string;
+  readonly version: string;
+}
+
+export type OAuthConnectionStatus = CredentialRefreshStatus & {
+  readonly schedule?: {
+    readonly version: string;
+    readonly nextRefreshAt: string;
+    readonly grantedScopes: readonly string[];
+  };
+};

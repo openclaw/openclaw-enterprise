@@ -149,6 +149,19 @@ const reviewedImports = {
     // Compare the complete resolved binding before proposing standing scope; no I/O.
     "node:util": ["isDeepStrictEqual"],
   },
+  // The OAuth grant's private CAS record pins client, endpoint, and scope. Only the
+  // refresh adapter can POST that grant. The Token Service receives no general HTTP capability.
+  "backends/token-service/oauth-connection.ts": {
+    "node:crypto": ["randomUUID"],
+    "node:timers/promises": ["setTimeout"],
+    "@openclaw-enterprise/contracts": ["isOAuthScopeToken"],
+    "@openclaw-enterprise/occ": [
+      "BrowserAuthorizationError",
+      "ResourceStateConflictError",
+      "refreshPinnedOAuthGrant",
+    ],
+    "@openclaw-enterprise/utils": ["asRecord", "isNonEmptyString"],
+  },
   // Token Service compares complete admissions. Provider I/O remains in the existing adapter.
   "backends/token-service/custody.ts": { "node:util": ["isDeepStrictEqual"] },
   "backends/token-service/service.ts": {

@@ -88,7 +88,7 @@ Review these consumers with the upstream diff:
   Follow the runtime recipe for Codex and architecture-specific Matrix crypto pins;
   change them only when the selected source requires it.
 - **Workspace defaults:** compare upstream templates with
-  [`workspace-defaults.mjs`](../../../../packages/contracts/src/workspace-defaults.mjs).
+  [`workspace-defaults.ts`](../../../../packages/contracts/src/workspace-defaults.ts).
   Update rendered content, version, content identity, and source provenance when
   those inputs change. The file documents its content-hash format. Keep unchanged
   historical provenance accurate rather than replacing every old commit citation.
