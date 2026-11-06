@@ -2115,6 +2115,14 @@ test(
     }
     const [agentA, agentB] = admittedPeers;
     assert.ok(agentA && agentB);
+    // The stored revision pins its account delivery driver privately. The Agent page
+    // reads this exact revision and still needs the public plugin selection and tools.
+    const revisionDetail = await owner("GET", `${path(agentA.id)}/revisions/${agentA.revision.id}`);
+    assert.equal(revisionDetail.statusCode, 200, revisionDetail.body);
+    assert.deepEqual(revisionDetail.json().data.plugins, {
+      driver: agentA.revision.plugins!.driver,
+      plugins: selectedPlugin,
+    });
     const allowed = {
       jsonrpc: "2.0",
       id: 1,
