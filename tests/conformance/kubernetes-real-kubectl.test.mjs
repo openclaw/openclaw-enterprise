@@ -29,8 +29,8 @@ import {
 } from "../helpers/kubernetes-real.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
 import { listen } from "../helpers/listen.mjs";
-import { withEnvironment } from "../helpers/environment.mjs";
-import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { withEnvironment } from "../helpers/environment.ts";
+import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import {
   createOpenShellKubernetesFixture,
@@ -1551,7 +1551,7 @@ test(
     );
     // Tests per file: each must reach arrangeProductionTopology, so a new test bumps its count.
     const files = {
-      "harness-topology-k3d-real.test.mjs": 6,
+      "harness-topology-k3d-real.test.mjs": 7,
       "harness-topology-k3d-otel-real.test.mjs": 2,
       "harness-topology-k3d-slack-real.test.mjs": 1,
     };

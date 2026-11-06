@@ -39,7 +39,7 @@ import {
   createAuthenticatedControllerRequest,
   createTestAuthPrincipal,
 } from "../helpers/auth-session.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.mjs";
@@ -1778,7 +1778,6 @@ async function protectedOpenShellComposition(
     (installationAccess || harness === "openclaw") &&
     new OpenShellGitRuntime(
       {
-        protectedExecution,
         ...(preview && { observedHookPreviewWorkspace: "preview-1" }),
       },
       createGitHubRepositoryDeliveryResolver(

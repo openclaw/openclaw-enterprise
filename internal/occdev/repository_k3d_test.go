@@ -20,6 +20,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/openclaw/openclaw-enterprise/internal/devtls"
 )
 
 // preparedRepositoryRegistry is an input registry the worker can prepare: one
@@ -295,7 +297,7 @@ func testDevelopmentRepositoryInstallation(t *testing.T, origin, realNode string
 	}
 	inputs := &developmentRepositoryInputs{registry: preparedRepositoryRegistry(), backendID: "repository-backend", upstreamCIDRs: []string{"192.0.2.10/32"}, appKey: testAppKeyPEM(t)}
 	if origin != "" {
-		issuer, _, err := generateDevelopmentTLS("issuer", "fixture CA", []string{"172.17.0.1"})
+		issuer, _, err := devtls.Generate("issuer", "fixture CA", []string{"172.17.0.1"})
 		if err != nil {
 			t.Fatal(err)
 		}

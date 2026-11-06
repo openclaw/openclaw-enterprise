@@ -1,6 +1,6 @@
 ---
 created: 2026-09-04
-updated: 2026-11-04
+updated: 2026-11-05
 last_updated_session: authoring-run/14bcb9d6-2d4c-449d-8bbc-b64e3ef7e632
 ---
 
@@ -58,11 +58,10 @@ graph TD
 `scripts/ci/test-suites/<lane>.json` references for runners and preparation.
 Each lane owns its tests, environment, required inputs and preparation settings.
 
-For focused proof, `run-tests.mjs:selectLane` requires an exact file path from the
-selected lane. The composite action calls `check-selection` before tool setup or
-preparation. `runLane` uses the same selector and retains the file's expected
-cases, environment and cleanup. Results carry `scope: focused`;
-`validateLaneEvidence` rejects them for full-lane aggregation, even for a one-file lane.
+For focused proof, `run-tests.mjs:selectLane` requires a lane-owned path; the action
+validates it before setup. Focused results retain expected cases, environment and
+cleanup, but `validateLaneEvidence` rejects them for full-lane aggregation,
+including one-file lanes.
 
 CI uses the event checkout without external service credentials. `CI Impact` starts independently of `Suite Audit and Static Checks`, which verifies checkout identity and runs the [documented checks](../testing/ci/required-checks.md#scenarios) in every mode. Docs mode skips test lanes. The [coverage map](../testing/ci/required-checks.md#scenarios) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. Image startup parts 1 and 2, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other jobs use `blacksmith-16vcpu-ubuntu-2404`.
 
@@ -106,6 +105,8 @@ stops QA. Aggregation requires the selected results.
 PostgreSQL migration and application suites own separate servers; each Kubernetes fixture lane owns a separate cluster and PostgreSQL server. Before creating k3d nodes that share the runner kernel, the shared action enables bridge netfilter; missing filtering fails setup rather than leaving Pod network policies unenforced. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay on each runner; within a lane, `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
 
 The application lane gives the native IAM barrier test its own migrated PostgreSQL database; only that test receives its application and migrator connection details, which the CLI keeps out of `GITHUB_ENV`. Its unregistered supplier stays in that disposable database. This fixture does not establish production writer participation in the barrier.
+
+`runtime-artifact` supplies `image-lanes` (CI), `image-lanes-same-sha` (Full Integration), and First Agent Smoke. Aggregates require producer and consumer success; unrelated lanes run independently.
 
 The [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) prepares, runs, and cleans up lanes and uploads sanitized results. Callers set the commit, environment, credentials, and timeout. Tests stop five minutes early.
 

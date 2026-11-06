@@ -28,7 +28,7 @@ import {
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -1145,7 +1145,7 @@ test(
       let unconfiguredAgentId: string | undefined;
       const statusCalls: string[] = [];
       const provisionCalls: string[] = [];
-      await selectRepo(registry, "registry", {
+      const { controller } = await selectRepo(registry, "registry", {
         bundled: true,
         runtimeCredentials: {
           requiresAgentRuntimeCredentials: true,
@@ -1251,6 +1251,37 @@ test(
         0,
         "bundled standing recheck must not use legacy resolve",
       );
+
+      // The operator can select a different registered policy while deployment reads the approval.
+      // Keep the finite decision's owner; even a resolver returning the original grant must not run.
+      const otherResolve = t.mock.fn(original);
+      const other = controller.registerDriver<RepositoryPolicyDriver>({
+        id: "replacement-standing-policy",
+        implementation: "replacement-standing-policy",
+        capability: "repo" as const,
+        listOptions: policy.listOptions.bind(policy),
+        resolve: otherResolve,
+      });
+      permitted = true;
+      bound.mock.mockImplementationOnce((input) => {
+        const result = original(input);
+        queueMicrotask(() => controller.selectDriver("repo", other.id));
+        return result;
+      });
+      try {
+        const changed = await request("POST", path + "/deploy");
+        assert.equal(changed.statusCode, 503, changed.body);
+        assert.ok(controller.selectedDriver("repo") === other);
+        assert.equal(
+          otherResolve.mock.callCount(),
+          0,
+          "a different policy must not receive the saved binding",
+        );
+        assert.deepEqual(await operations(), beforeOperations);
+        assert.deepEqual(await read(), [first]);
+      } finally {
+        controller.selectDriver("repo", policy.id);
+      }
     });
     await selectRepo(registry, true);
     const currentGeneration = async () =>
@@ -1288,6 +1319,7 @@ test(
     assert.doesNotMatch(staleDeploy.body, new RegExp(approvalId));
     await selectRepo(registry);
     const savedConfig = configuration.stored({ namespaceId, id: configurationId });
+    assert.ok(savedConfig, "Expected the stored Configuration");
     await configuration.delete({ namespaceId, id: configurationId });
     secrets.setResolveOverride(() => {
       throw new Error("Synthetic Secret unavailable");

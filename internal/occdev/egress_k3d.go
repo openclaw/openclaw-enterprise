@@ -29,7 +29,7 @@ func CheckDevelopmentProfile() error {
 func (r *runner) protectedEgressSelection() error {
 	value := r.env["OCC_DEVELOPMENT_PROTECTED_EGRESS"]
 	if value != "" && value != "0" && value != "1" {
-		return fmt.Errorf("OCC_DEVELOPMENT_PROTECTED_EGRESS must be 0 or 1")
+		return fmt.Errorf("OCC_DEVELOPMENT_PROTECTED_EGRESS must be unset, empty, or set to 0")
 	}
 	if _, selected := r.env["OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP"]; selected {
 		return fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP is retired; remove this setting")

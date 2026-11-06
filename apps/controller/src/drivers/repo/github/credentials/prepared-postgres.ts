@@ -5,7 +5,11 @@ import {
   issueAttemptLiveBoundMs,
   providerClockSkewMs,
 } from "./driver/lifetime.ts";
-import type { PreparedGitHubEgressSource, Secret } from "@openclaw-enterprise/contracts";
+import type {
+  EgressSourceKey,
+  PreparedGitHubEgressSource,
+  Secret,
+} from "@openclaw-enterprise/contracts";
 import { preparedGitHubLive as live, readPreparedGitHubMetadata } from "@openclaw-enterprise/occ";
 import type {
   PostgresClient,
@@ -53,6 +57,11 @@ const matching = "f.source_id = $1 AND f.source = $2::jsonb";
 const families = "occ.prepared_github_families";
 const attempts = "occ.prepared_github_attempts";
 type Source = PreparedGitHubEgressSource;
+export interface GitHubPreparationRequest {
+  readonly source: Source;
+  readonly urgency: "proactive" | "required";
+}
+
 type TokenSource = {
   readonly key: { readonly source: { readonly id: string } };
   readonly grant: Admission["grant"];
@@ -245,17 +254,44 @@ export class PreparedGitHubPostgres {
     });
   }
 
-  async claim(claim: string) {
+  async registeredSource(reference: EgressSourceKey): Promise<Source | undefined> {
     return this.transaction(async (c) => {
       const { rows } = await c.query(
+        `SELECT source FROM ${families} f WHERE f.source_id=$1 AND f.source->'key'=$2::jsonb
+          AND f.enabled AND f.admission->>'issuerAuthority'=$3 AND ${active}`,
+        [reference.source.id, reference, this.issuerAuthority],
+      );
+      return (rows[0] as Pick<FamilyRow, "source"> | undefined)?.source;
+    });
+  }
+
+  async claim(claim: string, request?: GitHubPreparationRequest) {
+    return this.transaction(async (c) => {
+      // Proactive hints keep the normal cadence for short-lived tokens. If this use
+      // cannot proceed, it may advance the exact family's next check without stealing a live claim.
+      const due = "f.next_check_at <= clock_timestamp()";
+      const when = request?.urgency === "required" ? `(f.worker_claim IS NULL OR ${due})` : due;
+      const exact = request ? "AND f.source_id=$3 AND f.source=$4::jsonb" : "";
+      const { rows } = await c.query(
         `WITH due AS (SELECT source_id FROM ${families} f
-        WHERE enabled AND admission->>'issuerAuthority'=$2 AND next_check_at <= clock_timestamp() AND ${active}
+        WHERE enabled AND admission->>'issuerAuthority'=$2 AND ${when} ${exact} AND ${active}
         ORDER BY next_check_at LIMIT 1 FOR UPDATE SKIP LOCKED)
         UPDATE ${families} f SET next_check_at=clock_timestamp() + interval '60 seconds',worker_claim=$1
         FROM due WHERE f.source_id=due.source_id RETURNING f.source, f.issuer`,
-        [claim, this.issuerAuthority],
+        request
+          ? [claim, this.issuerAuthority, request.source.key.source.id, request.source]
+          : [claim, this.issuerAuthority],
       );
       return rows[0] as Pick<FamilyRow, "source" | "issuer"> | undefined;
+    });
+  }
+
+  async releaseClaim(source: Source, claim: string): Promise<void> {
+    await this.transaction(async (c) => {
+      await c.query(
+        `UPDATE ${families} f SET worker_claim=NULL WHERE ${matching} AND worker_claim=$3`,
+        [source.key.source.id, source, claim],
+      );
     });
   }
 
@@ -400,7 +436,7 @@ export class PreparedGitHubPostgres {
   }
 
   // Request access pins the selected material and the earlier material/request deadline.
-  // Null is background preparation: it may open material no longer eligible for requests.
+  // Null selects issuance, which may inspect material no longer eligible for a request.
   store(
     source: { readonly key: { readonly source: { readonly id: string } } },
     access: Readonly<{

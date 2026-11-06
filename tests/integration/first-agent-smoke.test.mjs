@@ -27,8 +27,8 @@ import {
   waitFor,
   watchCluster,
 } from "../../scripts/ci/first-agent-smoke.mjs";
-import { withEnvironment } from "../helpers/environment.mjs";
-import { commandPath } from "../helpers/fake-commands.mjs";
+import { withEnvironment } from "../helpers/environment.ts";
+import { commandPath } from "../helpers/fake-commands.ts";
 import { listen } from "../helpers/listen.mjs";
 
 const revision = "rev_00000000-0000-4000-8000-000000000001";
@@ -524,6 +524,21 @@ test("the smoke bake only pushes the controller and runtime images, and loads th
         !output.startsWith("type=docker") || definition === target["smoke-provider"],
         output,
       );
+    }
+  }
+});
+
+test("an artifact-backed smoke derives trust and provider images without compiling a runtime", () => {
+  const runtimeContext = `oci-layout:///work/verified-runtime@sha256:${"d".repeat(64)}`;
+  for (const load of [false, true]) {
+    const { target } = smokeBakeDefinition({ ...bakeInput, runtimeContext, load });
+    // Both FROM (trust) and COPY --from (provider) must resolve the same verified
+    // image. Keeping the source target here would silently reintroduce a cold build.
+    assert.equal(target["smoke-runtime-base"], undefined);
+    assert.deepEqual(target["smoke-runtime"].contexts, { "smoke-runtime-base": runtimeContext });
+    assert.equal(target["smoke-runtime"].args.RUNTIME_IMAGE, "smoke-runtime-base");
+    if (!load) {
+      assert.deepEqual(target["smoke-provider"].contexts, { "smoke-runtime-base": runtimeContext });
     }
   }
 });

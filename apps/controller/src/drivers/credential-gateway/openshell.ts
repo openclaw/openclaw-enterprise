@@ -1,4 +1,8 @@
-import { googleWorkspaceCredentialPolicy } from "../plugin/google-workspace/credential-policy.ts";
+import {
+  bearerTokenEndpoint,
+  OpenShellCredentialAttachments,
+  OpenShellCredentialGatewayFailure,
+} from "../sandbox/openshell-credential-attachments.ts";
 import { ConfigurationValidationError, type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
@@ -15,59 +19,47 @@ import type {
   CredentialSourceType,
 } from "@openclaw-enterprise/contracts";
 import {
-  configurationSettingMessage,
   CredentialSourceConfigError,
   CredentialSourceRegistrationConfigError,
-  CredentialSourceRevisionError,
   ScopeViolationError,
   StoredCredentialSourceConfigError,
 } from "@openclaw-enterprise/occ";
-import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
+import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
-import { verifyManagedPluginRegistration } from "../sandbox/openshell-plugin-policy.ts";
 import { managedMcpProviderEndpoint } from "../sandbox/openshell-managed-mcp-policy.ts";
-import {
-  managedCredentialBinding,
-  managedMcpCredentialBindings,
-  managedMcpInstallForSourceConfig,
-  managedMcpSlotAcceptsSource,
-} from "../plugin/managed-catalog.ts";
-import { managedGoogleInstall } from "../plugin/google-workspace/install.ts";
+import { managedMcpInstallForSourceConfig } from "../plugin/managed-catalog.ts";
 
-import { nativeOpenAiModelSelections } from "../native-openai-catalog.ts";
 import {
   modelProviderBaseUrl,
-  modelProviderConfiguration,
   requireModelSourceDestination,
   type ModelProviderConfiguration,
 } from "../compute/model-provider.ts";
 import { exactDnsName, validateOpenAiSourceBaseUrl } from "../credential-source-endpoint.ts";
-import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
 
 import {
+  ensureOpenShellProviderProfile,
+  MANAGED_BY_LABEL,
+  MANAGED_BY,
+  SOURCE_ID_LABEL,
+  openShellOwnedBy,
   openShellProviderName,
   openShellWorkspaceName,
   type OpenShellGateway,
   type OpenShellGatewayPlacement,
 } from "../../backends/openshell.ts";
 import {
-  confirmSandboxAbsent,
-  gatewayIdentityRefusal,
   OpenShellProviderAlreadyExistsError,
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
-  type OpenShellProviderResponse,
 } from "../sandbox/openshell-gateway-client.ts";
 
 import {
   CODEX_OAUTH_TYPE,
-  CODEX_ACCESS_TOKEN_ENV,
   OPEN_SHELL_REFRESH_SOURCE_TYPES,
 } from "../../backends/openshell-refresh-sources.ts";
 import {
   CODEX_ACCOUNT_CONFIG,
   CODEX_OAUTH_TOKEN_URL,
-  codexAccountMetadata,
 } from "../credential-refresh/codex-device-authorization.ts";
 
 export interface OpenShellCredentialGatewayOptions {
@@ -87,13 +79,7 @@ export interface OpenShellCredentialGatewaySelection {
   readonly backend: Backend<OpenShellGateway>;
 }
 
-class OpenShellCredentialGatewayFailure extends Error {}
-
-const MANAGED_BY_LABEL = "app.kubernetes.io/managed-by";
-const MANAGED_BY = "openclaw-enterprise";
-const SOURCE_ID_LABEL = "openclaw.dev/credential-source-id";
 const NAMESPACE_ID_LABEL = "openclaw.dev/namespace-id";
-const PROFILE_DIGEST_ANNOTATION = "openclaw.dev/profile-digest";
 const OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_AUTHORIZED_BASE_URL_CONFIG = "authorized_base_url";
 
@@ -440,18 +426,6 @@ function oauth2SourceType(
         refresh.credentialKey(config),
       );
     },
-  };
-}
-
-function bearerTokenEndpoint(config: Readonly<Record<string, string>>): {
-  readonly host: string;
-  readonly port: number;
-  readonly path: string;
-} {
-  return {
-    host: config.host ?? "",
-    port: config.port === undefined ? 443 : Number(config.port),
-    path: config.path ?? "/**",
   };
 }
 
@@ -830,68 +804,6 @@ function findSourceType(types: readonly OpenShellSourceType[], type: string): Op
   return found;
 }
 
-function ownedBy(provider: OpenShellProviderResponse, sourceId: string): boolean {
-  return (
-    provider.labels[MANAGED_BY_LABEL] === MANAGED_BY &&
-    provider.labels[SOURCE_ID_LABEL] === sourceId &&
-    provider.type === openShellProviderName(sourceId)
-  );
-}
-
-/**
- * A host and any explicit port for a refusal: never credentials or a path, and short enough
- * for the 256-character cap.
- */
-function shownHost(value: unknown): string {
-  const host = typeof value === "string" && URL.canParse(value) ? new URL(value).host : undefined;
-  if (!host) {
-    return "none";
-  }
-  const characters = Array.from(host);
-  return characters.length <= 48 ? host : `${characters.slice(0, 47).join("")}…`;
-}
-
-/**
- * Dedicated native OpenClaw sends each selected model's requests to its catalog endpoint, and
- * the source's profile admits only the source endpoint. Compute renders only the selected
- * entries into the native worker's catalog, so an unselected entry is not checked (finding
- * 1686). Compute refuses every other catalog shape before this; it stays fail-closed here.
- */
-function requireSourceEndpointForSelectedModels(
-  configuration: Readonly<Record<string, unknown>> | undefined,
-  endpoint: string,
-): void {
-  const selections =
-    configuration === undefined ? undefined : nativeOpenAiModelSelections(configuration);
-  if (
-    selections === undefined ||
-    selections.length === 0 ||
-    selections.some(
-      ({ provider, id, matches }) => provider !== "openai" || !id || matches.length !== 1,
-    )
-  ) {
-    throw new ScopeViolationError(
-      "Dedicated native OpenClaw model endpoints must match the bound credential source endpoint.",
-    );
-  }
-  const provider = asRecord(asRecord(asRecord(configuration?.models)?.providers)?.openai);
-  for (const { matches } of selections) {
-    const { entry, index } = matches[0]!;
-    const own = entry.baseUrl !== undefined && entry.baseUrl !== null;
-    const written = own ? entry.baseUrl : provider?.baseUrl;
-    if (typeof written !== "string" || normalizeOpenAiBaseUrl(written) !== endpoint) {
-      throw new ScopeViolationError(
-        configurationSettingMessage(
-          own
-            ? `models.providers.openai.models.${index}.baseUrl`
-            : "models.providers.openai.baseUrl",
-          `must be the bound credential source endpoint, path included (source host ${shownHost(endpoint)}, written host ${shownHost(written)})`,
-        ),
-      );
-    }
-  }
-}
-
 /** Stores OCC credential sources as OpenShell providers; the supervisor injects them. */
 export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver {
   static readonly configurationSchema = Object.freeze({
@@ -932,6 +844,8 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
   private readonly backend: Backend<OpenShellGateway>;
   /** Whether the Backend declares a Credential Refresh Driver for `refresh` types. */
   private readonly refresh: boolean;
+  /** @internal Shared attachment implementation for the built-in composition only. */
+  readonly attachments: OpenShellCredentialAttachments;
 
   constructor(
     options: OpenShellCredentialGatewayOptions,
@@ -965,6 +879,26 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
           });
     this.backend = selection.backend;
     this.refresh = selection.backend.drivers.credential_refresh !== undefined;
+    const attachmentOptions = this.options;
+    const modelProvider = this.modelProvider;
+    const refresh = this.refresh;
+    this.attachments = new OpenShellCredentialAttachments(
+      this.id,
+      this.backend,
+      this.modelProvider,
+      {
+        sourceType: (name) => {
+          const type = sourceType(name, attachmentOptions, refresh);
+          return {
+            catalog: type.catalog,
+            credentials: type.credentials,
+            profile: (sourceId, config, gateway) =>
+              type.profile(sourceId, config, attachmentOptions, gateway, modelProvider),
+          };
+        },
+        requiredToolBinaries: (binary) => requiredToolBinaries(attachmentOptions, binary),
+      },
+    );
   }
 
   async listSourceTypes(
@@ -1022,7 +956,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const credentials = providerCredentials(type, input);
     const name = openShellProviderName(context.source.id);
     const existing = await client.getProvider(workspace, name, context.signal);
-    if (existing !== undefined && !ownedBy(existing, context.source.id)) {
+    if (existing !== undefined && !openShellOwnedBy(existing, context.source.id)) {
       throw new ScopeViolationError(
         "An OpenShell provider with this source's name is not owned by the source.",
       );
@@ -1059,7 +993,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       }
       // Replay after an uncertain create adopts only this exact source's provider.
       const existing = await client.getProvider(workspace, name, context.signal);
-      if (existing === undefined || !ownedBy(existing, context.source.id)) {
+      if (existing === undefined || !openShellOwnedBy(existing, context.source.id)) {
         throw new ScopeViolationError(
           "An OpenShell provider with this source's name is not owned by the source.",
         );
@@ -1090,7 +1024,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     if (existing === undefined) {
       return { state: "absent" };
     }
-    if (!ownedBy(existing, context.source.id)) {
+    if (!openShellOwnedBy(existing, context.source.id)) {
       throw new ScopeViolationError(
         "An OpenShell provider with this source's name is not owned by the source.",
       );
@@ -1125,7 +1059,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     if (provider === undefined) {
       return { state: "absent" };
     }
-    if (!ownedBy(provider, context.source.id)) {
+    if (!openShellOwnedBy(provider, context.source.id)) {
       return { state: "failed", reason: "The OpenShell provider is not owned by this source." };
     }
     if (context.source.type === CODEX_OAUTH_TYPE && !provider.config[CODEX_ACCOUNT_CONFIG]) {
@@ -1141,7 +1075,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const client = this.client(context);
     const existing = await client.getProvider(workspace, name, context.signal);
     if (existing !== undefined) {
-      if (!ownedBy(existing, context.source.id)) {
+      if (!openShellOwnedBy(existing, context.source.id)) {
         throw new ScopeViolationError(
           "An OpenShell provider with this source's name is not owned by the source.",
         );
@@ -1158,255 +1092,17 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
   async attachForRevision(
     context: CredentialRevisionContext,
   ): Promise<readonly CredentialSourceAttachment[]> {
-    const workspace = openShellWorkspaceName(context.namespace);
-    const client = this.client(context);
-    const binding = managedCredentialBinding(
-      context.revision.plugins?.plugins,
-      managedGoogleInstall,
-    );
-    for (const { install, sourceId } of managedMcpCredentialBindings(
-      context.revision.plugins?.plugins,
-    )) {
-      const source = context.sources.find(({ id }) => id === sourceId);
-      if (source && !managedMcpSlotAcceptsSource(install, source)) {
-        throw new ScopeViolationError(
-          "The attached MCP account does not match the reviewed credential slot.",
-        );
-      }
-    }
-    for (const source of context.sources.filter(({ config }) => config.protocol === "mcp")) {
-      const install = managedMcpInstallForSourceConfig(source.config);
-      if (!install || !managedMcpSlotAcceptsSource(install, source)) {
-        throw new ScopeViolationError(
-          "The attached credential does not match a reviewed MCP slot.",
-        );
-      }
-      const conflict = context.sources.some((other) => {
-        const host =
-          other.type === "openai"
-            ? new URL(modelProviderBaseUrl(this.modelProvider)).hostname
-            : (other.config.host ?? "");
-        return (
-          other.id !== source.id &&
-          (host.toLowerCase().replace(/\.$/, "") === install.endpoint.host ||
-            other.config.env_var === install.credentialEnvironment)
-        );
-      });
-      if (conflict) {
-        throw new ScopeViolationError(
-          "The managed MCP credential conflicts with another credential for its host or placeholder.",
-        );
-      }
-    }
-    const selected = context.sources.find(({ id }) => id === binding?.sourceId);
-    if (binding && selected) {
-      if (
-        !googleWorkspaceCredentialPolicy.accepts(managedGoogleInstall, binding.credential, selected)
-      ) {
-        throw new ScopeViolationError(
-          "The attached Google account does not match the reviewed credential slot.",
-        );
-      }
-      const conflict = googleWorkspaceCredentialPolicy.conflict(selected, context.sources);
-      if (conflict) {
-        throw new ScopeViolationError(conflict);
-      }
-      const binaries = requiredToolBinaries(this.options, selected.config.binary);
-      if (binaries.length !== 1 || binaries[0] !== managedGoogleInstall.binaryPath) {
-        throw new ScopeViolationError(
-          "The bound Google account must grant only the pinned Google executable. Set binary on this OAuth2 source when its installation allows other tools.",
-        );
-      }
-      await verifyManagedPluginRegistration(client, context.signal);
-    }
-    const attachments: CredentialSourceAttachment[] = [];
-    const environment = new Set<string>();
-    for (const source of context.sources) {
-      if (source.driverId !== this.id || source.namespaceId !== context.namespace.id) {
-        throw new ScopeViolationError("The credential source is not owned by this gateway.");
-      }
-      const type = sourceType(source.type, this.options, this.refresh);
-      if (type.catalog.type === "openai") {
-        requireModelSourceDestination(source.config, this.modelProvider);
-        if (
-          (context.revision.harness.id !== "codex" && context.revision.harness.id !== "openclaw") ||
-          context.revision.harness.mode !== "dedicated"
-        ) {
-          throw new ScopeViolationError(
-            "OpenShell OpenAI-compatible credential sources require a dedicated Harness.",
-          );
-        }
-        if (context.revision.harness.id === "openclaw") {
-          requireSourceEndpointForSelectedModels(
-            modelProviderConfiguration(
-              context.revision.configuration,
-              context.revision.harness,
-              this.modelProvider,
-            ),
-            modelProviderBaseUrl(this.modelProvider),
-          );
-        }
-      }
-      // Two sources cannot place their placeholders in the same Sandbox variable.
-      for (const name of Object.values(type.credentials(source.config))) {
-        if (environment.has(name)) {
-          throw new CredentialSourceRevisionError(
-            "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT",
-            "Two credential sources bound to the revision use the same environment variable.",
-          );
-        }
-        environment.add(name);
-      }
-      const name = openShellProviderName(source.id);
-      const provider = await client.getProvider(workspace, name, context.signal);
-      if (provider === undefined || !ownedBy(provider, source.id)) {
-        throw new OpenShellCredentialGatewayFailure(
-          "The OpenShell provider for a bound credential source is unavailable.",
-        );
-      }
-      // Each deployment applies the current binary lists to the profiles it attaches. OpenShell
-      // composes Sandbox policy from the stored profile, so attached Sandboxes narrow too.
-      await this.ensureProfile(
-        client,
-        workspace,
-        type,
-        source.id,
-        source.config,
-        () => this.placement(context),
-        context.signal,
-      );
-      attachments.push(
-        Object.freeze({
-          sourceId: source.id,
-          ref: name,
-          ...((source.id === binding?.sourceId || source.config.protocol === "mcp") && {
-            requestScope: {
-              ...bearerTokenEndpoint(source.config),
-              scopes: (source.config.scope ?? "").split(/\s+/).filter(Boolean),
-            },
-          }),
-          ...(source.type === CODEX_OAUTH_TYPE
-            ? {
-                externalChatgptAuth: {
-                  ...codexAccountMetadata(provider.config),
-                  accessTokenPlaceholder: `openshell:resolve:env:${CODEX_ACCESS_TOKEN_ENV}`,
-                },
-              }
-            : {}),
-        }),
-      );
-    }
-    return Object.freeze(attachments);
+    return this.attachments.attachForRevision(context);
   }
 
   async attachmentStatus(
     context: CredentialRevisionContext,
   ): Promise<readonly CredentialAttachmentStatus[]> {
-    if (context.sandbox === undefined) {
-      throw new OpenShellCredentialGatewayFailure(
-        "OpenShell attachment status requires the provisioned Sandbox.",
-      );
-    }
-    const workspace = openShellWorkspaceName(context.namespace);
-    const client = this.client(context);
-    const statuses: CredentialAttachmentStatus[] = [];
-    for (const source of context.sources) {
-      const status = await client.getSandboxProviderStatus(
-        workspace,
-        context.sandbox.resourceName,
-        openShellProviderName(source.id),
-        context.signal,
-      );
-      statuses.push(
-        Object.freeze({
-          sourceId: source.id,
-          state: attachmentState(status.state),
-          ...(status.reason === undefined ? {} : { reason: status.reason }),
-        }),
-      );
-    }
-    return Object.freeze(statuses);
+    return this.attachments.attachmentStatus(context);
   }
 
-  /**
-   * Detaches the source's provider from the revision's Sandbox. Only a REVOKED receipt reports
-   * `revoked`: the Sandbox's placeholders then stop resolving, even in running processes. A
-   * missing Sandbox reports `absent` only once GetWorkspace proves this identity still sees the
-   * Workspace and a second GetSandbox still finds none: GetSandbox and DetachSandboxProvider
-   * answer NOT_FOUND alike for a Sandbox that is gone and for one the identity may not see
-   * (finding 1676), and `absent` settles the withdrawal while a hidden Sandbox would keep
-   * resolving the credential. A Sandbox the second read finds (a role restored between the
-   * reads, finding 1692) is detached instead; a detach that misses it again is unconfirmed, and
-   * the worker retries. A refusal fails with `SANDBOX_GATEWAY_UNAUTHORIZED`, which the worker
-   * records as the withdrawal's reason and fails it with; a replay tries again once the
-   * identity's role is restored.
-   */
   async withdraw(context: CredentialWithdrawalContext): Promise<CredentialAttachmentStatus> {
-    const workspace = openShellWorkspaceName(context.namespace);
-    const client = this.client(context);
-    const provider = openShellProviderName(context.sourceId);
-    const sandbox = context.sandbox.resourceName;
-    const unconfirmed = `the credential of Sandbox ${sandbox} cannot be confirmed withdrawn`;
-    const refused = gatewayIdentityRefusal(workspace, unconfirmed);
-    const read = () => client.getSandbox({ name: sandbox, workspace }, context.signal);
-    const listsProvider = (record: { readonly spec?: { readonly providers?: unknown } }) => {
-      const providers = record.spec?.providers;
-      return Array.isArray(providers) && providers.includes(provider);
-    };
-    // Detach is idempotent; a replay after an uncertain detach still returns a receipt.
-    const detach = () =>
-      refused(() => client.detachSandboxProvider(workspace, sandbox, provider, context.signal));
-    const settle = async (receiptId: string | undefined): Promise<CredentialAttachmentStatus> => {
-      const status = await refused(() =>
-        client.getSandboxProviderStatus(workspace, sandbox, provider, context.signal, receiptId),
-      );
-      const state = attachmentState(status.state);
-      return Object.freeze({
-        sourceId: context.sourceId,
-        state: state === "revoked" ? "revoked" : "pending",
-        ...(status.reason === undefined ? {} : { reason: status.reason }),
-      });
-    };
-    const absent = async (): Promise<CredentialAttachmentStatus> => {
-      const restored = await confirmSandboxAbsent(
-        client,
-        workspace,
-        context.signal,
-        refused,
-        () =>
-          new OpenShellCredentialGatewayFailure(
-            `OpenShell reports no Workspace ${workspace}, so ${unconfirmed}.`,
-          ),
-        read,
-      );
-      if (restored === undefined) {
-        // A missing Sandbox has no placeholders left to resolve, once it is confirmed missing.
-        return Object.freeze({ sourceId: context.sourceId, state: "absent" });
-      }
-      if (context.recheck === true && !listsProvider(restored)) {
-        return Object.freeze({ sourceId: context.sourceId, state: "revoked" });
-      }
-      const detached = await detach();
-      if (detached === undefined) {
-        throw new OpenShellCredentialGatewayFailure(
-          `OpenShell GetSandbox finds Sandbox ${sandbox} but DetachSandboxProvider did not, so ${unconfirmed}.`,
-        );
-      }
-      return settle(detached.receiptId);
-    };
-    if (context.recheck === true) {
-      // A recorded revocation needs a new detach only if the Sandbox lists the provider again,
-      // for example after a create that OpenShell accepted before the withdrawal landed after it.
-      const existing = await refused(read);
-      if (existing === undefined) {
-        return absent();
-      }
-      if (!listsProvider(existing)) {
-        return Object.freeze({ sourceId: context.sourceId, state: "revoked" });
-      }
-    }
-    const detached = await detach();
-    return detached === undefined ? absent() : settle(detached.receiptId);
+    return this.attachments.withdraw(context);
   }
 
   private client(context: CredentialGatewayContext & { readonly namespace: { name: string } }) {
@@ -1429,31 +1125,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     signal: AbortSignal,
   ): Promise<void> {
     const base = type.profile(sourceId, config, this.options, gateway, this.modelProvider);
-    const digest = sha256Hex(JSON.stringify(base));
-    const profile: OpenShellProviderProfile = {
-      ...base,
-      annotations: { [PROFILE_DIGEST_ANNOTATION]: digest },
-    };
-    const existing = await client.getProviderProfile(workspace, base.id, signal);
-    if (existing?.annotations[PROFILE_DIGEST_ANNOTATION] === digest) {
-      return;
-    }
-    try {
-      if (existing === undefined) {
-        await client.importProviderProfile(workspace, profile, signal);
-      } else {
-        await client.updateProviderProfile(workspace, profile, existing.resourceVersion, signal);
-      }
-    } catch (error) {
-      // A concurrent writer with the same configuration (another deployment, or a replay)
-      // already stored this exact profile.
-      const current = await client
-        .getProviderProfile(workspace, base.id, signal)
-        .catch(() => undefined);
-      if (current?.annotations[PROFILE_DIGEST_ANNOTATION] !== digest) {
-        throw error;
-      }
-    }
+    await ensureOpenShellProviderProfile(client, workspace, base, signal);
   }
 }
 
@@ -1474,19 +1146,4 @@ function providerCredentials(
       return [key, value];
     }),
   );
-}
-
-function attachmentState(state: string): CredentialAttachmentStatus["state"] {
-  switch (state) {
-    case "PROVIDER_READINESS_STATE_READY":
-      return "ready";
-    case "PROVIDER_READINESS_STATE_WITHHELD":
-      return "withheld";
-    case "PROVIDER_READINESS_STATE_REVOKED":
-      return "revoked";
-    case "PROVIDER_READINESS_STATE_FAILED":
-      return "failed";
-    default:
-      return "pending";
-  }
 }

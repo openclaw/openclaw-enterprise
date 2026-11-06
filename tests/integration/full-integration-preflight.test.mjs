@@ -122,8 +122,6 @@ async function runQaCredentialMaterializer(
     SLACK_BOT_TOKEN: "synthetic-slack-bot-token",
     SLACK_SENDER_TOKEN: "synthetic-slack-sender-token",
     OCC_TEST_QA_SLACK_CHANNEL_ID: "C0123456789",
-    OCC_TEST_CODEX_CALENDAR_TOOL_NAME: "calendar.list",
-    OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: "Synthetic calendar result",
     OCC_TEST_QA_REPOSITORY_AUTHORIZED: "1",
     REPOSITORY_REGISTRY_FILE: registryFile,
     REPOSITORY_APP_KEY: "synthetic-private-key",
@@ -177,9 +175,9 @@ test("QA credential materializer reads reviewed registry files only for reposito
     assert.doesNotMatch(failure.stderr, /synthetic-private-key/);
   }
 
-  // Calendar/model-only advisory runs need no repository metadata or App key.
+  // Model-only advisory runs need no repository metadata or App key.
   const noRepository = await runQaCredentialMaterializer(t, {
-    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_PRESET: "OpenClaw",
     OCC_TEST_QA_SCENARIOS: "model-ui",
     REPOSITORY_REGISTRY_FILE: undefined,
     REPOSITORY_APP_KEY: undefined,
@@ -682,6 +680,7 @@ test("workflow permits main push retries and refuses approval reuse on manual re
           outputs: { selected_lane: name === "logging-collector" ? name : "all", run_all: "true" },
         },
         slack: { result: "success" },
+        "runtime-artifact": { result: "success" },
       };
       assert.equal(workflowCondition(job.if, { github, needs }), true, `${name}: first attempt`);
       assert.equal(
@@ -944,6 +943,8 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   assert.equal(imageSelection.status, 0, imageSelection.stderr);
   const firstAgent = /^first-agent=(true|false)$/m.exec(await readFile(output, "utf8"))?.[1];
   assert.ok(firstAgent, "the shipped image selection must publish its mode");
+  const sourceBuild = /^source-build=(true|false)$/m.exec(await readFile(output, "utf8"))?.[1];
+  assert.ok(sourceBuild);
   const evaluate = (expression) =>
     runInNewContext(
       expression
@@ -952,10 +953,16 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
         .replaceAll(
           "steps.image-mode.outputs.first-agent",
           'steps["image-mode"].outputs["first-agent"]',
+        )
+        .replaceAll(
+          "steps.image-mode.outputs.source-build",
+          'steps["image-mode"].outputs["source-build"]',
         ),
       {
         inputs,
-        steps: { "image-mode": { outputs: { "first-agent": firstAgent } } },
+        steps: {
+          "image-mode": { outputs: { "first-agent": firstAgent, "source-build": sourceBuild } },
+        },
         startsWith: (value, prefix) => value.startsWith(prefix),
       },
     );

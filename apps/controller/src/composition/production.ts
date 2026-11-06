@@ -1,3 +1,4 @@
+import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
@@ -337,6 +338,15 @@ export async function composeProduction(
     }
     controller.registerDriver(configurationDriver);
     controller.selectDriver("configuration", configurationDriver.id);
+    // TODO: Select an OpenShell OAuth issuer in the API and worker when its RPC can
+    // take custody of the grant and own refresh. Other installations use the built-in issuer.
+    config.drivers.tokenService?.registerIssuer(
+      new OAuthAccountTokens(
+        state,
+        secretDriver,
+        controller.resolveConnectionClient.bind(controller),
+      ),
+    );
     config.serviceAccountDriverFactory?.(controller, state);
     controller.installPluginDrivers(pluginDrivers ?? []);
     if (repositoryPolicy !== undefined) {
@@ -344,6 +354,7 @@ export async function composeProduction(
       controller.selectDriver("repo", repositoryPolicy.id);
     }
     await controller.validateBackendConfiguration();
+    await controller.applyIAMConfiguration();
     if (config.logger !== undefined) {
       for (const shadowed of config.drivers.shadowedDefaultPresets ?? []) {
         emitOccLogEvent(config.logger, { event: "presets.bundled-default-shadowed", ...shadowed });

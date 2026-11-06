@@ -1,7 +1,7 @@
 diff --git a/extensions/codex/src/app-server/client.ts b/extensions/codex/src/app-server/client.ts
 --- a/extensions/codex/src/app-server/client.ts
 +++ b/extensions/codex/src/app-server/client.ts
-@@ -352,7 +352,52 @@
+@@ -352,7 +352,80 @@
          ),
        );
      }
@@ -47,7 +47,35 @@ diff --git a/extensions/codex/src/app-server/client.ts b/extensions/codex/src/ap
 +          result.activePermissionProfile.id === requestedProfile
 +        )
 +      ) {
-+        throw new Error(method + ": Codex did not grant the requested permission profile");
++        const requestSource =
++          typeof params.permissions === "string" ? "permissions" : "configDefault";
++        const configDefault = isJsonObject(params.config)
++          ? params.config.default_permissions
++          : undefined;
++        let selectors = "single";
++        if (typeof params.permissions === "string" && typeof configDefault === "string") {
++          selectors = params.permissions === configDefault ? "both-equal" : "both-different";
++        }
++        let comparison = "string-id-different";
++        if (!isJsonObject(result)) {
++          comparison = "nonobject-result";
++        } else if (!Object.hasOwn(result, "activePermissionProfile")) {
++          comparison = "field-absent";
++        } else if (result.activePermissionProfile === null) {
++          comparison = "field-null";
++        } else if (!isJsonObject(result.activePermissionProfile)) {
++          comparison = "field-not-object";
++        } else if (typeof result.activePermissionProfile.id !== "string") {
++          comparison = "id-not-string";
++        }
++        throw new Error(
++          method +
++            ": Codex did not grant the requested permission profile" +
++            " (requestSource=" + requestSource +
++            ", selectors=" + selectors + ", comparison=" + comparison + "). " +
++            "Ask your workspace administrator to verify profile availability and " +
++            "runtime compatibility before retrying.",
++        );
 +      }
 +      return result;
 +    };

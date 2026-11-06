@@ -24,6 +24,7 @@ on:
       - "deploy/presets/*.json"
       - "packages/contracts/src/preset-variables.mjs"
       - "packages/contracts/src/workspace-defaults.mjs"
+      - "packages/contracts/src/workspace-defaults.ts"
       - "packages/occ/src/environment-references.ts"
       - "packages/occ/src/gateway-security-defaults.ts"
       - "packages/occ/src/stored-configuration-rules.ts"

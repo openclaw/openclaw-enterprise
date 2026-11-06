@@ -52,6 +52,7 @@ jobs:
       # Full QA takes precedence when both labels are present. Main runs stay full.
       openshell-file: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-qa') && 'tests/integration/local-first-agent-openshell-real.test.mjs' || '' }}
       openshell-matrix: ${{ steps.openshell-matrix.outputs.matrix }}
+      installation-matrix: ${{ steps.openshell-matrix.outputs.installation-matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -66,6 +67,9 @@ jobs:
           import { basename } from 'node:path';
 
           const manifest = JSON.parse(readFileSync('scripts/ci/test-suites/openshell.json', 'utf8'));
+          const installation = JSON.parse(readFileSync('scripts/ci/test-suites/dev-up-k3d.json', 'utf8'));
+          const installationMatrix = installation.files.map(({ path }) => ({ file: path, shard: basename(path).replace(/\.test\.(mjs|ts)$/, '') }));
+          appendFileSync(process.env.GITHUB_OUTPUT, `installation-matrix=${JSON.stringify({ include: installationMatrix })}\n`);
           const selected = process.env.OPENSHELL_FILE;
           const files = manifest.files.filter(({ path }) => !selected || path === selected);
           if (files.length === 0 || new Set(files.map(({ path }) => path)).size !== files.length) {
@@ -78,14 +82,18 @@ jobs:
         run: echo "Running advisory QA for ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
 
   local-installation:
-    name: QA advisory (local installation)
+    name: QA advisory (local installation / ${{ matrix.shard }})
     needs: eligibility
     # Run this installation rehearsal with full-qa, the 6-hourly schedule or a manual dispatch on main.
     if: github.event_name != 'push' && needs.eligibility.outputs.openshell-file == ''
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.eligibility.outputs.installation-matrix) }}
     timeout-minutes: 180
     env:
       CI: "1"
+      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -95,9 +103,10 @@ jobs:
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: dev-up-k3d
+          test-file: ${{ matrix.file }}
           profile: full
           node-version: "24.22.1"
-          artifact-prefix: qa-advisory-local-installation
+          artifact-prefix: qa-advisory-local-installation-${{ matrix.shard }}
           job-timeout-minutes: 180
       - name: Show Docker Hub pull endpoints
         if: ${{ !cancelled() }}
@@ -107,7 +116,7 @@ jobs:
     name: QA advisory (${{ matrix.installation }})
     needs: eligibility
     if: needs.eligibility.outputs.openshell-file == ''
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 120
     environment: integration-qa-pr
     strategy:
@@ -116,16 +125,14 @@ jobs:
         installation: [compose, kubernetes]
     env:
       CI: "1"
+      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
       # The Compose launcher otherwise resolves the +v1.35 K3s channel online (update.k3s.io).
       # Keep in step with defaultK3sImage in scripts/ci/prepare.mjs.
       OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
       OCC_TEST_QA_INSTALLATION: ${{ matrix.installation }}
       OCC_TEST_QA_PRESET: Codex
-      OCC_TEST_QA_SCENARIOS: model-ui,calendar,console-secrets
+      OCC_TEST_QA_SCENARIOS: console-secrets
       OCC_TEST_QA_CODEX_MODEL: ${{ vars.OCC_TEST_QA_CODEX_MODEL }}
-      OCC_TEST_CODEX_CALENDAR_TOOL_NAME: ${{ vars.OCC_TEST_CODEX_CALENDAR_TOOL_NAME }}
-      OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: ${{ vars.OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT }}
-      OCC_TEST_CODEX_CALENDAR_PROMPT: ${{ vars.OCC_TEST_CODEX_CALENDAR_PROMPT }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -140,6 +147,7 @@ jobs:
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: qa-matrix
+          test-file: tests/integration/qa-matrix-real.test.mjs
           profile: full
           node-version: "24.22.1"
           artifact-prefix: qa-advisory-${{ matrix.installation }}
@@ -169,6 +177,8 @@ jobs:
     environment: integration-qa-pr
     strategy:
       fail-fast: false
+      # Bound provider concurrency while independent security workflows use separate clusters.
+      max-parallel: 10
       matrix: ${{ fromJSON(needs.eligibility.outputs.openshell-matrix) }}
     env:
       # The packaged browser has Ubuntu's AppArmor user-namespace permission.

@@ -17,11 +17,13 @@
     "tests/integration/postgres-restart-recovery.test.mjs",
     "tests/integration/postgres-agent-deletion-audit.test.mjs",
     "tests/integration/postgres-agent-gateway-managed-mode.test.ts",
+    "tests/integration/postgres-default-users.test.ts",
     "tests/integration/postgres-agent-runtime-logs.test.mjs",
     "tests/integration/postgres-repository-broker-receipts.test.mjs",
     "tests/integration/postgres-worker-stale-claim.test.mjs",
     "tests/integration/postgres-namespace-iam-policy.test.mjs",
     "tests/integration/postgres-agent-update-authority.test.ts",
+    "tests/integration/postgres-connection-templates.test.ts",
     "tests/integration/workspace-setup-worker.test.mjs",
     "tests/integration/postgres-repository-sessions.test.mjs",
     "tests/integration/postgres-secret-state.test.mjs",
@@ -142,6 +144,17 @@
       "expectedTests": ["PostgreSQL controller work requires exactly one complete target shape"]
     },
     {
+      "path": "tests/integration/postgres-connection-templates.test.ts",
+      "expectedTests": [
+        "the Installation starts with an editable Google OAuth template and preserves saved destination versions",
+        "an administrator registers OAuth clients against a pinned template and its availability",
+        "OAuth client rotation updates its stable private reference across an unknown commit",
+        "the worker removes an unpublished OAuth client after interrupted creation",
+        "MCP discovery selects one advertised issuer and saves only the administrator's approved scopes",
+        "revoking a browser session while rotation waits prevents the secret from reaching its Driver"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-agent-update-authority.test.ts",
       "expectedTests": [
         "Agent update refuses an exact grant withdrawn while waiting for its Namespace lock"
@@ -233,6 +246,16 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-default-users.test.ts",
+      "expectedTests": [
+        "Default users create Agents in the default Namespace and own what they create",
+        "an iam configuration change at restart revokes Group grants and keeps what members created",
+        "a session revoked while a Default user's deploy waits commits no Agent grant",
+        "an iam configuration change and a member's create commit one after the other",
+        "an Agent Owner binding deleted while its owner's deploy waits commits no Agent grant"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-agent-runtime-logs.test.mjs",
       "expectedTests": [
         "runtime log views and downloads persist audit rows before the read and fail closed without them"
@@ -313,6 +336,7 @@
     {
       "path": "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
       "expectedTests": [
+        "authorized GitHub proxy requests mint the registered grant and share one replacement",
         "PostgreSQL prepared custody: source consent, proactive renewal, restart, issuer rotation and withdrawal",
         "current proof preserves caller SQL limits and restores them in its unit",
         "signed PostgreSQL dispatch uses one shared connection for current material proof",
@@ -486,7 +510,8 @@
       "path": "tests/integration/postgres-standing-session-worker.test.ts",
       "expectedTests": [
         "standing maintenance supervises missing Git evidence across restart and still withdraws model authority",
-        "standing maintenance refuses withdrawn eligibility with unchanged scope"
+        "standing maintenance refuses withdrawn eligibility with unchanged scope",
+        "bound worker reconciliation retains the original repository admission policy"
       ]
     },
     {

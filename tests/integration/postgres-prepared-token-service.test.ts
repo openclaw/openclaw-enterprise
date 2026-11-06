@@ -171,6 +171,7 @@ test(
     let proofTx: string | undefined;
     const issuerAuthority = "fixture-artifact-issuer";
     const issuer: PreparedTokenIssuer = {
+      tokenKind: "prepared_source",
       provider: ref,
       issuerInput: "lease_key",
       issuerAuthority,
@@ -227,8 +228,8 @@ test(
           [familyId, source, issuerAuthority, serialize(initial)],
         );
       },
-      async readWarm(source) {
-        assert.deepEqual(source, admitted);
+      async resolve(reference) {
+        assert.deepEqual(reference, admitted?.key);
         const warm = await createWarmTokenReader(store, Date.now).readWarm(family);
         if (warm.kind !== "warm") {
           return;
@@ -236,14 +237,14 @@ test(
         const m = warm.material;
         try {
           return {
-            value: Buffer.from(m.bytes).toString(),
-            family: source.key.source,
+            accessToken: Buffer.from(m.bytes).toString(),
+            family: reference.source,
             materialId: family.familyId,
             inputVersion: family.inputVersion,
             ownerEpoch: family.ownerEpoch,
             preparationAttemptId: m.attemptId,
             materialVersion: m.materialVersion,
-            providerExpiresAt: new Date(m.providerExpiresAt).toISOString(),
+            expiresAt: new Date(m.providerExpiresAt).toISOString(),
             usableUntil: new Date(m.usableUntil).toISOString(),
           };
         } finally {
@@ -265,7 +266,7 @@ test(
       protectedSourceOnly: true,
       configurePreparedTokens(tokens: TokenService) {
         service = tokens;
-        tokens.register(issuer, (tx) => ({
+        tokens.registerIssuer(issuer, (tx) => ({
           async current(s, ev, authority, { signal, deadlineAt }) {
             assert(!signal.aborted && Date.parse(deadlineAt) > Date.now());
             assert.equal(ev.kind, "prepared_token");
@@ -674,7 +675,7 @@ test(
     );
     Object.defineProperty(checkReady, "bind", { value: undefined });
     Object.defineProperty(decorated, "ready", { value: checkReady });
-    tokens.register(decorated);
+    tokens.registerIssuer(decorated);
     const decoratedHandle = retained.issuer(decorated.provider);
     assert.ok(decoratedHandle && (await decoratedHandle.ready(source, t.signal)));
     assert.equal(Reflect.has(decoratedHandle.ready, "owner"), false);
@@ -684,7 +685,10 @@ test(
     assert.equal(await handle.ready(source, AbortSignal.abort()), false);
     assert.equal(f.secretReads, readsBeforeReadiness);
     assert.equal(gh.issuesOfTokens.length, 1, "readiness cannot issue inline");
-    const old = await lifecycle.readWarm(source, window());
+    const old = await tokens.resolve(
+      { kind: "github_app_installation", key: source.key },
+      { ...window(), minimumValidityMs: 0 },
+    );
     assert(old && Date.parse(old.usableUntil) > Date.now() + 40 * 60_000);
     const dispatched = async (revoke = false) => {
       const captured = captureMetadata(f);
@@ -728,9 +732,7 @@ test(
     trustedRejection = true;
     const first = await dispatched();
     assert.equal(await lifecycle.ready(source, t.signal), false);
-    assert.equal(await lifecycle.readWarm(source, window()), undefined);
-    assert.equal((await f.resolve(captureMetadata(f))).ready, undefined);
-    assert.equal(gh.issuesOfTokens.length, 1, "feedback and reads cannot mint inline");
+    assert.equal(gh.issuesOfTokens.length, 1, "rejection alone does not mint a replacement");
 
     const restarted = createOwner();
     const competitor = createOwner();
@@ -754,7 +756,7 @@ test(
     const [loser] = await raceMaintenance([restarted, competitor], t.signal);
     assert(loser === "idle" || loser === "retired", `unexpected losing pass: ${loser}`);
     assert.equal(revocations(), loser === "retired" ? 2 : 1);
-    const replacement = await restarted.readWarm(source, window());
+    const replacement = await restarted.resolve(source.key, { ...window(), minimumValidityMs: 0 });
     assert(replacement);
     assert.notEqual(replacement.materialVersion, old.materialVersion);
     assert.equal(gh.issuesOfTokens.length, 2);
@@ -765,7 +767,7 @@ test(
     assert.equal(await restarted.maintain(t.signal), "ready");
     assert.equal(revocations(), 2, "exactly one pass retires the rejected token");
     assert.equal(
-      (await restarted.readWarm(source, window()))?.materialVersion,
+      (await restarted.resolve(source.key, { ...window(), minimumValidityMs: 0 }))?.materialVersion,
       replacement.materialVersion,
     );
     assert.equal(
@@ -790,7 +792,7 @@ test(
     await due();
     assert.equal(await competitor.maintain(t.signal), "blocked");
     assert.equal(gh.issuesOfTokens.length, 3, "rejection cannot replay uncertain issuance");
-    assert.equal(await competitor.readWarm(source, window()), undefined);
+    assert.equal(await competitor.ready(source, t.signal), false);
     assert.equal(revocations(), 2, "later passes never replay the rejected token's retirement");
     assert.deepEqual(gh.errors, []);
   },

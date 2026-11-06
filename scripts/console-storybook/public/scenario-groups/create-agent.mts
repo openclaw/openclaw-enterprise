@@ -410,6 +410,12 @@ export const createAgentFormScenarios = {
     ],
     description:
       "Invalid JSON is reported once, under the field, with its line and column. Nothing is saved.",
+    steps: [
+      "Check the initial syntax error, then select Reset template and confirm discarding the edited launch settings. Expand Advanced settings and keep the restored Configuration JSON.",
+      'Set plugins.entries.knowledge to {"enabled":true,"config":{"thresholds":[1,1e400,3]}}, preserving the other entries and model settings. This is valid JSON syntax with an out-of-range number. Select Create Agent.',
+      "Read the error under the editor: A number is too large or too small to save. Use a number closer to zero. Check that Configuration JSON has focus, its exact text is unchanged, and neither an Agent nor a Configuration is written.",
+      "If the form shows a model list, select Enter model ID manually. Change Model ID and leave the field. Check that the range error focuses Configuration JSON and the rejected draft is not rewritten. Restore the original Model ID, change only 1e400 to 2, and select Create Agent. Inspect the created Agent's Configuration for [1,2,3]. All saves and deployment state in this story are simulated.",
+    ],
   },
   createPluginsUnavailable: {
     group: "Pages/Create Agent",
@@ -2169,6 +2175,43 @@ export const createAgentProvisioningScenarios = {
       "The Preset API saves launch-field errors such as an unknown execution mode. Use Preset names the first field the form cannot use and keeps the chooser open.",
     gap: "The fixture edits a simulated Preset; Preset CRUD has no console page.",
   },
+  createPresetNonTextPrimary: {
+    group: "Pages/Create Agent",
+    name: "Preset with a non-text primary",
+    path: create,
+    rules: [
+      {
+        // Only this stored default is malformed; the other Preset remains a usable fallback.
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/presets/pre_default_codex",
+        method: "GET",
+        data: {
+          id: "pre_default_codex",
+          namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+          name: "default-codex",
+          template: {
+            variables: { marker: { type: "string" } },
+            agent: { name: "{{ vars.marker }}", executionMode: "dedicated" },
+            configuration: {
+              values: { agents: { defaults: { model: { primary: 42 } } } },
+            },
+          },
+        },
+      },
+    ],
+    actions: [
+      click("Start with default Preset"),
+      { selector: "#preset-variable-marker", value: "Retained chooser draft" },
+      click("Use Preset"),
+    ],
+    description:
+      "An older stored Preset has a numeric primary that the current Controller refuses to save. The production form explains that the primary must be text and keeps the chooser and entered Marker intact.",
+    steps: [
+      "Confirm the refusal says the primary model must be text and offers another Preset or a template fix. No Agent form opens and Marker still reads Retained chooser draft.",
+      "Select the Agents link, then Create Agent. Confirm Marker is retained. Choose Research assistant, enter a Name, and select Use Preset: the normal Agent form opens.",
+      "Reset the story. Choose Research assistant, then default-codex in Preset template. Enter a Marker and select Use Preset to check the same refusal through explicit selection.",
+    ],
+    gap: "The exact Preset GET is simulated; this preview does not save invalid data through the Controller. The owning console-agent-presets browser case covers the current PATCH 400, legacy stored value, both entry paths, and fallback recovery.",
+  },
   createCapabilitiesDenied: {
     group: "Pages/Create Agent",
     name: "Permission check failed",
@@ -2218,27 +2261,45 @@ export const createAgentProvisioningScenarios = {
     actions: form,
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
-      "A member whose Namespace grants Agent create cannot read the Installation. The form goes on: an info status above it says why, the badge names the Preset, and Create Agent stays available; the API still decides at the preflight and at create.",
+      "A member whose Namespace grants Agent create cannot read the Installation, so the form reads the Namespace's Agent capabilities instead. The form goes on: an info status above it says why, the badge names the Preset, and Create Agent stays available; the API still decides at the preflight and at create.",
     steps: [
-      'Above the form, "Your access" says you can create Agents in Engineering and that an Installation administrator then gives the new Agent access to its Secrets.',
+      'Above the form, "Your access" says you can create Agents in Engineering and that deploying the new Agent gives it access to the Secrets and credential sources it uses.',
+      "The request log shows GET /installation refused and GET /namespaces/…/agent-capabilities answered.",
       'The form starts with the badge "From Preset · default-codex", and no mid-form note asks for Installation access.',
     ],
     gap: "The member creation browser test uses a member account and the real Installation permission check.",
   },
   createMemberGrantRefused: {
     group: "Pages/Create Agent",
-    name: "Member Agent created, grant needs an administrator",
+    name: "Member Agent created, opens its draft",
     path: create,
     observabilityDenied: true,
     actions: [...readyForm, click("Create Agent")],
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
-      "The session already knows this member does not administer the Installation, so after the Agent saves the form sends no IAM read for its credential grant. It names the administrator step at once and offers Open saved Agent, with no Retry credential access.",
+      "The session already knows this member does not administer the Installation. The member's deploy gives the Agent access to its Secrets (RFC-0026), so after the Agent saves the form sends no IAM request and opens the Agent's draft, where the member deploys it.",
     steps: [
-      "Read the alert: giving the Agent access to its Secrets needs Installation administration, so it asks an Installation administrator to open the saved Agent and grant it.",
-      "The saved-resources line identifies the Configuration and Agent, offers Open saved Agent, and does not promise a retry.",
-      "The request log shows no /iam/ request. Only Cancel and Start over remain beside the saved-resources line.",
+      "After Create Agent, the Agent page opens on its draft.",
+      "The request log shows no /iam/ request.",
     ],
+  },
+  createMemberCredentialGateway: {
+    group: "Pages/Create Agent",
+    name: "Member on a Credential Gateway Installation",
+    path: create,
+    observabilityDenied: true,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    unsupportedProvisioning: true,
+    actions: readyForm,
+    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    description:
+      "A member cannot read the Installation, but the Namespace's Agent capabilities list the Credential Gateway's model source types. Create Agent registers the selected model Secret as a credential source before it saves the Agent, so the deploy is not refused for Secret-backed Harness authentication.",
+    steps: [
+      "The request log shows GET /installation refused and GET /namespaces/…/agent-capabilities answered with the model credential source types.",
+      "Enable Native admin UI is unavailable, and its hint says native admin setup needs guided provisioning, which only an Installation administrator can use.",
+      "Create the Agent and inspect the requests: POST …/credential-sources precedes POST …/agents, whose harnessAuth names the new source. The Agent page opens on its draft.",
+    ],
+    gap: "The fixture simulates the Credential Gateway. The Default users PostgreSQL test reads the route from the real API.",
   },
   createRestricted: {
     group: "Pages/Create Agent",

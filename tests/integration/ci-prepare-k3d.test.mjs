@@ -10,6 +10,7 @@ import { prepareGatewayRouting } from "../../scripts/ci/routing.mjs";
 import {
   assertStderrMatch,
   digest,
+  fixture,
   fixtureImageCommands,
   fixturePreparationMetrics,
   immutableImage,
@@ -100,6 +101,60 @@ async function interceptFixtureDocker(t, commands, scriptFor) {
 // Each case waits on its own fake k3d and container engine processes, mostly for
 // deliberate timeouts, so the cases run concurrently.
 describe("CI k3d preparation", { concurrency: true }, () => {
+  test("preselected runtime preparation publishes the verified host image for Docker relays", async (t) => {
+    const preload = join(await fixture(t), "runtime-selection.mjs");
+    const commands = await fixtureImageCommands(t, "local-digest", "k3d-model", {
+      NODE_OPTIONS: `--import=${preload}`,
+      NODE_BASE_IMAGE: nodeBaseImage,
+      OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
+      OPENAI_API_KEY: "test-only-key",
+      OCC_TEST_OPENAI_MODEL: "test-model",
+      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
+      OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
+      OCC_TEST_KUBERNETES_CODEX_VERSION: "0.164.0",
+    });
+    // Exercise the real preparation CLI, image verification and environment publication.
+    // Routing installation and seccomp generation are separate from image selection.
+    const prepareUrl = new URL("../../scripts/ci/prepare.mjs", import.meta.url).href;
+    await writeFile(
+      preload,
+      `import { registerHooks } from "node:module";
+export async function prepareGatewayRouting() { return { env: {} }; }
+export async function prepareCodexSeccompProfile() { return { profileName: "fixture-profile", nodes: [] }; }
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (context.parentURL === ${JSON.stringify(prepareUrl)} &&
+        ["./routing.mjs", "./codex-seccomp.mjs"].includes(specifier)) {
+      return { url: import.meta.url, shortCircuit: true };
+    }
+    return nextResolve(specifier, context);
+  },
+});
+`,
+    );
+    const result = await commands.prepare();
+    assert.equal(result.status, 0, result.stderr);
+    const state = await commands.readState();
+    // Docker runs the verified host config, while Kubernetes uses its imported manifest.
+    assert.equal(state.env.OCC_DOCKER_RUNTIME_IMAGE, `sha256:${"b".repeat(64)}`);
+    assert.match(state.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE, /^localhost\/.+@sha256:/);
+    assert.notEqual(
+      state.env.OCC_DOCKER_RUNTIME_IMAGE,
+      state.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE,
+    );
+    assert.match(
+      await readFile(commands.githubEnv, "utf8"),
+      new RegExp(`^OCC_DOCKER_RUNTIME_IMAGE=sha256:${"b".repeat(64)}$`, "m"),
+    );
+    await commands.cleanupSuccessfully();
+    assert.ok(
+      !(await commands.commands()).some(
+        ({ args }) => args[0] === "image" && args[1] === "rm" && args.includes(immutableImage),
+      ),
+      "cleanup must preserve the caller's immutable source image",
+    );
+  });
+
   test("fixture preparation rejects an unknown proxy source before publishing its environment", async (t) => {
     const commands = await fixtureImageCommands(t, "missing-proxy-source");
     const result = await commands.prepare();

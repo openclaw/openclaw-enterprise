@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: 2026-11-05
-last_updated_session: authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0
+updated: 2026-11-06
+last_updated_session: authoring-run/c13df234-5a0d-4e3c-b254-cc806ee046e7
 ---
 
 # Protected credential request flow
@@ -32,13 +32,8 @@ Suppose the revision admits `github-app-metadata` for repository ID `12345`,
 1. **Match the request.** The supervisor binds the bodyless `GET /repos/acme/widgets`
    reply to its exchange. The GitHub adapter checks method, URL, headers and body
    against the installed route.
-2. **Resolve the token.** OCC checks installation, binding, withdrawal and current
-   `credential_source:operate`, selects a usable worker-prepared token, then returns
-   its `Authorization: Bearer …` header to the supervisor.
-3. **Permit one send.** On the same stream, OCC rechecks authority and the
-   token version. If the Agent lost its source grant after resolution, OCC
-   refuses the send. Otherwise, the supervisor can start the request by the
-   deadline in the permit. Issuing a permit does not confirm receipt by GitHub.
+2. **Resolve the token.** OCC authorizes the Agent and resolves the registered grant. The Token Service can start or join issuance. OCC rechecks authority and token version before returning the header.
+3. **Permit one send.** OCC rechecks the binding on the same stream. The supervisor must start its request by the permit deadline.
 4. **Release the identity.** The adapter checks GitHub's complete reply: `200` JSON,
    at most 64 KiB, with the admitted ID and name (ASCII case may differ). The caller
    receives `200`, `Content-Type: application/json`, `Cache-Control: no-store`
@@ -111,33 +106,30 @@ fence refuses; legacy observations cannot substitute. The gateway compares unkno
 fields too. The local fingerprint covers both hashes and full policies, but is neither
 a canonical supplier hash nor supervisor attestation.
 
-Compute sends protected Harnesses `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` and a
-verifier, withholding its private status identifiers and raw bearer. The helper
-refuses mismatched enrollment before opening its authenticated listener.
+For protected provider Harnesses, Compute sets `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID`
+from the admitted revision. The helper requires a match with the manifest's enrollment
+revision before opening the authenticated listener on the service port. Compute withholds its private status
+revision, port, container name and Pod UID. The provider receives only the transport verifier.
 
-Before inference, Compute commits and rechecks the installation, Sandbox, service
-and challenge, then signs release with its private key. Startup closes the listener;
-replacements need fresh challenges. At 180 seconds it fails closed. Enrollment
-neither resolves credentials nor retries requests. Reconciliation can repeat checks;
-[Harness-only restart recovery remains manual](../reference/credential-sources/protected-inference.md#installation-configuration).
+The Harness waits before its first model probe. Compute awaits installation commit, rechecks evidence
+and calls the Sandbox Driver. The Driver verifies the Sandbox and service and reads
+the execution/plan challenge. Compute signs the fresh process nonce and current
+installation with its control-plane key. The listener closes before Codex starts.
+Restart invalidates the old release. After 180 seconds startup fails closed and remains held.
+Reconciliation can repeat readiness checks without resolving material or retrying
+business requests. Active revisions require queued work; default Kubernetes has
+no periodic maintenance for [Harness-only restarts](../reference/credential-sources/protected-inference.md#installation-configuration).
 
-For the v6 preview, `NATIVE_WORKER_ENTRYPOINT`
-(`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`) waits
-for signed release. Sandbox matches enrollment to admission and checks its ID
-after the ACK. `ProtectedExecutionDriver.enroll` verifies policy, recipient and
-Pod identity; Compute requires node enrollment and exposure withdrawal.
+During held Git enrollment, `openshell-git-runtime.ts:observeHeldPreview` logs
+[curl and response failures](../reference/repository-credentials/protected-openshell-git.md#worker-log).
+An unconfirmed one-shot probe blocks the route with `bootstrap_failed` before credential delivery or release.
 
-The read-only PVC launcher `/usr/local/bin/git` delegates to a `TMPDIR` shim
-with Codex's scoped helper and `NODE_EXTRA_CA_CERTS` (Sandbox egress and Gateway
-CAs). The supervisor retains credentials. Both files are Agent-writable; no other
-principal may execute them. Git inputs are checked before release. The private shim survives worker reconnects and is removed only when its supervisor exits. Git validation/setup holds `repository-git-route`;
-other released-worker failures hold `native-worker-startup`, both `UNAVAILABLE`.
-
-`openshell-git-installation.ts:observeOpenShellGitInstallation` completes a model
-OBSERVE per active environment for observed Git routes, including rotations.
-`ObservedHookPreview.completedModelReceipt` caches completion per environment revision.
-Stale or incomplete model receipts keep the route pending without changing the
-original launch witness or startup acknowledgment.
+For native v6, `NATIVE_WORKER_ENTRYPOINT`
+(`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`) waits for signed release.
+Its Agent-private launcher and shim use Codex's scoped helper and `NODE_EXTRA_CA_CERTS`;
+other principals must not execute them. The shim survives reconnects until the
+native worker supervisor exits. Git setup and other startup failures hold
+`repository-git-route` and `native-worker-startup`, respectively (`UNAVAILABLE`).
 
 ### 2. Capture identity, operation and first authority decision
 
@@ -195,15 +187,7 @@ extend the lifetime.
 GitHub acquisition validation, transport and metadata injection share a wire check:
 1–16,384 bytes of nonspace printable ASCII, not authentication.
 
-`apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts:readWarm`
-pins the committed attempt ID, material version and earlier of material expiry or signed
-deadline. The store projects ciphertext only for that eligible row and issuer, checks
-`clock_timestamp()` at projection and rechecks expiry and cancellation immediately before
-decryption. The outer reader verifies identity and expiry. Expired or replaced selections
-return `not_ready` unless the signed deadline has elapsed; projected bytes cannot be recalled.
-Separate background custody permits rotation and cleanup of material ineligible for requests.
-The registry returns credential headers, an opaque handle and nonsecret evidence to the
-authenticated supervisor; material remains request-scoped.
+`apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts:resolve` checks the registered source and the token's remaining lifetime. It reads only ciphertext for the selected issuer, attempt and version. The store rechecks the caller’s deadline and cancellation before decryption. If issuance cannot supply an eligible token in time, OCC releases no header. Background cleanup retains access to retired material.
 
 Before send, `packages/occ/src/state/prepared-github-state.ts:postgresPreparedGitHubProof`
 queries current material metadata in the active platform transaction, without another
@@ -343,6 +327,12 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-06 02:36: Preserve request-time token resolution and held-probe diagnostics when merging the current flow. (authoring-run/c13df234-5a0d-4e3c-b254-cc806ee046e7 - 585e7ac2c6673611ec29a3c76ca507e61308fa6f)
+
+- 2026-11-05 23:21: Trace request-time token resolution and the permission check before releasing a credential header. (codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676 - 614169814)
+
+- 2026-11-05 20:36: Trace one-shot Git enrollment probe failures to the worker log. (authoring-run/5e3df28f-4382-449e-a9db-e26d5347994e - b1da9eddd3a594982ce36639610d1e3480a9e1f7)
 
 - 2026-11-05 02:35: Refresh model observation after Git credential rotation. (authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0 - 261e4b54cbd0366ff0cba0dc6a00b7890b8e39f2)
 
