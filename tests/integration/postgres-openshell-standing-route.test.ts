@@ -1,16 +1,77 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
-import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
+import {
+  OpenShellGitRuntime,
+  openShellRepositoryAccess,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
+import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { CREDENTIAL_GATEWAY_FIXTURE_ID } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
-import type { ProtectedRepositoryGitMaterial } from "../../packages/contracts/src/index.ts";
+import type {
+  AgentRevision,
+  ComputeRevisionContext,
+  ProtectedGitHubInstallationMaterial,
+  SandboxRepositoryAccess,
+} from "../../packages/contracts/src/index.ts";
 import type { EgressAuthorityConfiguration } from "../../apps/controller/src/composition/egress-authority.ts";
+import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
 import type { PostgresPool } from "../../packages/occ/src/index.ts";
+
+// Admission is shared; each case still owns its route, worker custody and fault injection.
+async function protectedStandingFixture(
+  t: TestContext,
+  repository: () => SandboxRepositoryAccess,
+  client: () => Awaited<ReturnType<typeof gitExpiryGateway>>["client"],
+) {
+  let peer!: Awaited<ReturnType<typeof preparedStandingGitPeer>>;
+  const protectedGit = protectedRepositoryGitRelease(repository, async () => ({
+    close: async () => {},
+  }));
+  const gateway = new OpenShellCredentialGatewayDriver(
+    { binaries: ["/usr/bin/codex"] },
+    {
+      id: CREDENTIAL_GATEWAY_FIXTURE_ID,
+      backend: {
+        id: "fixture-gateway",
+        drivers: { credential_gateway: CREDENTIAL_GATEWAY_FIXTURE_ID },
+        client: { placement: () => undefined, clientForNamespace: client },
+      } as never,
+    },
+  );
+  const fixture = await standingExecutionFixture(
+    t,
+    import.meta.url,
+    async (pool, namespace) => ({
+      ...(peer = await preparedStandingGitPeer(t, pool, namespace, {
+        driver: protectedGit.owner.ref,
+        installationAccess: true,
+      })),
+      requestedBinding: {
+        repositoryRef: "team-installation",
+        profile: "github-installation",
+      },
+      protectedDriver: protectedGit.owner,
+      credentialGateway: gateway,
+    }),
+    { sandbox: protectedGit.sandboxConfiguration },
+  );
+  const { revision, credentials } = fixture;
+  assert.deepEqual(revision.executionAdmission, { version: 5, mode: "protected" });
+  const plan = revision.egressPlan;
+  assert.ok(plan);
+  assert.equal(plan.repositoryGitAuthorization, "online-request");
+  assert.deepEqual(plan.repositoryGit, credentials);
+  return { ...fixture, peer, protectedGit, gateway, plan };
+}
 
 // Real standing approval, persisted route, runtime, provider and stock gRPC client. The
 // supervisor, Pod identities and material are controlled; no credential or origin is needed.
@@ -19,10 +80,34 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
     `OpenShell standing rotation preserves custody when ${outcome}`,
     { ...requiresPostgres, timeout: 45_000 },
     async (t) => {
-      const { f, registry, revision, credentials, binding, key, approval } =
-        await standingExecutionFixture(t, import.meta.url);
+      const {
+        f,
+        registry,
+        revision,
+        credentials,
+        binding,
+        key,
+        approval,
+        peer,
+        protectedGit,
+        gateway,
+        driver,
+        plan,
+      } = await protectedStandingFixture(
+        t,
+        () =>
+          openShellRepositoryAccess(warm.runtime, () => ({
+            client,
+            continuity,
+            workspace,
+            sandbox,
+          })),
+        () => client,
+      );
       const routes = new PostgresOpenShellGitRouteStore(f.observerPool);
-      const model = "original-model";
+      const auth = plan.harnessCredentialSource;
+      assert.ok(auth);
+      const model = openShellProviderName(auth.sourceId);
       const workspace = "team-workspace";
       const sandbox = "git-execution";
       const firstDeadline = credentials.deadlineWallMs;
@@ -34,13 +119,14 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
         deadline: firstDeadline,
         platformProfile: false,
         trackGitExpiry: true,
+        modelSourceId: auth.sourceId,
       });
       let workload = "original-pods-and-containers";
       const continuity = { model, workload: async () => workload };
       const context = async () => ({ client, workspace, sandbox, continuity });
       const signal = AbortSignal.timeout(40_000);
       const identity = {
-        sandboxId: "original-sandbox-id",
+        sandboxId: `sandbox-${revision.id}`,
         workspace,
         requestId: "fixture-request",
         bindingId: "",
@@ -57,10 +143,10 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
           sessionId: "session-" + n,
           materialVersion: randomUUID(),
           preparationAttemptId: randomUUID(),
-          repository: "example/source",
-          pushRef: "refs/heads/review",
+          scope: "github-installation",
+          installationId: registry.githubInstallationId,
           apiOrigin: "https://api.github.com",
-        }) satisfies ProtectedRepositoryGitMaterial;
+        }) satisfies ProtectedGitHubInstallationMaterial;
       const materials = [
         undefined,
         material(1, firstDeadline),
@@ -90,6 +176,11 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
             reads++;
             // The prepared owner's separate contract checks session and custody. This fixture
             // supplies a selected attempt only while this exact durable approval is current.
+            if (
+              (await f.currentAgent({ id: revision.agentId }))?.activeRevisionId !== revision.id
+            ) {
+              return { absent: "unprepared" } as const;
+            }
             const current = await f.state.read((v) =>
               v.repositorySessions.findStandingApproval(
                 revision.namespaceId,
@@ -128,17 +219,91 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
         const reconcile = async () => {
           const entry = (await runtime["entries"].get(revision.id))!;
           entry.nextRefreshAt = 0;
+          entry.nextObserveAt = 0;
           await runtime["reconcile"](entry);
         };
         return { runtime, prepare, bind, verify, reconcile, lookup };
       };
 
       const warm = worker();
-      const installed = await warm.prepare();
-      identity.bindingId =
-        installed.middlewares["oce-prepared-git"].config.fields.binding_id.stringValue;
-      world.id = identity.sandboxId;
-      await warm.bind();
+      let installed!: Awaited<ReturnType<typeof warm.prepare>>;
+      const kube = createTestKubernetesComputeDriver(f.compute.id, {
+        repositoryCredentials: true,
+        protectedDriver: protectedGit.owner,
+        credentialGatewayDriver: gateway,
+      });
+      // The normal worker owns the installation transaction and signed enrollment.
+      // Stop it before controlled rotation faults; cold reads then see its committed evidence.
+      await f.start(
+        {
+          ...f.compute,
+          validateRepositoryCredentials: kube.validateRepositoryCredentials.bind(kube),
+          validateExecutionAdmission: kube.validateExecutionAdmission.bind(kube),
+          async prepareRevision(r: AgentRevision, custody: ComputeRevisionContext) {
+            assert.equal(r.id, revision.id);
+            const resolved = custody.harnessAuth!;
+            assert.equal(resolved.method, "credential_source");
+            const attachments = await gateway.attachForRevision({
+              revision: r,
+              sources: [resolved.source],
+              namespace: { ...f.namespace, name: workspace, status: "ready" },
+              signal,
+            });
+            assert.deepEqual(attachments, [{ sourceId: auth.sourceId, ref: model }]);
+            installed = await warm.prepare();
+            identity.bindingId =
+              installed.middlewares["oce-prepared-git"].config.fields.binding_id.stringValue;
+            assert.equal(identity.bindingId, plan.execution.executionId);
+            world.id = identity.sandboxId;
+            await warm.bind();
+            await warm.reconcile();
+            await protectedGit.enroll(
+              r,
+              custody,
+              installed.middlewares,
+              workspace,
+              identity.sandboxId,
+              world.repositoryGitRecipient,
+            );
+            return f.compute.prepareRevision(r);
+          },
+        },
+        {
+          transformDrivers: (d: InstallationRuntimeDrivers) =>
+            protectedGit.selectDrivers(
+              {
+                ...d,
+                repositoryPolicy: driver,
+                repositoryAdmission: { policy: driver, backendId: peer.backendId },
+                installation: {
+                  ...d.installation,
+                  backend: [
+                    ...(d.installation.backend ?? []),
+                    {
+                      id: peer.backendId,
+                      type: "github",
+                      configuration: { registryPath: "/unused/standing.json" },
+                      drivers: { repo: driver.id },
+                    },
+                  ],
+                },
+              },
+              gateway,
+            ),
+        },
+      );
+      try {
+        await f.work(revision, "succeeded");
+      } finally {
+        await f.stop();
+      }
+      const { rows: installations } = await f.observerPool.query(
+        "SELECT installation FROM occ.egress_installations WHERE revision_id=$1",
+        [revision.id],
+      );
+      assert.equal(installations.length, 1, "the worker committed one protected installation");
+      assert.deepEqual(installations[0].installation.plan, plan);
+      assert.equal(installations[0].installation.sandboxId, identity.sandboxId);
       await warm.reconcile();
       assert.equal((await warm.lookup())?.sessionId, "session-1");
       assert.equal(world.writes, 1);
@@ -356,15 +521,15 @@ test(
   "lost initial OpenShell route commit acknowledgement prevents bootstrap and replay across restart",
   { ...requiresPostgres, timeout: 45_000 },
   async (t) => {
-    let peer!: Awaited<ReturnType<typeof preparedStandingGitPeer>>;
-    const { f, registry, revision, credentials } = await standingExecutionFixture(
+    const { f, registry, revision, credentials, peer, plan } = await protectedStandingFixture(
       t,
-      import.meta.url,
-      async (pool, namespace) => (peer = await preparedStandingGitPeer(t, pool, namespace)),
+      () => openShellRepositoryAccess(first, () => ({ client, continuity, workspace, sandbox })),
+      () => client,
     );
     const model = "original-model";
     const workspace = "route-reservation";
     const sandbox = "reservation-sandbox";
+    const continuity = { model, workload: async () => "uncreated-workload" };
     const { client, world } = await gitExpiryGateway(t, {
       model,
       workspace,
@@ -433,6 +598,7 @@ test(
       [revision.id],
     );
     assert.ok(reserved);
+    assert.equal(reserved.binding_id, plan.execution.executionId);
     assert.equal(reserved.write_pending, "bootstrap");
     assert.equal(reserved.blocked, null);
     assert.equal(reserved.material_version, null);

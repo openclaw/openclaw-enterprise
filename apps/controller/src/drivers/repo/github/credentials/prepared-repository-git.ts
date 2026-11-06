@@ -355,8 +355,11 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     key: Buffer,
     authority: string,
     policy: Policy,
-    custody: RepositoryGitCustody = { kind: "native-broker" },
+    custody: RepositoryGitCustody,
   ) {
+    if (custody === undefined) {
+      throw new Error("REPOSITORY_GIT_CUSTODY_REQUIRED");
+    }
     const proxy: Recipient = custody.kind === "native-broker" ? undefined : custody;
     const driver = proxy?.driver;
     const adoption: PreparedRepositoryGitSource["adoption"][] = [

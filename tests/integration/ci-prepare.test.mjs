@@ -18,7 +18,6 @@ import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
 import { listen } from "../helpers/listen.mjs";
-import { nodeTestSummary } from "../helpers/node-test-summary.ts";
 import {
   assertStderrMatch,
   fixture,
@@ -591,6 +590,29 @@ describe("CI preparation", { concurrency }, () => {
       const cleaned = await commands.cleanup();
       assert.equal(cleaned.status, 0, `${event}: ${cleaned.stderr}`);
     }
+  });
+
+  test("installer preparation populates its builder even when the engine holds the images", async (t) => {
+    const commands = await fixtureImageCommands(t, "engine-holds-images", "qa-matrix", {
+      ...imageCacheEnv,
+      NODE_BASE_IMAGE: packagingNodeBaseImage,
+      BUILDX_BUILDER: "owned-installer-builder",
+    });
+    const prepared = await commands.prepare([
+      "--selected-file",
+      "tests/integration/qa-matrix-real.test.mjs",
+    ]);
+    assert.equal(prepared.status, 0, prepared.stderr);
+    const builds = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
+    // The installer builds again from source on this builder; tagging an engine image
+    // cannot supply that builder's layers. This checks orchestration, not live image storage.
+    assert.equal(builds.length, 2);
+    assert.ok(builds.every(({ args }) => args.includes("--load") && args.includes("--cache-from")));
+    assert.ok(builds.every(({ args }) => !args.includes("--cache-to")));
+    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+    assert.equal(state.env.BUILDX_BUILDER, "owned-installer-builder");
+    assert.equal(state.env.SOURCE_DATE_EPOCH, "0");
+    assert.doesNotMatch(JSON.stringify(state), /synthetic-cache-credential/);
   });
 
   test("image lanes tag the engine's copy when the restored cache resolves to an image it holds", async (t) => {
@@ -1546,89 +1568,44 @@ for (let index = 0; index < Number(times); index += 1) {
     assert.deepEqual(await readdir(root), ["order"]);
   });
 
-  test("installed repository preparation is refused before prerequisite checks or side effects", async (t) => {
+  test("retired repository lane is unknown before inputs, state, or commands", async (t) => {
     const root = await fixture(t);
-    const statePath = join(root, "installed-state.json");
-    const configPath = join(root, "app.json");
-    const keyPath = join(root, "app.pem");
-    await writeFile(configPath, "{}", { mode: 0o600 });
-    await writeFile(keyPath, "test-only key", { mode: 0o600 });
-    const args = ["--lane", "repository-credentials-installed", "--state", statePath];
-
-    // An operator who selects the lane without any inputs learns that it is
-    // unavailable, instead of being asked for model, App and image inputs first.
-    const unprepared = await runPrepare(args, {});
-    assert.equal(unprepared.status, 1);
-    assert.match(
-      unprepared.stderr,
-      /Installed repository qualification is temporarily unavailable/,
+    const manifest = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
+    assert.equal(Object.hasOwn(manifest.lanes, "repository-credentials-installed"), false);
+    const program = `
+import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+let commands = 0;
+childProcess.spawn = () => {
+  commands += 1;
+  throw new Error("Preparation must not run commands");
+};
+syncBuiltinESMExports();
+const { prepareLane, prepareFile } = await import(process.argv[1]);
+for (const prepare of [prepareLane, prepareFile]) {
+  await assert.rejects(
+    prepare({
+      lane: "repository-credentials-installed",
+      ...(prepare === prepareFile
+        ? { file: "tests/integration/repository-credentials-k3d-real.test.mjs" }
+        : {}),
+      statePath: process.argv[2],
+    }),
+    { message: "Unknown CI lane: repository-credentials-installed" },
+  );
+}
+assert.equal(commands, 0);
+`;
+    const result = await runProgram(
+      program,
+      join(root, "state.json"),
+      // No ambient credentials or real input files; even command lookup is isolated.
+      { PATH: root },
+      10_000,
     );
-    assert.doesNotMatch(unprepared.stderr, /Missing required CI input/);
-    await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-
-    // Inputs that previously passed the early checks cannot create a preparation state
-    // while remote cleanup lacks a safe ownership boundary.
-    const blocked = await runPrepare(args, {
-      OPENAI_API_KEY: "test-only-model-key",
-      OCC_TEST_OPENAI_MODEL: "test-model",
-      NODE_BASE_IMAGE: "",
-      OCC_TEST_REPOSITORY_CREDENTIALS_AUTHORIZED: "1",
-      OCC_TEST_REPOSITORY_CREDENTIALS_REPOSITORY: "fixture/repository",
-      OCC_TEST_REPOSITORY_CREDENTIALS_APP_CONFIG_FILE: configPath,
-      OCC_TEST_REPOSITORY_CREDENTIALS_APP_KEY_FILE: keyPath,
-      OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE: immutableImage,
-      OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE_MODE: "release",
-      OCC_TEST_REPOSITORY_CREDENTIALS_UPSTREAM_CIDRS: "203.0.113.1/32",
-      OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
-      OCC_TEST_KUBERNETES_RUNTIME_IMAGE: immutableImage,
-      OCC_TEST_PRODUCTION_POSTGRES_IMAGE: immutableImage,
-      OCC_TEST_PRODUCTION_NODE_IMAGE: immutableImage,
-    });
-    assert.equal(blocked.status, 1);
-    assert.match(blocked.stderr, /Installed repository qualification is temporarily unavailable/);
-    await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-
-    // Per-file preparation, which the test runner uses, is refused the same way.
-    const perFile = await runPrepare(
-      [...args, "--file", "tests/integration/repository-credentials-k3d-real.test.mjs"],
-      {},
-    );
-    assert.equal(perFile.status, 1);
-    assert.match(perFile.stderr, /Installed repository qualification is temporarily unavailable/);
-    await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-  });
-
-  test("the installed repository journey refuses direct execution before fixture setup", async (t) => {
-    const root = await fixture(t);
-    // Direct execution must fail at the safety guard even without credentials or
-    // a cluster, before any setup or provider operation can be attempted.
-    const result = await spawnResult(
-      process.execPath,
-      [
-        "--test",
-        "--test-name-pattern=^installed ",
-        "tests/integration/repository-credentials-k3d-real.test.mjs",
-      ],
-      {
-        env: {
-          HOME: root,
-          PATH: process.env.PATH,
-          OCC_TEST_REPOSITORY_CREDENTIALS_REAL: "1",
-        },
-        timeout: 15000,
-      },
-    );
-    assert.equal(result.status, 1);
-    const output = `${result.stdout}\n${result.stderr}`;
-    // Every selected installed case refuses; read the run's own totals rather
-    // than hard-coding how many installed cases that file has (finding 1032).
-    const summary = nodeTestSummary(output);
-    assert.ok(summary.tests >= 1, JSON.stringify(summary));
-    assert.equal(summary.fail, summary.tests, JSON.stringify(summary));
-    assert.equal(
-      (output.match(/Installed repository qualification is temporarily unavailable/g) ?? []).length,
-      summary.tests,
-    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(await readdir(root), []);
   });
 
   test("production upgrade preparation requires two distinct immutable image pairs before creating resources", async (t) => {
@@ -1722,7 +1699,6 @@ for (let index = 0; index < Number(times); index += 1) {
     const manifest = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
     for (const name of ["ci", "full"]) {
       assert.ok(manifest.groups[name].includes("repository-credentials-container"));
-      assert.ok(!manifest.groups[name].includes("repository-credentials-installed"));
       for (const lane of manifest.groups[name]) {
         assert.notEqual(manifest.lanes[lane].env?.OCC_TEST_REPOSITORY_CREDENTIALS_REAL, "1");
       }
@@ -1832,13 +1808,75 @@ for (let index = 0; index < Number(times); index += 1) {
       }
       assert.equal(result.status, 0, result.stderr);
       const { include } = JSON.parse(
-        (await readFile(output, "utf8")).trim().slice("matrix=".length),
+        (await readFile(output, "utf8"))
+          .split("\n")
+          .find((line) => line.startsWith("matrix="))
+          .slice("matrix=".length),
       );
       assert.deepEqual(
         include.map(({ file }) => file),
         selected ? [selected] : files.map(({ path }) => path),
       );
       assert.equal(new Set(include.map(({ shard }) => shard)).size, include.length);
+      const installation = JSON.parse(
+        (await readFile(output, "utf8"))
+          .split("\n")
+          .find((line) => line.startsWith("installation-matrix="))
+          .slice("installation-matrix=".length),
+      );
+      assert.deepEqual(
+        installation.include.map(({ file }) => file),
+        loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json")).lanes[
+          "dev-up-k3d"
+        ].files.map(({ path }) => path),
+      );
+      const installationJob = workflow.jobs["local-installation"];
+      assert.equal(installationJob.strategy["fail-fast"], false);
+      assert.equal(
+        installationJob.steps.find((step) => step.uses === "./.github/actions/run-ci-lane").with[
+          "test-file"
+        ],
+        "${{ matrix.file }}",
+      );
+    }
+  });
+
+  test("installer cache selection preserves source builds and the unselected manual lane", async (t) => {
+    const action = loadYaml(
+      await readFile(join(repositoryRoot, ".github/actions/run-ci-lane/action.yml"), "utf8"),
+    );
+    const select = action.runs.steps.find((step) => step.id === "image-mode");
+    const root = await fixture(t);
+    for (const [index, [lane, file, sourceBuild, firstAgent]] of [
+      ["dev-up-k3d", "", "false", "false"],
+      ["qa-matrix", "", "false", "false"],
+      ["qa-matrix", "tests/integration/qa-matrix-real.test.mjs", "true", "false"],
+      ["dev-up-k3d", "tests/integration/dev-up-k3d-keycloak-real.test.ts", "true", "false"],
+      ["openshell", "tests/integration/dev-up-openshell-k3d-real.test.mjs", "true", "false"],
+      ["openshell", "tests/integration/local-first-agent-openshell-real.test.mjs", "false", "true"],
+      ["openshell", "tests/integration/openshell-refresh-real.test.ts", "false", "false"],
+    ].entries()) {
+      const output = join(root, `image-mode-${index}`);
+      // Run the action's actual selector: confusing these paths can replace source-build proof
+      // with selected images, or require cache inputs the manual lane never supplied.
+      const result = spawnSync("bash", ["-e", "-c", select.run], {
+        cwd: repositoryRoot,
+        env: {
+          ...process.env,
+          CI_SELECTED_LANE: lane,
+          CI_SELECTED_TEST_FILE: file,
+          GITHUB_OUTPUT: output,
+        },
+        encoding: "utf8",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const outputs = Object.fromEntries(
+        (await readFile(output, "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => line.split("=")),
+      );
+      assert.deepEqual(outputs, { "source-build": sourceBuild, "first-agent": firstAgent });
     }
   });
 
@@ -2177,7 +2215,7 @@ for (let index = 0; index < Number(times); index += 1) {
     );
     const profileData = await readFile(seccomp.dockerProfilePath, "utf8");
     assert.deepEqual(JSON.parse(profileData), installedProfile);
-    assert.equal((await stat(seccomp.dockerProfilePath)).mode & 0o777, 0o644);
+    assert.equal((await stat(seccomp.dockerProfilePath)).mode & 0o777, 0o600);
   });
 
   test("prepareLane fails closed instead of overwriting an existing CI state file", async (t) => {
@@ -2661,45 +2699,6 @@ if (args[0] === "pull") {
     }
   });
 
-  test("provider-account preparation checks image inputs and admin key mode before prepared state exists", async (t) => {
-    const root = await fixture(t);
-    const adminKeyPath = join(root, "chatgpt-admin.key");
-    const statePath = join(root, "missing-state.json");
-    await writeFile(adminKeyPath, "admin key\n", { mode: 0o600 });
-    await chmod(adminKeyPath, 0o600);
-    const prepareProviderAccount = () =>
-      runPrepare(
-        [
-          "--lane",
-          "provider-account",
-          "--file",
-          "tests/integration/service-account-driver-real.test.mjs",
-          "--state",
-          statePath,
-        ],
-        {
-          OCC_TEST_OPENAI_MODEL: "gpt-test",
-          OCC_TEST_CHATGPT_WORKSPACE_ID: "workspace-test",
-          OCC_TEST_CHATGPT_ADMIN_KEY_PATH: adminKeyPath,
-          OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "",
-          OCC_TEST_KUBERNETES_AGENT_IMAGE: "",
-        },
-      );
-
-    const result = await prepareProviderAccount();
-    assert.equal(result.status, 1);
-    assertStderrMatch(result.stderr, /requires a prior prepareLane/);
-    assert.doesNotMatch(result.stderr, /OCC_TEST_KUBERNETES_.*IMAGE/);
-    await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-
-    // The admin key must stay private to the runner's user.
-    await chmod(adminKeyPath, 0o644);
-    const readable = await prepareProviderAccount();
-    assert.equal(readable.status, 1);
-    assertStderrMatch(readable.stderr, /ChatGPT admin key must have mode 0600/);
-    await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-  });
-
   test("OpenShell preparation requires the selected owner's credential before side effects", async (t) => {
     const root = await fixture(t);
     const owner = "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";
@@ -2756,6 +2755,26 @@ if (args[0] === "pull") {
         prepareLane: true,
       },
     ];
+    // Each split owner must retain the credential admission gate before any resource is created.
+    for (const file of [
+      "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+      "tests/integration/openshell-credentials-real.test.ts",
+      "tests/integration/openshell-withdrawal-real.test.ts",
+      "tests/integration/openshell-upstream-real.test.ts",
+      "tests/integration/openshell-refresh-real.test.ts",
+    ]) {
+      cases.push(
+        { harness: "codex", credentials: ["OPENAI_API_KEY"], file, missing: "CODEX_ACCESS_TOKEN" },
+        {
+          harness: "codex",
+          endpoint: true,
+          credentials: ["CODEX_ACCESS_TOKEN"],
+          file,
+          missing: "OPENAI_API_KEY",
+        },
+        { harness: "codex", endpoint: true, credentials: ["OPENAI_API_KEY"], file },
+      );
+    }
     for (const [index, value] of cases.entries()) {
       const statePath = join(root, `credential-${index}.json`);
       const env = {
@@ -2801,51 +2820,102 @@ if (args[0] === "pull") {
 
   test("Kubernetes runtime image overrides require a complete pair before preparation", async (t) => {
     const root = await fixture(t);
-    for (const selection of ["gateway", "agent", "both", "neither"]) {
-      await t.test(selection, async () => {
-        const statePath = join(root, `${selection}.json`);
-        const partial = selection === "gateway" || selection === "agent";
-        // Partial overrides must fail before state or infrastructure is created.
-        // Complete/default selections reach the existing prepared-state boundary.
-        const result = await runPrepare(
-          [
-            "--lane",
-            "k3d-model",
-            "--state",
-            statePath,
-            ...(partial ? [] : ["--file", "tests/integration/harness-topology-k3d-real.test.mjs"]),
-          ],
-          {
-            OPENAI_API_KEY: "test-openai-key",
-            OCC_TEST_OPENAI_MODEL: "gpt-test",
-            NODE_BASE_IMAGE: nodeBaseImage,
-            OCC_DOCKER_BIN: join(root, "docker-must-not-run"),
-            OCC_TEST_KUBERNETES_GATEWAY_IMAGE:
-              selection === "gateway" || selection === "both" ? immutableImage : "",
-            OCC_TEST_KUBERNETES_AGENT_IMAGE:
-              selection === "agent" || selection === "both" ? immutableImage : "",
-            OCC_TEST_KUBERNETES_RUNTIME_IMAGE: "",
-            OCC_TEST_KUBERNETES_CODEX_IMAGE: "",
+    for (const [lane, file] of [
+      ["k3d-model", "tests/integration/harness-topology-k3d-real.test.mjs"],
+      ["slack", "tests/integration/harness-topology-k3d-slack-real.test.mjs"],
+    ]) {
+      for (const selection of ["gateway", "agent", "both", "neither"]) {
+        await t.test(`${lane}: ${selection}`, async () => {
+          const statePath = join(root, `${lane}-${selection}.json`);
+          const partial = selection === "gateway" || selection === "agent";
+          // Partial overrides must fail before state or infrastructure is created.
+          // Complete/default selections reach the existing prepared-state boundary.
+          const result = await runPrepare(
+            ["--lane", lane, "--state", statePath, ...(partial ? [] : ["--file", file])],
+            {
+              OPENAI_API_KEY: "test-openai-key",
+              OCC_TEST_OPENAI_MODEL: "gpt-test",
+              NODE_BASE_IMAGE: nodeBaseImage,
+              ...(lane === "slack"
+                ? {
+                    OCC_TEST_SLACK_CHANNEL_ID: "C0123456789",
+                    OCC_TEST_SLACK_SENDER_BOT_TOKEN: "xoxb-sender",
+                    SLACK_APP_TOKEN: "xapp-test",
+                    SLACK_BOT_TOKEN: "xoxb-test",
+                  }
+                : {}),
+              OCC_DOCKER_BIN: join(root, "docker-must-not-run"),
+              OCC_TEST_KUBERNETES_GATEWAY_IMAGE:
+                selection === "gateway" || selection === "both" ? immutableImage : "",
+              OCC_TEST_KUBERNETES_AGENT_IMAGE:
+                selection === "agent" || selection === "both" ? immutableImage : "",
+              OCC_TEST_KUBERNETES_RUNTIME_IMAGE: "",
+              OCC_TEST_KUBERNETES_CODEX_IMAGE: "",
+            },
+          );
+          assert.equal(result.status, 1);
+          assertStderrMatch(
+            result.stderr,
+            partial
+              ? /OCC_TEST_KUBERNETES_GATEWAY_IMAGE and OCC_TEST_KUBERNETES_AGENT_IMAGE must be supplied together/
+              : /requires a prior prepareLane/,
+          );
+          await assert.rejects(() => stat(statePath), { code: "ENOENT" });
+        });
+      }
+    }
+  });
+
+  test("runtime artifact selection rejects unsupported lanes before preparation", async (t) => {
+    const root = await fixture(t);
+    const commandLog = join(root, "commands.log");
+    const commandGuard = join(root, "must-not-run");
+    await writeFile(
+      commandGuard,
+      `#!${process.execPath}\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(commandLog)}, "called\\n");\nprocess.exit(97);\n`,
+      { mode: 0o700 },
+    );
+    // These lanes share build caches, but cannot consume a runtime artifact.
+    // A complete selection must be refused before state or source builds exist.
+    for (const [lane, file] of [
+      ["dev-up-k3d", "tests/integration/dev-up-k3d-real.test.mjs"],
+      ["qa-matrix", "tests/integration/qa-matrix-real.test.mjs"],
+    ]) {
+      const statePath = join(root, `${lane}.json`);
+      const result = await spawnResult(
+        process.execPath,
+        [preparePath, "--lane", lane, "--state", statePath, "--selected-file", file],
+        {
+          env: {
+            HOME: root,
+            PATH: root,
+            RUNNER_TEMP: root,
+            OCC_CI_IMAGE_CACHE: "1",
+            BUILDX_BUILDER: "artifact-selection-test",
+            OCC_DOCKER_BIN: commandGuard,
+            OPENCLAW_CI_K3D_BIN: commandGuard,
+            OCC_KUBECTL_BIN: commandGuard,
+            OCC_CI_RUNTIME_ARTIFACT_DIRECTORY: join(root, "missing-artifact"),
+            OCC_CI_RUNTIME_ARTIFACT_SHA256: "a".repeat(64),
+            OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA: "a".repeat(40),
+            OCC_CI_RUNTIME_ARTIFACT_RUN_ID: "123456",
+            OCC_CI_RUNTIME_ARTIFACT_ATTEMPT: "1",
           },
-        );
-        assert.equal(result.status, 1);
-        assertStderrMatch(
-          result.stderr,
-          partial
-            ? /OCC_TEST_KUBERNETES_GATEWAY_IMAGE and OCC_TEST_KUBERNETES_AGENT_IMAGE must be supplied together/
-            : /requires a prior prepareLane/,
-        );
-        await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-      });
+        },
+      );
+      assert.equal(result.status, 1, lane);
+      assertStderrMatch(
+        result.stderr,
+        /Runtime artifacts are supported only by the ordinary image lanes/,
+        lane,
+      );
+      await assert.rejects(() => stat(statePath), { code: "ENOENT" });
+      await assert.rejects(() => stat(commandLog), { code: "ENOENT" });
     }
   });
 
   test("prepareLane rejects mutable Kubernetes image inputs before creating state", async (t) => {
     const root = await fixture(t);
-    const adminKeyPath = join(root, "admin.key");
-    await writeFile(adminKeyPath, "admin key\n", { mode: 0o600 });
-    await chmod(adminKeyPath, 0o600);
-
     const optionalKubernetesImages = {
       OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "",
       OCC_TEST_KUBERNETES_AGENT_IMAGE: "",
@@ -2904,22 +2974,10 @@ if (args[0] === "pull") {
           NODE_BASE_IMAGE: nodeBaseImage,
           ...k3dImages,
           OCC_TEST_KUBERNETES_GATEWAY_IMAGE: mutableImage,
-          OCC_TEST_SLACK_PROXY_URL: "http://127.0.0.1:3000",
           OCC_TEST_SLACK_CHANNEL_ID: "C0123456789",
           OCC_TEST_SLACK_SENDER_BOT_TOKEN: "xoxb-sender",
           SLACK_APP_TOKEN: "xapp-test",
           SLACK_BOT_TOKEN: "xoxb-test",
-        },
-      },
-      {
-        lane: "provider-account",
-        envName: "OCC_TEST_KUBERNETES_AGENT_IMAGE",
-        env: {
-          ...k3dImages,
-          OCC_TEST_KUBERNETES_AGENT_IMAGE: mutableImage,
-          OCC_TEST_OPENAI_MODEL: "gpt-test",
-          OCC_TEST_CHATGPT_WORKSPACE_ID: "workspace-test",
-          OCC_TEST_CHATGPT_ADMIN_KEY_PATH: adminKeyPath,
         },
       },
       {

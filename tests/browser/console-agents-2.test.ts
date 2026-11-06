@@ -45,6 +45,7 @@ import {
   persistedDeploymentError,
   apiRequests,
   login,
+  isRecord,
   nativeValues,
   newPage,
   nonAuthWriteRequests,
@@ -70,7 +71,7 @@ import {
   routeInstallationWithoutProvisioning,
   agentPostRequests,
   raceAgentName,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import {
   AGENT_NAME_CONFLICT,
@@ -2287,6 +2288,168 @@ test("Agent creation can return from manual model entry to the list and save the
   const choice = page.getByLabel("Model", { exact: true });
   const model = page.getByLabel("Model ID", { exact: true });
   const configuration = page.getByLabel("Configuration JSON");
+
+  await t.test(
+    "Malformed selected-provider catalogs preserve the draft and recover through model choices",
+    async () => {
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      const requests = apiRequests(page, fixture.origin);
+      await openAdvancedSettings(page);
+      const record = (value: unknown): Record<string, unknown> => {
+        assert.ok(isRecord(value));
+        return value;
+      };
+      const readValues = async () => record(JSON.parse(await configuration.inputValue()));
+      const primary = (values: Record<string, unknown>) =>
+        record(record(values.agents).defaults).model;
+      const chooseList = page.getByRole("button", {
+        name: "Choose a model from the list",
+        exact: true,
+      });
+      const original = await configuration.inputValue();
+      const base = record(JSON.parse(original));
+      const models = record(base.models ?? {});
+      const providers = record(models.providers ?? {});
+      const provider = record(providers.codex ?? {});
+      const editCatalog = async (catalog: unknown, selected = false) => {
+        const values = record(JSON.parse(original));
+        const agents = record(values.agents ?? {});
+        const defaults = record(agents.defaults ?? {});
+        if (selected) {
+          defaults.model = "codex/gpt-6-astra";
+        } else {
+          delete defaults.model;
+        }
+        values.agents = { ...agents, defaults };
+        values.models = {
+          ...models,
+          providers: {
+            ...providers,
+            // An unrelated malformed list must not block a Codex selection.
+            openai: { models: {} },
+            codex: { ...provider, extra: { keep: true }, models: catalog },
+          },
+        };
+        const raw = JSON.stringify(values, null, 2) + "\n";
+        await configuration.fill(raw);
+        return raw;
+      };
+      const assertBlocked = async (raw: string) => {
+        assert.equal(await configuration.inputValue(), raw);
+        assert.equal(await configuration.getAttribute("aria-invalid"), "true");
+        assert.equal(
+          await configuration.evaluate((node) => node.ownerDocument.activeElement === node),
+          true,
+        );
+        assert.equal(
+          await page.locator("#configuration-json-error").textContent(),
+          "Set models.providers.codex.models to an array of model objects with an id, or remove the field.",
+        );
+        assert.deepEqual(errors, []);
+        assert.deepEqual(nonAuthWriteRequests(requests), []);
+      };
+
+      // A native list change must roll back before it changes the hidden manual control.
+      const raw = await editCatalog({});
+      await page.getByText("Advanced settings", { exact: true }).click();
+      await choice.selectOption("gpt-6-sol");
+      await assertBlocked(raw);
+      assert.equal(await choice.inputValue(), "");
+      assert.equal(await model.inputValue(), "");
+      assert.equal(await choice.isVisible(), true);
+
+      // JSON selection edits expose manual entry. Preserve the attempted ID for a retry.
+      for (const catalog of [null, [null], [{ name: "missing id" }], [{ id: 7 }], {}]) {
+        const invalid = await editCatalog(catalog, true);
+        await model.fill("gpt-6-sol");
+        await model.press("Tab");
+        await assertBlocked(invalid);
+        assert.equal(await model.inputValue(), "gpt-6-sol");
+      }
+      const invalid = await configuration.inputValue();
+      await chooseList.click();
+      await assertBlocked(invalid);
+      assert.equal(await model.isVisible(), true);
+
+      // Clearing a selection leaves the malformed catalog in place, so keep its warning.
+      await model.fill("");
+      await model.press("Tab");
+      const cleared = await readValues();
+      assert.equal(primary(cleared), undefined);
+      assert.deepEqual(record(record(record(cleared.models).providers).codex).models, {});
+      assert.equal(await configuration.getAttribute("aria-invalid"), "true");
+      assert.equal(await page.locator("#configuration-json-error").isVisible(), true);
+      await model.fill("gpt-6-sol");
+      await model.press("Tab");
+      await assertBlocked(JSON.stringify(cleared, null, 2));
+
+      // Provider replacement repairs the transport without an intervening raw JSON edit.
+      const providerChoice = page.getByLabel("Provider", { exact: true });
+      await providerChoice.selectOption("anthropic");
+      assert.equal(await providerChoice.inputValue(), "anthropic");
+      assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "openclaw");
+      assert.equal(await choice.inputValue(), "");
+      assert.ok((await optionValues(choice)).some(({ value }) => value === "claude-opus-5-5"));
+      const replaced = await readValues();
+      assert.deepEqual(record(replaced.models).providers, {});
+      assert.equal(await configuration.getAttribute("aria-invalid"), null);
+      assert.equal(await page.locator("#configuration-json-error").isVisible(), false);
+      assert.doesNotMatch(
+        (await configuration.getAttribute("aria-describedby")) ?? "",
+        /\bconfiguration-json-error\b/,
+      );
+      await choice.selectOption("claude-opus-5-5");
+      const anthropic = await readValues();
+      assert.equal(primary(anthropic), "anthropic/claude-opus-5-5");
+      assert.deepEqual(record(record(record(anthropic.models).providers).anthropic).models, [
+        { id: "claude-opus-5-5", name: "claude-opus-5-5" },
+      ]);
+      assert.deepEqual(errors, []);
+      assert.deepEqual(nonAuthWriteRequests(requests), []);
+      await providerChoice.selectOption("openai");
+
+      // Correcting the list clears feedback and preserves extra catalog/provider fields.
+      const retained = { id: "another-model", contextWindow: 8192, extra: { keep: true } };
+      await editCatalog([{ id: "gpt-6-astra", cost: { input: 1 } }, retained], true);
+      assert.equal(await configuration.getAttribute("aria-invalid"), null);
+      await model.fill("  gpt-6-sol  ");
+      await model.press("Tab");
+      const corrected = await readValues();
+      assert.equal(primary(corrected), "codex/gpt-6-sol");
+      const correctedProviders = record(record(corrected.models).providers);
+      const correctedProvider = record(correctedProviders.codex);
+      assert.deepEqual(correctedProvider.extra, { keep: true });
+      assert.deepEqual(correctedProviders.openai, { models: {} });
+      assert.deepEqual(correctedProvider.models, [
+        { id: "gpt-6-sol", name: "gpt-6-sol", cost: { input: 1 } },
+        retained,
+      ]);
+      assert.equal(await page.locator("#configuration-json-error").isVisible(), false);
+      await chooseList.click();
+      await choice.selectOption("gpt-6-luna");
+      assert.equal(primary(await readValues()), "codex/gpt-6-luna");
+
+      // Removing the field is also a supported correction; explicit null above is not.
+      await editCatalog(undefined, true);
+      await model.fill("gpt-6-sol");
+      await model.press("Tab");
+      const withoutCatalog = await readValues();
+      assert.equal(primary(withoutCatalog), "codex/gpt-6-sol");
+      assert.deepEqual(record(record(record(withoutCatalog.models).providers).codex).models, [
+        { id: "gpt-6-sol", name: "gpt-6-sol" },
+      ]);
+      assert.equal(await configuration.getAttribute("aria-invalid"), null);
+      assert.deepEqual(errors, []);
+      assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+      // Return this shared browser to the original round-trip scenario.
+      await configuration.fill(original);
+      if (await model.isVisible()) {
+        await chooseList.click();
+      }
+    },
+  );
 
   // JSON edits can change the provider; returning to the list must show its models.
   await choice.selectOption("gpt-6-astra");

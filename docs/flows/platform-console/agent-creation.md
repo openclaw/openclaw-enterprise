@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
 updated: 2026-11-05
-last_updated_session: authoring-run/e403cb92-13a9-40b8-a636-6922c2747638
+last_updated_session: authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9
 ---
 
 # Console Agent creation
@@ -91,6 +91,20 @@ array of strings or remove the field. A refused model selection, provider change
 or Harness change keeps the last applied model, provider, Harness, and execution
 mode. The authentication method can still change: the form clears the prior
 credential and shows the new method's fields without changing the model or JSON.
+
+Before merging a model selection, `canMergeModelCatalog` checks the provider list
+that the selection would update. If the list is malformed, the form keeps the
+draft JSON as typed, opens **Advanced settings**, and focuses **Configuration JSON**.
+The warning names the affected `models.providers.<provider>.models` field. The
+edit sends no write request. [Correct the list and retry](../../reference/console/create-and-deploy.md#create-an-agent)
+to apply the model.
+
+Before a model change rewrites the JSON, `readModelConfiguration` rejects values
+that parse as infinity, including nested numbers such as `1e400`. Serialization
+would otherwise replace them with `null`. The form skips the rewrite, keeps the
+raw draft, and focuses **Configuration JSON** with an inline error. The same
+number check stops **Create Agent** before any writes. Replace the value with a
+number closer to zero and retry the action.
 
 Submission still matches the primary Configuration model to `model.value` and
 uses the normal server validation.
@@ -194,6 +208,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-05 18:37: Explain the Configuration number range refusal on Create. (authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9 - 5fd3fde4911e1640c354d69bb09f6f3d72445a05)
 - 2026-11-05 13:00: Retain upstream malformed-policy guards while preserving authored allow/deny lists through Harness changes. (authoring-run/e403cb92-13a9-40b8-a636-6922c2747638 - 71d3a9d7a5385839159672c5152ee42848e9a46c)
 
 - 2026-11-05 08:55: Preserve Harness-switch permissions and use existing server admission, including disabled Codex entry acceptance. (authoring-run/878b2a70-223a-4813-9763-0f2a7051f8bd - 65dc3e90e)

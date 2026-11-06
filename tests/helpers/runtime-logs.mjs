@@ -17,7 +17,7 @@ import {
   signInToControllerApp,
   createTestAuthPrincipal,
 } from "./auth-session.mjs";
-import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createReadyComputeDriver } from "./development.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { grantRole } from "./iam-grants.mjs";

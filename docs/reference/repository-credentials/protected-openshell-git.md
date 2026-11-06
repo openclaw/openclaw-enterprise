@@ -1,14 +1,13 @@
 # Protected repository access with OpenShell
 
-Selected repositories require a pre-credentials request binding. Before issuing
-credentials, OCE verifies the registration and matches a held launcher request to
-an authenticated middleware denial. The Agent starts after credential installation
-and signed release.
+Before issuing repository credentials, OCE verifies registration and matches a held
+launcher request to an authenticated middleware denial. The Agent starts after
+credential installation and signed release.
 
 Follow [OpenShell enrollment](../../guides/repository-credentials/openshell-enrollment.md).
-Select repositories sharing an explicit permission map. OCE requests their canonical
-IDs and verifies GitHub’s returned scope. GitHub governs refs and REST/GraphQL
-operations. Changing or removing a grant blocks subsequent use of that grant.
+Select repositories sharing an explicit permission map. OCE requests canonical IDs
+and verifies GitHub’s returned scope. GitHub governs refs and REST/GraphQL.
+Changed or removed grants block subsequent use.
 
 Existing `git-write` grants retain their exact ref policy. OCE qualifies the live
 sender by its configured capabilities and runtime evidence. `git-read` and
@@ -21,8 +20,6 @@ existing installation, follow the
 [compatibility upgrade](../../guides/deploy/credential-proxy-upgrade.md#check-compatibility-before-interrupting-access).
 
 ## Prerequisites
-
-Check these before qualifying a release:
 
 - **Kernel.** The Driver requires Landlock (`hard_requirement`). Sandboxes need ABI
   v3 or later and Linux 6.2 or newer. Ubuntu 22.04's 5.15 kernel cannot start them.
@@ -206,11 +203,13 @@ The Sandbox sets process-scoped `safe.directory` for its approved mount,
 allowing root-owned workspaces without trusting nested repositories or changing
 persistent Git configuration. `push.negotiate=true` reduces redundant transfers; [push request limits](../../guides/repository-credentials/openshell-enrollment.md#plan-for-request-limits) apply.
 
-With `github-repository`, use selected HTTPS Git URLs. API operations
-use token permissions. Both API scopes refuse runner-token and deploy-key
-creation. For selected repositories, the sender accepts the CLI’s
-`Time-Zone: Etc/UTC` and, on GraphQL POSTs, `Graphql-Features: merge_queue`.
-Duplicate headers are refused. Each request requires current authorization.
+With `github-repository`, use selected HTTPS Git URLs; API operations use token
+permissions. Both API scopes refuse runner-token and deploy-key creation.
+Selected-repository requests to `api.github.com` accept `Time-Zone: Etc/UTC`;
+GraphQL POSTs also accept `Graphql-Features: merge_queue` and bounded
+`X-GH-CACHE-TTL` hints (such as `24h0m0s`).
+Hints support `gh pr list --search`; OCE ignores their values and checks current
+authorization. Duplicate headers are refused.
 
 With `git-write`, use exactly
 `https://github.com/$OCE_OPENSHELL_GIT_REPOSITORY.git` for clone, fetch and push.
@@ -237,17 +236,15 @@ See [Credential Proxy uncertainty](../drivers/credential-proxy.md#cancellation-r
 
 ## Diagnose a refused request
 
-Git does not print the body of a JSON error response. When OpenShell refuses the
-first request of a clone, fetch, `ls-remote` or push, Git shows only
-`The requested URL returned error: 403` (exit 128). When it refuses only the
-push's upload, usually `request_not_allowed` for another branch or tag, Git
-shows `error: RPC failed; HTTP 403`, then
-`fatal: the remote end hung up unexpectedly`, and may end with
-`Everything up-to-date` (exit 1). That last line does not mean there was nothing
-to push: the push never reached GitHub.
+Git hides JSON error bodies. If OpenShell refuses the first clone, fetch,
+`ls-remote` or push request, Git reports `The requested URL returned error: 403`
+(exit 128). If only the push upload is refused, usually for another branch or tag
+(`request_not_allowed`), Git reports `error: RPC failed; HTTP 403`, then
+`fatal: the remote end hung up unexpectedly`. Even if it prints
+`Everything up-to-date` (exit 1), the push never reached GitHub.
 
-Only after a known pre-send refusal, diagnose with a fresh read using Git's HTTP
-trace, which redacts the authorization header. Never rerun an uncertain write. The trace splits the body across lines, so join them first:
+After a known pre-send refusal, trace a fresh read. Git redacts the authorization
+header. Join the response lines to extract the reason. Never replay an uncertain write.
 
 ```bash
 GIT_TRACE_CURL=1 git ls-remote origin 2>&1 | sed -n 's/.*<= Recv data: //p' \
@@ -276,14 +273,23 @@ A version that is still deploying has no credential yet, so its requests answer
 
 ### Worker log
 
-Each refused request logs one `worker.openshell-git-denied` line. Its `reasonCode`
-is the code above, and its `reason` is the worker's detailed cause, such as
-`ref_not_allowed`, `draft_rejected`, `session_closed`, `material_unavailable`,
-`installation_changed` or `route_blocked`. The line also carries the Sandbox ID and
-the request ID that the supervisor's own log shows. The
-`worker.openshell-git-route-warning` line for a lost credential carries the same
-`reasonCode`, so an alert can tell a removed binding (`access_withdrawn`) from a
-rejected App key (`credential_unavailable`).
+After held enrollment failure and cleanup, check worker logs.
+`worker.openshell-git-probe-failed` records the HTTP 400 `reason`:
+
+- `probe_process_failed`: curl failed; optional integer `code` is its exit status (1–99).
+- `probe_response_invalid`: the launcher could not read response JSON.
+
+The event omits stdout, stderr, response bodies, URLs and proofs. Collector
+attributes: `occ.git_probe.reason` and optional `occ.git_probe.exit_code`
+([limits](../../flows/common-logging.md#7-collector-exports-only-operational-classes)).
+A parsed unexpected denial returns HTTP 409 `preview_not_observed`.
+
+For refused Git requests, `worker.openshell-git-denied` records `reasonCode`
+from the table, the detailed `reason` (such as `ref_not_allowed`, `draft_rejected`,
+`session_closed`, `material_unavailable`, `installation_changed` or `route_blocked`),
+Sandbox ID and supervisor request ID. For lost credentials,
+`worker.openshell-git-route-warning` carries the same `reasonCode` to distinguish
+a removed binding (`access_withdrawn`) from a rejected App key (`credential_unavailable`).
 
 ## Route state, restarts and recovery
 

@@ -8,7 +8,7 @@ import test from "node:test";
 import { createServer } from "node:net";
 import { startApi } from "../../apps/controller/src/api-startup.mjs";
 import { listen } from "../helpers/listen.mjs";
-import { setEnvironment } from "../helpers/environment.mjs";
+import { setEnvironment } from "../helpers/environment.ts";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { request as httpRequest } from "node:http";
@@ -19,17 +19,19 @@ import { setTimeout as delay } from "node:timers/promises";
 import { composePostgresDevelopment, composeProduction } from "../helpers/password-hasher.mjs";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.mjs";
 import { normalizePresetTemplate } from "../../packages/contracts/src/index.ts";
 import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   PostgresPlatformState,
   InstalledDriver,
+  OpenClawController,
 } from "../../packages/occ/src/index.ts";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -852,21 +854,46 @@ test(
       assert.deepEqual(skippedRefreshes(frozenLog), frozenWarning);
       // Development PostgreSQL startup passes the same warning to its logger.
       const developmentLog = memoryLog();
-      const development = await composePostgresDevelopment(
-        {
-          mode: "development",
-          host: "127.0.0.1",
-          databaseUrl,
-          authSecret,
-          authBaseURL,
-          logger: developmentLog.logger,
-        },
-        await productionDrivers({
+      const { gateway } = createDeviceCredentialDrivers();
+      const withSourceToken = t.mock.fn(() => {
+        assert.fail("PostgreSQL development startup must not read a plugin credential");
+      });
+      const pluginSourceReader = { gateway, withSourceToken };
+      const developmentRuntime = {
+        ...(await productionDrivers({
           includeDefaults: true,
           configurationRoot: join(passwordDirectory, "configurations"),
-        }),
-      );
-      await development.close();
+        })),
+        pluginSourceReader,
+      };
+      const factory = t.mock.method(OpenClawController, "forInstallation");
+      let development;
+      try {
+        development = await composePostgresDevelopment(
+          {
+            mode: "development",
+            host: "127.0.0.1",
+            databaseUrl,
+            authSecret,
+            authBaseURL,
+            logger: developmentLog.logger,
+          },
+          developmentRuntime,
+        );
+        assert.equal(factory.mock.callCount(), 1);
+        const [persistedInstallation, controllerOptions] = factory.mock.calls[0].arguments;
+        assert.equal(persistedInstallation.id, installation.rows[0].id);
+        assert.ok(controllerOptions.state instanceof PostgresPlatformState);
+        assert.strictEqual(
+          controllerOptions.pluginSourceReader,
+          pluginSourceReader,
+          "PostgreSQL development must forward the identical plugin source reader",
+        );
+        assert.equal(withSourceToken.mock.callCount(), 0);
+      } finally {
+        factory.mock.restore();
+        await development?.close();
+      }
       assert.deepEqual(await readOpenClaw(), refrozen.data);
       assert.deepEqual(skippedRefreshes(developmentLog), frozenWarning);
       // An operator file named like a bundled default (default-codex was bundled after

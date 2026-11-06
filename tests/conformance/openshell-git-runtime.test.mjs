@@ -76,8 +76,62 @@ async function expectDenied(f, reason, message) {
   assert.equal(f.denials().at(-1).reason, reason, message);
 }
 
-// The direct fixtures here characterize legacy routes. The admitted mandatory
-// and observed-preview paths have separate controls below.
+test("Git preparation refuses missing admission or plan identity before gateway calls", async () => {
+  const narrow = resolveGitHubRepositoryBinding(registry, {
+    namespaceId: "namespace-a",
+    repositoryRef: "application",
+    profile: "git-write",
+  });
+  for (const invalid of ["no-plan", "no-admission", "no-execution", "empty-id", "snapshot"]) {
+    const f = bootstrapping({ store: routeStore() });
+    const credentials = { ...f.revision.repositoryCredentials, bindings: [narrow] };
+    const revision = {
+      ...f.revision,
+      repositoryCredentials: credentials,
+      executionAdmission:
+        invalid === "no-plan" || invalid === "no-admission"
+          ? undefined
+          : f.revision.executionAdmission,
+      egressPlan:
+        invalid === "no-plan"
+          ? undefined
+          : {
+              ...f.revision.egressPlan,
+              repositoryGit:
+                invalid === "snapshot" ? f.revision.repositoryCredentials : credentials,
+              execution:
+                invalid === "no-execution"
+                  ? undefined
+                  : { executionId: invalid === "empty-id" ? "" : "admitted-execution" },
+            },
+    };
+    let gatewayCalls = 0;
+    f.faults.gatewayCall = () => {
+      gatewayCalls += 1;
+    };
+    await assert.rejects(
+      f.runtime.prepare(
+        revision,
+        f.client,
+        f.sandbox.workspace,
+        f.sandbox.name,
+        AbortSignal.timeout(2_000),
+        "/sandbox/enterprise",
+        ["openai"],
+      ),
+      /requires one explicitly admitted GitHub binding/,
+      invalid,
+    );
+    assert.equal(gatewayCalls, 0, invalid);
+    assert.equal(f.calls.material, 0, invalid);
+    assert.equal(f.calls.providerWrites, 0, invalid);
+    assert.equal(f.calls.rotate, 0, invalid);
+    assert.equal(f.store.rows.size, 0, invalid);
+  }
+});
+
+// Ordinary routes use admitted v5 installation access. Mandatory exact-ref and
+// selected scopes and observed-preview paths have separate controls below.
 test("a gateway that does not answer closes the Git route and restores it without a tombstone", async () => {
   const f = await reconciledFixture();
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
@@ -103,7 +157,7 @@ test("a gateway that does not answer closes the Git route and restores it withou
       namespaceId: "namespace-a",
       agentId: "agent-one",
       revisionId: "rev-one",
-      repositoryRef: "application",
+      repositoryRef: "installation",
     },
   ]);
   // Closed: a request is denied, and the denial says why.
@@ -276,7 +330,7 @@ test("the same supervisor process reconnecting with a new session re-adopts the 
   assert.equal(restorations(f)[0].reason, "supervisor_reconnected");
   assert.ok(Number.isFinite(restorations(f)[0].durationMs) && restorations(f)[0].durationMs >= 0);
   assert.equal(restorations(f)[0].revisionId, "rev-one");
-  assert.equal(restorations(f)[0].repositoryRef, "application");
+  assert.equal(restorations(f)[0].repositoryRef, "installation");
   // The adopted session is the reference from here on: a later read reports nothing more.
   await f.reconcile();
   assert.equal((await f.lookup())?.executionId, f.revision.id);
@@ -501,7 +555,7 @@ test("an open Git route that loses its material says so once and names it in eac
       namespaceId: "namespace-a",
       agentId: "agent-one",
       revisionId: "rev-one",
-      repositoryRef: "application",
+      repositoryRef: "installation",
     },
   ]);
   assert.equal(f.denials().at(-1).reason, "material_unavailable");
@@ -585,7 +639,7 @@ test("the Git route tombstone stays for a replaced execution, an unknown write a
         namespaceId: "namespace-a",
         agentId: "agent-one",
         revisionId: "rev-one",
-        repositoryRef: "application",
+        repositoryRef: "installation",
       },
     ]);
     // A gateway that answers again never reopens a tombstone.
@@ -728,7 +782,7 @@ test("the Git route tombstone stays for a replaced execution, an unknown write a
 
   // Material that no longer matches the admitted grant.
   f = await reconciledFixture();
-  f.owner.material = { ...f.owner.material, pushRef: "refs/heads/main" };
+  f.owner.material = { ...f.owner.material, installationId: "other-installation" };
   await f.reconcile();
   await expectBlocked(f, "material_mismatch");
 
@@ -884,16 +938,32 @@ test("a restarted worker names why it cannot adopt a revision's Sandbox, once pe
       namespaceId: "namespace-a",
       agentId: "agent-one",
       revisionId: "rev-one",
-      repositoryRef: "application",
+      repositoryRef: "installation",
     },
   ]);
   assert.equal(f.calls.getSandbox, 1, "the retained failure is not re-observed");
   assert.equal(openShellGitRouteReadiness(f.runtime.route(f.revision.id)), "blocked");
 });
 
+test("a fresh Git route uses the execution ID admitted before gateway reads", async () => {
+  const store = routeStore();
+  const f = bootstrapping({ store });
+  const execution = f.revision.egressPlan.execution;
+  const admittedId = execution.executionId;
+  f.faults.gatewayCall = (method) => {
+    if (method === "getSandbox") {
+      execution.executionId = "changed-during-gateway-read";
+    }
+  };
+
+  await f.prepare();
+  assert.notEqual(execution.executionId, admittedId, "the gateway read changed the input");
+  assert.equal(store.rows.get(f.revision.id).bindingId, admittedId);
+});
+
 test("a failed read while the Git route bootstraps is read again; a refused identity still closes it", async () => {
   // Finding 2210: one gateway read that failed during the bootstrap closed the route for good.
-  const preparedName = (name) => /^oce-git-[0-9a-f]{32}$/.test(name ?? "");
+  const preparedName = (name) => /^oce-(?:git|github-installation)-[0-9a-f]{32}$/.test(name ?? "");
   const observationFailure = (failure) => (error) =>
     error.name === "OpenShellGitObservationError" && error.failure === failure;
   const store = routeStore();
@@ -944,6 +1014,8 @@ test("a failed read while the Git route bootstraps is read again; a refused iden
   // The gateway answers again: the same route bootstraps.
   f.faults.gatewayCall = undefined;
   const { bindingId } = row();
+  assert.equal(bindingId, f.revision.egressPlan.execution.executionId);
+  f.revision.egressPlan.execution.executionId = "later-admitted-execution";
   const prepared = await f.prepare();
   assert.equal(
     prepared.middlewares["oce-prepared-git"].config.fields.binding_id.stringValue,
@@ -1292,7 +1364,7 @@ test("a withdrawn route is dropped once its Sandbox is gone and never prepared a
       namespaceId: "namespace-a",
       agentId: "agent-one",
       revisionId: "rev-one",
-      repositoryRef: "application",
+      repositoryRef: "installation",
     },
   ]);
 
@@ -1556,6 +1628,12 @@ test("a restarted worker re-adopts a persisted Git route without a provider writ
   assert.ok(!store.dump().includes("synthetic-installation-token"), "a token was persisted");
 
   const g = await restarted(f);
+  assert.equal(g.revision, f.revision, "restart retains the admitted revision");
+  assert.equal(g.resolveDelivery, f.resolveDelivery, "restart retains the registry resolver");
+  assert.equal(g.entry.preview, undefined);
+  assert.equal(g.entry.bindingId, f.revision.egressPlan.execution.executionId);
+  assert.equal(g.entry.bindingId, row.bindingId, "adoption retains the original binding");
+  assert.equal(f.calls.providerWrites, 0, "adoption does not bootstrap a provider");
   assert.equal(store.rows.get(f.revision.id).fence, installedFence + 1, "adoption moves the fence");
   assert.deepEqual(
     g.events.filter((event) => event.status === "adopted"),
@@ -1568,7 +1646,7 @@ test("a restarted worker re-adopts a persisted Git route without a provider writ
         namespaceId: "namespace-a",
         agentId: "agent-one",
         revisionId: "rev-one",
-        repositoryRef: "application",
+        repositoryRef: "installation",
       },
     ],
   );
@@ -2232,13 +2310,13 @@ test("protected material selection is serialized with the reservation fence at t
     ...f.revision,
     executionAdmission: { version: 5, mode: "protected" },
     egressPlan: {
+      ...f.revision.egressPlan,
       driver: { id: "openshell" },
       repositoryGitAuthorization: "online-request",
       repositoryGit: f.revision.repositoryCredentials,
     },
   };
   f.entry.revision = revision;
-  f.runtime.configuration.protectedExecution = true;
   const reads = [];
   const material = f.owner.material;
   f.owner.readOpenShellMaterial = async (_revisionId, _signal, route) => {
@@ -2278,7 +2356,13 @@ const legacyRegistrationBytes = Buffer.from(
 
 async function observedGitRoute(
   mandatoryPolicy,
-  { legacy = false, removeBinding = false, changedStartup = false, narrowRepository } = {},
+  {
+    legacy = false,
+    removeBinding = false,
+    changedStartup = false,
+    narrowRepository,
+    probeFailure,
+  } = {},
 ) {
   const repositoryOnly = narrowRepository !== undefined;
   const previewRegistry = validateGitHubRepositoryRegistry(
@@ -2336,7 +2420,6 @@ async function observedGitRoute(
   };
   f.entry.revision = revision;
   f.entry.authorization = resolve(revision);
-  f.runtime.configuration.protectedExecution = true;
   f.runtime.configuration.observedHookPreviewWorkspace = f.sandbox.workspace;
   f.runtime.configuration.authority.audience = "preview";
   const preview = new ObservedHookPreview(
@@ -2448,6 +2531,17 @@ async function observedGitRoute(
       apiOrigin: "https://api.github.com",
     };
   } else {
+    f.owner.material = {
+      ...binding.grant,
+      repository: registry.repositories[0].repository,
+      pushRef: f.entry.authorization.repository.pushRef,
+      value: "synthetic-installation-token",
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      sessionId: "preview-session",
+      preparationAttemptId: "preview-attempt",
+      materialVersion: "preview-material",
+      apiOrigin: "https://api.github.com",
+    };
     assert.equal(f.entry.authorization.binding.profile, "git-write");
     assert.equal("scope" in f.owner.material, false, "this control requires narrow material");
   }
@@ -2518,6 +2612,40 @@ async function observedGitRoute(
       ),
     };
   };
+  if (probeFailure !== undefined) {
+    // The transport exposes only a failed response wrapper. Even hostile fields cannot
+    // enter the worker log, and recording a diagnosis must not release or retry startup.
+    await assert.rejects(
+      f.runtime.observeHeldPreview(revision.id, startupId, signal, async () => ({ probeFailure })),
+      /did not receive its exact middleware denial/,
+    );
+    assert.deepEqual(f.runtime.route(revision.id), {
+      state: "blocked",
+      reason: "bootstrap_failed",
+    });
+    assert.equal(f.calls.material, 0);
+    assert.equal(f.calls.rotate, 0);
+    const events = f.events.filter((event) => event.event === "worker.openshell-git-probe-failed");
+    const recognized = ["probe_process_failed", "probe_response_invalid"].includes(
+      probeFailure.error,
+    );
+    assert.equal(events.length, recognized ? 1 : 0);
+    if (recognized) {
+      const { namespaceId, agentId, revisionId, repositoryRef, ...diagnostic } = events[0];
+      assert.equal(revisionId, revision.id);
+      assert.deepEqual(diagnostic, {
+        event: "worker.openshell-git-probe-failed",
+        reason: probeFailure.error,
+        ...(probeFailure.error === "probe_process_failed" && probeFailure.code === 56
+          ? { code: 56 }
+          : {}),
+      });
+    }
+    await f.runtime.observeHeldPreview(revision.id, startupId, signal, async () => {
+      assert.fail("a failed one-shot probe must not be repeated");
+    });
+    return;
+  }
   assert.equal(await f.runtime.observeHeldPreview(revision.id, startupId, signal, probe), "held");
   if (repositoryOnly) {
     // The stock endpoint checks this prefix before invoking the mandatory hook.
@@ -2790,6 +2918,18 @@ for (const policy of [undefined, 2, 3]) {
     await observedGitRoute(policy, { changedStartup: true });
   });
 }
+
+test("held Git probe failures reach worker diagnostics without response content or retries", async () => {
+  for (const probeFailure of [
+    { error: "probe_process_failed", code: 56, stdout: "private-output", stderr: "private-error" },
+    { error: "probe_process_failed", code: "private-code" },
+    { error: "probe_process_failed", code: 100 },
+    { error: "probe_response_invalid", code: 56, response: "private-body" },
+    { error: "private-unrecognized-error", code: 56 },
+  ]) {
+    await observedGitRoute(2, { probeFailure });
+  }
+});
 
 test("the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access", async () => {
   for (const narrowRepository of [

@@ -22,6 +22,7 @@
     "tests/integration/postgres-worker-stale-claim.test.mjs",
     "tests/integration/postgres-namespace-iam-policy.test.mjs",
     "tests/integration/postgres-agent-update-authority.test.ts",
+    "tests/integration/postgres-connection-templates.test.ts",
     "tests/integration/workspace-setup-worker.test.mjs",
     "tests/integration/postgres-repository-sessions.test.mjs",
     "tests/integration/postgres-secret-state.test.mjs",
@@ -50,6 +51,7 @@
     "tests/integration/postgres-external-protected-git.test.ts",
     "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
     "tests/integration/postgres-openshell-standing-repository-set.test.ts",
+    "tests/integration/postgres-openshell-standing-selected-repository.test.ts",
     "tests/integration/postgres-egress-send-receipts.test.mjs",
     "tests/integration/postgres-protected-credential-free.test.mjs",
     "tests/integration/postgres-standing-approval-api.test.ts",
@@ -139,6 +141,17 @@
     {
       "path": "tests/integration/postgres-controller-work-targets.test.mjs",
       "expectedTests": ["PostgreSQL controller work requires exactly one complete target shape"]
+    },
+    {
+      "path": "tests/integration/postgres-connection-templates.test.ts",
+      "expectedTests": [
+        "the Installation starts with an editable Google OAuth template and preserves saved destination versions",
+        "an administrator registers OAuth clients against a pinned template and its availability",
+        "OAuth client rotation updates its stable private reference across an unknown commit",
+        "the worker removes an unpublished OAuth client after interrupted creation",
+        "MCP discovery selects one advertised issuer and saves only the administrator's approved scopes",
+        "revoking a browser session while rotation waits prevents the secret from reaching its Driver"
+      ]
     },
     {
       "path": "tests/integration/postgres-agent-update-authority.test.ts",
@@ -312,6 +325,7 @@
     {
       "path": "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
       "expectedTests": [
+        "authorized GitHub proxy requests mint the registered grant and share one replacement",
         "PostgreSQL prepared custody: source consent, proactive renewal, restart, issuer rotation and withdrawal",
         "current proof preserves caller SQL limits and restores them in its unit",
         "signed PostgreSQL dispatch uses one shared connection for current material proof",
@@ -426,6 +440,14 @@
       "path": "tests/integration/postgres-openshell-standing-repository-set.test.ts",
       "expectedTests": [
         "one deployed OpenShell Agent pushes A and B with one repository-scoped token and cannot push C"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-openshell-standing-selected-repository.test.ts",
+      "expectedTests": [
+        "one selected repository renews beyond its original session without replacing the execution and denies withdrawn approval",
+        "an expired acknowledged launch refuses a pending successor after recipient changes",
+        "an expired acknowledged launch refuses a pending successor after approval changes"
       ]
     },
     {

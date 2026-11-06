@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { keycloakRealmFile, prepareKeycloak } from "../../scripts/ci/keycloak.mjs";
-import { commandCalls, writeCommand } from "../helpers/fake-commands.mjs";
+import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));

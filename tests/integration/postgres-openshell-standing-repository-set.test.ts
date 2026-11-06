@@ -9,5 +9,5 @@ import { repositorySetJourney } from "../helpers/postgres-repository-set-journey
 test(
   "one deployed OpenShell Agent pushes A and B with one repository-scoped token and cannot push C",
   { ...requiresPostgres, timeout: 90000 },
-  repositorySetJourney,
+  (t) => repositorySetJourney(t),
 );
