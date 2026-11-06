@@ -5031,7 +5031,8 @@ async function assertAuthenticatedNativePolicyScopes(topology) {
   }
 }
 
-async function assertAgentNetworkPolicyLifecycle(topology) {
+async function assertAgentNetworkPolicyLifecycle(topology, enterCheck) {
+  enterCheck("installation-discovery");
   const base = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
   const policyPath = `${base}/sandbox-policy/networking`;
   const installationDiscovery = await topology.request(
@@ -5093,6 +5094,7 @@ PYTHON`;
     return executed;
   };
   // Prove both listeners and cluster DNS independently before interpreting a policy denial.
+  enterCheck("cluster-target-reachability");
   const reachable = await kubectl(
     "exec",
     "pod/token-echo",
@@ -5104,22 +5106,30 @@ PYTHON`;
     `fetch("http://${grant.host}:${topology.tokenEcho.policyPort}/policy-probe").then(async r => { if (r.status !== 200 || (await r.json()).path !== "/policy-probe") process.exit(1); console.log("reachable"); })`,
   );
   assert.match(reachable, /reachable/);
+  enterCheck("agent-default-control-request");
   const control = await python(topology.agent.id, 8082);
+  enterCheck("agent-default-control-exit");
   assert.equal(
     control.exitCode,
     0,
     "the Installation default permits the real Agent's control request",
   );
+  enterCheck("agent-default-control-response");
   assert.match(control.aggregatedOutput ?? "", /POLICY_PROBE \/policy-probe/);
   // Before any additions, enforcement denies the actual interpreter request.
+  enterCheck("agent-initial-denial-request");
   const denied = await python();
+  enterCheck("agent-initial-denial-exit");
   assert.notEqual(denied.exitCode, 0);
+  enterCheck("agent-initial-denial-reason");
   assert.match(denied.aggregatedOutput ?? "", /Permission denied|Errno 13/);
+  enterCheck("provider-denial-read");
   const logs = await topology.request(
     "GET",
     `${base}/deployments/${topology.revision.id}/runtime/logs?source=sandbox&tailLines=1000`,
   );
   assert.equal(logs.status, 200, JSON.stringify(logs.error));
+  enterCheck("provider-denial-observed");
   const blocked = logs.data.records.find(
     ({ decision }) =>
       decision?.decision === "denied" &&
@@ -5128,6 +5138,7 @@ PYTHON`;
       decision.port === topology.tokenEcho.policyPort,
   );
   assert.ok(blocked, "the provider must record the exact executable and denied target port");
+  enterCheck("provider-denied-dns-binding");
   // An unmapped port is logged against the synthetic policy IP. Bind it to the real DNS
   // mapping rather than treating an unrelated denial or a failed DNS lookup as enforcement.
   assert.ok(
@@ -5139,6 +5150,7 @@ PYTHON`;
       ),
     "the denied address must map to the requested destination",
   );
+  enterCheck("editing-admission");
   const suggestions = await topology.request(
     "GET",
     `${base}/revisions/${topology.revision.id}/sandbox-policy/networking/recommendations`,
@@ -5169,6 +5181,7 @@ PYTHON`;
         { workspace: topology.placement, sandbox: topology.sandbox.metadata.name },
         AbortSignal.timeout(10_000),
       );
+  enterCheck("apply-authorization");
   for (const [action, kind, id] of [
     ["manage_policy", "agent", topology.agent.id],
     ["update", "sandbox_policy", initial.data.policy.id],
@@ -5348,10 +5361,13 @@ PYTHON`;
       );
     }
   };
+  enterCheck("grant-application");
   await change([grant], true);
+  enterCheck("granted-agent-request");
   const allowed = await python();
   assert.equal(allowed.exitCode, 0, "a confirmed grant must permit the same real Python request");
   assert.match(allowed.aggregatedOutput ?? "", /HTTP [1-5][0-9]{2}/);
+  enterCheck("provider-allow-observed");
   const allowedLogs = await topology.request(
     "GET",
     `${base}/deployments/${topology.revision.id}/runtime/logs?source=sandbox&tailLines=1000`,
@@ -5367,6 +5383,7 @@ PYTHON`;
     ),
     "the provider confirms the real connection was allowed",
   );
+  enterCheck("revision-unchanged");
   const unchanged = await topology.request("GET", base);
   assert.equal(
     unchanged.data.activeRevisionId,
@@ -5382,6 +5399,7 @@ PYTHON`;
     [],
     "live changes must preserve immutable revision evidence",
   );
+  enterCheck("second-agent-isolation");
   // A second ordinary Agent shares the Installation defaults but receives no addition.
   const second = await deployAdditionalCredentialAgent(
     topology,
@@ -5396,6 +5414,7 @@ PYTHON`;
   const isolated = await python(second.agent.id);
   assert.notEqual(isolated.exitCode, 0, "another Agent must remain denied");
   assert.match(isolated.aggregatedOutput ?? "", /Permission denied|Errno 13/);
+  enterCheck("second-agent-cleanup");
   // Release the shared credential reference before the later credential-revocation scenarios.
   const deleted = await topology.request("DELETE", second.path);
   assert.equal(deleted.status, 202, JSON.stringify(deleted.error));
@@ -5410,6 +5429,7 @@ PYTHON`;
     },
     120_000,
   );
+  enterCheck("editing-state-enforcement");
   assert.equal(
     (await topology.request("PATCH", `${policyPath}/editing`, { enabled: false })).status,
     200,
@@ -5423,6 +5443,7 @@ PYTHON`;
     (await topology.request("PATCH", `${policyPath}/editing`, { enabled: true })).status,
     200,
   );
+  enterCheck("grant-revocation");
   await change([]);
   const revoked = await python();
   assert.notEqual(revoked.exitCode, 0, "explicit removal must restore enforcement");
@@ -8305,7 +8326,18 @@ export function registerProviderLifecycleTest(workflow) {
     },
     async (testContext) => {
       // Finding 1711: every cleanup this test registers runs, last-registered first, each bounded.
-      const teardown = boundedTeardown(testContext, { label: "OpenShell integration teardown" });
+      const policyCase = workflow === "policy" || networkPolicyOnly;
+      const teardown = boundedTeardown(testContext, {
+        label: "OpenShell integration teardown",
+        onOutcome: policyCase
+          ? (outcome) => {
+              testContext.diagnostic(
+                "openclaw-ci-measurement " +
+                  JSON.stringify({ kind: "openshell-fixture-teardown", outcome }),
+              );
+            }
+          : undefined,
+      });
       teardownStarted = () => teardown.started;
       const { context } = teardown;
       if (demoStatePath !== undefined) {
@@ -8434,18 +8466,25 @@ export function registerProviderLifecycleTest(workflow) {
           requestGatewayTurns(context, topology, "codex"),
         );
         process.stderr.write("OpenShell integration: regular Gateway shell turns passed.\n");
-        if (workflow === "policy" || networkPolicyOnly) {
+        if (policyCase) {
           if (!networkPolicyOnly) {
             await measureOpenShellStage(testContext, "filesystem-network", () =>
               assertOpenShellToolFilesystemAndNetworkEnforcement(topology),
             );
           }
           process.stderr.write("OpenShell integration: testing Agent network policy lifecycle.\n");
+          let policyCheck;
           try {
             await measureOpenShellStage(testContext, "network-policy", () =>
-              assertAgentNetworkPolicyLifecycle(topology),
+              assertAgentNetworkPolicyLifecycle(topology, (check) => {
+                policyCheck = check;
+              }),
             );
           } catch (error) {
+            testContext.diagnostic(
+              "openclaw-ci-measurement " +
+                JSON.stringify({ kind: "openshell-network-policy-check", check: policyCheck }),
+            );
             // Teardown may take minutes; preserve the failure before removing its resources.
             const message = redactLogLine(
               String(error?.stack ?? error?.message).replaceAll("\n", " "),
