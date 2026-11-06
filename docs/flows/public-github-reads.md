@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
 updated: "2026-11-05"
-last_updated_session: authoring-run/d4af6731-99c5-4748-a8e4-0b063c19a426
+last_updated_session: authoring-run/dc5ce070-492f-403f-b59f-c29b19511006
 ---
 
 # Public GitHub read flow
@@ -106,18 +106,18 @@ Compute's NetworkPolicy grants reader egress to the selected ordinary Harness or
 the exact trusted supervisor peer; a protected workload receives no direct grant.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:pluginRuntimeSnapshot`
-selects Harness ownership before the public-reader launcher. Compute-owned Codex
-launches compose public material setup over the initialize-RPC readiness entrypoint;
-provider-owned launches retain their matching commands and provider readiness.
-Both selections carry the matching workspace-node wrapper.
-The Deployment mounts the capability Secret only for Compute-owned Harnesses;
-provider-owned Harnesses use provider material delivery.
+selects Compute's initialize-RPC launcher or the provider's launcher and readiness.
+Both retain the workspace-node wrapper. The Deployment mounts capability Secrets
+only for Compute-owned Harnesses; provider-owned Harnesses use provider delivery.
+`transport.mjs:installProjectedSkill` copies OpenShell's skill to native
+HOME's `.openclaw/skills/public-github-read/SKILL.md`. It refuses unsafe parents
+or differing files; Compute-mounted skills stay unchanged.
 
 Compute ConfigMaps and OpenShell provider files deliver the nonsecret transport.
 `openshell.ts:harnessRuntimeFiles` embeds its source in the profile's
 64 KiB file template, outside provider config's 8 KiB value limit.
-The launcher verifies a regular file of at most 64 KiB against its baked-in SHA-256
-before copying or execution. Missing, stale or altered source fails closed.
+The launcher verifies the file's SHA-256 and 64 KiB bound before execution.
+Missing, stale or altered source fails closed.
 The admitted launcher places helper source, combined public CA, transport config
 and Git wrappers below `$HOME/.oce-public-git`, in private generated children.
 It rejects symlinked, foreign-owned or nonprivate material parents. The Gateway's
@@ -271,6 +271,8 @@ that the owning runtime has stopped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 21:48: Install projected skills (accompanying fix; authoring-run/dc5ce070-492f-403f-b59f-c29b19511006 - 9fec5ea0c824d2c9034c1bab7e7aaab09458de1b)
 
 - 2026-11-05 21:26: Correct transport projection (accompanying fix; authoring-run/d4af6731-99c5-4748-a8e4-0b063c19a426 - 9b94488677213a4cc92375aa52940d86856d3763)
 

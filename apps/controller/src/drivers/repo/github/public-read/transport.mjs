@@ -83,14 +83,18 @@ function refusalReceipt(error) {
 
 function readTrust(path, limit) {
   refusalPhase = "trust-input";
+  return readBoundedFile(path, limit);
+}
+
+function readBoundedFile(path, limit, extraFlags = 0) {
   if (!isAbsolute(path ?? "")) {
-    throw new Error("TLS trust requires an absolute file path.");
+    throw new Error("Public runtime files require an absolute path.");
   }
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | extraFlags);
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > limit) {
-      throw new Error("TLS trust exceeds its file bound.");
+      throw new Error("Public runtime file exceeds its bound.");
     }
     const bytes = Buffer.alloc(limit + 1);
     let length = 0;
@@ -102,7 +106,7 @@ function readTrust(path, limit) {
       length += count;
     }
     if (length > limit) {
-      throw new Error("TLS trust exceeds its file bound.");
+      throw new Error("Public runtime file exceeds its bound.");
     }
     return bytes.subarray(0, length).toString("utf8");
   } finally {
@@ -770,6 +774,50 @@ function remoteHelper(remote, originalUrl) {
   runChild(helper, [remote, url], env);
 }
 
+function installProjectedSkill(home) {
+  const source = process.env.OCE_PUBLIC_GITHUB_READ_SKILL_FILE;
+  // Compute-owned Harnesses already mount the skill.
+  if (source === undefined) {
+    return;
+  }
+  const text = readBoundedFile(source, 65_536);
+  if (!text.trim()) {
+    throw new Error("The projected public skill is empty.");
+  }
+  let directory = home;
+  for (const name of [".openclaw", "skills", "public-github-read"]) {
+    directory = join(directory, name);
+    try {
+      mkdirSync(directory, { mode: 0o700 });
+    } catch (error) {
+      if (error.code !== "EEXIST") {
+        throw error;
+      }
+    }
+    const stat = lstatSync(directory);
+    if (!stat.isDirectory() || stat.uid !== process.getuid() || (stat.mode & 0o022) !== 0) {
+      throw new Error("The public skill requires owned directories.");
+    }
+  }
+  const target = join(directory, "SKILL.md");
+  try {
+    writeFileSync(target, text, { mode: 0o400, flag: "wx" });
+  } catch (error) {
+    if (error.code !== "EEXIST") {
+      throw error;
+    }
+    const stat = lstatSync(target);
+    if (
+      !stat.isFile() ||
+      stat.uid !== process.getuid() ||
+      (stat.mode & 0o777) !== 0o400 ||
+      readBoundedFile(target, 65_536, constants.O_NOFOLLOW) !== text
+    ) {
+      throw new Error("An existing public skill differs from its projection.", { cause: error });
+    }
+  }
+}
+
 function installMaterial(materialPath) {
   const bytes = readFileSync(materialPath);
   if (bytes.length > 1024 * 1024) {
@@ -809,6 +857,7 @@ function installMaterial(materialPath) {
   if (!stat.isDirectory() || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o700) {
     throw new Error("Public Git material must have a private owned directory.");
   }
+  installProjectedSkill(home);
   const directory = mkdtempSync(join(root, "material-"));
   chmodSync(directory, 0o700);
   const ca = composeTrust(material.caBundle);

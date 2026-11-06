@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import https from "node:https";
@@ -300,7 +309,24 @@ async function materialFixture(t) {
 test("launcher material installs real capabilities, inherited trust, and protected placeholders without materializing credentials", async (t) => {
   const fixture = await materialFixture(t);
   const { directory, provider, token, install, git } = fixture;
-  const env = await install({ GIT_SSL_CAINFO: path.join(directory, "github-provider.crt") });
+  const { publicGithubReadSkill } =
+    await import("../../apps/controller/src/drivers/repo/github/public-read/codex.ts");
+  const projectedSkill = path.join(directory, "provider-public-github-read.md");
+  const skillPath = path.join(directory, ".openclaw", "skills", "public-github-read", "SKILL.md");
+  const skill = publicGithubReadSkill({
+    address: "127.0.0.1",
+    endpoint: fixture.endpoint,
+    skillPath,
+  });
+  await writeFile(projectedSkill, skill);
+  const env = await install({
+    GIT_SSL_CAINFO: path.join(directory, "github-provider.crt"),
+    OCE_PUBLIC_GITHUB_READ_SKILL_FILE: projectedSkill,
+  });
+  assert.equal(await readFile(skillPath, "utf8"), skill);
+  assert.equal((await lstat(skillPath)).mode & 0o777, 0o400);
+  // A supervisor restart reuses only the exact managed file, never a linked target.
+  await install({ OCE_PUBLIC_GITHUB_READ_SKILL_FILE: projectedSkill });
   const clone = path.join(directory, "launcher-clone");
   const url = "https://github.com/Example/Project.git";
   await git(env, "clone", "--depth=1", url, clone);
@@ -1186,6 +1212,43 @@ test("material installation refuses redirected or shared private-home parents", 
   await chmod(sharedRoot, 0o755);
   await assert.rejects(fixture.install({ HOME: sharedHome }), { code: 1 });
   assert.deepEqual(await readdir(sharedRoot), []);
+
+  const projectedSkill = path.join(fixture.directory, "provider-skill.md");
+  await writeFile(projectedSkill, "---\nname: public-github-read\n---\nManaged instructions.\n");
+  const skillHome = path.join(fixture.directory, "skill-home");
+  await mkdir(skillHome);
+  await symlink(elsewhere, path.join(skillHome, ".openclaw"));
+  await assert.rejects(
+    fixture.install({ HOME: skillHome, OCE_PUBLIC_GITHUB_READ_SKILL_FILE: projectedSkill }),
+    { code: 1 },
+  );
+  assert.deepEqual(await readdir(elsewhere), []);
+  for (const contents of ["", "x".repeat(65_537)]) {
+    await writeFile(projectedSkill, contents);
+    await assert.rejects(fixture.install({ OCE_PUBLIC_GITHUB_READ_SKILL_FILE: projectedSkill }), {
+      code: 1,
+    });
+  }
+  await assert.rejects(fixture.install({ OCE_PUBLIC_GITHUB_READ_SKILL_FILE: fixture.directory }), {
+    code: 1,
+  });
+  await writeFile(projectedSkill, "Managed instructions.\n");
+  const target = path.join(fixture.directory, ".openclaw", "skills", "public-github-read");
+  await mkdir(target, { recursive: true });
+  const preserved = path.join(elsewhere, "preserved.md");
+  await writeFile(preserved, "Agent-owned content.");
+  await symlink(preserved, path.join(target, "SKILL.md"));
+  await assert.rejects(fixture.install({ OCE_PUBLIC_GITHUB_READ_SKILL_FILE: projectedSkill }), {
+    code: 1,
+  });
+  assert.equal(await readFile(preserved, "utf8"), "Agent-owned content.");
+  const skill = path.join(target, "SKILL.md");
+  await unlink(skill);
+  await writeFile(skill, "Different existing instructions.", { mode: 0o400 });
+  await assert.rejects(fixture.install({ OCE_PUBLIC_GITHUB_READ_SKILL_FILE: projectedSkill }), {
+    code: 1,
+  });
+  assert.equal(await readFile(skill, "utf8"), "Different existing instructions.");
 });
 
 test("public Git ignores credential-bearing inherited Git config regardless of scope or command-line precedence", async (t) => {
