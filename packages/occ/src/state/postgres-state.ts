@@ -13,6 +13,7 @@ import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindRepository } from "../ports/repository-factory.ts";
 import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import { createPlatformReadView } from "../ports/platform-read-view.ts";
+import { postgresSavedConnections } from "./postgres-saved-connections.ts";
 import { postgresConnectionTemplates } from "./postgres-connection-templates.ts";
 import { postgresRepositorySessions } from "./postgres-repository-sessions.ts";
 import {
@@ -616,6 +617,7 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
   const ownerCapability = text(row, "owner_capability");
   if (
     (ownerCapability !== "credential_gateway" &&
+      ownerCapability !== "token_service" &&
       (ownerCapability !== "credential_proxy" || row.egress == null)) ||
     Object.values(config).some((value) => typeof value !== "string") ||
     Object.values(secretIds).some((value) => typeof value !== "string")
@@ -637,8 +639,9 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
         { kind: "secret" as const, namespaceId, id },
       ]),
     ),
-    driverId: text(row, "driver_id"),
-    ownerCapability,
+    ...(ownerCapability === "token_service"
+      ? { ownerCapability }
+      : { ownerCapability, driverId: text(row, "driver_id") }),
     state,
     createdAt: timestamp(row, "created_at"),
   });
@@ -2969,7 +2972,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             source.name,
             source.type,
             JSON.stringify(source.config),
-            source.driverId,
+            source.driverId ?? null,
             source.state,
             source.createdAt,
             source.egress === undefined ? null : JSON.stringify(source.egress),
@@ -4341,6 +4344,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       installations,
       namespaces,
       configurations,
+      savedConnections: postgresSavedConnections(client, () => this.requireInitialized(context)),
       connectionTemplates: postgresConnectionTemplates(client, () =>
         this.requireInitialized(context),
       ),

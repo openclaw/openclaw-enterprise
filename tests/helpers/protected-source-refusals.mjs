@@ -57,7 +57,7 @@ export async function protectedSourceFixture(t, { githubMetadata = false, ...opt
       preparedGitHub: {
         apiOrigin: "https://api.github.com",
         configure: unexpectedIssuerWork,
-        readWarm: unexpectedIssuerWork,
+        resolve: unexpectedIssuerWork,
         ready: unexpectedIssuerWork,
         withdraw: unexpectedIssuerWork,
         current: unexpectedIssuerWork,

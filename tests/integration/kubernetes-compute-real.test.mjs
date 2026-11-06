@@ -143,13 +143,16 @@ test(
         context: kubernetesContext,
       };
     }
-    const drivers = await loadInstallationConfiguration({
-      mode: "development",
-      environment: {},
-      startupConfiguration: { configuration, logging: { level: "info" } },
-    });
-    assert.ok(drivers);
-    const driver = drivers.computeDriver;
+    // Each API and worker process installs its own token issuers, including after a failed start.
+    async function loadDrivers() {
+      const drivers = await loadInstallationConfiguration({
+        mode: "development",
+        environment: {},
+        startupConfiguration: { configuration, logging: { level: "info" } },
+      });
+      assert.ok(drivers);
+      return drivers;
+    }
     const adminCredentials = {
       email: "admin-kubernetes-integration@example.test",
       password: "kubernetes-integration-admin-password",
@@ -160,8 +163,6 @@ test(
     let app;
     let worker;
     let workerPool;
-    let workerDrivers = drivers;
-    let workerStarts = 0;
     context.after(async () => {
       if (worker !== undefined) {
         await worker.stop();
@@ -225,12 +226,12 @@ test(
       );
       const before = await resource("namespace", legacyName);
       await assert.rejects(async () => {
-        const unexpected = await composePostgresDevelopment(developmentConfig, drivers);
+        const unexpected = await composePostgresDevelopment(developmentConfig, await loadDrivers());
         await unexpected.close();
       }, /Existing split-layout Gateway storage/);
       const rejectedWorker = createControllerWorker({
+        drivers: await loadDrivers(),
         pool: new pg.Pool({ connectionString: databaseUrl, max: 2 }),
-        drivers,
         emit: () => {},
       });
       try {
@@ -245,7 +246,8 @@ test(
     } finally {
       await kubectl("delete", "namespace", legacyName, "--wait=true");
     }
-    app = await composePostgresDevelopment(developmentConfig, drivers);
+    const apiDrivers = await loadDrivers();
+    app = await composePostgresDevelopment(developmentConfig, apiDrivers);
     const session = await signInToControllerApp(app, adminCredentials);
 
     async function request(method, url, payload, options = {}) {
@@ -266,18 +268,9 @@ test(
 
     async function startWorker({ convergenceTimeoutMs } = {}) {
       workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
-      if (workerStarts > 0) {
-        workerDrivers = await loadInstallationConfiguration({
-          mode: "development",
-          environment: {},
-          startupConfiguration: { configuration, logging: { level: "info" } },
-        });
-        assert.ok(workerDrivers);
-      }
-      workerStarts += 1;
       worker = createControllerWorker({
         pool: workerPool,
-        drivers: workerDrivers,
+        drivers: await loadDrivers(),
         pollIntervalMs: 25,
         leaseDurationMs: 30_000,
         maxAttempts: 20,
@@ -582,8 +575,8 @@ test(
       const result = await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/deploy`);
       assert.equal(result.status, 202, JSON.stringify(result.error));
       assert.deepEqual(result.data.compute, {
-        id: driver.id,
-        implementation: driver.implementation,
+        id: apiDrivers.computeDriver.id,
+        implementation: apiDrivers.computeDriver.implementation,
       });
       assert.equal(Object.hasOwn(result.data, "servicePrincipalId"), false);
       return result.data;

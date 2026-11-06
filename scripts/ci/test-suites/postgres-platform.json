@@ -325,6 +325,7 @@
     {
       "path": "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
       "expectedTests": [
+        "authorized GitHub proxy requests mint the registered grant and share one replacement",
         "PostgreSQL prepared custody: source consent, proactive renewal, restart, issuer rotation and withdrawal",
         "current proof preserves caller SQL limits and restores them in its unit",
         "signed PostgreSQL dispatch uses one shared connection for current material proof",

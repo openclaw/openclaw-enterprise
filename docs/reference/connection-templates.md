@@ -14,6 +14,8 @@ Open **Credentials → OAuth clients → Register OAuth client**. Select a saved
 
 List clients with `GET /oauth-clients`. Use `POST /oauth-clients/{oauthClientId}/rotate-secret` to replace the current secret. OCC replaces the secret at the same private reference. New code exchanges and later refreshes for existing accounts use the current secret. If the response is lost, retry with the same secret. To remove a registration, select the trash icon beside it in **Credentials → OAuth clients** or use `DELETE /oauth-clients/{oauthClientId}`. A template version that still references the client blocks deletion, including an older version of a template.
 
+When starting consent for an MCP template, send the nonempty `selectedScopes` the account owner chose. The choice must come from the approved version and include each scope in its resource challenge. Configured manual OAuth uses its fixed scopes. OCC keeps the selection with the private attempt and records it with the resulting grant.
+
 ## Create a template
 
 In **Credentials → Connection templates → Create connection template**, **Template availability** starts with the current readable Namespace. If there is none, choose availability before registering a client or saving the template. Choose **Installation-wide** to share the template across Namespaces. Availability is fixed after creation.
@@ -34,3 +36,37 @@ Existing accounts use the current manual destinations for their template and iss
 Changing the template’s default OAuth client applies to future connections. Existing grants continue to refresh with their original registration and its current secret.
 
 See the [API reference](api.md#connections) for request and response fields.
+
+## Connect an account
+
+OCC handles browser consent and the callback. After exchange, OCC registers the grant with the Token Service. It returns a stable account reference and renews the access token using the original client registration. Users can connect an account before an administrator configures a Credential Gateway for Agent delivery.
+
+1. Use a signed-in browser session. List available templates at
+   `GET /namespaces/{namespaceId}/connection-templates`. OCC requires
+   `credential_source:create` for that Namespace. A template appears here once
+   its current version has an OAuth client.
+2. Send the chosen `connectionTemplateId` to
+   `POST /namespaces/{namespaceId}/connections`. For a template with no configured scope list, supply optional `selectedScopes` or omit them to use provider defaults. A manual template with configured scopes uses the full list. For MCP, include every scope required by the resource and stay within any configured list. Open the returned
+   `authorizationUrl` in the same browser and approve the request.
+   Register the public OCC callback URL ending in `/oauth/callback` with the provider.
+3. After the redirect, look up the saved account with
+   `GET /namespaces/{namespaceId}/connections`. Other users see it only if
+   they have permission to read the source. Keep the credential source ID to
+   refer to the account. The response names the selected OAuth client, issuer,
+   effective destinations, and requested and granted scopes. An empty destination list means the current template is unavailable or incompatible. MCP accounts also record the
+   approved server URL and protected resource. The Token Service keeps the tokens
+   and uses the pinned client method and protected resource when it renews them.
+
+The native Namespace role API currently rejects `create` permissions. Installation
+administrators can connect with the built-in administrator role. See
+[Namespace role limits](../guides/topics/iam.md#let-a-person-run-an-existing-agent).
+
+A pending request expires after ten minutes. Restart consent if it expires,
+the provider denies it, or the browser session changes. The server handles each
+code once. If the provider rejects the client secret, an administrator can correct it and
+the Token Service retries the same grant. If the provider rejects the user’s
+refresh grant, the user reconnects.
+
+Use `DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}` to
+disconnect the account. OCC records the request before retiring the credential
+and the worker can finish an interrupted disconnect.

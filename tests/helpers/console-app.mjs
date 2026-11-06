@@ -8,6 +8,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
+import { createConsoleFixtureRevisions } from "./console-fixture-revisions.ts";
 import { fileConsoleApp as createFileConsoleApp } from "./console-file-app.ts";
 
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
@@ -18,7 +19,6 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import {
   AgentResponse,
-  AgentRevisionResponse,
   ConfigurationResponse,
   NamespaceResponse,
   SecretResponse,
@@ -776,27 +776,14 @@ export async function createConsoleAppFixture(t, options = {}) {
     return fixtureResponse(agent, 200, AgentResponse, "update Agent").data;
   }
 
-  async function deployAgent(namespaceId, agentId) {
-    const revision = await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/deploy`);
-    return fixtureResponse(revision, 202, AgentRevisionResponse, "deploy Agent").data;
-  }
-
-  async function activateRevision(namespaceId, agentId, revisionId, expectedRevisionId) {
-    assert.ok(controller, "bootstrap must create the controller before revision activation");
-    // This renders a valid admitted active revision for console tests; runtime dispatch,
-    // worker lease handling, and Compute Driver effects are proved by worker tests.
-    const active = await platformState.transact((unit) =>
-      unit.agents.compareAndSetActiveRevision(namespaceId, agentId, expectedRevisionId, revisionId),
-    );
-    assert.ok(active, "the admitted Agent revision must activate from the expected state");
-    return active;
-  }
-
-  async function seedActiveAgentRevision(namespaceId, agentId, expectedRevisionId) {
-    const revision = await deployAgent(namespaceId, agentId);
-    const agent = await activateRevision(namespaceId, agentId, revision.id, expectedRevisionId);
-    return { agent, revision };
-  }
+  const { deployAgent, activateRevision, seedActiveAgentRevision } = createConsoleFixtureRevisions(
+    request,
+    fixtureResponse,
+    () => {
+      assert.ok(controller, "bootstrap must create the controller before revision activation");
+      return platformState;
+    },
+  );
 
   async function createSecret(namespaceId, name, value) {
     const secret = await request("POST", `/namespaces/${namespaceId}/secrets`, {
@@ -929,35 +916,4 @@ export function grantMember(fixture, label, grants) {
   );
 }
 
-// The authorization denials an InMemoryAuditSink recorded: all of them, or those for `action`,
-// an exact action name or a RegExp for a family of actions.
-/**
- * @param {Pick<InMemoryAuditSink, "list">} auditSink
- * @param {string | RegExp} [action]
- */
-export function authorizationDenials(auditSink, action) {
-  const matches =
-    action === undefined
-      ? () => true
-      : typeof action === "string"
-        ? (name) => name === action
-        : (name) => action.test(name);
-  return auditSink
-    .list()
-    .filter((event) => event.kind === "authorization_denial" && matches(event.action));
-}
-
-// Runs `send` and returns its response with the checks its authorization denials name, as
-// { action, kind, id }, so a refusal can be shown to be audited once, for its own target.
-export async function denialsDuring(auditSink, send) {
-  const before = authorizationDenials(auditSink).length;
-  const response = await send();
-  const denials = authorizationDenials(auditSink)
-    .slice(before)
-    .map(({ authorization: { action, resource } }) => ({
-      action,
-      kind: resource.kind,
-      id: resource.id,
-    }));
-  return { response, denials };
-}
+export { authorizationDenials, denialsDuring } from "./console-audit-denials.ts";
