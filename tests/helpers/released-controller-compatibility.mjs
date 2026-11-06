@@ -13,7 +13,7 @@ const docker = process.env.OCC_DOCKER_BIN ?? "docker";
 const origin = "http://127.0.0.1";
 const authSecret = "local-compatibility-session-secret-32-bytes";
 
-export async function assertReleasedControllerCompatibility(t, db, images) {
+export async function assertReleasedControllerCompatibility(t, images, createDatabase) {
   const owner = `controller-compatibility-${randomUUID()}`;
   const label = `org.openclaw.compatibility=${owner}`;
   const children = [];
@@ -38,6 +38,7 @@ export async function assertReleasedControllerCompatibility(t, db, images) {
     assert.equal(inspected.length, 1);
     assert.equal(inspected[0].Config.Labels["org.opencontainers.image.revision"], image.revision);
   }
+  const db = await createDatabase();
   const migrationUrl = new URL(db.migrationUrl);
   migrationUrl.hostname = "127.0.0.1";
   migrationUrl.port = "5432";

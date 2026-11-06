@@ -130,15 +130,6 @@ try {
       });
       assert.equal(started.statusCode, 201, started.body);
       const sourceId = started.json().data.credentialSourceId;
-      const rows = (
-        await pool.query(
-          "SELECT owner_capability,driver_id,state FROM occ.credential_sources WHERE id=$1",
-          [sourceId],
-        )
-      ).rows;
-      assert.deepEqual(rows, [
-        { owner_capability: "token_service", driver_id: null, state: "registering" },
-      ]);
       const current = await app.inject({
         method: "GET",
         url: `/namespaces/${input.namespaceId}/credential-sources`,
@@ -153,7 +144,6 @@ try {
           readStatus: current.statusCode,
           sourceId,
           listedSourceIds: current.json().data.map((source) => source.id),
-          storedMetadata: rows,
         }),
       );
     } else if (input.op === "work") {

@@ -3689,9 +3689,10 @@ if (
         ),
         "Both released and candidate controller image references and revisions are required.",
       );
-      const fixture = await migrationHistoryFixture();
-      const db = await historyDatabase(t, fixture, "released_controller");
-      await assertReleasedControllerCompatibility(t, db, controllerImages);
+      await assertReleasedControllerCompatibility(t, controllerImages, async () => {
+        const fixture = await migrationHistoryFixture();
+        return historyDatabase(t, fixture, "released_controller");
+      });
     },
   );
 }
