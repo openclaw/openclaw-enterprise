@@ -217,8 +217,8 @@ COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-r
 RUN echo 'b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
-# Run the bridge tests alongside the build using the same patched source.
-# Packaging mounts this stage so a failed test still blocks the runtime image.
+# Broad source verification is an explicit target, separate from image assembly.
+# Native container CI requires this target before exporting and smoking the image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
 # One main runner invocation for the Node test files: the runner compiles the whole
 # source tree for its workers first (about a minute), and a second invocation on
@@ -365,7 +365,6 @@ COPY scripts/lib/openclaw-source.ts /tmp/lib/openclaw-source.ts
 COPY --from=openclaw-source /tmp/openclaw-source.json /tmp/openclaw-source.json
 RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verification/scripts \
     --mount=type=bind,from=openclaw-build,source=/source/node_modules,target=/verification/node_modules \
-    --mount=type=bind,from=openclaw-bridge-tests,target=/verification/bridge-tests \
     node scripts/docker/copy-bootstrap-scripts.mjs /tmp/openclaw-runtime-bootstrap \
     && rm -rf scripts \
     && mv /tmp/openclaw-runtime-bootstrap/scripts scripts \
