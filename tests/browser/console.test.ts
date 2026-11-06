@@ -527,7 +527,7 @@ test("console reports a refused debug preference save without enabling diagnosti
   assert.equal(await debug.isChecked(), false);
   assert.equal(await page.locator(".runtime-debug").count(), 0);
   await page.getByRole("link", { name: "Agents", exact: true }).click();
-  await page.getByRole("heading", { name: "Agents" }).waitFor();
+  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
 });
 
 test("console browser flow keeps Namespace URL state across global pages and logout", async (t) => {
