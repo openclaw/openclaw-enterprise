@@ -168,30 +168,33 @@ Replace `"status"` with the operation's arguments, for example
 `"deactivate", "--writers-stopped"`. The Pod's own database connection is excluded
 from the writer check. The Job does not retry a failed Pod.
 
-Wait for completion and inspect the command's JSON output. On failure or timeout,
-also inspect the Job status; a timeout does not establish whether a change committed.
+Wait for completion, inspect the JSON output, then delete the Job and wait for
+its Pods to stop. This block attempts cleanup even after a failure and returns
+nonzero if completion, diagnostics, or cleanup fails. A timeout does not establish
+whether a change committed.
 
 ```bash
-if ! kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
-  --namespace openclaw-system wait --for=condition=Complete \
-  job/occ-auth-maintain --timeout=5m; then
+(
+  result=0
   kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
-    --namespace openclaw-system get job/occ-auth-maintain -o yaml
-fi
-kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
-  --namespace openclaw-system logs job/occ-auth-maintain -c occ-auth-maintain
+    --namespace openclaw-system wait --for=condition=Complete \
+    job/occ-auth-maintain --timeout=5m || result=$?
+  if [ "$result" -ne 0 ]; then
+    kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
+      --namespace openclaw-system get job/occ-auth-maintain -o yaml || result=$?
+  fi
+  kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
+    --namespace openclaw-system logs job/occ-auth-maintain -c occ-auth-maintain || result=$?
+  kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
+    --namespace openclaw-system delete job/occ-auth-maintain \
+    --cascade=foreground --wait=true --timeout=5m || result=$?
+  exit "$result"
+)
 ```
 
-After retaining the result, delete this Job and wait for its owned Pods to stop.
-Do this on failure or timeout too, before running another operation. If the result
-was uncertain, run `status` in a new Job before deciding whether to retry a change.
-Confirm the intended database state before resuming writers.
-
-```bash
-kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
-  --namespace openclaw-system delete job/occ-auth-maintain \
-  --cascade=foreground --wait=true --timeout=5m
-```
+If cleanup fails, complete it before another operation or resuming writers. If
+the result was uncertain, run `status` in a new Job before deciding whether to
+retry a change. Confirm the intended database state before resuming writers.
 
 For `reset-recovery-password`, put the new password in a Secret, mount it
 read-only in the Pod, and pass the mounted path with `--password-file`. Delete
