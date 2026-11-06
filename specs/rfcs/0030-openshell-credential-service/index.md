@@ -27,7 +27,9 @@ OCE already registers GitHub grants and saved OAuth accounts with its Token Serv
 
 ## What happens on a protected request?
 
-For v1, defer both sender caches. On every protected send the trusted sender asks OCC to authorize the captured request and resolve the credential. The issuer may return an already minted token for that grant. OCC rechecks access before release. Withdrawal denies the next fresh send. A redirect requires its own approval. [Request flow](request-lifecycle.svg) · [Editable diagram](request-lifecycle.mmd) · [What a future cached read would have to match](github-integration.md#authorization-across-senders)
+By default, the trusted sender asks OCC to authorize each captured request and resolve its credential. The issuer can return a token it already minted. OCC rechecks access before release. With a sender time to live (TTL) of zero, withdrawing a grant denies the next fresh send. [Online request flow](request-lifecycle.svg) · [Editable diagram](request-lifecycle.mmd)
+
+For v1, we propose one opt-in exception on OpenShell. OCC can authorize a sender to fetch from one read-only repository for up to 30 seconds. Git discovery and object transfer can share that approval. A disconnected sender can start a matching fetch until the fixed deadline. Pushes and GitHub API requests still need a fresh OCC decision. The trial duration and scope are open for review. [Cache key, alternatives and acceptance](github-integration.md#authorization-across-senders)
 
 ## Proposed issuer contract
 
@@ -35,6 +37,8 @@ Deploy the issuer alongside OpenShell or separately, with its own process and se
 
 For a cold Git request, extend `EnsureFresh` to start or join issuance for an authorized delivery. Read the committed version through `ResolveSecrets`. If OCC loses a mutation reply, replay the same operation ID to recover its recorded result. An uncertain provider exchange stays with the issuer. [Upstream API proposal](https://github.com/NVIDIA/OpenShell/pull/5139)
 
-OpenShell has merged the embedded refresh engine. Remote delivery authorization and recovery still need implementation. During OAuth cutover, pause the selected grant, drain the old owner, and transfer its last confirmed version before enabling renewal at the new owner. [Embedded engine](https://github.com/NVIDIA/OpenShell/pull/5283) · [Proposed embedded versioning](https://github.com/NVIDIA/OpenShell/pull/5315)
+OpenShell has merged the embedded refresh engine. Remote delivery authorization and recovery still need implementation. [Embedded engine](https://github.com/NVIDIA/OpenShell/pull/5283) · [Proposed embedded versioning](https://github.com/NVIDIA/OpenShell/pull/5315)
+
+During OAuth cutover, stop every old writer for the selected grant and transfer its last confirmed version under one durable transfer ID. If the acknowledgment is lost, look up the transfer before reopening delivery. [Renewal lock and ownership transfer](../../plans/0030-openshell-credential-service.md#move-one-existing-grant-during-a-maintenance-window)
 
 [Migration plan and OAuth acceptance](../../plans/0030-openshell-credential-service.md) · [First GitHub integration and installed test](github-integration.md)
