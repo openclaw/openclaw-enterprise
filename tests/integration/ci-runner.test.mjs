@@ -3240,12 +3240,31 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     check: "provider-denial-observed",
   };
   const teardown = { kind: "openshell-fixture-teardown", outcome: "failed" };
+  const nativeBodyCheck = {
+    kind: "openshell-native-policy-check",
+    stage: "native-policy-scopes",
+    primaryCheck: "read.unauthenticated-code-16",
+    cleanupCheck: null,
+  };
+  const nativeCleanupCheck = {
+    ...nativeBodyCheck,
+    primaryCheck: null,
+    cleanupCheck: "cleanup.restore-auth.helm-upgrade",
+  };
+  const nativeBothChecks = { ...nativeBodyCheck, cleanupCheck: nativeCleanupCheck.cleanupCheck };
   const phaseDiagnostics = [
     failedPhase,
     failedStage,
     failedCheck,
     { ...failedCheck, check: "fixture-opaque-phase-detail\nunknown check" },
     { ...teardown, outcome: "fixture-opaque-phase-detail" },
+    nativeBodyCheck,
+    nativeCleanupCheck,
+    nativeBothChecks,
+    { ...nativeBodyCheck, primaryCheck: "fixture-opaque-phase-detail" },
+    { ...nativeBodyCheck, cleanupCheck: "fixture-opaque-phase-detail" },
+    { ...nativeBodyCheck, stage: "fixture-opaque-phase-detail" },
+    { ...nativeBodyCheck, primaryCheck: null },
   ].map(
     (measurement) =>
       `openclaw-ci-measurement ${JSON.stringify({ ...measurement, detail: "fixture-opaque-phase-detail" })}`,
@@ -3314,6 +3333,9 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     failedPhase,
     failedStage,
     failedCheck,
+    nativeBodyCheck,
+    nativeCleanupCheck,
+    nativeBothChecks,
     teardown,
   ]);
   assert.equal(await readFile(join(root, "teardown-completed"), "utf8"), "yes");
