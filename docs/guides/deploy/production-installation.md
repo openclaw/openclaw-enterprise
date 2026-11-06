@@ -619,7 +619,7 @@ Keep `auth.github` configured. Never [roll back](production-upgrade-recovery.md#
 
    For native admin, replace `enabled: false` with the
    [host-only exchange settings](native-admin.md#install-on-an-existing-cluster).
-   Match its name and distinct keys (client ID, not App ID).
+   Match the GitHub sign-in Secret name and distinct keys (client ID, not App ID).
    Rerender with workspace routing and [profile inputs](installation-profiles.md#external-sign-in-and-trusted-proxies). Register the [callback](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
    See [allowlists, egress and proxies](../../reference/settings/production.md#github-sign-in-and-trusted-proxies).
 
