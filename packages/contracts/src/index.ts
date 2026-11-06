@@ -1558,6 +1558,8 @@ export type {
   Preset,
   PresetSummary,
   PresetTemplate,
+  PresetDraftTemplate,
+  PresetDraftDefinition,
   PresetLaunchSettings,
   PresetVariable,
 } from "./presets.ts";
@@ -1570,7 +1572,7 @@ export {
   presetTemplateDefaults,
   presetTemplateDefaultsWithPlaceholders,
   requiredPresetVariables,
-} from "./preset-variables.mjs";
+} from "./preset-variables.mts";
 
 export {
   CODEX_FAILURE_OUTPUT_CLASSES,
