@@ -337,19 +337,31 @@ and verification remain refused, and denials log `no_binding`.
 `worker.openshell-git-route` reports same-worker restoration, with `durationMs`.
 Correlate revision and request IDs with `worker.openshell-git-denied`.
 
+[Managed replacement](../drivers/kubernetes-openshell-compute.md#lifecycle-and-retained-files)
+waits for durable withdrawal and removes the old middleware and Provider before
+releasing the route. The Sandbox and tombstone remain. The successor receives a
+new binding under unchanged repository scope.
+
+### Execution identity
+
+Both Workspace modes verify Git through OpenShell APIs without Pod access. OCE checks Sandbox ownership, readiness, execution identities and
+installed Provider generation. Missing or inconsistent evidence denies Git.
+Reconnects require fresh evidence of the same execution; replacements require
+new admission. Expiry cleanup also verifies the original execution.
+
+OCE trusts authenticated OpenShell reports. It does not independently attest them
+or detect a compromised supervisor claiming an earlier identity. See the
+[verification flow](../../flows/openshell-managed-workload.md).
+
 ### Qualification history
 
-OpenShell 0.1.4 (`5a7728c3`) reported supervisor process and network identities
-without Gateway attestation; the Gateway authenticated only the Sandbox
-principal. Reconnect continuity therefore relied on the supervisor's claims.
-This observation does not qualify a newer candidate's identity.
-
-That version also reset all Sandbox connections on provider material changes,
-including the workspace WebSocket and model streams. Activation passed through
-`REPOSITORY_GIT_MATERIAL_PENDING`, `WORKSPACE_NODE_RECONNECT_PENDING`, and
-`WORKSPACE_NODE_PENDING`. Later renewals repeated the reset (observed chat outages
-of about 1–7 s). Qualify connection continuity on the selected release; inspect
-uncertain request outcomes before retrying.
+OpenShell 0.1.4 (`5a7728c3`) authenticated the Sandbox principal but did not attest
+reported execution identities. Provider changes reset Sandbox connections,
+including workspace and model streams, with observed outages of 1–7 s.
+Activation reported `REPOSITORY_GIT_MATERIAL_PENDING`,
+`WORKSPACE_NODE_RECONNECT_PENDING`, and `WORKSPACE_NODE_PENDING`.
+Qualify identity and connection continuity on the selected release; inspect
+uncertain outcomes before retrying.
 
 ## GitHub App key rotated or revoked
 

@@ -230,12 +230,13 @@ Records the owner of each source. A Credential Gateway or Credential Proxy sourc
 ### `egress_installations`
 
 Binds authenticated supervisor/Sandbox identity and an immutable loaded-enforcement
-instance/configuration fingerprint to the exact admitted revision plan.
+instance/configuration fingerprint to the exact admitted revision plan. Retains retired
+receipts while allowing one current enrollment per sender and Sandbox.
 See [protected inference](../credential-sources/protected-inference.md).
 
 - `sender_id`, `sandbox_id`
 - `namespace_id`, `agent_id`, `revision_id`
-- `installation`
+- `installation`, `retired`
 
 ### `credential_deliveries`
 

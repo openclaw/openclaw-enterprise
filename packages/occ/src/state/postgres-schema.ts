@@ -1818,9 +1818,13 @@ export const egressInstallations = occSchema.table(
     revisionId: text("revision_id").notNull(),
     agentId: text("agent_id").notNull(),
     installation: jsonb("installation").$type<EgressInstallation>().notNull(),
+    retired: boolean("retired").notNull().default(false),
   },
   (table) => [
-    primaryKey({ columns: [table.senderId, table.sandboxId] }),
+    primaryKey({ columns: [table.senderId, table.sandboxId, table.revisionId] }),
+    uniqueIndex("egress_installations_current_sandbox")
+      .on(table.senderId, table.sandboxId)
+      .where(sql`NOT ${table.retired}`),
     check(
       "egress_installations_check",
       sql`length(${table.senderId}) BETWEEN 1 AND 200 AND length(${table.sandboxId}) BETWEEN 1 AND 200`,

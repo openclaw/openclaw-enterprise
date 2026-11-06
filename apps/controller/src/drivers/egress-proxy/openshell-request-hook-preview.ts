@@ -26,8 +26,13 @@ interface Selection {
   readonly registration: string;
   readonly audience: string;
   readonly modelProvider: string;
+  readonly runtimeProvider: string;
+  readonly sourcePolicy: Readonly<Record<string, unknown>>;
   readonly gitRule: { name: string; endpoints: readonly Record<string, unknown>[] };
-  readonly workload: (sandboxId: string, signal: AbortSignal) => Promise<string | undefined>;
+  readonly execution: (
+    sandbox: OpenShellSandboxResponse,
+    signal: AbortSignal,
+  ) => Promise<string | undefined>;
   readonly signal: AbortSignal;
 }
 
@@ -96,7 +101,9 @@ export async function previewPolicyAndRecipient({
   audience,
   gitRule,
   modelProvider,
-  workload,
+  runtimeProvider,
+  sourcePolicy,
+  execution,
   signal,
   mandatory,
 }: Selection): Promise<string | undefined> {
@@ -122,23 +129,22 @@ export async function previewPolicyAndRecipient({
   }
   const c = await client.getSandboxConfig?.(o.workspace, sandbox.name, signal);
   const policy = asRecord(c?.policy);
-  const source = asRecord(sandbox.spec?.policy);
-  // The paired Sandbox already verified this entire spec. Select only its actual model,
-  // endpointless runtime files, and revision-private Git provider, in their emitted order.
+  // The paired Sandbox verifies the workload and current source policy. Attachment order
+  // can change during replacement; require the exact three independently selected Providers.
   const providers = sandbox.spec?.providers;
-  if (!Array.isArray(providers) || providers.length !== 3) {
+  const expected = [modelProvider, runtimeProvider, o.provider];
+  if (
+    !Array.isArray(providers) ||
+    providers.length !== 3 ||
+    new Set(expected).size !== 3 ||
+    expected.some((name) => !name || !providers.includes(name))
+  ) {
     return;
   }
-  const [modelProviderName, runtimeProvider, gitProvider] = providers;
   if (
-    modelProviderName !== modelProvider ||
-    gitProvider !== o.provider ||
-    typeof runtimeProvider !== "string" ||
-    !/^oce-runtime-[a-f0-9]{16}$/.test(runtimeProvider) ||
     !c ||
     !policy ||
-    !source ||
-    !expectedPolicy(source, policy, gitRule, modelProvider, runtimeProvider) ||
+    !expectedPolicy(sourcePolicy, policy, gitRule, modelProvider, runtimeProvider) ||
     c.version !== admission.policy_version ||
     c.workspace !== o.workspace ||
     c.configuration_instance_id !== admission.instance_id ||
@@ -189,13 +195,13 @@ export async function previewPolicyAndRecipient({
   ) {
     return;
   }
-  const pods = await workload(sandbox.id, signal);
-  if (!pods) {
+  const executionIdentity = await execution(sandbox, signal);
+  if (!executionIdentity) {
     return;
   }
   // Omit only the three fields necessarily changed by installing the token. Everything else,
   // including process, network, supervisor session, loaded effective policy, configuration
-  // instance, actual Pod UIDs/container IDs, and admitted extension registration, must stay.
+  // instance, OpenShell execution ownership, and admitted extension registration, must stay.
   const {
     providerEnvRevision: _env,
     providerResourceVersion: _version,
@@ -211,7 +217,7 @@ export async function previewPolicyAndRecipient({
         admission.instance_id,
         wirePolicy(policy),
         wirePolicy(service),
-        pods,
+        executionIdentity,
       ]),
     )
     .digest("hex");

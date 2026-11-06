@@ -898,6 +898,8 @@ export const DELETED_NAMESPACE_NAME_CONFLICT =
  * A revision admits one installed egress execution (UNIQUE (namespace_id, revision_id)); a
  * second Sandbox for the same revision is refused alike by the memory and PostgreSQL stores.
  */
+export const EGRESS_SANDBOX_INSTALLED_CONFLICT =
+  "Sandbox already has a current egress installation.";
 export const EGRESS_REVISION_INSTALLED_CONFLICT =
   "Egress revision already has an installed execution.";
 

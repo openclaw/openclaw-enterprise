@@ -193,7 +193,9 @@ test(
     };
     assert.equal(observed.sandboxId, sandboxId);
     const workload = "original-workload-uid";
-    const continuity = { model, workload: async () => workload };
+    const continuity = { model, runtime: "runtime-files",
+      policy: async (box: import("../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts").OpenShellSandboxResponse) => box.spec?.policy as Record<string, unknown>,
+      execution: async () => workload };
     const box = await client.getSandbox({ workspace, name: sandbox }, t.signal);
     assert.ok(box);
     const hash = await witnessOpenShellGitLaunch(client, continuity, box, observed, t.signal, {

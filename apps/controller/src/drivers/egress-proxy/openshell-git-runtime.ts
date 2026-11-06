@@ -603,7 +603,11 @@ export class OpenShellGitRuntime {
     workspaceRoot: string,
     otherProviders: readonly string[] = [],
     otherHosts: readonly string[] = [],
+    retainedSandbox?: (sandbox: OpenShellSandboxResponse) => Promise<void>,
   ) {
+    if (retainedSandbox && !this.routes) {
+      throw new Error("Retained Git replacement requires a durable route store.");
+    }
     if (
       !workspaceRoot.startsWith("/sandbox/") ||
       workspaceRoot.endsWith("/") ||
@@ -670,7 +674,9 @@ export class OpenShellGitRuntime {
           () => client.getSandbox({ workspace, name: sandbox }, signal),
           signal,
         );
-        if (current) {
+        if (current && retainedSandbox) {
+          await retainedSandbox(current);
+        } else if (current) {
           // The rejected bootstrap is retained below, so this logs once per revision while
           // every later pass (maintenance included) rethrows the same failure. The Sandbox
           // predates the route store (or its route was removed): nothing says which
@@ -963,7 +969,7 @@ export class OpenShellGitRuntime {
 
   async bind(
     revisionId: string,
-    verify: (sandbox: OpenShellSandboxResponse) => void,
+    verify: (sandbox: OpenShellSandboxResponse, signal: AbortSignal) => void | Promise<void>,
     continuity?: OpenShellGitContinuity,
   ): Promise<void> {
     const entry = await this.entries.get(revisionId);
@@ -1138,7 +1144,9 @@ export class OpenShellGitRuntime {
       audience: this.configuration.authority.audience,
       gitRule: entry.provider.previewNetworkRule(),
       modelProvider: entry.continuity.model,
-      workload: entry.continuity.workload,
+      runtimeProvider: entry.continuity.runtime,
+      sourcePolicy: await read(() => entry.continuity!.policy(box, context.signal), context.signal),
+      execution: entry.continuity.execution,
       signal: context.signal,
     });
     if (!recipient || entry.preview.recipient !== recipient) {
@@ -1295,6 +1303,27 @@ export class OpenShellGitRuntime {
     this.recordWithdrawal({ revisionId });
   }
 
+  /** Retained Sandbox cleanup must persist closure before it can prepare a successor. */
+  async withdrawConfirmed(revisionId: string): Promise<void> {
+    const entry = await this.entries.get(revisionId)?.catch(() => undefined);
+    if (entry) {
+      entry.blocked ??= "withdrawn";
+      entry.installed = undefined;
+    } else {
+      this.states.set(revisionId, { blocked: "withdrawn" });
+    }
+    if (!this.routes) {
+      throw new Error("Retained Git replacement requires a durable route store.");
+    }
+    await this.routes.withdraw({ revisionId });
+  }
+
+  /** Called after confirmed withdrawal and removal of the revision's Provider attachments. */
+  releaseWithdrawn(revisionId: string): void {
+    this.entries.delete(revisionId);
+    this.states.set(revisionId, { blocked: "withdrawn" });
+  }
+
   withdrawNamespace(namespaceId: string): void {
     for (const pending of this.entries.values()) {
       void pending.then(
@@ -1308,6 +1337,17 @@ export class OpenShellGitRuntime {
       );
     }
     this.recordWithdrawal({ namespaceId });
+  }
+
+  async withdrawNamespaceConfirmed(namespaceId: string): Promise<void> {
+    for (const pending of this.entries.values()) {
+      const entry = await pending.catch(() => undefined);
+      if (entry?.revision.namespaceId === namespaceId) {
+        entry.blocked ??= "withdrawn";
+        entry.installed = undefined;
+      }
+    }
+    await this.routes?.withdraw({ namespaceId });
   }
 
   /** The store's tombstone keeps any other worker from adopting the routes; this process's

@@ -74,7 +74,6 @@ import {
   KubernetesObjectApi,
   type KubernetesObject,
   type V1Deployment,
-  type V1Pod,
   type V1NetworkPolicySpec,
   PatchStrategy,
 } from "@kubernetes/client-node";
@@ -2889,7 +2888,7 @@ export function runtimeProviderSetupUpdate(
   });
 }
 
-function verifyExistingSandbox(
+export function verifyExistingSandbox(
   existing: OpenShellSandboxResponse,
   request: OpenShellSandboxCreateRequest,
 ): void {
@@ -2954,7 +2953,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   protected readonly options: OpenShellSandboxDriverOptions;
   private readonly backend: Backend<OpenShellGateway>;
   private readonly operatorOwnedKubernetesResources: boolean;
-  private readonly openShellGit: OpenShellGitRuntime | undefined;
+  protected readonly openShellGit: OpenShellGitRuntime | undefined;
   readonly repositoryAccess?: NonNullable<SandboxDriver["repositoryAccess"]>;
 
   static validateConfiguration(
@@ -3348,6 +3347,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             this.options.policy.networkPolicies.flatMap((policy) =>
               policy.endpoints.map((endpoint) => endpoint.host),
             ),
+            this.retainedGitSandbox(context),
           );
     if (git && context.requirements.proxyWiring && !context.revision.egressPlan?.repositoryGit) {
       throw new OpenShellSandboxConfigurationFailure(
@@ -3399,6 +3399,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       "openclaw.dev/namespace-id": context.revision.namespaceId,
       "openclaw.dev/agent-id": context.revision.agentId,
       "openclaw.dev/revision-id": context.revision.id,
+      ...this.gitScopeAnnotations(context.revision),
     };
     const selector = { name: sandbox.resourceName, workspace };
     const create = {
@@ -3453,7 +3454,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "Workspace enrollment policy differs from its Agent-owned binding.",
       );
     }
-    const requestIds = createRequestIds(context.revision.id);
     if (git) {
       create.spec.providers.push(git.provider);
       Object.assign(
@@ -3483,7 +3483,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         );
       await this.openShellGit!.bind(
         context.revision.id,
-        (observed) => verifyExistingSandbox(observed, { ...create, requestId: requestIds[0]! }),
+        (observed, signal) => this.verifyGitSandbox(client, observed, create, signal),
         originalModel ? continuity : undefined,
       );
     }
@@ -3564,6 +3564,25 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     mounts: readonly { readonly mount_path: string; readonly read_only: boolean }[],
   ) {
     return filesystemPolicy(this.options, { mount_path: workspacePath, read_only: false }, mounts);
+  }
+
+  protected gitScopeAnnotations(_revision: Readonly<AgentRevision>): Record<string, string> {
+    return {};
+  }
+
+  protected retainedGitSandbox(
+    _context: SandboxHarnessContext,
+  ): ((sandbox: OpenShellSandboxResponse) => Promise<void>) | undefined {
+    return undefined;
+  }
+
+  protected async verifyGitSandbox(
+    _client: OpenShellGatewayClient,
+    observed: OpenShellSandboxResponse,
+    create: Omit<OpenShellSandboxCreateRequest, "requestId">,
+    _signal: AbortSignal,
+  ): Promise<void> {
+    verifyExistingSandbox(observed, { ...create, requestId: "observation" });
   }
 
   protected async reconcileHarness(
@@ -3751,8 +3770,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     return sandbox;
   }
 
-  /** OpenShell labels the supervisor and workload Pods as one boundary pair. Keep both
-   * exact Pod UIDs, container IDs and restart counts, not just the aggregate Ready status. */
+  protected gitRuntimeProviderName(revision: Readonly<AgentRevision>): string {
+    return runtimeProviderName(revision.id);
+  }
+
+  /** OpenShell owns execution identity. Provider receipts separately verify the current
+   * authenticated supervisor and workload boundary; OCE never inspects their Pods. */
   private gitContinuity(context: SandboxNamespaceContext & { revision: Readonly<AgentRevision> }) {
     const { revision } = context;
     const auth = revision.harnessAuth;
@@ -3769,71 +3792,59 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     ) {
       return;
     }
-    const namespace = namespaceName(context.namespace);
+    const client = this.gatewayClientForNamespace(context.namespace.name);
+    const ref = this.sandboxRef(context);
+    const workspace = workspaceName(context.namespace);
     return {
       model: retained,
-      workload: async (sandboxId: string, signal: AbortSignal) => {
-        if (!sandboxId || !KUBERNETES_LABEL_VALUE.test(sandboxId)) {
-          return;
-        }
-        const key = "openshell.ai/boundary-pair";
-        const pair = sandboxId.toLowerCase();
-        const { items, metadata } = await kubernetes(context).list<V1Pod>(
-          "v1",
-          "Pod",
-          namespace,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          labelSelector({ [key]: pair }),
-        );
+      runtime: this.gitRuntimeProviderName(revision),
+      policy: (sandbox: OpenShellSandboxResponse, signal: AbortSignal) =>
+        this.networkPolicyBaseline(
+          client,
+          { workspace, sandbox: ref.resourceName },
+          sandbox,
+          signal,
+        ),
+      execution: async (expected: OpenShellSandboxResponse, signal: AbortSignal) => {
+        const box = await client.getSandbox({ workspace, name: ref.resourceName }, signal);
         signal.throwIfAborted();
-        if (items.length !== 2 || metadata?._continue || metadata?.remainingItemCount) {
+        if (
+          !expected.id ||
+          box?.id !== expected.id ||
+          box.name !== ref.resourceName ||
+          box.workspace !== workspace ||
+          box.annotations["openclaw.dev/namespace-id"] !== context.namespace.id ||
+          box.annotations["openclaw.dev/agent-id"] !== revision.agentId ||
+          box.annotations["openclaw.dev/revision-id"] !== revision.id ||
+          ![2, "SANDBOX_PHASE_READY"].includes(box.phase as string | number) ||
+          (box.restartCount ?? 0) !== 0 ||
+          ![1, "SANDBOX_RESTART_POLICY_NEVER"].includes(
+            box.spec?.restart_policy as string | number,
+          ) ||
+          !box.mainProcessInstanceId ||
+          box.mainProcessInstanceId !== expected.mainProcessInstanceId ||
+          !box.mainProcessStartedAt ||
+          !Number.isFinite(Date.parse(box.mainProcessStartedAt)) ||
+          box.mainProcessStartedAt !== expected.mainProcessStartedAt
+        ) {
           return;
         }
-        const identities = [];
-        for (const role of ["supervisor", "workload"]) {
-          const pod = items.find(
-            (p) => p.metadata?.labels?.[OPENSHELL_BOUNDARY_ROLE_LABEL] === role,
-          );
-          const m = pod?.metadata;
-          const labels = m?.labels;
-          const cs = pod?.status?.containerStatuses;
-          if (
-            !pod ||
-            !m?.uid ||
-            !m.name ||
-            m.namespace !== namespace ||
-            m.deletionTimestamp ||
-            labels?.[key] !== pair ||
-            pod.status?.phase !== "Running" ||
-            !pod.status.conditions?.some((c) => c.type === "Ready" && c.status === "True") ||
-            !(role === "supervisor"
-              ? labels[OPENSHELL_SANDBOX_ID_LABEL] === sandboxId
-              : labels["openclaw.dev/revision"] === revision.id &&
-                labels["openclaw.dev/agent"] === revision.agentId) ||
-            !cs?.length ||
-            cs.some(
-              (c) =>
-                !c.name || !c.ready || c.restartCount !== 0 || !c.state?.running || !c.containerID,
-            )
-          ) {
-            return;
-          }
-          identities.push([
-            role,
-            m.name,
-            m.uid,
-            cs.map((c) => [c.name, c.containerID, c.restartCount]),
-          ]);
-        }
-        return JSON.stringify([namespace, revision.id, identities]);
+        // Reconnects retain these identities; replacements cannot inherit the prior proof.
+        // Session and process identities from Provider readiness are checked by the Git owner.
+        return JSON.stringify([
+          workspace,
+          box.id,
+          context.namespace.id,
+          revision.agentId,
+          revision.id,
+          box.mainProcessInstanceId,
+          box.mainProcessStartedAt,
+        ]);
       },
     };
   }
 
-  /** The existing launch and Pod identities for a read-only standing execution check. */
+  /** The existing OpenShell execution identity for a read-only standing execution check. */
   standingGitExecution(context: SandboxNamespaceContext & { revision: Readonly<AgentRevision> }) {
     this.requireOperatorWorkspaceMode("observe standing repository execution");
     const continuity = this.gitContinuity(context);

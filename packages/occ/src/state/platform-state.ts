@@ -101,6 +101,7 @@ import {
   DELETED_NAMESPACE_NAME_CONFLICT,
   DependencyUnavailableError,
   EGRESS_REVISION_INSTALLED_CONFLICT,
+  EGRESS_SANDBOX_INSTALLED_CONFLICT,
   IAMPolicyValidationError,
   IAMRoleInUseError,
   NAMESPACE_NAME_CONFLICT,
@@ -566,6 +567,7 @@ export type CredentialSourceBlockingReference = "reference" | "withdrawal_work";
 export interface CredentialSourceRepository extends CredentialSourceReadRepository {
   rejectEgressMaterial(evidence: EgressMaterialEvidence): Promise<void>;
   recordEgressInstallation(installation: EgressInstallation): Promise<void>;
+  retireEgressInstallation(namespaceId: string, revisionId: string): Promise<void>;
   saveCredentialPolicyReduction(
     namespaceId: string,
     revisionId: string,
@@ -1268,6 +1270,7 @@ interface PlatformSnapshot {
   readonly credentialPolicyReductions: Map<string, CredentialPolicyReductionState>;
   readonly credentialWithdrawals: Map<string, Readonly<StoredCredentialWithdrawal>>;
   readonly egressInstallations: Map<string, Readonly<EgressInstallation>>;
+  readonly retiredEgressInstallations: Set<string>;
   readonly egressRejected: Set<string>;
   readonly serviceAccounts: Map<string, Readonly<ServiceAccount>>;
   readonly agents: Map<string, Readonly<Agent>>;
@@ -1394,6 +1397,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, storedCopy(secret)])),
     egressRejected: new Set(snapshot.egressRejected),
     egressSendReceipts: new Map(snapshot.egressSendReceipts),
+    retiredEgressInstallations: new Set(snapshot.retiredEgressInstallations),
     egressInstallations: new Map(
       Array.from(snapshot.egressInstallations, ([key, value]) => [key, storedCopy(value)]),
     ),
@@ -2760,7 +2764,17 @@ function repositories(
       snapshot.egressRejected.add(materialKey(evidence));
     },
     findEgressInstallation: async (senderId, sandboxId) => {
-      const found = snapshot.egressInstallations.get(JSON.stringify([senderId, sandboxId]));
+      const found = [...snapshot.egressInstallations.values()].find(
+        (installation) =>
+          installation.sender.id === senderId &&
+          installation.sandboxId === sandboxId &&
+          !snapshot.retiredEgressInstallations.has(
+            agentKey(
+              installation.plan.execution.namespaceId,
+              installation.plan.execution.revisionId,
+            ),
+          ),
+      );
       return found === undefined ||
         !(
           snapshot.revisions.get(
@@ -2793,13 +2807,20 @@ function repositories(
       if (!revision || !isDeepStrictEqual(revision.egressPlan, installation.plan)) {
         throw new ScopeViolationError("Egress installation does not match an admitted revision.");
       }
-      const key = JSON.stringify([installation.sender.id, installation.sandboxId]);
+      const key = agentKey(execution.namespaceId, execution.revisionId);
       const prior = snapshot.egressInstallations.get(key);
       if (
         prior !== undefined &&
-        (!isDeepStrictEqual(prior.plan, installation.plan) ||
-          !isDeepStrictEqual(prior.sender, installation.sender) ||
-          !isDeepStrictEqual(prior.enforcement, installation.enforcement))
+        (prior.sender.id !== installation.sender.id || prior.sandboxId !== installation.sandboxId)
+      ) {
+        throw new ResourceStateConflictError(EGRESS_REVISION_INSTALLED_CONFLICT);
+      }
+      if (
+        snapshot.retiredEgressInstallations.has(key) ||
+        (prior !== undefined &&
+          (!isDeepStrictEqual(prior.plan, installation.plan) ||
+            !isDeepStrictEqual(prior.sender, installation.sender) ||
+            !isDeepStrictEqual(prior.enforcement, installation.enforcement)))
       ) {
         throw new ResourceStateConflictError("Egress execution identity is already bound.");
       }
@@ -2807,13 +2828,20 @@ function repositories(
         Array.from(snapshot.egressInstallations.entries()).some(
           ([otherKey, other]) =>
             otherKey !== key &&
-            other.plan.execution.namespaceId === execution.namespaceId &&
-            other.plan.execution.revisionId === execution.revisionId,
+            !snapshot.retiredEgressInstallations.has(otherKey) &&
+            other.sender.id === installation.sender.id &&
+            other.sandboxId === installation.sandboxId,
         )
       ) {
-        throw new ResourceStateConflictError(EGRESS_REVISION_INSTALLED_CONFLICT);
+        throw new ResourceStateConflictError(EGRESS_SANDBOX_INSTALLED_CONFLICT);
       }
       snapshot.egressInstallations.set(key, prior ?? immutableCopy(installation));
+    },
+    retireEgressInstallation: async (namespaceId, revisionId) => {
+      const key = agentKey(namespaceId, revisionId);
+      if (snapshot.egressInstallations.has(key)) {
+        snapshot.retiredEgressInstallations.add(key);
+      }
     },
     admitEgressSource: async (namespaceId, sourceId, expectedGeneration, egress) => {
       const current = await findCredentialSource(namespaceId, sourceId);
@@ -4540,6 +4568,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     credentialPolicyReductions: new Map(),
     credentialWithdrawals: new Map(),
     egressInstallations: new Map(),
+    retiredEgressInstallations: new Set(),
     egressRejected: new Set(),
     egressSendReceipts: new Map(),
     serviceAccounts: new Map(),

@@ -2167,6 +2167,7 @@ export class ControllerWorker {
       await this.closeRevisionCredentials(claim, previous);
       if (drain === "wait") {
         await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(previous));
+        await this.retireEgressInstallation(previous);
       } else {
         try {
           await this.stopYieldingDrain(claim, previous);
@@ -2339,6 +2340,7 @@ export class ControllerWorker {
             }
           } else {
             await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
+            await this.retireEgressInstallation(revision);
             stoppedRevision = revision;
           }
         }
@@ -2948,12 +2950,29 @@ export class ControllerWorker {
    * yielding. Stops that yielded during their own drain do not count as due Work (see
    * withClaimHeartbeat; finding 1093).
    */
-  private stopYieldingDrain(claim: ClaimedWork, revision: Readonly<AgentRevision>): Promise<void> {
-    return this.withClaimHeartbeat(claim, () =>
+  private async stopYieldingDrain(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): Promise<void> {
+    await this.withClaimHeartbeat(claim, () =>
       stopWithDrainYield(this.workAgeMs(claim), this.convergenceTimeoutMs, () =>
         this.compute.stopRevision(revision),
       ),
     );
+    await this.retireEgressInstallation(revision);
+  }
+
+  private async retireEgressInstallation(revision: Readonly<AgentRevision>): Promise<void> {
+    if (revision.egressPlan === undefined) {
+      return;
+    }
+    // Only confirmed runtime retirement releases this Sandbox's current enrollment.
+    // Keep the revision's receipt for policy reduction and cleanup evidence.
+    await this.state.transact(async (state) => {
+      await state.namespaces.lockNamespace(revision.namespaceId);
+      await state.agents.lockAgent(revision.namespaceId, revision.agentId);
+      await state.credentialSources.retireEgressInstallation(revision.namespaceId, revision.id);
+    });
   }
 
   /** When work whose stop yielded to other Work runs again: 1 s, growing with its age to 5 s. */
@@ -3120,6 +3139,7 @@ export class ControllerWorker {
       for (const revision of revisions) {
         await this.closeRevisionCredentials(claim, revision, { awaitCleanup: false });
         await this.withClaimHeartbeat(claim, () => this.compute.retireRevision(revision));
+        await this.retireEgressInstallation(revision);
       }
       if (this.compute.deleteAgentRuntimeCredentials !== undefined) {
         await this.withClaimHeartbeat(claim, () =>
@@ -5848,15 +5868,32 @@ export class ControllerWorker {
           ? {}
           : {
               recordEgressInstallation: async (installation) => {
-                await this.state.transact(async (state) => {
-                  await state.agents.lockAgent(revision.namespaceId, revision.agentId);
+                await this.state.transactWithQueue(async (state, queue) => {
+                  const namespace = await state.namespaces.lockNamespace(revision.namespaceId);
+                  const agent = await state.agents.lockAgent(
+                    revision.namespaceId,
+                    revision.agentId,
+                  );
+                  if (
+                    namespace?.status !== "ready" ||
+                    agent?.status !== "active" ||
+                    agent.desiredRuntimeState !== "running" ||
+                    agent.servicePrincipalId !== revision.servicePrincipalId
+                  ) {
+                    throw new Error("The protected execution is no longer current.");
+                  }
                   const current = await state.credentialSources.findRevisionEgressInstallation(
                     revision.namespaceId,
                     revision.id,
                   );
-                  // Re-observing the same installation may advance its timestamp, not its authority.
+                  const active = await state.credentialSources.findEgressInstallation(
+                    installation.sender.id,
+                    installation.sandboxId,
+                  );
+                  // Re-observing a current receipt cannot reactivate a retired execution.
                   if (
                     current &&
+                    isDeepStrictEqual(active, current) &&
                     isDeepStrictEqual(current, {
                       ...installation,
                       installedAt: current.installedAt,
@@ -5864,7 +5901,19 @@ export class ControllerWorker {
                   ) {
                     return;
                   }
+                  const newest = (
+                    await state.revisions.listRevisionMetadata(
+                      revision.namespaceId,
+                      revision.agentId,
+                    )
+                  ).at(-1);
+                  const deployment = await queue.findWork(
+                    `agent_revision:${revision.id}:reconcile`,
+                  );
                   if (
+                    newest?.id !== revision.id ||
+                    deployment === undefined ||
+                    deployment.state === "failed_permanent" ||
                     current ||
                     !isDeepStrictEqual(installation.plan, revision.egressPlan) ||
                     (
@@ -5937,7 +5986,18 @@ export class ControllerWorker {
                       "Credential policy reduction is not observed.",
                     );
                   }
-                  return view.credentialSources.findRevisionEgressInstallation(namespaceId, id);
+                  const receipt = await view.credentialSources.findRevisionEgressInstallation(
+                    namespaceId,
+                    id,
+                  );
+                  if (receipt === undefined) {
+                    return undefined;
+                  }
+                  const active = await view.credentialSources.findEgressInstallation(
+                    receipt.sender.id,
+                    receipt.sandboxId,
+                  );
+                  return isDeepStrictEqual(active, receipt) ? receipt : undefined;
                 }),
             }),
         secretEnvironment: Object.freeze(resolved),
@@ -6669,6 +6729,7 @@ export class ControllerWorker {
       await this.withClaimHeartbeat(claim, () =>
         withYieldingComputeStop(() => compute.stopRevision(revision)),
       );
+      await this.retireEgressInstallation(revision);
     } catch (error) {
       if (error instanceof WorkClaimLostError) {
         // A graceful shutdown aborts a slow stop (a Pod-termination wait) like a lost claim.
@@ -6912,6 +6973,7 @@ export class ControllerWorker {
     for (const previous of earlier) {
       await this.closeRevisionCredentials(claim, previous);
       await this.withClaimHeartbeat(claim, () => this.compute.retireRevision(previous));
+      await this.retireEgressInstallation(previous);
     }
   }
 

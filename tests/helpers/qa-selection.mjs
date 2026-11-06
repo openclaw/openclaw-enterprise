@@ -6,6 +6,7 @@ const scenarioPresets = {
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
   "openshell-provider-replacement": ["Codex"],
+  "openshell-git-replacement": ["Codex"],
   "model-ui": ["OpenClaw"],
   "codex-search-config": ["Codex"],
   "harness-overrides": ["OpenClaw", "Codex"],
@@ -36,6 +37,7 @@ export function selectQaMatrix(env = process.env) {
               "plugin-install",
               "openshell-linear-read",
               "openshell-provider-replacement",
+              "openshell-git-replacement",
               "codex-search-config",
               "harness-overrides",
               "oidc-agent-chat",
@@ -79,6 +81,7 @@ export function selectQaMatrix(env = process.env) {
             "harness-overrides",
             "oidc-agent-chat",
             "openshell-provider-replacement",
+            "openshell-git-replacement",
           ].includes(scenario) && scenarioPresets[scenario].includes(name),
       ),
       unselected: allScenarios.filter(
@@ -90,6 +93,7 @@ export function selectQaMatrix(env = process.env) {
             "harness-overrides",
             "oidc-agent-chat",
             "openshell-provider-replacement",
+            "openshell-git-replacement",
           ].includes(scenario) &&
           scenarioPresets[scenario].includes(name) &&
           !scenarios.includes(scenario),
@@ -103,6 +107,7 @@ export function selectQaMatrix(env = process.env) {
             "harness-overrides",
             "oidc-agent-chat",
             "openshell-provider-replacement",
+            "openshell-git-replacement",
           ].includes(scenario) && !scenarioPresets[scenario].includes(name),
       ),
     })),
@@ -163,8 +168,9 @@ export function selectQaMatrix(env = process.env) {
   const sandboxPolicy = scenarios.includes("sandbox-policy");
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");
+  const gitReplacement = scenarios.includes("openshell-git-replacement");
   const providerReplacement = scenarios.includes("openshell-provider-replacement");
-  if (providerReplacement) {
+  if (providerReplacement || gitReplacement) {
     assert.notEqual(installation, "compose", "Provider replacement requires Kubernetes setup");
     requiredEnv.push(
       "OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE",
@@ -245,6 +251,7 @@ export function selectQaMatrix(env = process.env) {
     harnessOverrides,
     presets,
     providerReplacement,
+    gitReplacement,
     cells,
     scenarios,
     requiredEnv,
@@ -254,7 +261,7 @@ export function selectQaMatrix(env = process.env) {
       exclusions.length === 0 &&
       installation === "all" &&
       preset === "all" &&
-      scenarios.length === allScenarios.length - 6
+      scenarios.length === allScenarios.length - 7
         ? "full"
         : "partial:selected",
   };

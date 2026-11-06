@@ -246,6 +246,9 @@ export async function staticEgressFixture(
     workspaceVisible: true,
     policyStatusRequests: 0,
     policyStatusUnavailable: false,
+    policyVersion: 1,
+    activePolicyVersion: 1,
+    policyStatus: 2,
   };
   // OpenShell reports negotiated capabilities in lexical order, including the base contract.
   const gatewayCapabilities = ["openshell.supervisor-middleware.contract", ...capabilities].sort();
@@ -339,8 +342,8 @@ export async function staticEgressFixture(
       }
       callback(null, {
         revision: {
-          version: 1,
-          status: 2,
+          version: observed.policyVersion,
+          status: observed.policyStatus,
           policy: observed.policy,
           policy_hash: observed.policyHash,
         },
@@ -349,7 +352,7 @@ export async function staticEgressFixture(
         loaded_policy_observation: observed.observation
           ? { ...observed.observation, enforcement: observed.evidence }
           : undefined,
-        active_version: 1,
+        active_version: observed.activePolicyVersion,
       });
     },
     DeleteSandbox(call, callback) {

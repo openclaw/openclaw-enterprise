@@ -671,7 +671,9 @@ async function repositoryGitJourney(
   };
   const continuity = {
     model: "openai",
-    workload: async () => "controlled-pod-uid/container-id",
+    runtime: state.runtimeProvider,
+    policy: async () => ({ ...state.policy }),
+    execution: async () => "controlled-openshell-execution",
   };
   let preparationError: unknown;
   // Only the Kubernetes transport is controlled. The production Sandbox reader owns

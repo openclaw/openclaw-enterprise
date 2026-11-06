@@ -338,6 +338,12 @@ test(
     );
     // Consume the same independently verified adapter observation that Compute
     // commits. State is real; this test does not manufacture an installation receipt.
+    // A retained Sandbox advances its policy version across Agent revisions,
+    // while the newly admitted OCE plan starts at generation 1.
+    assert.equal(f.context.plan.generation, 1);
+    f.observed.policyVersion = 4;
+    f.observed.activePolicyVersion = 4;
+    f.observed.evidence.policy_version = 4;
     const installed = await f.egress.wiringStatus({ ...f.context, signal }, f.attachment);
     assert.ok(installed);
     await f.controller.transact((unit) =>

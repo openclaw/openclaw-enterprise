@@ -53,6 +53,7 @@ const legacyRegistrationBytes = Buffer.from(
 async function observedGitRoute(
   mandatoryPolicy,
   {
+    managed = false,
     legacy = false,
     removeBinding = false,
     changedStartup = false,
@@ -137,10 +138,16 @@ async function observedGitRoute(
   );
   f.entry.preview = preview;
   f.store.rows.get(revision.id).workerInstance = f.runtime.instance;
-  f.entry.continuity = { model: "openai", workload: async () => "original-pods" };
   f.entry.binding.provider = "oce-github-installation-" + "a".repeat(32);
   f.entry.binding.executionId = revision.id;
-  const runtimeProvider = "oce-runtime-" + "a".repeat(16);
+  const runtimeProvider = "oce-runtime-" + "a".repeat(managed ? 24 : 16);
+  const sourcePolicy = { network_policies: {} };
+  f.entry.continuity = {
+    model: "openai",
+    runtime: runtimeProvider,
+    policy: async () => sourcePolicy,
+    execution: async () => "original-execution",
+  };
   const gitRule = new OpenShellPreparedGitProvider(f.client, {
     ...f.entry.authorization.delivery,
     workspace: f.sandbox.workspace,
@@ -174,8 +181,12 @@ async function observedGitRoute(
   };
   f.sandbox.mainProcessStartedAt = new Date().toISOString();
   f.sandbox.mainProcessInstanceId = f.supervisor.networkInstanceId;
-  f.sandbox.spec.policy = { network_policies: {} };
-  f.sandbox.spec.providers = ["openai", runtimeProvider, f.entry.binding.provider];
+  // Managed replacements keep creation-time policy in GetSandbox. The Driver supplies
+  // the current policy, and reattachment need not preserve Provider ordering.
+  f.sandbox.spec.policy = managed ? { retired_policy: true } : sourcePolicy;
+  f.sandbox.spec.providers = managed
+    ? [f.entry.binding.provider, "openai", runtimeProvider]
+    : ["openai", runtimeProvider, f.entry.binding.provider];
   f.sandbox.spec.provider_attachment_epoch = f.supervisor.attachmentEpoch;
   const admission = () => ({
     state: 2,
@@ -278,6 +289,24 @@ async function observedGitRoute(
     }
     f.client.getSandboxConfig = config;
   }
+  // A different runtime Provider with the same naming format is not this execution's Provider.
+  const providers = [...f.sandbox.spec.providers];
+  const otherRuntime = runtimeProvider.replaceAll("a", "b");
+  f.sandbox.spec.providers = providers.map((p) => (p === runtimeProvider ? otherRuntime : p));
+  const config = f.client.getSandboxConfig;
+  f.client.getSandboxConfig = async () => {
+    const value = await config();
+    const rules = value.policy.network_policies;
+    delete rules["_provider_" + runtimeProvider.replaceAll("-", "_")];
+    const name = "_provider_" + otherRuntime.replaceAll("-", "_");
+    rules[name] = { name };
+    return value;
+  };
+  await f.reconcile();
+  assert.equal(preview.recipient, undefined);
+  assert.equal(f.calls.material, 0);
+  f.sandbox.spec.providers = providers;
+  f.client.getSandboxConfig = config;
   await f.reconcile();
   assert.equal(f.calls.rotate, 0, "ACCEPTED and effective config cannot release material");
   assert.equal(preview.hook, undefined);
@@ -1165,4 +1194,8 @@ test("cold held-launch verification requires typed redeployment before supplier 
       }
     },
   });
+});
+
+test("managed Git startup uses exact Providers and current policy after replacement", async () => {
+  await observedGitRoute(2, { narrowRepository: "allowed", managed: true });
 });

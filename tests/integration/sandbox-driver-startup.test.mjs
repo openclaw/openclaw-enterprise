@@ -44,7 +44,7 @@ import {
   nodeProgramArguments,
   withoutLineComments,
 } from "../../apps/controller/src/drivers/compute/node-program.ts";
-import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { OpenShellSandboxDriver, workspaceLabels } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   assertNoManagedMcpRouteOverlap,
   managedMcpNetwork,
@@ -526,6 +526,70 @@ function codexRequirements(revision, environment = []) {
     ],
     labels: { "openclaw.dev/revision": revision.id },
   };
+}
+
+// Exercise the Driver's production observation callback with SDK-decoded Kubernetes resources.
+// Only Kubernetes/OpenShell transport is controlled; this does not prove live RBAC or startup.
+async function assertGitExecutionContinuity(driver, context, box, managed) {
+  const { createConfiguration, ServerConfiguration } = controllerRequire("@kubernetes/client-node");
+  const api = new KubernetesObjectApi(
+    createConfiguration({ baseServer: new ServerConfiguration("http://127.0.0.1:9", {}) }),
+  );
+  // Git verification must work without Kubernetes access to OpenShell-owned resources.
+  // The real SDK transport rejects every request; only the OpenShell API is available.
+  api.requestPromise = async () => assert.fail("Git continuity must not read Kubernetes resources");
+  const observation = driver.standingGitExecution({ ...context, kubernetes: api });
+  const read = (expected = structuredClone(box)) =>
+    observation.continuity.execution(expected, context.signal);
+  const original = await read();
+  assert.ok(original, "OpenShell execution identity must qualify without Pod access");
+  assert.ok(box.spec.providers.includes(observation.continuity.runtime));
+  assert.match(
+    observation.continuity.runtime,
+    managed ? /^oce-runtime-[a-f0-9]{24}$/ : /^oce-runtime-[a-f0-9]{16}$/,
+  );
+  // A retained Sandbox UUID cannot authorize the predecessor revision or another Agent.
+  for (const key of [
+    "openclaw.dev/revision-id",
+    "openclaw.dev/agent-id",
+    "openclaw.dev/namespace-id",
+  ]) {
+    const expected = box.annotations[key];
+    box.annotations[key] = "other-owner";
+    assert.equal(await read(), undefined, key);
+    box.annotations[key] = expected;
+  }
+  for (const [key, values] of [
+    ["id", [undefined, "replacement-sandbox"]],
+    ["name", ["another-sandbox"]],
+    ["workspace", ["another-workspace"]],
+    ["phase", ["SANDBOX_PHASE_STOPPED", "SANDBOX_PHASE_PROVISIONING"]],
+    ["restartCount", [1]],
+    ["mainProcessInstanceId", [undefined]],
+    ["mainProcessStartedAt", [undefined, "invalid"]],
+  ]) {
+    const originalBox = structuredClone(box);
+    for (const value of values) {
+      box[key] = value;
+      assert.equal(await read(originalBox), undefined, key);
+    }
+    box[key] = originalBox[key];
+  }
+  for (const [key, value] of [
+    ["mainProcessInstanceId", randomUUID()],
+    ["mainProcessStartedAt", new Date(Date.parse(box.mainProcessStartedAt) + 1000).toISOString()],
+  ]) {
+    const previous = structuredClone(box);
+    box[key] = value;
+    assert.equal(await read(previous), undefined, "replacement during observation cannot qualify");
+    assert.notEqual(await read(), original, "a replacement execution changes the startup proof");
+    box[key] = previous[key];
+  }
+  const restartPolicy = box.spec.restart_policy;
+  box.spec.restart_policy = "SANDBOX_RESTART_POLICY_ON_FAILURE";
+  assert.equal(await read(), undefined, "automatic restart must remain disabled");
+  box.spec.restart_policy = restartPolicy;
+  assert.equal(await read(), original);
 }
 
 function runtimeSandboxFixture(
@@ -1086,7 +1150,7 @@ test("managed Harness rendering submits no PVC and keeps the bootstrap outside p
     // A retry with already-correct attachments must still check current policy;
     // membership alone cannot authorize starting the desired workload.
     client.getPolicyStatus = async () => ({ policy: { network_policies: {} } });
-    await assert.rejects(provision(next, sourceB), /static policy or middleware bindings/);
+    await assert.rejects(provision(next, sourceB), /static policy or non-Git middleware bindings/);
     assert.equal(phase, "SANDBOX_PHASE_STOPPED");
     client.getPolicyStatus = async () => ({ policy: structuredClone(policy) });
     await provision(next, sourceB);
@@ -1107,7 +1171,7 @@ test("managed Harness rendering submits no PVC and keeps the bootstrap outside p
     client.getPolicyStatus = async () => ({ policy: { network_policies: {} } });
     await assert.rejects(
       provision("rev_00000000-0000-4000-8000-000000000007", sourceA),
-      /static policy or middleware bindings/,
+      /static policy or non-Git middleware bindings/,
     );
     assert.equal(mutations.length, 2);
     client.getPolicyStatus = async () => ({ policy: structuredClone(policy) });
@@ -1213,7 +1277,10 @@ test("managed network policy replacement survives lost responses and gates activ
   for (const field of ["process", "network_middlewares"]) {
     const saved = structuredClone(policy);
     policy[field] = { changed: true };
-    await assert.rejects(provision(replacement, next), /static policy or middleware bindings/);
+    await assert.rejects(
+      provision(replacement, next),
+      /static policy or non-Git middleware bindings/,
+    );
     policy = saved;
   }
   assert.equal(writes, 0);
@@ -8579,6 +8646,8 @@ test(
         phase: "SANDBOX_PHASE_READY",
         restartCount: 0,
       });
+      sandbox.mainProcessInstanceId = randomUUID();
+      sandbox.mainProcessStartedAt = new Date().toISOString();
       sandboxes.set(request.name, sandbox);
       return sandbox;
     };
@@ -8759,7 +8828,7 @@ test(
     // model source survives Git; the runtime-files provider cannot stand in for that source.
     await t.test(
       "protected Sandbox accepts only the separately admitted model alongside Git",
-      async (subtest) => {
+      async (protectedTest) => {
         const git = protectedGit.sandboxDriver.openShellGit;
         const proxy = protectedGit.proxyDriver;
         const sandbox = protectedGit.sandboxDriver;
@@ -8835,6 +8904,10 @@ test(
         });
         const proxyWiring = await proxy.configureRevision(ctx);
         const required = structuredClone({ ...requirements, proxyWiring });
+        required.labels = {
+          "openclaw.dev/revision": rev.id,
+          "openclaw.dev/agent": rev.agentId,
+        };
         const { harnessEgressEnrollment } =
           await import("../../apps/controller/src/drivers/compute/egress-enrollment.ts");
         required.files[0].content = JSON.stringify({
@@ -8900,6 +8973,12 @@ test(
             }),
             undefined,
           );
+          await assertGitExecutionContinuity(
+            sandbox,
+            ctx,
+            sandboxes.get(result.resourceName),
+            false,
+          );
           const spec = created.spec;
           assert.ok(spec.providers.includes(inferenceProvider));
           assert.equal(spec.providers.filter((p) => p.startsWith("oce-git-")).length, 1);
@@ -8949,6 +9028,259 @@ test(
             },
           );
           assert.deepEqual(result.proxyWiring.plan, plan);
+          await protectedTest.test(
+            "managed Git redeployment retires its old route without deleting the Sandbox",
+            async () => {
+              const config = structuredClone(sandbox.options);
+              config.gateway = { workspaceMode: "managed" };
+              config.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
+              const managed = new ManagedOpenShellSandbox(config, {
+                id: sandbox.id,
+                backend: backendFor(gateway),
+                openShellGit: git,
+                gatewayId: "test-gateway",
+              });
+              const saved = {
+                created,
+                updatePolicy: gateway.updatePolicy,
+                getPolicyStatus: gateway.getPolicyStatus,
+                stopSandbox: gateway.stopSandbox,
+                startSandbox: gateway.startSandbox,
+                updateSandbox: gateway.updateSandbox,
+                detachSandboxProvider: gateway.detachSandboxProvider,
+                attachSandboxProvider: gateway.attachSandboxProvider,
+                deleteProviderProfile: gateway.deleteProviderProfile,
+              };
+              let policy;
+              let version = 1;
+              let name;
+              let lost;
+              const box = () => sandboxes.get(name);
+              const mutate = (operation) => {
+                version++;
+                box().resourceVersion = String(version);
+                if (lost === operation) {
+                  lost = undefined;
+                  throw new Error(`lost ${operation} reply`);
+                }
+              };
+              gateway.getPolicyStatus = async () => ({
+                policy: structuredClone(policy),
+                state: "POLICY_STATUS_LOADED",
+                version: 1,
+                activeVersion: 1,
+              });
+              gateway.updatePolicy = async (request) => {
+                assert.equal(box().phase, "SANDBOX_PHASE_STOPPED");
+                assert.equal(request.expectedResourceVersion, String(version));
+                policy = structuredClone(request.policy);
+                mutate("policy");
+              };
+              gateway.stopSandbox = async () => {
+                box().phase = "SANDBOX_PHASE_STOPPED";
+              };
+              gateway.startSandbox = async () => {
+                box().phase = "SANDBOX_PHASE_READY";
+                box().mainProcessInstanceId = randomUUID();
+                box().mainProcessStartedAt = new Date().toISOString();
+              };
+              gateway.updateSandbox = async (request) => {
+                assert.equal(request.expectedResourceVersion, String(version));
+                const previous = box();
+                sandboxes.set(name, {
+                  ...previous,
+                  labels: request.labels,
+                  annotations: request.annotations,
+                  spec: {
+                    ...request.spec,
+                    policy: previous.spec.policy,
+                    providers: previous.spec.providers,
+                  },
+                });
+                mutate("workload");
+              };
+              for (const operation of ["detach", "attach"]) {
+                gateway[`${operation}SandboxProvider`] = async (
+                  _workspace,
+                  _name,
+                  provider,
+                  _signal,
+                  conditional,
+                ) => {
+                  assert.equal(box().phase, "SANDBOX_PHASE_STOPPED");
+                  assert.equal(conditional.expectedResourceVersion, String(version));
+                  box().spec.providers =
+                    operation === "detach"
+                      ? box().spec.providers.filter((p) => p !== provider)
+                      : [...box().spec.providers, provider];
+                  mutate(operation);
+                };
+              }
+              gateway.deleteProviderProfile = async (...args) => {
+                await saved.deleteProviderProfile(...args);
+                if (lost === "profile") {
+                  lost = undefined;
+                  throw new Error("lost profile reply");
+                }
+              };
+              const deployment = () => {
+                const id = "rev_" + randomUUID();
+                const nextPlan = {
+                  ...plan,
+                  id: randomUUID(),
+                  execution: {
+                    ...plan.execution,
+                    revisionId: id,
+                    executionId: randomUUID().replaceAll("-", ""),
+                  },
+                };
+                const nextRevision = { ...rev, id, egressPlan: nextPlan };
+                const nextContext = { ...ctx, revision: nextRevision, plan: nextPlan };
+                const nextRequirements = structuredClone({
+                  ...required,
+                  workspaceMounts: [],
+                  proxyWiring: qualifiedWiring(nextContext),
+                });
+                nextRequirements.files[0].content = JSON.stringify({
+                  kind: "codex",
+                  selections: {},
+                  providerTools: "none",
+                  egressEnrollment: harnessEgressEnrollment(nextPlan),
+                });
+                return { ...nextContext, requirements: nextRequirements };
+              };
+              const first = deployment();
+              const second = deployment();
+              // The public provision/cleanup path uses the real Git runtime and Provider owner.
+              // Only OpenShell transport is simulated; live credential installation needs the cluster scenario.
+              try {
+                await gateway.createWorkspace(
+                  openShellWorkspaceName(ctx.namespace),
+                  workspaceLabels(ctx.namespace),
+                  ctx.signal,
+                );
+                name = managed.harnessResource(first).resourceName;
+                // The policy read after CreateSandbox observes what that server just stored.
+                gateway.getPolicyStatus = async () => ({
+                  policy: structuredClone(policy ?? box()?.spec.policy),
+                  state: "POLICY_STATUS_LOADED",
+                  version: 1,
+                  activeVersion: 1,
+                });
+                await managed.provisionHarness(first);
+                box().resourceVersion = String(version);
+                await assertGitExecutionContinuity(managed, first, box(), true);
+                const originalId = box().id;
+                const oldProvider = box().spec.providers.find((p) => p.startsWith("oce-git-"));
+                const oldBinding =
+                  box().spec.policy.network_middlewares["oce-prepared-git"].config.fields.binding_id
+                    .stringValue;
+                const creationPolicy = structuredClone(box().spec.policy);
+                policy = structuredClone(creationPolicy);
+                const routes = git.routes;
+                const withdraw = routes.withdraw;
+                routes.withdraw = async () => {
+                  throw new Error("withdrawal unavailable");
+                };
+                try {
+                  await assert.rejects(managed.cleanup(first), /withdrawal unavailable/);
+                  assert.equal(
+                    box().phase,
+                    "SANDBOX_PHASE_READY",
+                    "durable closure must precede stop/reuse",
+                  );
+                } finally {
+                  routes.withdraw = withdraw;
+                }
+                for (const operation of ["policy", "detach", "profile"]) {
+                  lost = operation;
+                  await assert.rejects(
+                    managed.cleanup(first),
+                    new RegExp(`lost ${operation} reply`),
+                  );
+                  assert.equal(box().phase, "SANDBOX_PHASE_STOPPED");
+                }
+                await managed.cleanup(first);
+                assert.equal(git.route(first.revision.id).state, "blocked");
+                assert.equal(gateway.providers.has(oldProvider), false);
+                assert.equal(gateway.profiles.has(oldProvider), false);
+                assert.equal(box().spec.providers.includes(inferenceProvider), true);
+                assert.equal(policy.network_middlewares?.["oce-prepared-git"], undefined);
+                await managed.provisionHarness(second);
+                assert.equal(box().id, originalId);
+                await assertGitExecutionContinuity(managed, second, box(), true);
+                assert.equal(
+                  await managed.standingGitExecution(first).continuity.execution(box(), ctx.signal),
+                  undefined,
+                  "the predecessor cannot observe its successor as the same execution",
+                );
+                assert.deepEqual(
+                  await managed.standingGitExecution(second).continuity.policy(box(), ctx.signal),
+                  policy,
+                  "Git verifies the current source policy, not GetSandbox's creation policy",
+                );
+                assert.equal(box().annotations["openclaw.dev/revision-id"], second.revision.id);
+                assert.deepEqual(
+                  box().spec.policy,
+                  creationPolicy,
+                  "GetSandbox keeps creation-time policy",
+                );
+                assert.notEqual(
+                  policy.network_middlewares["oce-prepared-git"].config.fields.binding_id
+                    .stringValue,
+                  oldBinding,
+                );
+                assert.equal(box().spec.providers.includes(oldProvider), false);
+                assert.equal(
+                  box().spec.providers.filter((p) => p.startsWith("oce-git-")).length,
+                  1,
+                );
+                assert.equal(
+                  await git.lookup(
+                    { bindingId: oldBinding, workspace: box().workspace, sandboxId: originalId },
+                    ctx.signal,
+                  ),
+                  undefined,
+                  "the retired middleware binding cannot authorize requests on the retained Sandbox",
+                );
+                // The runtime invokes the Driver's observation callback, which must compare current
+                // policy rather than reject the creation-time binding retained by GetSandbox.
+                box().spec.providers.reverse(); // Attachment order carries no authorization meaning.
+                const entry = await git.entries.get(second.revision.id);
+                const getPolicyStatus = gateway.getPolicyStatus;
+                gateway.getPolicyStatus = async () => {
+                  throw new DependencyUnavailableError("policy read unavailable");
+                };
+                await git.reconcile(entry);
+                assert.equal(git.route(second.revision.id).state, "pending");
+                gateway.getPolicyStatus = getPolicyStatus;
+                entry.nextObserveAt = 0;
+                await git.reconcile(entry);
+                assert.notEqual(git.route(second.revision.id).state, "blocked");
+                await managed.cleanup(first);
+                assert.equal(
+                  box().phase,
+                  "SANDBOX_PHASE_READY",
+                  "late old cleanup preserves the successor",
+                );
+                await managed.cleanup(second);
+                await managed.deleteAgent(
+                  {
+                    namespace: ctx.namespace,
+                    agent: { id: rev.agentId, namespaceId: rev.namespaceId },
+                  },
+                  ctx.signal,
+                );
+              } finally {
+                created = saved.created;
+                for (const [key, value] of Object.entries(saved)) {
+                  if (key !== "created") {
+                    gateway[key] = value;
+                  }
+                }
+              }
+            },
+          );
           const collisionConfiguration = structuredClone(
             configuration.drivers.sandbox.configuration,
           );

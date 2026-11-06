@@ -567,6 +567,46 @@ test("current supplier evidence is required at access and send; stored receipts 
   );
 });
 
+test("retained Sandbox policy versions are independent of plan generation but still fence installation", async (t) => {
+  const f = await staticEgressFixture(t, { recordInstallation: false });
+  assert.equal(f.context.plan.generation, 1);
+  f.observed.policyVersion = 4;
+  f.observed.activePolicyVersion = 4;
+  f.observed.evidence.policy_version = 4;
+  const installed = await f.egress.wiringStatus(f.context, f.attachment);
+  assert.ok(installed, "matching loaded policy must enroll after retained-Sandbox updates");
+  assert.equal(await f.egress.verifyInstallation(f.context, installed), true);
+
+  // Independent supplier fields must agree; none can borrow the OCE generation
+  // or claim readiness for a policy that is still loading or failed.
+  for (const change of [
+    { policyVersion: 1 },
+    { activePolicyVersion: 1 },
+    { policyStatus: 1 },
+    { policyStatus: 3 },
+    { policyVersion: 0, activePolicyVersion: 0 },
+  ]) {
+    Object.assign(f.observed, change);
+    assert.equal(await f.egress.wiringStatus(f.context, f.attachment), undefined);
+    assert.equal(await f.egress.verifyInstallation(f.context, installed), false);
+    Object.assign(f.observed, { policyVersion: 4, activePolicyVersion: 4, policyStatus: 2 });
+  }
+  f.observed.evidence.policy_version = 1;
+  assert.equal(await f.egress.wiringStatus(f.context, f.attachment), undefined);
+  assert.equal(await f.egress.verifyInstallation(f.context, installed), false);
+
+  // Even unchanged policy content at a new supplier version invalidates the
+  // earlier receipt; changing the comparison must not remove that fence.
+  f.observed.policyVersion = 5;
+  f.observed.activePolicyVersion = 5;
+  f.observed.evidence.policy_version = 5;
+  assert.equal(await f.egress.verifyInstallation(f.context, installed), false);
+  const replacement = await f.egress.wiringStatus(f.context, f.attachment);
+  assert.ok(replacement);
+  assert.notEqual(replacement.enforcement.configurationId, installed.enforcement.configurationId);
+  assert.equal(await f.egress.verifyInstallation(f.context, replacement), true);
+});
+
 test("V1 permits only the exact inert runtime rule and fences both policies before Secret access and send", async (t) => {
   const f = await staticEgressFixture(t, { inertProviderRule: true });
   const observation = structuredClone(f.observed.observation);

@@ -82,6 +82,7 @@ import {
   DependencyUnavailableError,
   PersistedStateInvalidError,
   EGRESS_REVISION_INSTALLED_CONFLICT,
+  EGRESS_SANDBOX_INSTALLED_CONFLICT,
   IAMPolicyValidationError,
   IAMRoleInUseError,
   NAMESPACE_NAME_CONFLICT,
@@ -916,6 +917,7 @@ const NAME_CONFLICTS: Readonly<Record<string, string>> = Object.freeze({
   // Not a name: the installation's inline UNIQUE (namespace_id, revision_id). A second
   // Sandbox for one revision is the state conflict the memory store raises, not an id collision.
   egress_installations_namespace_id_revision_id_key: EGRESS_REVISION_INSTALLED_CONFLICT,
+  egress_installations_current_sandbox: EGRESS_SANDBOX_INSTALLED_CONFLICT,
 });
 
 function databaseError(error: unknown): Error {
@@ -2838,7 +2840,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
       findEgressInstallation: async (senderId, sandboxId) => {
         const result = await client.query(
-          `${currentEgressInstallation} WHERE sender_id = $1 AND sandbox_id = $2`,
+          `${currentEgressInstallation} WHERE sender_id = $1 AND sandbox_id = $2 AND NOT retired`,
           [senderId, sandboxId],
         );
         const row = rows(result.rows)[0];
@@ -2872,8 +2874,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           `INSERT INTO occ.egress_installations (sender_id, sandbox_id, namespace_id, revision_id, installation, agent_id)
           SELECT $1, $2, $3, $4, $5::jsonb, $7 FROM occ.agent_revisions
           WHERE namespace_id = $3 AND id = $4 AND admitted_spec->'egress_plan' = $6::jsonb
-          ON CONFLICT (sender_id, sandbox_id) DO UPDATE SET installation = occ.egress_installations.installation
-          WHERE occ.egress_installations.installation->'plan' = EXCLUDED.installation->'plan'
+          ON CONFLICT (sender_id, sandbox_id, revision_id) DO UPDATE SET installation = occ.egress_installations.installation
+          WHERE NOT occ.egress_installations.retired
+            AND occ.egress_installations.installation->'plan' = EXCLUDED.installation->'plan'
             AND occ.egress_installations.installation->'sender' = EXCLUDED.installation->'sender'
             AND occ.egress_installations.installation->'enforcement' = EXCLUDED.installation->'enforcement'`,
           [
@@ -2891,6 +2894,12 @@ export class PostgresPlatformState implements PlatformStateStore {
             "Egress installation does not match its admitted execution.",
           );
         }
+      },
+      retireEgressInstallation: async (namespaceId, revisionId) => {
+        await client.query(
+          "UPDATE occ.egress_installations SET retired = true WHERE namespace_id = $1 AND revision_id = $2 AND NOT retired",
+          [namespaceId, revisionId],
+        );
       },
       admitEgressSource: async (namespaceId, sourceId, expectedGeneration, egress) => {
         const updated = await client.query(

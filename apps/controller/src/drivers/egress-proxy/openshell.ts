@@ -83,6 +83,21 @@ function revisionNumber(value: unknown): string | undefined {
     : undefined;
 }
 
+function loadedPolicyVersion(status: Readonly<Record<string, unknown>>): number | undefined {
+  const revision = asRecord(status.revision);
+  const version = revision?.version;
+  // OpenShell versions belong to the retained Sandbox, independently of OCE's
+  // per-revision plan generation. Accept only a loaded, matching uint32 version.
+  return typeof version === "number" &&
+    Number.isInteger(version) &&
+    version > 0 &&
+    version <= 0xffffffff &&
+    status.active_version === version &&
+    [2, "POLICY_STATUS_LOADED"].includes(revision?.status as string | number)
+    ? version
+    : undefined;
+}
+
 function enforcementEvidence(
   status: Readonly<Record<string, unknown>>,
   sandboxId: string,
@@ -110,9 +125,6 @@ function enforcementEvidence(
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
       evidence.instance_id,
     ) ||
-    revision.version !== policyVersion ||
-    status.active_version !== policyVersion ||
-    ![2, "POLICY_STATUS_LOADED"].includes(revision.status as string | number) ||
     evidence.policy_version !== policyVersion ||
     typeof evidence.policy_hash !== "string" ||
     !/^[0-9a-f]{64}$/.test(evidence.policy_hash) ||
@@ -516,9 +528,6 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       !policy ||
       // Protobuf omits the map when deny-all has no rules (even auxiliary rules).
       (Object.keys(expectedPolicies).length > 0 && !policies) ||
-      Number(status.active_version) !== context.plan.generation ||
-      Number(revision.version) !== context.plan.generation ||
-      ![2, "POLICY_STATUS_LOADED"].includes(revision.status as string | number) ||
       !isDeepStrictEqual(
         wirePolicy(policy.network_middlewares),
         wirePolicy(expected.network_middlewares),
@@ -587,6 +596,10 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       return undefined;
     }
     const status = await client.getSandboxPolicyStatus(workspace, name, context.signal);
+    const policyVersion = loadedPolicyVersion(status);
+    if (policyVersion === undefined) {
+      return undefined;
+    }
     const sandboxId = existing.id;
     return {
       status,
@@ -603,7 +616,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           : enforcementEvidence(
               status,
               sandboxId,
-              context.plan.generation,
+              policyVersion,
               context.revision.id,
               this.options,
             ),

@@ -1496,6 +1496,7 @@ export function createOpenShellKubernetesFixture({
   }) {
     assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 300_000);
     const script = String.raw`
+      const WebSocket = require("ws");
       const appServerUrl = ${JSON.stringify(appServerUrl)} ?? process.env.APP_SERVER_URL;
       const appServerToken = ${
         appServerTokenPath === undefined
@@ -1800,10 +1801,11 @@ export function createOpenShellKubernetesFixture({
           fail(error);
         }
       });
-      socket.addEventListener("error", () => {
+      socket.addEventListener("error", (event) => {
         if (finished) return;
         if (commandDeadline) return unknownCommandOutcome();
-        fail(new Error("Codex harness connection failed"));
+        const code = String(event.error?.code ?? "UNKNOWN");
+        fail(new Error("Codex harness connection failed: " + (/^[A-Z0-9_]+$/.test(code) ? code : "UNKNOWN")));
       });
       socket.addEventListener("close", () => {
         if (finished) return;

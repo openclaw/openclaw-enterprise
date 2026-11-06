@@ -967,6 +967,7 @@
               "testing/slack",
               "testing/plugins",
               "testing/openshell",
+              "testing/openshell-git-replacement",
               "testing/openshell-oauth",
               "testing/openshell-coverage",
               "testing/ci/openshell-execution",

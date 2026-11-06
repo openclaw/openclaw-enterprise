@@ -412,14 +412,16 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
     /exclusive QA selection/,
   );
   const full = selectQaMatrix({});
-  const replacement = selectQaMatrix({
-    OCC_TEST_QA_SCENARIOS: "openshell-provider-replacement",
-    OCC_TEST_QA_INSTALLATION: "kubernetes",
-    OCC_TEST_QA_PRESET: "Codex",
-  });
-  assert.equal(replacement.providerReplacement, true);
-  assert.ok(replacement.cells.every((cell) => cell.scenarios.length === 0));
-  assert.throws(() => validateQaInputs(replacement, {}), /REPLACEMENT_INPUT_FILE/);
+  for (const scenario of ["openshell-provider-replacement", "openshell-git-replacement"]) {
+    const replacement = selectQaMatrix({
+      OCC_TEST_QA_SCENARIOS: scenario,
+      OCC_TEST_QA_INSTALLATION: "kubernetes",
+      OCC_TEST_QA_PRESET: "Codex",
+    });
+    assert.equal(replacement.providerReplacement || replacement.gitReplacement, true);
+    assert.ok(replacement.cells.every((cell) => cell.scenarios.length === 0));
+    assert.throws(() => validateQaInputs(replacement, {}), /REPLACEMENT_INPUT_FILE/);
+  }
   assert.equal(full.scope, "full");
   assert.ok(full.repository);
   const isolated = selectQaMatrix({

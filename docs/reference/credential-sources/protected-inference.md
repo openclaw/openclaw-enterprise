@@ -56,6 +56,12 @@ releasing the workload, then for the Harness to report `serving` before reportin
 If the revision never becomes ready, deployment status reports the convergence timeout.
 Only the preparation worker can warm the family; startup, readiness and requests cannot.
 
+Enrollment receipts belong to individual revisions. A confirmed runtime stop retires
+that revision's enrollment without deleting its receipt. Only one enrollment per
+sender and Sandbox can be current; a successor reusing the Sandbox must enroll
+after retirement. Separate Sandboxes can have independent current enrollments.
+Retired receipts cannot authorize requests or become current again.
+
 ## Loaded enforcement
 
 The OpenShell Gateway and trusted supervisor must report credential access,

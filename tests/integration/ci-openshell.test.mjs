@@ -15,7 +15,7 @@ import {
   selectKubectlAsset,
   validateOpenShellSelection,
 } from "../../scripts/ci/openshell.mjs";
-import { withEnvironment } from "../helpers/environment.ts";
+import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
 import { prependPath } from "../helpers/fake-commands.ts";
 import {
   assertGatewayPolicyRunSucceeded,
@@ -38,6 +38,15 @@ async function fixture(t, prefix = "ci-openshell-test") {
   const root = await temporaryDirectory(t, `${prefix}-`);
   await chmod(root, 0o700);
   return root;
+}
+
+function probeWebSocketServer(t) {
+  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const socketRequire = createRequire(controller.resolve("@kubernetes/client-node"));
+  // The kubectl stand-in runs the in-Pod client locally. Give that child the same
+  // ws dependency as the peer without relying on a hoisted root dependency.
+  setEnvironment(t, { NODE_PATH: dirname(dirname(socketRequire.resolve("ws"))) });
+  return socketRequire("ws").WebSocketServer;
 }
 
 function ownedCluster(root, name = "openclaw-k8s-openshell-test") {
@@ -300,8 +309,7 @@ test("OpenShell host probes retain the exposed hostname while connecting to loop
 test("OpenShell probe observes its command after the turn ends, or preserves the unknown outcome", async (t) => {
   // Run the actual in-Pod client and probe decision. Only kubectl transport and the
   // app-server peer are fixtures. WebSocket message order, not a sleep, creates the boundary.
-  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-  const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
+  const WebSocketServer = probeWebSocketServer(t);
   const server = createServer();
   const peer = new WebSocketServer({ noServer: true });
   server.on("upgrade", (request, stream, head) => {
@@ -527,8 +535,7 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
   // Finding 1630: Codex hands a long command back to the model, which can reply and end the
   // turn while the command still runs. The in-Pod client waits for that command's completion
   // event up to the fixture's bound, and reports the command's timing when the bound expires.
-  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-  const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
+  const WebSocketServer = probeWebSocketServer(t);
   const server = createServer();
   const peer = new WebSocketServer({ server });
   await listen(t, server);
@@ -699,8 +706,7 @@ test("a turn the model answered at capacity runs again only for its own final er
   // timing, decides: a command that began (even one that completed), or an approval request,
   // before the at-capacity answer leaves the outcome unknown, so no second thread starts. Only
   // the client's exit status and exact stdout receipt allow another turn; stderr never does.
-  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-  const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
+  const WebSocketServer = probeWebSocketServer(t);
   const server = createServer();
   const peer = new WebSocketServer({ server });
   await listen(t, server);

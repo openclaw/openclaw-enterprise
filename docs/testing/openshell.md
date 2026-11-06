@@ -395,6 +395,8 @@ rejected peers, failed bootstrap, unsupported updates and lost acknowledgments.
 Test delayed stop and credential-withdrawal requests explicitly: current OpenShell
 APIs cannot fence them by launch generation.
 
+For unchanged Git revisions, use the [Git replacement scenario](openshell-git-replacement.md).
+
 ### Provider replacement
 
 Use a disposable loopback k3d installation with this branch's API and worker,
@@ -470,6 +472,9 @@ Cleanup removes test-created Agents, grants and sources, preserving prepared
 resources. Missing input skips the standalone test. A selected QA run requires
 it: use `OCC_TEST_QA_SCENARIOS=openshell-provider-replacement` with the Kubernetes
 Codex preset.
+
+For an operator-approved existing cluster, use the
+[explicit cluster selection](openshell-git-replacement.md#existing-cluster-selection).
 
 ## Troubleshooting
 

@@ -609,6 +609,14 @@
       "tag": "0076_native_browser_access",
       "breakpoints": true,
       "sha256": "5ba98d253eb755b61548a60471475a45d704622059db76fe5b769461ab628aec"
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1787000000077,
+      "tag": "0077_revision_egress_installations",
+      "breakpoints": true,
+      "sha256": "b59c64d118c0f6a4f6d12af6c3b78166f64e8677ff9659842a4f2507d66fe44f"
     }
   ],
   "initialSchemaStates": {
@@ -755,7 +763,8 @@
     "preHarnessOverrides": "451fc5103dcacb194c7decfd419da6444995d78ddbd4f44ee4f69217b4cb6c5b",
     "preAccountAdministrationPolicy": "c1e2e44e89e14f9408c939d4e2caf72d49dabc200df617f52b11a7050c36828c",
     "preFiniteRepositorySessionWithdrawal": "c806edfa92f7889a92783f40ea6d0dbed281250ebdc632a363d724f12a2d1d33",
-    "preHumanAuthenticationResults": "9398601c17f3ae475fc41fafd162e6da4383fe37ac25318bd03efc7dfb161600"
+    "preHumanAuthenticationResults": "9398601c17f3ae475fc41fafd162e6da4383fe37ac25318bd03efc7dfb161600",
+    "preRevisionEgressInstallations": "3c4fbf128dd283e684211b88abf6c5dbd102463e7eec1dfcf5e7172180c611ed"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",
