@@ -304,6 +304,10 @@ a moved Sandbox version or an outcome the gateway cannot tell retires the runtim
 An empty OpenShell profile workspace selects the platform profile, not a same-named
 Workspace profile.
 
+Standing succession can use a fresh expired-provider report only to confirm
+predecessor identity. New installations and post-detach model completion require
+ready credentials; model authorization remains independent.
+
 A transient observation failure closes access until the same installation verifies,
 with retry backoff from 1 s to 10 s. The held-launch paths (`github-repository`,
 protected `git-write`, and installation preview) cannot be adopted by a replacement
@@ -322,14 +326,12 @@ or `gateway_unauthorized`. `worker.openshell-git-route-warning` distinguishes
 `unobserved` reads, `pending` material, `closed` routes (`worker_replaced`, or
 `withdrawn` and `repository_expired` when another worker closed the route) and
 `retained` ones.
-`OPENSHELL_GIT_WITHDRAWAL_UNRECORDED` means the store did not record a withdrawal:
-this worker still refuses the route, but confirm its Sandbox was deleted, or another
-worker could adopt it. The worker drops a closed route once its Sandbox reads absent
-(twice if it never observed one); a failed read keeps it. A read the gateway refuses by
-the worker's identity logs one `retained` warning with `gateway_unauthorized`: the
-route stays in memory, read again with backoff, until a read finds its Sandbox gone.
-The worker still refuses to
-prepare, adopt or verify that revision, and later denials log `no_binding`.
+`OPENSHELL_GIT_WITHDRAWAL_UNRECORDED` means withdrawal was not persisted.
+Confirm Sandbox deletion: this worker refuses the route, but another could adopt it.
+Closed routes are dropped after confirmed absence (two reads if never observed).
+Failed reads retain them. Gateway authorization refusal logs `retained` with
+`gateway_unauthorized` and retries with backoff until absence; preparation, adoption
+and verification remain refused, and denials log `no_binding`.
 `worker.openshell-git-route` reports adoption and restoration, with `durationMs`.
 Correlate the revision and request ID with `worker.openshell-git-denied`.
 
