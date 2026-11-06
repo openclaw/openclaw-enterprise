@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 const scenarioPresets = {
   "sandbox-policy": ["Codex"],
+  "private-storage": ["Codex"],
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
   "model-ui": ["OpenClaw"],
@@ -30,6 +31,7 @@ export function selectQaMatrix(env = process.env) {
           (name) =>
             ![
               "sandbox-policy",
+              "private-storage",
               "plugin-install",
               "openshell-linear-read",
               "codex-search-config",
@@ -60,19 +62,32 @@ export function selectQaMatrix(env = process.env) {
       preset: name,
       scenarios: scenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
-          scenarioPresets[scenario].includes(name),
+          ![
+            "sandbox-policy",
+            "private-storage",
+            "plugin-install",
+            "openshell-linear-read",
+          ].includes(scenario) && scenarioPresets[scenario].includes(name),
       ),
       unselected: allScenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
+          ![
+            "sandbox-policy",
+            "private-storage",
+            "plugin-install",
+            "openshell-linear-read",
+          ].includes(scenario) &&
           scenarioPresets[scenario].includes(name) &&
           !scenarios.includes(scenario),
       ),
       notApplicable: allScenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
-          !scenarioPresets[scenario].includes(name),
+          ![
+            "sandbox-policy",
+            "private-storage",
+            "plugin-install",
+            "openshell-linear-read",
+          ].includes(scenario) && !scenarioPresets[scenario].includes(name),
       ),
     })),
   );
@@ -112,12 +127,17 @@ export function selectQaMatrix(env = process.env) {
     requiredEnv.push("OCC_TEST_QA_CODEX_MODEL_BASE_URL");
   }
   const sandboxPolicy = scenarios.includes("sandbox-policy");
+  const privateStorage = scenarios.includes("private-storage");
+  if (privateStorage) {
+    assert.notEqual(installation, "compose", "Private storage requires Kubernetes setup");
+  }
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");
   assert.ok(
     exclusions.length === 0 ||
       activeScenarios.length > 0 ||
       sandboxPolicy ||
+      privateStorage ||
       pluginInstall ||
       linearRead,
     "All selected QA scenarios require a custom Codex permission profile",
@@ -134,7 +154,7 @@ export function selectQaMatrix(env = process.env) {
       "OCC_TEST_CODEX_LINEAR_RESULT_EXPECT",
     );
   }
-  if (sandboxPolicy || pluginInstall) {
+  if (sandboxPolicy || pluginInstall || privateStorage) {
     if (!requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
       requiredEnv.push("OCC_TEST_QA_CODEX_TOKEN_FILE");
     }
@@ -164,6 +184,7 @@ export function selectQaMatrix(env = process.env) {
     installations,
     exclusions,
     sandboxPolicy,
+    privateStorage,
     pluginInstall,
     linearRead,
     cells,
@@ -175,7 +196,7 @@ export function selectQaMatrix(env = process.env) {
       exclusions.length === 0 &&
       installation === "all" &&
       preset === "all" &&
-      scenarios.length === allScenarios.length - 4
+      scenarios.length === allScenarios.length - 5
         ? "full"
         : "partial:selected",
   };

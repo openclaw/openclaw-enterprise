@@ -13,7 +13,7 @@ QA Matrix Advisory is one workflow with three groups of test jobs:
 
 - **QA matrix:** Console Secret management with Standard Codex Agents on Compose
   and Kubernetes installations.
-- **OpenShell:** ten jobs with at most ten running at once for sandbox policy, credentials, plugins,
+- **OpenShell:** eleven jobs with at most ten running at once for sandbox policy, credentials, plugins,
   installation, and Agent redeployment.
 - **Local installation:** the hosted local setup tests.
 
@@ -62,6 +62,7 @@ is in the [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json).
 | Scenario                | In advisory          | Presets         | Checks                                                                                                                                                     |
 | ----------------------- | -------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `sandbox-policy`        | Yes — OpenShell jobs | Codex           | Discover and preview configuration, then apply, update, and withdraw OpenShell network policy in a prepared environment.                                   |
+| `private-storage`       | Yes — OpenShell jobs | Codex           | Private state ancestry, unrelated-UID rename denial, and retained bytes across Agent replacement; no additional model turn beyond startup.                 |
 | `plugin-install`        | Yes — OpenShell jobs | Codex           | Install a dedicated Codex plugin, find it after the Codex process restarts, then remove it from the Agent selection.                                       |
 | `model-ui`              | No                   | OpenClaw        | Real model turn and native browser response.                                                                                                               |
 | `console-secrets`       | Yes (Codex)          | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls. |
@@ -77,7 +78,7 @@ defines their applicability.
 
 ### Scenario details
 
-The OpenShell jobs cover `sandbox-policy` and `plugin-install` automatically.
+The OpenShell jobs cover `sandbox-policy`, `plugin-install`, and `private-storage` automatically.
 To select these scenarios locally through the QA matrix, prepare their OpenShell
 fixtures: [network policy](../openshell-coverage.md#qa-matrix-selector) or
 [plugin installation](../openshell.md#codex-plugin-installation).
@@ -94,7 +95,7 @@ on its own Ubuntu 24.04 VM, with a Landlock check, Docker daemon, cluster, and
 private state. These are parallel jobs within the same advisory run, named
 `QA advisory (OpenShell / <test-file-basename>)`.
 
-The selection job reads the ten files in the
+The selection job reads the eleven files in the
 [OpenShell manifest](../../../scripts/ci/test-suites/openshell.json). Each resulting
 job calls `run-ci-lane` with `lane: openshell` and its selected `test-file`. The
 `qa-openshell-compose` label selects only the first row below.
@@ -111,6 +112,7 @@ job calls `run-ci-lane` with `lane: openshell` and its selected `test-file`. The
 | [Sandbox enforcement](../../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)       | Provider credential delivery, authenticated Codex access, filesystem enforcement, and Agent network policy.                                                                      |
 | [Kubernetes first Agent](../../../tests/integration/local-first-agent-openshell-k3d-real.test.mjs) | The first-Agent and native redeployment workflow with the control plane in Kubernetes.                                                                                           |
 | [Codex plugin installation](../../../tests/integration/openshell-plugin-install-real.test.ts)      | Selected Codex plugin installation and retention through the OpenShell Agent workflow.                                                                                           |
+| [Private storage](../../../tests/integration/openshell-private-storage-real.test.ts)               | Process-owned private state, unrelated-UID rename denial, and retained bytes after Agent Stop and redeployment.                                                                  |
 
 The runner requires the selected files' credentials, expected tests, and cleanup.
 Local installation also uses one runner per manifest file: input and network-policy
@@ -138,7 +140,7 @@ To run the same coverage as the schedule, configure the
 gh workflow run qa-advisory.yml --repo openclaw/openclaw-enterprise --ref main
 ```
 
-This starts the QA matrix, all ten OpenShell jobs, and three local installation jobs.
+This starts the QA matrix, all eleven OpenShell jobs, and three local installation jobs.
 For only OpenShell, use [Full Integration](full-integration.md#run-a-protected-integration-lane)
 with `lane=openshell`.
 
@@ -147,12 +149,18 @@ OpenShell files or the local installation suite. For those suites, follow
 [OpenShell setup](../openshell.md#openshell-sandbox) or
 [local installation tests](../kubernetes.md#local-kubernetes-installation).
 
+`private-storage` uses the same prepared environment and credential-file inputs
+as `sandbox-policy`. Both revisions perform the ordinary startup authentication
+probe; the storage assertions add no model turn. It proves PVC protection and
+retained bytes, not successful
+native Doctor capture or enrollment after a maintenance refusal.
+
 ### Select scenarios
 
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
-`all` excludes the explicit `sandbox-policy`, `plugin-install`,
+`all` excludes the explicit `sandbox-policy`, `plugin-install`, `private-storage`,
 `openshell-linear-read`, and `codex-search-config` selectors.
 Invalid or wholly inapplicable selections fail before provisioning; missing
 inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.

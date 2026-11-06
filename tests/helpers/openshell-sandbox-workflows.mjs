@@ -78,11 +78,12 @@ import {
 const executeFile = promisify(execFile);
 const selectedScenario = process.env.OCC_TEST_OPENSHELL_SCENARIO ?? "full";
 assert.ok(
-  ["full", "network-policy", "plugin-install"].includes(selectedScenario),
+  ["full", "network-policy", "plugin-install", "private-storage"].includes(selectedScenario),
   "Unknown OpenShell scenario.",
 );
 const networkPolicyOnly = selectedScenario === "network-policy";
 const pluginInstallOnly = selectedScenario === "plugin-install";
+const privateStorageOnly = selectedScenario === "private-storage";
 const installationPluginId =
   process.env.OCC_TEST_CODEX_INSTALL_PLUGIN_ID ?? "codex-plugin:linear@openai-curated-remote";
 const pluginArtifactHosts = Object.freeze([
@@ -8364,6 +8365,170 @@ export function registerGatewayToolPolicyTest() {
   );
 }
 
+async function assertPrivateStorageReplacement(context, topology) {
+  const { placement, revision } = topology;
+  const container = topology.harnessPod.spec.containers.find(({ name }) => name === "agent");
+  const state = container.env.find(({ name }) => name === "OPENCLAW_NODE_STATE_DIR").value;
+  const mount = container.volumeMounts.find(({ mountPath }) => `${mountPath}/state` === state);
+  const volume = topology.harnessPod.spec.volumes.find(({ name }) => name === mount.name);
+  const nonce = randomUUID();
+  const inspect = async (pod, create) =>
+    JSON.parse(
+      await kubectl(
+        "exec",
+        "-n",
+        placement,
+        pod.metadata.name,
+        "-c",
+        "agent",
+        "--",
+        "node",
+        "-e",
+        `const fs=require("node:fs"),path=require("node:path");
+     const state=process.env.OPENCLAW_NODE_STATE_DIR, parent=path.dirname(state);
+     const file=path.join(state,"private-storage-proof");
+     if(process.argv[1]==="create")fs.writeFileSync(file,process.argv[2],{mode:0o600,flag:"wx"});
+     const stat=fs.statSync(parent);
+     console.log(JSON.stringify({uid:process.getuid(),gid:process.getgid(),owner:stat.uid,
+       mode:stat.mode&0o7777,retained:fs.readFileSync(file,"utf8")}));`,
+        create ? "create" : "read",
+        nonce,
+      ),
+    );
+  // The API-admitted Agent reaches the real Compute -> Sandbox preparation path.
+  // A private state child alone is insufficient if its mounted parent is replaceable.
+  const before = await inspect(topology.harnessPod, true);
+  assert.equal(before.owner, before.uid);
+  assert.equal(before.mode, 0o700);
+  assert.equal(before.retained, nonce);
+  const name = `storage-sibling-${hash(revision.id)}`;
+  context.after(() => kubectl("delete", "job", name, "-n", placement, "--ignore-not-found=true"));
+  // Give an unrelated UID the same group and exact admitted subpath, but no root,
+  // capabilities, token or network access. It must not rename the protected child.
+  await fixture.applyManifest(
+    JSON.stringify({
+      apiVersion: "batch/v1",
+      kind: "Job",
+      metadata: { name, namespace: placement },
+      spec: {
+        backoffLimit: 0,
+        activeDeadlineSeconds: 60,
+        template: {
+          spec: {
+            restartPolicy: "Never",
+            automountServiceAccountToken: false,
+            securityContext: {
+              runAsUser: before.uid + 1,
+              runAsGroup: before.gid,
+              runAsNonRoot: true,
+              seccompProfile: { type: "RuntimeDefault" },
+            },
+            containers: [
+              {
+                name: "probe",
+                image: codexImage,
+                imagePullPolicy: "IfNotPresent",
+                command: [
+                  "node",
+                  "-e",
+                  `const fs=require("node:fs");let denied=false;
+          try{fs.renameSync("/protected/state","/protected/replaced");}
+          catch(e){if(e.code!=="EACCES"&&e.code!=="EPERM")throw e;denied=true;}
+          if(!denied){try{fs.renameSync("/protected/replaced","/protected/state");}catch{}
+            throw Error("unrelated UID replaced private state");}`,
+                ],
+                resources: {
+                  requests: { cpu: "10m", memory: "32Mi" },
+                  limits: { cpu: "250m", memory: "128Mi" },
+                },
+                securityContext: {
+                  allowPrivilegeEscalation: false,
+                  readOnlyRootFilesystem: true,
+                  capabilities: { drop: ["ALL"] },
+                },
+                volumeMounts: [{ name: "state", mountPath: "/protected", subPath: mount.subPath }],
+              },
+            ],
+            volumes: [{ name: "state", persistentVolumeClaim: volume.persistentVolumeClaim }],
+          },
+        },
+      },
+    }),
+  );
+  await kubectl(
+    "wait",
+    "-n",
+    placement,
+    "--for=condition=Complete",
+    `job/${name}`,
+    "--timeout=75s",
+  );
+  await kubectl("delete", "job", name, "-n", placement, "--wait=true", "--timeout=60s");
+  const priorUid = topology.harnessPod.metadata.uid;
+  const claimName = volume.persistentVolumeClaim.claimName;
+  const claim = await resource("persistentvolumeclaim", claimName, placement);
+  const agentPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
+  // OpenShell suspends a Sandbox when its Pod is deleted. Replace it through
+  // normal Agent Stop/deploy so the worker settles the old owner before reuse.
+  const stopped = await topology.request("POST", `${agentPath}/stop`);
+  assert.equal(stopped.status, 202, JSON.stringify(stopped.error));
+  await waitFor(
+    "the old Agent revision to settle before replacement",
+    async () => {
+      const current = await topology.request("GET", agentPath);
+      assert.equal(current.status, 200, JSON.stringify(current.error));
+      const sandboxes = await resources("sandboxes.agents.x-k8s.io", placement);
+      const pods = await resources("pods", placement);
+      return current.data.desiredRuntimeState === "stopped" &&
+        current.data.activeRevisionId === undefined &&
+        !sandboxes.some(
+          (sandbox) => sandbox.metadata.labels?.["openclaw.dev/revision"] === revision.id,
+        ) &&
+        !pods.some((pod) => pod.metadata.labels?.["openclaw.dev/revision"] === revision.id)
+        ? true
+        : undefined;
+    },
+    180_000,
+  );
+  const deployed = await topology.request("POST", `${agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+  assert.notEqual(deployed.data.id, revision.id);
+  await waitFor(
+    "the replacement Agent revision to activate",
+    async () => {
+      const current = await topology.request("GET", agentPath);
+      assert.equal(current.status, 200, JSON.stringify(current.error));
+      const status = await topology.request("GET", `${agentPath}/deployments/${deployed.data.id}`);
+      assert.equal(status.status, 200, JSON.stringify(status.error));
+      assert.notEqual(status.data.status, "failed", JSON.stringify(status.data));
+      return current.data.activeRevisionId === deployed.data.id ? true : undefined;
+    },
+    300_000,
+  );
+  const replacement = await waitForProviderHarnessPod(placement, deployed.data);
+  assert.notEqual(replacement.metadata.uid, priorUid);
+  const replacementContainer = replacement.spec.containers.find(({ name }) => name === "agent");
+  const replacementState = replacementContainer.env.find(
+    ({ name }) => name === "OPENCLAW_NODE_STATE_DIR",
+  ).value;
+  const replacementMount = replacementContainer.volumeMounts.find(
+    ({ mountPath }) => `${mountPath}/state` === replacementState,
+  );
+  const replacementVolume = replacement.spec.volumes.find(
+    ({ name }) => name === replacementMount.name,
+  );
+  assert.equal(replacementVolume.persistentVolumeClaim.claimName, claimName);
+  assert.equal(replacementMount.subPath, mount.subPath);
+  assert.equal(
+    (await resource("persistentvolumeclaim", claimName, placement)).metadata.uid,
+    claim.metadata.uid,
+  );
+  const after = await inspect(replacement, false);
+  assert.deepEqual(after, before, "replacement must preserve private ancestry and retained bytes");
+  // This proves storage protection/retention, not completion of native Doctor captures.
+  topology.harnessPod = replacement;
+}
+
 export function registerProviderLifecycleTest(workflow) {
   assert.ok(["policy", "credentials", "withdrawal", "upstream", "refresh"].includes(workflow));
   if (selected && workflow !== "policy") {
@@ -8371,6 +8536,7 @@ export function registerProviderLifecycleTest(workflow) {
   }
   return test(
     {
+      "private-storage": "OpenShell retains protected state through Agent revision replacement",
       "plugin-install": "OpenShell installs selected Codex plugins before WebSocket startup",
       "network-policy": "OpenShell Agent network policy lifecycle",
       full: {
@@ -8414,7 +8580,7 @@ export function registerProviderLifecycleTest(workflow) {
         const topology = await measureOpenShellStage(testContext, "installation", () =>
           prepareProductionInstallation(context, {
             harnessId: selectedHarness,
-            ...(pluginInstallOnly ? { withOAuthToolSources: false } : {}),
+            ...(pluginInstallOnly || privateStorageOnly ? { withOAuthToolSources: false } : {}),
             ...(demoStatePath === undefined ? {} : { controllerPort: demoConsolePort }),
           }),
         );
@@ -8423,6 +8589,10 @@ export function registerProviderLifecycleTest(workflow) {
           openShellAgentName(topology.agent.id),
         );
         assert.ok(topology.sandbox.metadata.name);
+        if (privateStorageOnly) {
+          await assertPrivateStorageReplacement(context, topology);
+          return;
+        }
         if (selectedHarness === "openclaw") {
           // A native worker exposes held startup failures only until its node enrolls.
           // Confirm Workspace visibility before treating an absent service as withdrawn.

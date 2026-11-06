@@ -68,6 +68,15 @@ test(
         () => verifyQaSandboxPolicy(artifacts),
       );
     }
+    if (selection.privateStorage) {
+      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "private storage survives workload replacement",
+        () => verifyQaSandboxPolicy(artifacts, "private-storage"),
+      );
+    }
     if (selection.pluginInstall) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(

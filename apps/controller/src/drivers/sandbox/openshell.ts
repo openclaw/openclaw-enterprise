@@ -2943,7 +2943,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
     } else if (sandboxServiceAccounts(options).length > 1) {
       reason =
-        "Dedicated OpenClaw needs at most one ServiceAccount in gateway.operatorWorkspaceResources of the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to remove the others.";
+        "Dedicated OpenClaw needs at most one ServiceAccount in gateway.operatorWorkspaceResources of the OpenShell Sandbox Driver configuration. Ask an operator to remove the others.";
     }
     this.supportsHarnessExecutionMode = Object.freeze({
       openclaw: Object.freeze({
@@ -2995,6 +2995,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const support = this.supportsHarnessExecutionMode.openclaw.dedicated;
     if (harness.id === "openclaw" && !support.supported) {
       throw new ConfigurationHarnessError(support.reason);
+    }
+    if (
+      harness.id === "codex" &&
+      this.options.kubernetes.userNamespaces === false &&
+      sandboxServiceAccounts(this.options).length > 1
+    ) {
+      throw new ConfigurationHarnessError(
+        "Dedicated Codex needs at most one ServiceAccount in gateway.operatorWorkspaceResources of the OpenShell Sandbox Driver configuration. Ask an operator to remove the others.",
+      );
     }
     const agents = optionalAgentConfiguration(
       configuration.agents,
@@ -3468,7 +3477,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "The standing Git execution is no longer present.",
       );
     }
-    if (!codex && existing === undefined) {
+    if ((!codex || this.options.kubernetes.userNamespaces === false) && existing === undefined) {
       await prepareNativeWorkspace(context, this.options, sandbox);
     }
     // A refused request_id ran nothing, but its earlier call may still create the Sandbox,
@@ -4204,7 +4213,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       const sandbox = this.sandboxRef({ namespace: context.namespace, revision: context.revision });
       if (
         context.revision.harness.mode === "dedicated" &&
-        context.revision.harness.id === "openclaw"
+        (context.revision.harness.id === "openclaw" ||
+          (context.revision.harness.id === "codex" &&
+            this.options.kubernetes.userNamespaces === false))
       ) {
         // Creation can reach Kubernetes without returning a receipt or creating a Sandbox.
         await cleanupNativeWorkspace({ ...context, revision: context.revision }, sandbox);

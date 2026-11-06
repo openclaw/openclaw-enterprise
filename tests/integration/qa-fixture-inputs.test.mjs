@@ -196,6 +196,28 @@ test(
   },
 );
 
+test("private storage QA refuses Compose before Kubernetes preparation", async () => {
+  const { selectQaMatrix } = await import("../helpers/qa-selection.mjs");
+  const selection = {
+    OCC_TEST_QA_SCENARIOS: "private-storage",
+    OCC_TEST_QA_PRESET: "Codex",
+  };
+  // A Compose-only request must not dispatch the separate real Kubernetes lane.
+  assert.throws(
+    () => selectQaMatrix({ ...selection, OCC_TEST_QA_INSTALLATION: "compose" }),
+    /Private storage requires Kubernetes setup/,
+  );
+  for (const installation of ["kubernetes", "all"]) {
+    const selected = selectQaMatrix({ ...selection, OCC_TEST_QA_INSTALLATION: installation });
+    assert.equal(selected.privateStorage, true);
+    assert.deepEqual(selected.requiredEnv, [
+      "OCC_TEST_QA_CODEX_TOKEN_FILE",
+      "OCC_TEST_QA_SANDBOX_ENV",
+    ]);
+    assert.ok(selected.cells.every((cell) => cell.scenarios.length === 0));
+  }
+});
+
 test("QA selection keeps prerequisite credentials and reports omitted coverage", async () => {
   const { selectQaMatrix, validateQaInputs } = await import("../helpers/qa-selection.mjs");
   const selected = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,console-secrets" });

@@ -418,7 +418,7 @@ function endpointInstallation(endpoint) {
 }
 
 function namespaceContext(name = "oce-123456789012345") {
-  return {
+  const context = {
     namespace: {
       id: "ns_00000000-0000-4000-8000-000000000001",
       name,
@@ -428,6 +428,8 @@ function namespaceContext(name = "oce-123456789012345") {
     kubernetes: {},
     signal: new AbortController().signal,
   };
+  nativePreparationClient(context);
+  return context;
 }
 
 // Controlled Kubernetes transport: verifies the production preparation manifest and
@@ -620,7 +622,7 @@ function runtimeSandboxFixture(
         : []),
     labels: { "openclaw.dev/revision": revision.id },
   };
-  const prepared = harnessId === "openclaw" ? nativePreparationClient(context) : [];
+  const prepared = nativePreparationClient(context);
   return { context, revision, requirements, runtimeManifest, codexConfig, nodeSetup, prepared };
 }
 
@@ -853,17 +855,16 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
   );
 });
 
-// Native OpenClaw's private workspace preparation needs userNamespaces: false and at most one
-// operator-mode ServiceAccount, and it runs only after a dedicated deploy has stopped its
-// predecessors. Agent save and deploy admission call configureAgent, so they refuse those
-// settings first (findings 2334, 2346).
-test("OpenShell refuses dedicated OpenClaw on settings its workspace preparation refuses", () => {
+// Preparation requires at most one operator ServiceAccount. OpenClaw also requires
+// userNamespaces:false; Codex without that setting retains its unprepared path.
+// Admission must refuse unsupported preparation before deployment stops a predecessor.
+test("OpenShell refuses Harness settings its workspace preparation refuses", () => {
   const configuration = { agents: { defaults: { model: "openai/gpt-5" } } };
   const harness = (id) => ({ id, version: "1.0.0", mode: "dedicated" });
   const userNamespaces =
     "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
   const accounts =
-    "Dedicated OpenClaw needs at most one ServiceAccount in gateway.operatorWorkspaceResources of the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to remove the others.";
+    "Dedicated OpenClaw needs at most one ServiceAccount in gateway.operatorWorkspaceResources of the OpenShell Sandbox Driver configuration. Ask an operator to remove the others.";
   const serviceAccount = (name) => ({
     apiVersion: "v1",
     kind: "ServiceAccount",
@@ -874,13 +875,30 @@ test("OpenShell refuses dedicated OpenClaw on settings its workspace preparation
     kind: "Role",
     metadata: { name: "r" },
   };
-  for (const [settings, message] of [
+  const codexAccounts = accounts.replace("OpenClaw", "Codex");
+  for (const [settings, message, codexMessage] of [
     [(options) => delete options.kubernetes.userNamespaces, userNamespaces],
     [(options) => (options.kubernetes.userNamespaces = true), userNamespaces],
     [
       (options) =>
         (options.gateway.operatorWorkspaceResources = [serviceAccount("a"), serviceAccount("b")]),
       accounts,
+      codexAccounts,
+    ],
+    // User-namespace Codex does not enter this preparation path.
+    [
+      (options) => {
+        options.kubernetes.userNamespaces = true;
+        options.gateway.operatorWorkspaceResources = [serviceAccount("a"), serviceAccount("b")];
+      },
+      userNamespaces,
+    ],
+    [
+      (options) => {
+        delete options.kubernetes.userNamespaces;
+        options.gateway.operatorWorkspaceResources = [serviceAccount("a"), serviceAccount("b")];
+      },
+      userNamespaces,
     ],
     // Control: one ServiceAccount beside other resources still prepares.
     [(options) => (options.gateway.operatorWorkspaceResources = [serviceAccount("a"), role])],
@@ -897,6 +915,7 @@ test("OpenShell refuses dedicated OpenClaw on settings its workspace preparation
       driver.supportsHarnessExecutionMode.openclaw.dedicated.supported = false;
     }, TypeError);
     // A caller's later mutation cannot change the constructed Driver's support decision.
+    const originalUserNamespaces = options.kubernetes.userNamespaces;
     options.kubernetes.userNamespaces = !options.kubernetes.userNamespaces;
     if (message === undefined) {
       assert.ok(driver.configureAgent(configuration, harness("openclaw")));
@@ -911,8 +930,19 @@ test("OpenShell refuses dedicated OpenClaw on settings its workspace preparation
         },
       );
     }
-    // Codex never runs the preparation, so it is still admitted.
-    assert.ok(driver.configureAgent(configuration, harness("codex")).plugins.entries.codex);
+    options.kubernetes.userNamespaces = originalUserNamespaces;
+    if (codexMessage === undefined) {
+      assert.ok(driver.configureAgent(configuration, harness("codex")).plugins.entries.codex);
+    } else {
+      assert.throws(
+        () => driver.configureAgent(configuration, harness("codex")),
+        (error) => {
+          assert.ok(error instanceof ConfigurationHarnessError);
+          assert.equal(error.message, codexMessage);
+          return true;
+        },
+      );
+    }
   }
 });
 
@@ -3537,7 +3567,7 @@ for (const harnessId of ["codex", "openclaw"]) {
     );
     t.diagnostic(`Final ${harnessId} command with workspace setup: ${commandBytes} bytes`);
     assert.equal(executions.length, 0, "private initialization waits for supervisor readiness");
-    assert.equal(prepared.length, harnessId === "openclaw" ? 1 : 0);
+    assert.equal(prepared.length, 1);
     sandbox.phase = "SANDBOX_PHASE_READY";
     await provision();
     const execution = executions[0];

@@ -1268,6 +1268,60 @@ assert.deepEqual(finalState.resources.map(({ kind, laneTemplate }) => [kind, lan
     assert.equal(sessions().length, 7);
   });
 
+  test("OpenShell private storage preparation supplies its own database's migrator URL", async (t) => {
+    const root = await fixture(t);
+    const statePath = join(root, "state.json");
+    const postgres = await laneFakePostgres(t);
+    const server = composePostgres("private-storage", postgres.port);
+    // This protocol fixture checks preparation's returned inputs, not PostgreSQL
+    // migrations or storage enforcement; the real OpenShell workflow covers those.
+    await writeState(statePath, {
+      version: 1,
+      repositoryRoot,
+      lane: "openshell",
+      prefix: server.owner,
+      statePath,
+      resources: [server],
+    });
+    const corepackPath = join(root, "fake-corepack.mjs");
+    await writeFile(corepackPath, `#!${process.execPath}\n`, { mode: 0o700 });
+    const program = `
+import assert from "node:assert/strict";
+const { prepareFile } = await import(process.argv[1]);
+const selected = await prepareFile({
+  lane: "openshell",
+  file: "tests/integration/openshell-private-storage-real.test.ts",
+  statePath: process.argv[2],
+});
+try {
+  const app = new URL(selected.env.OCC_TEST_DATABASE_URL);
+  const migrator = new URL(selected.env.OCC_TEST_OPENSHELL_POLICY_MIGRATION_DATABASE_URL);
+  assert.equal(app.username, "occ_app");
+  assert.equal(migrator.username, "occ_migrator");
+  assert.equal(app.host, migrator.host);
+  assert.equal(app.pathname, migrator.pathname);
+  assert.match(app.pathname, /^\\/openclaw_k8s_openshell_private_storage_real_[a-f0-9]{12}$/);
+} finally {
+  await selected.cleanup();
+}
+`;
+    const result = await runProgram(
+      program,
+      statePath,
+      {
+        PATH: root,
+        LANG: "C",
+        OCC_DOCKER_BIN: join(root, "must-not-run"),
+        OPENCLAW_CI_COREPACK_BIN: corepackPath,
+        CODEX_ACCESS_TOKEN: "synthetic-fixture-credential",
+        OCC_TEST_OPENAI_MODEL: "fixture-model",
+      },
+      20_000,
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+  });
+
   test("prepareFile copies a per-test database from a ready template it owns without migrating", async (t) => {
     const root = await fixture(t);
     const statePath = join(root, "state.json");

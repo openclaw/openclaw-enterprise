@@ -19,13 +19,29 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
   };
   // This is a separate test process, not a recursive run inside the matrix worker.
   delete env.NODE_TEST_CONTEXT;
+  const selected = {
+    "network-policy": {
+      pattern: undefined,
+      expected: /ok 1 - OpenShell Agent network policy lifecycle/,
+      outcome: "real Agent defaults, preview, save, apply, revoke and isolation",
+    },
+    "plugin-install": {
+      pattern: "^OpenShell installs selected Codex plugins",
+      expected: /ok 1 - OpenShell installs selected Codex plugins before WebSocket startup/,
+      outcome: "real Agent plugin installation, native restart discovery, and selection removal",
+    },
+    "private-storage": {
+      pattern: "^OpenShell retains protected state",
+      expected: /ok 1 - OpenShell retains protected state through Agent revision replacement/,
+      outcome: "real admitted Agent private storage, sibling denial and revision replacement",
+    },
+  }[scenario];
+  assert.ok(selected, "Unknown OpenShell QA scenario");
   const args = [
     `--env-file=${resolve(envFile)}`,
     "--test",
     "--test-reporter=tap",
-    ...(scenario === "plugin-install"
-      ? ["--test-name-pattern=^OpenShell installs selected Codex plugins"]
-      : []),
+    ...(selected.pattern === undefined ? [] : [`--test-name-pattern=${selected.pattern}`]),
     "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
   ];
   let output;
@@ -60,19 +76,8 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
   const evidence = resolve(artifacts, `${scenario}-runtime.log`);
   await writeFile(evidence, text, { mode: 0o600 });
   assert.equal(failed, false, `OpenShell workflow failed; see ${evidence}`);
-  assert.match(
-    text,
-    scenario === "plugin-install"
-      ? /ok 1 - OpenShell installs selected Codex plugins before WebSocket startup/
-      : /ok 1 - OpenShell Agent network policy lifecycle/,
-  );
+  assert.match(text, selected.expected);
   assert.match(text, /# pass 1\b/);
   assert.match(text, /# skipped 0\b/);
-  return {
-    evidence,
-    outcome:
-      scenario === "plugin-install"
-        ? "real Agent plugin installation, native restart discovery, and selection removal"
-        : "real Agent defaults, preview, save, apply, revoke and isolation",
-  };
+  return { evidence, outcome: selected.outcome };
 }
