@@ -5,6 +5,7 @@ import { writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { ProductionTuiRequestError } from "./production-tui-request.ts";
 import {
   protectedJSON,
   type FixtureRun,
@@ -334,9 +335,17 @@ export async function measureUpgradeAvailability<T>(
       } else {
         outcome = body.data.id === installationId ? "ok" : "wrong-installation";
       }
-    } catch {
-      // Transport errors can contain private response bytes. Retain only the category.
-      outcome = signal.aborted ? "timeout" : "request-error";
+    } catch (error) {
+      // Keep received status even when strict response parsing rejects the body.
+      // Transport errors can contain private bytes; never retain their text.
+      status = error instanceof ProductionTuiRequestError ? error.status : undefined;
+      if (signal.aborted) {
+        outcome = "timeout";
+      } else if (status !== undefined && status !== 200) {
+        outcome = "http-error";
+      } else {
+        outcome = "request-error";
+      }
     }
     const finish = performance.now();
     samples.push({
@@ -352,29 +361,49 @@ export async function measureUpgradeAvailability<T>(
   };
   await sample("before");
   const stopped = new AbortController();
-  const observing = (async () => {
-    while (!stopped.signal.aborted) {
-      await sample("during");
-      await delay(1_000, undefined, { signal: stopped.signal }).catch(() => {});
-    }
-  })();
-  let upgradeSucceeded = false;
+  let observing: Promise<void> | undefined;
+  let outcome: { succeeded: true; value: T } | { succeeded: false; error: unknown };
   try {
-    const result = await upgrade();
-    upgradeSucceeded = true;
-    return result;
-  } finally {
-    stopped.abort();
-    // Join the final bounded request before taking the post-upgrade observation.
-    await observing;
-    await sample("after");
+    const upgrading = upgrade();
+    observing = (async () => {
+      while (!stopped.signal.aborted) {
+        await sample("during");
+        await delay(1_000, undefined, { signal: stopped.signal }).catch(() => {});
+      }
+    })();
+    outcome = { succeeded: true, value: await upgrading };
+  } catch (error) {
+    outcome = { succeeded: false, error };
+  }
+  stopped.abort();
+  // Join the final bounded request before taking the post-upgrade observation.
+  await observing;
+  await sample("after");
+  let recordFailure: { error: unknown } | undefined;
+  try {
     await record({
       requestTimeoutMs: 5_000,
       intervalAfterResponseMs: 1_000,
-      upgradeSucceeded,
+      upgradeSucceeded: outcome.succeeded,
       samples,
     });
+  } catch (error) {
+    recordFailure = { error };
   }
+  if (!outcome.succeeded) {
+    if (recordFailure) {
+      throw new AggregateError(
+        [outcome.error, recordFailure.error],
+        "Upgrade failed and API availability observations could not be recorded",
+        { cause: outcome.error },
+      );
+    }
+    throw outcome.error;
+  }
+  if (recordFailure) {
+    throw recordFailure.error;
+  }
+  return outcome.value;
 }
 
 async function assertReturnedInstallationAuthentication(

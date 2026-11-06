@@ -87,9 +87,12 @@ the test. The forward upgrade records authenticated HTTPS `GET /installation`
 samples before, during, and after the upgrade, including a failed upgrade. Each
 request has a five-second deadline; requests run serially with a one-second
 pause between observations during the upgrade. The evidence includes timestamps,
-request durations, actual gaps, HTTP status when available, and outcomes. Only
+request durations, actual gaps, received HTTP status even for invalid response
+bodies, and outcomes. Only
 HTTP 200 with the original Installation ID counts as a successful observation.
-Response bodies and credentials are omitted.
+Response bodies and credentials are omitted. If recording fails, the test reports
+the write failure alongside any upgrade failure, preserving the upgrade as the
+primary cause.
 
 These observations do not add an outage-free pass requirement. They measure the
 fixture's HTTPS route, not exact downtime, public ingress, Slack, or model

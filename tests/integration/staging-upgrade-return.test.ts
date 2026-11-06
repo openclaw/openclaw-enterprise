@@ -885,9 +885,14 @@ test(
           response.end(JSON.stringify({ error: privateBytes }));
           return;
         case 5:
-          response.end(privateBytes);
+          // Match the rehearsal proxy's response when its upstream connection fails.
+          response.writeHead(502);
+          response.end("Bad Gateway\n");
           return;
-        case 6: {
+        case 6:
+          incoming.socket.destroy();
+          return;
+        case 7: {
           // A response that keeps arriving must still hit the total request deadline.
           response.writeHead(200);
           response.write(" ");
@@ -903,12 +908,18 @@ test(
       }
     });
     const port = await listen(t, server);
-    const request = createProductionTuiRequest({
+    const rawRequest = createProductionTuiRequest({
       baseURL: `https://localhost:${port}`,
       ca: tls.caBundle,
       serviceKey: () => key,
       secrets: [key],
     });
+    let actionStarted = false;
+    const actionStartedAtRequest: boolean[] = [];
+    const request = (...args: Parameters<typeof rawRequest>) => {
+      actionStartedAtRequest.push(actionStarted);
+      return rawRequest(...args);
+    };
     let evidence:
       | {
           samples: {
@@ -918,44 +929,50 @@ test(
             elapsedMs: number;
             gapMs: number | null;
             outcome: string;
+            status: number | undefined;
           }[];
           upgradeSucceeded: boolean;
         }
       | undefined;
-    const upgradeFailure = new Error("upgrade fixture failed");
-    // Exercise the same wrapper as the rehearsal. The controlled HTTPS server
-    // proves measurement and cleanup, not OCC authentication or a Helm upgrade.
-    await assert.rejects(
-      measureUpgradeAvailability(
-        request,
-        "original-installation",
-        async () => {
-          await timedOut.promise;
-          throw upgradeFailure;
-        },
-        async (details) => {
-          evidence = details as typeof evidence;
-        },
-      ),
-      (error: unknown) => error === upgradeFailure,
+    // Exercise the real HTTPS helper while the action succeeds despite failed
+    // observations. Measurement must not introduce a new availability gate.
+    const result = await measureUpgradeAvailability(
+      request,
+      "original-installation",
+      async () => {
+        actionStarted = true;
+        await timedOut.promise;
+        return "upgrade completed";
+      },
+      async (details) => {
+        evidence = details as typeof evidence;
+      },
     );
+    assert.equal(result, "upgrade completed");
     assert.ok(evidence);
-    assert.equal(evidence.upgradeSucceeded, false);
+    assert.equal(evidence.upgradeSucceeded, true);
     assert.deepEqual(
-      evidence.samples.map(({ outcome }) => outcome),
-      [
-        "ok",
-        "wrong-installation",
-        "invalid-response",
-        "http-error",
-        "request-error",
-        "timeout",
-        "ok",
-      ],
-    );
-    assert.deepEqual(
-      evidence.samples.map(({ phase }) => phase),
-      ["before", "during", "during", "during", "during", "during", "after"],
+      {
+        observations: evidence.samples.map(({ phase, outcome, status }) => [
+          phase,
+          outcome,
+          status,
+        ]),
+        actionStartedAtRequest,
+      },
+      {
+        observations: [
+          ["before", "ok", 200],
+          ["during", "wrong-installation", 200],
+          ["during", "invalid-response", 200],
+          ["during", "http-error", 503],
+          ["during", "http-error", 502],
+          ["during", "request-error", undefined],
+          ["during", "timeout", 200],
+          ["after", "ok", 200],
+        ],
+        actionStartedAtRequest: [false, true, true, true, true, true, true, true],
+      },
     );
     assert.equal(evidence.samples[0]?.gapMs, null);
     for (const sample of evidence.samples) {
@@ -963,8 +980,8 @@ test(
       assert.ok(Date.parse(sample.finishedAt) >= Date.parse(sample.startedAt));
       assert.ok(sample.elapsedMs >= 0);
     }
-    assert.ok((evidence.samples[5]?.elapsedMs ?? 0) >= 4_900);
-    assert.ok(evidence.samples.slice(2, 6).every(({ gapMs }) => gapMs !== null && gapMs >= 900));
+    assert.ok((evidence.samples[6]?.elapsedMs ?? 0) >= 4_900);
+    assert.ok(evidence.samples.slice(2, 7).every(({ gapMs }) => gapMs !== null && gapMs >= 900));
     assert.equal(peakActive, 1);
     assert.equal(active, 0);
     assert.ok(
@@ -974,28 +991,77 @@ test(
     );
     assert.ok(!JSON.stringify(evidence).includes(key));
     assert.ok(!JSON.stringify(evidence).includes(privateBytes));
+  },
+);
 
-    // A successful action also returns its value and completes its final sample.
-    const result = await measureUpgradeAvailability(
+test("upgrade availability preserves action and evidence-write failures", async (t) => {
+  const tls = await harnessTlsFixture(t);
+  const key = `fixture-service-key-${randomUUID()}`;
+  const server = createServer(tls, (_incoming, response) => {
+    response.end(JSON.stringify({ data: { id: "original-installation" } }));
+  });
+  const port = await listen(t, server);
+  const request = createProductionTuiRequest({
+    baseURL: `https://localhost:${port}`,
+    ca: tls.caBundle,
+    serviceKey: () => key,
+    secrets: [key],
+  });
+  const upgradeFailure = new Error("upgrade fixture failed");
+  const recordFailure = new Error("evidence write failed");
+  let recorded = false;
+  // A synchronous action failure must still get a final observation. If the
+  // recorder also fails, preserve the original failure as the primary cause.
+  await assert.rejects(
+    measureUpgradeAvailability(
+      request,
+      "original-installation",
+      () => {
+        throw upgradeFailure;
+      },
+      async (details) => {
+        recorded = true;
+        const evidence = details as {
+          upgradeSucceeded: boolean;
+          samples: { phase: string; outcome: string }[];
+        };
+        assert.equal(evidence.upgradeSucceeded, false);
+        assert.equal(evidence.samples.at(-1)?.phase, "after");
+        assert.equal(evidence.samples.at(-1)?.outcome, "ok");
+        throw recordFailure;
+      },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.cause, upgradeFailure);
+      assert.deepEqual(error.errors, [upgradeFailure, recordFailure]);
+      return true;
+    },
+  );
+  assert.equal(recorded, true);
+  await assert.rejects(
+    measureUpgradeAvailability(
+      request,
+      "original-installation",
+      async () => {
+        throw upgradeFailure;
+      },
+      async () => {},
+    ),
+    (error: unknown) => error === upgradeFailure,
+  );
+  await assert.rejects(
+    measureUpgradeAvailability(
       request,
       "original-installation",
       async () => "complete",
-      async (details) => {
-        evidence = details as typeof evidence;
+      async () => {
+        throw recordFailure;
       },
-    );
-    assert.equal(result, "complete");
-    assert.equal(evidence.upgradeSucceeded, true);
-    assert.deepEqual(
-      evidence.samples.map(({ phase, outcome }) => [phase, outcome]),
-      [
-        ["before", "ok"],
-        ["during", "ok"],
-        ["after", "ok"],
-      ],
-    );
-  },
-);
+    ),
+    (error: unknown) => error === recordFailure,
+  );
+});
 
 test(
   "timed-out fixture commands reject success and terminate their subprocesses without exposing output",
