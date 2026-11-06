@@ -19,7 +19,7 @@ export function createProductionTuiRequest(configuration: RequestConfiguration) 
     method: string,
     path: string,
     body?: unknown,
-    { authenticated = true } = {},
+    { authenticated = true, signal }: { authenticated?: boolean; signal?: AbortSignal } = {},
   ): Promise<ApiResponse> =>
     new Promise((resolve, reject) => {
       const data = body === undefined ? undefined : JSON.stringify(body);
@@ -29,6 +29,7 @@ export function createProductionTuiRequest(configuration: RequestConfiguration) 
           method,
           ca: configuration.ca,
           family: 4,
+          signal,
           headers: {
             ...(authenticated ? { "x-api-key": configuration.serviceKey() } : {}),
             ...(data

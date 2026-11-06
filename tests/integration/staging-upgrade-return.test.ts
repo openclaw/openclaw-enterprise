@@ -22,6 +22,7 @@ import {
   assertDistinctControllers,
   assertReturnedAgents,
   assertRunningController,
+  measureUpgradeAvailability,
   returnedDatabaseConnections,
   returnedAgentSnapshot,
   selectRehearsalControllers,
@@ -843,6 +844,156 @@ test(
         return true;
       });
     }
+  },
+);
+
+test(
+  "upgrade availability observations retain failures and gaps without overlapping TLS requests",
+  { timeout: 20_000 },
+  async (t) => {
+    const tls = await harnessTlsFixture(t);
+    const key = `fixture-service-key-${randomUUID()}`;
+    const privateBytes = `private-response-${randomUUID()}`;
+    const observedRequests: {
+      method: string | undefined;
+      path: string | undefined;
+      key: unknown;
+    }[] = [];
+    let active = 0;
+    let peakActive = 0;
+    const timedOut = Promise.withResolvers<void>();
+    const server = createServer(tls, (incoming, response) => {
+      observedRequests.push({
+        method: incoming.method,
+        path: incoming.url,
+        key: incoming.headers["x-api-key"],
+      });
+      active++;
+      peakActive = Math.max(peakActive, active);
+      response.once("close", () => {
+        active--;
+      });
+      switch (observedRequests.length) {
+        case 2:
+          response.end(JSON.stringify({ data: { id: "other-installation" } }));
+          return;
+        case 3:
+          response.end(JSON.stringify({ data: { name: privateBytes } }));
+          return;
+        case 4:
+          response.writeHead(503);
+          response.end(JSON.stringify({ error: privateBytes }));
+          return;
+        case 5:
+          response.end(privateBytes);
+          return;
+        case 6: {
+          // A response that keeps arriving must still hit the total request deadline.
+          response.writeHead(200);
+          response.write(" ");
+          const timer = setInterval(() => response.write(" "), 50);
+          response.once("close", () => {
+            clearInterval(timer);
+            timedOut.resolve();
+          });
+          return;
+        }
+        default:
+          response.end(JSON.stringify({ data: { id: "original-installation" } }));
+      }
+    });
+    const port = await listen(t, server);
+    const request = createProductionTuiRequest({
+      baseURL: `https://localhost:${port}`,
+      ca: tls.caBundle,
+      serviceKey: () => key,
+      secrets: [key],
+    });
+    let evidence:
+      | {
+          samples: {
+            phase: string;
+            startedAt: string;
+            finishedAt: string;
+            elapsedMs: number;
+            gapMs: number | null;
+            outcome: string;
+          }[];
+          upgradeSucceeded: boolean;
+        }
+      | undefined;
+    const upgradeFailure = new Error("upgrade fixture failed");
+    // Exercise the same wrapper as the rehearsal. The controlled HTTPS server
+    // proves measurement and cleanup, not OCC authentication or a Helm upgrade.
+    await assert.rejects(
+      measureUpgradeAvailability(
+        request,
+        "original-installation",
+        async () => {
+          await timedOut.promise;
+          throw upgradeFailure;
+        },
+        async (details) => {
+          evidence = details as typeof evidence;
+        },
+      ),
+      (error: unknown) => error === upgradeFailure,
+    );
+    assert.ok(evidence);
+    assert.equal(evidence.upgradeSucceeded, false);
+    assert.deepEqual(
+      evidence.samples.map(({ outcome }) => outcome),
+      [
+        "ok",
+        "wrong-installation",
+        "invalid-response",
+        "http-error",
+        "request-error",
+        "timeout",
+        "ok",
+      ],
+    );
+    assert.deepEqual(
+      evidence.samples.map(({ phase }) => phase),
+      ["before", "during", "during", "during", "during", "during", "after"],
+    );
+    assert.equal(evidence.samples[0]?.gapMs, null);
+    for (const sample of evidence.samples) {
+      assert.ok(Number.isFinite(Date.parse(sample.startedAt)));
+      assert.ok(Date.parse(sample.finishedAt) >= Date.parse(sample.startedAt));
+      assert.ok(sample.elapsedMs >= 0);
+    }
+    assert.ok((evidence.samples[5]?.elapsedMs ?? 0) >= 4_900);
+    assert.ok(evidence.samples.slice(2, 6).every(({ gapMs }) => gapMs !== null && gapMs >= 900));
+    assert.equal(peakActive, 1);
+    assert.equal(active, 0);
+    assert.ok(
+      observedRequests.every(
+        (item) => item.method === "GET" && item.path === "/installation" && item.key === key,
+      ),
+    );
+    assert.ok(!JSON.stringify(evidence).includes(key));
+    assert.ok(!JSON.stringify(evidence).includes(privateBytes));
+
+    // A successful action also returns its value and completes its final sample.
+    const result = await measureUpgradeAvailability(
+      request,
+      "original-installation",
+      async () => "complete",
+      async (details) => {
+        evidence = details as typeof evidence;
+      },
+    );
+    assert.equal(result, "complete");
+    assert.equal(evidence.upgradeSucceeded, true);
+    assert.deepEqual(
+      evidence.samples.map(({ phase, outcome }) => [phase, outcome]),
+      [
+        ["before", "ok"],
+        ["during", "ok"],
+        ["after", "ok"],
+      ],
+    );
   },
 );
 

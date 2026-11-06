@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   protectedJSON,
   type FixtureRun,
@@ -291,8 +292,90 @@ type ExternalRequest = (
   method: "GET",
   path: string,
   body: undefined,
-  options: { authenticated: boolean },
-) => Promise<{ status?: number; body: unknown }>;
+  options: { authenticated: boolean; signal?: AbortSignal },
+) => Promise<{ status: number | undefined; body: unknown }>;
+
+// These observations describe the fixture's authenticated HTTPS route. They do
+// not establish continuous availability between requests or gate the upgrade.
+export async function measureUpgradeAvailability<T>(
+  request: ExternalRequest,
+  installationId: string,
+  upgrade: () => Promise<T>,
+  record: (details: object) => Promise<void>,
+) {
+  const samples: {
+    phase: "before" | "during" | "after";
+    startedAt: string;
+    finishedAt: string;
+    elapsedMs: number;
+    gapMs: number | null;
+    outcome:
+      "ok" | "http-error" | "invalid-response" | "wrong-installation" | "timeout" | "request-error";
+    status: number | undefined;
+  }[] = [];
+  let previousFinish: number | undefined;
+  const sample = async (phase: (typeof samples)[number]["phase"]) => {
+    const startedAt = new Date().toISOString();
+    const start = performance.now();
+    const signal = AbortSignal.timeout(5_000);
+    let outcome: (typeof samples)[number]["outcome"];
+    let status: number | undefined;
+    try {
+      const response = await request("GET", "/installation", undefined, {
+        authenticated: true,
+        signal,
+      });
+      status = response.status;
+      const body = response.body as { data?: { id?: unknown } } | null;
+      if (status !== 200) {
+        outcome = "http-error";
+      } else if (typeof body?.data?.id !== "string") {
+        outcome = "invalid-response";
+      } else {
+        outcome = body.data.id === installationId ? "ok" : "wrong-installation";
+      }
+    } catch {
+      // Transport errors can contain private response bytes. Retain only the category.
+      outcome = signal.aborted ? "timeout" : "request-error";
+    }
+    const finish = performance.now();
+    samples.push({
+      phase,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      elapsedMs: Math.round(finish - start),
+      gapMs: previousFinish === undefined ? null : Math.round(start - previousFinish),
+      outcome,
+      status,
+    });
+    previousFinish = finish;
+  };
+  await sample("before");
+  const stopped = new AbortController();
+  const observing = (async () => {
+    while (!stopped.signal.aborted) {
+      await sample("during");
+      await delay(1_000, undefined, { signal: stopped.signal }).catch(() => {});
+    }
+  })();
+  let upgradeSucceeded = false;
+  try {
+    const result = await upgrade();
+    upgradeSucceeded = true;
+    return result;
+  } finally {
+    stopped.abort();
+    // Join the final bounded request before taking the post-upgrade observation.
+    await observing;
+    await sample("after");
+    await record({
+      requestTimeoutMs: 5_000,
+      intervalAfterResponseMs: 1_000,
+      upgradeSucceeded,
+      samples,
+    });
+  }
+}
 
 async function assertReturnedInstallationAuthentication(
   request: ExternalRequest,
@@ -763,8 +846,15 @@ export async function rehearsePopulatedReturn({
     upgrade(["--preflight-only", "--evidence-dir", join(directory, "preflight")]),
   );
   await phase("Upgrade the controller and confirm authenticated OCC recovery", async () => {
-    await upgrade(["--evidence-dir", join(directory, "forward")]);
-    await verifyInstallation();
+    await measureUpgradeAvailability(
+      externalRequest,
+      installationId,
+      async () => {
+        await upgrade(["--evidence-dir", join(directory, "forward")]);
+        await verifyInstallation();
+      },
+      (details) => record("Forward upgrade API availability observations", details),
+    );
   });
   const candidateRelease = await helmStatus();
   assert.equal(candidateRelease.info.status, "deployed");
