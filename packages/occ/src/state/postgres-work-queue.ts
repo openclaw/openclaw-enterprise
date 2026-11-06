@@ -1174,6 +1174,11 @@ export class PostgresWorkQueue {
   }
 
   async hasRepositoryExecutionRedeployRequired(owner: RepositoryRevisionOwner): Promise<boolean> {
+    // Terminal maintenance commits its cleanup obligation in the same transaction.
+    // Most deployment reads have no withdrawal; use its indexed key before history.
+    if ((await this.repositoryExpiryState(owner)) === undefined) {
+      return false;
+    }
     const { namespaceId, agentId, revisionId } = owner;
     const found = await this.client.query(
       `SELECT 1 FROM occ.controller_work

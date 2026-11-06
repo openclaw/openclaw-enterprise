@@ -655,10 +655,8 @@ export class OpenShellGitRuntime {
     const scope = this.scope(revision);
     const admittedExecutionId = revision.egressPlan!.execution.executionId;
     const legacyPreview = revision.executionAdmission?.version === 6;
-    const mandatory =
-      revision.egressPlan?.repositoryGitAuthorization === "online-request" &&
-      scope.binding.profile !== githubInstallationProfile;
-    const preview = legacyPreview || requiresOriginalLauncher(revision, scope.binding.profile);
+    const mandatory = requiresOriginalLauncher(revision, scope.binding.profile);
+    const preview = legacyPreview || mandatory;
     if (
       (legacyPreview && workspace !== this.configuration.observedHookPreviewWorkspace) ||
       (preview && !this.routes)
