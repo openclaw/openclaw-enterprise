@@ -209,6 +209,10 @@ export const CreatePresetInvalidField = {
   ...story("createPresetInvalidField"),
   name: "Preset with an invalid field",
 };
+export const CreatePresetNonTextPrimary = {
+  ...story("createPresetNonTextPrimary"),
+  name: "Preset with a non-text primary",
+};
 export const CreateCapabilitiesDenied = {
   ...story("createCapabilitiesDenied"),
   name: "Permission check failed",

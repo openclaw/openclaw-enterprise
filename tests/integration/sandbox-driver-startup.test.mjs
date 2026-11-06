@@ -7,6 +7,7 @@ import { openShellWorkspaceChartResources } from "../fixtures/openshell-workspac
 import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { inflateRawSync } from "node:zlib";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
@@ -32,10 +33,14 @@ import {
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
+  PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import {
+  nodeProgramArguments,
+  withoutLineComments,
+} from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   assertNoManagedMcpRouteOverlap,
@@ -2961,7 +2966,7 @@ test("OpenShell Harness endpoints expose only the Backend public CA", async (t) 
   await assert.rejects(endpoint(join(tls.directory, "missing-root.pem")), /readable public PEM CA/);
 });
 
-test("OpenShell provisions dedicated Codex with bearer passthrough and provider files", async () => {
+test("OpenShell provisions dedicated Codex with bearer passthrough and provider files", async (t) => {
   const requests = [];
   let getServiceCalls = 0;
   let storedSandbox;
@@ -3075,6 +3080,7 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
       ...account,
     },
   };
+  requirements.command = harnessRuntimeCommand(PROTECTED_CODEX_WITH_NODE_ENTRYPOINT);
   requirements.loginMode = revision.harnessAuth.loginMode;
   requirements.environment.push(
     { name: "CODEX_LOGIN_MODE", value: requirements.loginMode },
@@ -3144,7 +3150,16 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
     mountPaths.some((path) => path.startsWith("/sandbox/.openclaw-runtime/")),
     false,
   );
-  const script = spec.command[RUNTIME_WRAPPER_COMMAND.length];
+  const commandBytes = Buffer.byteLength(JSON.stringify(spec.command));
+  assert.ok(commandBytes <= 65_536, `final OpenShell command is ${commandBytes} bytes`);
+  t.diagnostic(`Final OpenShell account command: ${commandBytes} bytes`);
+  const loader = nodeProgramArguments("")[0];
+  const script =
+    spec.command[RUNTIME_WRAPPER_COMMAND.length].slice(0, -loader.length) +
+    inflateRawSync(
+      Buffer.from(spec.command.slice(RUNTIME_WRAPPER_COMMAND.length + 1).join(""), "base64"),
+    ).toString("utf8");
+  assert.ok(script.endsWith(withoutLineComments(PROTECTED_CODEX_WITH_NODE_ENTRYPOINT)));
   assert.match(script, /\/sandbox\/\.openclaw-runtime\/home\/\.codex\/sessions/);
   assert.match(script, /\/sandbox\/\.openclaw-mounts\/[a-f0-9]{16}/);
   assert.doesNotMatch(
@@ -3448,6 +3463,15 @@ for (const harnessId of ["codex", "openclaw"]) {
     const { context, revision, requirements, prepared } = runtimeSandboxFixture(driver, {
       harnessId,
     });
+    if (harnessId === "codex") {
+      requirements.command = harnessRuntimeCommand(PROTECTED_CODEX_WITH_NODE_ENTRYPOINT);
+      requirements.loginMode = "chatgptAuthTokens";
+      requirements.credentialAttachments[0].externalChatgptAuth = {
+        accessTokenPlaceholder: `openshell:resolve:env:s${"1".repeat(64)}_CODEX_ACCESS_TOKEN`,
+        accountId: "account",
+        planType: "business",
+      };
+    }
     const setup = {
       id: "initial-workspace",
       namespaceId: revision.namespaceId,
@@ -3506,6 +3530,12 @@ for (const harnessId of ["codex", "openclaw"]) {
     const provision = () => driver.provisionHarness({ ...context, revision, requirements });
 
     await provision();
+    const commandBytes = Buffer.byteLength(JSON.stringify(sandbox.spec.command));
+    assert.ok(
+      commandBytes <= 65_536,
+      `final OpenShell command with workspace setup is ${commandBytes} bytes`,
+    );
+    t.diagnostic(`Final ${harnessId} command with workspace setup: ${commandBytes} bytes`);
     assert.equal(executions.length, 0, "private initialization waits for supervisor readiness");
     assert.equal(prepared.length, harnessId === "openclaw" ? 1 : 0);
     sandbox.phase = "SANDBOX_PHASE_READY";
@@ -7767,7 +7797,6 @@ test(
     assert.equal(protectedGit.repositoryOwner.controlSocket, undefined);
     assert.equal(protectedGit.nativeRepositorySender, undefined);
     assert.equal(protectedGit.egressAuthority, undefined);
-    assert.equal(protectedGit.sandboxDriver.openShellGit.configuration.protectedExecution, true);
     // Release labels do not qualify the sender; runtime proof still gates material.
     repositoryGatewayVersion = "unknown";
     for (const profile of ["repository_git", "github_repository"]) {

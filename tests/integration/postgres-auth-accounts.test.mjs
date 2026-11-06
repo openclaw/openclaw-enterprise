@@ -11,7 +11,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { signInToControllerApp } from "../helpers/auth-session.mjs";
 import { injectJson } from "../helpers/inject-json.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";

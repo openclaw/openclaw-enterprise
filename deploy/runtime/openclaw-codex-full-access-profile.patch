@@ -1,34 +1,85 @@
 diff --git a/extensions/codex/src/app-server/client.ts b/extensions/codex/src/app-server/client.ts
 --- a/extensions/codex/src/app-server/client.ts
 +++ b/extensions/codex/src/app-server/client.ts
-@@ -348,7 +348,29 @@
+@@ -352,7 +352,80 @@
          ),
        );
      }
 -    return this.requestWithOverloadRetry<T>(method, params, options);
-+    const verifyProviderPermission = (result: T): T => {
-+      // Codex can accept an explicit permission profile but return a more restrictive
-+      // sandbox. Honor that decision; do not expose the thread to code that starts a turn.
++    const verifyPermissionProfile = (result: T): T => {
 +      if (
-+        (method === "thread/start" ||
-+          method === "thread/resume" ||
-+          method === "thread/fork") &&
-+        isJsonObject(params) &&
-+        params.permissions === ":danger-full-access" &&
++        (method !== "thread/start" &&
++          method !== "thread/resume" &&
++          method !== "thread/fork") ||
++        !isJsonObject(params)
++      ) {
++        return result;
++      }
++      let requestedProfile: string | undefined;
++      if (typeof params.permissions === "string") {
++        requestedProfile = params.permissions;
++      } else if (
++        isJsonObject(params.config) &&
++        typeof params.config.default_permissions === "string"
++      ) {
++        requestedProfile = params.config.default_permissions;
++      }
++      // Managed requirements can refuse an explicit profile or a loaded thread can
++      // retain its earlier profile. Do not expose that thread for a model turn.
++      if (requestedProfile === ":danger-full-access") {
++        if (
++          !(
++            isJsonObject(result) &&
++            isJsonObject(result.sandbox) &&
++            result.sandbox.type === "dangerFullAccess"
++          )
++        ) {
++          throw new Error(
++            method +
++              ": Codex did not grant the requested :danger-full-access profile",
++          );
++        }
++      } else if (
++        requestedProfile !== undefined &&
 +        !(
 +          isJsonObject(result) &&
-+          isJsonObject(result.sandbox) &&
-+          result.sandbox.type === "dangerFullAccess"
++          isJsonObject(result.activePermissionProfile) &&
++          result.activePermissionProfile.id === requestedProfile
 +        )
 +      ) {
++        const requestSource =
++          typeof params.permissions === "string" ? "permissions" : "configDefault";
++        const configDefault = isJsonObject(params.config)
++          ? params.config.default_permissions
++          : undefined;
++        let selectors = "single";
++        if (typeof params.permissions === "string" && typeof configDefault === "string") {
++          selectors = params.permissions === configDefault ? "both-equal" : "both-different";
++        }
++        let comparison = "string-id-different";
++        if (!isJsonObject(result)) {
++          comparison = "nonobject-result";
++        } else if (!Object.hasOwn(result, "activePermissionProfile")) {
++          comparison = "field-absent";
++        } else if (result.activePermissionProfile === null) {
++          comparison = "field-null";
++        } else if (!isJsonObject(result.activePermissionProfile)) {
++          comparison = "field-not-object";
++        } else if (typeof result.activePermissionProfile.id !== "string") {
++          comparison = "id-not-string";
++        }
 +        throw new Error(
 +          method +
-+            ": Codex did not grant the requested :danger-full-access profile",
++            ": Codex did not grant the requested permission profile" +
++            " (requestSource=" + requestSource +
++            ", selectors=" + selectors + ", comparison=" + comparison + "). " +
++            "Ask your workspace administrator to verify profile availability and " +
++            "runtime compatibility before retrying.",
 +        );
 +      }
 +      return result;
 +    };
-+    return this.requestWithOverloadRetry<T>(method, params, options).then(verifyProviderPermission);
++    return this.requestWithOverloadRetry<T>(method, params, options).then(verifyPermissionProfile);
    }
 
    private async requestWithOverloadRetry<T>(
@@ -70,10 +121,11 @@ diff --git a/extensions/codex/src/app-server/thread-requests.ts b/extensions/cod
 +    CodexAppServerRuntimeOptions,
 +    "networkProxy" | "providerPermissionProfile" | "sandbox"
 +  >,
-+): Pick<CodexThreadStartParams, "sandbox"> & { permissions?: ":danger-full-access" } {
++): Pick<CodexThreadStartParams, "sandbox"> & { permissions?: string } {
    if (appServer.networkProxy) {
-     return {};
-   }
+-    return {};
++    return { permissions: appServer.networkProxy.profileName };
++  }
 +  // Legacy sandbox can be superseded by managed default_permissions. Only an outer
 +  // sandbox provider opts into the explicit profile; native requirements still take precedence.
 +  if (
@@ -81,19 +133,20 @@ diff --git a/extensions/codex/src/app-server/thread-requests.ts b/extensions/cod
 +    appServer.sandbox === "danger-full-access"
 +  ) {
 +    return { permissions: appServer.providerPermissionProfile };
-+  }
+   }
    return { sandbox: appServer.sandbox };
  }
 diff --git a/extensions/codex/src/app-server/turn-params.ts b/extensions/codex/src/app-server/turn-params.ts
 --- a/extensions/codex/src/app-server/turn-params.ts
 +++ b/extensions/codex/src/app-server/turn-params.ts
-@@ -114,7 +114,14 @@
+@@ -114,7 +114,15 @@
      // Catalog collaboration stays native; parent-local context exists only at inference egress.
      collaborationMode.settings.developer_instructions = null;
    }
 -  const useThreadPermissionProfile = options.appServer.networkProxy && !options.sandboxPolicy;
-+  const useThreadPermissionProfile =
-+    options.appServer.networkProxy && !options.sandboxPolicy;
++  const threadPermissionProfile = !options.sandboxPolicy
++    ? options.appServer.networkProxy?.profileName
++    : undefined;
 +  const providerPermissions =
 +    !options.sandboxPolicy &&
 +    !options.appServer.networkProxy &&
@@ -103,7 +156,7 @@ diff --git a/extensions/codex/src/app-server/turn-params.ts b/extensions/codex/s
    const currentSender = params.trigger === "user" ? readCodexCurrentSender(params) : undefined;
    // Codex emits only changed values and cannot retract omitted fragments from model history.
    // Always send configured-or-host context so warm threads see rollover and removed overrides.
-@@ -188,17 +195,19 @@
+@@ -188,17 +196,19 @@
        : {}),
      approvalPolicy: options.appServer.approvalPolicy,
      approvalsReviewer: options.appServer.approvalsReviewer,
@@ -120,8 +173,8 @@ diff --git a/extensions/codex/src/app-server/turn-params.ts b/extensions/codex/s
 -        }),
 +    ...(providerPermissions
 +      ? { permissions: providerPermissions }
-+      : useThreadPermissionProfile
-+        ? {}
++      : threadPermissionProfile
++        ? { permissions: threadPermissionProfile }
 +        : {
 +            sandboxPolicy:
 +              options.sandboxPolicy ??
@@ -134,3 +187,42 @@ diff --git a/extensions/codex/src/app-server/turn-params.ts b/extensions/codex/s
      ...(modelSelection
        ? { model: modelSelection.model, personality: CODEX_NATIVE_PERSONALITY_NONE }
        : {}),
+diff --git a/extensions/codex/src/app-server/side-question.ts b/extensions/codex/src/app-server/side-question.ts
+--- a/extensions/codex/src/app-server/side-question.ts
++++ b/extensions/codex/src/app-server/side-question.ts
+@@ -130,7 +130,10 @@
+   CodexThreadPolicyHandoffError,
+   refreshCodexThreadPolicy,
+ } from "./thread-policy.js";
+-import { buildCodexRuntimeThreadConfig } from "./thread-requests.js";
++import {
++  buildCodexRuntimeThreadConfig,
++  codexThreadSandboxOrPermissions,
++} from "./thread-requests.js";
+ import { resolveCodexToolAbortTerminalReason } from "./tool-abort-terminal-reason.js";
+ import { buildCodexTemporalAdditionalContext } from "./turn-params.js";
+ import type { CodexAppServerServerRequest, CodexThreadRouteScope } from "./turn-router.js";
+@@ -780,6 +783,9 @@
+                         approvalPolicy,
+                         approvalsReviewer: appServer.approvalsReviewer,
+                         ...(sandboxEnvironment || appServer.networkProxy ? {} : { sandbox }),
++                        ...(!sandboxEnvironment && appServer.networkProxy
++                          ? codexThreadSandboxOrPermissions(appServer)
++                          : {}),
+                         ...(serviceTier ? { serviceTier } : {}),
+                         config: threadConfig,
+                         developerInstructions: SIDE_DEVELOPER_INSTRUCTIONS,
+@@ -890,7 +896,12 @@
+                           nativeToolSurfaceEnabled,
+                         ),
+                       }
+-                    : { cwd }),
++                    : {
++                        cwd,
++                        ...(appServer.networkProxy
++                          ? codexThreadSandboxOrPermissions(appServer)
++                          : {}),
++                      }),
+                   model: modelSelection.model,
+                   ...(usesSupervisionConnection
+                     ? {}

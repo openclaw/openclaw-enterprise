@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 const envoyGateway = Object.freeze({
@@ -101,6 +102,37 @@ function sha256(data) {
   return createHash("sha256").update(data).digest("hex");
 }
 
+const manifestMaximumBytes = 32 * 1024 * 1024;
+
+class ManifestSizeError extends Error {
+  constructor() {
+    super("manifest exceeds its size limit");
+  }
+}
+
+async function readManifestBytes(chunks) {
+  let bytes = Buffer.alloc(0);
+  let length = 0;
+  for await (const chunk of chunks) {
+    if (chunk.length > manifestMaximumBytes - length) {
+      throw new ManifestSizeError();
+    }
+    const nextLength = length + chunk.length;
+    if (nextLength > bytes.length) {
+      const capacity = Math.min(
+        manifestMaximumBytes,
+        Math.max(65536, nextLength, bytes.length * 2),
+      );
+      const grown = Buffer.allocUnsafe(capacity);
+      bytes.copy(grown, 0, 0, length);
+      bytes = grown;
+    }
+    bytes.set(chunk, length);
+    length = nextLength;
+  }
+  return bytes.subarray(0, length);
+}
+
 const transientHttpStatus = /^(?:408|429|5\d\d)$/;
 // Connection, DNS, reset and timeout errors, matching the curl exit codes
 // download-pinned.sh retries. TLS certificate errors and bad URLs are not here.
@@ -134,8 +166,8 @@ export function isTransientFetchError(error) {
 
 // Same retry rule as scripts/ci/download-pinned.sh: transient network errors
 // and HTTP 408/429/5xx are retried (eight attempts, backoff doubling to a
-// 20 s cap; no retry starts after 120 s); any other error or HTTP status fails
-// at once. The caller verifies the checksum, never retried.
+// 20 s cap; schedule only when the delay fits the 120 s budget). Other errors
+// and HTTP statuses fail at once. The caller verifies the checksum, never retried.
 export async function fetchPinnedBytes(
   artifact,
   {
@@ -157,14 +189,17 @@ export async function fetchPinnedBytes(
         signal: AbortSignal.timeout(attemptTimeoutMs),
       });
       if (response.ok) {
-        return Buffer.from(await response.arrayBuffer());
+        return await readManifestBytes(response.body ?? []);
       }
       await response.body?.cancel();
       failure = `HTTP ${response.status}`;
       transient = transientHttpStatus.test(String(response.status));
     } catch (error) {
       cause = error;
-      failure = error.cause?.code ?? error.name ?? "network error";
+      failure =
+        error instanceof ManifestSizeError
+          ? "manifest exceeds its 32 MiB size limit"
+          : (error.cause?.code ?? error.name ?? "network error");
       transient = isTransientFetchError(error);
     }
     if (!transient || attempt >= attempts || Date.now() - started + delayMs > budgetMs) {
@@ -180,18 +215,33 @@ export async function fetchPinnedBytes(
   }
 }
 
-async function downloadPinnedArtifact({ artifact, directory }) {
+export async function downloadPinnedArtifact({ artifact, directory }) {
   const destination = join(directory, artifact.path);
   assertInsideDirectory(directory, destination, `${artifact.name} manifest`);
+  let cached;
   try {
-    const existing = await readFile(destination);
+    cached = await open(
+      destination,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    const info = await cached.stat();
+    if (!info.isFile() || info.uid !== process.getuid?.() || info.nlink !== 1) {
+      throw new Error("cached manifest must be an owned regular file");
+    }
+    if (info.size > manifestMaximumBytes) {
+      throw new ManifestSizeError();
+    }
+    const existing = await readManifestBytes(cached.createReadStream({ autoClose: false }));
     if (sha256(existing) === artifact.sha256) {
+      await cached.chmod(0o600);
       return destination;
     }
   } catch (error) {
     if (error.code !== "ENOENT") {
       throw error;
     }
+  } finally {
+    await cached?.close();
   }
 
   const data = await fetchPinnedBytes(artifact);
