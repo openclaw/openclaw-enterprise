@@ -14,7 +14,7 @@ import {
   portClash,
   queryPrometheus,
   waitForMonitoring,
-} from "../helpers/metrics-monitoring-readiness.mjs";
+} from "../helpers/metrics-monitoring-readiness.ts";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import { startMetricsListener } from "../../apps/controller/src/metrics/listener.ts";
 import { availablePort } from "../helpers/available-port.mjs";
