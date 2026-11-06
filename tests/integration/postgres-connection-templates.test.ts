@@ -28,7 +28,7 @@ const clientInput = (connectionTemplateId: string, connectionTemplateVersion = 1
   connectionTemplateVersion,
   displayName: "Example OAuth application",
   clientId: randomUUID(),
-  tokenEndpointAuthMethod: "client_secret_basic",
+  tokenEndpointAuthMethod: "client_secret_basic" as const,
   clientSecret: randomUUID(),
 });
 const manual = {
@@ -377,7 +377,10 @@ test(
           occurredAt: new Date().toISOString(),
           kind: "mutation" as const,
           actorId: principal.id,
-          action: `oauth_clients.${operation}`,
+          action:
+            operation === "create"
+              ? "openclaw.oauth_clients.create"
+              : "openclaw.oauth_clients.rotate_secret",
           resource: { kind: "installation" as const, id: installation.id },
           outcome: "success" as const,
           details: { oauthClientId: id, transactionProbe: probe },
