@@ -12,6 +12,8 @@ Git. Selecting it as a paired protected Driver is refused by the normal loader.
 The Driver also refuses protected revision inputs, credential attachments, a
 projected workload identity or initial workspace files before starting the Box.
 
+The Driver reports `serving` after an authenticated WebSocket upgrade. It does not send a JSON-RPC `initialize` request. Verify that the intended Codex server answers `initialize` before using the installation.
+
 ## Build and select
 
 From the repository root with the pinned Node and pnpm and the frozen
