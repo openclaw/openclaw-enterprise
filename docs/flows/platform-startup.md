@@ -259,8 +259,8 @@ execution begins in the adjacent
   required to prove gateway or Agent workload execution; startup tests alone do
   not establish that outcome.
 - With a selected ServiceAccount Driver, verify the admin key and ChatGPT client
-  exist only in the API process; provider-issued access tokens require the
-  genuine scenario in `tests/integration/service-account-driver-real.test.mjs`.
+  exist only in the API process. See [service-account coverage](../testing/slack.md#service-account-coverage)
+  for the checks and their limits.
 
 ## Related docs
 
@@ -285,6 +285,7 @@ execution begins in the adjacent
 
 - 2026-11-04 20:24: Refuse negative Kubernetes workload resources before persistence. (01a12074-7896-7f63-99fe-9f42e9041d02 - 9d714d63dd7d54b2b94546616f7d8c30571d70d3)
 
+- 2026-11-04 09:42: Remove the retired hosted Provider Account test from verification instructions; retain service-account implementation coverage. (authoring-run/390095eb-01a9-4e24-b609-791b49f19f81 - e2311f4d2250874d622ab12c2fe8588a076bd19b)
 - 2026-10-23: Pass the Installation's Credential Proxy request capacity from startup to the exchange registry.
 
 - 2026-10-21: Load the route validators and serializers the image build precompiled.

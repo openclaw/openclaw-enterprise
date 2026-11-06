@@ -5,8 +5,8 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { publishWorkflow, repository } from "../../scripts/ci/container-release.mjs";
-import { setEnvironment } from "../helpers/environment.mjs";
-import { prependPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { setEnvironment } from "../helpers/environment.ts";
+import { prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 test("publication aliases and recovery preserve producer bytes and identity", async (t) => {

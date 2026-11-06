@@ -13,14 +13,27 @@ import { createSecretReferenceField, renderSecretReference } from "./secret-pick
 import type { AgentAccessContext } from "./credential-access.mjs";
 import { createDeviceLogin, deviceLoginOffered, type DeviceLogin } from "./device-login.mjs";
 
+function primaryModel(defaults: Record<string, unknown>, entries: Record<string, unknown>[]) {
+  const selection = defaults.model ?? entries.find((entry) => entry.model)?.model;
+  const model = typeof selection === "string" ? selection : responseFields(selection).primary;
+  return typeof model === "string" ? model : undefined;
+}
+
+export function configuredModel(values: unknown) {
+  const agents = responseFields(responseFields(values).agents);
+  return primaryModel(
+    responseFields(agents.defaults),
+    Object.values(responseFields(agents.entries)).map(responseFields),
+  );
+}
+
 // Display native model policy; deployment admission owns full Configuration validation.
 export function configuredHarnessId(values: unknown): "codex" | "openclaw" | undefined {
   const { agents, models } = responseFields(values);
   const agentPolicy = responseFields(agents);
   const defaults = responseFields(agentPolicy.defaults);
   const entries = Object.values(responseFields(agentPolicy.entries)).map(responseFields);
-  const selection = defaults.model ?? entries.find((entry) => entry.model)?.model;
-  const model = typeof selection === "string" ? selection : responseFields(selection).primary;
+  const model = primaryModel(defaults, entries);
   if (typeof model !== "string") {
     return undefined;
   }

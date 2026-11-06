@@ -1,3 +1,7 @@
+import {
+  openCreateSecretDialog,
+  createAgentThroughForm,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -17,9 +21,8 @@ import {
   setSlackSelection,
   waitForEnabled,
   isMaskedSecretValue,
-} from "./console-agents-browser-helpers.mjs";
-import { openCreateSecretDialog, createAgentThroughForm } from "./console-agents-test-support.mjs";
-import { expectDeploymentOutcome } from "./console-deployment-activity-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { expectDeploymentOutcome } from "./console-deployment-activity-helpers.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 function assertChannelOnlySlackAccess(configuration: unknown) {

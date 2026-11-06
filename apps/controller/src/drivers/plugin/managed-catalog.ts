@@ -252,11 +252,8 @@ if (
 /** A selection holds references only. Installation without an account remains valid. */
 export function managedCredentialBinding(
   selections: PluginDesiredState | undefined,
-  install = managedCliInstalls.find(({ id }) => selections?.[id]?.driverPolicy !== undefined),
+  install: ManagedCliInstall,
 ) {
-  if (!install) {
-    return undefined;
-  }
   const selection = selections?.[install.id];
   const policy = selection?.driverPolicy;
   if (policy === undefined) {
@@ -285,14 +282,17 @@ export function managedCredentialBinding(
   return { install, slot, sourceId, credential };
 }
 
+export function managedCliCredentialBindings(selections: PluginDesiredState | undefined) {
+  return managedCliInstalls
+    .map((install) => managedCredentialBinding(selections, install))
+    .filter((binding) => binding !== undefined);
+}
+
 /** Upstream tool names belong to one pinned MCP server. */
 export function managedMcpCredentialBinding(
   selections: PluginDesiredState | undefined,
-  install = managedMcpInstalls.find(({ id }) => selections?.[id]?.driverPolicy !== undefined),
+  install: ManagedMcpInstall,
 ) {
-  if (!install) {
-    return undefined;
-  }
   const selection = selections?.[install.id];
   const policy = selection?.driverPolicy;
   if (policy === undefined) {
@@ -335,6 +335,40 @@ export function managedMcpCredentialBinding(
     );
   }
   return { install, sourceId, toolNames: selected as string[] };
+}
+
+export function managedMcpCredentialBindings(
+  selections: PluginDesiredState | undefined,
+  installs = managedMcpInstalls,
+) {
+  const servers = new Set<string>();
+  const tools = new Set<string>();
+  const bindings = [];
+  for (const install of installs) {
+    if (selections?.[install.id]?.enabled) {
+      if (servers.has(install.server)) {
+        throw new ConfigurationHarnessError(
+          `Two enabled MCP packages use the same worker server name: ${install.server}.`,
+        );
+      }
+      servers.add(install.server);
+    }
+    const binding = managedMcpCredentialBinding(selections, install);
+    if (!binding) {
+      continue;
+    }
+    for (const name of binding.toolNames) {
+      const alias = `oce_mcp_${install.server}_${name}`.toLowerCase();
+      if (tools.has(alias)) {
+        throw new ConfigurationHarnessError(
+          `Two selected MCP tools use the same Gateway name: ${alias}. Deselect one of them.`,
+        );
+      }
+      tools.add(alias);
+    }
+    bindings.push(binding);
+  }
+  return bindings;
 }
 
 export function managedMcpInstallForSourceConfig(

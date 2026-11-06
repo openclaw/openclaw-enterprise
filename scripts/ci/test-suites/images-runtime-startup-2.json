@@ -11,7 +11,8 @@
     "tests/integration/runtime-image-model-probe-outcomes.test.mjs",
     "tests/integration/runtime-image-startup-probe.test.mjs",
     "tests/integration/runtime-image-startup-termination.test.mjs",
-    "tests/integration/sandbox-driver-startup.test.mjs"
+    "tests/integration/sandbox-driver-startup.test.mjs",
+    "tests/integration/runtime-image-codex-readiness.test.ts"
   ],
   "files": [
     {
@@ -73,6 +74,10 @@
       "expectedTests": [
         "Docker Compute leaves a slow workspace setup its state lock until setup ends"
       ]
+    },
+    {
+      "path": "tests/integration/runtime-image-codex-readiness.test.ts",
+      "expectedTests": ["runtime image Codex readiness requires a successful initialization RPC"]
     }
   ]
 }

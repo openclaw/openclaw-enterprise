@@ -1,3 +1,9 @@
+---
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
+---
+
 # OpenShell tests
 
 ## Overview
@@ -151,7 +157,7 @@ history. It also needs Docker, k3d, kubectl, Helm, `openssl`, and
 network access to the pinned assets. The CI preparation creates a disposable
 cluster, installs the OpenShell and Agent Sandbox prerequisites, imports
 immutable images, and prepares PostgreSQL. A standard k3d cluster alone is not
-sufficient. See the [CI lane guide](ci.md#manual-full-integration-lanes) for the hosted run.
+sufficient. See the [CI lane guide](ci/full-integration.md#scenarios) for the hosted run.
 
 To run the same lane locally, export both credentials and the model through your
 approved credential workflow. Preparation builds the controller unless
@@ -252,10 +258,21 @@ directory when finished.
 ### Guided native OpenClaw redeployment
 
 `tests/integration/local-first-agent-real.test.mjs` runs in both Compose-plus-k3d
-and Kubernetes-only first-Agent stacks. It first proves Codex with a `codex-pat`
-source, then creates a separate `openai` source from `OPENAI_API_KEY` for guided
-native OpenClaw provisioning. The native case uses the pinned runtime and
-production Drivers without the k3d helper's compatibility bridge.
+and Kubernetes-only first-Agent stacks. Each stack is created by the public Local
+Setup installer, including OpenShell installation. Hosted focused jobs prepare
+current-source images through the [CI image path](ci.md); local runs retain source
+builds in the installer.
+The initial invocation checks a fresh nonce and a custom prompt. Reuse checks a
+new nonce without repeating the custom prompt, with credentials removed from the
+helper environment. It must retain the exact Agent, revision, Namespace, and
+model. Stage timings are retained in the [CI results](ci/openshell-execution.md#interpret-timing-and-proof).
+
+After verifying the ready default Namespace created by Local Setup, the test
+runs distinct Codex and native Agents concurrently. Codex uses its `codex-pat`
+source; native OpenClaw uses a separate `openai` source from `OPENAI_API_KEY`.
+The test drains both operations before shared denial checks and stack teardown.
+The native case uses the pinned runtime and production Drivers without the k3d
+helper's compatibility bridge.
 
 To exercise an OpenAI-compatible service, set
 `OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE` to a private JSON file containing
@@ -270,7 +287,12 @@ changing only the embedded QA preset does not exercise this path.
 
 The case edits `USER.md` through the workspace API and verifies its marker through
 real model execution and `exec`. That turn writes a unique file in its session
-worktree. After a normal redeployment, the case checks replacement Sandbox and
+worktree. It waits for the enrolled node's actual setup expiry before a normal
+redeployment, adding up to ten minutes to the case. The successor must retain
+the owned setup Secret, credential, expiry and device identity while recording
+its own enrolled revision. Completion receipts must match while retained by the
+Gateway; after its 20-minute retention window, empty status is allowed. Durable
+Secret and execution assertions still apply; emitted events are not counted. The case also checks replacement Sandbox and
 Pod UIDs, the retained workspace PVC/subpath, and every owner file's bytes. It
 then resumes the same session ID and key, requiring another model turn and `exec`
 to read the original file with its original hash. Run placement must identify the

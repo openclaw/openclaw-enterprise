@@ -9,7 +9,8 @@
     "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
     "OCC_TEST_PRODUCTION_POSTGRES_IMAGE",
     "OCC_TEST_PRODUCTION_NODE_IMAGE",
-    "OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE"
+    "OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE",
+    "OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE"
   ],
   "prepare": {
     "k3d": true,
@@ -24,7 +25,20 @@
     {
       "path": "tests/integration/production-observability-k3d.test.mjs",
       "expectedTests": [
-        "Helm defaults expose private OCC metrics and operational logs through real collection"
+        "Helm defaults expose private OCC metrics and operational logs through real collection",
+        "worker observer retains two real restartable-init worker exits"
+      ]
+    },
+    {
+      "path": "tests/integration/worker-termination-observer.test.ts",
+      "expectedTests": [
+        "worker observer retains distinct exits through kubectl and OTLP without Pod payloads"
+      ]
+    },
+    {
+      "path": "tests/integration/installation-receipt-k3d-real.test.ts",
+      "expectedTests": [
+        "production installation receipts survive interruption before and after Job capture"
       ]
     }
   ]

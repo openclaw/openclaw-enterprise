@@ -118,6 +118,8 @@ function normalizeFile(file, laneName, index, issues) {
   return {
     path: file.path,
     expectedTests: stringArray(file.expectedTests, `${path}.expectedTests`, issues),
+    requiredEnv: stringArray(file.requiredEnv, `${path}.requiredEnv`, issues),
+    optionalEnv: stringArray(file.optionalEnv, `${path}.optionalEnv`, issues),
   };
 }
 
@@ -486,6 +488,8 @@ function mergeEnv(...objects) {
 
 function shouldRemoveInheritedEnv(name) {
   return (
+    name === "ACTIONS_RUNTIME_TOKEN" ||
+    name === "ACTIONS_RESULTS_URL" ||
     name === "KEEP" ||
     name === "DEBUG" ||
     name === "NODE_TEST_CONTEXT" ||
@@ -1079,6 +1083,8 @@ function imageDigests(env) {
     pairBroker: "OCC_PROBE_BROKER_IMAGE",
     pairOldController: "OCC_PROBE_OLD_CONTROLLER_IMAGE",
     pairOldBroker: "OCC_PROBE_OLD_BROKER_IMAGE",
+    releasedController: "OCC_TEST_RELEASED_CONTROLLER_IMAGE",
+    candidateController: "OCC_TEST_CANDIDATE_CONTROLLER_IMAGE",
   };
   return Object.fromEntries(
     Object.entries(names).flatMap(([role, name]) => {
@@ -1218,12 +1224,13 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     issues.push(laneDeadlineIssue(relativePath));
   }
 
+  const requiredEnv = [...lane.requiredEnv, ...file.requiredEnv];
   const env = mergeEnv(
-    baseChildEnv([...lane.requiredEnv, ...lane.optionalEnv]),
+    baseChildEnv([...requiredEnv, ...lane.optionalEnv, ...file.optionalEnv]),
     lane.env,
     prepared.env,
   );
-  for (const name of lane.requiredEnv) {
+  for (const name of requiredEnv) {
     if (env[name] === undefined || env[name] === "") {
       issues.push(
         issue("missing-env", `lane ${lane.name} requires env ${name}`, {

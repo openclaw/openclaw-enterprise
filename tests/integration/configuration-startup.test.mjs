@@ -21,7 +21,7 @@ import {
   isDevelopmentBrowserOrigin,
 } from "../../apps/controller/src/auth/configuration.ts";
 import { PresetFileError } from "../../apps/controller/src/composition/installation-presets.ts";
-import { openShellRepositoryConfiguration } from "../../apps/controller/src/composition/installation-fields.ts";
+import { openShellRepositoryConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
 import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "../../apps/controller/src/composition/production-harness.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";

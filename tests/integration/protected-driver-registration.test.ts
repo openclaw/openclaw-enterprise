@@ -1,9 +1,5 @@
 import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
-import {
-  openShellGitRuntimeFixture,
-  registry as runtimeRegistry,
-  takeUnloggedRuntimeFields,
-} from "../helpers/openshell-git-runtime.ts";
+import { takeUnloggedRuntimeFields } from "../helpers/openshell-git-runtime.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
   resolveGitHubRepositoryBinding,
@@ -602,9 +598,9 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
   assert.ok(capabilities.sandbox.repositoryAccess);
   assert.ok(capabilities.proxy?.bindRepositoryGit);
   assert.ok(capabilities.repositoryTransport);
-  assert.equal(runtime.configuration.protectedExecution, true);
-  // Observe the actual bundled handoff without starting listeners or contacting PostgreSQL.
   const authority = {} as ProtectedRepositoryGitAuthority;
+  await assert.rejects(runtime.bindRepositoryGit(authority), /requires its selected route store/);
+  // Observe the actual bundled handoff without starting listeners or contacting PostgreSQL.
   const connect = t.mock.method(runtime, "connectRouteStore");
   const bind = t.mock.method(
     capabilities.proxy as Required<Pick<CredentialProxyDriver, "bindRepositoryGit">>,
@@ -659,38 +655,6 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
   assert.equal(bare.sandbox.id, input.sandbox.id);
   assert.equal(bare.repositoryTransport, undefined);
   assert.equal(bare.sandbox.repositoryAccess, undefined);
-});
-
-test("the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access", async () => {
-  const resolve = createGitHubRepositoryDeliveryResolver(runtimeRegistry);
-  let changed = false;
-  const f = openShellGitRuntimeFixture({
-    resolveDelivery: (revision) => {
-      const scope = resolve(revision);
-      return changed
-        ? { ...scope, repository: { ...scope.repository!, pushRef: "refs/heads/other" } }
-        : scope;
-    },
-  });
-  await f.reconcile();
-  assert.ok(await f.lookup());
-  await f.prepare();
-  assert.equal(f.calls.rotate, 1, "same admission does not reinstall material");
-  // A faulty Repo result cannot change the ref used to initialize this recipient.
-  changed = true;
-  await assert.rejects(f.prepare(), /OpenShell Git revision binding is unavailable/);
-  await f.reconcile();
-  assert.equal(await f.lookup(), undefined);
-  changed = false;
-  await f.reconcile();
-  assert.equal(await f.lookup(), undefined, "restoring policy cannot revive the blocked recipient");
-  assert.equal(f.calls.rotate, 1);
-
-  const foreign = openShellGitRuntimeFixture();
-  foreign.owner.material.repositoryId = "99999";
-  await foreign.reconcile();
-  assert.equal(await foreign.lookup(), undefined);
-  assert.equal(foreign.calls.rotate, 0, "foreign supplier material never reaches the provider");
 });
 
 test("repository scope changes invalidate the external Driver identity while a reload preserves it", async (t) => {

@@ -30,7 +30,10 @@ type Drafts = ReturnType<ReturnType<typeof createDraftStore>["scope"]>;
 
 interface ChannelDraft {
   provider: string;
-  baseline: string | undefined;
+  baseline: {
+    fingerprint: string | undefined;
+    configurationId: string | undefined;
+  };
   initial: Record<string, FieldValue>;
   initialSecretBindings: SecretBindings | undefined;
   fields: Record<string, FieldValue>;
@@ -589,13 +592,6 @@ export function input(id: string, value: string, attrs: Record<string, string | 
 const listValues = (value: string) => uniqueList(value.split(","));
 const sameSource = (left: SecretReference | undefined, right: SecretReference | undefined) =>
   left === undefined ? right === undefined : refsEqual(left, right ?? {});
-const configurationOf = (baseline: string | undefined): unknown => {
-  try {
-    return JSON.parse(baseline ?? "")?.[0];
-  } catch {
-    return undefined;
-  }
-};
 
 function fieldValue(control: Control): FieldValue {
   return "checked" in control
@@ -703,7 +699,14 @@ function openDrawer(
   // A draft carried through a save conflict applies over the settings Reload draft rereads
   // (finding 1504). Reached any other way, it reopens like any retained draft.
   const carried = retained?.carried && retained.reloaded ? draftChanges(retained) : null;
-  const stale = retained && !carried && retained.baseline !== state.drawerContext.baseline;
+  const baseline =
+    retained && !carried
+      ? retained.baseline
+      : {
+          fingerprint: state.drawerContext.baseline,
+          configurationId: state.drawerContext.configurationId,
+        };
+  const stale = retained && !carried && baseline.fingerprint !== state.drawerContext.baseline;
   const unresolved = retained?.unresolved;
   if (carried && retained) {
     if (carried.secrets.length) {
@@ -864,7 +867,7 @@ function openDrawer(
   }
   const captureDraft = (): ChannelDraft => ({
     provider: provider.id,
-    baseline: (!carried && retained?.baseline) || state.drawerContext.baseline,
+    baseline,
     initial,
     initialSecretBindings,
     edited: [...edited],
@@ -1052,7 +1055,9 @@ export function renderChannelSection(
       // Carried edits apply only to the Configuration they were made on: another browser may
       // have moved this Agent to one other Agents share (finding 1510).
       const moved =
-        carried && configurationOf(retained.baseline) !== configurationOf(drawerContext.baseline);
+        carried &&
+        (!retained.baseline.configurationId ||
+          retained.baseline.configurationId !== drawerContext.configurationId);
       const opened = provider && !moved && openDrawer(section, state, provider, retained);
       if (carried && !opened) {
         // A declined carried draft would otherwise reopen on a later visit.

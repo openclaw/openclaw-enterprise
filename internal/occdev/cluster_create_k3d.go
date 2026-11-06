@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 )
 
@@ -28,7 +29,9 @@ func (r *runner) createK3dCluster(ctx context.Context, args ...string) error {
 		cmd := r.command(ctx, "k3d", args...)
 		cmd.Stdout = io.MultiWriter(r.opts.Out, output)
 		cmd.Stderr = io.MultiWriter(r.opts.Err, output)
+		started := time.Now()
 		err := cmd.Run()
+		r.commandTiming("k3d", args, started, err)
 		if err == nil {
 			return nil
 		}

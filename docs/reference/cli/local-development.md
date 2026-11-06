@@ -5,6 +5,11 @@ profile. They use local development configuration, not the remote connection or
 output options in the [CLI command reference](../cli.md). Kubernetes is the supported
 local setup for deploying an Agent; follow [Local Setup](../../guides/quickstart.md).
 
+The CLI uses the nearest enclosing checkout identified by its OCE `go.mod` and
+`compose.yaml`. If that `go.mod` contains CRLF line endings, both commands stop
+with a repair error. Convert the file to LF and retry; the CLI does not continue
+to an outer checkout that could own a different stack.
+
 | Command                                         | What it does                                                                                                                                                                   |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `occ dev up`                                    | Starts the profile selected by `OCC_DEVELOPMENT_COMPUTE_DRIVER`: `docker` (default) or `kubernetes`. Docker is a control-plane preview and cannot deploy Agents.               |
@@ -25,3 +30,11 @@ profile; the Compute and Sandbox Driver settings select the implementation.
 When `scripts/dev-up` fails on the Docker profile, `occ dev up` exits with the
 script's status (`2` for a usage or configuration error) and prints nothing
 beyond the script's own message.
+
+The Go Local Setup commands write `[occ-dev-timing]` records to the progress output for
+image builds, pulls, exports/imports, cluster creation, Compose startup, Helm
+installation, and Kubernetes readiness waits. Each record contains a fixed stage,
+elapsed milliseconds, and whether the command failed. It excludes arguments,
+environment values, and subprocess output. Concurrent commands overlap, so their
+durations must not be added as total startup time. These records do not change
+command cancellation, readiness checks, or failure handling.

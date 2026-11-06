@@ -78,6 +78,12 @@ ambient kubeconfig fallback, unverified TLS, caller-selected Kubernetes
 namespaces, or caller-selected Kubernetes Secret names. Backend identity is
 OCC-owned metadata.
 
+## Installation-private OAuth client secrets
+
+Helm provisions a separate Kubernetes namespace for confidential registrations and configures both the API and worker to use it. Outside Helm, use `OCC_INSTALLATION_SECRET_NAMESPACE` to select a dedicated namespace. The driver defaults to `oce-installation-secrets`. Grant the API permission to get, create, update, and delete Secrets there. Grant the worker get and delete. Keep workloads and tenant RoleBindings out of this namespace.
+
+The Driver creates one Opaque Secret per registration. Rotation replaces its value in place. Before using or deleting the Secret, the Driver checks its Installation, registration, and Driver identity. Kubernetes resource versions fence concurrent changes.
+
 ## Create a Namespace-owned Secret
 
 Create the Secret after the OpenClaw Namespace is ready. An Agent does not need

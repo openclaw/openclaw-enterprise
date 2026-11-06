@@ -7,13 +7,16 @@
     "node": ">=24"
   },
   "scripts": {
+    "typecheck": "tsc --pretty false",
     "prepare:assets": "node prepare-assets.ts",
     "dev": "node prepare-assets.ts && storybook dev --host 127.0.0.1 -p 6006 --no-open --disable-telemetry",
-    "build": "node prepare-assets.ts && storybook build --output-dir dist/site --disable-telemetry"
+    "build": "pnpm typecheck && node prepare-assets.ts && storybook build --output-dir dist/site --disable-telemetry"
   },
   "devDependencies": {
     "@storybook/html-vite": "10.6.0",
+    "@types/node": "24.19.2",
     "storybook": "10.6.2",
+    "typescript": "7.0.2",
     "vite": "7.3.7"
   }
 }

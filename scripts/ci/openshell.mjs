@@ -4,6 +4,7 @@ import { chmod, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { request } from "node:https";
+import { downloadPinnedArtifact } from "./routing.mjs";
 
 const openShellVersion = "0.1.6";
 const openShellRevision = "ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47";
@@ -273,8 +274,16 @@ async function acquireOpenShellCharts(execFile, helm, directory) {
 }
 
 async function installAgentSandbox(execFile, kubectl, cluster, directory) {
-  const manifestPath = join(directory, `agent-sandbox-${agentSandboxVersion}.yaml`);
-  await downloadVerified(agentSandboxManifestUrl(), manifestPath, agentSandboxManifestSha256);
+  const manifestPath = await downloadPinnedArtifact({
+    artifact: {
+      name: "Agent Sandbox",
+      version: agentSandboxVersion,
+      url: agentSandboxManifestUrl(),
+      path: `agent-sandbox-${agentSandboxVersion}.yaml`,
+      sha256: agentSandboxManifestSha256,
+    },
+    directory,
+  });
   await execFile(kubectl, kubectlArgs(cluster, ["apply", "-f", manifestPath]));
   await execFile(kubectl, kubectlArgs(cluster, ["get", "crd", "sandboxes.agents.x-k8s.io"]));
   await execFile(

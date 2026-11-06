@@ -40,6 +40,7 @@ import {
   ServiceAccountId,
   Timestamp,
   WorkspaceFileName,
+  PluginCatalogHarnessId,
   PluginApprovalModeSchema,
   PluginReviewerSchema,
 } from "./common.ts";
@@ -314,6 +315,11 @@ const CredentialSourceCatalogSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const InstallationPluginDiscoverySchema = Type.Object(
+  { credential: PluginDiscoveryCredentialSchema },
+  { additionalProperties: false },
+);
+
 const InstallationCapabilitiesSchema = Type.Object(
   {
     nativeAdmin: Type.Optional(Type.Literal(true)),
@@ -329,10 +335,18 @@ const InstallationCapabilitiesSchema = Type.Object(
         { additionalProperties: false },
       ),
     ),
-    pluginDiscovery: Type.Optional(
-      Type.Object({ credential: PluginDiscoveryCredentialSchema }, { additionalProperties: false }),
+    pluginCatalogs: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            harnessId: PluginCatalogHarnessId,
+            pluginPolicies: PluginPolicyCapabilitiesSchema,
+            pluginDiscovery: Type.Optional(InstallationPluginDiscoverySchema),
+          },
+          { additionalProperties: false },
+        ),
+      ),
     ),
-    pluginPolicies: Type.Optional(PluginPolicyCapabilitiesSchema),
     nativeWorkers: Type.Optional(
       Type.Object(
         { support: Type.Union([Type.Literal("pinned-runtime"), Type.Literal("custom-image")]) },
@@ -415,6 +429,7 @@ export const AgentSchema = Type.Object(
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: HarnessExecutionModeSchema,
     gatewayManagedMode: GatewayManagedModeSchema,
+    pluginDriver: Type.Optional(Type.Ref("PluginDriverIdentity")),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingSelectionsSchema),
@@ -446,7 +461,7 @@ const ConfigurationReadErrorSchema = Type.Object(
 );
 
 const agentReadDescription =
-  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources.";
+  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources.";
 
 export const AgentReadSchema = Type.Union(
   [
@@ -454,6 +469,7 @@ export const AgentReadSchema = Type.Union(
     Type.Object(
       {
         ...Type.Omit(AgentSchema, [
+          "pluginDriver",
           "plugins",
           "pluginApprovers",
           "repositoryBindings",
@@ -669,10 +685,14 @@ export const CredentialSourceSchema = Type.Object(
     name: Name,
     type: CredentialSourceType,
     ownerCapability: Type.Union(
-      [Type.Literal("credential_gateway"), Type.Literal("credential_proxy")],
+      [
+        Type.Literal("credential_gateway"),
+        Type.Literal("credential_proxy"),
+        Type.Literal("token_service"),
+      ],
       {
         description:
-          "The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership.",
+          "The Token Service owns saved accounts. Other sources belong to the Driver that admitted them.",
       },
     ),
     config: CredentialSourceConfig,
@@ -838,6 +858,29 @@ export const NamespaceSecretPermissionsResponse = Type.Object(
           description:
             "The IDs of the Namespace's Secrets that the caller may read but the selected IAM Driver does not allow Secret operate on now, sorted. Agent creation needs Secret operate on each Secret it binds or uses: its Harness authentication source, its Configuration's Secret bindings, and a directory search Secret. Empty when it is not reported: reported only to a caller who may create an Agent in this Namespace. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
         }),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
+// A member who may create Agents here cannot read the Installation; this answer gives that caller
+// the capabilities the Agent create form needs (RFC-0026).
+export const NamespaceAgentCapabilitiesResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        capabilities: Type.Omit(
+          InstallationCapabilitiesSchema,
+          ["nativeAdmin", "agentProvisioning"],
+          {
+            additionalProperties: false,
+            description:
+              "The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It omits nativeAdmin and agentProvisioning, which apply only to guided provisioning and need Installation administration.",
+          },
+        ),
       },
       { additionalProperties: false },
     ),
@@ -2018,6 +2061,9 @@ export type AgentRevisionWire = Type.Static<typeof AgentRevisionSchema>;
 export type AgentDeploymentStatusWire = Type.Static<typeof AgentDeploymentStatusSchema>;
 export type AgentDeploymentDiagnosticsWire = Type.Static<typeof AgentDeploymentDiagnosticsSchema>;
 export type InstallationResponse = Type.Static<typeof InstallationResponse>;
+export type NamespaceAgentCapabilitiesResponse = Type.Static<
+  typeof NamespaceAgentCapabilitiesResponse
+>;
 export type InstallationDeploymentInventoryResponse = Type.Static<
   typeof InstallationDeploymentInventoryResponse
 >;
