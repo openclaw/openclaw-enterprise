@@ -71,6 +71,7 @@ type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
     description: string;
     path?: string;
     buildRevision?: string;
+    debugEnabled?: boolean;
     actions?: readonly StoryAction[];
     rules?: readonly AuthoredRule[];
     steps?: readonly string[];
@@ -256,7 +257,8 @@ const authoredScenarios = {
   runtimeImages: {
     group: "Pages/Navigation",
     name: "Debug runtime images",
-    path: "/console/agents?debug=true",
+    path: "/console/agents",
+    debugEnabled: true,
     buildRevision: "1234567890abcdef1234567890abcdef12345678",
     runtimeImages: {
       status: "observed",
@@ -281,13 +283,14 @@ const authoredScenarios = {
     },
     actions: [{ selector: ".runtime-debug-images summary", click: true }],
     description:
-      "Inspect the OCE commit and each Agent's observed runtime images. Expand an Agent, compare the gateway image ID, Enterprise source commit, and upstream OpenClaw commit, then navigate to Namespaces: debug=true remains enabled. Remove the flag to hide diagnostics.",
+      "Inspect the OCE commit and each Agent's observed runtime images. Expand an Agent, compare the gateway image ID, Enterprise source commit, and upstream OpenClaw commit, then navigate to Namespaces: Debug mode remains enabled. Turn it off in Settings to hide diagnostics.",
     gap: "Simulated image identities demonstrate presentation. Native Driver integration verifies actual Docker and Kubernetes observations separately.",
   } satisfies LocalScenario,
   runtimeImagesUnavailable: {
     group: "Pages/Navigation",
     name: "Debug metadata unavailable",
-    path: "/console/agents?debug=true",
+    path: "/console/agents",
+    debugEnabled: true,
     rules: [{ suffix: "/runtime-images", status: 503 }],
     actions: [{ selector: ".runtime-debug-images summary", click: true }],
     description:
@@ -1154,7 +1157,8 @@ const authoredScenarios = {
   buildRevision: {
     group: "Components/Navigation",
     name: "OCC build revision",
-    path: "/console/agents?debug=true",
+    path: "/console/agents",
+    debugEnabled: true,
     buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
     description:
       "Approved OpenClaw mech mascot beside the OpenClaw Enterprise wordmark and an eight-character OCC commit. Check the mascot at desktop and mobile widths, then hover the version for the full hash. This revision is simulated.",
@@ -1162,7 +1166,8 @@ const authoredScenarios = {
   developmentBuild: {
     group: "Components/Navigation",
     name: "OCC development build",
-    path: "/console/agents?debug=true",
+    path: "/console/agents",
+    debugEnabled: true,
     description:
       "Approved OpenClaw mech mascot beside the OpenClaw Enterprise wordmark with an adjacent dev label when OCC build metadata is unavailable. No checkout or gateway revision is inferred.",
   } satisfies LocalScenario,

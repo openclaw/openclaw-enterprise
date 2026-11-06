@@ -45,7 +45,7 @@ replacement semantics, source consent, supported authentication, and network lim
 5. Update current provider reference, deployment guides, runtime flows, and
    generated API documentation. Complete validation and independent review.
 
-## Verification
+## Initial implementation verification
 
 | Outcome                                                                                | Evidence                                                                                                                                            | Result                                                             |
 | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
@@ -75,10 +75,9 @@ The implementation includes deployment preview, normalized first-intent identity
 resolved Compute settings, source consent checks, Proxy route revalidation, CLI
 and Console controls, and baseline override retention in image upgrades.
 
-[Console screenshots and video](https://gist.github.com/kevinlin-openai/a74a353fbf02fc15918dc00067a90e44)
-show `Pages/Agent detail/Harness overrides`, `Harness preview loading`,
-`Harness preview denied`, and `Harness preview unavailable`. The uploaded bytes
-were checked against the inspected local captures. Storybook does not establish
+The initial source was visually verified with rebuilt Storybook. Its captures used
+the then-permitted gist delivery. Main now requires native GitHub attachments;
+the merge record below owns current media status. Storybook does not establish
 backend persistence, credential delivery, deployment, or model execution.
 
 Live QA needs two authorized endpoint URLs, private API-key file paths, and a
@@ -97,6 +96,32 @@ required before merge.
 Pages between 1,500 and 2,500 words remain together because each owns one complete
 Driver contract or runtime workflow. Repeated provider details link to the owning
 reference. No documentation length exception was added.
+
+## Merge verification
+
+The history-preserving merge integrates main at
+`5b92f4c6e1a5dc409b9c9bc9eae538adf50cf4e2`. Saved OAuth connections retain migration
+0070; Harness settings move to 0071. Both first-deployment recovery and OAuth
+callback routes retain their query parameters. The Token Service and Proxy use
+the merged contracts without changing the immutable Harness snapshots.
+
+- 541 focused API, Compute, Proxy and OAuth conformance cases passed without skips.
+- PostgreSQL Harness persistence (1), withdrawal (2), State (13), prepared tokens
+  (3), and real Keycloak saved-account consent/refresh (1) passed without skips.
+- Migration compatibility exercised 194 cases. The final broad run passed 193;
+  its remaining populated-restore fixture was corrected and the owning logical
+  restore case then passed. Fresh, populated-prefix, and restored catalog
+  fingerprints were qualified against actual PostgreSQL, including the new
+  pre-Harness boundary. No schema or privilege mismatch is silently accepted.
+- Typecheck, lint, formatting, workspace boundary, generated API, and CI suite
+  audit passed on the merged source.
+- Main changed the sticky sidebar. Storybook was rebuilt and the desktop
+  walkthrough and screenshots were refreshed. Preview, deployment, denial,
+  loading and retry recovery passed. Native GitHub upload is pending: the DevBox
+  has no authenticated browser session or attachment-upload connector operation.
+
+The independent-review authentication gap and live model prerequisites remain
+open. Neither the earlier review nor earlier media qualifies the merged head.
 
 ## Manual Notes
 

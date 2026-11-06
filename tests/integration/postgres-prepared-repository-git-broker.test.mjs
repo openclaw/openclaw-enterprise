@@ -19,7 +19,7 @@ import {
   createTestAuthPrincipal,
 } from "../helpers/auth-session.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { relaySockets } from "../helpers/socket-relay.mjs";
+import { relaySockets } from "../helpers/socket-relay.ts";
 import { fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
 import {
   cleanEnvironment,

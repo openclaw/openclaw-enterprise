@@ -32,7 +32,7 @@ import {
 } from "../fixtures/repository-credentials/service.mjs";
 import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
-import { relaySockets } from "../helpers/socket-relay.mjs";
+import { relaySockets } from "../helpers/socket-relay.ts";
 
 type Resources = ReturnType<typeof createTestResourceScope>;
 

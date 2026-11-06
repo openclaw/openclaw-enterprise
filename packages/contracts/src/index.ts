@@ -61,10 +61,23 @@ export type {
   PreparedTokenGrant,
   PreparedTokenSource,
   PreparedTokenSelection,
+  ResolvedToken,
   PreparedTokenEvidence,
   PreparedTokenCurrentProof,
   PreparedTokenIssuer,
-  PreparedTokenService,
+  OAuthConnectionAccessToken,
+  OAuthConnectionGrant,
+  OAuthRefreshTokenRegistration,
+  OAuthRefreshTokenIssuer,
+  OAuthConnectionClient,
+  OAuthConnectionRegistration,
+  OAuthConnectionStatus,
+  OAuthAccountRef,
+  PreparedTokenKind,
+  PreparedTokenRegistration,
+  PreparedTokenRef,
+  TokenResolveOptions,
+  TokenService,
 } from "./prepared-token.ts";
 export {
   preparedGitHubType,
@@ -148,6 +161,8 @@ export type {
   ConnectionTemplate,
   ConnectionTemplateValues,
   OAuthConnectionTemplateVersion,
+  ConnectionSession,
+  SavedConnection,
 } from "./connection-templates.ts";
 export {
   ConnectionTemplateValidationError,
@@ -531,11 +546,18 @@ export interface CredentialSourceType {
 /** `registering` is recorded before the gateway write, so an uncertain outcome stays visible. */
 export type CredentialSourceState = "registering" | "ready" | "deleting";
 
-/** Driver IDs are scoped to a capability. Both parts of a source owner are immutable. */
-export type CredentialSourceOwnerCapability = "credential_gateway" | "credential_proxy";
+/** Driver-owned sources pin the selected Driver. The Token Service owns saved accounts directly. */
+type CredentialSourceOwner =
+  | {
+      readonly ownerCapability: "credential_gateway" | "credential_proxy";
+      readonly driverId: string;
+    }
+  | { readonly ownerCapability: "token_service"; readonly driverId?: never };
+
+export type CredentialSourceOwnerCapability = CredentialSourceOwner["ownerCapability"];
 
 /** OCC source admission, including its owner and Secret references, never credential values. */
-export interface CredentialSource {
+export type CredentialSource = CredentialSourceOwner & {
   readonly egress?: ProtectedEgressSource;
   readonly id: string;
   readonly namespaceId: string;
@@ -543,11 +565,9 @@ export interface CredentialSource {
   readonly type: string;
   readonly config: Readonly<Record<string, string>>;
   readonly secrets: Readonly<Record<string, SecretReference>>;
-  readonly ownerCapability: CredentialSourceOwnerCapability;
-  readonly driverId: string;
   readonly state: CredentialSourceState;
   readonly createdAt: string;
-}
+};
 
 export interface CredentialSourceMetadata {
   readonly ownerCapability: CredentialSourceOwnerCapability;
@@ -617,6 +637,9 @@ export function credentialSourceMatchesSnapshot(
     return false;
   }
   switch (source.ownerCapability) {
+    case "token_service":
+      // A saved account has no runnable sender until a consumer receives its own binding.
+      return false;
     case "credential_gateway":
       return (
         snapshot.credentialProxyId === undefined && snapshot.credentialGatewayId === source.driverId

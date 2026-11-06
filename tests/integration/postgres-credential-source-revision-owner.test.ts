@@ -50,18 +50,22 @@ async function fixture(t: TestContext, sourceCount = 2) {
     },
     createdAt,
   };
-  const sources: CredentialSource[] = Array.from({ length: sourceCount }, (_, index) => ({
-    id: id("cs"),
-    namespaceId: ns.id,
-    name: `source-${index}`,
-    type: "openai",
-    driverId: "gateway-original",
-    ownerCapability: "credential_gateway",
-    config: {},
-    secrets: { api_key: { kind: "secret", namespaceId: ns.id, id: secret.id } },
-    state: "ready",
-    createdAt,
-  }));
+  const sources = Array.from(
+    { length: sourceCount },
+    (_, index) =>
+      ({
+        id: id("cs"),
+        namespaceId: ns.id,
+        name: `source-${index}`,
+        type: "openai",
+        driverId: "gateway-original",
+        ownerCapability: "credential_gateway",
+        config: {},
+        secrets: { api_key: { kind: "secret", namespaceId: ns.id, id: secret.id } },
+        state: "ready",
+        createdAt,
+      }) satisfies CredentialSource,
+  );
   const listed = sources.map((source) => ({
     sourceId: source.id,
     sourceType: source.type,

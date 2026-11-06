@@ -1899,6 +1899,23 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
       "    throw error;",
       "  }",
       "});",
+      'test("allowlisted observability installation status diagnostic", () => {',
+      "  try {",
+      "    assert.equal(503, 401);",
+      "  } catch (error) {",
+      "    error.openclawCiDiagnostic = {",
+      '      kind: "observability-installation-status",',
+      "      status: 503,",
+      `      body: "${secret}-body",`,
+      "    };",
+      "    throw error;",
+      "  }",
+      "});",
+      'test("rejects unsafe observability installation status diagnostic", () => {',
+      '  const error = new Error("Invalid status control");',
+      `  error.openclawCiDiagnostic = { kind: "observability-installation-status", status: "${secret}" };`,
+      "  throw error;",
+      "});",
       'test("allowlisted observability log export diagnostic", () => {',
       `  const error = new Error("${secret}-message");`,
       `  error.openclawCiDiagnostic = { kind: "observability-log-export", api: true, worker: false, records: ["${secret}-record"] };`,
@@ -2214,6 +2231,18 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     (entry) => entry.name === "rejects unsafe controller HTTP diagnostic",
   );
   assert.equal(unsafeFailure.error.diagnostic, undefined);
+  const installationStatusFailure = summary.files[0].tests.find(
+    (entry) => entry.name === "allowlisted observability installation status diagnostic",
+  );
+  assert.deepEqual(installationStatusFailure.error.diagnostic, {
+    kind: "observability-installation-status",
+    status: 503,
+    expectedStatus: 401,
+  });
+  const unsafeInstallationStatusFailure = summary.files[0].tests.find(
+    (entry) => entry.name === "rejects unsafe observability installation status diagnostic",
+  );
+  assert.equal(unsafeInstallationStatusFailure.error.diagnostic, undefined);
   const logExportFailure = summary.files[0].tests.find(
     (entry) => entry.name === "allowlisted observability log export diagnostic",
   );

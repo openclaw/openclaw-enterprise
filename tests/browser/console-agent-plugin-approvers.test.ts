@@ -197,6 +197,51 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
   catalog.release();
 });
 
+test("A dedicated Agent with empty configuration can browse the default OpenClaw catalog", async (t) => {
+  const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
+    await createReadyConsoleNamespace(t, "Default plugin catalog");
+  const namespace = entity(namespaceValue);
+  for (const driver of [
+    new OCCPluginDriver(),
+    createTestKubernetesComputeDriver("compute-default-plugin-catalog"),
+  ]) {
+    controller(fixture).registerDriver(driver);
+    controller(fixture).selectDriver(driver.capability, driver.id);
+  }
+  const agent = entity(
+    await fixture.createAgent(
+      namespace.id,
+      "Default catalog Agent",
+      {},
+      {
+        executionMode: "dedicated",
+        harnessAuth: null,
+      },
+    ),
+  );
+  const catalogUrl = new URL(
+    `/namespaces/${namespace.id}/agents/${agent.id}/plugins`,
+    fixture.origin,
+  ).href;
+  const { page } = await newPage(t, fixture, { browser });
+  await Promise.all([
+    responseTo(page, "GET", `${catalogUrl}/capabilities`).then((response) =>
+      assert.equal(response.status(), 200, "saved Agent plugin capabilities"),
+    ),
+    responseTo(page, "POST", catalogUrl).then((response) =>
+      assert.equal(response.status(), 200, "saved Agent plugin catalog"),
+    ),
+    (async () => {
+      await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+      await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+    })(),
+  ]);
+  await page
+    .getByRole("dialog", { name: "Configure plugins", exact: true })
+    .getByRole("button", { name: "Google Workspace", exact: true })
+    .waitFor({ state: "visible" });
+});
+
 test("Plugin details refresh preserves the user's current keyboard focus", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

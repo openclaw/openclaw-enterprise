@@ -14,6 +14,7 @@ interface Account {
 }
 
 export interface ShellState {
+  debug: boolean;
   session: { user: Account } | null;
   namespaces: readonly Namespace[];
   namespaceId: string | null;
@@ -632,7 +633,7 @@ export function createShell({
     const revision =
       document.querySelector<HTMLMetaElement>('meta[name="occ-build-revision"]')?.content ?? "";
     const knownRevision = /^[a-f0-9]{40}$/.test(revision);
-    const debug = route().url.searchParams.get("debug") === "true";
+    const debug = state.debug;
     const diagnostics =
       debug && session
         ? element(

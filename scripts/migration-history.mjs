@@ -161,6 +161,9 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preConnectionTemplates";
   }
   if (count === 69 && completedCount > 69) {
+    return "preSavedConnections";
+  }
+  if (count === 70 && completedCount > 70) {
     return "preHarnessOverrides";
   }
   if (count === completedCount) {

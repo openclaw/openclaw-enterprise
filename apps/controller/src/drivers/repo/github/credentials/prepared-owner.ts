@@ -27,7 +27,7 @@ interface PreparationOptions {
 }
 
 /**
- * One background worker owner, invoked independently of requests/provisioning.
+ * One fenced attempt for an admitted GitHub grant, shared by scheduled and request-triggered work.
  */
 export function createGitHubPreparationOwner(options: PreparationOptions) {
   const { store, clock, getKey, renewBeforeMs, minimumValidityMs } = options;

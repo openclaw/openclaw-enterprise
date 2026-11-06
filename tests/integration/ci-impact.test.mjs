@@ -29,7 +29,7 @@ import { checkArguments, classify, respond } from "../../scripts/ci/impact.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const selector = join(repositoryRoot, "scripts/ci/impact.mjs");
-const pnpmImpact = join(repositoryRoot, "scripts/ci/pnpm-impact.mjs");
+const pnpmImpact = join(repositoryRoot, "scripts/ci/pnpm-impact.ts");
 const gate = join(repositoryRoot, "scripts/ci/impact-gate.mjs");
 const runner = join(repositoryRoot, "scripts/ci/run-tests.mjs");
 const read = (path) => readFileSync(join(repositoryRoot, path), "utf8");
@@ -528,6 +528,20 @@ test("pnpm impact reports unavailable without exposing a failed tool's output", 
     "#!/bin/sh\nprintf 'not valid json with private text\\n'\n",
   ]) {
     const path = shim(join(f.dir, "bin"), "pnpm", body);
+    assert.deepEqual(await affectedPackages(f, path), unavailable("inspection_failed"));
+  }
+});
+
+test("pnpm impact safely handles non-record JSON values from the event and pnpm", async (t) => {
+  const f = await fixture(t, sharedChange, workspaceFiles());
+  for (const event of [null, false, "text", { pull_request: { base: null, head: 1 } }]) {
+    f.writeEvent(JSON.stringify(event));
+    assert.deepEqual(await affectedPackages(f), unavailable("invalid_identity"));
+  }
+  f.writeEvent();
+  for (const value of [null, false, 1, "text", [], { name: 7, path: "/" }]) {
+    const json = JSON.stringify([value]);
+    const path = shim(join(f.dir, "json-bin"), "pnpm", `#!/bin/sh\nprintf '%s' '${json}'\n`);
     assert.deepEqual(await affectedPackages(f, path), unavailable("inspection_failed"));
   }
 });

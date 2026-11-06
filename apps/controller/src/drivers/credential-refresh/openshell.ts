@@ -183,7 +183,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       {
         workspace: openShellWorkspaceName(context.namespace),
         provider: openShellProviderName(context.source.id),
-        credentialKey: type.credentialKey(input.config),
+        credentialKey: type.credentialKey(context.source.config),
         strategy: type.strategy,
         material,
         requestId: input.requestId,

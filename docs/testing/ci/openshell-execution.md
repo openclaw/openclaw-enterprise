@@ -12,6 +12,9 @@ parallel across separate VMs, with at most ten OpenShell jobs active.
 Gateway policy, network policy, credential replacement, live withdrawal, upstream outages, and
 Gateway/OAuth recovery use separate installations and databases. Each workflow
 keeps its dependent operations serial, including recovery before later assertions.
+The upstream workflow replaces the Harness used by its positive model turns before
+redirecting DNS to the untrusted TLS receiver. It requires a rejected handshake
+at that receiver, with no completed handshake or HTTP request.
 OAuth expiry and model failure bounds are unchanged. The shared
 [scenario implementation](../../../tests/helpers/openshell-sandbox-workflows.mjs)
 registers only the workflow selected by each test entry point. The two first-Agent files provision and clean up
