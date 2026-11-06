@@ -22,6 +22,7 @@ export function bindPlatformUnitOfWork(
       "createInstallation",
       "holdPrincipalAccount",
       "holdAuthenticationSession",
+      "holdIAMConfiguration",
     ]),
     namespaces: bindRepository(repositories.namespaces, lifetime, [
       "findNamespace",
@@ -184,6 +185,13 @@ export function bindPlatformUnitOfWork(
       "listServicePrincipals",
       "getServicePrincipal",
       "createServicePrincipal",
+      "listConfiguredPolicy",
+      "putConfiguredRole",
+      "deleteConfiguredRole",
+      "createConfiguredGroup",
+      "deleteConfiguredGroup",
+      "createOCCBinding",
+      "deleteConfiguredBinding",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
       "findStandingExecution",

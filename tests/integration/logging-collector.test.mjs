@@ -542,6 +542,20 @@ test(
           status: 403,
           ...payload,
         }),
+        // Verified-email lookup failures must keep their stage after the body is
+        // replaced. An unreviewed stage must still be discarded by the Collector.
+        ...["email", canaries[4]].map((step) =>
+          JSON.stringify({
+            event: "authentication.provider-unavailable-warning",
+            severity: "WARN",
+            provider: "github",
+            providerId: `github:providerkey${fixture.suffix}`,
+            step,
+            cause: "http_status",
+            status: 503,
+            ...payload,
+          }),
+        ),
         JSON.stringify({
           event: "presets.default-refresh-skipped",
           severity: "WARN",
@@ -611,12 +625,12 @@ test(
       JSON.stringify({ level: "info", subsystem: "gateway", message: "x".repeat(33_000) }),
     ]);
     await waitFor(
-      "at least 13 exported records",
-      async () => (await records()).length >= 13,
+      "at least 15 exported records",
+      async () => (await records()).length >= 15,
       fixture,
     );
     const initial = await records();
-    assert.equal(initial.length, 13, "only reviewed JSON classes and Codex stderr pass");
+    assert.equal(initial.length, 15, "only reviewed JSON classes and Codex stderr pass");
     const warningEvents = [
       "compute.preflight-warning",
       "authentication.sign-in-limited",
@@ -643,6 +657,8 @@ test(
     }
     assert.deepEqual(initial.map(({ resource }) => resource["service.name"]).sort(), [
       "codex-app-server",
+      "occ-api",
+      "occ-api",
       "occ-api",
       "occ-api",
       "occ-api",
@@ -732,6 +748,21 @@ test(
         "occ.sign_in.step": "membership",
         "occ.sign_in.cause": "http_status",
         "occ.sign_in.status": "403",
+      },
+      {
+        "event.name": "authentication.provider-unavailable-warning",
+        "log.iostream": "stdout",
+        "occ.sign_in.provider": "github",
+        "occ.sign_in.step": "email",
+        "occ.sign_in.cause": "http_status",
+        "occ.sign_in.status": "503",
+      },
+      {
+        "event.name": "authentication.provider-unavailable-warning",
+        "log.iostream": "stdout",
+        "occ.sign_in.provider": "github",
+        "occ.sign_in.cause": "http_status",
+        "occ.sign_in.status": "503",
       },
       {
         "event.name": "authentication.provider-unavailable-warning",
@@ -1903,10 +1934,48 @@ test(
       "occ.agent.id": agentId,
       "occ.revision.id": revisionId,
     };
-    const cases = codeFieldCases({ canary, identity, exportedIdentity }).map((entry) => ({
-      ...entry,
-      requestId: `req_${randomUUID()}`,
+    // Probe diagnostics survive Pod cleanup through this real Collector pipeline.
+    // Only the two fixed reasons and a process-failure curl exit code may escape.
+    const probeCases = [
+      ...[1, 56, 99].map((code) => ({
+        reason: "probe_process_failed",
+        code,
+        exported: {
+          "occ.git_probe.reason": "probe_process_failed",
+          "occ.git_probe.exit_code": String(code),
+        },
+      })),
+      ...[undefined, -1, 0, 100, 1.5, "56", "E_FAILURE", true, { code: 56 }].map((code) => ({
+        reason: "probe_process_failed",
+        code,
+        exported: { "occ.git_probe.reason": "probe_process_failed" },
+      })),
+      {
+        reason: "probe_response_invalid",
+        code: 56,
+        exported: { "occ.git_probe.reason": "probe_response_invalid" },
+      },
+      ...[canary, "probe_process_failed_extra", 56, null].map((reason) => ({
+        reason,
+        code: 56,
+        exported: {},
+      })),
+    ].map(({ reason, code, exported }) => ({
+      record: {
+        event: "worker.openshell-git-probe-failed",
+        ...identity,
+        reason,
+        code,
+        stdout: canary,
+        stderr: canary,
+        proof: canary,
+        url: canary,
+      },
+      exported: { ...exportedIdentity, ...exported },
     }));
+    const cases = [...codeFieldCases({ canary, identity, exportedIdentity }), ...probeCases].map(
+      (entry) => ({ ...entry, requestId: `req_${randomUUID()}` }),
+    );
     const line = (record) => ({
       timeUnixNano: String(BigInt(Date.now()) * 1000000n),
       body: {
@@ -1937,6 +2006,7 @@ test(
               ...cases.map(({ record, requestId }) => line({ ...record, requestId })),
               // Near-matches of the reviewed names are still dropped.
               line({ event: "worker.openshell-git-expiry-unreviewed", check: "model-provider" }),
+              line({ event: "worker.openshell-git-probe-failed-unreviewed" }),
               line({ event: "worker.repository-delivery-pending-unreviewed" }),
             ],
           },
@@ -1973,6 +2043,10 @@ test(
         // A fence is exported as an integer, never a double or string.
         const fence = actual.record.attributes.find(({ key }) => key === "occ.fence");
         assert.equal(String(fence.value.intValue), fields["occ.fence"]);
+      }
+      if (fields["occ.git_probe.exit_code"] !== undefined) {
+        const code = actual.record.attributes.find(({ key }) => key === "occ.git_probe.exit_code");
+        assert.equal(String(code.value.intValue), fields["occ.git_probe.exit_code"]);
       }
       assert.deepEqual(
         actual.fields,

@@ -85,7 +85,7 @@ the paths.
 | [Backends](#backends) | 1 operation |
 | [Connections](#connections) | 15 operations |
 | [Installation](#installation) | 5 operations |
-| [Namespaces](#namespaces) | 6 operations |
+| [Namespaces](#namespaces) | 7 operations |
 | [Agents](#agents) | 50 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
@@ -3459,6 +3459,7 @@ Example response
 | [`POST /namespaces`](#post-namespaces) | Create an Installation-owned Namespace |
 | [`DELETE /namespaces/{namespaceId}`](#delete-namespacesnamespaceid) | Begin or retry deletion of an empty Installation-owned Namespace |
 | [`GET /namespaces/{namespaceId}`](#get-namespacesnamespaceid) | Get an exact Installation-owned Namespace |
+| [`GET /namespaces/{namespaceId}/agent-capabilities`](#get-namespacesnamespaceidagentcapabilities) | Report the Installation capabilities that Agent creation in this Namespace needs, for a caller who may create Agents there |
 | [`GET /namespaces/{namespaceId}/permissions`](#get-namespacesnamespaceidpermissions) | Report advisory primary IAM permissions on a readable Namespace, not authorization for a later operation |
 | [`GET /namespaces/{namespaceId}/permissions/secrets`](#get-namespacesnamespaceidpermissionssecrets) | Report the readable Secrets that the caller may not bind to a new Agent, not authorization for a later operation |
 
@@ -3718,6 +3719,137 @@ Example response
     "id": "ns_123e4567-e89b-42d3-a456-426614174000",
     "name": "engineering",
     "status": "ready"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /namespaces/{namespaceId}/agent-capabilities`
+
+<span id="get-namespacesnamespaceidagentcapabilities"></span>
+
+Report the Installation capabilities that Agent creation in this Namespace needs, for a caller who may create Agents there
+
+**Operation ID:** `getNamespaceAgentCapabilities`
+
+**Permissions:** Requires create permission for Agent resources in the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `create` | `agent` | `namespace` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.capabilities` | `object` | Yes | The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It omits nativeAdmin and agentProvisioning, which apply only to guided provisioning and need Installation administration. |
+| `data.capabilities.credentialSources` | `object` | No | — |
+| `data.capabilities.credentialSources.types` | `array<object>` | Yes | — |
+| `data.capabilities.credentialSources.types[].config` | `array<object>` | Yes | — |
+| `data.capabilities.credentialSources.types[].config[].description` | `string` | No | — |
+| `data.capabilities.credentialSources.types[].config[].issuerRotated` | `boolean` | No | — |
+| `data.capabilities.credentialSources.types[].config[].name` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].config[].required` | `boolean` | Yes | — |
+| `data.capabilities.credentialSources.types[].deviceAuthorization` | `object` | No | — |
+| `data.capabilities.credentialSources.types[].deviceAuthorization.harnessId` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].harnessAuth` | `object` | No | — |
+| `data.capabilities.credentialSources.types[].harnessAuth.loginMode` | `"api_key" or "codex_pat" or "chatgptAuthTokens"` | Yes | — |
+| `data.capabilities.credentialSources.types[].harnessAuth.modelProvider` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].rotation` | `"none" or "external" or "refresh"` | Yes | — |
+| `data.capabilities.credentialSources.types[].secrets` | `array<object>` | Yes | — |
+| `data.capabilities.credentialSources.types[].secrets[].description` | `string` | No | — |
+| `data.capabilities.credentialSources.types[].secrets[].issuerRotated` | `boolean` | No | — |
+| `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
+| `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
+| `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
+| `data.capabilities.nativeWorkers.support` | `"pinned-runtime" or "custom-image"` | Yes | — |
+| `data.capabilities.openclaw` | `object` | No | — |
+| `data.capabilities.openclaw.executionModes` | `array<"embedded" or "dedicated">` | Yes | max items: 2; The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent deploy. Agent save refuses Embedded with a selected Sandbox Driver, and Dedicated when the Sandbox Driver's settings refuse it (settingRefusals); it saves Dedicated without a Sandbox Driver that can provision it, which deploy refuses. Empty when no mode can deploy: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw with settings that allow it, and a selected Sandbox Driver that is unavailable admits neither. |
+| `data.capabilities.openclaw.sandboxDriverUnavailable` | `true` | No | Present while the selected Sandbox Driver is unavailable. executionModes is then empty until it returns, and Agent save and deploy answer 503 DEPENDENCY_UNAVAILABLE. |
+| `data.capabilities.openclaw.settingRefusals` | `object` | No | Present when the selected Sandbox Driver can provision a mode missing from executionModes but its settings refuse it. Each value is the message Agent save and deploy return for that mode, naming the setting an operator changes. Absent for other reasons a mode is missing. |
+| `data.capabilities.openclaw.settingRefusals.dedicated` | `string` | No | min length: 1 |
+| `data.capabilities.pluginCatalogs` | `array<object>` | No | — |
+| `data.capabilities.pluginCatalogs[].harnessId` | `"openclaw" or "codex"` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginDiscovery` | `object` | No | — |
+| `data.capabilities.pluginCatalogs[].pluginDiscovery.credential` | `"required" or "none"` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies` | `object` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.approvers` | `object` | No | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.approvers.agent` | `boolean` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.approvers.plugin` | `boolean` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.approvers.tools` | `boolean` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.driver` | `PluginDriverIdentity` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.driver.id` | `string` | Yes | min length: 1 |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.driver.implementation` | `string` | Yes | min length: 1 |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.driverPolicySchema` | `object<string, any>` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.policyScopeByPlugin` | `object<string, "enablement_only">` | No | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.toolDefaults` | `object` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.toolDefaults.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.toolDefaults.enabled` | `boolean` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.toolDefaults.reviewer` | `array<"human" or "auto">` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.tools` | `object` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.tools.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.tools.enabled` | `boolean` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.tools.reviewer` | `array<"human" or "auto">` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "capabilities": {
+      "credentialSources": {
+        "types": [
+          {
+            "config": [
+              {
+                "name": "authorized_base_url",
+                "required": false
+              }
+            ],
+            "harnessAuth": {
+              "loginMode": "api_key",
+              "modelProvider": "openai"
+            },
+            "rotation": "external",
+            "secrets": [
+              {
+                "name": "api_key",
+                "required": true
+              }
+            ],
+            "type": "openai"
+          }
+        ]
+      },
+      "openclaw": {
+        "executionModes": [
+          "dedicated"
+        ]
+      }
+    }
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"

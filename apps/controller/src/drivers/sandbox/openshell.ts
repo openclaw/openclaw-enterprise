@@ -3342,11 +3342,17 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         ),
       );
     const observedFields = authorityFields(actual);
-    if (actual.kind === "NetworkPolicy" && Object.hasOwn(observedFields, "spec")) {
-      observedFields.spec = networkPolicySpecToJson(observedFields.spec as V1NetworkPolicySpec);
+    const expectedFields = authorityFields(expected);
+    for (const [resource, fields] of [
+      [actual, observedFields],
+      [expected, expectedFields],
+    ] as const) {
+      if (isCoreNetworkPolicy(resource) && Object.hasOwn(fields, "spec")) {
+        fields.spec = networkPolicySpecToJson(fields.spec as V1NetworkPolicySpec);
+      }
     }
     if (
-      !isDeepStrictEqual(JSON.parse(JSON.stringify(observedFields)), authorityFields(expected)) ||
+      !isDeepStrictEqual(JSON.parse(JSON.stringify(observedFields)), expectedFields) ||
       actual.metadata?.name !== expected.metadata?.name ||
       actual.metadata?.namespace !== expected.metadata?.namespace
     ) {
@@ -4174,6 +4180,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       if (result.status === 200) {
         return result.json;
       }
+      // Keep refusal details separate from a successful observation transcript.
+      return { probeFailure: result.json };
     });
   }
 

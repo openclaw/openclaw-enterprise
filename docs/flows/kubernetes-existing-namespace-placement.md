@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: 2026-11-06
-last_updated_session: authoring-run/48cabda2-0481-4747-999a-097933c768f7
+last_updated_session: authoring-run/6c1f8605-73d6-448e-a544-8da049a5f928
 ---
 
 # Existing Kubernetes Namespace Placement Flow
@@ -79,7 +79,7 @@ with its generated platform Namespace ID before queuing worker provisioning.
 Partial database uniqueness prevents simultaneous active claims for the same name.
 
 `packages/occ/src/state/postgres-schema.ts:namespaceLifecycle` and
-`migrations/0071_namespace_lifecycle.sql:reserve_namespace_lifecycle` reserve a
+`migrations/0072_namespace_lifecycle.sql:reserve_namespace_lifecycle` reserve a
 stable lifecycle UUID with the Namespace insertion, before any dispatch. The
 initial revision-zero record proves no effect was attempted. The worker's
 `ControllerWorker.namespaceLifecycle` locks work before Namespace, rechecks its
@@ -126,6 +126,15 @@ approved content and tenant ownership, not OCC's later creation nonce. The
 selected OpenShell Driver binds observed operator resource and Workspace IDs
 before readiness; repeated preparation refuses replacement. Automatic Namespace
 teardown remains refused. See [binding authority](../reference/drivers/compute-namespace-lifecycle.md#driver-owned-data).
+
+For the separate [preprovisioned Namespace profile](../reference/drivers/kubernetes-compute/preprovisioned-namespace.md),
+`KubernetesComputeDriver.verifyExistingNetworkPolicies` compares admitted specs
+with the declared operator policies before initialization. The operator-owned
+`OpenShellSandboxDriver.ensureNamespaceWorkspace` check uses the same
+`drivers/kubernetes/network-policy.ts:networkPolicySpecToJson` projection on both
+observed and configured specs. It restores the SDK ingress alias and accepts
+omitted empty rule lists only for explicitly selected policy directions. Other
+spec differences still stop preparation; neither check repairs the policy.
 
 ### 3. Colocate Configuration and workload resources
 
@@ -270,6 +279,9 @@ path exists for missing original identity or permanently lost provider evidence.
 
 ## Changelog
 
+- 2026-11-06 14:00: Preserve admitted empty policy comparison in the journal-owned verifier and update its schema pointer after default-user schema integration. (authoring-run/6c1f8605-73d6-448e-a544-8da049a5f928 - 8bf06182f7d3b29db9a281e0c698a759d57b9e34)
+
+- 2026-11-06 17:40: Trace admitted empty NetworkPolicy rule lists in both operator-owned checks. (authoring-run/22fe6796-3f06-49bf-bb59-d9ac13bb66f7 - eb1ea7a5a6bf1bc706a41e00246cb795ed8dd703)
 - 2026-11-06 07:02: Reconcile the unchanged journal source pointer after main saved-connection schema integration. (authoring-run/48cabda2-0481-4747-999a-097933c768f7 - 883bf30f01292261cb6aadb9cf776ffd4f72561f)
 
 - 2026-11-05 15:57: Retain journal authority and update its source pointer after main connection-template schema reconciliation. (authoring-run/7daf5a28-9b44-4381-8699-0aa066b9994d - 9c7813a98305b552d0fbef5e23e1168e9930d179)

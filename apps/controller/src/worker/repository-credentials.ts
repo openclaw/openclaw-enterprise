@@ -51,14 +51,15 @@ export class StandingRepositorySessionDisposingError extends Error {}
 interface Dependencies {
   readonly state: PostgresPlatformState;
   readonly queueOptions: PostgresWorkQueueOptions;
-  readonly driver: RepositoryPolicyDriver | undefined;
-  readonly repositoryAdmission?:
+  readonly repository?:
+    | undefined
+    | { readonly kind: "registered"; readonly policy: RepositoryPolicyDriver }
     | {
+        readonly kind: "bound";
         readonly policy: RepositoryPolicyDriver & {
           readonly resolveBindings: RepositoryPolicyDriver["resolve"];
         };
-      }
-    | undefined;
+      };
   readonly nativeSender?: NativeRepositorySender | undefined;
   readonly verifyExecution?: (
     claim: ClaimedWork,
@@ -142,14 +143,6 @@ export class RepositoryCredentialLifecycle {
   private readonly dependencies: Dependencies;
 
   constructor(dependencies: Dependencies) {
-    const { driver, repositoryAdmission } = dependencies;
-    if (
-      repositoryAdmission !== undefined &&
-      (repositoryAdmission.policy !== driver ||
-        typeof repositoryAdmission.policy.resolveBindings !== "function")
-    ) {
-      throw new Error("The bound repository admission owner is not selected or unavailable.");
-    }
     this.dependencies = dependencies;
   }
 
@@ -166,7 +159,16 @@ export class RepositoryCredentialLifecycle {
     ) {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_PROXY_ADMISSION_MISMATCH");
     }
-    const driver = this.driver(revision);
+    const repository = this.dependencies.repository;
+    const selected = snapshot.driver;
+    if (
+      !repository ||
+      !selected ||
+      repository.policy.id !== selected.id ||
+      repository.policy.implementation !== selected.implementation
+    ) {
+      throw new RepositoryCredentialAuthorityError("REPOSITORY_DRIVER_MISMATCH");
+    }
     if (snapshot.standingApprovalId === undefined && Date.now() >= snapshot.deadlineWallMs) {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED");
     }
@@ -174,7 +176,10 @@ export class RepositoryCredentialLifecycle {
       const binding = snapshot.bindings[0];
       const scope =
         binding &&
-        eligibleRepositoryApprovalScope(driver, { namespaceId: revision.namespaceId, binding });
+        eligibleRepositoryApprovalScope(repository.policy, {
+          namespaceId: revision.namespaceId,
+          binding,
+        });
       if (
         !binding ||
         snapshot.bindings.length !== 1 ||
@@ -199,9 +204,10 @@ export class RepositoryCredentialLifecycle {
           profile,
         })),
       };
-      const admission = this.dependencies.repositoryAdmission;
       resolved =
-        admission === undefined ? driver.resolve(input) : admission.policy.resolveBindings(input);
+        repository.kind === "bound"
+          ? repository.policy.resolveBindings(input)
+          : repository.policy.resolve(input);
     } catch {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_BINDING_UNAVAILABLE");
     }
@@ -504,20 +510,6 @@ export class RepositoryCredentialLifecycle {
       }
     }
     return outcome;
-  }
-
-  private driver(revision: Revision): RepositoryPolicyDriver {
-    const driver = this.dependencies.driver;
-    const selected = revision.repositoryCredentials?.driver;
-    if (
-      !driver ||
-      !selected ||
-      driver.id !== selected.id ||
-      driver.implementation !== selected.implementation
-    ) {
-      throw new RepositoryCredentialAuthorityError("REPOSITORY_DRIVER_MISMATCH");
-    }
-    return driver;
   }
 
   private driverFor(selected: CleanupContext["driver"] | undefined): NativeRepositorySender {

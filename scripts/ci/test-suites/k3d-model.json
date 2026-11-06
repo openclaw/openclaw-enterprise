@@ -33,6 +33,7 @@
     {
       "path": "tests/integration/harness-topology-k3d-real.test.mjs",
       "expectedTests": [
+        "production Default user deploys embedded OpenClaw in the default Namespace with owner grants",
         "production dedicated Skill source uploads honor default and denied node-write policy",
         "production dedicated Codex preserves gateway conversations and retained images across Pod replacement",
         "production Secret binding powers embedded OpenClaw and preserves conversations across Pod replacement",

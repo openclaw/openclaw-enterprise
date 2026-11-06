@@ -228,12 +228,20 @@
                         "label": "Authorization"
                       },
                       {
+                        "page": "reference/authorization/default-users",
+                        "label": "Default Users"
+                      },
+                      {
                         "page": "reference/service-accounts",
                         "label": "Service Accounts"
                       },
                       {
                         "page": "reference/authentication/external-sign-in",
                         "label": "External Sign-In"
+                      },
+                      {
+                        "page": "reference/authentication/team-enrollment",
+                        "label": "GitHub Team Enrollment"
                       },
                       {
                         "page": "reference/authentication/service-api-keys",
