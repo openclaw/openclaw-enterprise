@@ -356,16 +356,24 @@ export async function protectedText(path, label) {
 }
 
 export async function grantQaSecret(f, agent, secretId, name) {
+  return grantQaOperate(f, agent, "secret", secretId, name);
+}
+
+export async function grantQaCredentialSource(f, agent, sourceId, name) {
+  return grantQaOperate(f, agent, "credential_source", sourceId, name);
+}
+
+async function grantQaOperate(f, agent, resourceKind, resourceId, name) {
   const base = `/namespaces/${agent.namespaceId}`;
   const role = await f.api("POST", `${base}/iam/roles`, {
     name,
-    permissions: [{ action: "operate", resourceKind: "secret" }],
+    permissions: [{ action: "operate", resourceKind }],
   });
   await f.api("POST", `${base}/iam/access-bindings`, {
     subjectKind: "identity",
     subjectId: agent.servicePrincipalId,
     roleId: role.id,
-    resourceKind: "secret",
-    resourceId: secretId,
+    resourceKind,
+    resourceId,
   });
 }

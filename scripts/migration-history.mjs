@@ -163,6 +163,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 69 && completedCount > 69) {
     return "preSavedConnections";
   }
+  if (count === 70 && completedCount > 70) {
+    return "preComputeServiceAccess";
+  }
   if (count === completedCount) {
     return "completed";
   }

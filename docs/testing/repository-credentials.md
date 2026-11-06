@@ -40,10 +40,52 @@ and negative coverage. It is a regression guard, not a sandbox or a dataflow pro
 The separate [public GitHub reader](../reference/public-github-reads.md) owns an
 HTTP listener and permits anonymous HTTPS GET requests to a fixed origin. The source guard forbids imports
 between the reader and credential owners; its boundary test uses a local TLS
-provider. PR CI's Image Runtime Startup lane checks that stock Codex reads the
-projected skill through its limited native proxy, with local binding disabled,
-and returns a random title available only at the TLS provider. This needs no
-model or repository credentials.
+provider. PR CI's Image Runtime Startup case separately checks limited-mode
+API GET through Codex interception and full-method native Git through an enabled
+reader-host-restricted proxy. The latter retains the filesystem/exec sandbox,
+disables local binding, SOCKS and upstream proxying, and checks unauthorized-host,
+repository and push denials alongside clone/API/fetch/new-object proof. Full-mode
+HTTPS is tunneled, not MITM-intercepted; host domains are not port/path rules.
+Neither mode selects danger-full-access. These checks need no model or repository
+credentials and require actual Linux execution before qualification. Both native and K3d reader fixtures serve a
+separate `CA:false` server-auth leaf and project only its public issuer as trust.
+Fixture metadata checks do not establish native Rustls success. The native test
+captures at most 64 passive TLS/HTTP event receipts before teardown, with collection
+and truncation flags. Model-tool diagnostics retain fixed preflight stages, exit
+status, validated helper refusal phase/code and known error classes; unknown
+failures remain unknown without raw stderr.
+
+`node --test tests/integration/public-github-git-transport.test.mjs` checks the
+actual launcher and Git/API helper with verified loopback TLS. Consecutive peer
+roots introduced after installation prove current-tool trust composition;
+wrong-hostname/unrelated roots, malformed trust, redirects and denied capabilities
+remain failures. Git clone/fetch uses the admitted runtime workspace when ambient temporary roots
+are missing or read-only. Invalid selected workspaces fail without fallback or
+private diagnostic output; authenticated Git delegation does not depend on public scratch.
+A real reader 401 must not invoke public Git askpass, including on Git 2.39.5;
+a bound provider challenge must still reach its authenticated askpass. Concurrent cancellation checks
+verify private directory/file modes and independent cleanup of public-only bundles.
+The native fixture supplies the same existing workspace variable as production,
+without changing its filesystem grants. These tests do not establish cleanup after
+uncatchable termination; Git public-CA residue can remain.
+API cases instead ignore unavailable scratch roots and exercise in-memory
+trust, isolated Node startup with a fixed executable path, large distinct public-root
+bundles, SIGTERM/SIGINT
+and the 24-second parent deadline, including a proxy holding CONNECT. Host checks
+exercise the same Node client. The Linux proxy owner sets the legitimate bare
+`process.execPath` fallback before importing the actual helper and poisons ambient
+PATH; this proves component lookup/privacy, not native proc behavior. The native
+filesystem/proxy still needs Linux proof.
+The native fixture adds a separate Limited read-only API body/metadata control,
+asserts workspace write denial and no residue, and retains the Limited
+workspace-write POST-denial and Full workspace-write Git controls: a
+read-only clone failure would not prove POST denial. All native controls still need
+actual Linux execution. The tests also follow a real reader's two-page list through the fixed metadata mode,
+reject malformed/oversized continuation data and suppress unrelated headers.
+These host checks do not prove Codex's interception or its upstream store: require the stock
+Linux native clone/API/fetch test and installed Agent qualification separately.
+The OpenShell QA's raw receive-pack request uses the current tool CA bundle only
+to prove the reader's exact HTTP refusal; it is not the managed API caller.
 
 Full Integration's Gateway Routing journey checks the dedicated Agent, managed
 skill, and native network path with a substituted external provider. The Agent

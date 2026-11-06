@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-05
-last_updated_session: authoring-run/33ffb317-d84b-4de5-b946-70b58f35af74
+last_updated_session: authoring-run/3b4c90f8-64e1-40c4-a759-3b8f0ffc735d
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -286,18 +286,21 @@ after 24 hours. Names are Workspace-unique. At 1,000 live/unresolved records,
 without spending attempts until its deadline; Namespace work retries.
 
 Adoption, including `ALREADY_EXISTS`, requires matching Workspace, labels,
-annotations/spec and a Sandbox that is neither stopped nor deleting. Workspace `sandbox:write`
+annotations/spec and a Sandbox neither stopped nor deleting.
+`canonicalSandboxPolicy` equates empty and protobuf-omitted endpoint lists,
+preserving nonempty/malformed differences.
+Workspace `sandbox:write`
 permits replacement. Each Harness has one unnamed bearer-passthrough
 `APP_SERVER_PORT` exposure; only Codex returns a URL. Native held-failure exposure
-ends after confirmed deletion through `withdrawHarnessExposure`, adoption or
+ends through confirmed `withdrawHarnessExposure`, adoption or
 recreation with `workspaceNodeEnrolled`.
 
 After HTTP `400` or `404`, `observeHeldRepositoryGitPreview` and `enrollHarness`
 require the recorded release acknowledgment and authenticated WebSocket. Other
 non-`200` responses stay pending or refuse enrollment without an upgrade.
 
-The Backend reuses clients and retries setup. Cancellation follows
-setup/credential preparation; stalled initialization/file reads have no cancellation deadline.
+The Backend reuses clients, retrying setup. Cancellation follows
+setup/credential preparation; initialization/file reads lack cancellation deadlines.
 After dispatch it stops local gRPC, but remote mutations may require recovery.
 
 `GetService` separates control/workload addresses. `harnessEndpoint` returns the
@@ -410,6 +413,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 18:56: Normalize endpoint adoption (accompanying fix; authoring-run/3b4c90f8-64e1-40c4-a759-3b8f0ffc735d - 8ce2a22f7aea95060e7df3b2a02119872c55c249)
 
 - 2026-11-05 14:34: Reuse bounded retries for the pinned Agent Sandbox manifest. (authoring-run/33ffb317-d84b-4de5-b946-70b58f35af74 - a383313636fc348a2325c0b1f6e05ae80327fd30)
 

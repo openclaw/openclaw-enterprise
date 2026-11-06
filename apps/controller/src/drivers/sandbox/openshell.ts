@@ -1,3 +1,8 @@
+import {
+  PUBLIC_GITHUB_READ_TRANSPORT_FILE,
+  PUBLIC_GITHUB_READ_TRANSPORT_ENV,
+  PUBLIC_GITHUB_READ_TRANSPORT_SOURCE,
+} from "../repo/github/public-read/runtime-source.ts";
 import { managedCredentialEnvironment } from "./openshell-plugin-runtime.ts";
 import {
   openShellRepositoryAccess,
@@ -43,6 +48,11 @@ import {
 } from "../plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../plugin/google-workspace/install.ts";
 import { openShellLogDecisions } from "./openshell-log-decisions.ts";
+import {
+  openShellRevisionServiceRules,
+  openShellServiceNetworkRules,
+  qualifyOpenShellServiceAccess,
+} from "./openshell-service-access.ts";
 import { qualifyOpenShellCodexArtifactRules } from "./openshell-codex-artifacts.ts";
 import { workspaceNodeNetworkPolicy } from "./openshell-workspace-node-policy.ts";
 import {
@@ -54,6 +64,8 @@ import {
 import type {
   SandboxNetworkGrant,
   ProtectedCodexArtifactPolicyAdmission,
+  ProtectedNetworkPolicyAdmission,
+  ComputeServiceAccess,
   SandboxPolicySnapshot,
   SandboxPolicyObservation,
   SandboxPolicyRecommendations,
@@ -246,6 +258,11 @@ export interface OpenShellSandboxDriverSelection {
 }
 
 class OpenShellSandboxConfigurationFailure extends Error {}
+// Worker logs retain error classes, never these errors' private contextual text.
+class OpenShellRuntimeMaterialFailure extends OpenShellSandboxConfigurationFailure {}
+class OpenShellRuntimeProviderMismatch extends OpenShellSandboxConfigurationFailure {}
+class OpenShellSandboxOwnershipMismatch extends OpenShellSandboxConfigurationFailure {}
+class OpenShellWorkspaceInitializationFailure extends OpenShellSandboxConfigurationFailure {}
 
 const GRPC_NOT_FOUND = 5;
 const GRPC_PERMISSION_DENIED = 7;
@@ -369,6 +386,14 @@ const RUNTIME_PROFILE_IDS = {
   codex: "oce-codex-runtime",
   openclaw: "oce-openclaw-runtime",
 } as const;
+const PUBLIC_READER_PROFILE_ID = "oce-codex-runtime-public-github-read";
+const PUBLIC_READER_CAPABILITY_ENV = "OCE_PUBLIC_GITHUB_READ_CAPABILITY";
+const RUNTIME_FILE_CONFIG_KEYS: Readonly<Record<string, string>> = {
+  "runtime.json": "runtime_json",
+  "config.toml": "config_toml",
+  "public-github-read.json": "public_github_read_json",
+  "public-github-read.md": "public_github_read_md",
+};
 const RUNTIME_PROFILE_MANAGED_ANNOTATION = "openclaw.dev/managed-by";
 const RUNTIME_PROFILE_MANAGED_VALUE_PREFIX = `${OPENSHELL_MANAGED_BY}:`;
 const RUNTIME_PROVIDER_AGENT_LABEL = "openclaw.dev/agent-id";
@@ -791,8 +816,11 @@ function harnessRuntimeFiles(
   requirements: HarnessWorkloadRequirements,
   harnessId: keyof typeof RUNTIME_PROFILE_IDS,
   plan?: ProxyPlan,
+  revision?: Readonly<AgentRevision>,
 ): HarnessRuntimeFiles {
   const codex = harnessId === "codex";
+  openShellRevisionServiceRules(revision);
+  const service = revision?.sandboxPolicy?.serviceAccess?.[0];
   const expected = new Map(
     codex
       ? [
@@ -801,9 +829,15 @@ function harnessRuntimeFiles(
         ]
       : [],
   );
+  if (service !== undefined) {
+    expected.set("public-github-read.json", "OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE");
+    expected.set(PUBLIC_GITHUB_READ_TRANSPORT_FILE, PUBLIC_GITHUB_READ_TRANSPORT_ENV);
+    expected.set("public-github-read.md", "OCE_PUBLIC_GITHUB_READ_SKILL_FILE");
+  }
   const files = requirements.files ?? [];
   if (
     files.length !== expected.size ||
+    new Set(files.map((file) => file.name)).size !== files.length ||
     files.some(
       (file) =>
         expected.get(file.name) !== file.environmentVariable ||
@@ -838,8 +872,47 @@ function harnessRuntimeFiles(
       ) ||
       (plan !== undefined && manifest.providerTools !== "none")
     ) {
-      throw new OpenShellSandboxConfigurationFailure(
+      throw new OpenShellRuntimeMaterialFailure(
         "Protected Harness startup must match the admitted egress plan.",
+      );
+    }
+    const metadata = asRecord(manifest.publicGithubRead);
+    if (service !== undefined) {
+      let material: ConfigurationRecord | undefined;
+      try {
+        material = asRecord(
+          JSON.parse(files.find((file) => file.name === "public-github-read.json")!.content),
+        );
+      } catch {
+        /* Refuse below with bounded diagnostics. */
+      }
+      if (
+        metadata?.endpoint !== service.endpoint ||
+        files.find((file) => file.name === PUBLIC_GITHUB_READ_TRANSPORT_FILE)?.content !==
+          PUBLIC_GITHUB_READ_TRANSPORT_SOURCE ||
+        !material ||
+        !isDeepStrictEqual(Object.keys(material).sort(), [
+          "authenticatedRepositories",
+          "caBundle",
+          "endpoint",
+        ]) ||
+        material.endpoint !== service.endpoint ||
+        material.caBundle !== service.configuration.caBundle ||
+        !Array.isArray(material.authenticatedRepositories) ||
+        material.authenticatedRepositories.length > 256 ||
+        material.authenticatedRepositories.some(
+          (repository) =>
+            typeof repository !== "string" ||
+            !/^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?\/(?!\.{1,2}$)[a-z\d._-]{1,100}$/.test(repository),
+        )
+      ) {
+        throw new OpenShellRuntimeMaterialFailure(
+          "OpenShell requires exact public-reader runtime files.",
+        );
+      }
+    } else if (metadata?.endpoint !== undefined) {
+      throw new OpenShellRuntimeMaterialFailure(
+        "OpenShell public-reader runtime files require frozen service admission.",
       );
     }
     configurationObject(manifest.selections, "Codex plugin-runtime selections");
@@ -871,23 +944,39 @@ function harnessRuntimeFiles(
   const nodeCa = nodeCaEntries[0];
   const config = Object.freeze({
     ...Object.fromEntries(
-      files.map((file) => [
-        file.name === "runtime.json" ? "runtime_json" : "config_toml",
-        file.content,
-      ]),
+      files
+        .filter((file) => file.name !== PUBLIC_GITHUB_READ_TRANSPORT_FILE)
+        .map((file) => [RUNTIME_FILE_CONFIG_KEYS[file.name]!, file.content]),
     ),
     [WORKSPACE_NODE_SETUP_CONFIG]: "{}",
     node_ca_pem: nodeCa === undefined || "valueFrom" in nodeCa ? "" : nodeCa.value,
   });
   const profileBase: Omit<OpenShellProviderProfile, "annotations"> = {
-    id: RUNTIME_PROFILE_IDS[harnessId],
+    id: service === undefined ? RUNTIME_PROFILE_IDS[harnessId] : PUBLIC_READER_PROFILE_ID,
     displayName: `${codex ? "Codex" : "OpenClaw"} runtime files (OpenClaw Enterprise)`,
     category: "PROVIDER_PROFILE_CATEGORY_OTHER",
-    credentials: [],
+    credentials:
+      service === undefined
+        ? []
+        : [
+            {
+              name: "public_github_read_capability",
+              envVars: [PUBLIC_READER_CAPABILITY_ENV],
+              required: true,
+              authStyle: "bearer",
+              headerName: "authorization",
+              stablePlaceholder: true,
+            },
+          ],
     files: [
       ...files.map((file) => ({
         path: file.name,
-        content: `{{config.${file.name === "runtime.json" ? "runtime_json" : "config_toml"}}}`,
+        // The shipped source is immutable and non-secret. Keep it in the profile's
+        // 64 KiB file template rather than a provider config value (8 KiB maximum).
+        content:
+          file.name === PUBLIC_GITHUB_READ_TRANSPORT_FILE
+            ? PUBLIC_GITHUB_READ_TRANSPORT_SOURCE
+            : `{{config.${RUNTIME_FILE_CONFIG_KEYS[file.name]!}}}`,
         environmentVariable: file.environmentVariable,
       })),
       {
@@ -941,12 +1030,47 @@ interface HarnessRuntimeCredentialMaterial {
   readonly binding?: WorkspaceNodeBinding;
 }
 
+function serviceRuntimeCredentials(
+  context: SandboxHarnessContext,
+): Readonly<Record<string, string>> {
+  openShellRevisionServiceRules(context.revision);
+  const selected = context.revision.sandboxPolicy?.serviceAccess !== undefined;
+  const material = context.requirements.serviceAccessMaterials;
+  if (!selected && material === undefined) {
+    return {};
+  }
+  const entry = material?.[0];
+  const capability = entry?.values?.capability;
+  if (
+    !selected ||
+    !Array.isArray(material) ||
+    material.length !== 1 ||
+    !entry ||
+    !isDeepStrictEqual(Object.keys(entry).sort(), ["serviceId", "values"]) ||
+    entry.serviceId !== "public-github-read" ||
+    !asRecord(entry.values) ||
+    !isDeepStrictEqual(Object.keys(entry.values), ["capability"]) ||
+    typeof capability !== "string" ||
+    capability.length === 0 ||
+    capability.length > 256 ||
+    /[^\x21-\x7e]/.test(capability) ||
+    context.requirements.environment.some((entry) => entry.name === PUBLIC_READER_CAPABILITY_ENV) ||
+    context.requirements.files.some((file) => file.content.includes(capability))
+  ) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "OpenShell requires exact public-reader service material.",
+    );
+  }
+  return Object.freeze({ [PUBLIC_READER_CAPABILITY_ENV]: capability });
+}
+
 async function harnessRuntimeCredentials(
   context: SandboxHarnessContext,
 ): Promise<HarnessRuntimeCredentialMaterial> {
+  const serviceCredentials = serviceRuntimeCredentials(context);
   const projected = context.requirements.environment.filter((entry) => "valueFrom" in entry);
   if (projected.length === 0) {
-    return { credentials: {}, credentialExpirationTimes: {}, config: {} };
+    return { credentials: serviceCredentials, credentialExpirationTimes: {}, config: {} };
   }
   if (projected.length !== 1 || projected[0]!.name !== WORKSPACE_NODE_SETUP_ENVIRONMENT) {
     const unsupported = projected.find((entry) => entry.name !== WORKSPACE_NODE_SETUP_ENVIRONMENT);
@@ -983,7 +1107,7 @@ async function harnessRuntimeCredentials(
   // OpenShell credential storage after OpenClaw can sign a stable public binding
   // instead of the token value that OpenShell rewrites on the WebSocket.
   return Object.freeze({
-    credentials: Object.freeze({}),
+    credentials: serviceCredentials,
     credentialExpirationTimes: Object.freeze({}),
     config: Object.freeze({ [WORKSPACE_NODE_SETUP_CONFIG]: JSON.stringify(setupEnvelope) }),
     binding: Object.freeze({
@@ -2185,6 +2309,12 @@ function sandboxSpec(
   mcpPolicies: ReturnType<typeof openShellManagedMcpPolicies> = [],
 ) {
   const defaults = revision.sandboxPolicy?.defaults ?? networkPolicies(options);
+  const serviceRules = openShellRevisionServiceRules(revision);
+  if (Object.keys(serviceRules).some((name) => Object.hasOwn(defaults, name))) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "Service rule names conflict with default rules.",
+    );
+  }
   const additions = openShellAgentNetworkRules(revision.sandboxPolicy?.additions ?? []);
   if (plugin) {
     assertPluginNetworkInspection(defaults, plugin.hosts);
@@ -2263,7 +2393,9 @@ function sandboxSpec(
       ...(plugin && { network_middlewares: plugin.middlewares }),
       network_policies: {
         // A protected execution keeps the exact policy and model attachment verified before provisioning.
-        ...(egressPolicy ? asRecord(egressPolicy.network_policies) : defaults),
+        ...(egressPolicy
+          ? asRecord(egressPolicy.network_policies)
+          : { ...defaults, ...serviceRules }),
         ...(egressPolicy ? {} : additions),
         ...plugin?.networks,
         ...Object.fromEntries(mcpPolicies.map(({ network }) => [network.name, network])),
@@ -2730,6 +2862,29 @@ function withoutSyntheticOneofs(
   );
 }
 
+function canonicalSandboxPolicy(value: unknown): unknown {
+  const policy = asRecord(value);
+  const rules = asRecord(policy?.network_policies);
+  if (policy === undefined || rules === undefined) {
+    return canonicalProtobufValues(value);
+  }
+  return canonicalProtobufValues({
+    ...policy,
+    network_policies: Object.fromEntries(
+      Object.entries(rules).map(([name, value]) => {
+        const rule = asRecord(value);
+        // Proto3 omits empty repeated endpoints. Both forms deny every
+        // destination; retain every nonempty or malformed value for comparison.
+        if (rule !== undefined && Array.isArray(rule.endpoints) && rule.endpoints.length === 0) {
+          const { endpoints: _empty, ...rest } = rule;
+          return [name, rest];
+        }
+        return [name, value];
+      }),
+    ),
+  });
+}
+
 function canonicalSandboxSpec(spec: Readonly<Record<string, unknown>> | undefined): unknown {
   const template = asRecord(spec?.template);
   if (spec === undefined || template === undefined) {
@@ -2739,7 +2894,7 @@ function canonicalSandboxSpec(spec: Readonly<Record<string, unknown>> | undefine
   const { provider_attachment_epoch: _epoch, restart_policy: restartPolicy, ...rest } = spec;
   return {
     ...withoutSyntheticOneofs(rest),
-    ...(spec.policy === undefined ? {} : { policy: canonicalProtobufValues(spec.policy) }),
+    ...(spec.policy === undefined ? {} : { policy: canonicalSandboxPolicy(spec.policy) }),
     ...(ADOPTABLE_RESTART_POLICIES.has(restartPolicy as string | number | undefined)
       ? {}
       : { restart_policy: restartPolicy }),
@@ -2763,7 +2918,7 @@ function verifyRuntimeProvider(
     !exactStringMap(provider.labels, expectedLabels) ||
     (expectedConfig !== undefined && !exactStringMap(provider.config, expectedConfig))
   ) {
-    throw new OpenShellSandboxConfigurationFailure(
+    throw new OpenShellRuntimeProviderMismatch(
       `Refusing OpenShell provider ${name} without exact AgentRevision ownership and content.`,
     );
   }
@@ -2836,7 +2991,7 @@ function runtimeProviderSetupUpdate(
     expectedSetup.expiresAtMs <= now ||
     expectedSetup.expiresAtMs <= actualSetup.expiresAtMs
   ) {
-    throw new OpenShellSandboxConfigurationFailure(
+    throw new OpenShellRuntimeProviderMismatch(
       `Refusing OpenShell provider ${name} without exact AgentRevision ownership and content.`,
     );
   }
@@ -2860,7 +3015,7 @@ function verifyExistingSandbox(
     ) ||
     !isDeepStrictEqual(canonicalSandboxSpec(existing.spec), canonicalSandboxSpec(request.spec))
   ) {
-    throw new OpenShellSandboxConfigurationFailure(
+    throw new OpenShellSandboxOwnershipMismatch(
       `Refusing OpenShell Sandbox ${request.name} without exact AgentRevision ownership and content.`,
     );
   }
@@ -2901,6 +3056,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   readonly id: string;
   readonly capability = "sandbox" as const;
   readonly implementation: string;
+  private readonly runtimeCredentialDigests = new Map<string, string>();
   readonly facets = Object.freeze(["networking", "filesystem", "process"] as const);
   readonly supportsHarnessExecutionMode;
   // environment() sets HOME to this for every Sandbox it creates.
@@ -3327,6 +3483,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       context.requirements,
       codex ? "codex" : "openclaw",
       context.revision.egressPlan,
+      context.revision,
     );
     const runtimeCredentialMaterial = await harnessRuntimeCredentials(context);
     await this.ensureRuntimeProfile(client, workspace, runtimeFiles.profile, context.signal);
@@ -4027,7 +4184,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         grpcStatus <= 16
           ? ` (gRPC status ${grpcStatus})`
           : "";
-      throw new OpenShellSandboxConfigurationFailure(
+      throw new OpenShellWorkspaceInitializationFailure(
         `OpenShell workspace initialization failed${detail}.`,
       );
     }
@@ -4043,7 +4200,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       } else if (exit === WORKSPACE_SETUP_NATIVE_TIMEOUT_EXIT_STATUS) {
         detail = `native setup timed out; ${detail}`;
       }
-      throw new OpenShellSandboxConfigurationFailure(
+      throw new OpenShellWorkspaceInitializationFailure(
         `OpenShell workspace initialization failed (${detail}).`,
       );
     }
@@ -4256,10 +4413,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           verifyRuntimeProvider(
             existing,
             provider,
-            RUNTIME_PROFILE_IDS[harnessId],
+            context.revision.sandboxPolicy?.serviceAccess === undefined
+              ? RUNTIME_PROFILE_IDS[harnessId]
+              : PUBLIC_READER_PROFILE_ID,
             runtimeProviderLabels(context.namespace, context.revision),
           );
           await client.deleteProvider(workspace, provider, context.signal);
+          this.runtimeCredentialDigests.delete(`${workspace}/${provider}`);
         }
       }
       const git = this.openShellGit;
@@ -4292,16 +4452,19 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       const providers = await client.listProviders(workspace.name, context.signal);
       for (const provider of providers) {
         if (
-          Object.values(RUNTIME_PROFILE_IDS).some((id) => provider.type === id) &&
+          [...Object.values(RUNTIME_PROFILE_IDS), PUBLIC_READER_PROFILE_ID].some(
+            (id) => provider.type === id,
+          ) &&
           provider.labels[OPENSHELL_MANAGED_BY_LABEL] === OPENSHELL_MANAGED_BY &&
           provider.labels[OPENSHELL_NAMESPACE_ID_LABEL] === context.namespace.id
         ) {
           await client.deleteProvider(workspace.name, provider.name, context.signal);
+          this.runtimeCredentialDigests.delete(`${workspace.name}/${provider.name}`);
         }
       }
       // Revisions cleaned up before finding 2206's fix left their Git providers behind.
       await deleteOpenShellPreparedGitProviders(client, workspace.name, providers, context.signal);
-      for (const profileId of Object.values(RUNTIME_PROFILE_IDS)) {
+      for (const profileId of [...Object.values(RUNTIME_PROFILE_IDS), PUBLIC_READER_PROFILE_ID]) {
         await this.deleteRuntimeProfileIfUnused(client, workspace.name, profileId, context.signal);
       }
       await client.deleteWorkspace(workspace.name, context.signal);
@@ -4361,13 +4524,54 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     });
   }
 
+  admitProtectedNetworkPolicy(
+    version: number,
+    serviceAccess: readonly ComputeServiceAccess[],
+  ): ProtectedNetworkPolicyAdmission {
+    const artifacts = this.admitProtectedCodexArtifactPolicy(version);
+    const services = qualifyOpenShellServiceAccess(serviceAccess);
+    const names = Object.keys(openShellServiceNetworkRules(services));
+    if (names.some((name) => Object.hasOwn(artifacts.snapshot.defaults, name))) {
+      throw new ConfigurationValidationError([
+        {
+          path: "/serviceAccess",
+          code: "INVALID_VALUE",
+          message: "Service rule names conflict with artifact declarations.",
+        },
+      ]);
+    }
+    return immutableCopy({
+      purpose: "protected-network",
+      declaredRuleNames: [...artifacts.declaredRuleNames, ...names],
+      snapshot: { ...artifacts.snapshot, serviceAccess: services },
+    });
+  }
+
   admitNetworkPolicy(
     additions: readonly SandboxNetworkGrant[],
     version: number,
     defaults?: SandboxPolicySnapshot["defaults"],
-    scope?: { readonly repositoryCredentials?: boolean },
+    scope?: {
+      readonly repositoryCredentials?: boolean;
+      readonly serviceAccess?: readonly ComputeServiceAccess[];
+    },
   ): SandboxPolicySnapshot {
     const rules = defaults ?? networkPolicies(this.options);
+    const services =
+      scope?.serviceAccess === undefined
+        ? undefined
+        : qualifyOpenShellServiceAccess(scope.serviceAccess);
+    if (
+      Object.keys(openShellServiceNetworkRules(services)).some((name) => Object.hasOwn(rules, name))
+    ) {
+      throw new ConfigurationValidationError([
+        {
+          path: "/serviceAccess",
+          code: "INVALID_VALUE",
+          message: "Service rule names conflict with default rules.",
+        },
+      ]);
+    }
     // First, so the named refusal answers even when another check below would also fail.
     if (scope?.repositoryCredentials === true) {
       const overlap = this.gitRouteOverlap(rules, additions);
@@ -4396,6 +4600,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       version,
       defaults: rules as OpenClawConfigurationDocument,
       additions,
+      ...(services === undefined ? {} : { serviceAccess: services }),
     });
   }
 
@@ -4471,7 +4676,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (baseline === undefined) {
       throw new Error("Missing policy baseline.");
     }
-    const candidate = openShellPolicyCandidate(baseline, snapshot);
+    const candidate = openShellPolicyCandidate(baseline, snapshot, context.revision);
     const status = await client.getPolicyStatus(request, context.signal);
     const matches = sameOpenShellPolicy(status.policy, candidate);
     const state =
@@ -4521,7 +4726,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (baseline === undefined) {
       throw new Error("Missing policy baseline.");
     }
-    const candidate = openShellPolicyCandidate(baseline, input.snapshot);
+    const candidate = openShellPolicyCandidate(baseline, input.snapshot, context.revision);
     const plugin = googleRequestPolicyFromSandbox(baseline);
     if (plugin) {
       assertPluginRequestPolicy(candidate, plugin);
@@ -4919,6 +5124,20 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     verifyRuntimeProvider(provider, name, profileId, expectedLabels, config);
+    if (Object.keys(credentials).length > 0) {
+      const key = `${workspace}/${name}`;
+      const digest = sha256Hex(JSON.stringify([credentials, credentialExpirationTimes]));
+      if (!created && this.runtimeCredentialDigests.get(key) !== digest) {
+        await client.updateProviderCredentials(
+          workspace,
+          name,
+          credentials,
+          context.signal,
+          credentialExpirationTimes,
+        );
+      }
+      this.runtimeCredentialDigests.set(key, digest);
+    }
     return Object.freeze({ name, created });
   }
 

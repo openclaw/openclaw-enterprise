@@ -66,11 +66,47 @@ const reviewedImports = {
   "drivers/repo/github/credentials/provider-transport/request.ts": {
     "node:https": ["request"],
   },
-  // Separate tokenless listener and fixed-origin anonymous GET; this owner and
-  // the credential owners cannot import one another, in either direction.
+  // The separately reviewed public reader authenticates its internal caller but
+  // sends fixed-origin anonymous provider reads. Credential owners remain separate.
   "drivers/repo/github/public-read/server.ts": {
     "node:http": ["createServer"],
-    "node:https": ["Agent", "get"],
+    "node:https": ["Agent", "get", "createServer"],
+  },
+  "drivers/repo/github/public-read/access.ts": {
+    "node:crypto": ["createHash", "timingSafeEqual"],
+    "node:fs/promises": ["open"],
+  },
+  "drivers/repo/github/public-read/git.ts": { "node:https": ["request"] },
+  // Fixed public runtime artifact, projected with a command-bound digest; no credentials.
+  "drivers/repo/github/public-read/runtime-source.ts": {
+    "node:fs": ["readFileSync"],
+    "node:crypto": ["createHash"],
+  },
+  "drivers/repo/github/public-read/transport.mjs": {
+    "node:child_process": ["spawn", "spawnSync"],
+    // Fixed isolated API child: built-in proxy transport and in-memory CA only.
+    "node:https": ["Agent", "request"],
+    "node:tls": ["getCACertificates", "setDefaultCACertificates"],
+    // Parse only public certificates; bounded regular-file reads and operation
+    // cleanup compose tool trust without changing system or installed material.
+    "node:crypto": ["X509Certificate"],
+    // Private nonsecret HOME subtree: refuse symlinks and foreign ownership
+    // before generating material projected read-only to the native sandbox.
+    "node:fs": [
+      "chmodSync",
+      "closeSync",
+      "constants",
+      "fstatSync",
+      "lstatSync",
+      "mkdirSync",
+      "mkdtempSync",
+      "openSync",
+      "readFileSync",
+      "readSync",
+      "realpathSync",
+      "rmSync",
+      "writeFileSync",
+    ],
   },
   // The image draft helper uses only its selected broker, session bearer and operator-projected public CA.
   "drivers/repo/github/credentials/client/draft-pr.ts": {
@@ -338,6 +374,23 @@ const rawGlobals = new Set([
   "module",
 ]);
 const reviewedProcessMembers = {
+  "drivers/repo/github/public-read/server.ts": ["env"],
+  "drivers/repo/github/public-read/transport.mjs": [
+    // Fixed API child receives bounded request/trust bytes, never argv secrets.
+    "stdin",
+    "getuid",
+    "argv",
+    "env",
+    "execPath",
+    "stdout",
+    "stderr",
+    "exitCode",
+    "on",
+    "once",
+    "off",
+    "kill",
+    "pid",
+  ],
   "composition/repository-credentials/check-config.ts": ["argv", "exitCode", "stderr", "stdout"],
   "drivers/repo/github/credentials/client/environment.ts": ["env"],
   "drivers/repo/github/credentials/client/git-helper.ts": [

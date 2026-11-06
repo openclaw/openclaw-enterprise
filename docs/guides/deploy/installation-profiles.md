@@ -71,22 +71,19 @@ each Agent at its next deployment. Before adopting them, check each agents node'
 free memory: during a rollout the old and new Harness Pods of an Agent can run
 together on one node, because they share its workspace volume.
 
-Seeding both Presets does not change the profile's PluginDriver. An Agent
-created from the other profile's Preset still needs a compatible driver,
-runtime, harness mode, credentials, and channel support.
+Both Presets keep the profile's PluginDriver. Each Agent still needs compatible
+Drivers, runtime, Harness mode, credentials and channel support.
 
 To seed additional Presets, add `"presets": { "files": ["/app/deploy/presets/swe-preset.json"] }`
-to the input JSON and rerender. This example adds **SWE Agent** alongside the
-standard Presets. Both controller processes must be able to read the files at
-startup; the renderer validates the list but does not read container files. See
+to the input JSON and rerender to add **SWE Agent**. Both controllers must read
+these files at startup; the renderer validates only the list. See
 [Preset initialization](../../reference/presets.md#installation-defaults) for path
-resolution and startup validation.
+resolution and validation.
 
-Repository support is optional. When enabled, the renderer wires the broker
-container, GitHub Backend, Repo Driver, and Compute peer. The repository registry
-needs Namespace IDs that only exist after the first bootstrap, so most installs
-render with repositories disabled, bootstrap the platform, create the registry,
-then rerender with `repository.enabled: true`.
+Optional repository support wires the broker, GitHub Backend, Repo Driver and
+Compute peer. Its registry needs Namespace IDs from bootstrap. Render with
+repositories disabled, bootstrap, create the registry, then rerender with
+`repository.enabled: true`.
 
 ## Prepare inputs
 
@@ -361,6 +358,13 @@ paired.
 `runtime.transportSecretPrefix` must form a DNS-safe Kubernetes Secret name after
 `-` and 12 hex characters are appended, with at most 253 characters in total.
 Preflight refuses a prefix that the controller would reject at startup.
+
+## Optional public GitHub reads
+
+Follow [public reader setup](../../reference/public-github-reads.md#enable-the-reader)
+after bootstrap. The default is off; Installation enablement grants no Agent
+access. Each Agent selects its own scope and deploys. Protected execution also
+requires supervisor CA trust.
 
 ## Required environment checks
 

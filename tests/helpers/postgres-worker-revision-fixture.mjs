@@ -525,6 +525,10 @@ export function createWorkerRevisionFixtures(
       number,
       {
         harness,
+        configuration,
+        admissionCompute = /** @type {import("../../packages/contracts/src/index.ts").ComputeDriver} */ (
+          compute
+        ),
         sandboxDriverId,
         protectedRepositoryDriver,
         repositoryCredentials,
@@ -587,13 +591,17 @@ export function createWorkerRevisionFixtures(
         revision: number,
         gatewayManagedMode: owner.gatewayManagedMode,
         backendId: owner.backendId,
-        configuration: { revision: String(number) },
+        configuration: configuration ?? { revision: String(number) },
         configurationId: owner.configurationId,
         configurationKind: "agent",
         configurationGeneration: 1,
         executionAdmission: { version: 2, mode: "unprotected" },
         harness: approvedHarness,
-        compute: { id: compute.id, implementation: compute.implementation },
+        compute:
+          /** @type {import("../../packages/contracts/src/index.ts").AgentRevision["compute"]} */ ({
+            id: admissionCompute.id,
+            implementation: admissionCompute.implementation,
+          }),
         ...(sandboxDriverId === undefined ? {} : { sandboxDriverId }),
         ...(plugins === undefined ? {} : { plugins }),
         harnessAuth,
@@ -647,6 +655,14 @@ export function createWorkerRevisionFixtures(
           });
         });
       }
+      const serviceAccess = admissionCompute.admitServiceAccess?.({
+        installationId: installation.id,
+        configuration: candidate.configuration,
+        harness: candidate.harness,
+      });
+      if (serviceAccess?.length) {
+        candidate.compute = { ...candidate.compute, serviceAccess };
+      }
       const idempotencyKey = `agent_revision:${candidate.id}:reconcile`;
       let admitted;
       await state.transactWithQueue(async (unit, queue) => {
@@ -654,7 +670,7 @@ export function createWorkerRevisionFixtures(
         // cannot deadlock with a worker holding the Namespace while locking the Agent.
         await unit.namespaces.lockNamespace(namespace.id);
         await unit.agents.lockAgent(namespace.id, owner.id);
-        const admission = compute.admitRevision?.(freezeAgentRevision(candidate));
+        const admission = admissionCompute.admitRevision?.(freezeAgentRevision(candidate));
         if (admission !== undefined) {
           candidate.compute = { ...candidate.compute, admission };
         }

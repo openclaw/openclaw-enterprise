@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, copyFile, chmod, readFile, writeFile, stat } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  copyFile,
+  chmod,
+  readFile,
+  writeFile,
+  stat,
+  realpath,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { nativeAdminTarget } from "../../apps/controller/src/gateway/native-admin.ts";
@@ -16,6 +25,7 @@ import {
   protectedModelApiKey,
   registerQaSecret,
   grantQaSecret,
+  grantQaCredentialSource,
   qaCommandFailureDetail,
   redactedQaTail,
 } from "./qa-secrets.mjs";
@@ -85,9 +95,14 @@ export function launcherEnvironment() {
   );
   for (const name of [
     "OCC_DEVELOPMENT_K3S_IMAGE",
+    "OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR",
     "OCC_DEVELOPMENT_K3D_DNS_RESOLVER",
     "OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT",
     "NODE_BASE_IMAGE",
+    "OCC_DEVELOPMENT_OPENSHELL_GATEWAY_IMAGE",
+    "OCC_DEVELOPMENT_OPENSHELL_SANDBOX_IMAGE",
+    "OCC_DEVELOPMENT_OPENSHELL_SUPERVISOR_IMAGE",
+    "OCC_DEVELOPMENT_OPENSHELL_SOURCE_REVISION",
   ]) {
     if (process.env[name]) {
       env[name] = process.env[name];
@@ -219,6 +234,261 @@ export async function runQaCommand(f, command, args, options = {}) {
     delete error.stdout;
     delete error.stderr;
     delete error.stack;
+    throw error;
+  }
+}
+
+// Error bodies stay in the private fixture directory. Cancel bounded reads and
+// stop waiting after 3s, including a failed or stalled diagnostic write. The
+// original API assertion is the only failure exposed to the matrix reporter.
+async function captureQaApiRefusal(f, response) {
+  let reader;
+  let expired = false;
+  let timer;
+  const cancel = () => {
+    try {
+      reader?.cancel().catch(() => {});
+    } catch {
+      // A closed/failed body cannot change the original HTTP refusal.
+    }
+  };
+  const capture = async () => {
+    reader = response.body?.getReader();
+    const chunks = [];
+    let remaining = 64 * 1024;
+    let truncated = false;
+    if (reader) {
+      while (remaining > 0) {
+        const { done, value } = await reader.read();
+        if (done || expired) {
+          break;
+        }
+        const chunk = value.subarray(0, remaining);
+        chunks.push(chunk);
+        remaining -= chunk.byteLength;
+        if (remaining === 0) {
+          truncated = true;
+          cancel();
+        }
+      }
+    }
+    if (expired) {
+      return;
+    }
+    let text = Buffer.concat(chunks).toString("utf8");
+    let code = "unknown";
+    if (!truncated) {
+      try {
+        // Separate envelope fields before line redaction so a credential on
+        // one compact JSON line cannot hide an unrelated refusal code/path.
+        const envelope = JSON.parse(text);
+        const candidate = envelope.error?.code;
+        if (typeof candidate === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(candidate)) {
+          code = redactedQaTail(candidate, f.env, { lines: 1, lineChars: 80 }).join("");
+        }
+        text = JSON.stringify(envelope, null, 2);
+      } catch {
+        // Plain text and malformed JSON still receive the same redaction.
+      }
+      const formatted = Buffer.from(text);
+      if (formatted.byteLength > 64 * 1024) {
+        text = formatted.subarray(0, 64 * 1024).toString("utf8");
+        truncated = true;
+      }
+    }
+    if (truncated) {
+      // Do not retain a partial final line: the cap might split a credential
+      // that registered-value redaction could otherwise no longer recognize.
+      text = text.slice(0, text.lastIndexOf("\n") + 1);
+    }
+    const redacted = redactedQaTail(text, f.env, { lines: 65_536, lineChars: 65_536 }).join("\n");
+    if (!expired) {
+      await f.write(
+        `api-refusal-${randomUUID()}.log`,
+        `HTTP ${response.status}\n${truncated ? "[response truncated at 64 KiB]\n" : ""}${redacted}\n`,
+      );
+    }
+    return code;
+  };
+  try {
+    return await Promise.race([
+      capture().catch(() => {}),
+      new Promise((resolve) => {
+        timer = setTimeout(() => {
+          expired = true;
+          cancel();
+          resolve();
+        }, 3000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    cancel();
+  }
+}
+
+export async function requestQaApi(f, method, path, body) {
+  const response = await fetch(f.apiUrl + path, {
+    method,
+    headers: {
+      "x-api-key": f.serviceKey,
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) {
+    const code = (await captureQaApiRefusal(f, response).catch(() => {})) ?? "unknown";
+    assert.ok(response.ok, `OCC ${method} ${path}: HTTP ${response.status} (${code})`);
+  }
+  const text = await response.text();
+  return text ? JSON.parse(text).data : undefined;
+}
+
+// An initial supported Compose input, before dev-up renders its saved snapshot.
+// Podman may reallocate dynamic addresses even when restarting the same container.
+export function qaComposePeerNetwork(subnet) {
+  assert.match(
+    subnet,
+    /^172\.(?:2[0-9]|3[01])\.(?:[1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4])\.0\/24$/,
+  );
+  const prefix = subnet.slice(0, -4);
+  return {
+    services: Object.fromEntries(
+      ["controller", "worker-kubernetes"].map((service, index) => [
+        service,
+        {
+          networks: { development: { ipv4_address: `${prefix}${250 + index}` } },
+        },
+      ]),
+    ),
+  };
+}
+
+async function verifyQaComposePeers(f) {
+  const definition = JSON.parse(await f.compose("config", "--format", "json"));
+  for (const [service, expected] of Object.entries(f.composePeerNetwork.services)) {
+    const address = expected.networks.development.ipv4_address;
+    assert.equal(
+      definition.services?.[service]?.networks?.development?.ipv4_address,
+      address,
+      "saved Compose input must retain the initial fixed QA client address",
+    );
+    const id = (await f.compose("ps", "-q", service)).trim();
+    assert.ok(id, "fixed QA Compose client must be running");
+    const [container] = JSON.parse(await f.run("docker", ["inspect", id]));
+    assert.ok(
+      Object.values(container.NetworkSettings.Networks).some(
+        (network) => network.IPAddress === address,
+      ),
+      "running QA Compose client must retain its initial fixed peer address",
+    );
+  }
+}
+
+// TCP only: this neither sends credentials nor replaces TLS, enrollment or
+// actual Agent readiness. It bounds a broken test front door before Agent work.
+async function preflightQaComposeRoute(f) {
+  const route = f.configuration.drivers.compute.configuration.gatewayRouting;
+  if (!route) {
+    return;
+  }
+  const port = route.endpointPort ?? 443;
+  assert.ok(
+    typeof route.hostname === "string" &&
+      route.hostname.length > 0 &&
+      Number.isInteger(port) &&
+      port > 0 &&
+      port <= 65535,
+    "QA Gateway front door configuration is invalid.",
+  );
+  const script = `const net=require('node:net');const socket=net.connect({host:process.argv[1],port:Number(process.argv[2])});let done=false;function finish(code){if(done)return;done=true;socket.destroy();console.log(JSON.stringify({code}))}socket.setTimeout(3000);socket.once('connect',()=>finish('CONNECTED'));socket.once('timeout',()=>finish('TIMEOUT'));socket.once('error',e=>finish(['ECONNREFUSED','ECONNRESET','EHOSTUNREACH','ENETUNREACH','ENOTFOUND','EAI_AGAIN','ETIMEDOUT'].includes(e.code)?e.code:'UNAVAILABLE'));`;
+  for (const service of ["controller", "worker-kubernetes"]) {
+    let code = "EXEC_FAILED";
+    try {
+      const id = (await f.compose("ps", "-q", service)).trim();
+      const result = JSON.parse(
+        await f.run("docker", ["exec", id, "node", "-e", script, route.hostname, String(port)], {
+          timeout: 10_000,
+          maxBuffer: 4096,
+          privateFailureOutput: true,
+        }),
+      );
+      if (
+        [
+          "CONNECTED",
+          "TIMEOUT",
+          "ECONNREFUSED",
+          "ECONNRESET",
+          "EHOSTUNREACH",
+          "ENETUNREACH",
+          "ENOTFOUND",
+          "EAI_AGAIN",
+          "ETIMEDOUT",
+          "UNAVAILABLE",
+        ].includes(result.code)
+      ) {
+        code = result.code;
+      }
+    } catch {
+      // Only a fixed diagnostic class may leave the private command owner.
+    }
+    assert.equal(code, "CONNECTED", `QA Gateway front door unavailable from ${service} (${code}).`);
+  }
+}
+
+// The same mounted startup-file/recreation owner used by regular QA saves.
+export async function saveQaComposeInstallation(f, configuration) {
+  if (f.composePeerNetwork) {
+    await verifyQaComposePeers(f);
+    await preflightQaComposeRoute(f);
+  }
+  await writeFile(join(f.stateDirectory, "installation.yaml"), dumpYaml(configuration), {
+    mode: 0o600,
+  });
+  f.configuration = configuration;
+  await recreateQaComposeServices(f);
+  if (f.composePeerNetwork) {
+    await verifyQaComposePeers(f);
+    await preflightQaComposeRoute(f);
+  }
+}
+
+// Preserve the exited services' bounded logs before the installation scope tears
+// them down. Diagnostics are redacted private files; they never replace the
+// original health/startup failure or become uploaded QA evidence.
+export async function recreateQaComposeServices(f) {
+  try {
+    await f.compose("up", "-d", "--no-deps", "--force-recreate", "controller", "worker-kubernetes");
+  } catch (error) {
+    for (const service of ["controller", "worker-kubernetes"]) {
+      try {
+        const output = await f.run(
+          "docker",
+          [
+            "compose",
+            "-p",
+            f.cluster,
+            "-f",
+            join(f.stateDirectory, "compose.yaml"),
+            ...(f.consoleThemeComposeFile === undefined ? [] : ["-f", f.consoleThemeComposeFile]),
+            "logs",
+            "--no-color",
+            "--tail",
+            "120",
+            service,
+          ],
+          { timeout: 15_000, maxBuffer: 256 * 1024, privateFailureOutput: true },
+        );
+        await f.write(
+          `compose-startup-${service}-${randomUUID()}.log`,
+          redactedQaTail(output, f.env, { lines: 120, lineChars: 1000 }).join("\n") + "\n",
+        );
+      } catch {
+        // A missing service, log timeout or failed private write must not hide
+        // the owning Compose failure; continue collecting the other service.
+      }
+    }
     throw error;
   }
 }
@@ -451,13 +721,18 @@ export async function createQaInstallation(
   context,
   controlPlane,
   artifacts,
-  { repositoryInputs = true, sandboxDriver = "none", sandboxNetworkPolicyFile = undefined } = {},
+  {
+    repositoryInputs = true,
+    sandboxDriver = "none",
+    sandboxNetworkPolicyFile = undefined,
+    stableComposePeers = false,
+  } = {},
 ) {
   assert.ok(["compose", "kubernetes"].includes(controlPlane));
   assert.ok(["none", "openshell"].includes(sandboxDriver));
   const suffix = randomUUID().slice(0, 8);
   const cluster = `occ-dev-qa-${controlPlane === "compose" ? "c" : "k"}-${suffix}`;
-  const directory = await mkdtemp(join(tmpdir(), `${cluster}-`));
+  const directory = await mkdtemp(join(await realpath(tmpdir()), `${cluster}-`));
   const stateDirectory = join(directory, "state");
   const ports = new Set();
   while (ports.size < 4) {
@@ -472,7 +747,7 @@ export async function createQaInstallation(
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
     OCC_DEVELOPMENT_CONTROL_PLANE: controlPlane,
     OCC_DEVELOPMENT_SANDBOX_DRIVER: sandboxDriver,
-    OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",
+    OCC_DEVELOPMENT_CONTAINER_ENGINE: process.env.OCC_TEST_DEV_UP_CONTAINER_ENGINE ?? "docker",
     OCC_DEVELOPMENT_COMPOSE_PROJECT: cluster,
     OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,
     OCC_DEVELOPMENT_KUBERNETES_CLUSTER: cluster,
@@ -510,6 +785,7 @@ export async function createQaInstallation(
       env.OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY = repositoryInput;
     }
   }
+  assert.ok(!stableComposePeers || controlPlane === "compose", "fixed QA peers require Compose");
   const f = {
     controlPlane,
     directory,
@@ -569,29 +845,7 @@ export async function createQaInstallation(
       await f.kubectl("apply", "-f", path);
     },
     async api(method, path, body) {
-      const response = await fetch(f.apiUrl + path, {
-        method,
-        headers: {
-          "x-api-key": f.serviceKey,
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        signal: AbortSignal.timeout(30_000),
-      });
-      const text = await response.text();
-      let code = "unknown";
-      if (!response.ok) {
-        try {
-          const candidate = JSON.parse(text).error?.code;
-          if (typeof candidate === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(candidate)) {
-            code = redactedQaTail(candidate, f.env, { lines: 1, lineChars: 80 });
-          }
-        } catch {
-          // Do not print an unstructured error body or provider response.
-        }
-      }
-      assert.ok(response.ok, `OCC ${method} ${path}: HTTP ${response.status} (${code})`);
-      return text ? JSON.parse(text).data : undefined;
+      return requestQaApi(f, method, path, body);
     },
     async compose(...args) {
       return f.run("docker", [
@@ -605,20 +859,13 @@ export async function createQaInstallation(
       ]);
     },
     async saveInstallation(configuration) {
-      await writeFile(join(stateDirectory, "installation.yaml"), dumpYaml(configuration), {
-        mode: 0o600,
-      });
-      f.configuration = configuration;
       if (controlPlane === "compose") {
-        await f.compose(
-          "up",
-          "-d",
-          "--no-deps",
-          "--force-recreate",
-          "controller",
-          "worker-kubernetes",
-        );
+        await saveQaComposeInstallation(f, configuration);
       } else {
+        await writeFile(join(stateDirectory, "installation.yaml"), dumpYaml(configuration), {
+          mode: 0o600,
+        });
+        f.configuration = configuration;
         await f.apply({
           apiVersion: "v1",
           kind: "Secret",
@@ -643,6 +890,7 @@ export async function createQaInstallation(
           );
         }
       }
+      await f.afterSaveInstallation?.();
       await waitFor("OCC after configuration", async () => {
         try {
           return await f.api("GET", "/installation");
@@ -831,12 +1079,24 @@ export async function createQaInstallation(
     assert.ok(subnet, "no unused private Compose subnet available");
     env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR = subnet;
     await f.record("compose-network", { subnet });
+    if (stableComposePeers) {
+      f.composePeerNetwork = qaComposePeerNetwork(subnet);
+      f.composePeerInput = await f.write(
+        "compose-fixed-peers.yaml",
+        dumpYaml(f.composePeerNetwork),
+      );
+    }
   }
-  const started = await f.run(
-    join(repository, "scripts/dev-up"),
-    sandboxNetworkPolicyFile ? ["--sandbox-network-policy-file", sandboxNetworkPolicyFile] : [],
-    { timeout: 1_100_000, captureStartupTimings: true },
-  );
+  const launchArgs = sandboxNetworkPolicyFile
+    ? ["--sandbox-network-policy-file", sandboxNetworkPolicyFile]
+    : [];
+  if (f.composePeerInput) {
+    launchArgs.push("--", "-f", f.composePeerInput);
+  }
+  const started = await f.run(join(repository, "scripts/dev-up"), launchArgs, {
+    timeout: 1_100_000,
+    captureStartupTimings: true,
+  });
   assert.match(
     started,
     controlPlane === "compose" ? /Control plane: Compose/ : /Deployment: Kubernetes only/,
@@ -844,6 +1104,12 @@ export async function createQaInstallation(
   f.state = JSON.parse(await readFile(join(stateDirectory, "state.json"), "utf8"));
   assert.equal(f.state.cluster, cluster);
   assert.equal(f.state.sandboxDriver, sandboxDriver);
+  // Continue against the exact endpoint chosen and recorded by dev-up.
+  env.DOCKER_HOST = f.state.dockerHost;
+  if (f.state.containerEngine === "podman") {
+    env.CONTAINER_HOST = f.state.dockerHost;
+    delete env.CONTAINER_CONNECTION;
+  }
   f.serviceKey = JSON.parse(
     await protectedText(join(stateDirectory, "initial-admin-service-key.json"), "bootstrap key"),
   ).data.key;
@@ -862,6 +1128,11 @@ export async function createQaInstallation(
     ]);
   }
   f.configuration = loadYaml(await readFile(join(stateDirectory, "installation.yaml"), "utf8"));
+  // dev-up folds ordered initial -f inputs into this one saved snapshot. All
+  // later config/recreation/cleanup operations consume that same snapshot.
+  if (f.composePeerNetwork) {
+    await verifyQaComposePeers(f);
+  }
   f.namespace = f.defaultNamespace;
   if (controlPlane === "compose") {
     await prepareHybridInstallation(f);
@@ -959,12 +1230,27 @@ export async function prepareQaConsoleTheme(f) {
   });
 }
 
-export async function prepareQaPluginCatalogs(f) {
+export async function prepareQaPluginCatalogs(f, { includeDefaults = false } = {}) {
+  assert.ok(
+    !f.retained && f.pendingRepositories.size === 0,
+    "blocked by unresolved repository cleanup",
+  );
+  assert.ok(
+    f.agents.every((agent) => agent.stopped),
+    "stop the prior Agent before changing the installation runtime configuration",
+  );
   f.configuration.drivers.plugin = [
     { id: "occ-plugin", configuration: {} },
     { id: "codex-plugin", configuration: { catalogSource: "openai-curated" } },
   ];
+  if (includeDefaults) {
+    f.configuration.presets = { ...f.configuration.presets, includeDefaults: true };
+  }
   await f.saveInstallation(f.configuration);
+  if (includeDefaults) {
+    // Startup seeds the selected Namespace; use its actual post-save catalog.
+    f.presets = await f.api("GET", `/namespaces/${f.namespace.id}/presets`);
+  }
   const { capabilities } = await f.api("GET", "/installation");
   const catalogs = Object.fromEntries(
     capabilities.pluginCatalogs.map(({ harnessId, pluginPolicies }) => [
@@ -994,7 +1280,7 @@ export async function createQaAgent(
   presetName,
   browserOrigin,
   nameSuffix = "",
-  { apiKeyAuth = false } = {},
+  { apiKeyAuth = false, configureValues = undefined } = {},
 ) {
   assert.ok(!f.retained, "unresolved repository cleanup prevents new Agent work");
   // The Preset list returns summaries; the exact Preset carries the template.
@@ -1031,14 +1317,32 @@ export async function createQaAgent(
     ...(browserOrigin ? { allowedOrigins: [browserOrigin] } : {}),
   };
   values.agents.defaults.skipBootstrap = true;
+  configureValues?.(values);
   const secret = await f.api("POST", `/namespaces/${f.namespace.id}/secrets`, {
     name: `${rendered.agent.name}-model`,
     value: credential,
   });
-  const auth = {
-    method: codexAccountLogin ? "codex_pat" : "api_key",
-    source: { kind: "secret", namespaceId: f.namespace.id, id: secret.id },
-  };
+  let credentialSource;
+  if (f.configuration.drivers.credential_gateway !== undefined) {
+    const modelProvider = f.configuration.drivers.compute?.configuration?.runtime?.modelProvider;
+    credentialSource = await f.api("POST", `/namespaces/${f.namespace.id}/credential-sources`, {
+      name: `${rendered.agent.name}-model`,
+      type: codexAccountLogin ? "codex-pat" : "openai",
+      config:
+        !codexAccountLogin && modelProvider?.baseUrl !== undefined
+          ? { authorized_base_url: modelProvider.baseUrl }
+          : {},
+      secrets: { [codexAccountLogin ? "access_token" : "api_key"]: secret.ref },
+    });
+    assert.equal(credentialSource.state, "ready", "model credential source must be ready");
+    assert.equal(credentialSource.ownerCapability, "credential_gateway");
+  }
+  const auth = credentialSource
+    ? { method: "credential_source", sourceId: credentialSource.id }
+    : {
+        method: codexAccountLogin ? "codex_pat" : "api_key",
+        source: { kind: "secret", namespaceId: f.namespace.id, id: secret.id },
+      };
   const configuration = await f.api("POST", `/namespaces/${f.namespace.id}/configurations`, {
     ...rendered.configuration,
     kind: "agent",
@@ -1047,8 +1351,17 @@ export async function createQaAgent(
     ...rendered.agent,
     configurationId: configuration.id,
     harnessAuth: auth,
+    ...(credentialSource
+      ? {
+          credentialSources: [
+            ...(rendered.agent.credentialSources ?? []),
+            { sourceId: credentialSource.id },
+          ],
+        }
+      : {}),
   });
   f.agents.push(agent);
+
   agent.preset = presetName;
   agent.qaScenario = nameSuffix;
   agent.configuration = configuration;
@@ -1085,9 +1398,14 @@ export async function createQaAgent(
       { values },
     );
   }
-  await grantQaSecret(f, agent, secret.id, `${agent.name}-model`);
+  if (credentialSource) {
+    await grantQaCredentialSource(f, agent, credentialSource.id, `${agent.name}-model`);
+  } else {
+    await grantQaSecret(f, agent, secret.id, `${agent.name}-model`);
+  }
   await f.api("POST", `/namespaces/${f.namespace.id}/agents/${agent.id}/runtime-credentials`, {});
   await f.deployAndWait(agent);
+
   agent.native = createNativePluginAssertions({
     gatewayUrl: (a) => f.gatewayUrl(a),
     execGateway: (a, args) => f.execRole(a, "gateway", args),

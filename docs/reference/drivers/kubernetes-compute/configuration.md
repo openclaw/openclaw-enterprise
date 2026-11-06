@@ -54,16 +54,16 @@ A peer object has required `namespace` and `podLabels` fields. Use exact workloa
 selectors; see [networking and isolation](networking-and-isolation.md#networking)
 for label constraints, egress rules, and source-address verification.
 
-| Setting                                | Type         | Requirement | Value, default, and constraints                                                                                                            |
-| -------------------------------------- | ------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `network.dns`                          | peer         | Required    | Cluster DNS namespace and Pod labels.                                                                                                      |
-| `network.gatewayPort`                  | integer      | Required    | `1`–`65535`; cannot use runtime-status port `18791`. Sandbox routing also reserves the next port.                                          |
-| `network.gatewayTrustedProxyCidrs`     | string array | Required    | Nonempty proxy socket-source CIDRs; all-source ranges are rejected.                                                                        |
-| `network.gatewayClients`               | peer array   | Optional    | Nonempty without `gatewayRouting`; must be omitted with private routing.                                                                   |
-| `network.pluginStatusProxySourceCidrs` | string array | Optional    | API-server Pod-proxy sources, preferably `/32` or `/128`. Omission adds no diagnostics ingress.                                            |
-| `network.repositoryCredentials`        | object       | Optional    | Broker peer plus `port` (`1`–`65535`). Omission adds no broker peer rule.                                                                  |
-| `network.publicGithubRead`             | object       | Optional    | Reader peer plus IPv4 ClusterIP `address`; single-cluster only. No reader rule by default.                                                 |
-| `network.providerHarness`              | object       | Optional    | Provider peer plus IP `address` and `port` (`1`–`65535`). No bridge by default; supported only for the documented local OpenShell profile. |
+| Setting                                | Type         | Requirement | Value, default, and constraints                                                                                                                              |
+| -------------------------------------- | ------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `network.dns`                          | peer         | Required    | Cluster DNS namespace and Pod labels.                                                                                                                        |
+| `network.gatewayPort`                  | integer      | Required    | `1`–`65535`; cannot use runtime-status port `18791`. Sandbox routing also reserves the next port.                                                            |
+| `network.gatewayTrustedProxyCidrs`     | string array | Required    | Nonempty proxy socket-source CIDRs; all-source ranges are rejected.                                                                                          |
+| `network.gatewayClients`               | peer array   | Optional    | Nonempty without `gatewayRouting`; must be omitted with private routing.                                                                                     |
+| `network.pluginStatusProxySourceCidrs` | string array | Optional    | API-server Pod-proxy sources, preferably `/32` or `/128`. Omission adds no diagnostics ingress.                                                              |
+| `network.repositoryCredentials`        | object       | Optional    | Broker peer plus `port` (`1`–`65535`). Omission adds no broker peer rule.                                                                                    |
+| `network.publicGithubRead`             | object       | Optional    | Reader peer plus IPv4 ClusterIP `address`; single-cluster only. No reader rule by default. OCC supplies runtime Installation identity; startup must omit it. |
+| `network.providerHarness`              | object       | Optional    | Provider peer plus IP `address` and `port` (`1`–`65535`). No bridge by default; supported only for the documented local OpenShell profile.                   |
 
 ## Workload identity
 

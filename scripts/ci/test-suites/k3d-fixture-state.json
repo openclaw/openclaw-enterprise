@@ -17,7 +17,8 @@
   "parallelFiles": [
     "tests/integration/postgres-platform-state-kubernetes.test.mjs",
     "tests/integration/kubernetes-compute-provisioning-real.test.mjs",
-    "tests/integration/production-install-retained-job-k3d.test.mjs"
+    "tests/integration/production-install-retained-job-k3d.test.mjs",
+    "tests/integration/public-github-read-kubernetes.test.mjs"
   ],
   "files": [
     {
@@ -40,6 +41,12 @@
       "path": "tests/integration/production-install-retained-job-k3d.test.mjs",
       "expectedTests": [
         "Helm install preserves the initialization Job when release history is absent"
+      ]
+    },
+    {
+      "path": "tests/integration/public-github-read-kubernetes.test.mjs",
+      "expectedTests": [
+        "Kubernetes public-reader authorization survives restart and permanently withdraws only its revision"
       ]
     }
   ]

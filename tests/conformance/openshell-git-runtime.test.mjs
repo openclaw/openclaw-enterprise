@@ -1948,6 +1948,30 @@ test("Git expiry observes the original model in the reduced stock installation, 
     const { revision: r, sandbox: box, entry, client, supervisor: sv } = f;
     const git = "oce-git";
     const model = "original-model";
+    const publicReadPolicy = {
+      network_policies: {
+        "public-github-read": {
+          name: "public-github-read",
+          binaries: [{ path: "/usr/bin/node" }],
+          endpoints: [
+            {
+              host: "10.96.0.55",
+              ports: [8080],
+              allowed_ips: ["10.96.0.55"],
+              protocol: "rest",
+              enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+              credential_binding: { provider: "runtime" },
+              rules: [
+                { allow: { method: "GET", path: "/repos/**" } },
+                { allow: { method: "GET", path: "/git/**/info/refs" } },
+                { allow: { method: "POST", path: "/git/**/git-upload-pack" } },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    box.spec.policy = structuredClone(publicReadPolicy);
     box.spec.providers = [model, "runtime", git];
     box.spec.provider_attachment_epoch = sv.attachmentEpoch;
     box.annotations = { "openclaw.dev/revision-id": r.id };
@@ -2097,6 +2121,11 @@ test("Git expiry observes the original model in the reduced stock installation, 
     store.confirmDetached = async (_r, _h, id, epoch) => {
       assert.equal(id, detach.requestId);
       assert.deepEqual(box.spec.providers, [model, "runtime"]);
+      assert.deepEqual(
+        box.spec.policy,
+        publicReadPolicy,
+        "Git retirement must preserve independently selected public-reader policy and its runtime provider",
+      );
       detach.epoch = epoch;
       return true;
     };
@@ -2361,6 +2390,7 @@ async function observedGitRoute(
     removeBinding = false,
     changedStartup = false,
     narrowRepository,
+    publicReader = false,
     probeFailure,
   } = {},
 ) {
@@ -2410,6 +2440,7 @@ async function observedGitRoute(
   const revision = {
     ...f.revision,
     repositoryCredentials: credentials,
+    ...(publicReader && { compute: { serviceAccess: [{ id: "public-github-read" }] } }),
     executionAdmission: { version: mandatoryPolicy ? 5 : 6, mode: "protected" },
     egressPlan: {
       driver: { id: "openshell" },
@@ -2544,6 +2575,28 @@ async function observedGitRoute(
     };
     assert.equal(f.entry.authorization.binding.profile, "git-write");
     assert.equal("scope" in f.owner.material, false, "this control requires narrow material");
+  }
+  if (publicReader) {
+    // Reuse the admitted mandatory recipient fixture: selected Git authority stays exact
+    // when the independent public reader receives its authenticated-name dispatch material.
+    assert.equal(binding.profile, "github-repository");
+    const prepared = await f.runtime.prepare(
+      revision,
+      f.client,
+      f.sandbox.workspace,
+      f.sandbox.name,
+      AbortSignal.timeout(2_000),
+      "/sandbox/enterprise",
+      ["openai"],
+    );
+    assert.deepEqual(
+      JSON.parse(
+        prepared.environment.find(
+          (entry) => entry.name === "OCE_PUBLIC_GITHUB_AUTHENTICATED_REPOSITORIES",
+        )?.value ?? "null",
+      ),
+      ["example/application"],
+    );
   }
   {
     const config = f.client.getSandboxConfig;
@@ -2911,6 +2964,9 @@ for (const policy of [undefined, 2, 3]) {
       await observedGitRoute(policy, { legacy: true });
     }
     await observedGitRoute(policy);
+    if (policy === 2) {
+      await observedGitRoute(policy, { publicReader: true });
+    }
     if (policy) {
       await observedGitRoute(policy, { narrowRepository: "healthy" });
     }
@@ -2918,6 +2974,83 @@ for (const policy of [undefined, 2, 3]) {
     await observedGitRoute(policy, { changedStartup: true });
   });
 }
+
+test("public-reader dispatch preserves Repo-resolved authenticated names without broadening Git authority", async () => {
+  const resolve = createGitHubRepositoryDeliveryResolver(registry);
+  const f = fixture();
+  const revision = {
+    ...f.revision,
+    compute: {
+      id: "kubernetes",
+      implementation: "kubernetes",
+      serviceAccess: [{ id: "public-github-read" }],
+    },
+  };
+  f.entry.revision = revision;
+  f.entry.authorization = resolve(revision);
+  const prepared = await f.runtime.prepare(
+    revision,
+    f.client,
+    f.sandbox.workspace,
+    f.sandbox.name,
+    AbortSignal.timeout(2_000),
+    "/sandbox/enterprise",
+    ["openai"],
+  );
+  const routing = prepared.environment.find(
+    (entry) => entry.name === "OCE_PUBLIC_GITHUB_AUTHENTICATED_REPOSITORIES",
+  );
+  assert.deepEqual(JSON.parse(routing?.value ?? "null"), ["example/application"]);
+  // The shared fixture now admits installation access; public dispatch retains
+  // that exact delivery scope while exposing only its known repository names.
+  assert.deepEqual(resolve(revision).delivery, { installationId: "67890" });
+  const installationRegistry = validateGitHubRepositoryRegistry(
+    {
+      ...registry,
+      installationAccess: {
+        repositoryRef: "installation",
+        namespaces: [{ namespaceId: "namespace-a", accessMode: "installation" }],
+      },
+    },
+    registry.backendId,
+  );
+  const installation = {
+    ...revision,
+    repositoryCredentials: {
+      ...revision.repositoryCredentials,
+      bindings: [
+        resolveGitHubRepositoryBinding(installationRegistry, {
+          namespaceId: "namespace-a",
+          repositoryRef: "installation",
+          profile: "github-installation",
+        }),
+      ],
+    },
+  };
+  const delivery = createGitHubRepositoryDeliveryResolver(installationRegistry);
+  assert.deepEqual(delivery(installation).authenticatedRepositories, ["example/application"]);
+  const { compute: _compute, ...old } = installation;
+  assert.equal(delivery(old).authenticatedRepositories, undefined);
+  const empty = fixture({
+    resolveDelivery: (selected) => ({ ...resolve(selected), authenticatedRepositories: [] }),
+  });
+  await assert.rejects(
+    empty.runtime.prepare(
+      revision,
+      empty.client,
+      empty.sandbox.workspace,
+      empty.sandbox.name,
+      AbortSignal.timeout(2_000),
+      "/sandbox/enterprise",
+      ["openai"],
+    ),
+    (error) => {
+      assert.match(error.error.details[0].message, /explicit github-repository bindings/);
+      return true;
+    },
+  );
+  assert.equal(empty.calls.providerWrites, 0);
+});
 
 test("held Git probe failures reach worker diagnostics without response content or retries", async () => {
   for (const probeFailure of [

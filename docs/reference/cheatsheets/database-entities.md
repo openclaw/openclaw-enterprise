@@ -77,7 +77,9 @@ See [per-Agent policies](../sandbox-policies.md).
 
 Stores numbered, immutable snapshots of Agent settings accepted for deployment.
 `admitted_spec` includes the explicit v2
-[execution admission decision](../credential-sources/protected-inference.md#execution-admission-cutoff).
+[execution admission decision](../credential-sources/protected-inference.md#execution-admission-cutoff)
+and optional [Compute service descriptors](../drivers/compute-admission.md#service-admission)
+with the Sandbox acknowledgement.
 
 - `id`
 - `namespace_id`

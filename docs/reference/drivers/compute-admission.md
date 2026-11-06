@@ -20,6 +20,32 @@ value, in at most 256 characters. Agent provisioning also calls
 `validateAgentProvisioning`; see
 [initial runtime credential provisioning](compute.md#optional-initial-runtime-credential-provisioning).
 
+## Service admission
+
+`admitServiceAccess({installationId, configuration, harness})` reads the original
+Driver-owned Configuration before Sandbox normalization. OCC supplies the
+readonly `installationId` from its authoritative runtime Installation; authored
+Configuration and startup YAML cannot choose it. Omission selects no services.
+Return nonsecret `ComputeServiceAccess` descriptors with unique IDs, the selected
+Compute identity, endpoint and opaque Driver configuration. OCC freezes them
+under `AgentRevision.compute.serviceAccess`; a selected Sandbox must acknowledge
+them exactly under `SandboxPolicySnapshot.serviceAccess` before effects.
+PostgreSQL preserves both snapshots and rejects unknown descriptor fields,
+duplicate IDs, invalid values and changed Compute owners. Reload uses the saved
+services; revisions without them receive no service grant.
+Kubernetes Compute freezes that runtime ID in its public-reader descriptor and
+checks the registry owner label and rows against it. Its startup peer accepts
+no Installation ID; operator Helm/bootstrap input only initializes registry ownership.
+Protected execution requires `admitProtectedNetworkPolicy` and both paired
+compilers must validate the frozen authority. Private `serviceAccessMaterials`
+are delivered separately through the provider's existing credential mechanism;
+they never belong in the snapshot.
+
+After independent IAM, model, Secret/admission and Backend checks, the worker can
+call `maintainServiceAccess(revision, signal)` to retain existing leased services
+when repository access expires. It must obey claim cancellation, preserve frozen
+scope, and never prepare or activate a runtime or issue another repository grant.
+
 ## Agent save
 
 Agent create and update read the named Configuration and check the Agent as it

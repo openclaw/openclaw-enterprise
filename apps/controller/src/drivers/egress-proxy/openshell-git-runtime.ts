@@ -4,7 +4,10 @@ import { isIP } from "node:net";
 import { dirname, posix } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { asRecord } from "@openclaw-enterprise/utils";
-import { githubInstallationProfile } from "@openclaw-enterprise/contracts";
+import {
+  ConfigurationValidationError,
+  githubInstallationProfile,
+} from "@openclaw-enterprise/contracts";
 import type {
   AgentRevision,
   ProtectedGitHubInstallationMaterial,
@@ -620,6 +623,35 @@ export class OpenShellGitRuntime {
       throw new Error("OpenShell prepared Git requires a live admitted GitHub binding.");
     }
     const scope = this.scope(revision);
+    const publicReader =
+      revision.compute?.serviceAccess?.some((service) => service.id === "public-github-read") ===
+      true;
+    const authenticatedRepositories = publicReader
+      ? (scope.authenticatedRepositories ??
+        (scope.delivery.repository
+          ? [scope.delivery.repository]
+          : "repositories" in scope.delivery
+            ? scope.delivery.repositories.map((repository) => repository.repository)
+            : []))
+      : undefined;
+    if (
+      authenticatedRepositories !== undefined &&
+      (authenticatedRepositories.length === 0 ||
+        authenticatedRepositories.length > 256 ||
+        authenticatedRepositories.some(
+          (repository) =>
+            !/^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?\/(?!\.{1,2}$)[a-z\d._-]{1,100}$/.test(repository),
+        ))
+    ) {
+      throw new ConfigurationValidationError([
+        {
+          path: "/repositoryBindings",
+          code: "INVALID_VALUE",
+          message:
+            "Combined public GitHub reads require known authenticated repository names; configure explicit github-repository bindings.",
+        },
+      ]);
+    }
     const admittedExecutionId = revision.egressPlan!.execution.executionId;
     const legacyPreview = revision.executionAdmission?.version === 6;
     const mandatory =
@@ -877,6 +909,14 @@ export class OpenShellGitRuntime {
       provider: entry.binding.provider,
       readOnlyPaths: draft ? [dirname(REPOSITORY_CLIENT_BIN)] : [],
       environment: [
+        ...(authenticatedRepositories === undefined
+          ? []
+          : [
+              {
+                name: "OCE_PUBLIC_GITHUB_AUTHENTICATED_REPOSITORIES",
+                value: JSON.stringify([...new Set(authenticatedRepositories)].sort()),
+              },
+            ]),
         ...(draft ? [{ name: "PATH", value: OPENSHELL_GIT_DRAFT_PATH }] : []),
         ...(scope.repository
           ? [

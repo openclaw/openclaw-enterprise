@@ -3,6 +3,8 @@ import type { AdmittedRepositoryBinding, AgentRevision } from "@openclaw-enterpr
 /** Nonsecret delivery scope resolved by Repo, independently of token issuance or transport. */
 export interface RepositoryGitDeliveryBinding {
   readonly binding: AdmittedRepositoryBinding;
+  /** Nonsecret client routing hints for a selected public reader; never an authorization grant. */
+  readonly authenticatedRepositories?: readonly string[];
   readonly delivery:
     | {
         readonly scope: "github-repository";

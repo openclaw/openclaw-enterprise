@@ -4,6 +4,7 @@ const scenarioPresets = {
   "sandbox-policy": ["Codex"],
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
+  "public-github-git": ["Codex"],
   "model-ui": ["OpenClaw"],
   "codex-search-config": ["Codex"],
   "console-secrets": ["OpenClaw", "Codex"],
@@ -33,6 +34,7 @@ export function selectQaMatrix(env = process.env) {
               "plugin-install",
               "openshell-linear-read",
               "codex-search-config",
+              "public-github-git",
             ].includes(name),
         )
       : input.split(",").map((name) => name.trim());
@@ -41,6 +43,11 @@ export function selectQaMatrix(env = process.env) {
     "invalid QA scenario selection",
   );
   assert.equal(new Set(scenarios).size, scenarios.length, "duplicate QA scenario selection");
+  const publicGithubGit = scenarios.includes("public-github-git");
+  if (publicGithubGit) {
+    assert.equal(scenarios.length, 1, "public-github-git requires an exclusive QA selection");
+    assert.notEqual(installation, "kubernetes", "public-github-git uses a Compose control plane");
+  }
   const codexSearchConfig = scenarios.includes("codex-search-config");
   if (codexSearchConfig) {
     assert.equal(scenarios.length, 1, "codex-search-config requires an exclusive QA selection");
@@ -60,19 +67,32 @@ export function selectQaMatrix(env = process.env) {
       preset: name,
       scenarios: scenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
-          scenarioPresets[scenario].includes(name),
+          ![
+            "sandbox-policy",
+            "plugin-install",
+            "openshell-linear-read",
+            "public-github-git",
+          ].includes(scenario) && scenarioPresets[scenario].includes(name),
       ),
       unselected: allScenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
+          ![
+            "sandbox-policy",
+            "plugin-install",
+            "openshell-linear-read",
+            "public-github-git",
+          ].includes(scenario) &&
           scenarioPresets[scenario].includes(name) &&
           !scenarios.includes(scenario),
       ),
       notApplicable: allScenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
-          !scenarioPresets[scenario].includes(name),
+          ![
+            "sandbox-policy",
+            "plugin-install",
+            "openshell-linear-read",
+            "public-github-git",
+          ].includes(scenario) && !scenarioPresets[scenario].includes(name),
       ),
     })),
   );
@@ -101,7 +121,10 @@ export function selectQaMatrix(env = process.env) {
       ? "OCC_TEST_QA_CODEX_TOKEN_FILE"
       : "OCC_TEST_QA_OPENAI_KEY_FILE",
   );
-  if (codexSearchConfig) {
+  if (codexSearchConfig || publicGithubGit) {
+    if (publicGithubGit && !requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE")) {
+      requiredEnv.push("OCC_TEST_QA_OPENAI_KEY_FILE");
+    }
     if (env.OCC_TEST_QA_MODEL_API_KEY !== undefined) {
       requiredEnv.splice(
         requiredEnv.indexOf("OCC_TEST_QA_OPENAI_KEY_FILE"),
@@ -110,6 +133,9 @@ export function selectQaMatrix(env = process.env) {
       );
     }
     requiredEnv.push("OCC_TEST_QA_CODEX_MODEL_BASE_URL");
+  }
+  if (publicGithubGit) {
+    requiredEnv.push("OCC_TEST_QA_CODEX_MODEL");
   }
   const sandboxPolicy = scenarios.includes("sandbox-policy");
   const pluginInstall = scenarios.includes("plugin-install");
@@ -166,6 +192,7 @@ export function selectQaMatrix(env = process.env) {
     sandboxPolicy,
     pluginInstall,
     linearRead,
+    publicGithubGit,
     cells,
     scenarios,
     requiredEnv,
@@ -175,7 +202,7 @@ export function selectQaMatrix(env = process.env) {
       exclusions.length === 0 &&
       installation === "all" &&
       preset === "all" &&
-      scenarios.length === allScenarios.length - 4
+      scenarios.length === allScenarios.length - 5
         ? "full"
         : "partial:selected",
   };

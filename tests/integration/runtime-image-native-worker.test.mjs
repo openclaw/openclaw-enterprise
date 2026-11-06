@@ -589,6 +589,8 @@ ${AGENT_WITH_NODE_ENTRYPOINT}`;
         "tests/helpers/available-port.mjs",
         "tests/helpers/reuse-port-preload.mjs",
         "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+        "apps/controller/src/drivers/repo/github/public-read/runtime-source.ts",
+        "apps/controller/src/drivers/repo/github/public-read/transport.mjs",
         "apps/controller/src/drivers/compute/kubernetes/codex-plugin-stdio.ts",
         "apps/controller/plugins/marketplace.json",
         ...managedInstalls.map(
