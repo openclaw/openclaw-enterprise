@@ -50,6 +50,8 @@ operator connection can retrieve an access token. That credential lifecycle does
 not establish the three release requirements above. In particular, the released
 access-token RPC is not the proposed credential-access and dispatch protocol.
 
+[OpenClaw model keys](openclaw-model-keys.md) proposes qualifying online authorization for a dedicated Harness that also uses a saved plugin account. The proposal requires a real model turn with both credentials before enabling the profile.
+
 Keep [exact dispatch](protocol.md) for installations that must bind the selected credential,
 one send attempt and its response to the same execution. Select the level explicitly at
 admission. Never satisfy an exact-dispatch requirement with online authorization, or either
