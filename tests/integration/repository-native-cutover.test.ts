@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { rootCertificates } from "node:tls";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import {
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,

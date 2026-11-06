@@ -27,7 +27,7 @@ import {
   seedSessionRevision,
   sessionAttempt,
 } from "../conformance/repository-sessions.contract.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
 

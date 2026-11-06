@@ -4,7 +4,7 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
 
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { closeWorkerComposition } from "../../apps/controller/src/worker/shutdown.ts";

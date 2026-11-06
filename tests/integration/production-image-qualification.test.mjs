@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 
 import { checkBrokerCapability } from "../../scripts/upgrade-repository-image-probe.mjs";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);

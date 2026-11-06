@@ -3,7 +3,7 @@ import { createControlledClock } from "./clock.mjs";
 import { serviceConfigurationData } from "./builders.mjs";
 import { createTlsMaterial } from "./process.mjs";
 import { createResourceScope } from "./resources.mjs";
-import { socketDirectory } from "../../helpers/socket-directory.mjs";
+import { socketDirectory } from "../../helpers/socket-directory.ts";
 import {
   credentialDriverModule,
   githubProviderModule,

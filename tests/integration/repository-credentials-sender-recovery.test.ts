@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { buffer } from "node:stream/consumers";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 
 // Node's test runner gives this file a fresh process, before any broker imports.
 test("selected native sender recovers only the original grant without loading broker sessions", async (t) => {

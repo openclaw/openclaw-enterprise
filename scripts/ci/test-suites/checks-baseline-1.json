@@ -61,7 +61,7 @@
     "tests/integration/production-upgrade-chart-inputs.test.ts",
     "tests/conformance/test-files.test.mjs",
     "tests/conformance/update-contributors.test.mjs",
-    "tests/conformance/socket-directory.test.mjs",
+    "tests/conformance/socket-directory.test.ts",
     "tests/conformance/temporary-directory.test.mjs",
     "tests/integration/production-controller-security.test.mjs",
     "tests/conformance/kubernetes-runtime-credentials.test.mjs",
@@ -309,7 +309,7 @@
       "path": "tests/conformance/test-files.test.mjs"
     },
     {
-      "path": "tests/conformance/socket-directory.test.mjs"
+      "path": "tests/conformance/socket-directory.test.ts"
     },
     {
       "path": "tests/conformance/temporary-directory.test.mjs"

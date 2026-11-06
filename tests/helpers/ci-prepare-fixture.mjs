@@ -6,7 +6,7 @@ import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { commandShim, startFixtureCommandServer } from "./ci-prepare-fixture-command.mjs";
 import { readJsonLines } from "./json-lines.mjs";
-import { socketDirectory } from "./socket-directory.mjs";
+import { socketDirectory } from "./socket-directory.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
 export { forwardedEnv } from "./ci-prepare-fixture-command.mjs";

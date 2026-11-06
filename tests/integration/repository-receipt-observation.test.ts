@@ -25,7 +25,7 @@ import {
 } from "../fixtures/repository-credentials/process.mjs";
 import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.mjs";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 
 async function listen(server: Server, path: string) {
   server.listen(path);
