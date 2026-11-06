@@ -61,7 +61,6 @@ async function selectedV5(t: TestContext) {
   const store = routeStore();
   const options: FixtureOptions = {
     store,
-
     audience: "preview",
   };
   const f = bootstrappingOpenShellGitRuntimeFixture(options);
@@ -547,7 +546,6 @@ test("old attached v5 provider cleanup preserves unrelated resources", async (t)
   };
   await expectWithdrawn();
   client.getSandbox = async () => undefined;
-  assert.equal(await client.getSandbox({ workspace, name: sandbox.name }, t.signal), undefined);
   const { egressPlan: _oldPlan, ...saved } = revision;
   const cleanupRevision: Parameters<Runtime["removeProvider"]>[0] = saved;
   const state = () =>
