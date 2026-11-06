@@ -6,7 +6,7 @@ import {
   parseFrontmatter,
   resolveDocsFragment,
 } from "./docs-site/vendor/docs-markdown.mjs";
-import { createGithubAnchorReader } from "./docs-site/github-anchors.mjs";
+import { createGithubAnchorReader } from "./docs-site/github-anchors.ts";
 
 const root = process.cwd();
 const specs = path.join(root, "specs");

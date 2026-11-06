@@ -1320,7 +1320,7 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
       "pnpm lint",
       "pnpm format:check",
       "pnpm openapi:check",
-      "pnpm docs:install && pnpm openapi:lint && pnpm docs:check && pnpm docs:build",
+      "pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check && pnpm docs:build",
     ],
   );
   // A check moved out of the lanes must still gate CI Required in every mode.
