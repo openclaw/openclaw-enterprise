@@ -56,6 +56,13 @@ function canonical(value: unknown): unknown {
       .filter(
         ([key, field]) =>
           !key.startsWith("_") &&
+          // grpc-js adds this discriminator to google.protobuf.Value in middleware config.
+          !(
+            key === "kind" &&
+            typeof field === "string" &&
+            /^(null|number|string|bool|struct|list)Value$/.test(field) &&
+            Object.hasOwn(record, field)
+          ) &&
           field !== undefined &&
           field !== null &&
           field !== "" &&

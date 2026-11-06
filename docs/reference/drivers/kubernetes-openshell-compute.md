@@ -66,6 +66,12 @@ supervisor ID in the Gateway ingress policy. Use one cluster with enforcing
 NetworkPolicies and one OCE worker. `experimentalSingleWorker` acknowledges a
 limitation; it does not control the worker replica count.
 
+Protected Git verifies execution ownership and readiness through OpenShell's API.
+The worker does not need Kubernetes Pod-read access in OpenShell-managed namespaces.
+OpenShell owns the workload identities and reports them through its authenticated
+supervisor and Provider status. See the
+[Git execution trust boundary](../repository-credentials/protected-openshell-git.md#execution-identity).
+
 Rebuild the OCE Harness image from this branch. It must contain
 `/opt/oce/runtime/openshell-bootstrap.cjs`. Existing runtime images lack this
 bootstrap. Keep immutable image references in the Installation configuration.
@@ -111,7 +117,10 @@ policy and attachments. A rejected final policy leaves the changed attachments
 in place for retry without starting the workload. OCE starts only after policy
 and workload readbacks match, and reports the Harness ready only after the latest
 policy is loaded. With unchanged attachments, it updates the policy directly.
-Static policy and middleware bindings must remain unchanged. Provider profile
+Protected enrollment checks OpenShell's active and returned policy versions
+against each other, independently of the new OCE plan's generation. It still
+requires the expected policy and current execution evidence.
+Static policy and non-Git middleware bindings must remain unchanged. Provider profile
 and policy conflicts fail replacement before start.
 
 Provider config updates preserve unchanged empty fields, including an absent
@@ -145,10 +154,14 @@ See the [provisioning flow](../../flows/openshell-managed-workload.md).
   are refused. Bootstrap requires writable `/sandbox`; read-only policy paths
   within that root are refused. The inherited `sandboxDataMount` fields describe a logical
   workspace path; no mount using them is submitted to OpenShell.
-- Changing the Harness type, static policy, middleware bindings, resource requests
-  or runtime class through workload replacement is refused. Git replacement remains unsupported: its
-  revision-specific Provider, middleware binding and authorization lifecycle must
-  be reconciled together. Runtime Provider configuration keys cannot be removed.
+- Changing the Harness type, static policy, non-Git middleware bindings, resource requests
+  or runtime class through workload replacement is refused. Runtime Provider configuration keys cannot be removed.
+- Git-enabled Agents can redeploy with unchanged repository selections and resolved
+  permissions. Cleanup closes the old authorization and removes its Provider and
+  middleware before preparing the successor. Git replacement requires the durable
+  route store. Changed repository scope, enabling Git and removing Git remain
+  unsupported. [Live Git replacement verification](../../testing/openshell-git-replacement.md)
+  requires configured GitHub access and is pending for this increment.
 - Replacement relies on one OCE worker and OpenShell's serialized lifecycle
   operations. See [stop and replacement ordering](../../flows/openshell-managed-workload.md#stop-and-replacement-ordering)
   for the cancellation argument. Provider credential mutations and exposure

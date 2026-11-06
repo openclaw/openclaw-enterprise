@@ -11,22 +11,47 @@ import {
 import { validateExplicitK3dLoopbackContext } from "./kubernetes-real.mjs";
 import { createOpenShellKubernetesFixture } from "./openshell-kubernetes-real.mjs";
 
-/** Real API/worker workflow in an explicitly selected disposable managed installation. */
-export async function verifyOpenShellProviderReplacement(context) {
+/** Real API/worker workflow with run-owned resources in a selected managed installation. */
+export async function verifyOpenShellProviderReplacement(context, { gitReplacement = false } = {}) {
   const path = process.env.OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE;
   assert.ok(path, "Select the prepared managed installation input file");
   const input = JSON.parse(await readFile(path, "utf8"));
-  assert.equal(
-    input.disposable,
-    true,
-    "The fixture must explicitly select a disposable installation",
-  );
+  if (gitReplacement) {
+    assert.ok(input.git?.repositoryRef, "Select an enrolled repository reference");
+    for (const address of [input.git.url, input.git.deniedUrl]) {
+      const url = new URL(address);
+      assert.equal(url.origin, "https://github.com");
+      assert.equal(url.username + url.password + url.search + url.hash, "");
+      assert.match(url.pathname, /^\/[a-z0-9_.-]+\/[a-z0-9_.-]+\.git$/);
+    }
+    assert.notEqual(input.git.url, input.git.deniedUrl);
+  }
   const selection = {
     kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
     kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
   };
-  await validateExplicitK3dLoopbackContext(selection);
   const fixture = createOpenShellKubernetesFixture(selection);
+  if (input.existingCluster) {
+    // Existing-cluster runs require operator approval and pin both the endpoint
+    // and cluster identity before creating any API resources.
+    assert.ok(selection.kubeconfigPath, "Select an explicit kubeconfig");
+    assert.ok(input.existingCluster.context);
+    assert.equal(selection.kubernetesContext, input.existingCluster.context);
+    assert.equal(new URL(input.existingCluster.server).protocol, "https:");
+    assert.ok(input.existingCluster.kubeSystemUid);
+    const config = JSON.parse(await fixture.kubectl("config", "view", "--minify", "-o", "json"));
+    assert.equal(config.contexts?.length, 1);
+    assert.equal(config.contexts[0].name, input.existingCluster.context);
+    assert.equal(config.clusters?.length, 1);
+    assert.equal(config.clusters[0].cluster.server, input.existingCluster.server);
+    const system = JSON.parse(
+      await fixture.kubectl("get", "namespace", "kube-system", "-o", "json"),
+    );
+    assert.equal(system.metadata.uid, input.existingCluster.kubeSystemUid);
+  } else {
+    assert.equal(input.disposable, true, "Explicitly select a disposable installation");
+    await validateExplicitK3dLoopbackContext(selection);
+  }
   const serviceKey = (await readFile(input.serviceKeyFile, "utf8")).trim();
   const apiUrl = new URL(input.apiUrl);
   assert.ok(
@@ -71,6 +96,7 @@ export async function verifyOpenShellProviderReplacement(context) {
   };
   const agents = [];
   const sources = [];
+  const createdSources = [];
   const bindings = [];
   let role;
   context.after(async () => {
@@ -92,23 +118,36 @@ export async function verifyOpenShellProviderReplacement(context) {
     if (role) {
       await api("DELETE", `${base}/iam/roles/${role.id}`, undefined, true);
     }
-    for (const source of sources) {
+    for (const source of createdSources) {
       await api("DELETE", `${base}/credential-sources/${source.id}`, undefined, true);
     }
   });
-  // Clone references to an authorized existing Secret, never its value. Distinct
-  // source identities produce different Providers with the same credential key.
   const seed = await api("GET", `${base}/credential-sources/${input.modelSourceId}`);
   assert.ok(["openai", "codex-pat"].includes(seed.type));
-  for (const suffix of ["a", "b"]) {
-    sources.push(
-      await api("POST", `${base}/credential-sources`, {
+  if (gitReplacement) {
+    // The Git-only Proxy refuses new model source registration. Reuse the
+    // prepared Gateway source without acquiring ownership of it for cleanup.
+    assert.equal(seed.state, "ready", "The prepared model source must be ready");
+    assert.equal(seed.ownerCapability, "credential_gateway");
+    assert.equal(
+      seed.egress,
+      undefined,
+      "Use a model source registered before enabling the Git Proxy",
+    );
+    sources.push(seed);
+  } else {
+    // Clone references to an authorized existing Secret, never its value. Distinct
+    // source identities produce different Providers with the same credential key.
+    for (const suffix of ["a", "b"]) {
+      const source = await api("POST", `${base}/credential-sources`, {
         name: `replacement-${suffix}-${randomUUID()}`,
         type: seed.type,
         config: seed.config,
         secrets: seed.secrets,
-      }),
-    );
+      });
+      createdSources.push(source);
+      sources.push(source);
+    }
   }
   role = await api("POST", `${base}/iam/roles`, {
     name: `Replacement sources ${randomUUID()}`,
@@ -157,6 +196,16 @@ export async function verifyOpenShellProviderReplacement(context) {
       executionMode: "dedicated",
       harnessAuth: { method: "credential_source", sourceId: sources[0].id },
       credentialSources: [{ sourceId: sources[0].id }],
+      ...(gitReplacement
+        ? {
+            repositoryBindings: [
+              {
+                repositoryRef: input.git.repositoryRef,
+                profile: input.git.profile ?? "github-repository",
+              },
+            ],
+          }
+        : {}),
     });
     agents.push(agent);
     await api("POST", `${base}/agents/${agent.id}/runtime-credentials`, {});
@@ -171,6 +220,87 @@ export async function verifyOpenShellProviderReplacement(context) {
         }),
       );
     }
+  }
+  if (gitReplacement) {
+    // Read-only Git against explicitly selected repositories. Exercise the regular
+    // API/worker revision lifecycle; no token is read or installed by the test.
+    const first = await deploy(agents[0]);
+    const peer = await deploy(agents[1]);
+    const before = await sandbox(agents[0]);
+    assert.ok(before?.id);
+    const path = `/sandbox/oce/workspace/git-replacement-${randomUUID()}`;
+    const nonce = randomUUID();
+    const execute = async (agent, command) =>
+      gateway.execSandbox(
+        {
+          workspace,
+          sandbox: (await sandbox(agent)).name,
+          command,
+          environment: { GIT_TERMINAL_PROMPT: "0" },
+          stdin: "",
+          timeoutSeconds: 25,
+        },
+        signal(),
+      );
+    const fetch = (initial) =>
+      execute(agents[0], [
+        "/bin/sh",
+        "-ec",
+        initial
+          ? 'mkdir "$1"; git -C "$1" init -q; git -C "$1" remote add origin "$2"; git -C "$1" fetch -q --depth=1 origin HEAD; printf %s "$3" > "$1/retained"'
+          : 'test "$(cat "$1/retained")" = "$3"; git -C "$1" fetch -q --depth=1 origin HEAD',
+        "git-replacement",
+        path,
+        input.git.url,
+        nonce,
+      ]);
+    const denied = () => execute(agents[0], ["/usr/bin/git", "ls-remote", input.git.deniedUrl]);
+    assert.equal(await fetch(true), 0, "Initial revision must fetch the admitted repository");
+    assert.notEqual(await denied(), 0, "Unselected repository must be denied");
+    await turn(agents[0], first);
+    await turn(agents[1], peer);
+    const oldPolicy = await gateway.getPolicyStatus({ workspace, sandbox: before.name }, signal());
+    const oldProviders = [];
+    for (const name of before.spec.providers) {
+      const provider = await gateway.getProvider(workspace, name, signal());
+      if (provider?.labels["openclaw.dev/git-revision-id"] === first.id) {
+        oldProviders.push(provider);
+      }
+    }
+    assert.equal(oldProviders.length, 1);
+    const successor = await deploy(agents[0]);
+    const after = await sandbox(agents[0]);
+    assert.equal(after.id, before.id, "Git replacement retains the Sandbox and workspace");
+    const policy = await gateway.getPolicyStatus({ workspace, sandbox: after.name }, signal());
+    assert.equal(policy.state, "POLICY_STATUS_LOADED");
+    assert.equal(policy.activeVersion, policy.version);
+    assert.notDeepEqual(
+      policy.policy.network_middlewares["oce-prepared-git"],
+      oldPolicy.policy.network_middlewares["oce-prepared-git"],
+    );
+    for (const provider of oldProviders) {
+      assert.equal(after.spec.providers.includes(provider.name), false);
+      assert.equal(await gateway.getProvider(workspace, provider.name, signal()), undefined);
+      assert.equal(await gateway.getProviderProfile(workspace, provider.type, signal()), undefined);
+    }
+    assert.equal(
+      await fetch(false),
+      0,
+      "New revision must retain files and fetch with its new Git authorization",
+    );
+    assert.notEqual(await denied(), 0);
+    assert.equal(
+      await execute(agents[1], ["/usr/bin/git", "ls-remote", input.git.url]),
+      0,
+      "Peer Git access must survive replacement",
+    );
+    await turn(agents[0], successor);
+    await turn(agents[1], peer);
+    return {
+      outcome:
+        "unchanged Git redeployment, retained Sandbox/workspace, fetch before/after, denied unselected repository, retired Provider/profile and peer isolation",
+      limitation: "A successful public repository fetch does not prove credential delivery.",
+    };
   }
   const policyPath = `${base}/agents/${agents[0].id}/sandbox-policy/networking`;
   const networkGrant = {

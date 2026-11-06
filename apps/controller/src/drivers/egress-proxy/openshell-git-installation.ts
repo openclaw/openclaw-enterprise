@@ -61,7 +61,7 @@ export interface OpenShellGitObservationEntry {
   readonly otherProviders: readonly string[];
   binding: OpenShellPreparedGitBinding;
   readonly preview?: ObservedHookPreview;
-  verify?: (sandbox: OpenShellSandboxResponse) => void;
+  verify?: (sandbox: OpenShellSandboxResponse, signal: AbortSignal) => void | Promise<void>;
   sandboxId?: string;
   continuity?: OpenShellGitContinuity;
   retainedLaunchHash?: string;
@@ -312,8 +312,11 @@ export async function observeOpenShellGitInstallation(
     return;
   }
   try {
-    entry.verify(sandbox);
+    await entry.verify(sandbox, signal);
   } catch (error) {
+    if (error instanceof OpenShellGitObservationError || error instanceof OpenShellGitRouteError) {
+      throw error;
+    }
     throw new OpenShellGitRouteError(
       "sandbox_mismatch",
       "OpenShell Git sandbox no longer matches its admitted content.",
@@ -419,7 +422,12 @@ export async function observeOpenShellGitInstallation(
       audience: configuration.authority.audience,
       gitRule: entry.provider.previewNetworkRule(),
       modelProvider: entry.continuity.model,
-      workload: entry.continuity.workload,
+      runtimeProvider: entry.continuity.runtime,
+      sourcePolicy: await readOpenShellGitEvidence(
+        () => entry.continuity!.policy(sandbox, signal),
+        signal,
+      ),
+      execution: entry.continuity.execution,
       signal,
     });
     if (!recipient) {
@@ -503,17 +511,10 @@ export async function observeOpenShellGitInstallation(
     // restart that overlaps a rotation. Any other difference is a replaced supervisor
     // (finding 2136).
     //
-    // Stated limit (owner decision 2026-10-20): in OpenShell 0.1.4 (`5a7728c3`) both
-    // instance ids are asserted by the supervisor, not attested by the Gateway. The
-    // network instance id is the supervisor's own SupervisorHello instance id
-    // (crates/openshell-server/src/grpc/provider_readiness.rs; generated sandbox-side in
-    // crates/openshell-supervisor-process/src/delegated.rs), the process instance id comes
-    // from its readiness report and is only held constant within one session, and the
-    // Gateway persists what a reconnecting supervisor claims as its main process instance
-    // (crates/openshell-server/src/compute/mod.rs). ConnectSupervisor does authenticate a
-    // sandbox principal scoped to this Sandbox id, so continuity rests on that principal
-    // plus the supervisor's claims until OpenShell provides an attested reconnect identity
-    // (a planned OpenShell change). No material is issued or replayed on adoption.
+    // OpenShell is the trusted execution boundary. Its Gateway authenticates the Sandbox
+    // principal and accepts readiness only from the current supervisor session. Process and
+    // network identities are reported by that supervisor, not independently attested by OCE.
+    // Reconnects must report the same execution; no material is issued or replayed on adoption.
     if (
       (
         [
