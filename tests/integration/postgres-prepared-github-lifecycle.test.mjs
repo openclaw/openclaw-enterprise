@@ -51,12 +51,15 @@ test(
     assert.deepEqual(reference, { kind: "github_app_installation", key: source.key });
     const readsBeforeRefusal = f.secretReads;
     const registration = { source, secret: fixture.issuer };
-    for (const invalid of [
-      registration,
-      { ...registration, kind: "prepared_source" },
-      { ...registration, kind: "oauth_refresh_token" },
+    for (const [invalid, message] of [
+      [registration, /unknown token registration kind/i],
+      [{ ...registration, kind: "prepared_source" }, /provider does not support this token kind/],
+      [
+        { ...registration, kind: "oauth_refresh_token" },
+        /requires an account, approved template and grant/,
+      ],
     ]) {
-      await assert.rejects(tokens.register(invalid, t.signal));
+      await assert.rejects(tokens.register(invalid, t.signal), { message });
     }
     assert.equal(
       f.secretReads,

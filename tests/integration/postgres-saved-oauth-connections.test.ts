@@ -496,7 +496,7 @@ test(
     const accountRef = { kind: "oauth_refresh_token", namespaceId, sourceId: id } as const;
     const [recorded] = grantHandoff.mock.calls;
     assert.ok(recorded);
-    const issuedRef = await recorded.result;
+    const issuedRef: unknown = await recorded.result;
     assert.deepEqual(issuedRef, accountRef);
     grantHandoff.mock.restore();
     // A reference or registration from the saved account cannot become a GitHub input by changing kind.
@@ -504,6 +504,7 @@ test(
     try {
       assert.equal(
         await preparedTokens.resolve(
+          // @ts-expect-error A relabeled OAuth reference lacks the required prepared source key.
           { ...issuedRef, kind: "github_app_installation" },
           {
             signal: t.signal,
@@ -518,6 +519,9 @@ test(
           { ...recorded.arguments[0], kind: "github_app_installation" },
           t.signal,
         ),
+        {
+          message: /requires a source and issuer Secret/,
+        },
       );
       assert.equal(issuerLookup.mock.callCount(), 0);
     } finally {
