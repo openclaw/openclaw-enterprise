@@ -20,6 +20,13 @@ both the admitted revision and the execution. The deployment selects the composi
 execution identity. Protection is explicit even with no plan or bindings. Fence readers that could
 ignore it, refuse missing or unsupported admission, and require a new execution to change protection.
 
+For new model API keys, an Installation can select `modelApiKeyDelivery: credential_gateway`
+on its Credential Proxy. OCC registers these keys through the selected Credential Gateway.
+A dedicated Agent can use its Gateway model binding alone or alongside a saved plugin
+account served by Credential Proxy. With a selected Proxy, omitting this option keeps
+the protected admission rules. A missing sender capability never changes the selected
+delivery path. Existing sources keep their recorded custody and protection.
+
 | Protection                         | What Compute may release                                                                                                                                                                                                                                                                          |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `unprotected`                      | An explicit no-op for local development or minimal CI. The Agent has a control-plane identity, but OCE does not govern its direct requests. Refuse managed routes, bindings, preparation or clone. Supply no managed or ambient substitute credential.                                            |
