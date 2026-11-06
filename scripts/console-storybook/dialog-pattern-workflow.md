@@ -81,3 +81,7 @@ return to Plugins, and open Configure plugins. The catalog must load instead of
 staying on Loading plugins. Calendar's saved selection and policy stay unchanged.
 Close and reopen the picker, then Reset story and repeat. This scenario simulates
 catalog responses; it does not establish plugin installation or runtime access.
+
+## Choose OpenClaw plugins on a new Agent
+
+Open **Pages / Create Agent / OpenClaw Plugin Catalog**. In the dedicated OpenClaw form, open **Configure plugins** and load the catalog. Add **Google Workspace** and **Slack**, then choose **Done**. Reopen the picker and choose **Configured**. Both selections should be present, and the Agent name should still be **Research assistant**. Leave the form without submitting it.

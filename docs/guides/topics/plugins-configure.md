@@ -13,6 +13,8 @@ whose selections belonged to the Codex Driver.
 
 ## Use the console
 
+To choose packages while creating an Agent, select **OpenClaw** and **Dedicated**, then open **Configure plugins**. On Kubernetes with the bundled Plugin Driver, choose Google Workspace or Slack and create the Agent. Open its saved **Plugins** tab to connect an account or select MCP tools.
+
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
 Use **Configure plugins** to edit saved selections and tool policy. On a dedicated
 OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, choose

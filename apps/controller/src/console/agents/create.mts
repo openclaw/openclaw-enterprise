@@ -1796,16 +1796,20 @@ function renderAgentForm(
   const plugins = element("textarea", { id: "agent-plugins", rows: "4", spellcheck: "false" });
   plugins.value = JSON.stringify(agent.plugins ?? {}, null, 2);
   let pluginDiscoveryCredential: "none" | "required" | null = null;
-  let savedOpenClawCatalog = false;
+  let bundledOpenClawCatalog = false;
   let catalogUnavailable = false;
   let pluginHarness = harness.value;
+  let pluginMode = mode.value;
   let installationCapabilities: InstallationCapabilities | undefined;
   // Codex serves curated plugins only to ChatGPT logins; API-key Agents get them disabled.
   const apiKeyCodex = () =>
     harness.value === "codex" && (binding?.method ?? authMethod.value) === "api_key";
   function discoveryCredential() {
-    if (catalogUnavailable || savedOpenClawCatalog || apiKeyCodex()) {
+    if (catalogUnavailable || apiKeyCodex()) {
       return null;
+    }
+    if (bundledOpenClawCatalog) {
+      return mode.value === "dedicated" && openclawModeUsable("dedicated") ? {} : null;
     }
     if (harness.value === "codex" && pluginDiscoveryCredential === "none") {
       return {};
@@ -1847,31 +1851,37 @@ function renderAgentForm(
     input: plugins,
     canDiscover: () => Boolean(discoveryCredential()),
     canPrefetch: () =>
-      pluginDiscoveryCredential !== null &&
-      ["codex_pat", "credential_source"].includes(binding?.method ?? authMethod.value) &&
-      Boolean(boundSource ?? modelCredentialSource ?? apiKey.value.trim()),
+      bundledOpenClawCatalog ||
+      (pluginDiscoveryCredential !== null &&
+        ["codex_pat", "credential_source"].includes(binding?.method ?? authMethod.value) &&
+        Boolean(boundSource ?? modelCredentialSource ?? apiKey.value.trim())),
     isPending: () => pending,
     requestBody: (body) => ({
       ...discoveryCredential(),
       harnessId: harness.value,
+      ...(bundledOpenClawCatalog && { executionMode: mode.value }),
       ...body,
     }),
     unavailableMessage: () => {
       if (catalogUnavailable) {
         return "This Installation has no plugin catalog for the selected Harness.";
       }
-      return savedOpenClawCatalog
-        ? "To install Google Workspace, open Plugins on a saved dedicated OpenClaw Agent using Kubernetes Compute."
+      return bundledOpenClawCatalog
+        ? "Managed OpenClaw plugins require dedicated OpenClaw on Kubernetes Compute."
         : apiKeyCodex()
           ? "Codex plugins need a ChatGPT login. With an OpenAI API key, each selected plugin is disabled when the Agent deploys (PLUGIN_AUTH_REQUIRED). Choose Service Accounts or ChatGPT OAuth to browse and use plugins."
           : pluginDiscoveryCredential === "none"
             ? "Choose the Codex harness to browse this Installation's curated plugin catalog."
             : "For discovery, choose ChatGPT OAuth (Experimental) and sign in, or choose Service Accounts with the Codex harness and select a Secret or enter a preview token.";
     },
-    availableMessage: () =>
-      pluginDiscoveryCredential === "none"
+    availableMessage: () => {
+      if (bundledOpenClawCatalog) {
+        return "Choose plugins for this Agent. You can connect an account after saving the Agent.";
+      }
+      return pluginDiscoveryCredential === "none"
         ? "Load the installation's curated plugin catalog. Access and tool availability are checked separately."
-        : "Load plugins available to the selected credential. Your plugin selections stay unchanged.",
+        : "Load plugins available to the selected credential. Your plugin selections stay unchanged.";
+    },
     createApproverField: (options) =>
       createSlackApproverField({
         context,
@@ -1887,7 +1897,7 @@ function renderAgentForm(
     );
     const policies = catalog?.pluginPolicies;
     const discovery = catalog?.pluginDiscovery;
-    savedOpenClawCatalog = policies?.driver.implementation === "occ/openclaw-plugin";
+    bundledOpenClawCatalog = policies?.driver.implementation === "occ/openclaw-plugin";
     catalogUnavailable = capabilities !== undefined && discovery === undefined;
     pluginDiscoveryCredential = discovery?.credential ?? (catalogUnavailable ? null : "required");
     pluginFields.setCapabilities(policies ?? null);
@@ -1900,6 +1910,7 @@ function renderAgentForm(
     }
   }
   function resetPluginDiscovery() {
+    pluginMode = mode.value;
     if (pluginHarness !== harness.value) {
       pluginHarness = harness.value;
       plugins.value = "{}";
@@ -2941,7 +2952,7 @@ function renderAgentForm(
     if (!planLocked && capabilityDiscoveryDone && (!nativeAdminAvailable || !shouldProvision())) {
       nativeAdmin.checked = false;
     }
-    if (pluginHarness !== harness.value) {
+    if (pluginHarness !== harness.value || (bundledOpenClawCatalog && pluginMode !== mode.value)) {
       resetPluginDiscovery();
     } else {
       pluginDiscovery.update();

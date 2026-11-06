@@ -36,6 +36,7 @@ import {
   statusTone,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
+import { nativeSandboxDriver } from "./console-agents-test-support.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   callerDenied,
@@ -121,6 +122,57 @@ declare global {
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
+
+test("Create Agent can select installed packages for dedicated OpenClaw before saving", async (t) => {
+  const { fixture, namespace: namespaceValue } = await createReadyConsoleNamespace(
+    t,
+    "Create package Agent",
+    { nativeWorkerSupport: "custom-image" },
+  );
+  const namespace = entity(namespaceValue);
+  const platform = controller(fixture);
+  const plugin = new OCCPluginDriver();
+  platform.registerDriver(plugin);
+  platform.selectDriver("plugin", plugin.id);
+  const google = "occ-plugin:google@1.0.0";
+  const { page } = await newPage(t, fixture, { browser });
+  const openCreatePlugins = async () => {
+    await page.goto(fixture.origin + `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: "Start without Preset" }).click();
+    await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+    await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  };
+  await login(page, fixture, "/console/agents");
+  await openCreatePlugins();
+  const embedded = page.getByRole("dialog", { name: "Configure plugins" });
+  await embedded
+    .getByText("Managed OpenClaw plugins require dedicated OpenClaw on Kubernetes Compute.")
+    .waitFor();
+  assert.equal(
+    await embedded.getByRole("button", { name: "Google Workspace", exact: true }).count(),
+    0,
+  );
+  await embedded.getByRole("button", { name: "Done", exact: true }).click();
+  const sandbox = nativeSandboxDriver();
+  platform.registerDriver(sandbox);
+  platform.selectDriver("sandbox", sandbox.id);
+  // This Sandbox supports dedicated execution, but the current Compute cannot place the packages.
+  await openCreatePlugins();
+  await page.getByText("No plugins were returned.", { exact: true }).waitFor();
+  const compute = createTestKubernetesComputeDriver("compute-create-package");
+  platform.registerDriver(compute);
+  platform.selectDriver("compute", compute.id);
+  await openCreatePlugins();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins" });
+  await dialog.getByRole("button", { name: "Slack", exact: true }).waitFor();
+  await dialog.getByRole("button", { name: "Google Workspace", exact: true }).click();
+  await dialog.getByRole("button", { name: "Add Google Workspace", exact: true }).click();
+  assert.equal(await dialog.getByLabel("Google account", { exact: true }).count(), 0);
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), {
+    [google]: { enabled: true },
+  });
+});
 
 test("A dedicated OpenClaw Agent can enable and disable Google Workspace without a connection", async (t) => {
   const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =

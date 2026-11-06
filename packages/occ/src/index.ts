@@ -10320,31 +10320,48 @@ export class OpenClawController {
     namespaceId: string,
     input: PluginDiscoveryCredential & {
       readonly harnessId: string;
+      readonly executionMode?: HarnessExecutionMode;
       readonly cursor?: string;
       readonly q?: string;
     },
     signal?: AbortSignal,
   ): Promise<PluginCatalogPage> {
-    return this.withNamespacePluginCredential(principalId, namespaceId, input, signal, (driver) => {
-      if (!driver.discoverCatalog) {
-        throw new NotImplementedError(
-          "agent_plugins.discovery",
-          "Plugin discovery is unavailable.",
-        );
-      }
-      return (authentication) => {
-        if (authentication.accessToken === undefined && driver.discoveryCredential !== "none") {
-          throw new PluginDiscoveryError("credentials_rejected");
+    const { value: page, driver } = await this.withNamespacePluginCredential(
+      principalId,
+      namespaceId,
+      input,
+      signal,
+      (driver) => {
+        if (!driver.discoverCatalog) {
+          throw new NotImplementedError(
+            "agent_plugins.discovery",
+            "Plugin discovery is unavailable.",
+          );
         }
-        return driver.discoverCatalog!(
-          {
-            ...authentication,
-            ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
-            ...(input.q === undefined ? {} : { q: input.q }),
-          },
-          signal,
-        );
-      };
+        return (authentication) => {
+          if (authentication.accessToken === undefined && driver.discoveryCredential !== "none") {
+            throw new PluginDiscoveryError("credentials_rejected");
+          }
+          return driver.discoverCatalog!(
+            {
+              ...authentication,
+              ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+              ...(input.q === undefined ? {} : { q: input.q }),
+            },
+            signal,
+          );
+        };
+      },
+    );
+    if (input.executionMode === undefined) {
+      return page;
+    }
+    if (!this.pluginCatalogModeAvailable(driver, input.executionMode)) {
+      return { plugins: [], nextCursor: null };
+    }
+    return this.pluginCatalogForPlacement(page, driver, {
+      id: driver.harnessId,
+      mode: input.executionMode,
     });
   }
 
@@ -10539,23 +10556,46 @@ export class OpenClawController {
   async discoverAgentPluginDetails(
     principalId: string,
     namespaceId: string,
-    input: PluginDiscoveryCredential & { readonly harnessId: string; readonly pluginId: string },
+    input: PluginDiscoveryCredential & {
+      readonly harnessId: string;
+      readonly pluginId: string;
+      readonly executionMode?: HarnessExecutionMode;
+    },
     signal?: AbortSignal,
   ): Promise<PluginCatalogEntry> {
-    return this.withNamespacePluginCredential(principalId, namespaceId, input, signal, (driver) => {
-      if (!driver.getCatalogPlugin) {
-        throw new NotImplementedError(
-          "agent_plugins.discovery",
-          "Plugin tool discovery is unavailable.",
+    const { value: entry, driver } = await this.withNamespacePluginCredential(
+      principalId,
+      namespaceId,
+      input,
+      signal,
+      (driver) => {
+        if (!driver.getCatalogPlugin) {
+          throw new NotImplementedError(
+            "agent_plugins.discovery",
+            "Plugin tool discovery is unavailable.",
+          );
+        }
+        return (authentication) => {
+          if (authentication.accessToken === undefined && driver.discoveryCredential !== "none") {
+            throw new PluginDiscoveryError("credentials_rejected");
+          }
+          return driver.getCatalogPlugin!({ ...authentication, pluginId: input.pluginId }, signal);
+        };
+      },
+    );
+    if (input.executionMode !== undefined) {
+      if (!this.pluginCatalogModeAvailable(driver, input.executionMode)) {
+        throw new ConfigurationHarnessError(
+          `This Installation cannot run ${driver.harnessId} in ${input.executionMode} mode.`,
         );
       }
-      return (authentication) => {
-        if (authentication.accessToken === undefined && driver.discoveryCredential !== "none") {
-          throw new PluginDiscoveryError("credentials_rejected");
-        }
-        return driver.getCatalogPlugin!({ ...authentication, pluginId: input.pluginId }, signal);
-      };
-    });
+      this.validatePluginPlacement(
+        driver,
+        { [entry.id]: { enabled: true } },
+        { id: driver.harnessId, mode: input.executionMode },
+      );
+    }
+    return entry;
   }
 
   private async withNamespacePluginCredential<T>(
@@ -10566,7 +10606,7 @@ export class OpenClawController {
     prepareDiscovery: (
       driver: PluginDriver,
     ) => (authentication: PluginDiscoveryAuthentication) => Promise<T>,
-  ): Promise<T> {
+  ): Promise<{ value: T; driver: PluginDriver }> {
     const agentScope = { kind: "agent" as const, id: namespaceId, namespaceId };
     await this.authorize(principalId, "create", agentScope);
     await this.read((state) => this.exactNamespace(state, namespaceId));
@@ -10605,7 +10645,7 @@ export class OpenClawController {
       source: SecretReference | CredentialSourceReference | undefined,
     ) => Promise<void>,
     signal?: AbortSignal,
-  ): Promise<T> {
+  ): Promise<{ value: T; driver: PluginDriver }> {
     const { credentialSource, accessToken, secretRef } = credential;
     const source = secretRef ?? credentialSource;
     if (source !== undefined) {
@@ -10650,7 +10690,7 @@ export class OpenClawController {
       if (signal !== undefined) {
         context.signal = AbortSignal.any([context.signal, signal]);
       }
-      return this.invokePluginDiscovery(
+      const value = await this.invokePluginDiscovery(
         driver,
         discover,
         (invoke) =>
@@ -10668,8 +10708,9 @@ export class OpenClawController {
         },
         signal,
       );
+      return { value, driver };
     }
-    return this.invokePluginDiscovery(
+    const value = await this.invokePluginDiscovery(
       driver,
       discover,
       (invoke) => {
@@ -10683,6 +10724,7 @@ export class OpenClawController {
       recheck,
       signal,
     );
+    return { value, driver };
   }
 
   private async invokePluginDiscovery<T>(
@@ -10911,6 +10953,20 @@ export class OpenClawController {
       input.credentialSource,
       signal,
     );
+    return this.pluginCatalogForPlacement(page, driver, harness);
+  }
+
+  private pluginCatalogModeAvailable(driver: PluginDriver, mode: HarnessExecutionMode): boolean {
+    return (
+      driver.harnessId !== "openclaw" || this.openClawExecutionModes().executionModes.includes(mode)
+    );
+  }
+
+  private pluginCatalogForPlacement(
+    page: PluginCatalogPage,
+    driver: PluginDriver,
+    harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
+  ): PluginCatalogPage {
     if (page.plugins.length === 0) {
       return page;
     }
@@ -11221,7 +11277,7 @@ export class OpenClawController {
         );
       }
     };
-    const value = await this.withPluginDiscoveryCredential(
+    const { value } = await this.withPluginDiscoveryCredential(
       principalId,
       namespaceId,
       credential,

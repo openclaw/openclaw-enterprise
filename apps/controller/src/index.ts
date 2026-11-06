@@ -44,6 +44,7 @@ import {
   type SecretDriver,
   type SecretReference,
   type CredentialSourceReference,
+  type HarnessExecutionMode,
   type UpdateWorkspaceFileBody,
   type WorkspaceFileName,
 } from "@openclaw-enterprise/contracts";
@@ -2579,6 +2580,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         namespaceId,
         {
           harnessId: body?.harnessId as "codex" | "openclaw",
+          ...(body?.executionMode === undefined
+            ? {}
+            : { executionMode: body.executionMode as HarnessExecutionMode }),
           ...(body?.credentialSource === undefined
             ? {}
             : { credentialSource: body.credentialSource as CredentialSourceReference }),
@@ -2601,6 +2605,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         namespaceId,
         {
           harnessId: body?.harnessId as "codex" | "openclaw",
+          ...(body?.executionMode === undefined
+            ? {}
+            : { executionMode: body.executionMode as HarnessExecutionMode }),
           ...(body?.credentialSource === undefined
             ? {}
             : { credentialSource: body.credentialSource as CredentialSourceReference }),

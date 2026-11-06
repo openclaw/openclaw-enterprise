@@ -91,6 +91,16 @@ type CreateAgentScenario = {
 };
 
 // The OpenShell Sandbox Driver's refusal of Dedicated OpenClaw on its settings alone.
+const openClawCatalogEntries = [
+  {
+    id: "occ-plugin:google@1.0.0",
+    name: "Google Workspace",
+    selectableWithoutTools: true,
+    tools: [],
+  },
+  { id: "occ-plugin:slack@1.0.0", name: "Slack", selectableWithoutTools: true, tools: [] },
+];
+
 const openShellUserNamespacesRefusal =
   "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
 
@@ -416,6 +426,38 @@ export const createAgentFormScenarios = {
       "Read the error under the editor: A number is too large or too small to save. Use a number closer to zero. Check that Configuration JSON has focus, its exact text is unchanged, and neither an Agent nor a Configuration is written.",
       "If the form shows a model list, select Enter model ID manually. Change Model ID and leave the field. Check that the range error focuses Configuration JSON and the rejected draft is not rewritten. Restore the original Model ID, change only 1e400 to 2, and select Create Agent. Inspect the created Agent's Configuration for [1,2,3]. All saves and deployment state in this story are simulated.",
     ],
+  },
+  createOpenClawPluginCatalog: {
+    group: "Pages/Create Agent",
+    name: "Choose bundled plugins before creating an OpenClaw Agent",
+    path: create,
+    openclawExecutionModes: ["dedicated"],
+    pluginCapabilities: {
+      ...pluginCapabilities,
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      policyScopeByPlugin: Object.fromEntries(
+        openClawCatalogEntries.map(({ id }) => [id, "enablement_only" as const]),
+      ),
+    },
+    pluginDiscoveryCredential: "none",
+    pluginDiscovery: {
+      pages: { initial: { plugins: openClawCatalogEntries, nextCursor: null } },
+      details: Object.fromEntries(openClawCatalogEntries.map((entry) => [entry.id, entry])),
+    },
+    actions: [
+      click("Start without Preset"),
+      { selector: "#agent-name", value: "Research assistant" },
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+      { selector: "#execution-mode", value: "dedicated" },
+      click("Configure plugins"),
+    ],
+    description:
+      "Choose Google Workspace or Slack for a new dedicated OpenClaw Agent before supplying account credentials.",
+    steps: [
+      "Select Google Workspace and enable it. Do the same for Slack, choose Done, and reopen the picker. The Configured tab shows both selections in the unsaved Agent.",
+    ],
+    gap: "Catalog responses are simulated. This story verifies editing the new Agent form; it does not deploy a worker or authorize an account.",
   },
   createPluginsUnavailable: {
     group: "Pages/Create Agent",

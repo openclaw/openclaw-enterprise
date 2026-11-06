@@ -69,19 +69,11 @@ graph TD
 
 ### Credential-scoped discovery
 
-[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) needs a
-Harness, Agent `create`, and caller `operate` on stored sources. Wrong Namespace:
-`400`; missing Secret: `404`; unavailable explicit CredentialSource: `409`.
+[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires a Harness and Agent `create`. The OpenClaw picker sends its execution mode. OCC checks placement for search and details. Browsing needs no model key.
 
-Saved discovery needs a dedicated Agent and caller `read`/`update`. Bound sources
-require caller and Agent `operate`; explicit sources require caller `operate`.
-Missing or unready bound sources return `404`. Hosted catalogs use credentials;
-curated catalogs do not.
+Saved discovery requires a dedicated Agent and caller `read`/`update`. Stored sources require caller `operate`, and bound sources also require Agent `operate`. Cross-Namespace references return `400`, missing Secrets or unready bound sources `404`, and unavailable explicit sources `409`.
 
-The bundled OpenShell Backend reader looks up metadata and exports through
-operator mTLS. External Gateways retain optional `withSourceToken`. OCC checks
-the source and its Gateway owner, then rechecks authority, attachment and catalog
-before dispatch. Cancellation discards late credentials. Refresh stays with its owner.
+OpenShell reads metadata and exports over operator mTLS. External Gateways can use `withSourceToken`. OCC checks the source and Gateway owner, then rechecks authority, attachment and catalog before dispatch. Cancellation discards late credentials. Refresh stays with its owner.
 
 `packages/occ/src/index.ts:OpenClawController.discoverManagedMcpTools`
 

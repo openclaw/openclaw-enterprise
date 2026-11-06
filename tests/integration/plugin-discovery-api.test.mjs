@@ -1,3 +1,4 @@
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -1813,6 +1814,20 @@ test("Mixed Installation targets each Harness catalog before reading a discovery
     assert.equal(details.status, 200);
     assert.equal(details.data.id, entry.id);
   }
+  // The same unplaced catalog stays available above. A create form that supplies dedicated
+  // placement on Kubernetes also needs a Sandbox that admits that execution mode.
+  const compute = createTestKubernetesComputeDriver("compute-mixed-catalog");
+  fixture.controller.registerDriver(compute);
+  fixture.controller.selectDriver("compute", compute.id);
+  const placement = { harnessId: "openclaw", executionMode: "dedicated" };
+  const refused = await fixture.request("POST", path, { body: placement });
+  assert.equal(refused.status, 200);
+  assert.deepEqual(refused.data, { plugins: [], nextCursor: null });
+  const refusedDetails = await fixture.request("POST", `${path}/details`, {
+    body: { ...placement, pluginId: "occ-plugin:google@1.0.0" },
+  });
+  assert.equal(refusedDetails.status, 400);
+  assert.match(refusedDetails.body.error.message, /cannot run openclaw in dedicated mode/);
   for (const body of [
     { secretRef: secret.ref },
     { harnessId: "openclaw", secretRef: secret.ref },

@@ -17725,6 +17725,12 @@
                         "type": "object"
                       },
                       "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
+                      "executionMode": {
+                        "anyOf": [
+                          { "const": "embedded", "type": "string" },
+                          { "const": "dedicated", "type": "string" }
+                        ]
+                      },
                       "harnessId": {
                         "anyOf": [
                           { "const": "openclaw", "type": "string" },
@@ -17740,6 +17746,12 @@
                     "additionalProperties": false,
                     "properties": {
                       "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
+                      "executionMode": {
+                        "anyOf": [
+                          { "const": "embedded", "type": "string" },
+                          { "const": "dedicated", "type": "string" }
+                        ]
+                      },
                       "harnessId": {
                         "anyOf": [
                           { "const": "openclaw", "type": "string" },
@@ -17762,6 +17774,12 @@
                         "writeOnly": true
                       },
                       "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
+                      "executionMode": {
+                        "anyOf": [
+                          { "const": "embedded", "type": "string" },
+                          { "const": "dedicated", "type": "string" }
+                        ]
+                      },
                       "harnessId": {
                         "anyOf": [
                           { "const": "openclaw", "type": "string" },
@@ -17777,6 +17795,12 @@
                     "additionalProperties": false,
                     "properties": {
                       "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
+                      "executionMode": {
+                        "anyOf": [
+                          { "const": "embedded", "type": "string" },
+                          { "const": "dedicated", "type": "string" }
+                        ]
+                      },
                       "harnessId": {
                         "anyOf": [
                           { "const": "openclaw", "type": "string" },
@@ -18116,6 +18140,12 @@
                         "required": ["kind", "namespaceId", "id"],
                         "type": "object"
                       },
+                      "executionMode": {
+                        "anyOf": [
+                          { "const": "embedded", "type": "string" },
+                          { "const": "dedicated", "type": "string" }
+                        ]
+                      },
                       "harnessId": {
                         "anyOf": [
                           { "const": "openclaw", "type": "string" },
@@ -18130,6 +18160,12 @@
                   {
                     "additionalProperties": false,
                     "properties": {
+                      "executionMode": {
+                        "anyOf": [
+                          { "const": "embedded", "type": "string" },
+                          { "const": "dedicated", "type": "string" }
+                        ]
+                      },
                       "harnessId": {
                         "anyOf": [
                           { "const": "openclaw", "type": "string" },
@@ -18151,6 +18187,12 @@
                         "type": "string",
                         "writeOnly": true
                       },
+                      "executionMode": {
+                        "anyOf": [
+                          { "const": "embedded", "type": "string" },
+                          { "const": "dedicated", "type": "string" }
+                        ]
+                      },
                       "harnessId": {
                         "anyOf": [
                           { "const": "openclaw", "type": "string" },
@@ -18165,6 +18207,12 @@
                   {
                     "additionalProperties": false,
                     "properties": {
+                      "executionMode": {
+                        "anyOf": [
+                          { "const": "embedded", "type": "string" },
+                          { "const": "dedicated", "type": "string" }
+                        ]
+                      },
                       "harnessId": {
                         "anyOf": [
                           { "const": "openclaw", "type": "string" },

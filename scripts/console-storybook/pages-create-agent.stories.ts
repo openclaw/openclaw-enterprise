@@ -31,6 +31,7 @@ export const CreateInvalidConfiguration = {
   ...story("createInvalidConfiguration"),
   name: "Invalid Configuration JSON",
 };
+export const OpenClawPluginCatalog = story("createOpenClawPluginCatalog");
 export const PluginsUnavailable = {
   ...story("createPluginsUnavailable"),
   name: "Plugin discovery needs a service account credential",
