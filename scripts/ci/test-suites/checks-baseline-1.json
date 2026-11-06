@@ -24,6 +24,10 @@
     "tests/conformance/kubernetes-compute.test.mjs",
     "tests/conformance/openshell-static-credential-attachment.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
+    "tests/conformance/strands-box-driver.test.ts",
+    "tests/conformance/strands-box-git.test.ts",
+    "tests/conformance/strands-box-host.test.ts",
+    "tests/conformance/strands-box-ingress.test.ts",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
     "tests/conformance/workspace-node-supervisor.test.mjs",
     "tests/integration/presets-controller.test.mjs",
@@ -213,6 +217,18 @@
     },
     {
       "path": "tests/conformance/kubernetes-provider-harness.test.mjs"
+    },
+    {
+      "path": "tests/conformance/strands-box-driver.test.ts"
+    },
+    {
+      "path": "tests/conformance/strands-box-git.test.ts"
+    },
+    {
+      "path": "tests/conformance/strands-box-host.test.ts"
+    },
+    {
+      "path": "tests/conformance/strands-box-ingress.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-harness-workspace-volume.test.mjs"

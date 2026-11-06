@@ -6849,10 +6849,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // A provider-owned Harness gets the transport token's verifier only: Codex
         // authenticates its app-server with it, and both Codex and the dedicated
         // OpenClaw worker serve a held startup failure to the token holder.
-        (revision.egressPlan !== undefined || sandboxDriver?.implementation === "openshell") &&
-          (revision.harness.id === "codex" || revision.harness.id === "openclaw")
-          ? "verifier"
-          : "secret",
+        this.deliversHarnessTransportVerifier(revision, sandboxDriver) ? "verifier" : "secret",
       ),
     );
     const gatewaySecretEnvironment = await this.prepareRevisionStage(
@@ -7912,17 +7909,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       throw new Error("The exact AgentRevision workspace node is not enrolled.");
     }
-    const activatedHarnessAuth =
-      (revision.egressPlan !== undefined || sandboxDriver?.implementation === "openshell") &&
-      (revision.harness.id === "codex" || revision.harness.id === "openclaw")
-        ? {
-            ...harnessAuth,
-            environment: [
-              ...harnessAuth.environment,
-              await this.sandboxTransportVerifier(admittedRevision),
-            ],
-          }
-        : harnessAuth;
+    const activatedHarnessAuth = this.deliversHarnessTransportVerifier(revision, sandboxDriver)
+      ? {
+          ...harnessAuth,
+          environment: [
+            ...harnessAuth.environment,
+            await this.sandboxTransportVerifier(admittedRevision),
+          ],
+        }
+      : harnessAuth;
     const renderAgentDeployment = (environment: Readonly<Record<string, string>>) =>
       this.deployment(
         revisionName,
@@ -10491,6 +10486,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
       this.sandboxDriverForRevision(revision)?.provisionHarness !== undefined
       ? PROVIDER_FENCED_NETWORK_PROFILE
       : ORDINARY_NETWORK_PROFILE;
+  }
+
+  private deliversHarnessTransportVerifier(
+    revision: AgentRevision,
+    sandboxDriver: SandboxDriver | undefined,
+  ): boolean {
+    return (
+      (revision.harness.id === "codex" || revision.harness.id === "openclaw") &&
+      (revision.egressPlan !== undefined ||
+        sandboxDriver?.implementation === "openshell" ||
+        (revision.harness.mode === "dedicated" &&
+          sandboxDriver?.provisionHarness !== undefined &&
+          sandboxDriver.harnessEndpoint !== undefined &&
+          sandboxDriver.harnessTransportCredential === "verifier"))
+    );
   }
 
   private sandboxDriverForRevision(revision: AgentRevision): SandboxDriver | undefined {

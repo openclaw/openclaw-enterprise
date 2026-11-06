@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
+import type { SandboxHarnessContext } from "../../packages/contracts/src/index.ts";
+import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
 import {
   validateWorkspaceNodeSetupSecret,
   WorkspaceNodeSetupValidationError,
@@ -131,3 +134,53 @@ test("workspace setup and saved-device encodings reject nontrailing padding", ()
     }
   }
 });
+
+test("a selected external provider explicitly opts in to the native transport verifier", async () => {
+  for (const optedIn of [false, true]) {
+    const fixture = providerEndpointFixture();
+    Object.assign(fixture.sandbox, {
+      implementation: "external",
+      ...(optedIn && { harnessTransportCredential: "verifier" }),
+    });
+    await fixture.prepare();
+    fixture.setGatewayServing();
+    fixture.setSetupAvailable(true);
+    fixture.observePods([fixture.pod("ready")]);
+    assert.equal((await fixture.prepare()).ready, true);
+    await fixture.activate();
+
+    const expected = optedIn
+      ? [
+          {
+            name: "APP_TOKEN_SHA",
+            value: createHash("sha256").update("test-transport").digest("hex"),
+          },
+        ]
+      : [
+          {
+            name: "APP_SERVER_TOKEN",
+            valueFrom: {
+              secretKeyRef: {
+                name: `harness-secrets-${fixtureDigest(fixture.revision.agentId)}-${fixtureDigest(fixture.revision.id)}`,
+                key: "app-server-token",
+              },
+            },
+          },
+        ];
+    for (const { requirements } of [
+      fixture.provisions[0],
+      fixture.endpoints.at(-1),
+    ] as SandboxHarnessContext[]) {
+      assert.deepEqual(
+        requirements.environment.filter(({ name }) =>
+          ["APP_TOKEN_SHA", "APP_SERVER_TOKEN"].includes(name),
+        ),
+        expected,
+      );
+    }
+  }
+});
+
+function fixtureDigest(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}

@@ -1,0 +1,10 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "rootDir": ".",
+    "outDir": "../../../../.build/strands-box-agent"
+  },
+  "files": ["box-agent.ts", "transport.ts"]
+}

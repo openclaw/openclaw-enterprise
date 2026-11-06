@@ -48,6 +48,7 @@
     "tests/integration/postgres-openshell-online-git-journey.test.ts",
     "tests/integration/postgres-openshell-git-routes.test.ts",
     "tests/integration/postgres-openshell-standing-route.test.ts",
+    "tests/integration/strands-box-deployment.test.ts",
     "tests/integration/postgres-external-protected-git.test.ts",
     "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
     "tests/integration/postgres-openshell-standing-repository-set.test.ts",
@@ -416,6 +417,9 @@
         "OpenShell standing rotation preserves custody when lost-reply",
         "lost initial OpenShell route commit acknowledgement prevents bootstrap and replay across restart"
       ]
+    },
+    {
+      "path": "tests/integration/strands-box-deployment.test.ts"
     },
     {
       "path": "tests/integration/postgres-external-protected-git.test.ts",

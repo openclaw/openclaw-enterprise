@@ -1,0 +1,42 @@
+{
+  "linuxPreview": true,
+  "boxBin": "/opt/oce-box/box/box",
+  "nodeBin": "/usr/local/bin/node",
+  "codexBin": "/opt/oce/runtime/codex/codex",
+  "agentBuildDir": "/opt/oce-box/compiled-agent",
+  "runtimeDir": "/run/oce-box/revision",
+  "workspace": "/home/node/workspace",
+  "read": ["/app", "/opt/oce/runtime"],
+  "exec": ["/usr/bin/tini"],
+  "owner": {
+    "driverId": "strands-box-pilot",
+    "implementation": "@openclaw-enterprise/example-strands-box-driver@0.1.0",
+    "namespaceId": "ns_example",
+    "namespaceName": "agent-example",
+    "agentId": "agt_example"
+  },
+  "image": "example.invalid/agent@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "approvalDir": "/run/oce-box/operator-approval",
+  "endpoint": {
+    "url": "wss://box-harness.agent-example.svc.cluster.local:8443/",
+    "workspaceRoot": "/home/node/workspace"
+  },
+  "workspaceClaim": "claim-example",
+  "mountIdentities": {
+    "/home/node/workspace": { "dev": "0", "ino": "1" },
+    "/home/node/.codex/generated_images": { "dev": "0", "ino": "1" },
+    "/home/node/.codex/sessions": { "dev": "0", "ino": "1" },
+    "/home/node/.openclaw-node": { "dev": "0", "ino": "1" }
+  },
+  "writableState": [
+    "/home/node/.codex",
+    "/home/node/.openclaw",
+    "/home/node/.local",
+    "/home/node/openclaw-runtime-assets"
+  ],
+  "workspaceNode": { "url": "wss://gateway.example.invalid:8443/", "address": "10.0.0.1" },
+  "controlledInference": {
+    "url": "https://inference.example.invalid:8444/v1",
+    "address": "10.0.0.2"
+  }
+}

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-05
-last_updated_session: authoring-run/61309ab1-dd2a-4cb0-99b5-e2a9485fe91f
+updated: 2026-11-06
+last_updated_session: authoring-run/ef63549e-adf5-4ff9-8036-0772ec342a79
 ---
 
 # Harness Execution Topology Flow
@@ -124,27 +124,25 @@ only beside its storage label.
 The [upgrade requirements](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
 own the operator boundary.
 
-`ensureNamespace` prepares one single-cluster tenant namespace, including adopted
-targets; its storage-role label enables discovery. Two-cluster Gateways retain
-their control-cluster target. Dedicated Gateway and Harness Pods, identities,
-and PVCs remain separate. `deliverGatewaySecrets` validates canonical sources;
-`deliverHarnessAuth` creates selected model/transport projections.
-Transport and Gateway passwords use separate sources across modes. Compute
-retains legacy combined sources for older Pods and copies their password before
-new templates reference the separate source. Concurrent creation adopts only an
-exact-owned, identical password; foreign or conflicting sources fail.
-[Namespaces and isolation](../reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation)
-owns qualified DNS and exact NetworkPolicy/Service selectors. Harness selectors
-include version and network profile; Gateway selectors omit version for stability.
-`deploy/helm/openclaw-execution/templates/routing.yaml` validates DNS and Envoy peer maps
-before rendering NetworkPolicies. Values must be strings or native null; type
-errors identify the setting.
+On single clusters, `ensureNamespace` prepares the tenant namespace; a storage-role
+label identifies adopted targets. On split clusters, Gateways use the control cluster.
+Dedicated Gateways and Harnesses have separate Pods, identities and PVCs.
+`deliverGatewaySecrets` validates sources; `deliverHarnessAuth` projects selected
+model and transport credentials. Gateway and transport passwords use separate
+sources. Compute copies the legacy password before switching templates and
+retains combined sources for older Pods. Concurrent creation accepts an existing
+password only when ownership and value match.
+[Network policies](../reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation)
+select Harness peers by version and network profile. Gateway selectors omit the
+version. Before rendering, `deploy/helm/openclaw-execution/templates/routing.yaml`
+validates string-or-null DNS and Envoy peer maps and names invalid settings.
 `runtime.gatewayNodeSelector` places Gateways and private-state initializers.
-`runtime-entrypoints.ts:agentRuntimeReady` and the Docker healthcheck require
-Codex initialization for Compute-owned launches; provider commands remain
-unchanged. See the [readiness contract](../reference/drivers/kubernetes-compute.md#troubleshooting).
+For Compute-owned launches, `agentRuntimeReady` and the Docker healthcheck require
+[Codex initialization](../reference/drivers/kubernetes-compute.md#troubleshooting).
+Provider commands remain unchanged. The [Strands Box relay](../../deploy/examples/strands-box/README.md)
+carries Gateway traffic to native Codex.
 
-After Harness readiness, preparation replaces stopped or unready Gateways. Activation waits for workspace node enrollment; dedicated Codex retains `agent-<agent digest>-workspace`.
+Once the Harness is ready, Compute replaces unready or stopped Gateways. Activation requires workspace enrollment; dedicated Codex keeps `agent-<agent digest>-workspace`.
 `KubernetesComputeDriver.gatewayNativeHookRelayConfiguration` binds callbacks; `AGENT_WITH_NODE_ENTRYPOINT` prepares capability storage and TLS for OpenClaw-authorized [native hooks](../reference/gateway-routing.md#native-node-endpoint).
 
 Compute owns the Gateway; SandboxDriver owns the native Harness, with separate
@@ -354,6 +352,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 02:57: Describe the dedicated Box example and its enrollment boundary. (authoring-run/ef63549e-adf5-4ff9-8036-0772ec342a79 - fbe779cff8d8c83502c715e1e462f5734c82b5fb)
 
 - 2026-11-05 21:24: Trace probe closure. (authoring-run/61309ab1-dd2a-4cb0-99b5-e2a9485fe91f - fdb3fbd93a5295e37ad7814a5197029f2b615346)
 
