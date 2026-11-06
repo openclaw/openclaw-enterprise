@@ -67,7 +67,7 @@ page reload; otherwise the tab gives way to Configuration with no audited read.
 
 ### 2. Serialize Role and binding writes
 
-`apps/controller/src/console/agents/access.mts:matchesRole`
+`apps/controller/src/console/agents/access.mts:ensureGrant`
 
 Submission rereads policy, finds or creates an immutable Role by exact Namespace
 and permissions, then binds Namespace read to the exact Namespace. Only after
