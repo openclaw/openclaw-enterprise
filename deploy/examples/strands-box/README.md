@@ -152,8 +152,10 @@ controller's authority. Use the same package and configuration on API and Worker
    ```
 
    The Worker continues the same deployment on its next reconciliation. Use
-   that execution's `ready.json` for ingress. Verify authenticated native
-   initialization and workspace node enrollment before chat.
+   that execution's `ready.json` for ingress. A relay probe verifies that the
+   original listener rejects an anonymous upgrade. The Driver separately
+   requires an authenticated Codex `initialize` result for the same execution.
+   Verify workspace node enrollment before chat.
 
 ## Verify chat and repository access
 

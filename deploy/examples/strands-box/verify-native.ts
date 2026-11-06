@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, posix, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   Agent,
   MessageEvent,
@@ -19,6 +20,38 @@ const WRITE_AND_READ =
 
 function requireCheck(value: unknown): asserts value {
   if (!value) throw new Error("verification refused");
+}
+
+export async function initializeNativeVerifier(
+  rpc: (method: string, params: object) => Promise<Record<string, unknown>>,
+): Promise<void> {
+  const reply = await rpc("initialize", {
+    clientInfo: { name: "strands-box-verify-native", version: "1" },
+    capabilities: { experimentalApi: true },
+  });
+  requireCheck(Object.hasOwn(reply, "result") && !Object.hasOwn(reply, "error"));
+  const result = object(reply.result);
+  const { codexHome: home, userAgent: agent } = result;
+  // Codex can echo the caller's name here. The configured binary and original
+  // socket establish identity; the reply describes protocol compatibility.
+  requireCheck(
+    ["userAgent", "codexHome", "platformFamily", "platformOs"].every((key) =>
+      Object.hasOwn(result, key),
+    ) &&
+      result.platformFamily === "unix" &&
+      result.platformOs === "linux" &&
+      typeof home === "string" &&
+      home.length <= 4096 &&
+      posix.isAbsolute(home) &&
+      posix.normalize(home) === home &&
+      !/[\u0000-\u001f\u007f]/u.test(home) &&
+      typeof agent === "string" &&
+      agent.length <= 512 &&
+      /^[^\s/]+\/[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?(?: |$)/u.test(
+        agent,
+      ) &&
+      !/[\u0000-\u001f\u007f]/u.test(agent),
+  );
 }
 
 async function privateFile(path: string, limit: number, writable = false) {
@@ -173,26 +206,21 @@ async function verify() {
           requireCheck(event instanceof MessageEvent && typeof event.data === "string");
           requireCheck(Buffer.byteLength(event.data) <= 16384);
           const response = object(JSON.parse(event.data));
-          return response.id === id ? response : undefined;
+          return Object.hasOwn(response, "id") && response.id === id ? response : undefined;
         },
         () => native.send(JSON.stringify({ id, method, params })),
       );
       requireCheck(
-        (await owner.valid()) && Object.hasOwn(reply, "result") !== Object.hasOwn(reply, "error"),
+        (await owner.valid()) &&
+          !Object.hasOwn(reply, "method") &&
+          (reply.jsonrpc === undefined || reply.jsonrpc === "2.0") &&
+          Object.hasOwn(reply, "result") !== Object.hasOwn(reply, "error"),
       );
       return reply;
     }
 
     phase = "native initialize";
-    const hello = object(
-      (
-        await rpc("initialize", {
-          clientInfo: { name: "strands-box-verify-native", version: "1" },
-          capabilities: { experimentalApi: true },
-        })
-      ).result,
-    );
-    requireCheck(typeof hello.userAgent === "string" && hello.userAgent.includes("codex"));
+    await initializeNativeVerifier(rpc);
     native.send(JSON.stringify({ method: "initialized" }));
 
     phase = "workspace command";
@@ -255,12 +283,14 @@ async function verify() {
   }
 }
 
-try {
-  const { name, outside } = await verify();
-  process.stdout.write(
-    "strands-box-verify: verified marker=" + name + " outside=" + outside + "\n",
-  );
-} catch {
-  process.stderr.write("strands-box-verify: refused at " + phase + "\n");
-  process.exitCode = 1;
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const { name, outside } = await verify();
+    process.stdout.write(
+      "strands-box-verify: verified marker=" + name + " outside=" + outside + "\n",
+    );
+  } catch {
+    process.stderr.write("strands-box-verify: refused at " + phase + "\n");
+    process.exitCode = 1;
+  }
 }

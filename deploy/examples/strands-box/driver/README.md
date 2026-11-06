@@ -12,7 +12,9 @@ Git. Selecting it as a paired protected Driver is refused by the normal loader.
 The Driver also refuses protected revision inputs, credential attachments, a
 projected workload identity or initial workspace files before starting the Box.
 
-The Driver reports `serving` after an authenticated WebSocket upgrade. It does not send a JSON-RPC `initialize` request. Verify that the intended Codex server answers `initialize` before using the installation.
+The Driver reports `serving` only after the original Codex server answers the
+Driver’s authenticated JSON-RPC `initialize` request. Check the actual Box,
+network route, and workspace node before using the installation.
 
 ## Build and select
 
@@ -120,9 +122,11 @@ relay Deployment with one replica and observes the relay objects after
 creation. The standard Worker creates the Deployment with its existing
 permissions. Kubernetes marks the relay Pod ready only when its real probe reaches the original native listener
 through the private TLS route. Separately, the Driver compares the live
-execution to the provisioned relay and authenticates the native WebSocket
-handshake with Compute's Harness transport token. The host and the relay must
-still name the same execution after the handshake. During removal, the Driver
+execution to the provisioned relay and sends `initialize` to Codex over the
+verified TLS route using Compute's Harness transport token. The Driver reports
+serving only after Codex returns a compatible result for that exact request
+within the probe deadline. The host and relay must still name the same execution
+afterward. During removal, the Driver
 uses Kubernetes deletion preconditions, confirms the relay Pods are gone,
 retires the exact host execution and checks for its absence.
 

@@ -1,19 +1,24 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { execFileSync, spawn } from "node:child_process";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { dirname, join } from "node:path";
+import { connect, createServer as createNetServer } from "node:net";
+import { dirname, isAbsolute, join } from "node:path";
+import type { Duplex } from "node:stream";
 import { json } from "node:stream/consumers";
 import test, { type TestContext } from "node:test";
+import { createServer as createTlsServer } from "node:tls";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { Agent, MessageEvent, WebSocket } from "../../apps/controller/node_modules/undici/index.js";
 import {
   createExternalProtectedDriver,
   loadDriverPackage,
 } from "../../apps/controller/src/composition/driver-packages.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
+import { initializeNativeVerifier } from "../../deploy/examples/strands-box/verify-native.ts";
 import type {
   AgentRevision,
   HarnessWorkloadRequirements,
@@ -22,7 +27,9 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { listen } from "../helpers/listen.mjs";
+import { stopProcess } from "../helpers/stop-process.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { waitFor } from "../helpers/wait-for.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const driverSource = join(root, "deploy/examples/strands-box/driver");
@@ -929,27 +936,127 @@ test(
   },
 );
 
+async function readinessFixture(t: TestContext) {
+  const x = await fixture(t);
+  const module: unknown = await import(x.nativeModule);
+  const exported = object(module).nativeStatus;
+  assert.equal(typeof exported, "function");
+  const probe = exported as (
+    url: string,
+    ca: string,
+    token: string,
+    signal: AbortSignal,
+  ) => Promise<unknown>;
+  return { probe, ca: x.ca, tls: { key: await readFile(x.certKey), cert: x.ca } };
+}
+
+function firstClientFrame(socket: Duplex, receive: (value: Record<string, unknown>) => void) {
+  let saved = Buffer.alloc(0);
+  const onData = (chunk: Buffer) => {
+    saved = Buffer.concat([saved, chunk]);
+    if (saved.length < 2) {
+      return;
+    }
+    assert.equal(saved[0], 0x81);
+    const indicator = saved[1]!;
+    assert.ok(indicator & 0x80, "the client must mask its text frame");
+    let size = indicator & 0x7f;
+    let offset = 2;
+    if (size === 126) {
+      if (saved.length < 4) {
+        return;
+      }
+      size = saved.readUInt16BE(2);
+      offset = 4;
+    }
+    assert.ok(size > 0 && size < 512);
+    if (saved.length < offset + 4 + size) {
+      return;
+    }
+    socket.off("data", onData);
+    const message = Buffer.from(saved.subarray(offset + 4, offset + 4 + size));
+    for (let i = 0; i < message.length; i++) {
+      message[i] = message[i]! ^ saved[offset + (i % 4)]!;
+    }
+    receive(object(JSON.parse(message.toString("utf8"))));
+  };
+  socket.on("data", onData);
+}
+
+function serverFrame(opcode: number, payload: Buffer, final = true): Buffer {
+  const short = payload.length < 126;
+  const header = Buffer.alloc(short ? 2 : 4);
+  header[0] = (final ? 0x80 : 0) | opcode;
+  header[1] = short ? payload.length : 126;
+  if (!short) {
+    header.writeUInt16BE(payload.length, 2);
+  }
+  return Buffer.concat([header, payload]);
+}
+
+const compatibleNativeResult = {
+  userAgent: "neutral-native/0.164.0 (Linux test)",
+  codexHome: "/home/node/.codex",
+  platformFamily: "unix",
+  platformOs: "linux",
+};
+const productNameOnly = { userAgent: "codex_app_server_daemon/0.164.0" };
+
+test("the operator verifier requires the Linux initialize result and accepts neutral client names", async () => {
+  assert.equal(compatibleNativeResult.userAgent.includes("codex"), false);
+  await initializeNativeVerifier(async () => ({ result: compatibleNativeResult }));
+  for (const result of [
+    productNameOnly,
+    { ...compatibleNativeResult, codexHome: ".codex" },
+    { ...compatibleNativeResult, platformOs: "macos" },
+    { ...compatibleNativeResult, userAgent: "codex without a version" },
+  ]) {
+    await assert.rejects(
+      initializeNativeVerifier(async () => ({ result })),
+      /verification refused/,
+    );
+  }
+  await assert.rejects(
+    initializeNativeVerifier(async () => ({ result: compatibleNativeResult, error: {} })),
+    /verification refused/,
+  );
+});
+
 test(
-  "readiness requires a valid authenticated WebSocket upgrade over the pinned CA",
+  "readiness requires the authenticated native initialize response over the pinned TLS authority",
   { timeout: 30_000 },
   async (t) => {
-    const x = await fixture(t);
-    const module: unknown = await import(x.nativeModule);
-    const exported = object(module).nativeStatus;
-    assert.equal(typeof exported, "function");
-    const probe = exported as (
-      url: string,
-      ca: string,
-      token: string,
-      signal: AbortSignal,
-    ) => Promise<unknown>;
-    const server = createHttpsServer({ key: await readFile(x.certKey), cert: x.ca });
-    const observations: boolean[] = [];
+    const { probe, ca, tls } = await readinessFixture(t);
+    const signal = new AbortController().signal;
+    const expectedFailure = {
+      component: "agent",
+      check: "codex-app-server",
+      code: "fixture-held-failure",
+    };
+    let mode: "upgrade-only" | "wrong-id" | "bad-result" | "initialize" | "held" | "silent" =
+      "upgrade-only";
+    const observations: string[] = [];
+    let sawSilentRequest = false;
+    const server = createHttpsServer(tls, (request, response) => {
+      assert.equal(request.url, "/openclaw/runtime/status");
+      assert.equal(request.headers.authorization, `Bearer ${token}`);
+      observations.push("status");
+      response
+        .writeHead(200, { "content-type": "application/json" })
+        .end(JSON.stringify({ runtimeFailure: expectedFailure }));
+    });
     server.on("upgrade", (request, socket) => {
-      const authorized = request.headers.authorization === `Bearer ${token}`;
-      observations.push(authorized);
-      if (!authorized) {
+      const current = mode;
+      if (request.headers.authorization !== `Bearer ${token}`) {
+        observations.push("wrong-auth");
         socket.end("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        return;
+      }
+      if (current === "held") {
+        observations.push("held");
+        socket.end(
+          "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
         return;
       }
       const challenge = request.headers["sec-websocket-key"];
@@ -957,28 +1064,230 @@ test(
       const accept = createHash("sha1")
         .update(challenge + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
         .digest("base64");
-      socket.once("data", () => socket.end());
       socket.write(
         `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
       );
+      firstClientFrame(socket, (rpc) => {
+        observations.push(current);
+        assert.match(String(rpc.id), /^[a-f0-9]{32}$/);
+        assert.equal(rpc.method, "initialize");
+        assert.deepEqual(rpc.params, {
+          clientInfo: { name: "codex_app_server_daemon", version: "1.0.0" },
+        });
+        if (current === "upgrade-only") {
+          return; // Keep the valid upgrade open; the Driver's own deadline must expire.
+        }
+        if (current === "silent") {
+          sawSilentRequest = true;
+          return;
+        }
+        const result = current === "bad-result" ? productNameOnly : compatibleNativeResult;
+        const reply = Buffer.from(
+          JSON.stringify({
+            id: current === "wrong-id" ? "unrelated-request" : rpc.id,
+            result,
+          }),
+        );
+        if (current === "initialize") {
+          const half = Math.floor(reply.length / 2);
+          socket.write(serverFrame(1, reply.subarray(0, half), false));
+          socket.write(serverFrame(9, Buffer.from("ping")));
+          socket.write(serverFrame(0, reply.subarray(half)));
+        } else {
+          socket.write(serverFrame(1, reply));
+        }
+      });
     });
+    const port: number = await listen(t, server);
+    const url = `wss://127.0.0.1:${port}/`;
+    assert.deepEqual(await probe(url, ca, "wrong-token", signal), { state: "starting" });
+    await assert.rejects(probe(url, ca, token, signal), /did not confirm readiness/);
+    mode = "wrong-id";
+    await assert.rejects(probe(url, ca, token, signal), /did not confirm readiness/);
+    mode = "bad-result";
+    await assert.rejects(probe(url, ca, token, signal), /did not confirm readiness/);
+    mode = "initialize";
+    assert.deepEqual(await probe(url, ca, token, signal), { state: "serving" });
+    await assert.rejects(
+      probe(`wss://localhost:${port}/`, ca, token, signal),
+      /did not confirm readiness/,
+    );
+    mode = "held";
+    assert.deepEqual(await probe(url, ca, token, signal), {
+      state: "failed",
+      runtimeFailure: expectedFailure,
+    });
+    mode = "silent";
+    const cancellation = new AbortController();
+    await Promise.all([
+      assert.rejects(probe(url, ca, token, cancellation.signal), /fixture caller cancelled/),
+      (async () => {
+        await waitFor("the open upgrade to receive initialize", () =>
+          sawSilentRequest ? true : undefined,
+        );
+        cancellation.abort(new Error("fixture caller cancelled"));
+      })(),
+    ]);
+    assert.deepEqual(observations, [
+      "wrong-auth",
+      "upgrade-only",
+      "wrong-id",
+      "bad-result",
+      "initialize",
+      "held",
+      "status",
+      "silent",
+    ]);
+  },
+);
+
+const realNative = process.env.OCC_TEST_STRANDS_NATIVE_CODEX;
+
+function bridge(from: Duplex, to: Duplex) {
+  from.on("error", () => to.destroy());
+  to.on("error", () => from.destroy());
+  from.once("close", () => to.destroy());
+  to.once("close", () => from.destroy());
+  from.pipe(to);
+  to.pipe(from);
+}
+
+test(
+  "the pinned TLS readiness probe initializes the original native Codex through a Unix relay",
+  {
+    timeout: 20_000,
+    skip:
+      realNative === undefined &&
+      "Set OCC_TEST_STRANDS_NATIVE_CODEX to a verified native Codex executable.",
+  },
+  async (t) => {
+    assert.ok(realNative && isAbsolute(realNative));
+    const { probe, ca, tls } = await readinessFixture(t);
+    const directory = await temporaryDirectory(t, "strands-real-native-");
+    const path = join(directory, "app-server.sock");
+    const capability = randomBytes(32).toString("base64url");
+    const digest = createHash("sha256").update(capability).digest("hex");
+    const native = spawn(
+      realNative,
+      [
+        "app-server",
+        "--listen",
+        "ws://127.0.0.1:0",
+        "--ws-auth",
+        "capability-token",
+        "--ws-token-sha256",
+        digest,
+      ],
+      {
+        cwd: directory,
+        env: {
+          HOME: directory,
+          CODEX_HOME: directory,
+          PATH: "/usr/bin:/bin",
+          LANG: "C.UTF-8",
+          OTEL_SDK_DISABLED: "true",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let startupError: Error | undefined;
+    let listener: number | undefined;
+    native.once("error", (error) => {
+      startupError = error;
+    });
+    t.after(() => stopProcess(native));
+    for (const output of [native.stdout, native.stderr]) {
+      let tail = "";
+      output.setEncoding("utf8").on("data", (text: string) => {
+        tail = (tail + text).slice(-4_096);
+        const port = /(?:^|\n) {2}listening on: ws:\/\/127\.0\.0\.1:(\d{1,5})(?:\r?\n|$)/.exec(
+          tail,
+        )?.[1];
+        if (port !== undefined && Number(port) > 0 && Number(port) <= 65535) {
+          listener = Number(port);
+        }
+      });
+    }
+    const nativePort: number = await waitFor(
+      "the native process to announce its owned listener",
+      () => {
+        if (startupError) {
+          throw startupError;
+        }
+        assert.equal(
+          native.exitCode,
+          null,
+          "the selected Codex must support native WebSocket capability auth",
+        );
+        return listener;
+      },
+      5_000,
+    );
+
+    // Match the installed route's transport shape. Both bridges pass bytes;
+    // only the actual native app-server authenticates and answers initialize.
+    const unix = createNetServer((socket) => bridge(socket, connect(nativePort, "127.0.0.1")));
     await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", resolve);
+      unix.once("error", reject);
+      unix.listen(path, resolve);
     });
+    await chmod(path, 0o600);
     t.after(
       () =>
-        new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve())),
-        ),
+        new Promise<void>((resolve) => {
+          unix.close(() => resolve());
+        }),
     );
-    const address = server.address();
-    assert.ok(address && typeof address === "object");
-    const url = `wss://127.0.0.1:${address.port}/`;
-    assert.deepEqual(await probe(url, x.ca, "wrong-token", x.context.signal), {
-      state: "starting",
+    const dispatcher = new Agent({ connect: { socketPath: path } });
+    const verifier = new WebSocket("ws://localhost/", {
+      dispatcher,
+      headers: { authorization: `Bearer ${capability}` },
     });
-    assert.deepEqual(await probe(url, x.ca, token, x.context.signal), { state: "serving" });
-    assert.deepEqual(observations, [false, true]);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        verifier.addEventListener("open", () => resolve(), { once: true });
+        verifier.addEventListener("error", reject, { once: true });
+      });
+      await initializeNativeVerifier(async (method, params) => {
+        const id = 1;
+        const reply = await new Promise<Record<string, unknown>>((resolve, reject) => {
+          verifier.addEventListener("error", reject, { once: true });
+          verifier.addEventListener("message", (event) => {
+            try {
+              assert.ok(event instanceof MessageEvent && typeof event.data === "string");
+              const response = object(JSON.parse(event.data));
+              if (response.id === id) {
+                resolve(response);
+              }
+            } catch (error) {
+              reject(error);
+            }
+          });
+          verifier.send(JSON.stringify({ id, method, params }));
+        });
+        const result = object(reply.result);
+        assert.equal(result.codexHome, directory);
+        const { userAgent } = result;
+        assert.ok(typeof userAgent === "string");
+        assert.equal(userAgent.includes("codex"), false);
+        const nativeVersion = execFileSync(realNative, ["--version"], { encoding: "utf8" })
+          .trim()
+          .split(" ")[1];
+        assert.ok(nativeVersion);
+        assert.equal(userAgent.split(" ")[0], `strands-box-verify-native/${nativeVersion}`);
+        return reply;
+      });
+    } finally {
+      verifier.close();
+      await dispatcher.destroy();
+    }
+    const server = createTlsServer(tls, (socket) => bridge(socket, connect(path)));
+    const port: number = await listen(t, server);
+    const url = `wss://127.0.0.1:${port}/`;
+    const signal = new AbortController().signal;
+    assert.deepEqual(await probe(url, ca, "incorrect-capability", signal), { state: "starting" });
+    assert.deepEqual(await probe(url, ca, capability, signal), { state: "serving" });
+    assert.equal(native.exitCode, null);
+    await stopProcess(native);
   },
 );

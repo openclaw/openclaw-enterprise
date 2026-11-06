@@ -151,8 +151,8 @@ export async function probeNative({
     socket.once("close", () => finish(new Error("Native readiness closed without a response.")));
     socket.once("secureConnect", () => {
       // A positive reachability signal from the live native server without
-      // bringing a capability into the relay. Compute still requires its
-      // own authenticated WebSocket handshake; JSON-RPC initialization is a separate check.
+      // bringing a capability into the relay. The Driver separately requires
+      // an authenticated Codex initialize result before reporting serving.
       socket.write(
         `GET / HTTP/1.1\r\nHost: ${authority}:${TRANSPORT_PORT}\r\n` +
           "Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n" +
