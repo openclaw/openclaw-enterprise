@@ -255,7 +255,8 @@ generates, and, with `controlPlane.loggingCollector.enabled`, from
 `occ-otel-collector-config` and `occ-otel-collector-exporter`.
 
 `github`, `google` and `oidc` also accept `secretName`, `clientIdKey`, `clientSecretKey`
-and `egressCidrs`; `github` also accepts `allowedOrgs` and `allowedTeams`
+and `egressCidrs`; `github` also accepts `allowedOrgs`, `allowedTeams` and
+[`autoEnrollGroupId`](../../reference/authentication/team-enrollment.md)
 ([allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist));
 `oidc` also accepts `tokenAuth` and `displayName`;
 `trustedProxy` accepts `clientAddressHeader`, required for the `generic` preset.

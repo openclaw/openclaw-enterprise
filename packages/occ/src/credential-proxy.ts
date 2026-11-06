@@ -78,7 +78,7 @@ export interface EgressAuthorityPorts {
     lifetime: CredentialReadLifetime,
     isProviderCurrent: () => boolean,
   ): Promise<VersionedSecretValue & { readonly materialId: string }>;
-  readonly readPrepared?: PreparedTokenIssuer["readWarm"];
+  readonly resolvePrepared?: PreparedTokenIssuer["resolve"];
   /** Check the exact selection, then mint once immediately before the possible-send receipt. */
   authorizeSend(
     use: CapturedEgressUse,
@@ -693,6 +693,21 @@ export class CredentialProxy implements CredentialProxyExchange {
       if (evidence.kind !== "no_material_required" && material.value === undefined) {
         return { kind: "refused", error: { kind: "not_ready", code: "material_missing" } };
       }
+      if (source.adoption === "prepared") {
+        // Resolution can wait for the issuer. Recheck the grant and selected token before
+        // disclosing headers to the trusted proxy, even if it never asks for a send permit.
+        const current = await this.ports.check(captured, evidence, undefined, provider);
+        const ended = accessEnded();
+        if (ended) {
+          return { kind: "refused", error: ended };
+        }
+        if (!("key" in current)) {
+          return { kind: "refused", error: current };
+        }
+        if (!isDeepStrictEqual(current, source)) {
+          return refuse("scope_mismatch");
+        }
+      }
       const headers =
         evidence.kind === "no_material_required"
           ? []
@@ -774,10 +789,6 @@ export class CredentialProxy implements CredentialProxyExchange {
     if (!Number.isFinite(remaining) || remaining <= 0) {
       return { kind: "deadline_exceeded" };
     }
-    const lifetime: CredentialReadLifetime = {
-      signal: AbortSignal.any([signal, AbortSignal.timeout(Math.ceil(remaining))]),
-      deadlineAt: request.deadlineAt,
-    };
     if (source.adoption === "prepared") {
       if (
         use.operation.kind !== source.grant.kind ||
@@ -788,21 +799,21 @@ export class CredentialProxy implements CredentialProxyExchange {
         return { kind: "denied", code: "scope_mismatch" };
       }
 
-      const selected = await this.ports.readPrepared?.(source, lifetime);
+      const selected = await this.ports.resolvePrepared?.(source.key, {
+        signal,
+        deadlineAt: request.deadlineAt,
+        minimumValidityMs: remaining,
+      });
       if (!selected) {
         return { kind: "not_ready", code: "material_missing" };
       }
-      const { value, usableUntil, ...selection } = selected;
-      const until = Math.min(
-        deadline,
-        Date.parse(usableUntil),
-        Date.parse(selection.providerExpiresAt),
-      );
-      if (!Number.isFinite(until) || until <= this.ports.now() || lifetime.signal.aborted) {
+      const { accessToken, expiresAt, usableUntil, ...selection } = selected;
+      const until = Math.min(deadline, Date.parse(usableUntil), Date.parse(expiresAt));
+      if (!Number.isFinite(until) || until <= this.ports.now() || signal.aborted) {
         return { kind: "not_ready", code: "expired" };
       }
       return {
-        value,
+        value: accessToken,
         evidence: immutableCopy({
           family: selection.family,
           ownerEpoch: selection.ownerEpoch,
@@ -810,7 +821,7 @@ export class CredentialProxy implements CredentialProxyExchange {
           preparationAttemptId: selection.preparationAttemptId,
           materialId: selection.materialId,
           materialVersion: selection.materialVersion,
-          providerExpiresAt: selection.providerExpiresAt,
+          providerExpiresAt: expiresAt,
           kind: source.schemaVersion === 2 ? "prepared_github" : "prepared_token",
           source: source.key,
           binding: route.binding.binding,
@@ -823,6 +834,10 @@ export class CredentialProxy implements CredentialProxyExchange {
     if (use.operation.kind !== "inference") {
       return { kind: "denied", code: "scope_mismatch" };
     }
+    const lifetime: CredentialReadLifetime = {
+      signal: AbortSignal.any([signal, AbortSignal.timeout(Math.ceil(remaining))]),
+      deadlineAt: request.deadlineAt,
+    };
     const material = await this.ports.read(source, lifetime, provider.isCurrent);
     const observed = Date.parse(material.authoritativeObservedAt);
     const usableUntil = Math.min(

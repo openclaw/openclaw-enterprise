@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -7,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
-import { writeCommand } from "../helpers/fake-commands.mjs";
+import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
 
@@ -22,6 +23,269 @@ const upgradeScript = fileURLToPath(
   new URL("../../scripts/upgrade-production-images", import.meta.url),
 );
 
+test("quickstart Installation updates preserve the bound Secret and stop on unsafe outcomes", async (t) => {
+  let kubectl;
+  try {
+    kubectl = (await execute("bash", ["-c", "command -v kubectl"])).stdout.trim();
+  } catch {
+    t.skip("kubectl is required for real local Secret merge-patch semantics");
+    return;
+  }
+  const snippet = join(repository, "docs/snippets/openshell-quickstart/operator-session.sh");
+  const document = "drivers:\n  repository: reviewed-change\n";
+  for (const failure of [
+    "",
+    "unannotated",
+    "pod-handoff",
+    "pod-gone",
+    "helm-pending",
+    "helm-failed",
+    "helm-changed",
+    "helm-started",
+    "binding",
+    "mounted-binding",
+    "identity",
+    "patch",
+    "helm",
+  ]) {
+    await t.test(failure || "preserves identity and unrelated data", async (t) => {
+      const directory = await temporaryDirectory(t, "occ-quickstart-installation-");
+      const bin = join(directory, "bin");
+      await mkdir(bin);
+      const secret = {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: {
+          name: "selected-installation",
+          namespace: "system",
+          uid: "selected-secret-uid",
+          resourceVersion: "7",
+          labels: { retained: "yes" },
+          annotations: {
+            "openclaw.dev/installation-id": failure === "identity" ? "ins_other" : "ins_selected",
+            retained: "yes",
+          },
+        },
+        data: { "custom.yaml": Buffer.from("old").toString("base64"), retained: "a2VlcA==" },
+      };
+      if (["unannotated", "pod-handoff"].includes(failure)) {
+        delete secret.metadata.annotations["openclaw.dev/installation-id"];
+      }
+      const apiPod = {
+        spec: {
+          volumes: [
+            {
+              name: "installation-startup",
+              secret: {
+                secretName: failure === "mounted-binding" ? "other-secret" : secret.metadata.name,
+                items: [{ key: "custom.yaml", path: "installation.yaml" }],
+              },
+            },
+          ],
+          containers: [
+            {
+              name: "api",
+              env: [
+                { name: "OCC_CONFIG_PATH", value: "/etc/openclaw/installation/installation.yaml" },
+              ],
+              volumeMounts: [
+                { name: "installation-startup", mountPath: "/etc/openclaw/installation" },
+              ],
+            },
+          ],
+        },
+      };
+      const liveValues = {
+        installation: { secretName: secret.metadata.name, key: "custom.yaml" },
+        repositoryCredentials: { registryConfigMapName: "old-registry" },
+      };
+      const values = structuredClone(liveValues);
+      values.repositoryCredentials.registryConfigMapName = "reviewed-registry";
+      if (failure === "binding") {
+        values.installation.secretName = "different-secret";
+      }
+      for (const [name, content] of Object.entries({
+        "secret.json": JSON.stringify(secret),
+        "api-pod.json": JSON.stringify(apiPod),
+        "live-values.json": JSON.stringify(liveValues),
+        "values.json": JSON.stringify(values),
+        "installation.yaml": document,
+        "key.json": JSON.stringify({ data: { key: "fixture-key" } }),
+        "request.mjs": "// Transport is substituted; the real shell constructs its request.\n",
+      })) {
+        await writeFile(join(directory, name), content, { mode: 0o600 });
+      }
+      const log = join(directory, "commands");
+      // Substitute remote command responses, but apply the generated patch with actual
+      // kubectl --local. This proves the helper/merge contract, not API-server concurrency.
+      await writeCommand(
+        bin,
+        "kubectl",
+        `
+case "$*" in
+  *"get pods"*)
+    pod=api
+    if [[ $FAILURE == pod-handoff && -f "$RUN_DIR/pod-selected" ]]; then pod=replacement; fi
+    touch "$RUN_DIR/pod-selected"
+    printf '{"items":[{"metadata":{"name":"%s"},"status":{"podIP":"127.0.0.1","containerStatuses":[{"name":"api","ready":true}]}}]}\\n' "$pod" ;;
+  *"exec -i"*)
+    cat > "$RUN_DIR/api-request.json"
+    if [[ $FAILURE == pod-gone ]]; then exit 9; fi
+    if [[ "$*" == *"exec -i replacement"* ]]; then
+      printf '%s\\n' '{"data":{"id":"ins_replacement"}}'
+    else printf '%s\\n' '{"data":{"id":"ins_selected"}}'; fi ;;
+  *"get pod "*) cat "$RUN_DIR/api-pod.json" ;;
+  *"get secret"*) cat "$RUN_DIR/secret.json" ;;
+  *"patch secret"*)
+    while (($#)); do
+      if [[ $1 == --patch-file ]]; then patch=$2; break; fi
+      shift
+    done
+    cp "$patch" "$RUN_DIR/submitted-patch.json"
+    if [[ $FAILURE == patch ]]; then exit 9; fi
+    "$REAL_KUBECTL" patch --local -f "$RUN_DIR/secret.json" --type merge --patch-file "$patch" -o json > "$RUN_DIR/merged.json" || exit
+    cp "$RUN_DIR/merged.json" "$RUN_DIR/secret.json"
+    cat "$RUN_DIR/secret.json" ;;
+  *"create secret generic"*)
+    # Keep the old implementation runnable: its actual client-side create loses identity.
+    while [[ $1 != generic ]]; do shift; done
+    "$REAL_KUBECTL" create secret generic "$2" --from-file="installation.yaml=$INSTALLATION_FILE" --dry-run=client -o json > "$RUN_DIR/secret.json" ;;
+  *"rollout status"*) ;;
+  *) exit 91 ;;
+esac
+`,
+        { interpreter: "bash", log },
+      );
+      await writeCommand(
+        bin,
+        "helm",
+        `
+case "$*" in
+  *" status "*)
+    version=3
+    status=deployed
+    if [[ $FAILURE == helm-pending ]]; then status=pending-upgrade; fi
+    if [[ $FAILURE == helm-failed ]]; then status=failed; fi
+    if [[ -f "$RUN_DIR/status-read" ]]; then
+      if [[ $FAILURE == helm-changed ]]; then version=4; fi
+      if [[ $FAILURE == helm-started ]]; then status=pending-upgrade; fi
+    fi
+    touch "$RUN_DIR/status-read"
+    printf '{"version":%s,"info":{"status":"%s"}}\\n' "$version" "$status" ;;
+  *"get values"*) cat "$RUN_DIR/live-values.json" ;;
+  *"upgrade"*)
+    while (($#)); do
+      if [[ $1 == -f ]]; then cp "$2" "$RUN_DIR/applied-values.json"; break; fi
+      shift
+    done
+    if [[ $FAILURE == helm ]]; then exit 9; fi ;;
+  *) exit 92 ;;
+esac
+`,
+        { interpreter: "bash", log },
+      );
+      const result = await execute(
+        "bash",
+        ["-c", 'set -euo pipefail; source "$SNIPPET"; upgrade_installation'],
+        {
+          cwd: repository,
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            REAL_KUBECTL: kubectl,
+            SNIPPET: snippet,
+            RUN_DIR: directory,
+            KUBECONFIG: join(directory, "unused-kubeconfig"),
+            CONTEXT: "selected",
+            PLATFORM_NS: "system",
+            RELEASE: "oce",
+            OCE_CHART: "unused-local-chart",
+            OCC_SERVICE_KEY_FILE: join(directory, "key.json"),
+            INSTALLATION_FILE: join(directory, "installation.yaml"),
+            VALUES_FILE: join(directory, "values.json"),
+            FAILURE: failure,
+          },
+        },
+      ).then(
+        (result) => ({ ...result, code: 0 }),
+        (error) => error,
+      );
+      const success = !failure || ["unannotated", "pod-handoff"].includes(failure);
+      assert.equal(result.code, success ? 0 : 1, result.stderr);
+      const commands = await readFile(log, "utf8");
+      if (failure === "pod-handoff") {
+        assert.match(commands, /exec -i api/);
+        assert.doesNotMatch(commands, /exec -i replacement/);
+      }
+      const after = JSON.parse(await readFile(join(directory, "secret.json"), "utf8"));
+      assert.deepEqual(
+        after.metadata,
+        success
+          ? {
+              ...secret.metadata,
+              annotations: {
+                ...secret.metadata.annotations,
+                "openclaw.dev/installation-id": "ins_selected",
+              },
+            }
+          : secret.metadata,
+        "the same Secret and all metadata survive",
+      );
+      assert.equal(after.data.retained, secret.data.retained);
+      const changed = success || failure === "helm";
+      assert.equal(
+        after.data["custom.yaml"],
+        changed ? Buffer.from(document).toString("base64") : secret.data["custom.yaml"],
+      );
+      if (
+        [
+          "binding",
+          "mounted-binding",
+          "identity",
+          "pod-gone",
+          "helm-pending",
+          "helm-failed",
+          "helm-changed",
+          "helm-started",
+        ].includes(failure)
+      ) {
+        assert.doesNotMatch(commands, /patch secret| upgrade /);
+      } else {
+        const patch = JSON.parse(await readFile(join(directory, "submitted-patch.json"), "utf8"));
+        assert.deepEqual(patch.metadata, {
+          uid: secret.metadata.uid,
+          resourceVersion: "7",
+          annotations: { "openclaw.dev/installation-id": "ins_selected" },
+        });
+        assert.deepEqual(Object.keys(patch.data), ["custom.yaml"]);
+      }
+      if (!success) {
+        assert.deepEqual(
+          JSON.parse(await readFile(join(directory, "values.json"), "utf8")),
+          values,
+        );
+        assert.doesNotMatch(commands, /rollout status/);
+        if (failure === "patch") {
+          assert.doesNotMatch(commands, / upgrade /);
+        }
+      } else {
+        const applied = JSON.parse(await readFile(join(directory, "applied-values.json"), "utf8"));
+        assert.deepEqual(applied, {
+          ...values,
+          controlPlane: {
+            installationChecksum: createHash("sha256").update(document).digest("hex"),
+          },
+        });
+        assert.deepEqual(
+          JSON.parse(await readFile(join(directory, "values.json"), "utf8")),
+          applied,
+        );
+        assert.match(commands, /rollout status deployment\/openclaw-enterprise-worker/);
+      }
+    });
+  }
+});
+
 test("production image upgrades preserve controller/runtime ownership and wait for ready Pods", async (t) => {
   const directory = await temporaryDirectory(t, "occ-production-upgrade-");
   const baselineControllerImage = `registry.example.invalid/controller@sha256:${"f".repeat(64)}`;
@@ -32,7 +296,7 @@ test("production image upgrades preserve controller/runtime ownership and wait f
   const bin = join(directory, "bin");
   await mkdir(bin);
   // Use real JSON operations for the run's dispatch journal and receipts.
-  const dispatchJson = `if [[ "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$1" == '-ser' || "$1" == '-cser' ]]; then
+  const dispatchJson = `if [[ "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$1" == '-ser' || "$1" == '-cser' ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 `;
@@ -105,6 +369,7 @@ esac
     bin,
     "python3",
     `if [[ "$1" == scripts/upgrade-dispatch-state.py ||
+      ( "$1" == - && "$4" == */oce-upgrade-preflight-* ) ||
       ( "$1" == - && ( "$2" == deploy/helm/openclaw-enterprise ||
         "$2" == "$UPGRADE_TEST_KUBECONFIG" || "$2" == */parameters.json ) ) ]]; then
   command -p python3 "$@"
@@ -405,6 +670,62 @@ esac
 `,
     { interpreter: "bash" },
   );
+  // Keep preflight identities across command invocations. This is API protocol
+  // coverage; the fixture does not run a Kubernetes Job controller.
+  await writeCommand(
+    bin,
+    "preflight-kubectl",
+    `const fs = require("node:fs");
+const args = process.argv.slice(2);
+const statePath = process.argv[1] + ".json";
+const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : {};
+const value = (flag) => args[args.indexOf(flag) + 1];
+const child = (job) => job && ({
+  apiVersion: "v1", kind: "Pod",
+  metadata: {
+    ...job.spec.template.metadata, namespace: job.metadata.namespace,
+    labels: { ...job.spec.template.metadata.labels, "batch.kubernetes.io/controller-uid": job.metadata.uid },
+    name: job.metadata.name + "-child", uid: job.metadata.uid + "-child",
+    ownerReferences: [{ apiVersion: "batch/v1", kind: "Job", controller: true,
+      name: job.metadata.name, uid: job.metadata.uid }],
+  },
+  spec: job.spec.template.spec, status: { phase: "Succeeded" },
+});
+let result;
+if (args.includes("create")) {
+  const file = value("--filename");
+  const object = JSON.parse(fs.readFileSync(file === "-" ? 0 : file, "utf8"));
+  object.metadata.uid = "fixture-" + object.metadata.name;
+  if (object.kind === "Job") {
+    object.status = { conditions: [{ type: "Complete", status: "True" }] };
+  }
+  state[object.metadata.name] = object;
+  result = object.metadata.uid;
+} else if (args.includes("delete")) {
+  const name = args.find((arg) => arg.startsWith("--raw=")).split("/").at(-1);
+  const options = JSON.parse(fs.readFileSync(0, "utf8"));
+  if (state[name]?.metadata.uid !== options.preconditions?.uid) {
+    throw new Error("preflight DELETE UID mismatch");
+  }
+  delete state[name];
+} else if (args.includes("logs")) {
+  result = "agent-drafts-accepted\\ninstallation-startup-ready\\n";
+} else if (args.includes("pods")) {
+  const uid = value("--selector").slice("batch.kubernetes.io/controller-uid=".length);
+  result = { items: Object.values(state).filter((object) =>
+    object.kind === "Job" && object.metadata.uid === uid).map(child) };
+} else {
+  const resource = args.find((arg) => /^(job[.]batch|pod)\\//.test(arg));
+  const [kind, name] = resource.split("/");
+  result = kind === "pod" ? child(state[name.slice(0, -6)]) : state[name];
+}
+fs.writeFileSync(statePath, JSON.stringify(state));
+if (result !== undefined) {
+  process.stdout.write(typeof result === "string" ? result : JSON.stringify(result));
+}
+`,
+    { interpreter: process.execPath },
+  );
   await writeCommand(
     bin,
     "kubectl",
@@ -417,8 +738,9 @@ case "$*" in
     fi
     printf '%s\\n' '{"status":"ok"}'
     ;;
-  *' create --filename -'*) cat >/dev/null; printf '%s' 'fixture-preflight-uid' ;;
-  *' create --filename'*) printf '%s' 'fixture-preflight-uid' ;;
+  *' create --filename'*|*' get job.batch/'*|*'batch.kubernetes.io/controller-uid='*|*' get pod/oce-upgrade-preflight-'*|*' logs pod/oce-upgrade-preflight-'*|*'delete --raw='*)
+    exec "$(dirname "$0")/preflight-kubectl" "$@" ;;
+
   *'jsonpath='*) printf '%s\\n' "$OBSERVED_CONTROLLER_IMAGE" ;;
   *'get pods'*) printf '%s\\n' '{"items":[]}' ;;
   *' get pod/'*) printf '%s\\n' '{"status":{"phase":"Succeeded"}}' ;;

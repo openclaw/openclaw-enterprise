@@ -191,6 +191,14 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if gt (add (len (default list $githubLists.allowedOrgs)) (len (default list $githubLists.allowedTeams))) 10 -}}{{- fail "auth.github.allowedOrgs and auth.github.allowedTeams list at most 10 entries together" -}}{{- end -}}
 {{- if and (not (and $github $github.enabled)) (or (default list $githubLists.allowedOrgs) (default list $githubLists.allowedTeams)) -}}{{- fail "auth.github.allowedOrgs and auth.github.allowedTeams require auth.github.enabled: true; they limit GitHub sign-in only" -}}{{- end -}}
+{{- if not (or (kindIs "invalid" $githubLists.autoEnrollGroupId) (kindIs "string" $githubLists.autoEnrollGroupId)) -}}
+{{- fail "auth.github.autoEnrollGroupId must be a Group ID string" -}}
+{{- end -}}
+{{- with $group := $githubLists.autoEnrollGroupId -}}
+{{- if or (not (kindIs "string" $group)) (not (regexReplaceAll $jsTrim (toString $group) "")) (not (default list $githubLists.allowedTeams)) (default list $githubLists.allowedOrgs) -}}
+{{- fail "auth.github.autoEnrollGroupId requires a valid Group ID, allowedTeams and no allowedOrgs" -}}
+{{- end -}}
+{{- end -}}
 {{- with $binding := .Values.preprovisionedNamespace -}}
 {{- if or (ne (len $binding) 2) (not (regexMatch "^ns_[a-zA-Z0-9_-]{1,60}$" (toString $binding.namespaceId))) (not (regexMatch "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" (toString $binding.uid))) -}}
 {{- fail "preprovisionedNamespace requires exactly namespaceId and Kubernetes uid" -}}
@@ -1026,4 +1034,8 @@ per-client-address limit. Behind an HTTP proxy, API calls fail with 403 until it
 is set.
 {{- end -}}
 {{- end -}}
+{{- end -}}
+
+{{- define "openclaw.installationSecretNamespace" -}}
+{{- printf "oce-installation-secrets-%s" (printf "%s/%s" .Release.Namespace .Release.Name | sha256sum | trunc 15) -}}
 {{- end -}}

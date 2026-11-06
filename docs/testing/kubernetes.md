@@ -1,3 +1,9 @@
+---
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
+---
+
 # Kubernetes tests
 
 ## Overview
@@ -9,14 +15,13 @@ Use disposable local k3d with enforcing NetworkPolicies. Fixtures exclude real g
 Install k3d, kubectl, Helm, `certutil`, and Chromium with sandbox support.
 Use a disposable container engine with image-build capacity. The
 Keycloak cases need free, bindable loopback port 443 and must not run beside
-the standalone Keycloak lane. From the root of a trusted repository checkout,
-install the dependencies and build the CLI before running:
+the standalone Keycloak lane. Run these commands from the trusted checkout root:
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm exec playwright install chromium
 pnpm cli:build
-OCC_TEST_DEV_UP_K3D_REAL=1 node --test tests/integration/dev-up-k3d-real.test.mjs
+OCC_TEST_DEV_UP_K3D_REAL=1 node --test --test-concurrency=1 tests/integration/dev-up-k3d-real.test.mjs tests/integration/dev-up-k3d-refusals-real.test.ts tests/integration/dev-up-k3d-keycloak-real.test.ts
 ```
 
 The tests cover installation, cleanup, workspace boundaries, NetworkPolicy,
@@ -51,18 +56,13 @@ OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/opencla
     tests/integration/kubernetes-compute-driver-real.test.mjs
 ```
 
-All fixture cases must pass without skips. Missing selectors skip; partial
-selectors fail. A missing database skips its cases. Run files sequentially
-because they share a database. The suite checks API, worker, Driver, RBAC,
-storage, lifecycle and network isolation, not live OAuth/models, cloud volume
-detach or node fencing.
+Run all cases sequentially against the shared database and require zero skips.
+Absent selectors or database skip their cases. Partial selectors fail. Coverage
+includes API, worker, Driver, RBAC, storage, lifecycle and network isolation.
+Cloud volume detach and node fencing require separate proof.
 
-External OAuth credentials use OpenShell, not Kubernetes bootstrap Jobs or a
-native OAuth store. A green fixture result does not prove live OAuth refresh: the
-[OpenShell OAuth proof](openshell-oauth.md) and the credentialed
-[OpenShell runtime lane](openshell.md) cover it, outside ordinary CI.
-
-When finished, delete only the cluster you created:
+For live OAuth, use the [OpenShell OAuth](openshell-oauth.md) and
+[credentialed runtime](openshell.md) suites. Delete only your disposable cluster:
 
 ```sh
 k3d cluster delete oce
@@ -78,9 +78,11 @@ OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
   node --test tests/integration/installation-handoff-k3d-real.test.ts
 ```
 
-This builds `occ` and checks rendered Jobs, named-read RBAC, and replacement UIDs.
-Suspended Jobs need no database/model credentials; migration/bootstrap and runtime
-remain unproved.
+Checks named-Job access, replacement, interrupted Helm dispatch, CRDs/controllers,
+quota headroom, address drift and denials. EKS connectivity and Envoy acceptance
+remain unproved. The [production observability lane](local.md#kubernetes-observability-acceptance)
+runs `installation-receipt-k3d-real.test.ts` with PostgreSQL to check bootstrap
+after interruption before and after UID capture.
 
 ### Production workload network access
 
@@ -93,9 +95,11 @@ OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
   node --test tests/integration/production-network-access.test.mjs
 ```
 
-Live listeners verify chart and quickstart NetworkPolicies, supervisor grant withdrawal,
-and loss of namespace ownership. Selectors exclude other releases.
-No database or model credentials are required.
+Checks cover isolation, management DNS/API/Git TCP reachability, denied ports and
+destinations, and grant withdrawal. TLS-preserving API proxies verify withdrawal;
+a controlled discovery snapshot tests removal of the last backend. Its CI lane owns
+a separate cluster and awaits slice and namespace cleanup. No database or model credentials
+are required.
 
 ## Kubernetes model turns and Secrets
 
@@ -163,9 +167,10 @@ OCC_TEST_HARNESS_K3D_REAL=1 OCC_TEST_SLACK_LIVE=0 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/harness-topology-k3d-real.test.mjs
 ```
 
-All six non-Slack cases must pass: dedicated Codex, dedicated Skill source
-uploads, embedded OpenClaw, Secret lifecycle, and startup-failure evidence with
-plugins disabled and enabled. The Skill source case needs local `zip`. A
+Seven non-Slack cases must pass: dedicated Codex, dedicated Skill source
+uploads, embedded OpenClaw, Secret lifecycle, Default user deploy, and
+startup-failure evidence with and without plugins. The Skill source case needs
+local `zip`. A
 selected suite fails on missing prerequisites; an unselected suite skips. The
 suite does not install OCC with Helm. Credentials belong only in the selected
 runtime Pods, not controllers, logs, or shell history. For private workspace

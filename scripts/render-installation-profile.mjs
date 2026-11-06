@@ -944,6 +944,18 @@ function signInProvider(source, name, diagnostics) {
       "controlPlane.github.allowedOrgs and allowedTeams list at most 10 entries together.",
     );
   }
+  if (source.autoEnrollGroupId !== undefined) {
+    rendered.autoEnrollGroupId = optionalString(
+      source,
+      [...path, "autoEnrollGroupId"],
+      diagnostics,
+    );
+    if (!rendered.allowedTeams?.length || rendered.allowedOrgs?.length) {
+      diagnostics.errors.push(
+        "controlPlane.github.autoEnrollGroupId requires allowedTeams and no allowedOrgs.",
+      );
+    }
+  }
   if (source.egressCidrs !== undefined) {
     rendered.egressCidrs = stringArray(source, [...path, "egressCidrs"], diagnostics, {
       validate: isIpv4Cidr,
@@ -1272,7 +1284,15 @@ function buildInput(rawInput, diagnostics) {
   closed(
     github,
     "controlPlane.github",
-    ["secretName", "clientIdKey", "clientSecretKey", "allowedOrgs", "allowedTeams", "egressCidrs"],
+    [
+      "secretName",
+      "clientIdKey",
+      "clientSecretKey",
+      "allowedOrgs",
+      "allowedTeams",
+      "autoEnrollGroupId",
+      "egressCidrs",
+    ],
     diagnostics,
   );
   const google = section(controlPlane, "google", diagnostics, false);
@@ -2280,11 +2300,11 @@ function buildRendered(profile, parsed, diagnostics) {
 }
 
 async function resolveHostedDiscoveryCidrs(profile, parsed, values, diagnostics) {
-  const plugin = profile.installation.drivers.plugin;
-  if (
-    plugin.id !== "codex-plugin" ||
-    (plugin.configuration?.catalogSource ?? "hosted") !== "hosted"
-  ) {
+  const hostedDiscovery = profile.installation.drivers.plugin.some(
+    (entry) =>
+      entry.id === "codex-plugin" && (entry.configuration?.catalogSource ?? "hosted") === "hosted",
+  );
+  if (!hostedDiscovery) {
     return;
   }
   const hosts = ["auth.openai.com", "chatgpt.com"];

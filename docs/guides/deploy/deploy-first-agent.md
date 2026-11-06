@@ -2,9 +2,39 @@
 
 Complete the installation setup for [local k3d](local-setup.md), [Kubernetes](kubernetes-setup.md), or [Amazon EKS](eks-openshell-setup.md). Continue in the same Bash shell at the root of the matching release checkout. Use the API connection, namespace and browser origin from setup.
 
+Use this OpenShell workflow to evaluate Agent deployment and model execution.
+A successful run does not complete the
+[remaining OpenShell production qualification](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
+
+Create an Agent called `fred` in the Console below, or [start with the API](#1-select-or-register-the-model-credential). Both paths lead to the same onboarding steps. Choose a fresh setup where the name `fred` is available.
+
+## Create and deploy fred in the Console
+
+Run `deployment_preflight` in your operator shell before creating the Agent. Open `$CONSOLE_ORIGIN/console/` and sign in with the administrator account from setup. Keep any required browser port-forward running.
+
+<Snippet file="../../snippets/openshell-quickstart/console-agent.md" />
+
+While provisioning runs, open **Agents → fred** in a second tab. Under **Viewing version**, select the first saved version. Copy the Agent ID after `/agents/` and the deployment ID from `revision=` in that tab’s URL.
+
+In the operator shell, enter those IDs to prepare the network rules and wait for that deployment. Record the Agent and its model credential for the Git and Linear walkthroughs.
+
+```bash
+agent='<Agent ID from the Console URL>'
+revision='<deployment ID from the same URL>'
+wait_deployment "$revision"
+request GET "$base/agents/$agent" > "$RUN_DIR/agent"
+name=$(jq -er .data.name "$RUN_DIR/agent")
+principal=$(jq -er .data.servicePrincipalId "$RUN_DIR/agent")
+modelSource=$(jq -er '.data.harnessAuth | select(.method=="credential_source") | .sourceId' "$RUN_DIR/agent")
+```
+
+Continue to [onboarding in the Control UI](#4-complete-onboarding-in-the-control-ui).
+
 ## 1. Select or register the model credential
 
 Choose one credential for the dedicated Codex Agent. Both paths use the [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md#source-type-catalog).
+
+Before selecting either credential, confirm its account policy meets the [OpenShell permission-profile requirement](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
 
 ### Option A. ChatGPT service account token
 
@@ -30,10 +60,11 @@ credential_file=/secure/oce/openai-api-key
 
 ### Select or register the source
 
-Set the Agent name once:
+Set the Agent name and a unique prefix for the credential and role created by this run:
 
 ```bash
-name="openshell-codex-$(date +%s)"
+name=fred
+resource_prefix="$name-$(date +%s)"
 ```
 
 If the credential is already registered, set `MODEL_SOURCE_NAME` to its registered name. Select the ready source and continue to step 2:
@@ -48,12 +79,12 @@ Otherwise, store the credential in a Namespace Secret and register its reference
 
 ```bash
 # POST $base/secrets: read the credential from its file.
-jq -n --arg name "$name-model" --rawfile token "$credential_file" \
+jq -n --arg name "$resource_prefix-model" --rawfile token "$credential_file" \
   '{name:$name,value:($token|rtrimstr("\n"))}' |
   request POST "$base/secrets" --data-binary @- > "$RUN_DIR/model-secret"
 
 # POST $base/credential-sources: register the Secret reference for the selected login method.
-jq --arg name "$name-model" --arg t "$source_type" --arg field "$secret_field" \
+jq --arg name "$resource_prefix-model" --arg t "$source_type" --arg field "$secret_field" \
   '{name:$name,type:$t,secrets:{($field):.data.ref}}' "$RUN_DIR/model-secret" |
   request POST "$base/credential-sources" --data-binary @- > "$RUN_DIR/model-source"
 modelSource=$(jq -er '.data|select(.state=="ready")|.id' "$RUN_DIR/model-source")
@@ -120,7 +151,7 @@ Create one role scoped to credential sources. Bind that role to this Agent's pri
 
 ```bash
 # POST $base/iam/roles: allow the operate action on CredentialSources.
-role=$(jq -n --arg name "$name-sources" \
+role=$(jq -n --arg name "$resource_prefix-sources" \
   '{name:$name,permissions:[{action:"operate",resourceKind:"credential_source"}]}' |
   request POST "$base/iam/roles" --data-binary @- | jq -er .data.id)
 
@@ -139,14 +170,16 @@ request POST "$base/agents/$agent/runtime-credentials" --data '{}' > "$RUN_DIR/t
 
 Open `$CONSOLE_ORIGIN/console/` and sign in with the administrator account from installation setup. Keep any required private browser port-forward running.
 
-Run `deployment_preflight` in the operator shell, then use **Deploy an existing Agent’s saved draft** below for the Agent created in step 2. Do not create another Agent. After clicking deploy, run:
+Run `deployment_preflight` in the operator shell. Open **Agents → fred** and select **Draft · Editable Configuration** under **Viewing version**. In **Prepare this version**, check the saved configuration and credentials, then click **Deploy new version** to start version 1.
+
+<Snippet file="../../snippets/openshell-quickstart/console-first-deploy.md" />
+
+Copy the deployment ID from the Console URL and wait for that deployment in the operator shell:
 
 ```bash
 revision='<deployment ID from the Console URL revision parameter>'
 wait_deployment "$revision"
 ```
-
-<Snippet file="../../snippets/openshell-quickstart/console-deployment-actions.md" />
 
 </Accordion>
 <Accordion title="CLI">
@@ -166,31 +199,36 @@ Continue when the deployment reports `succeeded` and the Agent's `activeRevision
 
 ## 4. Complete onboarding in the Control UI
 
-Before sending the first prompt, use the operator shell to check the bootstrap file in this Agent's workspace. This check needs permission to list Pods and execute a command in the tenant namespace.
+<AccordionGroup>
+<Accordion title="Control UI">
+
+<Snippet file="../../snippets/openshell-quickstart/console-open-agent.md" />
+
+In the Control UI, send this message:
+
+> Your name is fred. I prefer short answers. Please finish onboarding and save those details.
+
+In the Console, open **Workspace files** on `fred`. Check `IDENTITY.md` for its name and `USER.md` for your preference.
+
+Send `Reply with OCE_READY.` and confirm the reply. Close the Agent tab, reopen **Open Agent UI**, and select the **same conversation** in chat history. Ask “How do I like my answers?” and check the reply against your saved preference. Retain the conversation's browser path with the private session record.
+
+<Snippet file="../../snippets/openshell-quickstart/console-onboard.md" />
+
+</Accordion>
+<Accordion title="CLI">
+
+To check that the deployed Agent can answer through its Gateway, run this in the same operator shell:
 
 ```bash
-revision=$(request GET "$base/agents/$agent" | jq -er .data.activeRevisionId)
-agent_pod=$(kube -n "${TENANT_NAMESPACE:?}" get pods \
-  -l "openclaw.dev/agent=$agent,openclaw.dev/revision=${revision:?}" -o json |
-  jq -er '[.items[] | select(.metadata.deletionTimestamp == null and
-    any(.status.containerStatuses[]?; .name == "agent" and .ready))] |
-    select(length == 1) | first.metadata.name')
-workspace_check() {
-  kube -n "$TENANT_NAMESPACE" exec "$agent_pod" -c agent -- sh -c \
-    'cd /sandbox/enterprise && test -x . && test "$@"' sh "$@"
-}
-workspace_check -f BOOTSTRAP.md
+printf '%s\n' 'Reply with OCE_READY.' > "$RUN_DIR/setup-prompt"
+turn "$RUN_DIR/setup-prompt" > "$RUN_DIR/setup-result" &&
+  jq -e '.outcome.status == "ok" and (.outcome.terminalReply.text | contains("OCE_READY"))' "$RUN_DIR/setup-result"
 ```
 
-Use **Open Agent UI** for the same Agent. Give it a name and one unique preference to remember. Ask it to complete onboarding and save them in its workspace. In the Console **Workspace** tab, open `IDENTITY.md` and `USER.md` and verify the saved values. Back in the operator shell, confirm the Agent removed the bootstrap file:
+A successful check prints `true`. Each `turn` starts a new conversation. Use the Control UI steps to complete onboarding and verify recall in the same conversation.
 
-```bash
-workspace_check ! -e BOOTSTRAP.md
-```
-
-Send `Reply with OCE_READY.` and confirm the reply. Close the Agent tab, reopen **Open Agent UI**, and select the **same conversation** in chat history. Ask for the saved preference without including its value in the prompt. Check the response against the original value. Retain the conversation's browser path with the private session record.
-
-The shared `turn` helper starts a new conversation on each call. A terminal model reply does not replace this browser onboarding and continuity check.
+</Accordion>
+</AccordionGroup>
 
 <a id="keep-the-session-for-the-next-stage"></a>
 

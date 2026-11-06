@@ -122,9 +122,33 @@ mismatch, including a branch moved between review and dispatch, fails before
 image builds. An omitted or empty `source_sha` defaults to `github.sha`, with
 no independent check. Reusable callers must supply it.
 
-Successful runs upload OCI artifacts for one day; repository readers can
-download them. Review the image contents and audience, especially for public
-source. The workflow does not push images to a registry or install a release.
+The workflow does not push images to a registry or install a release. Repository
+readers can download its artifacts; review the image contents and audience,
+especially for public source.
+
+### Retain native export evidence
+
+Before using the exports, require a successful terminal workflow with all four
+`Prepare <controller|runtime> (<amd64|arm64>)` jobs successful, including their
+exact-export smoke and upload steps. Runtime jobs must also finish cleanup
+successfully. One successful platform does not establish that the full native
+matrix passed.
+
+Download the selected artifacts before their **one-day retention** expires.
+Their names are `platform-<controller|runtime>-<amd64|arm64>-<run-id>-<attempt>`.
+Keep the original download and artifact metadata, including its ID and SHA-256
+digest, together with the run, attempt, source SHA and successful job records.
+Compare the downloaded ZIP's checksum with the artifact metadata; this checksum
+identifies the ZIP bytes, not an OCI image digest.
+
+Each artifact contains an OCI layout and `platform.json`. Check the receipt's
+`sourceSha`, `workflowSha`, `runId`, `attempt`, `image`, `platform`, `digest` and
+`native: true` against the selected producer and export. Verify the OCI root and
+reachable blobs against their descriptors before loading or transferring them.
+Preserve their identities through transport. This is not the publication
+workflow's `image.tar` and publication receipt, and it does not prove registry
+availability or a working deployment. For local use, follow the
+[populated controller return rehearsal](../testing/populated-controller-return.md#prepare-the-cluster-and-images).
 
 ## Prepare and publish
 

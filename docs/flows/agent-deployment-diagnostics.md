@@ -139,10 +139,11 @@ state after admission.
   Harness could not enroll with its egress proxy before the model check.
   An `agent` `state-migration` or `workspace-baseline` check with code
   `UNAVAILABLE` is a dedicated Harness or native worker held before Codex or its
-  node started: Doctor left its node state older, or `openclaw setup --baseline`
+  node started: Doctor did not complete maintenance, or `openclaw setup --baseline`
   failed. The log line names the cause and any invalid setting paths, and
   OpenClaw's own hints to run `openclaw doctor` are dropped, since the
-  Harness runs Doctor itself. Fix the cause, then deploy again.
+  Harness runs Doctor itself. A pending marker in the retained `state` directory preserves the repair requirement
+  across container replacements; fix the cause, then deploy again.
 - A `gateway` `gateway-state-lock` check with code `UNAVAILABLE` is a dedicated
   Gateway that OpenClaw refused to configure: an earlier Gateway process did not
   stop cleanly, and the restarted container cannot verify that the lock holder

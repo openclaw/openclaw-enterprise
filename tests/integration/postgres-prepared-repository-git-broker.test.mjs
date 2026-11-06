@@ -19,7 +19,7 @@ import {
   createTestAuthPrincipal,
 } from "../helpers/auth-session.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { relaySockets } from "../helpers/socket-relay.mjs";
+import { relaySockets } from "../helpers/socket-relay.ts";
 import { fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
 import {
   cleanEnvironment,
@@ -29,7 +29,7 @@ import {
 } from "../fixtures/repository-credentials/process.mjs";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
-import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
+import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
 import { startListeners } from "../../apps/controller/src/drivers/repo/credentials/server.ts";
