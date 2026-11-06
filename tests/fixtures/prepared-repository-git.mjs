@@ -430,7 +430,7 @@ export async function admitProtectedVersion(
     providerId,
     providerResourceVersion: "1",
     profileVersion: "1",
-    credentialState: "active",
+    credentialState: "bootstrap",
     attachmentEpoch: "e",
     providerEnvRevision: "1",
     configRevision: "1",
