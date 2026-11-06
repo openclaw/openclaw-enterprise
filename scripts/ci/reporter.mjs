@@ -200,7 +200,7 @@ function safeMeasurement(value) {
     ) {
       return undefined;
     }
-    return {
+    const result = {
       kind: value.kind,
       phase: value.phase,
       stage: value.stage,
@@ -208,6 +208,24 @@ function safeMeasurement(value) {
       failed: value.failed,
       elapsedMs: value.elapsedMs,
     };
+    if (value.stage === "runtime-build") {
+      const { nonzeroExitCount = 0, signaledCount = 0 } = value;
+      if (
+        Number.isInteger(nonzeroExitCount) &&
+        nonzeroExitCount >= 0 &&
+        Number.isInteger(signaledCount) &&
+        signaledCount >= 0 &&
+        nonzeroExitCount + signaledCount <= value.failed
+      ) {
+        if (nonzeroExitCount > 0) {
+          result.nonzeroExitCount = nonzeroExitCount;
+        }
+        if (signaledCount > 0) {
+          result.signaledCount = signaledCount;
+        }
+      }
+    }
+    return result;
   }
   if (isRecord(value) && value.kind === "local-first-agent-pod") {
     if (
