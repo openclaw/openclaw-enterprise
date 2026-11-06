@@ -39,6 +39,20 @@ export interface SavedAccountPeer {
 }
 
 /** Real OCC, request authority, Plugin Driver and OAuth issuer; the test owns the Gateway inventory. */
+export function installSavedAccountPlacement(controller: OpenClawController) {
+  // This existing PostgreSQL fixture provides Compute lifecycle without Kubernetes. Use the
+  // normal Namespace mapping so the real OpenShell verifier looks up the installed Sandbox.
+  const compute = {
+    ...controller.selectedDriver("compute"),
+    id: "saved-account-compute",
+    async resolveSandboxNamespace(namespace: Readonly<Namespace>) {
+      return { ...namespace, name: kubernetesNamespaceName(namespace.id) };
+    },
+  };
+  controller.registerDriver(compute);
+  controller.selectDriver("compute", compute.id);
+}
+
 export async function installSavedAccountProxy(t: TestContext, controller: OpenClawController) {
   const tls = await harnessTlsFixture(t);
   const keys = generateKeyPairSync("ed25519");
@@ -125,17 +139,6 @@ export async function installSavedAccountProxy(t: TestContext, controller: OpenC
     { capabilities: { sandbox, credential_proxy: proxy } },
   );
   controller.installDriver(owner, ["sandbox", "credential_proxy"]);
-  // This existing PostgreSQL fixture provides Compute lifecycle without Kubernetes. Use the
-  // normal Namespace mapping so the real OpenShell verifier looks up the installed Sandbox.
-  const compute = {
-    ...controller.selectedDriver("compute"),
-    id: "saved-account-compute",
-    async resolveSandboxNamespace(namespace: Readonly<Namespace>) {
-      return { ...namespace, name: kubernetesNamespaceName(namespace.id) };
-    },
-  };
-  controller.registerDriver(compute);
-  controller.selectDriver("compute", compute.id);
   const listener = await installEgressAuthority(controller, owner);
   assert.ok(listener);
   t.after(listener.close);

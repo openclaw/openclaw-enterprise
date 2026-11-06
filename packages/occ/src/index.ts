@@ -4661,14 +4661,18 @@ export class OpenClawController {
   private pluginAccountBindings(
     driver: PluginDriver | undefined,
     plugins: PluginDesiredState | undefined,
+    eligibleSources?: readonly CredentialSource[],
   ) {
     const credentials = driver?.credentials;
     if (!plugins || !credentials?.connectionSlot) {
       return [];
     }
-    return credentials.choices([]).flatMap(({ pluginId, id }) => {
+    return credentials.choices(eligibleSources ?? []).flatMap(({ pluginId, id, sources }) => {
       const slot =
         plugins[pluginId]?.enabled && credentials.connectionSlot?.(plugins, pluginId, id);
+      if (eligibleSources && slot && !sources.some(({ id }) => id === slot.credentialSourceId)) {
+        return [];
+      }
       return slot && slot.credentialSourceId
         ? [{ pluginId, id, sourceId: slot.credentialSourceId, slot }]
         : [];
@@ -8300,9 +8304,10 @@ export class OpenClawController {
     sandboxDriverId?: string,
     repositoryGit?: RepositoryRevisionState,
     harnessAuth?: HarnessAuthSnapshot,
-    savedAccountRequests = false,
+    savedPluginDriver?: PluginDriver,
   ): Promise<ProxyPlan | undefined> {
     const sources: CredentialSource[] = [];
+    const nativePluginSources: CredentialSource[] = [];
     let harnessCredentialSource: ProxyPlan["harnessCredentialSource"];
     for (const binding of admittedSources) {
       const source = await state.credentialSources.findCredentialSource(
@@ -8312,7 +8317,7 @@ export class OpenClawController {
       if (source?.egress !== undefined) {
         sources.push(source);
       } else if (
-        repositoryGit &&
+        (repositoryGit || savedPluginDriver) &&
         source?.state === "ready" &&
         harnessAuth?.method === "credential_source" &&
         source.id === harnessAuth.sourceId &&
@@ -8321,6 +8326,12 @@ export class OpenClawController {
         // admitHarnessAuth and admitCredentialSources already authorized this ordinary
         // Harness source. Bind its identity to release, without giving Git any model authority.
         harnessCredentialSource = harnessAuth;
+      } else if (
+        savedPluginDriver &&
+        source?.ownerCapability === "credential_gateway" &&
+        credentialSourceMatchesSnapshot(source, binding)
+      ) {
+        nativePluginSources.push(source);
       }
     }
     // Each refusal below is an Installation property or the Agent's saved bindings, after the
@@ -8336,12 +8347,35 @@ export class OpenClawController {
       }
       return undefined;
     }
-    if (savedAccountRequests) {
+    if (savedPluginDriver) {
       // Saved-account middleware applies to plugin routes, alongside the ordinary Harness.
       // A revision with a protected Git or inference plan still needs that plan's exclusive sender.
       if (sources.length || repositoryGit) {
         throw new ResourceStateConflictError(
           "The selected protected execution cannot also install a saved OAuth plugin request policy.",
+        );
+      }
+      // Native attachments must be accounted for by the separately admitted Harness or a
+      // credential slot on the enabled, pinned release. An unused Gateway source would be
+      // attached by the worker without any Credential Proxy route or managed plugin policy.
+      const selectedSlots = this.pluginAccountBindings(
+        savedPluginDriver,
+        agent.plugins,
+        nativePluginSources,
+      ).filter(
+        ({ pluginId, slot }) =>
+          agent.plugins?.[pluginId]?.driverPolicy?.releaseSha256 === slot.releaseSha256,
+      );
+      if (
+        admittedSources.some(
+          ({ sourceId, credentialGatewayId }) =>
+            !credentialGatewayId ||
+            (sourceId !== harnessCredentialSource?.sourceId &&
+              !selectedSlots.some((binding) => binding.sourceId === sourceId)),
+        )
+      ) {
+        throw new ResourceStateConflictError(
+          "The saved OAuth sender can attach a Gateway credential only for the admitted Harness or a selected plugin account slot. Remove the unrelated credential binding before deploying.",
         );
       }
       return undefined;
@@ -13489,7 +13523,7 @@ export class OpenClawController {
         sandbox?.id,
         repositoryCredentials,
         harnessAuth,
-        savedAccounts !== undefined,
+        savedAccounts ? driver : undefined,
       );
       let executionAdmission: ExecutionAdmission;
       if (egressPlan === undefined) {

@@ -14,9 +14,11 @@ import {
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { createSavedAccountOrigin } from "../helpers/saved-account-origin.ts";
 import {
+  installSavedAccountPlacement,
   installSavedAccountProxy,
   savedAccountSandboxRegistration,
 } from "../helpers/saved-account-proxy.ts";
+import { observationGateway } from "../helpers/postgres-standing-worker-fixture.ts";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
@@ -1499,6 +1501,42 @@ test(
 
     // Install the selected terminal authority and admit two actual revisions for the same
     // saved grant. The fixture stands in for Compute activation and Gateway inventory.
+    // These sources predate Credential Proxy selection. Only the Agent's selected Harness
+    // model key belongs in the new deployment. The Gateway reports readiness for this admission test.
+    installSavedAccountPlacement(controller);
+    const gateway = observationGateway();
+    controller.registerDriver({
+      ...gateway,
+      listSourceTypes: async () => [
+        {
+          type: "openai",
+          config: [],
+          secrets: [{ name: "api_key", required: true }],
+          rotation: "none",
+          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+        },
+      ],
+      registerSource: async () => ({ state: "ready" }),
+    });
+    controller.selectDriver("credential_gateway", gateway.id);
+    const legacySources: string[] = [];
+    for (const name of ["Harness model", "Unrelated gateway source"]) {
+      const source = await owner("POST", base + "/credential-sources", {
+        name,
+        type: "openai",
+        config: {},
+        secrets: { api_key: harnessRef },
+      });
+      assert.equal(source.statusCode, 201, source.body);
+      legacySources.push(source.json().data.id);
+    }
+    const [modelSource, unrelatedSource] = legacySources;
+    assert.ok(modelSource && unrelatedSource);
+    const modelRole = await owner("POST", base + "/iam/roles", {
+      name: "Use legacy credential",
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    });
+    assert.equal(modelRole.statusCode, 201, modelRole.body);
     const runtime = await installSavedAccountProxy(t, controller);
     const ns = await state.read((view) => view.namespaces.findNamespace(namespaceId));
     assert.ok(ns);
@@ -1515,12 +1553,42 @@ test(
     };
     for (const name of ["Agent with renewed access", "Agent keeping access"]) {
       const id = await agent(name);
-      await grantAgentSecretOperate(pool, { namespaceId, id }, harnessRef.id);
+      const checkUnrelated = name === "Agent with renewed access";
+      const initialSources = checkUnrelated ? legacySources : [modelSource];
       const save = await owner("PATCH", path(id), {
         configurationId: config.json().data.id,
         plugins: selectedPlugin,
+        harnessAuth: { method: "credential_source", sourceId: modelSource },
+        credentialSources: initialSources.map((sourceId) => ({ sourceId })),
       });
       assert.equal(save.statusCode, 200, save.body);
+      const principal = await state.read((view) => view.agents.findAgent(namespaceId, id));
+      assert.ok(principal);
+      for (const sourceId of initialSources) {
+        if (sourceId === unrelatedSource) {
+          // Agent authorization takes precedence over explaining which credential is out of scope.
+          const denied = await owner("POST", path(id) + "/deploy");
+          assert.equal(denied.statusCode, 403, denied.body);
+        }
+        const permission = await owner("POST", base + "/iam/access-bindings", {
+          roleId: modelRole.json().data.id,
+          subjectKind: "identity",
+          subjectId: principal.servicePrincipalId,
+          resourceKind: "credential_source",
+          resourceId: sourceId,
+        });
+        assert.equal(permission.statusCode, 201, permission.body);
+      }
+      if (checkUnrelated) {
+        const mixed = await owner("POST", path(id) + "/deploy");
+        assert.equal(mixed.statusCode, 409, mixed.body);
+        assert.match(mixed.json().error.message, /unrelated credential binding/);
+        const kept = await owner("PATCH", path(id), {
+          configurationId: config.json().data.id,
+          credentialSources: [{ sourceId: modelSource }, { sourceId: report.id }],
+        });
+        assert.equal(kept.statusCode, 200, kept.body);
+      }
       const deployment = await owner("POST", path(id) + "/deploy");
       assert.equal(deployment.statusCode, 202, deployment.body);
       const revision = await state.read((view) =>

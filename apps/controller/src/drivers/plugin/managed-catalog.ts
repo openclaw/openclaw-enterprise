@@ -524,6 +524,7 @@ export function managedPluginAccountSlot(
     ): "credential" | "public" | "deny" {
       if (
         !selection?.enabled ||
+        selection.driverPolicy?.releaseSha256 !== install.releaseSha256 ||
         !current ||
         request.target.reportedScheme !== "https" ||
         !acceptsRecipient(target)

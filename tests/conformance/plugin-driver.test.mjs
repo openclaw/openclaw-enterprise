@@ -481,6 +481,25 @@ test("managed plugin slots match saved accounts by issuer and reviewed API or MC
     }),
     "deny",
   );
+
+  // An updated release cannot grant its operations to an older deployed selection.
+  const configured = slot.bind(sourceId);
+  const stale = credentials.connectionSlot(
+    {
+      [googleId]: {
+        ...configured,
+        driverPolicy: { ...configured.driverPolicy, releaseSha256: "b".repeat(64) },
+      },
+    },
+    googleId,
+    "account",
+  );
+  for (const request of [google, publicRead]) {
+    assert.equal(
+      stale.authorizeRequest(target, ["https://www.googleapis.com/auth/gmail.readonly"], request),
+      "deny",
+    );
+  }
 });
 
 test("OpenClaw plugin startup translation renders native install and enablement", () => {
