@@ -7050,6 +7050,37 @@ test("OpenShell verifies operator NetworkPolicy from actual KubernetesObjectApi 
       message: "Name NetworkPolicy ingress sources with the Kubernetes field from.",
     },
   ]);
+
+  // Match the API server's omission of empty rule lists without admitting an
+  // allow-all rule or a change to which Pods/directions the policy isolates.
+  const denyConfiguration = structuredClone(configuration);
+  const denyPolicy = {
+    ...policy,
+    spec: { podSelector: {}, policyTypes: ["Ingress", "Egress"], ingress: [], egress: [] },
+  };
+  denyConfiguration.gateway.networkPolicyResources = [denyPolicy];
+  const denyDriver = new OpenShellSandboxDriver(denyConfiguration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+    operatorOwnedKubernetesResources: true,
+  });
+  wire = { ...structuredClone(denyPolicy), metadata };
+  delete wire.spec.ingress;
+  delete wire.spec.egress;
+  await denyDriver.ensureNamespace(context);
+  for (const changed of [
+    { ingress: [{}] },
+    { egress: [{}] },
+    { policyTypes: ["Ingress"] },
+    { podSelector: { matchLabels: { app: "other" } } },
+  ]) {
+    wire = { ...denyPolicy, metadata, spec: { ...denyPolicy.spec, ...changed } };
+    await assert.rejects(
+      denyDriver.ensureNamespace(context),
+      /Operator workspace resource does not match/,
+    );
+  }
 });
 
 /**
