@@ -171,6 +171,7 @@ test(
     let proofTx: string | undefined;
     const issuerAuthority = "fixture-artifact-issuer";
     const issuer: PreparedTokenIssuer = {
+      tokenKind: "prepared_source",
       provider: ref,
       issuerInput: "lease_key",
       issuerAuthority,
@@ -684,7 +685,10 @@ test(
     assert.equal(await handle.ready(source, AbortSignal.abort()), false);
     assert.equal(f.secretReads, readsBeforeReadiness);
     assert.equal(gh.issuesOfTokens.length, 1, "readiness cannot issue inline");
-    const old = await tokens.resolve(source.key, { ...window(), minimumValidityMs: 0 });
+    const old = await tokens.resolve(
+      { kind: "github_app_installation", key: source.key },
+      { ...window(), minimumValidityMs: 0 },
+    );
     assert(old && Date.parse(old.usableUntil) > Date.now() + 40 * 60_000);
     const dispatched = async (revoke = false) => {
       const captured = captureMetadata(f);

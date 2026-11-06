@@ -6295,7 +6295,11 @@ export class OpenClawController {
             materialId: secret.backendRef.uid,
           };
         },
-        resolvePrepared: (reference, options) => this.tokenService().resolve(reference, options),
+        resolvePrepared: (key, options) =>
+          this.tokenService().resolve(
+            { kind: this.preparedIssuer(key.provider).tokenKind, key },
+            options,
+          ),
         authorizeSend: async (use, source, attempt, mintAuthorization, provider) => {
           if (this.transactionContext.getStore()) {
             return { kind: "unavailable", code: "authority" };
@@ -7332,7 +7336,11 @@ export class OpenClawController {
     try {
       if (source.egress?.adoption === "prepared" && issuer) {
         await this.tokenService().register(
-          { source: source.egress, secret: issuer },
+          {
+            kind: this.preparedIssuer(source.egress.key.provider).tokenKind,
+            source: source.egress,
+            secret: issuer,
+          },
           AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
         );
       }

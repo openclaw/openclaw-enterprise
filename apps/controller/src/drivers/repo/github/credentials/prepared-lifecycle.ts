@@ -82,6 +82,7 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
     context?: Readonly<Record<string, string | number | boolean | undefined>>,
     severity?: "info" | "error",
   ) => void = () => {};
+  readonly tokenKind = "github_app_installation";
   readonly provider = preparedGitHubProviderRef;
   readonly sourceFromRoute = preparedGitHubSourceFromRoute;
   readonly issuerInput = "private_key";

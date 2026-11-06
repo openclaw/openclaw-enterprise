@@ -66,6 +66,7 @@ export interface PreparedTokenCurrentProof {
 
 /** Installed issuer policy and its custody. No management or material method is given to a sender. */
 export interface PreparedTokenIssuer {
+  readonly tokenKind: PreparedTokenKind;
   readonly provider: EgressRef;
   readonly issuerInput: string;
   readonly issuerAuthority: string;
@@ -94,14 +95,25 @@ export interface TokenResolveOptions extends CredentialReadLifetime {
   readonly minimumValidityMs: number;
 }
 
+export type PreparedTokenKind = "github_app_installation" | "prepared_source";
+
+export interface PreparedTokenRegistration {
+  readonly kind: PreparedTokenKind;
+  readonly source: PreparedTokenSource;
+  readonly secret: Readonly<Secret>;
+}
+
+/** The installed provider generation and admitted grant remain bound to this handle across renewal. */
+export interface PreparedTokenRef {
+  readonly kind: PreparedTokenKind;
+  readonly key: EgressSourceKey;
+}
+
 /** Registration binds an immutable grant to its issuer secret. Its reference survives renewal. */
 export interface TokenService {
-  register(
-    registration: { readonly source: PreparedTokenSource; readonly secret: Readonly<Secret> },
-    signal: AbortSignal,
-  ): Promise<EgressSourceKey>;
+  register(registration: PreparedTokenRegistration, signal: AbortSignal): Promise<PreparedTokenRef>;
   resolve(
-    reference: EgressSourceKey,
+    reference: PreparedTokenRef,
     options: TokenResolveOptions,
   ): Promise<PreparedTokenSelection | undefined>;
   issuer(provider: EgressRef): Omit<PreparedTokenIssuer, "configure" | "resolve"> | undefined;

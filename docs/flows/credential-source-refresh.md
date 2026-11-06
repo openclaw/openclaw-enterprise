@@ -252,7 +252,7 @@ graph TD
   linkStyle default stroke:#89919a
 ```
 
-OCC registers the scoped grant and App key. PostgreSQL encrypts tokens with a persistent 32-byte key. Authorized metadata requests reuse valid tokens or join issuance until their deadline. Native Git uses its [private broker](../reference/repository-credentials.md#native-git-from-the-agent-to-github).
+OCC registers `github_app_installation` with the scoped grant and signing-key reference. PostgreSQL encrypts tokens with a persistent 32-byte key. Authorized metadata requests reuse valid tokens or join issuance until their deadline. Native Git uses its [private broker](../reference/repository-credentials.md#native-git-from-the-agent-to-github).
 
 For `acme/widgets`, the Token Service requests ID `12345` and `metadata: read`. It verifies the ID, name, permissions and expiry. The approved `github-installation` profile sends `{}` for installation scope. Committing a replacement retires the old version. OCC rechecks the grant and version [before sending](credential-source-egress.md#3-resolve-versioned-material-and-authorize-its-sole-send).
 

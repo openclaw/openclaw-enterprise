@@ -3,9 +3,8 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
   EgressRef,
-  EgressSourceKey,
-  PreparedTokenSource,
-  Secret,
+  PreparedTokenRef,
+  PreparedTokenRegistration,
   TokenResolveOptions,
   PreparedTokenIssuer,
   TokenService as TokenServiceContract,
@@ -50,6 +49,9 @@ export class TokenService implements TokenServiceContract {
   });
 
   registerIssuer(issuer: PreparedTokenIssuer, postgresProof?: PostgresProof): void {
+    if (issuer.tokenKind !== "github_app_installation" && issuer.tokenKind !== "prepared_source") {
+      throw new Error("A prepared token issuer must declare a supported token kind.");
+    }
     const { id } = issuer.provider;
     if (this.issuers.has(id)) {
       throw new Error("A prepared provider must have exactly one lifecycle owner.");
@@ -66,18 +68,18 @@ export class TokenService implements TokenServiceContract {
   }
 
   async register(
-    { source, secret }: { readonly source: PreparedTokenSource; readonly secret: Readonly<Secret> },
+    { kind, source, secret }: PreparedTokenRegistration,
     signal: AbortSignal,
-  ): Promise<EgressSourceKey> {
+  ): Promise<PreparedTokenRef> {
     const issuer = this.issuer(source.key.provider);
-    if (!issuer) {
-      throw new Error("The token issuer for this registration is unavailable.");
+    if (!issuer || issuer.tokenKind !== kind) {
+      throw new Error("The registered provider does not support this token kind.");
     }
     await issuer.configure(source, secret, signal);
-    return source.key;
+    return { kind, key: source.key };
   }
 
-  async resolve(reference: EgressSourceKey, options: TokenResolveOptions) {
+  async resolve(reference: PreparedTokenRef, options: TokenResolveOptions) {
     const { signal, deadlineAt, minimumValidityMs } = options;
     if (
       signal.aborted ||
@@ -87,7 +89,11 @@ export class TokenService implements TokenServiceContract {
     ) {
       return undefined;
     }
-    return this.issuer(reference.provider)?.resolve(reference, options);
+    const issuer = reference.key && this.issuer(reference.key.provider);
+    if (!issuer || issuer.tokenKind !== reference.kind) {
+      return undefined;
+    }
+    return issuer.resolve(reference.key, options);
   }
 
   /** One serialized discovery, retirement and preparation loop for an independently owned set. */

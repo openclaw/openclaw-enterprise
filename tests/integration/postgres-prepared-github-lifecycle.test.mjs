@@ -45,7 +45,42 @@ test(
         }
       },
     });
-    const { f, gh, tokens, source, createOwner, registerSource } = fixture;
+    const { f, gh, tokens, source, createOwner, registerSource, tokenRegistration } = fixture;
+    const { reference } = tokenRegistration;
+    assert.equal(tokenRegistration.kind, "github_app_installation");
+    assert.deepEqual(reference, { kind: "github_app_installation", key: source.key });
+    const readsBeforeRefusal = f.secretReads;
+    const registration = { source, secret: fixture.issuer };
+    for (const invalid of [registration, { ...registration, kind: "prepared_source" }]) {
+      await assert.rejects(tokens.register(invalid, t.signal));
+    }
+    assert.equal(
+      f.secretReads,
+      readsBeforeRefusal,
+      "an untagged or mismatched registration cannot open the signing key",
+    );
+
+    const refuseOtherKinds = async () => {
+      const dispatch = t.mock.method(fixture.lifecycle, "resolve");
+      try {
+        const options = {
+          signal: t.signal,
+          deadlineAt: new Date(Date.now() + 20_000).toISOString(),
+          minimumValidityMs: 1_000,
+        };
+        for (const invalid of [source.key, { kind: "prepared_source", key: reference.key }]) {
+          assert.equal(await tokens.resolve(invalid, options), undefined);
+        }
+        assert.equal(
+          dispatch.mock.callCount(),
+          0,
+          "mismatched or untagged handles cannot reach the GitHub issuer",
+        );
+      } finally {
+        dispatch.mock.restore();
+      }
+    };
+    await refuseOtherKinds();
     const unrelated = await registerSource("unrelated-due-family");
     assert.equal(gh.issuesOfTokens.length, 0, "registration alone sends nothing to GitHub");
 
@@ -68,7 +103,7 @@ test(
       },
       { times: 1 },
     );
-    const lateClaim = otherTokens.resolve(source.key, {
+    const lateClaim = otherTokens.resolve(reference, {
       deadlineAt: new Date(Date.now() + 30_000).toISOString(),
       minimumValidityMs: 20_000,
       signal: t.signal,
@@ -104,6 +139,7 @@ test(
       [{ repositoryIds: [String(fixtureRepositoryId)], permissions: { metadata: "read" } }],
     );
     await dispatchMetadata(f, gh, request, ready);
+    await refuseOtherKinds();
     const {
       rows: [receipt],
     } = await f.pool.query(
@@ -152,21 +188,21 @@ test(
       "UPDATE occ.prepared_github_families SET next_check_at=clock_timestamp() WHERE source_id=$1",
       [source.key.source.id],
     );
-    const sufficient = await tokens.resolve(source.key, {
+    const sufficient = await tokens.resolve(reference, {
       ...lifetime,
       minimumValidityMs: 1_000,
       signal: t.signal,
     });
     assert.equal(sufficient?.materialVersion, selected.materialVersion);
     await waitUntil("the due warm grant starts early renewal", () => hold.started);
-    const first = tokens.resolve(source.key, { ...lifetime, signal: leaving.signal });
+    const first = tokens.resolve(reference, { ...lifetime, signal: leaving.signal });
     const leavingResult = first.catch((error) => {
       if (error.name !== "AbortError") {
         throw error;
       }
       return undefined;
     });
-    const other = () => otherTokens.resolve(source.key, { ...lifetime, signal: t.signal });
+    const other = () => otherTokens.resolve(reference, { ...lifetime, signal: t.signal });
     let proxyResult;
     let otherResult;
     const replacementRequest = captureMetadata(f);
@@ -1390,6 +1426,7 @@ async function preparedLifecycleFixture(t, githubOptions = {}, now = undefined) 
   const secretValue = gh.privateKey.export({ format: "pem", type: "pkcs8" });
   let lifecycle;
   let tokens;
+  let tokenRegistration;
   let secretDriver;
   let issuer;
   let source;
@@ -1403,6 +1440,17 @@ async function preparedLifecycleFixture(t, githubOptions = {}, now = undefined) 
     createPreparedGitHub(opts) {
       secretDriver = opts.secretDriver;
       tokens = opts.tokenService;
+      const register = tokens.register.bind(tokens);
+      t.mock.method(
+        tokens,
+        "register",
+        async (input, signal) => {
+          const reference = await register(input, signal);
+          tokenRegistration = { kind: input.kind, reference };
+          return reference;
+        },
+        { times: 1 },
+      );
       lifecycle = createOwner(gh.origin, tokens);
       return lifecycle;
     },
@@ -1451,6 +1499,7 @@ async function preparedLifecycleFixture(t, githubOptions = {}, now = undefined) 
     gh,
     f,
     tokens,
+    tokenRegistration,
     lifecycle,
     issuer,
     source,

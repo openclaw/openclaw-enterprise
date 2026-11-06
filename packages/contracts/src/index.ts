@@ -65,6 +65,9 @@ export type {
   PreparedTokenEvidence,
   PreparedTokenCurrentProof,
   PreparedTokenIssuer,
+  PreparedTokenKind,
+  PreparedTokenRegistration,
+  PreparedTokenRef,
   TokenResolveOptions,
   TokenService,
 } from "./prepared-token.ts";
