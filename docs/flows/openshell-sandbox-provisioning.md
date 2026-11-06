@@ -38,10 +38,10 @@ graph TD
   Q --> G{"<b>Harness inputs valid?</b><br/>Provider files"}
   G -- "no" --> R["<b>Reject provisioning</b><br/>Candidate stays inactive"]
   G -- "yes" --> W["<b>Reconcile runtime provider</b><br/>Files and literal setup"]
-  W --> W0{"<b>Native OpenClaw?</b>"}
+  W --> W0{"<b>Private PVC preparation?</b>"}
   W0 -- "yes" --> W1["<b>Prepare writable subpaths</b><br/>Private ownership; retain entries"]
   W1 --> W2["<b>Stop preparer</b><br/>Deployment and Pods gone"]
-  W2 --> H["<b>Create Sandbox</b><br/>Providers and exposure"]
+  W2 --> H["<b>Create Sandbox</b><br/>Check bound identity when present"]
   W0 -- "no" --> H
   H --> I["<b>Initialize workspace</b><br/>Private ExecSandbox stdin"]
   I --> V{"<b>Harness</b>"}
@@ -255,12 +255,12 @@ and workspace permissions stay unchanged. Permission failures stop startup.
 Workspace, node identity, sessions and images stay separate. The supervisor probes
 `/tmp`; native `TMPDIR` is a private `tmp` child under the runtime home.
 
-`prepareNativeWorkspace` gives both Harnesses' retained PVC subpaths process-owned
-`0700` parents with `userNamespaces: false`. Its restricted Deployment uses the
-Gateway's default UID/GID and at most one operator ServiceAccount, without credentials,
-tokens or capabilities. Ownership checks and UID-fenced deletion drain preparation
-before Sandbox creation. Agent admission enforces these requirements;
-Codex with user namespaces skips preparation.
+With `userNamespaces: false`, admission binds the provider's UID, GID and
+placement. `validatePrivateWorkspaceIdentity` rechecks the binding before
+predecessor Stop. Unproven retained ownership refuses deployment.
+`prepareNativeWorkspace` rechecks the binding and drains its restricted preparer
+before identity-conditional Sandbox creation. v0.1.6 lacks this contract. See
+[private storage](../reference/drivers/openshell-sandbox.md#workload-identity).
 
 After Sandbox readiness, `initializeWorkspace` validates the setup Secret's
 Namespace, Agent and setup identity, then sends initializer/JSON stdin through

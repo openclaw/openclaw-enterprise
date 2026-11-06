@@ -18,6 +18,7 @@ import { deleteOpenShellPreparedGitProviders } from "../egress-proxy/openshell-p
 import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import {
   requireConfiguration,
+  validPrivateWorkspaceIdentity,
   SandboxNetworkPolicyConfiguration,
   ConfigurationValidationError,
 } from "@openclaw-enterprise/contracts";
@@ -82,6 +83,7 @@ import {
   ConfigurationHarnessError,
   configurationSettingMessage,
   DependencyUnavailableError,
+  ResourceStateConflictError,
   RuntimeLogsForbiddenByClusterError,
   RuntimeLogsSandboxNotFoundError,
   SandboxNamespaceRefusedError,
@@ -114,6 +116,8 @@ import type {
   SandboxLogContext,
   SandboxLogRequest,
   SandboxNamespaceContext,
+  SandboxPrivateWorkspaceIdentityContext,
+  PrivateWorkspaceIdentity,
   SandboxResourceRef,
   SandboxHarnessLostCode,
 } from "@openclaw-enterprise/contracts";
@@ -1616,6 +1620,7 @@ async function prepareNativeWorkspace(
   context: SandboxHarnessContext,
   options: OpenShellSandboxDriverOptions,
   sandbox: SandboxResourceRef,
+  revalidateIdentity: () => Promise<void>,
 ): Promise<void> {
   if (options.kubernetes.userNamespaces !== false) {
     throw new OpenShellSandboxConfigurationFailure(
@@ -1623,28 +1628,13 @@ async function prepareNativeWorkspace(
     );
   }
   const api = kubernetes(context);
-  const namespace = await api.read({
-    apiVersion: "v1",
-    kind: "Namespace",
-    metadata: { name: sandbox.namespaceName },
-  });
-  // Match the pinned OpenShell driver's namespace-derived runtime identity.
-  const annotations = namespace.metadata?.annotations ?? {};
-  const rangeStart = (value: string | undefined) => {
-    if (value === undefined) {
-      return undefined;
-    }
-    const first = value.split(",")[0]!.split("/")[0]!;
-    if (!/^\d+$/u.test(first) || !Number.isSafeInteger(Number(first))) {
-      throw new OpenShellSandboxConfigurationFailure("Invalid namespace runtime identity range.");
-    }
-    return Number(first);
-  };
-  const uid = rangeStart(annotations["openshift.io/sa.scc.uid-range"]) ?? 10001;
-  const gid = uid;
-  if (uid < 1 || gid < 1) {
-    throw new OpenShellSandboxConfigurationFailure("Workspace preparation requires non-root IDs.");
+  const identity = context.revision.privateWorkspaceIdentity;
+  if (identity === undefined) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "Private workspace creation requires an admitted workload identity; deploy a new revision.",
+    );
   }
+  const { uid, gid } = identity;
   const accounts = sandboxServiceAccounts(options);
   if (accounts.length > 1) {
     throw new OpenShellSandboxConfigurationFailure(
@@ -1764,6 +1754,8 @@ async function prepareNativeWorkspace(
       throw error;
     }
   }
+  await revalidateIdentity();
+  context.signal.throwIfAborted();
   if (existing === undefined) {
     existing = await api.create<V1Deployment>(resource);
   } else {
@@ -2912,6 +2904,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   private readonly operatorOwnedKubernetesResources: boolean;
   private readonly openShellGit: OpenShellGitRuntime | undefined;
   readonly repositoryAccess?: NonNullable<SandboxDriver["repositoryAccess"]>;
+  readonly resolvePrivateWorkspaceIdentity?: NonNullable<
+    SandboxDriver["resolvePrivateWorkspaceIdentity"]
+  >;
+
+  readonly validatePrivateWorkspaceIdentity?: NonNullable<
+    SandboxDriver["validatePrivateWorkspaceIdentity"]
+  >;
 
   static validateConfiguration(
     configuration: Readonly<OpenShellSandboxDriverOptions>,
@@ -2937,6 +2936,19 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     this.options = options;
+    if (options.kubernetes.userNamespaces === false) {
+      this.validatePrivateWorkspaceIdentity = (context) => this.validatePrivateWorkspace(context);
+      this.resolvePrivateWorkspaceIdentity = async (context) => {
+        try {
+          return await this.resolvePrivateWorkspace(context);
+        } catch (error) {
+          if (error instanceof SandboxRevisionUnsupportedError) {
+            throw new ResourceStateConflictError(error.message);
+          }
+          throw error;
+        }
+      };
+    }
     let reason: string | undefined;
     if (options.kubernetes.userNamespaces !== false) {
       reason =
@@ -3199,6 +3211,139 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     verifyActiveWorkspace(workspace, context.namespace);
   }
 
+  private async validatePrivateWorkspace(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<void> {
+    if (
+      this.options.kubernetes.userNamespaces !== false ||
+      context.revision.harness.mode !== "dedicated"
+    ) {
+      return;
+    }
+    const admitted = context.revision.privateWorkspaceIdentity;
+    if (admitted === undefined) {
+      throw new SandboxRevisionUnsupportedError(
+        "SANDBOX_HARNESS_UNSUPPORTED",
+        "Private workspace replacement requires an admitted workload identity; deploy a new revision before replacing the serving revision.",
+      );
+    }
+    const current = await this.workspaceWorkloadIdentity(
+      context.namespace,
+      this.gatewayClientForNamespace(namespaceName(context.namespace)),
+      context.signal,
+    );
+    if (!isDeepStrictEqual(current, admitted)) {
+      throw new SandboxRevisionUnsupportedError(
+        "SANDBOX_HARNESS_UNSUPPORTED",
+        "OpenShell workload identity changed after admission; the serving revision was preserved. Deploy a new revision after resolving storage ownership.",
+      );
+    }
+    context.signal.throwIfAborted();
+  }
+
+  private async resolvePrivateWorkspace(
+    context: SandboxPrivateWorkspaceIdentityContext,
+  ): Promise<PrivateWorkspaceIdentity | undefined> {
+    if (
+      context.harness.mode !== "dedicated" ||
+      !["codex", "openclaw"].includes(context.harness.id)
+    ) {
+      return undefined;
+    }
+    this.requireOperatorWorkspaceMode("resolve private workspace identity");
+    const client = this.gatewayClientForNamespace(namespaceName(context.namespace));
+    const identity = await this.workspaceWorkloadIdentity(
+      context.namespace,
+      client,
+      context.signal,
+    );
+    // A failed newer admission must not hide an older revision that owns the retained tree.
+    // GID changes preserve access through the directory owner's 0700 bits; UID changes do not.
+    for (const predecessor of context.predecessors) {
+      // Embedded revisions use their runtime claim, not the dedicated Harness claim.
+      if (predecessor.harness.mode === "embedded") {
+        continue;
+      }
+      if (
+        predecessor.namespaceId !== context.namespace.id ||
+        predecessor.agentId !== context.agentId ||
+        predecessor.sandboxDriverId !== this.id ||
+        predecessor.harness.mode !== "dedicated"
+      ) {
+        throw new ResourceStateConflictError(
+          "Retained private workspace ownership cannot be established for this Driver. Keep the serving revision and use a separately provisioned Agent for a storage migration.",
+        );
+      }
+      let owner = predecessor.privateWorkspaceIdentity;
+      if (owner === undefined) {
+        const ref = this.sandboxRef({ namespace: context.namespace, revision: predecessor });
+        const sandbox = await client.getSandbox(
+          { workspace: workspaceName(context.namespace), name: ref.resourceName },
+          context.signal,
+        );
+        // A legacy Sandbox can supply its provider-checked creation receipt, but policy
+        // process names or a current namespace default cannot attest the retained owner.
+        if (
+          sandbox?.name === ref.resourceName &&
+          sandbox.workspace === workspaceName(context.namespace) &&
+          sandbox.annotations["openclaw.dev/namespace-id"] === predecessor.namespaceId &&
+          sandbox.annotations["openclaw.dev/agent-id"] === predecessor.agentId &&
+          sandbox.annotations["openclaw.dev/revision-id"] === predecessor.id
+        ) {
+          const receipt = asRecord(sandbox.spec?.expected_workspace_workload_identity);
+          if (validPrivateWorkspaceIdentity(receipt)) {
+            owner = { uid: receipt.uid, gid: receipt.gid, placement: receipt.placement };
+          }
+        }
+      }
+      if (
+        owner === undefined ||
+        owner.uid !== identity.uid ||
+        owner.placement !== identity.placement
+      ) {
+        throw new ResourceStateConflictError(
+          "Retained private workspace ownership is unproven or differs from the proposed UID or placement. Restore the provider setting for a verified owner, or preserve this Agent and migrate its data to a separately provisioned Agent.",
+        );
+      }
+    }
+    context.signal.throwIfAborted();
+    return identity;
+  }
+
+  private async workspaceWorkloadIdentity(
+    namespace: Readonly<Namespace>,
+    client: OpenShellGatewayClient,
+    signal: AbortSignal,
+  ): Promise<PrivateWorkspaceIdentity> {
+    const name = workspaceName(namespace);
+    const workspace = await client.getWorkspace(name, signal);
+    if (workspace === undefined) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "Private workspace identity requires the exact active OpenShell Workspace.",
+      );
+    }
+    verifyActiveWorkspace(workspace, namespace);
+    if (!isNonEmptyString(workspace.id)) {
+      throw new OpenShellSandboxConfigurationFailure("OpenShell Workspace has no stable identity.");
+    }
+    if (client.resolveWorkspaceWorkloadIdentity === undefined) {
+      throw new SandboxRevisionUnsupportedError(
+        "SANDBOX_HARNESS_UNSUPPORTED",
+        "OpenShell does not support workspace workload identity resolution; upgrade the Gateway before deploying private storage.",
+      );
+    }
+    const identity = await client.resolveWorkspaceWorkloadIdentity(name, signal);
+    const current = await client.getWorkspace(name, signal);
+    if (current === undefined || current.id !== workspace.id) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "OpenShell Workspace changed during identity resolution.",
+      );
+    }
+    verifyActiveWorkspace(current, namespace);
+    signal.throwIfAborted();
+    return identity;
+  }
+
   async provisionHarness(context: SandboxHarnessContext): Promise<SandboxResourceRef> {
     assertNoRepositoryEnrollment(context, this.openShellGit);
     this.requireOperatorWorkspaceMode("provision a Harness");
@@ -3365,31 +3510,40 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       ...selector,
       labels: context.requirements.labels,
       annotations,
-      spec: sandboxSpec(
-        this.options,
-        context.revision,
-        context.requirements,
-        runtimeProvider,
-        new Set([
-          WORKSPACE_NODE_SETUP_ENVIRONMENT,
-          WORKSPACE_NODE_CA_ENVIRONMENT,
-          managedCredentialEnvironment,
-          ...(!codex
-            ? managedInstalls.flatMap(({ credentials }) =>
-                Object.values(credentials).map((slot) => slot.delivery.env),
-              )
-            : []),
-          // Only the attached provider supplies its identity-bound credential alias.
-          // A static placeholder would survive withdrawal and shadow its absence.
-          ...(context.requirements.loginMode === "chatgptAuthTokens" ? ["CODEX_ACCESS_TOKEN"] : []),
-          ...Object.keys(runtimeCredentialMaterial.credentials),
-          ...(git ? ["GITHUB_TOKEN"] : []),
-        ]),
-        runtimeCredentialMaterial.binding,
-        egressPolicy,
-        plugin,
-        mcpPolicies,
-      ),
+      spec: {
+        ...(context.revision.privateWorkspaceIdentity === undefined
+          ? {}
+          : {
+              expected_workspace_workload_identity: context.revision.privateWorkspaceIdentity,
+            }),
+        ...sandboxSpec(
+          this.options,
+          context.revision,
+          context.requirements,
+          runtimeProvider,
+          new Set([
+            WORKSPACE_NODE_SETUP_ENVIRONMENT,
+            WORKSPACE_NODE_CA_ENVIRONMENT,
+            managedCredentialEnvironment,
+            ...(!codex
+              ? managedInstalls.flatMap(({ credentials }) =>
+                  Object.values(credentials).map((slot) => slot.delivery.env),
+                )
+              : []),
+            // Only the attached provider supplies its identity-bound credential alias.
+            // A static placeholder would survive withdrawal and shadow its absence.
+            ...(context.requirements.loginMode === "chatgptAuthTokens"
+              ? ["CODEX_ACCESS_TOKEN"]
+              : []),
+            ...Object.keys(runtimeCredentialMaterial.credentials),
+            ...(git ? ["GITHUB_TOKEN"] : []),
+          ]),
+          runtimeCredentialMaterial.binding,
+          egressPolicy,
+          plugin,
+          mcpPolicies,
+        ),
+      },
       serviceExposures,
     };
     // Check the final composition against the independently validated setup binding,
@@ -3477,8 +3631,28 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "The standing Git execution is no longer present.",
       );
     }
+    if (
+      existing === undefined &&
+      context.revision.privateWorkspaceIdentity !== undefined &&
+      this.options.kubernetes.userNamespaces !== false
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "This revision requires private workspace preparation. Restore its OpenShell storage configuration before recreating the Sandbox.",
+      );
+    }
     if ((!codex || this.options.kubernetes.userNamespaces === false) && existing === undefined) {
-      await prepareNativeWorkspace(context, this.options, sandbox);
+      await prepareNativeWorkspace(context, this.options, sandbox, async () => {
+        const current = await this.workspaceWorkloadIdentity(
+          context.namespace,
+          client,
+          context.signal,
+        );
+        if (!isDeepStrictEqual(current, context.revision.privateWorkspaceIdentity)) {
+          throw new OpenShellSandboxConfigurationFailure(
+            "OpenShell workload identity changed after admission; private storage was not prepared. Deploy a new revision after resolving storage ownership.",
+          );
+        }
+      });
     }
     // A refused request_id ran nothing, but its earlier call may still create the Sandbox,
     // so the next ID is tried only after GetSandbox finds none. The Sandbox name is unique

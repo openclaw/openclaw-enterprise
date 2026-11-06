@@ -199,7 +199,10 @@ const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
 );
 
+// Distinct chart-configured IDs expose both namespace UID guessing and GID=UID shortcuts.
+const privateStorageIdentity = Object.freeze({ uid: 23101, gid: 23202 });
 const fixture = createOpenShellKubernetesFixture({
+  ...(privateStorageOnly ? { explicitWorkloadIdentity: privateStorageIdentity } : {}),
   kubeconfigPath,
   kubernetesContext,
   gatewayImage,
@@ -726,7 +729,9 @@ async function waitForCredentialJobDeletion(operatorKubernetes, context, name) {
 }
 
 function credentialBridgeResource(context, claimName, subPath) {
-  const { uid: runtimeUser, gid: runtimeGroup } = OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY;
+  const { uid: runtimeUser, gid: runtimeGroup } = privateStorageOnly
+    ? privateStorageIdentity
+    : OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY;
   const namespaceName = context.namespace.name;
   const name = credentialJobName(context.revision.id);
   const workloadIdentity = context.requirements.workloadIdentity;
@@ -1676,6 +1681,24 @@ function createIntegrationSandboxDriverFactory(
         ).readSandboxLogs(context, query);
       },
       harnessHome: configurationDriver.harnessHome,
+      ...(configurationDriver.resolvePrivateWorkspaceIdentity === undefined
+        ? {}
+        : {
+            resolvePrivateWorkspaceIdentity(context) {
+              return delegate(
+                undefined,
+                context.namespace.name,
+                existingEndpointForNamespace(context),
+              ).resolvePrivateWorkspaceIdentity(context);
+            },
+            validatePrivateWorkspaceIdentity(context) {
+              return delegate(
+                undefined,
+                context.namespace.name,
+                existingEndpointForNamespace(context),
+              ).validatePrivateWorkspaceIdentity(context);
+            },
+          }),
       configureAgent(configuration, harness) {
         return configurationDriver.configureAgent(configuration, harness);
       },
@@ -8307,7 +8330,7 @@ async function assertPrivateStorageReplacement(context, topology) {
      const file=path.join(state,"private-storage-proof");
      if(process.argv[1]==="create")fs.writeFileSync(file,process.argv[2],{mode:0o600,flag:"wx"});
      const stat=fs.statSync(parent);
-     console.log(JSON.stringify({uid:process.getuid(),gid:process.getgid(),owner:stat.uid,
+     console.log(JSON.stringify({uid:process.getuid(),gid:process.getgid(),owner:stat.uid,group:stat.gid,
        mode:stat.mode&0o7777,retained:fs.readFileSync(file,"utf8")}));`,
         create ? "create" : "read",
         nonce,
@@ -8315,7 +8338,15 @@ async function assertPrivateStorageReplacement(context, topology) {
     );
   // The API-admitted Agent reaches the real Compute -> Sandbox preparation path.
   // A private state child alone is insufficient if its mounted parent is replaceable.
+  const namespace = await resource("namespace", placement);
+  assert.equal(namespace.metadata.annotations?.["openshift.io/sa.scc.uid-range"], undefined);
+  assert.equal(
+    namespace.metadata.annotations?.["openshift.io/sa.scc.supplemental-groups"],
+    undefined,
+  );
   const before = await inspect(topology.harnessPod, true);
+  assert.equal(before.uid, privateStorageIdentity.uid);
+  assert.equal(before.gid, privateStorageIdentity.gid);
   assert.equal(before.owner, before.uid);
   assert.equal(before.mode, 0o700);
   assert.equal(before.retained, nonce);
@@ -8386,28 +8417,8 @@ async function assertPrivateStorageReplacement(context, topology) {
   const claimName = volume.persistentVolumeClaim.claimName;
   const claim = await resource("persistentvolumeclaim", claimName, placement);
   const agentPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
-  // OpenShell suspends a Sandbox when its Pod is deleted. Replace it through
-  // normal Agent Stop/deploy so the worker settles the old owner before reuse.
-  const stopped = await topology.request("POST", `${agentPath}/stop`);
-  assert.equal(stopped.status, 202, JSON.stringify(stopped.error));
-  await waitFor(
-    "the old Agent revision to settle before replacement",
-    async () => {
-      const current = await topology.request("GET", agentPath);
-      assert.equal(current.status, 200, JSON.stringify(current.error));
-      const sandboxes = await resources("sandboxes.agents.x-k8s.io", placement);
-      const pods = await resources("pods", placement);
-      return current.data.desiredRuntimeState === "stopped" &&
-        current.data.activeRevisionId === undefined &&
-        !sandboxes.some(
-          (sandbox) => sandbox.metadata.labels?.["openclaw.dev/revision"] === revision.id,
-        ) &&
-        !pods.some((pod) => pod.metadata.labels?.["openclaw.dev/revision"] === revision.id)
-        ? true
-        : undefined;
-    },
-    180_000,
-  );
+  // Deploy while the old revision still serves. Production admission and the worker
+  // must agree on the retained owner before draining the single-writer volume.
   const deployed = await topology.request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
   assert.notEqual(deployed.data.id, revision.id);

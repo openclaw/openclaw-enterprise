@@ -115,6 +115,51 @@ revisionTest(
   { timeout: 60_000 },
 );
 
+for (const retried of [false, true]) {
+  revisionTest(
+    `pending replacement validation preserves the serving predecessor on ${retried ? "retried" : "first"} Stop and exempts active maintenance`,
+    async (fixture) => {
+      const owner = await fixture.agent("replacement-binding", { executionMode: "dedicated" });
+      const stopped = [];
+      const validations = [];
+      let serving;
+      const compute = {
+        ...fixture.compute,
+        requiresStoppedPredecessors: () => true,
+        async validateRevisionReplacement(revision, signal) {
+          signal.throwIfAborted();
+          validations.push(revision.id);
+          if (retried && validations.length === 1) {
+            return;
+          }
+          throw new SandboxRevisionUnsupportedError(
+            "SANDBOX_HARNESS_UNSUPPORTED",
+            "The pending replacement has no valid private workspace binding.",
+          );
+        },
+        async stopRevision(revision) {
+          stopped.push(revision.id);
+          if (revision.id === serving?.id) {
+            throw new Error("The predecessor Stop did not start; retry after provider recovery.");
+          }
+        },
+      };
+      await fixture.start(compute);
+      serving = await fixture.revision(owner, 1);
+      await fixture.work(serving, "succeeded");
+      // Active maintenance must still adopt old revisions without a binding.
+      const maintenance = await enqueueMaintenance(fixture, owner, serving);
+      await fixture.work(maintenance, "succeeded");
+      assert.deepEqual(validations, []);
+      const replacement = await fixture.revision(owner, 2);
+      await fixture.work(replacement, "failed_permanent");
+      assert.deepEqual(validations, Array(retried ? 2 : 1).fill(replacement.id));
+      assert.equal(stopped.filter((id) => id === serving.id).length, retried ? 1 : 0);
+      assert.equal((await fixture.currentAgent(owner)).activeRevisionId, serving.id);
+    },
+  );
+}
+
 async function enqueueMaintenance(fixture, owner, revision) {
   const maintenance = {
     id: revision.id,

@@ -64,6 +64,7 @@
     "tests/integration/production-controller-security.test.mjs",
     "tests/conformance/kubernetes-runtime-credentials.test.mjs",
     "tests/conformance/openshell-gateway-wire.test.mjs",
+    "tests/conformance/openshell-private-workspace-identity-wire.test.mjs",
     "tests/conformance/openshell-provider-profile-wire.test.ts",
     "tests/conformance/openshell-oauth-wire.test.mjs",
     "tests/conformance/openshell-codex-device.test.mjs",
@@ -259,6 +260,9 @@
     },
     {
       "path": "tests/conformance/openshell-gateway-wire.test.mjs"
+    },
+    {
+      "path": "tests/conformance/openshell-private-workspace-identity-wire.test.mjs"
     },
     {
       "path": "tests/conformance/openshell-provider-profile-wire.test.ts",

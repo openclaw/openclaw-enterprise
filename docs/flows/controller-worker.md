@@ -184,14 +184,13 @@ dispatch optionally binds the exact Agent, then calls `prepareRevision` with its
 immutable snapshot. A wrong owner or invalid observation fails permanently;
 a pending observation defers convergence.
 
-When Compute's `requiresStoppedPredecessors` capability is set,
-`apps/controller/src/worker.ts:ControllerWorker.prepareRevision` performs
-[exclusive replacement](../reference/drivers/compute.md#production-revision-stages):
-it loads earlier snapshots, including failed candidates, closes their credential
-sessions, and stops them first; a release failure prevents preparation. Their
-drains yield like a stopped Agent's (`PREDECESSOR_STOP_YIELDED`); failing,
-superseded or stopped work first finishes that stop. The dispatch guard keeps
-maintenance from recreating a predecessor.
+For [exclusive replacement](../reference/drivers/compute.md#production-revision-stages),
+`ControllerWorker.prepareRevision` calls `Compute.validateRevisionReplacement` before disrupting each
+predecessor of a pending candidate. It closes credential sessions and stops
+earlier revisions, including failed candidates. Refusal prevents preparation.
+Drains yield as `PREDECESSOR_STOP_YIELDED`; failing, superseded or stopped work
+finishes the drain. The dispatch guard prevents maintenance from recreating
+predecessors.
 
 The worker validates Compute's startup plugin warning codes and selection keys
 against the immutable version; the

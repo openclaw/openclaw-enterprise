@@ -1093,6 +1093,29 @@ export interface RevisionHarnessDescriptor extends HarnessDescriptor {
   readonly mode: HarnessExecutionMode;
 }
 
+/** Provider-observed owner and placement for an Agent's private retained workspace. */
+export interface PrivateWorkspaceIdentity {
+  readonly uid: number;
+  readonly gid: number;
+  readonly placement: string;
+}
+
+export function validPrivateWorkspaceIdentity(value: unknown): value is PrivateWorkspaceIdentity {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  const identity = value as Record<string, unknown>;
+  return (
+    Object.keys(identity).length === 3 &&
+    ["uid", "gid", "placement"].every((key) => Object.hasOwn(identity, key)) &&
+    [identity.uid, identity.gid].every(
+      (id) => typeof id === "number" && Number.isSafeInteger(id) && id > 0 && id < 4294967295,
+    ) &&
+    typeof identity.placement === "string" &&
+    identity.placement.trim().length > 0
+  );
+}
+
 export interface AgentRevision extends Scope {
   readonly executionAdmission: ExecutionAdmission;
   readonly egressPlan?: ProxyPlan;
@@ -1114,6 +1137,7 @@ export interface AgentRevision extends Scope {
     readonly admission?: string;
   };
   readonly sandboxDriverId?: string;
+  readonly privateWorkspaceIdentity?: PrivateWorkspaceIdentity;
   readonly sandboxPolicy?: SandboxPolicySnapshot;
   readonly secretDriverId?: string;
   readonly secretBindings?: SecretBindings;
@@ -1166,6 +1190,9 @@ export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevi
     ...(revision.egressPlan === undefined
       ? {}
       : { egressPlan: immutableCopy(revision.egressPlan) }),
+    ...(revision.privateWorkspaceIdentity === undefined
+      ? {}
+      : { privateWorkspaceIdentity: immutableCopy(revision.privateWorkspaceIdentity) }),
     configuration: immutableCopy(revision.configuration),
     ...(revision.secretBindings === undefined
       ? {}
@@ -1430,6 +1457,7 @@ export type {
   SandboxResourceRef,
   SandboxHarnessEndpoint,
   SandboxNamespaceContext,
+  SandboxPrivateWorkspaceIdentityContext,
   SandboxHarnessContext,
   SandboxHarnessWithdrawalContext,
   SandboxHarnessStatusContext,

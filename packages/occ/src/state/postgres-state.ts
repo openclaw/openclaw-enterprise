@@ -1,6 +1,9 @@
 import { CredentialDeliveryReductions } from "./credential-delivery-reductions.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
-import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
+import {
+  assertExecutionAdmission,
+  validPrivateWorkspaceIdentity,
+} from "@openclaw-enterprise/contracts";
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
 import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
@@ -698,6 +701,7 @@ function revisionFromRow(
     harness: AgentRevision["harness"];
     compute: AgentRevision["compute"];
     sandbox_driver_id?: AgentRevision["sandboxDriverId"];
+    private_workspace_identity?: AgentRevision["privateWorkspaceIdentity"];
     sandbox_policy?: AgentRevision["sandboxPolicy"];
     harness_auth: AgentRevision["harnessAuth"] & { readonly protectedExecutionVersion?: number };
     credential_sources?: AgentRevision["credentialSources"];
@@ -718,6 +722,16 @@ function revisionFromRow(
     throw new SavedConfigurationReadError(
       "configuration",
       "Persisted AgentRevision execution admission is missing, unsupported or inconsistent.",
+    );
+  }
+  if (
+    admitted.private_workspace_identity !== undefined &&
+    (!admitted.sandbox_driver_id ||
+      !validPrivateWorkspaceIdentity(admitted.private_workspace_identity))
+  ) {
+    throw new SavedConfigurationReadError(
+      "configuration",
+      "Persisted AgentRevision private workspace identity is invalid.",
     );
   }
   // Older readers require an exact Harness-auth shape, rejecting the protected
@@ -777,6 +791,9 @@ function revisionFromRow(
     gatewayManagedMode: boolean(row, "gateway_managed_mode"),
     harness: admitted.harness,
     compute: admitted.compute,
+    ...(admitted.private_workspace_identity === undefined
+      ? {}
+      : { privateWorkspaceIdentity: admitted.private_workspace_identity }),
     ...(admitted.sandbox_policy === undefined ? {} : { sandboxPolicy: admitted.sandbox_policy }),
     ...(admitted.sandbox_driver_id === undefined
       ? {}
@@ -3885,6 +3902,13 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
         }
         if (
+          revision.privateWorkspaceIdentity !== undefined &&
+          (!revision.sandboxDriverId ||
+            !validPrivateWorkspaceIdentity(revision.privateWorkspaceIdentity))
+        ) {
+          throw new ScopeViolationError("The AgentRevision private workspace identity is invalid.");
+        }
+        if (
           Object.hasOwn(revision, "serviceAccount") ||
           !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
           !validCredentialSourceSnapshots(revision.credentialSources)
@@ -3975,6 +3999,9 @@ export class PostgresPlatformState implements PlatformStateStore {
               draft_spec: revision.configuration,
               harness: revision.harness,
               compute: revision.compute,
+              ...(revision.privateWorkspaceIdentity === undefined
+                ? {}
+                : { private_workspace_identity: revision.privateWorkspaceIdentity }),
               ...(revision.sandboxPolicy === undefined
                 ? {}
                 : { sandbox_policy: revision.sandboxPolicy }),

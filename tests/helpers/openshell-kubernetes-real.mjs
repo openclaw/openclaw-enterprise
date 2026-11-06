@@ -735,6 +735,7 @@ export function createOpenShellKubernetesFixture({
   openShellGatewayImage,
   openShellSandboxImage,
   openShellSupervisorImage,
+  explicitWorkloadIdentity,
   openShellRuntimeClass = "openshell-sandbox",
   openShellHelmPath,
   openShellHelmChart,
@@ -743,6 +744,7 @@ export function createOpenShellKubernetesFixture({
   commandTimeoutMs,
   signal,
 }) {
+  const workloadIdentity = explicitWorkloadIdentity ?? OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY;
   const selection = { kubeconfigPath, kubernetesContext };
   const original = createRealKubernetesFixture({
     kubeconfigPath,
@@ -1028,6 +1030,12 @@ export function createOpenShellKubernetesFixture({
       "--set=server.disableTls=true",
       "--set=server.auth.allowUnauthenticatedUsers=true",
       "--set=server.drivers.kubernetes.allowDriverConfig=true",
+      ...(explicitWorkloadIdentity === undefined
+        ? []
+        : [
+            `--set=server.sandboxUid=${explicitWorkloadIdentity.uid}`,
+            `--set=server.sandboxGid=${explicitWorkloadIdentity.gid}`,
+          ]),
       // The gateway rejects every Sandbox template label it does not allow; Harness
       // Pods carry the OCE selector labels that NetworkPolicies and Services match.
       `--set-json=gatewayConfig.openshell\\.drivers\\.kubernetes.allowed_pod_labels=${JSON.stringify(OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST)}`,
@@ -1372,12 +1380,12 @@ export function createOpenShellKubernetesFixture({
     assert.notEqual(container.securityContext?.runAsUser, 0);
     assert.equal(
       container.securityContext?.runAsUser ?? pod.spec.securityContext?.runAsUser,
-      OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY.uid,
+      workloadIdentity.uid,
       "OpenShell workload identity must match the fixture's private-storage owner.",
     );
     assert.equal(
       container.securityContext?.runAsGroup ?? pod.spec.securityContext?.runAsGroup,
-      OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY.gid,
+      workloadIdentity.gid,
       "OpenShell workload group must match the fixture's private-storage owner.",
     );
   }

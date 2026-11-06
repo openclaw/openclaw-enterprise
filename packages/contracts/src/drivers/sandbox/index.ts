@@ -3,6 +3,7 @@ import type { EgressInstallation, ProxyWiring } from "../credential-proxy/index.
 import type { Driver } from "../index.ts";
 import type {
   AgentRevision,
+  PrivateWorkspaceIdentity,
   CredentialSourceLoginMode,
   HarnessAuthBinding,
   HarnessExecutionMode,
@@ -185,7 +186,26 @@ export type HarnessExecutionModeSupport =
   | { readonly supported: true; readonly reason?: never }
   | { readonly supported: false; readonly reason?: string };
 
+export interface SandboxPrivateWorkspaceIdentityContext {
+  readonly namespace: Readonly<Namespace>;
+  readonly agentId: string;
+  readonly configuration: Readonly<OpenClawConfigurationDocument>;
+  readonly harness: Readonly<RevisionHarnessDescriptor>;
+  /** Immutable admitted history, newest first; an unprovisioned candidate need not own data. */
+  readonly predecessors: readonly Readonly<AgentRevision>[];
+  readonly signal: AbortSignal;
+}
+
 export interface SandboxDriver extends Driver {
+  /** Read-only provider admission before any predecessor Stop or private workspace mutation. */
+  resolvePrivateWorkspaceIdentity?(
+    context: SandboxPrivateWorkspaceIdentityContext,
+  ): Promise<PrivateWorkspaceIdentity | undefined>;
+  /** Revalidate the admitted private workspace binding before replacing a serving revision.
+   * Legacy unbound pending candidates must refuse; active adoption and cleanup stay valid. */
+  validatePrivateWorkspaceIdentity?(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<void>;
   /**
    * OpenClaw mode support, set in the constructor from Driver identity and Installation settings.
    * Refusal reasons contain only the setting name and a corrective action.

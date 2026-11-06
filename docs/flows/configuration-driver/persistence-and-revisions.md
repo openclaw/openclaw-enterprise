@@ -137,6 +137,12 @@ checks topology/model-source compatibility, and asks the selected Secret Driver
 to verify each backend reference. This resolves backend identity, not credential
 bytes or inline SecretRefs.
 
+For private Sandbox storage, deployment resolves the workspace identity outside
+the transaction. OCC rechecks the selected Drivers, Agent, Namespace,
+Configuration, Harness and predecessor revisions before recording that identity
+in the revision's admitted specification. A refusal leaves the serving revision
+in place. See [OpenShell provisioning](../openshell-sandbox-provisioning.md).
+
 Next OCC reads the selected Configuration Driver's stored document. For the
 bundled Kubernetes Driver, that document is the `openclaw.json` ConfigMap entry.
 When the selected Sandbox Driver exposes `configureAgent`, OCC transforms a

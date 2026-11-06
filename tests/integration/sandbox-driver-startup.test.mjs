@@ -164,7 +164,12 @@ function failedPrecondition(details) {
   return Object.assign(new Error(`9 FAILED_PRECONDITION: ${details}`), { code: 9, details });
 }
 
-function workspaceGatewayClient(seed = [], events = []) {
+const privateWorkspaceIdentity = { uid: 23456, gid: 34567, placement: "startup-placement" };
+
+function workspaceGatewayClient(
+  seed = [ownedWorkspace("oce-123456789012345", "ns_00000000-0000-4000-8000-000000000001")],
+  events = [],
+) {
   const workspaces = new Map(seed.map((workspace) => [workspace.name, structuredClone(workspace)]));
   const profiles = new Map();
   const providers = new Map();
@@ -192,10 +197,16 @@ function workspaceGatewayClient(seed = [], events = []) {
       events.push(["gateway", "getWorkspace", name]);
       return workspaces.get(name);
     },
+    async resolveWorkspaceWorkloadIdentity() {
+      return structuredClone(privateWorkspaceIdentity);
+    },
     async createWorkspace(name, labels) {
       calls.push(["createWorkspace", name, structuredClone(labels)]);
       events.push(["gateway", "createWorkspace", name]);
-      const workspace = { name, labels: structuredClone(labels), phase: "WORKSPACE_PHASE_ACTIVE" };
+      const workspace = {
+        ...ownedWorkspace(name, labels["openclaw.dev/namespace-id"]),
+        labels: structuredClone(labels),
+      };
       workspaces.set(name, workspace);
       return workspace;
     },
@@ -340,6 +351,7 @@ function dedicatedRevision(driver, context, n) {
     agentId: `agt_00000000-0000-4000-8000-${n}`,
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     sandboxDriverId: driver.id,
+    privateWorkspaceIdentity: structuredClone(privateWorkspaceIdentity),
   };
 }
 
@@ -349,7 +361,7 @@ function ownedWorkspace(name, namespaceId) {
     "app.kubernetes.io/managed-by": "openclaw-enterprise",
     "openclaw.dev/namespace-id": namespaceId,
   };
-  return { name, labels, phase: "WORKSPACE_PHASE_ACTIVE" };
+  return { id: `workspace-${namespaceId}`, name, labels, phase: "WORKSPACE_PHASE_ACTIVE" };
 }
 
 /** The gateway's record of a created Sandbox, serving its Harness at a per-Sandbox URL. */
@@ -532,6 +544,7 @@ function runtimeSandboxFixture(
     agentId: "agt_00000000-0000-4000-8000-000000000003",
     harness: { id: harnessId, version: "1.0.0", mode: "dedicated" },
     sandboxDriverId: driver.id,
+    privateWorkspaceIdentity: structuredClone(privateWorkspaceIdentity),
   };
   const nodeSetup = {
     url: nodeSetupUrl(revision, context),
@@ -1643,6 +1656,35 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
   });
   const command = requirements.command;
   await driver.ensureNamespace(context);
+  const validateReplacement = (candidate) =>
+    driver.validatePrivateWorkspaceIdentity({ ...context, revision: candidate });
+  await validateReplacement(revision);
+  await assert.rejects(
+    validateReplacement({ ...revision, privateWorkspaceIdentity: undefined }),
+    /requires an admitted workload identity/,
+  );
+  for (const changed of [
+    { ...privateWorkspaceIdentity, uid: privateWorkspaceIdentity.uid + 1 },
+    { ...privateWorkspaceIdentity, gid: privateWorkspaceIdentity.gid + 1 },
+    { ...privateWorkspaceIdentity, placement: "changed-placement" },
+  ]) {
+    await assert.rejects(
+      validateReplacement({ ...revision, privateWorkspaceIdentity: changed }),
+      /identity changed after admission/,
+    );
+  }
+  assert.equal(prepared.length, 0);
+  assert.equal(requests.length, 0);
+  await assert.rejects(
+    driver.provisionHarness({
+      ...context,
+      revision: { ...revision, privateWorkspaceIdentity: undefined },
+      requirements,
+    }),
+    /requires an admitted workload identity/,
+  );
+  assert.equal(prepared.length, 0);
+  assert.equal(requests.length, 0);
   // A denied preparer must leave the native Sandbox absent and retryable.
   const create = context.kubernetes.create;
   context.kubernetes.create = async () => {
@@ -1659,7 +1701,9 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
   assert.equal(prepared.length, 1, "an adopted Sandbox must not recreate its PVC writer");
   const preparation = prepared[0].spec.template.spec;
   assert.equal(preparation.automountServiceAccountToken, false);
-  assert.equal(preparation.securityContext.runAsUser, 10001);
+  assert.equal(preparation.securityContext.runAsUser, 23456);
+  assert.equal(preparation.securityContext.runAsGroup, 34567);
+  assert.equal(preparation.securityContext.fsGroup, 34567);
   assert.deepEqual(preparation.containers[0].securityContext.capabilities, { drop: ["ALL"] });
 
   assert.equal(sandbox.revisionId, revision.id);
@@ -4193,7 +4237,7 @@ test("OpenShell rejects unsupported or foreign Codex runtime providers before Sa
 });
 
 test("OpenShell Namespace lifecycle creates, adopts, and deletes its exact operator Workspace", async () => {
-  const gatewayClient = workspaceGatewayClient();
+  const gatewayClient = workspaceGatewayClient([]);
   const driver = openShellDriver(gatewayClient);
   const context = namespaceContext();
 
@@ -6992,7 +7036,7 @@ test("OpenShell verifies operator NetworkPolicy from actual KubernetesObjectApi 
     },
   };
   configuration.gateway.networkPolicyResources = [policy];
-  const gatewayClient = workspaceGatewayClient();
+  const gatewayClient = workspaceGatewayClient([]);
   const driver = new OpenShellSandboxDriver(configuration, {
     id: "openshell-sandbox",
     implementation: "openshell",
@@ -7152,7 +7196,7 @@ test("OpenShell operator mode applies NetworkPolicy ingress sources through the 
   };
   configuration.gateway.operatorWorkspaceResources = [policy("openshell-workspace-sandbox-ssh")];
   configuration.gateway.networkPolicyResources = [policy("provider-ingress"), crdPolicy];
-  const gatewayClient = workspaceGatewayClient();
+  const gatewayClient = workspaceGatewayClient([]);
   const driver = openShellDriver(gatewayClient, configuration);
   const context = namespaceContext();
   const { api, applied } = recordingObjectApi({
@@ -7369,7 +7413,7 @@ for (const kind of ["Role", "RoleBinding"]) {
     const resource = kind === "Role" ? role : binding;
     const configuration = sandboxInstallation().drivers.sandbox.configuration;
     configuration.gateway.operatorWorkspaceResources = [resource];
-    const gatewayClient = workspaceGatewayClient();
+    const gatewayClient = workspaceGatewayClient([]);
     const driver = new OpenShellSandboxDriver(configuration, {
       id: "openshell-sandbox",
       implementation: "openshell",

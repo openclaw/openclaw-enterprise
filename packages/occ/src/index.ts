@@ -34,6 +34,7 @@ import {
   ConnectionTemplateValidationError,
   MAX_AGENT_CREDENTIAL_SOURCES,
   assertExecutionAdmission,
+  validPrivateWorkspaceIdentity,
   assertExecutionReleaseAllowed,
   credentialFreeMetadataGrant,
   isInstallationRepositoryProfile,
@@ -3771,6 +3772,16 @@ export class OpenClawController {
           progress: {},
         });
       }
+      const admissionSandbox = this.sandboxDriver();
+      const workspacePreparation = {
+        sandbox: admissionSandbox,
+        resolver: admissionSandbox?.resolvePrivateWorkspaceIdentity,
+        prepared: await this.preparePrivateWorkspaceIdentity(
+          record.actorId,
+          { namespaceId: record.namespaceId, agentId: record.agentId! },
+          resolveHarness,
+        ),
+      };
       const revision = await this.mutate(async (state) => {
         const current = await state.provisioning.findByWorkId(claim.idempotencyKey);
         if (
@@ -3785,11 +3796,14 @@ export class OpenClawController {
         }
         await this.fenceAgentProvisioning(state, claim);
         const revision = await this.provisioningContext.run(claim, () =>
-          this.deployAgent(
+          this.admitAgentDeployment(
             current.actorId,
             { namespaceId: current.namespaceId, agentId: current.agentId! },
             resolveHarness,
-          ),
+            undefined,
+            undefined,
+            workspacePreparation,
+          ).then((admitted) => admitted.revision),
         );
         await this.commitProvisioningCheckpoint(state, claim, {
           completedPhase: "handoff",
@@ -11545,6 +11559,110 @@ export class OpenClawController {
     return { configuration, configurationDriver, channel, channelValidator };
   }
 
+  private async preparePrivateWorkspaceIdentity(
+    principalId: string,
+    input: DeployAgentInput,
+    resolveHarness: HarnessResolver,
+  ) {
+    const sandbox = this.sandboxDriver();
+    const resolver = sandbox?.resolvePrivateWorkspaceIdentity;
+    if (sandbox === undefined || resolver === undefined) {
+      return undefined;
+    }
+    if (this.transactionContext.getStore() !== undefined) {
+      throw new ResourceConflictError(
+        "Private workspace admission must run outside a controller transaction.",
+      );
+    }
+    await this.authorize(principalId, "deploy", {
+      kind: "agent",
+      id: input.agentId,
+      namespaceId: input.namespaceId,
+    });
+    const compute = this.selectedDriver("compute");
+    const configurationDriver = this.configurationDriver();
+    const snapshot = await this.read(async (state) => {
+      const namespace = await this.exactNamespace(state, input.namespaceId);
+      const agent = await state.agents.findAgent(namespace.id, input.agentId);
+      if (agent === undefined) {
+        throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
+      }
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
+      if (agent.status !== "active") {
+        throw new AgentDeletingError();
+      }
+      await this.authorize(principalId, "read", {
+        kind: "configuration",
+        id: agent.configurationId,
+        namespaceId: namespace.id,
+      });
+      const metadata = await state.configurations.findConfiguration(
+        namespace.id,
+        agent.configurationId,
+      );
+      if (metadata?.kind !== "agent") {
+        throw new ScopeViolationError("The Agent Configuration is unavailable.");
+      }
+      const predecessors = await state.revisions.listRevisions(namespace.id, agent.id);
+      return { namespace, agent, metadata, predecessors };
+    });
+    // Embedded execution has no dedicated private workspace to observe.
+    if (snapshot.agent.executionMode !== "dedicated") {
+      return undefined;
+    }
+    const configuration = this.exactConfiguration(
+      await this.driverOperation(() => configurationDriver.read(snapshot.metadata)),
+      snapshot.metadata,
+    );
+    const harnessId = resolveConfiguredHarnessId(
+      configuration.values,
+      this.modelPolicyAgent(snapshot.agent.executionMode, resolveHarness),
+    );
+    const approved = resolveAgentHarness(resolveHarness, harnessId, snapshot.agent.executionMode);
+    if (approved === undefined || approved.id !== harnessId) {
+      throw new DependencyUnavailableError("The selected Harness runtime is not approved.");
+    }
+    const harness = Object.freeze({ ...approved, mode: snapshot.agent.executionMode });
+    const namespace =
+      compute.resolveSandboxNamespace === undefined
+        ? snapshot.namespace
+        : await this.driverOperation(
+            () => compute.resolveSandboxNamespace!(snapshot.namespace),
+            "Compute",
+          );
+    const identity = await this.driverOperation(
+      () =>
+        resolver.call(sandbox, {
+          namespace,
+          agentId: snapshot.agent.id,
+          configuration: configuration.values,
+          harness,
+          predecessors: Object.freeze(
+            [...snapshot.predecessors].sort((a, b) => b.revision - a.revision),
+          ),
+          signal: AbortSignal.timeout(15_000),
+        }),
+      "Sandbox",
+    );
+    if (identity !== undefined && !validPrivateWorkspaceIdentity(identity)) {
+      throw new DependencyUnavailableError(
+        "The Sandbox returned an invalid private workspace identity.",
+      );
+    }
+    return {
+      ...snapshot,
+      configuration,
+      harness,
+      sandbox,
+      resolver,
+      compute,
+      configurationDriver,
+      identity: identity === undefined ? undefined : immutableCopy(identity),
+    };
+  }
+
   async deployAgentWithAuthorization(
     principalId: string,
     input: DeployAgentInput,
@@ -11559,6 +11677,12 @@ export class OpenClawController {
     input: DeployAgentInput,
     resolveHarness: HarnessResolver,
     auditEvent?: (result: Readonly<AuthorizedAgentDeployment>) => AuditEvent,
+    first?: undefined,
+    preAdmission?: {
+      readonly sandbox: SandboxDriver | undefined;
+      readonly resolver: SandboxDriver["resolvePrivateWorkspaceIdentity"];
+      readonly prepared: Awaited<ReturnType<OpenClawController["preparePrivateWorkspaceIdentity"]>>;
+    },
   ): Promise<Readonly<AuthorizedAgentDeployment>>;
   private async admitAgentDeployment(
     principalId: string,
@@ -11573,6 +11697,11 @@ export class OpenClawController {
     resolveHarness: HarnessResolver,
     auditEvent?: (result: Readonly<AuthorizedAgentDeployment>) => AuditEvent,
     first?: FirstDeploymentGuard,
+    preAdmission?: {
+      readonly sandbox: SandboxDriver | undefined;
+      readonly resolver: SandboxDriver["resolvePrivateWorkspaceIdentity"];
+      readonly prepared: Awaited<ReturnType<OpenClawController["preparePrivateWorkspaceIdentity"]>>;
+    },
   ): Promise<Readonly<AuthorizedAgentDeployment> | Readonly<FirstDeploymentReceipt>> {
     if (!isNonEmptyString(input.agentId)) {
       throw new ScopeViolationError("The exact Agent identity is missing.");
@@ -11581,6 +11710,28 @@ export class OpenClawController {
       await this.validateDeploymentChannels(principalId, input);
     }
     this.namespaceIdentity(input.namespaceId);
+    // Keep a concurrent first-admission receipt authoritative even if a fresh provider read fails.
+    const admissionSandbox =
+      preAdmission === undefined ? this.sandboxDriver() : preAdmission.sandbox;
+    const admissionWorkspaceResolver =
+      preAdmission === undefined
+        ? admissionSandbox?.resolvePrivateWorkspaceIdentity
+        : preAdmission.resolver;
+    const workspacePreparation =
+      preAdmission ??
+      (await (async () => {
+        try {
+          return {
+            prepared: await this.preparePrivateWorkspaceIdentity(
+              principalId,
+              input,
+              resolveHarness,
+            ),
+          };
+        } catch (error) {
+          return { error };
+        }
+      })());
     return this.mutate(async (state) => {
       let authorization = await this.authorize(principalId, "deploy", {
         kind: "agent",
@@ -11649,6 +11800,41 @@ export class OpenClawController {
             "The expected Configuration generation is unavailable. Recover the original first-deployment receipt after an uncertain result, then review the current Configuration before deploying.",
           );
         }
+      }
+      if (
+        this.sandboxDriver() !== admissionSandbox ||
+        admissionSandbox?.resolvePrivateWorkspaceIdentity !== admissionWorkspaceResolver
+      ) {
+        throw new ResourceStateConflictError(
+          "Private workspace Drivers changed. Refresh and retry deployment.",
+        );
+      }
+      if ("error" in workspacePreparation) {
+        throw workspacePreparation.error;
+      }
+      const workspace = workspacePreparation.prepared;
+      if (
+        admissionWorkspaceResolver !== undefined &&
+        lockedAgent.executionMode === "dedicated" &&
+        workspace === undefined
+      ) {
+        // A concurrent switch from embedded execution now needs the skipped provider read.
+        throw new ResourceStateConflictError(
+          "Private workspace admission inputs changed. Refresh and retry deployment.",
+        );
+      }
+      if (
+        workspace !== undefined &&
+        (this.sandboxDriver() !== workspace.sandbox ||
+          workspace.sandbox.resolvePrivateWorkspaceIdentity !== workspace.resolver ||
+          this.selectedDriver("compute") !== workspace.compute ||
+          this.configurationDriver() !== workspace.configurationDriver ||
+          !isDeepStrictEqual(namespace, workspace.namespace) ||
+          !isDeepStrictEqual(lockedAgent, workspace.agent))
+      ) {
+        throw new ResourceStateConflictError(
+          "Private workspace admission inputs changed. Refresh and retry deployment.",
+        );
       }
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
@@ -11736,6 +11922,15 @@ export class OpenClawController {
         ...approvedHarness,
         mode: lockedAgent.executionMode,
       });
+      if (
+        workspace !== undefined &&
+        (!isDeepStrictEqual(configuration, workspace.configuration) ||
+          !isDeepStrictEqual(revisionHarness, workspace.harness))
+      ) {
+        throw new ResourceStateConflictError(
+          "Private workspace Configuration or Harness changed. Refresh and retry deployment.",
+        );
+      }
       // Capability refusals precede Agent principal grants: a grant cannot make an unsupported
       // topology deployable, so the refusal the operator can act on must surface first. A
       // missing Sandbox Driver is a permanent 409 here; provisioning handoff reaches this only
@@ -11866,6 +12061,11 @@ export class OpenClawController {
       // Decode every earlier revision: one that is unreadable refuses the deploy here (503,
       // nothing created), because the worker must decode them all to stop or retire them.
       const previous = await state.revisions.listRevisions(namespace.id, lockedAgent.id);
+      if (workspace !== undefined && !isDeepStrictEqual(previous, workspace.predecessors)) {
+        throw new ResourceStateConflictError(
+          "Private workspace revision history changed. Refresh and retry deployment.",
+        );
+      }
       const createdAt = this.timestamp();
       let repositoryCredentials = this.admitRepositoryCredentials(
         lockedAgent,
@@ -12069,6 +12269,9 @@ export class OpenClawController {
         harness: revisionHarness,
         compute: { id: compute.id, implementation: compute.implementation },
         ...(sandbox === undefined ? {} : { sandboxDriverId: sandbox.id }),
+        ...(workspace?.identity === undefined
+          ? {}
+          : { privateWorkspaceIdentity: workspace.identity }),
         ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
         ...(secretDriver === undefined ? {} : { secretDriverId: secretDriver.id, secretBindings }),
         ...(pluginState === undefined ? {} : { plugins: pluginState }),
@@ -12088,9 +12291,28 @@ export class OpenClawController {
         throw new ConfigurationHarnessError(GATEWAY_MANAGED_MODE_UNSUPPORTED);
       }
       const computeAdmission = compute.admitRevision?.(freezeAgentRevision(revisionDraft));
+      if (
+        this.sandboxDriver() !== admissionSandbox ||
+        admissionSandbox?.resolvePrivateWorkspaceIdentity !== admissionWorkspaceResolver
+      ) {
+        throw new ResourceStateConflictError(
+          "Private workspace Drivers changed. Refresh and retry deployment.",
+        );
+      }
       // Database locks do not freeze process-local selections across awaited Driver calls.
       if (prepared !== undefined) {
         this.assertPreparedDeploymentDrivers(prepared);
+      }
+      if (
+        workspace !== undefined &&
+        (this.sandboxDriver() !== workspace.sandbox ||
+          workspace.sandbox.resolvePrivateWorkspaceIdentity !== workspace.resolver ||
+          this.selectedDriver("compute") !== workspace.compute ||
+          this.configurationDriver() !== workspace.configurationDriver)
+      ) {
+        throw new ResourceStateConflictError(
+          "Private workspace Drivers changed. Refresh and retry deployment.",
+        );
       }
       const revision = await state.revisions.createRevision(
         freezeAgentRevision({
@@ -16458,7 +16680,7 @@ export class OpenClawController {
 
   private async driverOperation<T>(
     operation: () => Promise<T>,
-    capability: "Configuration" | "ServiceAccount" | "Compute" = "Configuration",
+    capability: "Configuration" | "ServiceAccount" | "Compute" | "Sandbox" = "Configuration",
   ): Promise<T> {
     try {
       return await operation();

@@ -62,7 +62,7 @@ is in the [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json).
 | Scenario                | In advisory          | Presets         | Checks                                                                                                                                                     |
 | ----------------------- | -------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `sandbox-policy`        | Yes — OpenShell jobs | Codex           | Discover and preview configuration, then apply, update, and withdraw OpenShell network policy in a prepared environment.                                   |
-| `private-storage`       | Yes — OpenShell jobs | Codex           | Private state ancestry, unrelated-UID rename denial, and retained bytes across Agent replacement; no additional model turn beyond startup.                 |
+| `private-storage`       | Yes — OpenShell jobs | Codex           | Distinct workload UID/GID, private state ancestry, same-group rename denial, and retained bytes across replacement; requires Gateway identity support.     |
 | `plugin-install`        | Yes — OpenShell jobs | Codex           | Install a dedicated Codex plugin, find it after the Codex process restarts, then remove it from the Agent selection.                                       |
 | `model-ui`              | No                   | OpenClaw        | Real model turn and native browser response.                                                                                                               |
 | `console-secrets`       | Yes (Codex)          | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls. |
@@ -112,7 +112,7 @@ job calls `run-ci-lane` with `lane: openshell` and its selected `test-file`. The
 | [Sandbox enforcement](../../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)       | Provider credential delivery, authenticated Codex access, filesystem enforcement, and Agent network policy.                                                                      |
 | [Kubernetes first Agent](../../../tests/integration/local-first-agent-openshell-k3d-real.test.mjs) | The first-Agent and native redeployment workflow with the control plane in Kubernetes.                                                                                           |
 | [Codex plugin installation](../../../tests/integration/openshell-plugin-install-real.test.ts)      | Selected Codex plugin installation and retention through the OpenShell Agent workflow.                                                                                           |
-| [Private storage](../../../tests/integration/openshell-private-storage-real.test.ts)               | Process-owned private state, unrelated-UID rename denial, and retained bytes after Agent Stop and redeployment.                                                                  |
+| [Private storage](../../../tests/integration/openshell-private-storage-real.test.ts)               | Chart-configured distinct UID/GID, same-group rename denial, and retained bytes on the same claim when deploying a replacement over a serving Agent.                             |
 
 The runner requires the selected files' credentials, expected tests, and cleanup.
 Local installation also uses one runner per manifest file: input and network-policy

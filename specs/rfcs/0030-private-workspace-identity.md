@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: freeqaz-openai
 ---
 
@@ -22,7 +22,11 @@ against the immutable candidate revision before admission can supersede the
 serving revision. Bind the observation to the exact selected Driver,
 Namespace, Agent, Harness, and Configuration generation. A refused or
 unsupported check leaves the predecessor running and its claim untouched.
-Other storage topologies need no observation.
+Other storage topologies need no observation. Before each destructive predecessor
+Stop, the worker asks the selected Compute Driver to check the pending
+replacement. The Sandbox Driver revalidates the binding and refuses an unbound
+candidate queued before upgrade. Active revision maintenance and cleanup retain
+their existing paths.
 
 Compare the candidate with the owner of retained data before allowing a new
 exclusive revision. A previous bound identity or a verified predecessor
@@ -40,7 +44,7 @@ can still stop a cutover after the old workload has drained.
 
 ## Dependencies and acceptance
 
-The pinned Gateway lacks this contract. A Namespace annotation, a default
+OCE implements admission, storage preparation, and the create precondition. The pinned Gateway lacks this contract. A Namespace annotation, a default
 pair, and the predecessor Pod each fail to establish a future workload's
 identity. Avoid an operator override, a privileged ownership migration, or a
 wider directory mode. Existing workload cleanup must remain available.

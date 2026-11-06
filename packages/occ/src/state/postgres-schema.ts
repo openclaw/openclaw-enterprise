@@ -754,6 +754,23 @@ export const agentRevisions = occSchema.table(
         ), false)`,
     ),
     check(
+      "agent_revisions_private_workspace_identity",
+      sql`NOT (${table.admittedSpec} ? 'private_workspace_identity') OR COALESCE(
+        ${table.admittedSpec} ? 'sandbox_driver_id'
+        AND jsonb_typeof(${table.admittedSpec}->'private_workspace_identity') = 'object'
+        AND (${table.admittedSpec}->'private_workspace_identity') ?& ARRAY['uid', 'gid', 'placement']
+        AND ((${table.admittedSpec}->'private_workspace_identity') - 'uid' - 'gid' - 'placement') = '{}'::jsonb
+        AND CASE WHEN jsonb_typeof(${table.admittedSpec} #> '{private_workspace_identity,uid}') = 'number'
+          AND jsonb_typeof(${table.admittedSpec} #> '{private_workspace_identity,gid}') = 'number' THEN
+          (${table.admittedSpec} #>> '{private_workspace_identity,uid}')::numeric BETWEEN 1 AND 4294967294
+          AND mod((${table.admittedSpec} #>> '{private_workspace_identity,uid}')::numeric, 1) = 0
+          AND (${table.admittedSpec} #>> '{private_workspace_identity,gid}')::numeric BETWEEN 1 AND 4294967294
+          AND mod((${table.admittedSpec} #>> '{private_workspace_identity,gid}')::numeric, 1) = 0
+          ELSE false END
+        AND jsonb_typeof(${table.admittedSpec} #> '{private_workspace_identity,placement}') = 'string'
+        AND btrim(${table.admittedSpec} #>> '{private_workspace_identity,placement}') <> '', false)`,
+    ),
+    check(
       "agent_revisions_admitted_snapshot",
       sql`(${table.admittedSpec} ?& ARRAY[
           'configuration_id', 'configuration_kind', 'configuration_generation',
@@ -761,7 +778,7 @@ export const agentRevisions = occSchema.table(
         ])
         AND (${table.admittedSpec}
           - 'configuration_id' - 'configuration_kind' - 'configuration_generation'
-          - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id' - 'sandbox_policy'
+          - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id' - 'sandbox_policy' - 'private_workspace_identity'
           - 'secret_driver_id' - 'secret_bindings' - 'harness_auth' - 'credential_sources' - 'plugins'
           - 'plugin_approvers' - 'repository_credentials' - 'egress_plan' - 'execution_admission') = '{}'::jsonb
         AND jsonb_typeof(${table.admittedSpec}->'configuration_id') = 'string'

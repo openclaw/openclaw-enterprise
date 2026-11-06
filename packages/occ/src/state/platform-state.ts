@@ -1,6 +1,7 @@
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
   assertExecutionAdmission,
+  validPrivateWorkspaceIdentity,
   validateConnectionTemplateDestinations,
   MAX_AGENT_CREDENTIAL_SOURCES,
 } from "@openclaw-enterprise/contracts";
@@ -955,6 +956,12 @@ export function validCredentialSourceSnapshots(value: unknown): boolean {
 
 function assertAdmittedAgentRevision(revision: AgentRevision): void {
   assertExecutionAdmission(revision);
+  if (
+    revision.privateWorkspaceIdentity !== undefined &&
+    (!revision.sandboxDriverId || !validPrivateWorkspaceIdentity(revision.privateWorkspaceIdentity))
+  ) {
+    throw new ScopeViolationError("The AgentRevision private workspace identity is invalid.");
+  }
   if (
     (revision.backendId !== null && !isBackendId(revision.backendId)) ||
     !/^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
