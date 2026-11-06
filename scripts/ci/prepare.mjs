@@ -20,6 +20,11 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
+import {
+  assertRuntimeArtifactTagAvailable,
+  loadRuntimeArtifact,
+  runtimeArtifactSelection,
+} from "./runtime-artifact.mjs";
 import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
 import { withStateLock } from "./state-lock.ts";
 import { runPostgresAdmin } from "./postgres-admin.mjs";
@@ -1163,6 +1168,7 @@ async function buildRuntimeImages(
     controllerTarget = "runtime",
     buildConcurrency,
     registryOutput,
+    runtimeArtifact,
   } = {},
 ) {
   // Plain BuildKit progress shows each step's cache hit or duration. The warm job
@@ -1263,6 +1269,9 @@ async function buildRuntimeImages(
   const tagBase =
     registryOutput ?? `localhost/${ownedName("openclaw-ci-image", label, { maxLength: 48 })}`;
   const openclawSource = runtime ? process.env.OCC_K3D_OPENCLAW_SOURCE : undefined;
+  if (runtimeArtifact && (!runtime || registryOutput || cacheWarm || openclawSource)) {
+    throw new Error("A selected runtime artifact requires ordinary runtime image preparation.");
+  }
   if (controller) {
     assertNodeBaseImage(nodeBaseImage);
   }
@@ -1298,47 +1307,62 @@ async function buildRuntimeImages(
   }
   if (runtime) {
     const tag = `${tagBase}/runtime:local`;
-    const sourceArguments =
-      openclawSource === undefined ? openclawBuildArguments(await readOpenclawSource()) : [];
-    builds.push({
-      role: "runtime",
-      tag,
-      args:
-        openclawSource === undefined
-          ? [
-              ...imageBuildArgs(state, "runtime", localStore),
-              ...plainProgress,
-              ...revisionArgs,
-              ...sourceArguments,
-              "--pull=false",
-              "-f",
-              runtimeDockerfile,
-              "-t",
-              tag,
-              repositoryRoot,
-            ]
-          : [
-              "build",
-              ...(localStore && basename(process.env.OCC_DOCKER_BIN ?? "docker") !== "podman"
-                ? ["--builder", "default", "--load"]
-                : []),
-              "--build-arg",
-              "OPENCLAW_DOCKER_BUILD_SKIP_DTS=1",
-              "-t",
-              tag,
-              openclawSource,
-            ],
-      env: {
-        OCC_TEST_RUNTIME_IMAGE: tag,
-        OCC_DOCKER_RUNTIME_IMAGE: tag,
-        OCC_DOCKER_GATEWAY_IMAGE: tag,
-        OCC_DOCKER_AGENT_IMAGE: tag,
-        OCC_TEST_KUBERNETES_RUNTIME_IMAGE: tag,
-        ...(openclawSource === undefined
-          ? {}
-          : { OCC_K3D_OPENCLAW_COMMIT: process.env.OCC_K3D_OPENCLAW_COMMIT }),
-      },
-    });
+    const runtimeEnv = {
+      OCC_TEST_RUNTIME_IMAGE: tag,
+      OCC_DOCKER_RUNTIME_IMAGE: tag,
+      OCC_DOCKER_GATEWAY_IMAGE: tag,
+      OCC_DOCKER_AGENT_IMAGE: tag,
+      OCC_TEST_KUBERNETES_RUNTIME_IMAGE: tag,
+      ...(openclawSource === undefined
+        ? {}
+        : { OCC_K3D_OPENCLAW_COMMIT: process.env.OCC_K3D_OPENCLAW_COMMIT }),
+    };
+    if (runtimeArtifact) {
+      assertRuntimeArtifactTagAvailable(tag);
+      const resource = addResource(state, "image-tag", { name: tag, owner: state.prefix });
+      resources.push(resource);
+      await writeState(statePath, state);
+      const loaded = await loadRuntimeArtifact({ ...runtimeArtifact, tag });
+      try {
+        await markResourceReady(statePath, state, resource);
+        Object.assign(env, runtimeEnv);
+      } finally {
+        await loaded.cleanup();
+      }
+    } else {
+      const sourceArguments =
+        openclawSource === undefined ? openclawBuildArguments(await readOpenclawSource()) : [];
+      builds.push({
+        role: "runtime",
+        tag,
+        args:
+          openclawSource === undefined
+            ? [
+                ...imageBuildArgs(state, "runtime", localStore),
+                ...plainProgress,
+                ...revisionArgs,
+                ...sourceArguments,
+                "--pull=false",
+                "-f",
+                runtimeDockerfile,
+                "-t",
+                tag,
+                repositoryRoot,
+              ]
+            : [
+                "build",
+                ...(localStore && basename(process.env.OCC_DOCKER_BIN ?? "docker") !== "podman"
+                  ? ["--builder", "default", "--load"]
+                  : []),
+                "--build-arg",
+                "OPENCLAW_DOCKER_BUILD_SKIP_DTS=1",
+                "-t",
+                tag,
+                openclawSource,
+              ],
+        env: runtimeEnv,
+      });
+    }
   }
   // Registry output reuses compressed cached layers directly, without loading
   // and recompressing them through the host engine.
@@ -2826,6 +2850,22 @@ async function prepareLane({ lane, statePath, file }) {
   ) {
     throw new Error("Selected file must belong to the lane manifest.");
   }
+  const runtimeArtifact = runtimeArtifactSelection(process.env);
+  if (runtimeArtifact) {
+    if (
+      ![
+        "images-packaging",
+        "images-runtime-startup",
+        "images-runtime-startup-2",
+        "images-runtime-startup-3",
+      ].includes(name)
+    ) {
+      throw new Error("Runtime artifacts are supported only by the ordinary image lanes.");
+    }
+    if (process.env.OCC_K3D_OPENCLAW_SOURCE) {
+      throw new Error("A runtime artifact cannot be combined with OCC_K3D_OPENCLAW_SOURCE.");
+    }
+  }
   await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
   const resolvedStatePath = normalizeStatePath(statePath);
   const existingState = await readState(resolvedStatePath);
@@ -2893,7 +2933,7 @@ async function prepareLane({ lane, statePath, file }) {
         prepareTogether([
           () =>
             timedPreparation(name, "runtime-image-build", () =>
-              buildRuntimeImages(resolvedStatePath, state, { runtime: true }),
+              buildRuntimeImages(resolvedStatePath, state, { runtime: true, runtimeArtifact }),
             ),
           ...(codexSeccomp
             ? [
@@ -2926,6 +2966,7 @@ async function prepareLane({ lane, statePath, file }) {
             buildRuntimeImages(resolvedStatePath, state, {
               controller: true,
               runtime: true,
+              runtimeArtifact,
               nodeBaseImage: effectiveLaneEnv(name, env).NODE_BASE_IMAGE,
             }),
           )

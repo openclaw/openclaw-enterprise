@@ -286,8 +286,27 @@ export async function serviceWebSocketHandshake(
     signal,
     (request, resolve) => {
       request.on("upgrade", (response: IncomingMessage, socket: Socket) => {
-        socket.destroy();
-        resolve(response.statusCode === 101 && response.headers["sec-websocket-accept"] === accept);
+        if (response.statusCode !== 101 || response.headers["sec-websocket-accept"] !== accept) {
+          socket.destroy();
+          resolve(false);
+          return;
+        }
+        // A probe owns only this disposable connection. Send a masked RFC 6455
+        // normal-close frame so the Harness does not report an abrupt disconnect.
+        const mask = randomBytes(4);
+        const closeFrame = Buffer.alloc(8);
+        closeFrame.set([0x88, 0x82]);
+        mask.copy(closeFrame, 2);
+        closeFrame.writeUInt16BE(1000 ^ mask.readUInt16BE(0), 6);
+        const cleanup = setTimeout(() => socket.destroy(), options.requestTimeoutMs);
+        cleanup.unref();
+        socket.once("close", () => clearTimeout(cleanup));
+        socket.once("error", () => socket.destroy());
+        // Let the server close TCP after acknowledging Close, within the bound above.
+        socket.once("end", () => socket.end());
+        socket.resume();
+        socket.write(closeFrame);
+        resolve(true);
       });
       request.on("response", (response: IncomingMessage) => {
         response.destroy();

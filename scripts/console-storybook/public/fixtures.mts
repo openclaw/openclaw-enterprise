@@ -48,7 +48,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     slackGrantMissing?: string;
     auth?: null | string;
     namespaceDeleteOutcome?: string;
-    namespaceDeleteRetryStatusFailure?: true;
+    namespaceDeleteRetryStatusFailure?: "unavailable" | "invalid";
     observabilityUrl?: string;
     repositoryOptions?: readonly RepositoryOption[];
     credentialRegistrationOutcome?: string;
@@ -534,16 +534,21 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         return response(item, 202);
       }
       if (method === "GET") {
-        // Consume this preview failure only while the ordinary retry prompt is open.
-        // Earlier polls and later Refresh status reads keep their normal responses.
+        // The invalid-value preview fails the first read after the unconfirmed write;
+        // the unavailable preview waits for the ordinary retry prompt to open.
         if (
           scenario.namespaceDeleteRetryStatusFailure &&
           item.id === namespaceId &&
           !namespaceDeleteRetryStatusFailed &&
-          document.querySelector(".namespace-delete-dialog[open] #namespace-delete-title")
-            ?.textContent === `Retry deletion of ${item.name}?`
+          (scenario.namespaceDeleteRetryStatusFailure === "invalid"
+            ? item.status === "deleting"
+            : document.querySelector(".namespace-delete-dialog[open] #namespace-delete-title")
+                ?.textContent === `Retry deletion of ${item.name}?`)
         ) {
           namespaceDeleteRetryStatusFailed = true;
+          if (scenario.namespaceDeleteRetryStatusFailure === "invalid") {
+            return response({ ...item, status: [item.status] });
+          }
           return new Response("Service unavailable", { status: 503 });
         }
         if (item.status === "deleting" && scenario.namespaceDeleteOutcome === "complete") {

@@ -139,7 +139,7 @@ branch. An explicit `--head` keeps `gh pr create` from choosing where to push th
 - Request relevant maintainers' feedback. Resolve substantive findings and
   required checks before merging.
 - Before merging Console UI changes, upload screenshots and a short video of
-  the final UI to GitHub (native attachments or a gist) and show them in the
+  the final UI as native GitHub attachments, not gists, and show them in the
   PR's Verification section.
   Missing or stale media blocks merging even when CI passes. Follow the
   [Console evidence requirements](AGENTS.md#console-storybook) for capture,
@@ -165,7 +165,7 @@ Keep the RFC consistent with the final code and land them together when ready,
 either in one PR or as linked PRs merged in dependency order. Core team members
 do not wait for an RFC response unless a specific decision or hold requires it.
 
-Use `node scripts/pr-status.mjs PR_NUMBER` to inspect a PR before the final
+Use `node scripts/pr-status.ts PR_NUMBER` to inspect a PR before the final
 checks. The command is read-only; it does not establish merge readiness. After
 the applicable checks and review, set `PR_NUMBER` and `HEAD_SHA` to the observed
 PR number and final head, then merge from this checkout:
@@ -198,7 +198,7 @@ the repository root with Node.js 24.22.1 or newer (26.x requires 26.12.1 or newe
 pnpm contributors:update
 ```
 
-You can also run `node scripts/update-contributors.mjs` directly; the generator
+You can also run `node scripts/update-contributors.ts` directly; the generator
 uses only Node built-ins and does not require installing npm packages.
 
 The command needs only read access to repository metadata, contributors, pull

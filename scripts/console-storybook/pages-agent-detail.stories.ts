@@ -68,6 +68,7 @@ export const InvalidConfigurationInvisibleCharacters = story(
 );
 export const InvalidConfigurationCurlyQuotes = story("invalidConfigurationCurlyQuotes");
 export const ConfigurationChangedElsewhereMerged = story("configurationChangedElsewhereMerged");
+export const ConfigurationConflictFocus = story("configurationConflictFocus");
 export const Admitted = story("admitted");
 export const RepositoryDraft = {
   ...story("repositoryDraft"),

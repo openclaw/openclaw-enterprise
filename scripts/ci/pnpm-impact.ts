@@ -11,17 +11,17 @@ const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 // The result is advisory: package dependencies do not describe all test,
 // configuration, generated-code, runtime, or cross-language dependencies.
-function unavailable(reason) {
+function unavailable(reason: string) {
   return { status: "unavailable", reason, packages: [] };
 }
 
-function forwarded(...names) {
+function forwarded(...names: string[]) {
   return Object.fromEntries(
     names.filter((name) => process.env[name]).map((name) => [name, process.env[name]]),
   );
 }
 
-function run(program, args) {
+function run(program: string, args: string[]) {
   const result = spawnSync(program, args, {
     encoding: null,
     maxBuffer: 2 * 1024 * 1024,
@@ -51,11 +51,11 @@ function run(program, args) {
   return result.stdout;
 }
 
-function git(...args) {
+function git(...args: string[]) {
   return run("git", ["--no-replace-objects", ...args]);
 }
 
-function changedPaths(base, tested) {
+function changedPaths(base: string, tested: string) {
   const raw = git(
     "diff",
     "--raw",
@@ -77,7 +77,7 @@ function changedPaths(base, tested) {
   }
   const paths = [];
   for (let i = 0; i < fields.length; i += 2) {
-    const match = /^:(\d{6}) (\d{6}) [0-9a-f]+ [0-9a-f]+ ([AMD])$/.exec(fields[i]);
+    const match = /^:(\d{6}) (\d{6}) [0-9a-f]+ [0-9a-f]+ ([AMD])$/.exec(fields[i] ?? "");
     if (!match) {
       throw new Error("unsupported diff");
     }
@@ -89,7 +89,7 @@ function changedPaths(base, tested) {
     ) {
       throw new Error("unsupported file mode");
     }
-    paths.push(decoder.decode(Buffer.from(fields[i + 1], "binary")));
+    paths.push(decoder.decode(Buffer.from(fields[i + 1] ?? "", "binary")));
   }
   return paths;
 }
@@ -109,9 +109,9 @@ function cleanCheckout() {
   );
 }
 
-function projects(args) {
-  const result = JSON.parse(
-    run("pnpm", [...args, "--recursive", "list", "--depth", "-1", "--json"]),
+function projects(args: string[]): unknown[] {
+  const result: unknown = JSON.parse(
+    run("pnpm", [...args, "--recursive", "list", "--depth", "-1", "--json"]).toString(),
   );
   if (!Array.isArray(result) || result.length > 128) {
     throw new Error("invalid workspace");
@@ -119,53 +119,60 @@ function projects(args) {
   return result;
 }
 
+function property(value: unknown, key: string): unknown {
+  return Reflect.get(Object(value), key);
+}
+
 function inspect() {
   if (process.env.GITHUB_EVENT_NAME !== "pull_request") {
     return unavailable("not_pull_request");
   }
-  const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
-  const eventBase = event?.pull_request?.base?.sha;
-  const head = event?.pull_request?.head?.sha;
+  const event: unknown = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH ?? "", "utf8"));
+  const pullRequest: unknown = property(event, "pull_request");
+  const eventBase: unknown = property(property(pullRequest, "base"), "sha");
+  const head: unknown = property(property(pullRequest, "head"), "sha");
   const tested = process.env.GITHUB_SHA;
-  if (![eventBase, head, tested].every((value) => typeof value === "string" && oid.test(value))) {
+  if (
+    typeof eventBase !== "string" ||
+    typeof head !== "string" ||
+    typeof tested !== "string" ||
+    ![eventBase, head, tested].every((value) => oid.test(value))
+  ) {
     return unavailable("invalid_identity");
   }
   const actual = git("rev-parse", "--verify", "HEAD^{commit}").toString("ascii").trim();
   const parents = git("show", "-s", "--format=%P", tested).toString("ascii").trim().split(" ");
-  if (actual !== tested || parents.length !== 2 || !oid.test(parents[0]) || parents[1] !== head) {
+  const base = parents[0] ?? "";
+  if (actual !== tested || parents.length !== 2 || !oid.test(base) || parents[1] !== head) {
     return unavailable("checkout_mismatch");
   }
   // When the base branch moves, GitHub builds the merge ref on a newer base
   // than the event's base.sha. The tested merge's first parent is the base of
   // the checked-out tree, so compare against it.
-  const base = parents[0];
 
   const paths = changedPaths(base, tested);
   if (!cleanCheckout()) {
     return unavailable("dirty_checkout");
   }
   const root = realpathSync(".");
-  const inventory = new Map();
-  for (const project of projects([])) {
-    if (
-      !project ||
-      typeof project.name !== "string" ||
-      project.name.length > 128 ||
-      !packageName.test(project.name)
-    ) {
+  const inventory = new Map<string, string>();
+  for (const value of projects([])) {
+    const name = property(value, "name");
+    const path = property(value, "path");
+    if (!value || typeof name !== "string" || name.length > 128 || !packageName.test(name)) {
       throw new Error("invalid project name");
     }
-    if (typeof project.path !== "string" || !isAbsolute(project.path)) {
+    if (typeof path !== "string" || !isAbsolute(path)) {
       throw new Error("invalid project path");
     }
-    const directory = relative(root, realpathSync(project.path)).split(sep).join("/");
-    if (directory === ".." || directory.startsWith("../") || inventory.has(project.name)) {
+    const directory = relative(root, realpathSync(path)).split(sep).join("/");
+    if (directory === ".." || directory.startsWith("../") || inventory.has(name)) {
       throw new Error("invalid project path");
     }
-    inventory.set(project.name, directory);
+    inventory.set(name, directory);
   }
 
-  const owners = new Set();
+  const owners = new Set<string>();
   for (const path of paths) {
     // Start with TypeScript files owned by a workspace project. Root tooling,
     // manifests, Go and unknown paths keep full CI and receive no prediction.
@@ -176,27 +183,29 @@ function inspect() {
       ([, directory]) => directory && path.startsWith(`${directory}/`),
     );
     matches.sort((a, b) => b[1].length - a[1].length);
-    if (!matches.length || (matches[1] && matches[0][1] === matches[1][1])) {
+    const first = matches[0];
+    if (!first || (matches[1] && first[1] === matches[1][1])) {
       return unavailable("outside_typescript_workspace");
     }
-    owners.add(matches[0][0]);
+    owners.add(first[0]);
   }
 
-  const selected = new Set();
-  for (const project of projects(["--filter", `...[${base}]`])) {
+  const selected = new Set<string>();
+  for (const value of projects(["--filter", `...[${base}]`])) {
+    const name = property(value, "name");
+    const path = property(value, "path");
     if (
-      !project ||
-      typeof project.name !== "string" ||
-      !inventory.has(project.name) ||
-      !inventory.get(project.name) ||
-      selected.has(project.name) ||
-      typeof project.path !== "string" ||
-      relative(root, realpathSync(project.path)).split(sep).join("/") !==
-        inventory.get(project.name)
+      !value ||
+      typeof name !== "string" ||
+      !inventory.has(name) ||
+      !inventory.get(name) ||
+      selected.has(name) ||
+      typeof path !== "string" ||
+      relative(root, realpathSync(path)).split(sep).join("/") !== inventory.get(name)
     ) {
       throw new Error("invalid affected project");
     }
-    selected.add(project.name);
+    selected.add(name);
   }
   if (!cleanCheckout()) {
     return unavailable("dirty_checkout");

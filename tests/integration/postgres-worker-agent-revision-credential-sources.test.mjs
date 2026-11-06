@@ -31,7 +31,13 @@ import {
 import { gitCommandBodies, gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { onlineGitAllow, openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
 import { invoke, token } from "../helpers/openshell-online-wire.mjs";
-import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
+import {
+  OpenShellGitRuntime,
+  openShellRepositoryAccess,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
+import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
@@ -2964,7 +2970,30 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
   return async (t) => {
     const backendId = "github-primary";
     const repository = repositoryBoundary({ backendId });
-    const f = await setup(t, { repoDriver: repository.driver });
+    // This registered controlled sender qualifies finite v5 installation access. Stock
+    // OpenShell does not offer nonpreview installation-wide admission; this is not that claim.
+    const protectedGit = protectedRepositoryGitRelease(
+      () => openShellRepositoryAccess(runtime, () => ({ client, continuity, workspace, sandbox })),
+      async () => ({ close: async () => {} }),
+    );
+    const f = await setup(t, {
+      repoDriver: repository.driver,
+      driverSelections: { sandbox: protectedGit.sandboxConfiguration },
+    });
+    const gateway = new OpenShellCredentialGatewayDriver(
+      { binaries: ["/usr/bin/codex"] },
+      {
+        id: CREDENTIAL_GATEWAY_FIXTURE_ID,
+        backend: {
+          id: "finite-expiry-gateway",
+          drivers: { credential_gateway: CREDENTIAL_GATEWAY_FIXTURE_ID },
+          client: { placement: () => undefined, clientForNamespace: () => client },
+        },
+      },
+    );
+    f.controller.installDriver(protectedGit.owner, ["sandbox", "credential_proxy"]);
+    f.controller.registerDriver(gateway);
+    f.controller.selectDriver("credential_gateway", gateway.id);
     const routes = new PostgresOpenShellGitRouteStore(f.observerPool);
     const namespaceId = f.namespace.id;
     const pushRef = "refs/heads/review/task";
@@ -2977,28 +3006,18 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
         appId: "12345",
         githubInstallationId: "67890",
         maximumDurationSeconds: 86400,
-        repositories: [
-          {
-            repositoryRef: "application",
-            repositoryId: "34567",
-            repository: project,
-            namespaces: [
-              {
-                namespaceId,
-                profiles: ["git-write"],
-                pushRefAllowlist: [pushRef],
-                transport: "git-only",
-              },
-            ],
-          },
-        ],
+        installationAccess: {
+          repositoryRef: "installation",
+          namespaces: [{ namespaceId, accessMode: "installation" }],
+        },
+        repositories: [],
       },
       backendId,
     );
     const binding = resolveGitHubRepositoryBinding(registry, {
       namespaceId,
-      repositoryRef: "application",
-      profile: "git-write",
+      repositoryRef: "installation",
+      profile: "github-installation",
     });
     // Repository and Compute must resolve the same registry grant throughout this test.
     repository.driver.resolve = (input) => ({
@@ -3031,8 +3050,15 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       },
       async authorizeOnlineRequest(request, installed) {
         assert.equal(request.sessionId, sessionId);
+        assert.equal(request.scope, "github-installation");
         approved.push(request.operation);
-        return onlineGitAllow(request, installed);
+        assert.equal(installed.route.revisionId, revision.id);
+        return {
+          ...onlineGitAllow(request, installed),
+          scope: request.scope,
+          revisionId: installed.route.revisionId,
+          fence: installed.route.fence,
+        };
       },
     });
     // Allocate the Agent and independent model grant before starting the short Git clock.
@@ -3040,13 +3066,25 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       auth: "credential_source",
       executionMode: "dedicated",
     });
+    await f.observerPool.query("UPDATE occ.agents SET repository_bindings=$1 WHERE id=$2", [
+      JSON.stringify([{ repositoryRef: binding.repositoryRef, profile: binding.profile }]),
+      agent.id,
+    ]);
+    // The preinstalled model provider and its retained profile remain the original expiry
+    // fixture's. Enrollment must not replace that profile and erase its overlap controls.
     const model = agent.harnessAuth.sourceId;
     const continuity = { model, workload: async () => "original-workload-and-supervisor" };
     const deadlineWallMs = Date.now() + 6_000;
     const revision = await f.revision(agent, 1, {
-      sandboxDriverId: "sandbox-worker-fixture",
+      protectedRepositoryDriver: protectedGit.owner,
       repositoryCredentials: { ...repository.snapshot, deadlineWallMs, bindings: [binding] },
     });
+    assert.deepEqual(revision.executionAdmission, { version: 5, mode: "protected" });
+    assert.equal(revision.egressPlan.repositoryGitAuthorization, "online-request");
+    assert.deepEqual(revision.egressPlan.repositoryGit, revision.repositoryCredentials);
+    assert.equal(revision.repositoryCredentials.standingApprovalId, undefined);
+    assert.equal(revision.repositoryCredentials.deadlineWallMs, deadlineWallMs);
+    assert.deepEqual(revision.egressPlan.harnessCredentialSource, revision.harnessAuth);
     const { client, world } = await gitExpiryGateway(t, {
       model,
       workspace,
@@ -3059,8 +3097,8 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       ...binding.grant,
       value: "synthetic-installation-token",
       expiresAt: new Date(deadlineWallMs + 600_000).toISOString(),
-      repository: project,
-      pushRef,
+      scope: "github-installation",
+      installationId: registry.githubInstallationId,
       preparationAttemptId: randomUUID(),
       materialVersion: randomUUID(),
       apiOrigin: "https://api.github.com",
@@ -3070,22 +3108,44 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
         { registrationName, authority: {} },
         createGitHubRepositoryDeliveryResolver(registry),
       );
-      // The authority has a real TLS socket; only custody and the external installation are doubles.
+      // Keep the original controlled supplier and TLS authority. Enrollment and route custody
+      // are real; this material is released only after the worker has committed activation.
       git.routes = routes;
-      git.owner = { readOpenShellMaterial: async () => ({ ...material, sessionId }) };
+      git.owner = {
+        async readOpenShellMaterial(_revisionId, _signal, route, scope) {
+          assert.equal(_revisionId, revision.id);
+          assert.equal(route.revisionId, revision.id);
+          assert.equal(scope, "github-installation");
+          if ((await f.currentAgent(agent)).activeRevisionId !== revision.id) {
+            return { absent: "unprepared" };
+          }
+          return { ...material, sessionId };
+        },
+      };
       git.emit = (e) => events.push(e);
       return git;
     }
     senderRuntime = runtime = releaseRuntime();
+    const kube = createTestKubernetesComputeDriver(f.compute.id, {
+      repositoryCredentials: true,
+      protectedDriver: protectedGit.owner,
+      credentialGatewayDriver: gateway,
+    });
     const compute = {
       ...f.compute,
+      validateExecutionAdmission: kube.validateExecutionAdmission.bind(kube),
       validateRepositoryCredentials(harness, selected) {
         assert.equal(harness.id, "codex");
         assert.equal(harness.mode, "dedicated");
-        assert.equal(selected, "sandbox-worker-fixture");
+        assert.equal(selected, protectedGit.owner.ref.id);
+        kube.validateRepositoryCredentials(harness, selected);
       },
       async prepareRevision(r, context) {
+        assert.equal(r.id, revision.id);
+        assert.equal(r.agentId, agent.id);
         assert.equal(r.harnessAuth.sourceId, model);
+        assert.equal(context.harnessAuth.method, "credential_source");
+        assert.equal(context.harnessAuth.source.id, model);
         assert.equal(
           world.id,
           undefined,
@@ -3106,9 +3166,18 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
         );
         world.id = sandboxId;
         identity = git.middlewares[registrationName].config;
+        assert.equal(identity.fields.binding_id.stringValue, r.egressPlan.execution.executionId);
         await runtime.bind(r.id, (box) => assert.equal(box.id, sandboxId), continuity);
         const entry = await runtime.entries.get(r.id);
         await runtime.reconcile(entry);
+        await protectedGit.enroll(
+          r,
+          context,
+          git.middlewares,
+          workspace,
+          sandboxId,
+          world.repositoryGitRecipient,
+        );
         return f.compute.prepareRevision(r, context);
       },
       retireExpiredRepositoryAccess: (r, signal) =>
@@ -3119,7 +3188,10 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       },
     };
     const start = () =>
-      f.start(compute, { emit: (e) => events.push(e), transformDrivers: withCredentialGateway });
+      f.start(compute, {
+        emit: (e) => events.push(e),
+        transformDrivers: (drivers) => protectedGit.selectDrivers(drivers, gateway),
+      });
     let originRequests = 0;
     let originBytes = 0;
     async function fetchFromPrivateOrigin() {
@@ -3161,6 +3233,17 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       } = await f.workResult(revision);
       throw Error("Git-enabled revision did not activate: " + work?.reason_code, { cause });
     });
+    const { rows: installations } = await f.observerPool.query(
+      "SELECT installation FROM occ.egress_installations WHERE revision_id=$1",
+      [revision.id],
+    );
+    assert.equal(installations.length, 1);
+    assert.deepEqual(installations[0].installation.plan, revision.egressPlan);
+    assert.equal(installations[0].installation.sandboxId, sandboxId);
+    const entry = await runtime.entries.get(revision.id);
+    entry.nextObserveAt = 0;
+    entry.nextRefreshAt = 0;
+    await runtime.reconcile(entry);
     assert.deepEqual(await fetchFromPrivateOrigin(), { decision: 1 });
     assert.deepEqual(approved, ["upload-pack"]);
     const remaining = deadlineWallMs - Date.now();
@@ -3199,6 +3282,20 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       attempts.map((a) => [a.phase, a.sessionId]),
       [["disposed", sessionId]],
     );
+    const originalAdmission = attempts[0].admissionId;
+    assert.ok(originalAdmission);
+    const assertOriginalSession = async () => {
+      assert.deepEqual(
+        (await repositoryAttempts(f, revision)).map(({ admissionId, sessionId, phase }) => [
+          admissionId,
+          sessionId,
+          phase,
+        ]),
+        [[originalAdmission, sessionId, "disposed"]],
+        "settlement never creates a second durable admission",
+      );
+      assert.equal(repository.calls.filter((c) => c.operation === "open").length, 0);
+    };
     await advanceCleanupRetries(f, revision);
     await nextExpiry("REPOSITORY_CLEANUP_PENDING");
     assert.equal(
@@ -3230,6 +3327,7 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
         [1, bodies.fetch.length, ["upload-pack"]],
       );
       assert.deepEqual([world.detaches.length, world.writes], [1, 1], "no replay or replacement");
+      await assertOriginalSession();
       return;
     }
     await nextExpiry("REPOSITORY_ACCESS_WITHDRAWN");
@@ -3257,7 +3355,7 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
     assert.equal((await fetchFromPrivateOrigin()).decision, 2);
     assert.equal(originBytes, bodies.fetch.length, "neither late fetch reached the Git origin");
     assert.deepEqual(approved, ["upload-pack"]);
-    assert.equal(repository.calls.filter((c) => c.operation === "open").length, 1);
+    await assertOriginalSession();
     assert.deepEqual(
       [world.detaches.length, world.writes],
       [1, 1],
