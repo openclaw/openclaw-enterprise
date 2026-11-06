@@ -9,7 +9,7 @@ import {
   portClash,
   queryPrometheus,
   waitForMonitoring,
-} from "../helpers/metrics-monitoring-readiness.mjs";
+} from "../helpers/metrics-monitoring-readiness.ts";
 import { listen } from "../helpers/listen.mjs";
 
 async function loopbackServer(t, respond) {
