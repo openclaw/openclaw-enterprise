@@ -4,15 +4,18 @@ import type {
   DriverCustody,
   RepositoryBackend,
   RetireOutcome,
-} from "../../../credentials/backend-contracts.ts";
-import type { GitHubStaticTokenOwner } from "../types.ts";
-import type { GitHubDriverState } from "./state.ts";
+} from "./backend-contracts.ts";
+import type { RepositoryDriverState } from "./driver-state.ts";
+
+export interface StaticTokenOwner {
+  withToken<T>(consume: (bytes: Uint8Array, assertCurrent: () => void) => Promise<T>): Promise<T>;
+}
 
 type StaticAcquisitionDependencies = Readonly<{
-  state: GitHubDriverState;
+  state: RepositoryDriverState;
   custody: DriverCustody;
   clock: Clock;
-  owner: GitHubStaticTokenOwner;
+  owner: StaticTokenOwner;
   leaseMs: number;
 }>;
 
@@ -81,7 +84,9 @@ export function createStaticTokenAcquisition({
 }
 
 /** A static token has no provider retirement; the common owner releases it on expiry. */
-export function createUnsupportedRetirement(state: GitHubDriverState): RepositoryBackend["retire"] {
+export function createUnsupportedRetirement(
+  state: RepositoryDriverState,
+): RepositoryBackend["retire"] {
   return async (attempt, credential): Promise<RetireOutcome> => {
     if (!state.credentials.has(credential)) {
       throw new Error("foreign-credential");

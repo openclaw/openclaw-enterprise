@@ -9,7 +9,7 @@ import { parseUnambiguousJson } from "../../../credentials/json-members.ts";
 import { planDraftPull } from "../prepared-draft-pull.ts";
 import { classifyRoute } from "./classification.ts";
 import { allowsGraphqlInput } from "../graphql-input.ts";
-import { allowsReceivePackInput } from "./receive-pack.ts";
+import { allowsReceivePackInput } from "../../../credentials/receive-pack.ts";
 
 /** A validated HTTPS request view; transport validation remains with the caller. */
 type GitHubRequest = {

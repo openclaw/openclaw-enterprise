@@ -14,6 +14,68 @@ container, platform, or live-provider boundary. Run commands from the repository
 root with Node.js 24, Git, OpenSSL, Docker, and installed workspace dependencies.
 The controlled tests use disposable fixtures and do not use ambient GitHub credentials.
 
+## GitLab provider checks
+
+Run the component checks with `node --test tests/conformance/gitlab-repository-{config,policy,credentials}.test.mjs`.
+All three files run in `checks-baseline-1`. They cover project and request policy,
+Namespace policy, draft and quick-action rules, token ownership, and Backend
+validation ownership.
+
+The `gitlab-repository-live` lane registers the composed Agent-session tests.
+It requires these explicit inputs:
+
+| Variable                   | Required input                                                |
+| -------------------------- | ------------------------------------------------------------- |
+| `GITLAB_TEST_LIVE`         | `1` to select the live cases; the lane sets it.               |
+| `GITLAB_TEST_AUTHORIZED`   | `1` to authorize effects on the disposable project.           |
+| `GITLAB_TEST_TOKEN_FILE`   | Protected file containing the project service-account PAT.    |
+| `GITLAB_TEST_PROJECT`      | Canonical GitLab.com project path, such as `example/project`. |
+| `GITLAB_TEST_PROJECT_ID`   | Numeric GitLab project ID.                                    |
+| `GITLAB_TEST_WRITE_BRANCH` | Existing source branch with changes against `main`.           |
+
+With these variables set, run `node --test tests/integration/gitlab-repository-agent.test.mjs`.
+A selected live case fails on missing inputs. With live selection unset, the
+registry-withdrawal case runs with synthetic local material and the two live
+cases skip. The write case creates a draft merge request. The operator must
+remove that test artifact through GitLab after checking it; the client does not
+provide administrative cleanup. Never use a shared production project or print
+PAT contents. The lane is opt-in and is not included in ordinary CI or the
+`Full Integration` workflow.
+
+## Installed GitLab Agent lane
+
+The `gitlab-repository-installed` lane selects an explicit disposable k3d cluster
+and exercises the regular installed path: Helm startup, repository service
+projection, Installation admission, Agent Pod delivery, allowed read, forbidden
+push refusal before dispatch, independent GitLab observer confirmation, stop, and
+session disposal.
+
+It requires the GitLab project inputs, a protected PAT file, an authorized model
+credential, an explicit Kubernetes context, current GitLab.com IPv4 `/32` egress,
+and immutable controller, repository credential, runtime, PostgreSQL, and Node
+images:
+
+```sh
+OCC_TEST_GITLAB_REPOSITORY_KUBERNETES_REAL=1 \
+GITLAB_TEST_TOKEN_FILE=/path/to/protected/pat \
+GITLAB_TEST_PROJECT=example/project \
+GITLAB_TEST_PROJECT_ID=12345678 \
+OCC_TEST_KUBERNETES_KUBECONFIG=/path/to/kubeconfig \
+OCC_TEST_KUBERNETES_CONTEXT=k3d-disposable \
+OCC_TEST_GITLAB_UPSTREAM_CIDRS=203.0.113.10/32 \
+OPENAI_API_KEY=... \
+OCC_TEST_OPENAI_MODEL=codex/<model> \
+  node --test tests/integration/gitlab-repository-kubernetes-real.test.mjs
+```
+
+Also set `OCC_TEST_PRODUCTION_CONTROLLER_IMAGE`,
+`OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE`,
+`OCC_TEST_KUBERNETES_RUNTIME_IMAGE`, `OCC_TEST_PRODUCTION_POSTGRES_IMAGE`, and
+`OCC_TEST_PRODUCTION_NODE_IMAGE` to immutable references. The example replaces
+the model credential with `...`; a real run supplies it from a protected
+environment and never prints it. This lane is opt-in and is not included in
+ordinary PR CI or `Full Integration`.
+
 ## Run controlled tests
 
 ```sh

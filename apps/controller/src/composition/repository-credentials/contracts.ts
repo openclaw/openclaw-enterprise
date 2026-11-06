@@ -7,6 +7,7 @@ import type { RepositoryServiceFactory } from "../../drivers/repo/credentials/ba
 import type { ServiceConfig } from "../../drivers/repo/credentials/service-contracts.ts";
 import type { TlsMaterial } from "../../drivers/repo/credentials/internal-contracts.ts";
 import type { GitHubTokenClass } from "../../drivers/repo/github/credentials/types.ts";
+import type { GitLabTokenClass } from "../../drivers/repo/gitlab/credentials/types.ts";
 
 export interface LoadedConfiguration {
   readonly config: ServiceConfig;
@@ -15,9 +16,10 @@ export interface LoadedConfiguration {
   readonly trustedUpstreamOrigins: ReadonlySet<string>;
   readonly upstreamCa?: Uint8Array;
   /** Names the upstream authority; the token kind is development-only. */
-  readonly authority: "github-prepared-git-registry" | "github-token-development";
+  readonly authority:
+    "github-prepared-git-registry" | "github-token-development" | "gitlab-token-development";
   /** Present for the token authority only; derived from the token prefix, never secret. */
-  readonly tokenClass?: GitHubTokenClass;
+  readonly tokenClass?: GitHubTokenClass | GitLabTokenClass;
   close(): void;
 }
 

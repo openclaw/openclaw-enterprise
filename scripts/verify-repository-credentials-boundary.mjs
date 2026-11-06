@@ -8,6 +8,7 @@ const credentialDirectories = [
   "composition/repository-credentials",
   "drivers/repo/credentials",
   "drivers/repo/github",
+  "drivers/repo/gitlab",
   "backends/repository-credentials",
   "backends/token-service",
 ];
@@ -119,10 +120,25 @@ const reviewedImports = {
   "composition/repository-credentials/platform.ts": {
     // Shared, synchronous JSON validation has no credential or I/O access.
     "@openclaw-enterprise/contracts": ["requireConfiguration"],
+    // Read the Installation's selected, nonsecret GitLab repository registry.
+    "node:fs/promises": ["readFile"],
   },
   "composition/repository-credentials/protected-file.ts": {
     "node:fs": ["constants"],
     "node:fs/promises": ["lstat", "open"],
+  },
+  // The send boundary synchronously rereads the nonsecret, read-only ConfigMap
+  // projection and rejects symlink escape, replacement, and generation changes.
+  "drivers/repo/gitlab/credentials/current-registry.ts": {
+    "node:fs": [
+      "closeSync",
+      "constants",
+      "fstatSync",
+      "lstatSync",
+      "openSync",
+      "readSync",
+      "realpathSync",
+    ],
   },
   // Bounded, descriptor-checked PEM from the Installation's read-only public CA projection.
   "composition/repository-credentials/public-ca.ts": {
@@ -143,6 +159,10 @@ const reviewedImports = {
   "composition/repository-credentials/registry.ts": {
     "node:fs": ["constants"],
     "node:fs/promises": ["open"],
+  },
+  "composition/repository-credentials/policy.ts": {
+    // Read the Installation's selected, nonsecret GitLab repository registry.
+    "node:fs/promises": ["readFile"],
   },
   "drivers/repo/github/credentials/registry.ts": {
     "node:crypto": ["createHash"],
@@ -223,6 +243,17 @@ const reviewedImports = {
   // Hash the canonical public CA bundle for issuer trust identity.
   "drivers/repo/github/credentials/origin.ts": { "node:crypto": ["createHash"] },
   "drivers/repo/github/policy.ts": {
+    "@openclaw-enterprise/occ": ["ScopeViolationError"],
+  },
+  "drivers/repo/gitlab/backend.ts": {
+    "@openclaw-enterprise/contracts": ["BACKEND_ID_MAX_CHARACTERS", "isBackendId"],
+    "@openclaw-enterprise/occ": ["ScopeViolationError"],
+    "@openclaw-enterprise/utils": ["asRecord", "deepFreeze", "isNonEmptyString"],
+  },
+  "drivers/repo/gitlab/credentials/grants.ts": {
+    "node:crypto": ["createHash"],
+  },
+  "drivers/repo/gitlab/policy.ts": {
     "@openclaw-enterprise/occ": ["ScopeViolationError"],
   },
   "drivers/repo/github/driver.ts": {
@@ -337,6 +368,10 @@ const rawGlobals = new Set([
   "console",
   "module",
 ]);
+const reviewedRawGlobals = {
+  // Fixed-origin GitLab transport with redirect refusal and token redaction.
+  "drivers/repo/gitlab/client.ts": ["fetch"],
+};
 const reviewedProcessMembers = {
   "composition/repository-credentials/check-config.ts": ["argv", "exitCode", "stderr", "stdout"],
   "drivers/repo/github/credentials/client/environment.ts": ["env"],
@@ -382,6 +417,7 @@ const reviewedProcessMembers = {
   "drivers/repo/github/credentials/client/operator.ts": ["argv", "exitCode", "stderr", "stdout"],
   "drivers/repo/github/credentials/admission-probe.ts": ["argv", "exitCode", "stderr", "stdout"],
   "drivers/repo/github/credentials/client/private-files.ts": ["getuid"],
+  "drivers/repo/gitlab/credentials/current-registry.ts": ["getuid"],
   "composition/repository-credentials/protected-file.ts": ["getuid"],
   "composition/repository-credentials/service.ts": ["exit", "once", "stderr", "stdout"],
   "composition/repository-credentials/projected-inputs.ts": [
@@ -694,6 +730,9 @@ function inspectSource(path, root, sources, ast) {
     }
     if (node.type === "Identifier" && isReference(parent, key)) {
       if (rawGlobals.has(node.name)) {
+        if (reviewedRawGlobals[file]?.includes(node.name)) {
+          return;
+        }
         deny(node, `raw global ${node.name} requires security review`);
       }
       if (node.name === "process") {

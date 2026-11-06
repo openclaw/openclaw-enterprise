@@ -4,7 +4,7 @@ import { createGitHubDriver } from "./driver.ts";
 import { validateGitHubConfiguration } from "./config.ts";
 import { staticTokenGraphqlPolicy } from "./profiles.ts";
 import { createRoutePolicy } from "./routes.ts";
-import { createGatewayAuthentication } from "./gateway-authentication.ts";
+import { createGatewayAuthentication } from "../../credentials/gateway-authentication.ts";
 import { createGrantResolver } from "./grants.ts";
 import type { GitHubDriverFactory, GitHubFactoryOptions, GitHubTokenProfile } from "./types.ts";
 

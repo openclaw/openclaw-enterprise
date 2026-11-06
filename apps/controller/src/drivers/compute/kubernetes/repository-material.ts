@@ -132,7 +132,8 @@ function clientField(value: unknown): string {
 function validateClient(value: unknown): RepositoryCredentialClientConfiguration {
   const input = record(value);
   const hasPolicy = Object.hasOwn(input, "pushRefAllowlist");
-  if (Object.keys(input).length !== (hasPolicy ? 7 : 6)) {
+  const hasProjectId = Object.hasOwn(input, "projectId");
+  if (Object.keys(input).length !== (hasPolicy ? 7 : 6) + (hasProjectId ? 1 : 0)) {
     return invalid();
   }
   const client: RepositoryCredentialClientConfiguration = {
@@ -142,6 +143,7 @@ function validateClient(value: unknown): RepositoryCredentialClientConfiguration
     canonicalApiHost: clientField(input.canonicalApiHost),
     apiHost: clientField(input.apiHost),
     repository: clientField(input.repository),
+    ...(hasProjectId ? { projectId: clientField(input.projectId) } : {}),
     ...(hasPolicy ? { pushRefAllowlist: normalizePushRefAllowlist(input.pushRefAllowlist) } : {}),
   };
   let origin: URL;
@@ -166,11 +168,15 @@ function validateClient(value: unknown): RepositoryCredentialClientConfiguration
     remote.hash ||
     !/^\/[A-Za-z0-9._/-]+\.git$/.test(remote.pathname) ||
     remote.pathname.includes("..") ||
+    remote.pathname !== `/${client.repository}.git` ||
     !/^[A-Za-z0-9._-]{1,128}$/.test(client.gitUsername) ||
     !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(client.apiHost) ||
     !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(client.canonicalApiHost) ||
     client.apiHost !== origin.hostname ||
-    !/^[A-Za-z0-9._/-]{1,512}$/.test(client.repository)
+    !(!hasProjectId
+      ? /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(client.repository)
+      : /^([A-Za-z0-9][A-Za-z0-9._-]*\/)+[A-Za-z0-9][A-Za-z0-9._-]*$/.test(client.repository)) ||
+    (hasProjectId && !/^[1-9][0-9]{0,15}$/.test(client.projectId!))
   ) {
     return invalid();
   }
@@ -230,7 +236,10 @@ export function repositorySessionFiles(
     return invalid();
   }
   const client = validateClient(document.client);
-  const hosts = `${JSON.stringify(client.canonicalApiHost)}:\n  api_host: ${JSON.stringify(client.apiHost)}\n  git_protocol: https\n  oauth_token: ${JSON.stringify(files.bearer)}\n`;
+  const hosts =
+    client.projectId === undefined
+      ? `${JSON.stringify(client.canonicalApiHost)}:\n  api_host: ${JSON.stringify(client.apiHost)}\n  git_protocol: https\n  oauth_token: ${JSON.stringify(files.bearer)}\n`
+      : "version: 1\n";
   if (
     files.gitconfig !== gitconfig ||
     files["gh/config.yml"] !== ghConfiguration ||

@@ -7,7 +7,7 @@ import type {
 } from "../../credentials/backend-contracts.ts";
 import { sameBinding } from "../../credentials/grant-identity.ts";
 import { githubProviderOrigin } from "./origin.ts";
-import { createGatewayAuthentication } from "./gateway-authentication.ts";
+import { createGatewayAuthentication } from "../../credentials/gateway-authentication.ts";
 import { resolveGitHubRepositoryBinding, validateGitHubRepositoryRegistry } from "./registry.ts";
 import type { GitHubRepositoryRegistry } from "./registry.ts";
 import { createRoutePolicy } from "./routes.ts";

@@ -294,12 +294,12 @@ The worker owns session lifecycle; API readiness remains database-backed.
 
 `apps/controller/src/composition/repository-credentials/projected-inputs.ts:prepareProjectedInputs`
 
-Beside the single worker, the optional service pins a projection generation,
-copies config/key/TLS/registry inputs into owned private regular files, validates
-the selected Backend and exact Service origin, then starts both listeners through
-the protected loader. App/TLS private material stays in its container; only the
-worker receives a projected Kubernetes API token. They share only the private
-control volume. The Pod uses `Recreate` and a 75-second termination grace period.
+Beside the worker, the optional service pins a projection generation, copies
+the selected authority's inputs into private files, validates the Backend and
+Service origin, then starts both listeners through the protected loader. Private
+repository material stays in its container; only the worker receives a projected
+Kubernetes API token. They share only the private control volume. The Pod uses
+`Recreate` and a 75-second termination grace period.
 Readiness requires both the service's Unix-listener probe and the worker's
 queue-health probe. The worker retries unavailable session operations through
 its Driver contract. Neither component has independent high availability.

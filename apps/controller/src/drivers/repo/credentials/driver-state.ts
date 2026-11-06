@@ -3,14 +3,20 @@ import type {
   AttemptContext,
   AuthorityIdentity,
   CredentialRef,
+  Denied,
   DriverCustody,
   FinalizeOutcome,
   OriginalOutcome,
+  RequestHead,
   RequestPlan,
   RepositoryBackend,
   RetireOutcome,
-} from "../../../credentials/backend-contracts.ts";
-import type { RoutePolicy } from "../routes.ts";
+} from "./backend-contracts.ts";
+
+export interface RoutePolicy {
+  route(head: RequestHead): unknown;
+  plan(head: RequestHead): RequestPlan | Denied;
+}
 
 type OutcomePayload<T> = T extends OriginalOutcome ? Omit<T, keyof OriginalOutcome> : never;
 type ProviderOutcomePayload = OutcomePayload<AcquireOutcome | RetireOutcome | FinalizeOutcome>;
@@ -36,7 +42,10 @@ interface CredentialRecord {
   observedMono: number;
 }
 
-export interface GitHubDriverState extends Pick<RepositoryBackend, "finalize" | "settle" | "plan"> {
+export interface RepositoryDriverState extends Pick<
+  RepositoryBackend,
+  "finalize" | "settle" | "plan"
+> {
   readonly credentials: WeakMap<CredentialRef, CredentialRecord>;
   readonly plans: WeakSet<RequestPlan>;
   readonly finalized: boolean;
@@ -47,11 +56,11 @@ export interface GitHubDriverState extends Pick<RepositoryBackend, "finalize" | 
   ): Readonly<T> & OriginalOutcome;
 }
 
-export function createGitHubDriverState({
+export function createRepositoryDriverState({
   authority,
   custody,
   routes,
-}: DriverStateDependencies): GitHubDriverState {
+}: DriverStateDependencies): RepositoryDriverState {
   const plans = new WeakSet<RequestPlan>();
   const credentials = new WeakMap<CredentialRef, CredentialRecord>();
   const unsettledOutcomes = new WeakSet<object>();

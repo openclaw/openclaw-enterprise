@@ -22,15 +22,18 @@ export interface PreparedRepositoryIngressOwner {
     readonly id: string;
     readonly agentId: string;
     readonly servicePrincipalId: string;
+    readonly harnessMode: "embedded" | "dedicated";
   };
 }
 
 function harnessPeer({ namespace, namespaceId, revision }: PreparedRepositoryIngressOwner) {
+  const workloadRole = revision?.harnessMode === "embedded" ? "gateway" : "agent";
   const identities = {
     "openclaw.dev/namespace": namespaceId,
     "openclaw.dev/revision": revision?.id ?? "",
     "openclaw.dev/agent": revision?.agentId ?? "",
     "openclaw.dev/service-principal": revision?.servicePrincipalId ?? "",
+    "openclaw.dev/workload-role": workloadRole,
   };
   if (
     !isKubernetesNamespaceName(namespace) ||
@@ -44,16 +47,14 @@ function harnessPeer({ namespace, namespaceId, revision }: PreparedRepositoryIng
   }
   return {
     namespaceSelector: { matchLabels: { [namespaceLabel]: namespace } },
-    podSelector: ordinaryNetworkPolicySelector({
-      ...identities,
-      "openclaw.dev/workload-role": "agent",
-    }),
+    podSelector: ordinaryNetworkPolicySelector(identities),
   };
 }
 
 /** Fail closed if any stored peer is broader than an exact Compute Harness revision. */
 function canonicalPeer(peer: V1NetworkPolicyPeer) {
   const labels = peer.podSelector?.matchLabels ?? {};
+  const workloadRole = labels["openclaw.dev/workload-role"] ?? "";
   return harnessPeer({
     namespace: peer.namespaceSelector?.matchLabels?.[namespaceLabel] ?? "",
     namespaceId: labels["openclaw.dev/namespace"] ?? "",
@@ -61,6 +62,7 @@ function canonicalPeer(peer: V1NetworkPolicyPeer) {
       id: labels["openclaw.dev/revision"] ?? "",
       agentId: labels["openclaw.dev/agent"] ?? "",
       servicePrincipalId: labels["openclaw.dev/service-principal"] ?? "",
+      harnessMode: workloadRole === "gateway" ? "embedded" : "dedicated",
     },
   });
 }

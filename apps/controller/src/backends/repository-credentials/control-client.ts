@@ -107,6 +107,8 @@ function status(value: unknown): SessionStatus {
 function client(value: unknown): RepositoryCredentialClientConfiguration {
   const hasPolicy =
     value !== null && typeof value === "object" && Object.hasOwn(value, "pushRefAllowlist");
+  const hasProjectId =
+    value !== null && typeof value === "object" && Object.hasOwn(value, "projectId");
   const parsed = object(value, [
     "gatewayOrigin",
     "gitRemote",
@@ -114,6 +116,7 @@ function client(value: unknown): RepositoryCredentialClientConfiguration {
     "canonicalApiHost",
     "apiHost",
     "repository",
+    ...(hasProjectId ? ["projectId"] : []),
     ...(hasPolicy ? ["pushRefAllowlist"] : []),
   ]);
   const fields: RepositoryCredentialClientConfiguration = {
@@ -123,6 +126,7 @@ function client(value: unknown): RepositoryCredentialClientConfiguration {
     canonicalApiHost: identity(parsed.canonicalApiHost),
     apiHost: identity(parsed.apiHost),
     repository: identity(parsed.repository),
+    ...(hasProjectId ? { projectId: identity(parsed.projectId) } : {}),
     ...(hasPolicy ? { pushRefAllowlist: normalizePushRefAllowlist(parsed.pushRefAllowlist) } : {}),
   };
   const origin = new URL(fields.gatewayOrigin);
@@ -139,7 +143,10 @@ function client(value: unknown): RepositoryCredentialClientConfiguration {
     remote.hash ||
     fields.apiHost !== origin.hostname ||
     !/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(fields.canonicalApiHost) ||
-    !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(fields.repository) ||
+    !(!hasProjectId
+      ? /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(fields.repository)
+      : /^([A-Za-z0-9][A-Za-z0-9._-]*\/)+[A-Za-z0-9][A-Za-z0-9._-]*$/.test(fields.repository)) ||
+    (hasProjectId && !/^[1-9][0-9]{0,15}$/.test(fields.projectId!)) ||
     remote.pathname !== `/${fields.repository}.git`
   ) {
     return unavailable();

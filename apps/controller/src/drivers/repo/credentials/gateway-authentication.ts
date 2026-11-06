@@ -1,8 +1,4 @@
-import type {
-  RepositoryBackendFactory,
-  Denied,
-  RequestHead,
-} from "../../credentials/backend-contracts.ts";
+import type { RepositoryBackendFactory, Denied, RequestHead } from "./backend-contracts.ts";
 
 type GatewayAuthenticationDependencies = Readonly<{
   isGitRoute: (head: RequestHead) => boolean;

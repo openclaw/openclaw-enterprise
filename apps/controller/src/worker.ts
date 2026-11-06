@@ -1191,6 +1191,7 @@ export class ControllerWorker {
   private readonly protectedDriver: InstalledDriver | undefined;
   private readonly preparedTokens: InstallationRuntimeDrivers["tokenService"];
   private readonly backends: readonly BackendDefinition[];
+  private readonly backendValidators: InstallationRuntimeDrivers["backendValidators"];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
   private readonly requireComputePreflight: boolean;
   private readonly pollIntervalMs: number;
@@ -1287,8 +1288,12 @@ export class ControllerWorker {
       preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
     });
     this.queue = new PostgresWorkQueue(options.pool, this.queueOptions);
-    this.backends = validateBackendDefinitions(drivers?.installation.backend ?? []);
-    this.backendMap = backendDefinitionMap(this.backends);
+    this.backends = validateBackendDefinitions(
+      drivers?.installation.backend ?? [],
+      drivers?.backendValidators,
+    );
+    this.backendValidators = drivers?.backendValidators;
+    this.backendMap = backendDefinitionMap(this.backends, drivers?.backendValidators);
     this.iamDriverId = drivers?.installation.drivers.iam.id ?? "native-iam";
     this.iam =
       drivers === undefined
@@ -1436,6 +1441,7 @@ export class ControllerWorker {
       sandboxNetworkPolicyCeiling: this.policyCeiling,
       driverConfigurations: this.driverConfigurations,
       backends: this.backends,
+      backendValidators: this.backendValidators,
       recordOperations: true,
       ...(this.configuredServiceAccountDriverId === undefined
         ? {}

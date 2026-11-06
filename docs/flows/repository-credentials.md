@@ -68,7 +68,7 @@ Both constructors share admission, capacity and shutdown:
 - **Development:** [Construct custody and lifecycle locally](../../apps/controller/src/drivers/repo/credentials/development-session.ts)
   and drain failed construction. The [GitHub factory](../../apps/controller/src/drivers/repo/github/credentials/factory.ts)
   uses the [grant resolver](../../apps/controller/src/drivers/repo/github/credentials/grants.ts) and
-  [client authentication](../../apps/controller/src/drivers/repo/github/credentials/gateway-authentication.ts).
+  [client authentication](../../apps/controller/src/drivers/repo/credentials/gateway-authentication.ts).
   It requires both `developmentOnly: true` and `--development-authority`.
 
 The [public contracts](../../packages/contracts/src/drivers/repo/index.ts) define
