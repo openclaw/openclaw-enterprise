@@ -1824,7 +1824,7 @@ const timeout = setTimeout(() => {
 );
 
 test(
-  "runtime image records the reviewed Node binary and shares Codex between the plugin and Dedicated command",
+  "runtime image shares the reviewed Codex version between the plugin and Dedicated command",
   imageTestOptions,
   async () => {
     const source = historicalCodex
