@@ -1493,12 +1493,24 @@ if [[ ! -f "$evidence_dir/helm-started" ]]; then
 fi
 
 helm_complete=0
-if [[ -f "$evidence_dir/helm-started" && "$helm_state" == deployed ]] &&
-  matches_yaml "$evidence_dir/current-live-values.yaml" "$candidate_values"; then
-  # A deployed Helm revision includes successful hooks, but ensure it is newer
-  # than the baseline before interpreting a lost response as success.
-  if jq -e --slurpfile before "$evidence_dir/before-helm-status.json" \
-    '.version > $before[0].version' "$evidence_dir/current-helm-status.json" >/dev/null; then
+if [[ -f "$evidence_dir/helm-started" ]]; then
+  jq -es '
+    length == 1 and (.[0] |
+    (.previousRevision | type == "number" and . > 0 and floor == .) and
+    (.expectedRevision | type == "number" and . > 0 and floor == .) and
+    .expectedRevision == .previousRevision + 1 and
+    .expectedRevision > .previousRevision)
+  ' "$evidence_dir/helm-started" >/dev/null ||
+    die "the Helm submission intent is missing or invalid; reconcile the release before continuing."
+  jq -e --slurpfile submission "$evidence_dir/helm-started" '
+    .version == $submission[0].previousRevision or .version == $submission[0].expectedRevision
+  ' "$evidence_dir/current-helm-status.json" >/dev/null ||
+    die "the Helm release revision is outside this submission; investigate before continuing."
+  if [[ "$helm_state" == deployed ]] &&
+    jq -e --slurpfile submission "$evidence_dir/helm-started" \
+      '.version == $submission[0].expectedRevision' "$evidence_dir/current-helm-status.json" >/dev/null; then
+    matches_yaml "$evidence_dir/current-live-values.yaml" "$candidate_values" ||
+      die "the expected deployed Helm revision does not match the candidate values; investigate before continuing."
     helm_complete=1
   fi
 fi
@@ -1588,7 +1600,18 @@ PYTHON
   if [[ "$repository_enabled" == true ]]; then
     verify_pair_nodes
   fi
-  touch "$evidence_dir/helm-started"
+  helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/before-helm-submission.json"
+  jq -e --slurpfile observed "$evidence_dir/current-helm-status.json" '
+    .version == $observed[0].version and .info.status == $observed[0].info.status
+  ' "$evidence_dir/before-helm-submission.json" >/dev/null ||
+    die "the Helm release changed before submission; investigate before continuing."
+  submission=$(mktemp "$evidence_dir/helm-submission.XXXXXXXX.json")
+  jq -e '
+    .version | select(type == "number" and . > 0 and floor == . and . + 1 > .) |
+    {previousRevision: ., expectedRevision: (. + 1)}
+  ' "$evidence_dir/before-helm-submission.json" >"$submission" ||
+    die "cannot bind the next Helm release revision."
+  install_atomically "$submission" "$evidence_dir/helm-started"
   # Open stdout before entering the native failure handler.
   {
     helm upgrade --install "$release" "$chart" "${helm_args[@]}" \
@@ -2233,6 +2256,11 @@ if [[ "$repository_enabled" == true ]]; then
 fi
 
 helm status "$release" "${helm_args[@]}" >"$evidence_dir/after-helm-status.txt"
+helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/after-helm-status.json"
+jq -e --slurpfile submission "$evidence_dir/helm-started" '
+  .info.status == "deployed" and .version == $submission[0].expectedRevision
+' "$evidence_dir/after-helm-status.json" >/dev/null ||
+  die "the final Helm release is not this submission's deployed revision; completion was not recorded."
 "${kube[@]}" get deployments,statefulsets,pods,persistentvolumeclaims --all-namespaces \
   --output json >"$evidence_dir/after-workloads.json"
 # Record the terminal state only after every required check and evidence read.

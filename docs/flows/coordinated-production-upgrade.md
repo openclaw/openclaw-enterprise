@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-06"
-last_updated_session: "authoring-run/fd9ca628-3661-4fb1-927c-661ea85ae64d"
+last_updated_session: "authoring-run/9ac3c663-290c-4524-94bd-7157cbd44914"
 ---
 
 # Production image upgrade flow
@@ -179,10 +179,10 @@ Ineligible Helm states stop before values/Secret reads. Values must match baseli
 or candidate; Secret UID, Installation annotation and other data must match baseline.
 Only saved reviewed candidates apply.
 
-Skip Helm only if this attempt started it and its newer deployed release matches
-candidate values. Otherwise, require the operator's migration-history check and
-no active initialization Job or Pod. Failed or disconnected migrations may have
-committed; operator-owned checks do not roll them back.
+Skip Helm only at the submission's expected deployed revision with candidate
+values. Revisions outside its prior/expected pair or invalid intents refuse
+resume. Retrying requires migration-history review and terminal initialization
+Jobs and Pods; checks cannot undo committed migrations.
 
 ### 3. Quiesce writers and run the candidate release
 
@@ -194,15 +194,14 @@ both stay at zero, within the shutdown deadline. It cannot detect independent
 database writers, autoscalers, or partitioned nodes; the operator stops those
 writers and keeps nodes reachable.
 
-The protected files are atomically replaced with the saved candidate. When the
-Installation changes, including a controller-only settings release, the script
-reads the Secret before updating its Installation key, preserving other data
-and metadata with a resource-version precondition.
-If the candidate is already present after a lost response, it does not write it
-again. The candidate Installation checksum is included in both OCC Pod
-templates.
+The script atomically replaces protected files with the saved candidate. For
+Installation changes, it updates the Secret's Installation key with a
+resource-version precondition, preserving other data and metadata.
+An already-present candidate is not rewritten after a lost response.
+Both OCC Pod templates include its checksum.
 
-A durable marker precedes `helm upgrade`. The Helm initialization hook checks
+Each submission atomically saves prior/expected revisions in `helm-started` after
+rechecking live status. Retries bind the next live revision. The initialization hook checks
 the Installation, then runs the candidate migrator and bootstrap, before API and
 worker rollout. If Helm
 fails, resumption reads its current status and migration state before a retry;
@@ -278,7 +277,7 @@ resume checks the replacement.
 
 `docs/guides/deploy/production-upgrade.md:Verify the release`
 
-Completion proves Helm rollout and OCC access; runtime upgrades verify
+Completion requires the expected deployed Helm revision and OCC access; runtime upgrades verify
 deployments, readiness and Doctor without errors.
 It writes a private `completed` marker. New upgrades require fresh
 evidence. Failed marker writes require reconciling evidence with live state;
@@ -335,6 +334,8 @@ saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 19:10: Bind resume to each submitted Helm revision. (authoring-run/9ac3c663-290c-4524-94bd-7157cbd44914 - f1c0865be4c523090af0dccc29c613ad1d47d542)
 
 - 2026-11-06 10:19: Bind startup results and logs to controller-owned Jobs; retain dependencies until cleanup is confirmed. (authoring-run/fd9ca628-3661-4fb1-927c-661ea85ae64d - 8e8035a0c073e2779aa7b32ece5dff449449f5b2)
 
