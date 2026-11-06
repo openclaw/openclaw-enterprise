@@ -11,7 +11,6 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
@@ -44,6 +43,9 @@ import {
   OVERVIEW_REFRESH_FAILED,
   READ_OUTAGE_REASON,
 } from "../helpers/refusal-text.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
 
 type ConsoleFixture = Awaited<ReturnType<typeof createReadyConsoleNamespace>>["fixture"];
 

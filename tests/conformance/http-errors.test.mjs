@@ -10,13 +10,6 @@ import {
   ConfigurationOwnershipError,
   ConfigurationValidationError,
 } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
-import {
-  isStaleGeneration,
-  message,
-  namespaceListNeed,
-  PROVISIONING_REFUSAL_CODES,
-  preAdmissionRefusal,
-} from "../../apps/controller/src/console/agents/list.mts";
 import { requestedValues } from "../../apps/controller/src/http/caller-denial.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
@@ -103,6 +96,15 @@ import {
   storedCredentialSourceConfig,
   dedicatedOpenClawSandboxRefusal,
 } from "../helpers/refusal-text.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const {
+  isStaleGeneration,
+  message,
+  namespaceListNeed,
+  PROVISIONING_REFUSAL_CODES,
+  preAdmissionRefusal,
+} = await importConsoleModule("agents/list.mjs");
 
 // Text that must never reach a client: the mappings below that answer with fixed text are
 // checked with an error carrying this message.

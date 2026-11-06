@@ -18,8 +18,6 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorkspaceFilesAccess } from "../../apps/controller/src/gateway/contracts.ts";
 
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -85,6 +83,10 @@ import {
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
 
 function deferred<T>() {
   let resolve: (value: T | PromiseLike<T>) => void = () =>

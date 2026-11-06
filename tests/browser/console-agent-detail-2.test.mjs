@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import test from "node:test";
 
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-
 import { fileConsoleApp } from "../helpers/console-app.mjs";
 import { createNativeConsoleFixture, nativeBrowserSupported } from "./console-native-ingress.ts";
 
@@ -38,6 +36,9 @@ import {
   registerSettingsRefocusAndTabsCases,
   registerSharingCredentialsAndChannelsCases,
 } from "./console-agent-detail-cases.mts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
 
 // The Console Browser lane runs the two Agent detail test files in parallel.
 

@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import test, { type TestContext } from "node:test";
-import { message } from "../../apps/controller/src/console/agents/list.mts";
-import {
-  createApiClient,
-  responseFields,
-  type RequestOptions,
-} from "../../apps/controller/src/console/api-client.mts";
+import type { RequestOptions } from "../../apps/controller/src/console/api-client.mts";
 import { createViewLifetime } from "../../apps/controller/src/console/view-lifetime.mts";
 import { listen } from "../helpers/listen.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const { message } = await importConsoleModule("agents/list.mjs");
+const { createApiClient, responseFields } = await importConsoleModule("api-client.mjs");
 
 async function namespaceUrl(t: TestContext, server: Server) {
   const port: unknown = await listen(t, server);

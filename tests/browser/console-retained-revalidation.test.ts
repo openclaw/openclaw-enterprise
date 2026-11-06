@@ -4,7 +4,6 @@ import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
 
-import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { listen } from "../helpers/listen.mjs";
@@ -30,6 +29,9 @@ import {
   viewTag,
 } from "./console-refocus-helpers.ts";
 import { restrict } from "../helpers/iam-grants.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
 
 type Agent = Pick<AgentWire, "id" | "name" | "configurationId">;
 type Namespace = Pick<NamespaceWire, "id">;

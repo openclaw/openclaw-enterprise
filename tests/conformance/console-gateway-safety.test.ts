@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
-import {
+const {
   GATEWAY_SAFETY_SETTINGS,
   gatewaySafetyStrict,
   gatewaySafetyValue,
   withGatewaySafetyStrict,
   withGatewaySafetyValue,
-} from "../../apps/controller/src/console/agents/gateway-safety.mts";
+} = await importConsoleModule("agents/gateway-safety.mjs");
 
 // The Configuration tab's collaboration and safety toggles edit the native document the JSON
 // editor saves, and show what a deployment of it runs with. These cases pin what the toggles
