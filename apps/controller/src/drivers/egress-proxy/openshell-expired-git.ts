@@ -228,7 +228,7 @@ function evidence(
       isDeepStrictEqual(generation(o), generation(desired)) &&
       Number.isFinite(at) &&
       at <= evaluated &&
-      (!expired || Math.abs(Date.now() - at) < 30_000) &&
+      (!expired || (evaluated - at < 30_000 && Math.abs(Date.now() - at) < 30_000)) &&
       Math.abs(Date.now() - evaluated) < 30_000,
   );
   return desired;

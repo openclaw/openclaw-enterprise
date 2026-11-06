@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import { witnessOpenShellGitLaunch } from "../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts";
+import {
+  observeOpenShellGitPredecessor,
+  witnessOpenShellGitLaunch,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts";
 import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
 import {
   OpenShellGitRouteBlockedError,
@@ -2059,9 +2062,11 @@ test("Git expiry observes the original model in the reduced stock installation, 
         observedTime: new Date().toISOString(),
         evaluatedTime: new Date().toISOString(),
       };
-      if (oldExpired && pass && fault === "stale expired observation") {
-        // A fresh gateway evaluation cannot renew an expired supervisor observation.
-        result.observedTime = new Date(Date.now() - 31_000).toISOString();
+      if (oldExpired && pass && fault.startsWith("stale expired observation")) {
+        // Both timestamps use the gateway clock. Its allowed skew must not hide age.
+        const evaluated = Date.now() + (fault.endsWith("clock skew") ? 20_000 : 0);
+        result.observedTime = new Date(evaluated - 40_000).toISOString();
+        result.evaluatedTime = new Date(evaluated).toISOString();
       }
       if (absent) {
         trace.push(receiptId ?? "OBSERVE");
@@ -2210,6 +2215,13 @@ test("Git expiry observes the original model in the reduced stock installation, 
     f.revision.repositoryCredentials.deadlineWallMs = Date.now() - 1;
     await f.reconcile();
     assert.equal(await f.lookup(), undefined, "Git denied at its own deadline before withdrawal");
+    if (fault.startsWith("stale expired observation")) {
+      pass = new AbortController();
+      await assert.rejects(
+        observeOpenShellGitPredecessor(client, entry.supervisor, pass.signal),
+        /cannot retain this execution after Git expiry/,
+      );
+    }
     const cleanup = (runtime, observer = owner) => {
       pass = new AbortController();
       return runtime.retireExpiredRepositoryAccess(
@@ -2247,9 +2259,12 @@ test("Git expiry observes the original model in the reduced stock installation, 
     if (expectedFirst === "retire-runtime") {
       assert.deepEqual(failures(), expectedFailures);
       if (
-        ["replacement Pod", "Git profile scope changed", "stale expired observation"].includes(
-          fault,
-        )
+        [
+          "replacement Pod",
+          "Git profile scope changed",
+          "stale expired observation",
+          "stale expired observation with clock skew",
+        ].includes(fault)
       ) {
         assert.equal(sends, 0);
       }
@@ -2332,6 +2347,7 @@ test("Git expiry observes the original model in the reduced stock installation, 
     ["failed model", "retire-runtime"],
     ["expired model", "retire-runtime"],
     ["stale expired observation", "retire-runtime"],
+    ["stale expired observation with clock skew", "retire-runtime"],
   ]) {
     await t.test(fault, () => exercise(fault, first, cold));
   }
