@@ -154,10 +154,30 @@ export async function gitExpiryGateway(
   };
   if (platformProfile) {
     profiles.service = serviceProfile;
-    providers["operator-service"] = {
-      // On the stock wire an omitted profile_workspace is the empty string (platform).
-      type: "service",
-      metadata: { workspace, name: "operator-service", id: "service-id", resource_version: "4" },
+    if (supervisor) {
+      // Mandatory launch has exactly model, runtime files and Git. Its model may select
+      // the platform profile even when the Workspace has a benign namesake.
+      providers[model].type = "service";
+      delete providers[model].profile_workspace;
+    } else {
+      providers["operator-service"] = {
+        // On the stock wire an omitted profile_workspace is the empty string (platform).
+        type: "service",
+        metadata: { workspace, name: "operator-service", id: "service-id", resource_version: "4" },
+      };
+    }
+  }
+  if (supervisor) {
+    profiles.runtime = { id: "runtime", endpoints: [], credentials: [] };
+    providers[supervisor.runtimeProvider] = {
+      type: "runtime",
+      profile_workspace: workspace,
+      metadata: {
+        workspace,
+        name: supervisor.runtimeProvider,
+        id: "runtime-id",
+        resource_version: "1",
+      },
     };
   }
   world.retainedProviders = Object.keys(providers);
@@ -167,7 +187,8 @@ export async function gitExpiryGateway(
     const name = req.provider;
     const git = name === gitName;
     const removed = world.detaches.length !== 0;
-    const expired = git && !removed && Date.now() >= world.gitExpiresAt;
+    // Readiness describes the whole provider environment, including on a model query.
+    const expired = !!gitName && !removed && Date.now() >= world.gitExpiresAt;
     const absent = git && removed;
     const profileChanged = retainedProfile.resource_version === "2";
     const snapshot = {
@@ -192,13 +213,17 @@ export async function gitExpiryGateway(
     const desiredEnvironment = receiptEnvironments.get(receiptId) ?? snapshot.provider_env_revision;
     receiptEnvironments.set(receiptId, desiredEnvironment);
     const metadata = providers[name].metadata;
-    const state = absent
-      ? "REVOKED"
-      : expired || (!git && world.modelFailed)
-        ? "FAILED"
-        : supervisor && desiredEnvironment !== snapshot.provider_env_revision
-          ? "SUPERSEDED"
-          : "READY";
+    let state = "READY";
+    if (supervisor && desiredEnvironment !== snapshot.provider_env_revision) {
+      state = "SUPERSEDED";
+    } else if (absent) {
+      state = "REVOKED";
+    } else if (expired) {
+      // Stock 0.1.6 withholds an expired credential without declaring installation failure.
+      state = "WITHHELD";
+    } else if (!git && world.modelFailed) {
+      state = "FAILED";
+    }
     // Only the Sandbox resourceVersion changes between the expiry owner's first two reads.
     if (expired && world.version === 13) {
       world.version = 14;
@@ -207,6 +232,12 @@ export async function gitExpiryGateway(
       world.reports.push([name, state, req.receipt_id ?? "OBSERVE"]);
     }
     const now = { seconds: Math.floor(Date.now() / 1000) };
+    let reason;
+    if (state === "SUPERSEDED") {
+      reason = "PROVIDER_READINESS_REASON_DESIRED_STATE_CHANGED";
+    } else if (expired) {
+      reason = "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED";
+    }
     return {
       status: {
         state: "PROVIDER_READINESS_STATE_" + state,
@@ -219,7 +250,7 @@ export async function gitExpiryGateway(
             completed_time: supervisor.started,
           },
         }),
-        ...(expired && { reason: "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED" }),
+        ...(reason && { reason }),
         receipt: {
           workspace,
           provider: name,
@@ -246,6 +277,7 @@ export async function gitExpiryGateway(
           process_instance_id: repositoryGitRecipient.processInstanceId,
           credentials_installed: !expired,
           launch_environment_installed: !expired,
+          ...(expired && { reason: "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED" }),
           policy_active: true,
         },
         network_instance_id: repositoryGitRecipient.networkInstanceId,
@@ -287,28 +319,26 @@ export async function gitExpiryGateway(
             restart_policy: "SANDBOX_RESTART_POLICY_NEVER",
             providers: world.detaches.length
               ? world.retainedProviders
-              : supervisor
-                ? [model, supervisor.runtimeProvider, gitName]
-                : [...world.retainedProviders, gitName],
+              : [...world.retainedProviders, gitName],
             provider_attachment_epoch: world.detaches.length
               ? "reduced"
               : repositoryGitRecipient.attachmentEpoch,
           },
           status: {
             phase: "SANDBOX_PHASE_READY",
-            ...(supervisor && {
-              configuration_activated: true,
-              main_process_started_time: supervisor.started,
-              main_process_instance_id: repositoryGitRecipient.networkInstanceId,
-              configuration_admission: {
-                state: 2,
-                instance_id: "configuration",
-                policy_version: 1,
-                config_revision: "3",
-                provider_env_revision: supervisor.providerEnvRevision || String(6 + world.writes),
-                policy_hash: "original-policy",
-              },
-            }),
+            main_process_instance_id: repositoryGitRecipient.networkInstanceId,
+            configuration_activated: true,
+            configuration_admission: {
+              state: 2,
+              instance_id: "configuration",
+              policy_version: 1,
+              config_revision: "3",
+              provider_env_revision: supervisor
+                ? supervisor.providerEnvRevision || String(6 + world.writes)
+                : "6",
+              policy_hash: "original-policy",
+            },
+            ...(supervisor && { main_process_started_time: supervisor.started }),
           },
         },
       },
@@ -377,11 +407,15 @@ export async function gitExpiryGateway(
     },
     GetSandboxProviderStatus: observe,
     DetachSandboxProvider: (req) => {
-      assert.equal(req.sandbox, sandbox);
+      assert.equal(req.sandbox, supervisor?.sandbox ?? sandbox);
       assert.equal(req.provider, gitName);
       assert.equal(req.workspace_scope.workspace, workspace);
       assert.deepEqual(world.detaches, []);
-      assert.equal(req.expected_resource_version, "14", "only send against a fresh observation");
+      assert.equal(
+        req.expected_resource_version,
+        String(world.version),
+        "only send against a fresh observation",
+      );
       world.detaches.push(req.request_id);
       world.version = 15;
       // Stock committed the conditional removal; its reply was lost. No DETACH receipt

@@ -32,6 +32,7 @@ export async function standingExecutionFixture(
     };
   }>,
   driverSelections: Partial<InstallationStartupConfiguration["drivers"]> = {},
+  firstAdmissionDurationMs = 120_000,
 ) {
   const f = await standingExecutionPlatform(t, testUrl, driverSelections);
   const external = await setupRepository?.(f.observerPool, f.namespace.id);
@@ -148,7 +149,7 @@ export async function standingExecutionFixture(
   const credentials = {
     driver: { id: driver.id, implementation: driver.implementation },
     bindings: [binding],
-    deadlineWallMs: Date.now() + 120_000,
+    deadlineWallMs: Date.now() + firstAdmissionDurationMs,
     standingApprovalId: approval.id,
     standingApprovalGeneration: approval.generation,
     standingApprovalScopeFingerprint: fingerprint,

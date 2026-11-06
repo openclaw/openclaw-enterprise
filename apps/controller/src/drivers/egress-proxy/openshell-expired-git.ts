@@ -160,6 +160,19 @@ const generation = (s: Snapshot) => [
   s.providerEnvRevision,
 ];
 
+/** Preserve the Gateway's RFC 3339 UTC wire precision for observation lease comparisons. */
+function timestampNanos(value: string | undefined): bigint | undefined {
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/.exec(value ?? "");
+  if (!match) {
+    return undefined;
+  }
+  const millis = Date.parse(`${match[1]}Z`);
+  if (!Number.isFinite(millis) || new Date(millis).toISOString().slice(0, 19) !== match[1]) {
+    return undefined;
+  }
+  return BigInt(millis) * 1_000_000n + BigInt((match[2] ?? "").padEnd(9, "0"));
+}
+
 /** An exact stock supervisor report. At expiry stock can report the old credentials expired;
  * accept that only before subtracting Git, never as the successful reduced installation. */
 function evidence(
@@ -168,7 +181,13 @@ function evidence(
   epoch: string,
   name: string,
   id: string,
-  options?: { old?: boolean; receiptId?: string; resourceVersion?: string; observe?: boolean },
+  options?: {
+    old?: boolean;
+    receiptId?: string;
+    resourceVersion?: string;
+    observe?: boolean;
+    readStartedAt?: bigint;
+  },
 ): Snapshot | undefined {
   const { receipt: r, observed: o, reason, state } = status;
   const desired = r?.desired;
@@ -176,10 +195,10 @@ function evidence(
   const kind = options?.receiptId && !options.observe ? "DETACH" : "OBSERVE";
   const expired =
     old &&
-    state === "PROVIDER_READINESS_STATE_FAILED" &&
+    state === "PROVIDER_READINESS_STATE_WITHHELD" &&
     reason === "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED";
-  const at = Date.parse(status.observedTime ?? "");
-  const evaluated = Date.parse(status.evaluatedTime ?? "");
+  const at = timestampNanos(status.observedTime);
+  const evaluated = timestampNanos(status.evaluatedTime);
   requireIdentity(
     r?.workspace === git.workspace &&
       r.provider === name &&
@@ -226,10 +245,22 @@ function evidence(
           o.launchEnvironmentInstalled &&
           (!o.reason || o.reason === unspecified))) &&
       isDeepStrictEqual(generation(o), generation(desired)) &&
-      Number.isFinite(at) &&
+      at !== undefined &&
+      evaluated !== undefined &&
       at <= evaluated &&
-      Math.abs(Date.now() - evaluated) < 30_000,
+      // Stock reports expiry before checking its 15-second supervisor observation lease.
+      (!expired || evaluated - at < 15_000_000_000n) &&
+      Math.abs(Date.now() - Date.parse(status.evaluatedTime ?? "")) < 30_000,
   );
+  // Request time includes transport before evaluation. If that conservative budget
+  // is exhausted, obtain a fresh witness without treating the matching identity as unsafe.
+  if (
+    expired &&
+    (options?.readStartedAt === undefined ||
+      evaluated - at + (process.hrtime.bigint() - options.readStartedAt) >= 15_000_000_000n)
+  ) {
+    return undefined;
+  }
   return desired;
 }
 
@@ -241,10 +272,27 @@ export async function observeOpenShellGitPredecessor(
   signal: AbortSignal,
 ) {
   const { workspace, sandbox, provider, providerId, providerResourceVersion } = git;
+  const readStartedAt = process.hrtime.bigint();
   const status = await client.getSandboxProviderStatus(workspace, sandbox, provider, signal);
+  if (
+    status.state === "PROVIDER_READINESS_STATE_WITHHELD" &&
+    status.reason === "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED"
+  ) {
+    // Stock reports expiry before checking whether this session still owns the live instance.
+    // Read after the report: an earlier Sandbox snapshot could miss a replacement accepted since.
+    const current = await client.getSandbox({ workspace, name: sandbox }, signal);
+    requireIdentity(
+      current?.id === git.sandboxId &&
+        current.name === sandbox &&
+        current.workspace === workspace &&
+        [2, "SANDBOX_PHASE_READY"].includes(current.phase as string | number) &&
+        current.mainProcessInstanceId === git.networkInstanceId,
+    );
+  }
   return !!evidence(status, git, git.attachmentEpoch, provider, providerId, {
     old: true,
     resourceVersion: providerResourceVersion,
+    readStartedAt,
   });
 }
 
@@ -263,9 +311,11 @@ export async function witnessOpenShellGitLaunch(
   box: OpenShellSandboxResponse,
   git: Git,
   signal: AbortSignal,
-  completedPreviewReceipt?: string,
+  options?: { completedPreviewReceipt?: string; coldObservation?: boolean },
 ): Promise<string | undefined> {
+  const completedPreviewReceipt = options?.completedPreviewReceipt;
   const id = await modelProvider(client, git, owner.model, signal);
+  const readStartedAt = process.hrtime.bigint();
   const status = await client.getSandboxProviderStatus(
     git.workspace,
     git.sandbox,
@@ -277,6 +327,24 @@ export async function witnessOpenShellGitLaunch(
     completedPreviewReceipt !== undefined &&
     status.completedOperationId !== completedPreviewReceipt
   ) {
+    return;
+  }
+  if (
+    options?.coldObservation &&
+    status.state === "PROVIDER_READINESS_STATE_WITHHELD" &&
+    status.reason === "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED"
+  ) {
+    // Expiry withholds the whole environment. Matching old evidence cannot reconstruct
+    // launch authority in a cold process; let the worker supervise and defer instead.
+    evidence(status, git, git.attachmentEpoch, owner.model, id, { old: true, readStartedAt });
+    requireIdentity(
+      box.id === git.sandboxId &&
+        box.name === git.sandbox &&
+        box.workspace === git.workspace &&
+        box.annotations["openclaw.dev/revision-id"] === git.executionId &&
+        [2, "SANDBOX_PHASE_READY"].includes(box.phase as string | number) &&
+        box.mainProcessInstanceId === git.networkInstanceId,
+    );
     return;
   }
   const model = evidence(
@@ -368,14 +436,7 @@ export async function subtractExpiredOpenShellGit(
         return result("retire-runtime", "attachment-after-send-intent");
       }
       check = "original-git-installation";
-      const before = evidence(
-        await status(provider),
-        git,
-        current.epoch,
-        provider,
-        git.providerId,
-        { old: true, resourceVersion: git.providerResourceVersion },
-      );
+      const before = await observeOpenShellGitPredecessor(client, git, signal);
       if (!before) {
         return result("pending");
       }
