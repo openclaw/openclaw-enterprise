@@ -22,6 +22,7 @@
     "tests/docs/docs-site.test.mjs",
     "tests/integration/github-login-transport.test.mjs",
     "tests/conformance/kubernetes-compute.test.mjs",
+    "tests/conformance/openshell-static-credential-attachment.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
     "tests/conformance/workspace-node-supervisor.test.mjs",
@@ -206,6 +207,9 @@
     },
     {
       "path": "tests/conformance/kubernetes-compute.test.mjs"
+    },
+    {
+      "path": "tests/conformance/openshell-static-credential-attachment.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-provider-harness.test.mjs"

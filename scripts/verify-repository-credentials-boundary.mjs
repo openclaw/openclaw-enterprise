@@ -158,6 +158,8 @@ const reviewedImports = {
   // The prepared owner reads only the Installation custody mount. The App issuer comes
   // through the admitted Secret Driver; grant hashing, comparison, claims and signing-key import stay here.
   "drivers/repo/github/credentials/prepared-lifecycle.ts": {
+    // Wait for an existing issuance claim within this request’s deadline.
+    "node:timers/promises": ["setTimeout"],
     "node:crypto": ["createHash", "createPrivateKey", "randomUUID"],
     "node:fs/promises": ["readFile"],
     "node:util": ["isDeepStrictEqual"],

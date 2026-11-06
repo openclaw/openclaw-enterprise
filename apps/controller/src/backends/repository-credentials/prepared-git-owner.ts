@@ -66,7 +66,7 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
   ) => void;
   startWorker?: boolean;
   /** Private host selection; never derived from issuer configuration or a request. */
-  repositoryGitCustody?: RepositoryGitCustody;
+  repositoryGitCustody: RepositoryGitCustody;
   tokenService?: TokenService;
 }
 
@@ -198,9 +198,10 @@ export async function startPreparedGitHubGitOwner(
   options: Options,
   clock: Clock = createSystemClock(),
 ) {
-  const custodySelection: RepositoryGitCustody = options.repositoryGitCustody ?? {
-    kind: options.controlSocket === undefined ? "unavailable" : "native-broker",
-  };
+  const custodySelection = options.repositoryGitCustody;
+  if (custodySelection === undefined) {
+    throw new Error("REPOSITORY_GIT_CUSTODY_REQUIRED");
+  }
   const selected = custodySelection.kind === "selected";
   const registry = validateGitHubRepositoryRegistry(options.registry, options.backendId);
   for (const repo of registry.repositories) {

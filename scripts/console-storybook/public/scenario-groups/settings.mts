@@ -16,6 +16,8 @@ type SettingsScenario = {
   name: string;
   path: "/console/settings";
   description: string;
+  debugEnabled?: boolean;
+  storageUnavailable?: boolean;
   steps?: readonly string[];
   installationModelProvider?: true;
   installationNestedValues?: true;
@@ -31,13 +33,31 @@ export const settingsScenarios = {
     name: "Account",
     path: "/console/settings",
     description:
-      "An account card with initials, name and email, and a Session card with Sign out. Administrators can inspect accepted startup fields or the same values as JSON, including redacted sections and an empty object. There are no editable settings in this release.",
+      "An account card with initials, name and email, and a Session card with Sign out. Administrators can inspect accepted startup fields or the same values as JSON, including redacted sections and an empty object. Browser preferences includes Debug mode, which saves locally.",
     steps: [
       "Check that the page has no Namespace selector and that the account card shows initials, name and email.",
+      "Turn Debug mode on and off. The sidebar diagnostics follow the switch without adding a URL parameter.",
       "Expand each Installation Driver below the cards. Read the human labels and raw keys; Credential Gateway shows binary paths, Sandbox shows nested fields and hidden resources, and IAM has no visible fields. Switch Fields / JSON and confirm the expanded groups stay open.",
       "Choose Sign out in the Session card: “Signing out…” appears, then the sign-in page.",
-      "On a long page, scroll to the bottom and check that the sidebar background and operator profile reach it. At phone width, values fit and the existing navigation drawer still opens.",
+      "Scroll the long page from top to bottom. The account control must stay at the viewport bottom; open it and select Settings without scrolling back. Repeat with Debug mode enabled. At phone width, values fit and the navigation drawer still opens.",
     ],
+  },
+  settingsDebugEnabled: {
+    group: "Pages/Settings",
+    name: "Debug mode enabled",
+    path: "/console/settings",
+    debugEnabled: true,
+    description:
+      "The saved browser preference enables sidebar diagnostics. Turn Debug mode off to hide them.",
+  },
+  settingsStorageUnavailable: {
+    group: "Pages/Settings",
+    name: "Browser storage unavailable",
+    path: "/console/settings",
+    storageUnavailable: true,
+    actions: [{ selector: "#settings-debug", click: true }],
+    description:
+      "A browser that blocks site storage refuses the save. Debug mode stays off and the control shows a recovery message.",
   },
   settingsModelProvider: {
     group: "Pages/Settings",
