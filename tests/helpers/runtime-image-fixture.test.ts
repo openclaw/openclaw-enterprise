@@ -212,6 +212,14 @@ test("runtime fixture removes its images under Docker's containerd image store",
   });
 });
 
+function aggregateErrors(error: AggregateError): readonly unknown[] {
+  return error.errors;
+}
+
+function hasMessage(value: unknown, pattern: RegExp): boolean {
+  return value instanceof Error && pattern.test(value.message);
+}
+
 test("runtime fixture preserves primary and cleanup failures", async () => {
   await withDirectory(async (directory) => {
     const engine = fakeEngine({ containerRemoveFails: true });
@@ -227,9 +235,11 @@ test("runtime fixture preserves primary and cleanup failures", async () => {
       failure = error;
     }
     assert.ok(failure instanceof AggregateError);
-    assert.ok(failure.errors.includes(primary));
-    assert.ok(failure.errors.some((error) => /container removal failed/.test(error.message)));
-    assert.ok(failure.errors.some((error) => /outcome.*unknown/.test(error.message)));
+    assert.ok(aggregateErrors(failure).includes(primary));
+    assert.ok(
+      aggregateErrors(failure).some((error) => hasMessage(error, /container removal failed/)),
+    );
+    assert.ok(aggregateErrors(failure).some((error) => hasMessage(error, /outcome.*unknown/)));
     assert.equal(engine.calls.filter((args) => args[0] === "rm").length, 1);
     assert.equal(imageRemovals(engine).length, 0);
   });
@@ -263,8 +273,10 @@ test("runtime fixture preserves an undefined rejection with and without cleanup 
       failure = error;
     }
     assert.ok(failure instanceof AggregateError);
-    assert.equal(failure.errors[0], undefined);
-    assert.ok(failure.errors.some((error) => /container removal failed/.test(error?.message)));
+    assert.equal(aggregateErrors(failure)[0], undefined);
+    assert.ok(
+      aggregateErrors(failure).some((error) => hasMessage(error, /container removal failed/)),
+    );
   });
 });
 
@@ -280,10 +292,10 @@ test("runtime fixture reports a lost build response without deleting or replayin
       failure = error;
     }
     assert.ok(failure instanceof AggregateError);
-    assert.ok(failure.errors.some((error) => /build response lost/.test(error.message)));
+    assert.ok(aggregateErrors(failure).some((error) => hasMessage(error, /build response lost/)));
     assert.ok(
-      failure.errors.some((error) =>
-        /build outcome for fixture:first is unknown/.test(error.message),
+      aggregateErrors(failure).some((error) =>
+        hasMessage(error, /build outcome for fixture:first is unknown/),
       ),
     );
     assert.ok(engine.images.has(ids[0]));
@@ -329,7 +341,7 @@ test("runtime fixture does not remove a tag changed by another writer", async ()
       }),
       (error) =>
         error instanceof AggregateError &&
-        error.errors.some((item) => /Tag changed/.test(item.message)),
+        aggregateErrors(error).some((item) => hasMessage(item, /Tag changed/)),
     );
     assert.equal(engine.tags.get("fixture:first"), baseId);
     assert.ok(engine.images.has(baseId));
@@ -346,7 +358,7 @@ test("runtime fixture does not replay a lost image removal response", async () =
       }),
       (error) =>
         error instanceof AggregateError &&
-        error.errors.some((item) => /outcome unknown/.test(item.message)),
+        aggregateErrors(error).some((item) => hasMessage(item, /outcome unknown/)),
     );
     assert.equal(imageRemovals(engine).length, 1);
     assert.ok(engine.images.has(baseId));
@@ -365,8 +377,8 @@ test("runtime fixture blocks later operations after an unknown effect", async ()
       }),
       (error) =>
         error instanceof AggregateError &&
-        error.errors.length === 1 &&
-        /build outcome for fixture:first is unknown/.test(error.errors[0].message),
+        aggregateErrors(error).length === 1 &&
+        hasMessage(aggregateErrors(error)[0], /build outcome for fixture:first is unknown/),
     );
     assert.equal(engine.calls.filter((args) => args[0] === "create").length, 0);
     assert.equal(imageRemovals(engine).length, 0);
@@ -388,9 +400,9 @@ test("runtime fixture records pending effects and successful cleanup", async () 
       ),
       (error) =>
         error instanceof AggregateError &&
-        error.errors.length === 2 &&
-        error.errors[0].message === "image removal response lost" &&
-        /image cleanup incomplete or outcome unknown/.test(error.errors.at(-1).message),
+        aggregateErrors(error).length === 2 &&
+        hasMessage(aggregateErrors(error)[0], /^image removal response lost$/) &&
+        hasMessage(aggregateErrors(error).at(-1), /image cleanup incomplete or outcome unknown/),
     );
     const result: unknown = JSON.parse(await readFile(receiptPath, "utf8"));
     assert.ok(
@@ -459,7 +471,7 @@ test("runtime fixture retains images when Docker omits reference information", a
       }),
       (error) =>
         error instanceof AggregateError &&
-        error.errors.some((item) => /omitted reference information/.test(item.message)),
+        aggregateErrors(error).some((item) => hasMessage(item, /omitted reference information/)),
     );
     assert.equal(imageRemovals(engine).length, 0);
     assert.ok(ids.every((id) => engine.images.has(id)));
@@ -487,7 +499,7 @@ test("runtime fixture refuses existing tags and foreign image references", async
       }),
       (error) =>
         error instanceof AggregateError &&
-        error.errors.some((item) => /unowned references/.test(item.message)),
+        aggregateErrors(error).some((item) => hasMessage(item, /unowned references/)),
     );
     assert.equal(imageRemovals(engine).length, 0);
     assert.equal(engine.tags.get("foreign:tag"), ids[0]);
@@ -509,7 +521,7 @@ test("runtime fixture refuses existing tags and foreign image references", async
         }),
         (error) =>
           error instanceof AggregateError &&
-          error.errors.some((item) => /unowned references/.test(item.message)),
+          aggregateErrors(error).some((item) => hasMessage(item, /unowned references/)),
       );
       assert.equal(imageRemovals(engine).length, 0);
       assert.ok(ids.every((id) => engine.images.has(id)));
@@ -573,7 +585,7 @@ test("runtime fixture refuses further Docker commands after an unsettled group",
     }),
     (error) =>
       error instanceof AggregateError &&
-      error.errors.some((item) => /process group did not settle/.test(item?.message)),
+      aggregateErrors(error).some((item) => hasMessage(item, /process group did not settle/)),
   );
   await assert.rejects(docker("image", "inspect", "base"), /unsettled process group/);
   assert.equal(calls, 1);
