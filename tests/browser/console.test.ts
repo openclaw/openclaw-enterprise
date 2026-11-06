@@ -424,7 +424,7 @@ async function holdRoute(
   };
 }
 
-test("console debug flag is opt-in and follows Namespace navigation without leaking prior Agent reads", async (t) => {
+test("console debug preference persists and follows Namespace navigation without leaking prior Agent reads", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const alpha = namedResource(await fixture.createNamespace("Debug Alpha", { ready: true }));
@@ -432,13 +432,25 @@ test("console debug flag is opt-in and follows Namespace navigation without leak
   await fixture.createAgent(alpha.id, "Alpha runtime");
   await fixture.createAgent(beta.id, "Beta runtime");
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
-  await login(page, fixture, `/console/agents?namespace=${alpha.id}&debug=false`);
+  await login(page, fixture, `/console/agents?namespace=${alpha.id}`);
   await page.getByRole("heading", { name: "Agents" }).waitFor();
   assert.equal(await page.locator(".runtime-debug").count(), 0);
   assert.ok(!requests.some(({ path }) => path.endsWith("/runtime-images")));
 
-  await page.goto(`${fixture.origin}/console/agents?namespace=${alpha.id}&debug=true`);
+  await page.goto(`${fixture.origin}/console/settings?namespace=${alpha.id}&debug=true`);
+  await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
+  const debug = page.getByRole("switch", { name: "Debug mode" });
+  assert.equal(await debug.count(), 1, "Settings exposes the Debug mode preference");
+  assert.equal(await debug.isChecked(), false, "the URL cannot enable diagnostics");
+  assert.equal(await page.locator(".runtime-debug").count(), 0);
+  await debug.check();
+  await page.reload();
+  await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
+  assert.equal(await debug.isChecked(), true, "the browser retains the preference after reload");
+  assert.equal(await page.evaluate(() => localStorage.getItem("oce.console.debug")), "true");
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
   const panel = page.getByRole("region", { name: "Build and runtime images" });
   await panel.getByText("No deployed runtime images observed.").waitFor({ state: "attached" });
   const initialPanelText = await panel.textContent();
@@ -449,7 +461,7 @@ test("console debug flag is opt-in and follows Namespace navigation without leak
   const changedPanelText = await panel.textContent();
   assert.ok(changedPanelText !== null);
   assert.doesNotMatch(changedPanelText, /Alpha runtime/);
-  assert.equal(new URL(page.url()).searchParams.get("debug"), "true");
+  assert.equal(new URL(page.url()).searchParams.has("debug"), false);
   await panel.getByText("No deployed runtime images observed.").waitFor({ state: "attached" });
   const runtimeRow = await panel.locator(".runtime-debug-images details").elementHandle();
   assert.ok(runtimeRow);
@@ -461,7 +473,7 @@ test("console debug flag is opt-in and follows Namespace navigation without leak
   });
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("heading", { name: "Namespaces" }).waitFor();
-  assert.equal(new URL(page.url()).searchParams.get("debug"), "true");
+  assert.equal(new URL(page.url()).searchParams.has("debug"), false);
   await page.goBack();
   await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
   assert.equal(
@@ -474,9 +486,48 @@ test("console debug flag is opt-in and follows Namespace navigation without leak
     true,
     "Returning preserves expanded runtime image diagnostics",
   );
-  await page.goto(`${fixture.origin}/console/agents?namespace=${beta.id}`);
+  await page.goto(`${fixture.origin}/console/settings?namespace=${beta.id}`);
+  await debug.uncheck();
+  await page.reload();
+  await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
+  assert.equal(await debug.isChecked(), false);
+  const before = requests.filter(({ path }) => path.endsWith("/runtime-images")).length;
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page.getByRole("heading", { name: "Agents" }).waitFor();
   assert.equal(await page.locator(".runtime-debug").count(), 0);
+  await waitForIdleFetches(page);
+  assert.equal(requests.filter(({ path }) => path.endsWith("/runtime-images")).length, before);
+  assert.deepEqual(
+    nonAuthWriteRequests(requests),
+    [],
+    "a browser preference needs no API mutation",
+  );
+});
+
+test("console reports a refused debug preference save without enabling diagnostics", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  // A browser can deny site storage; the actual Settings control must not claim it saved.
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "localStorage", {
+      get() {
+        throw new DOMException("Site storage is blocked", "SecurityError");
+      },
+    });
+  });
+  await login(page, fixture, "/console/settings");
+  const debug = page.getByRole("switch", { name: "Debug mode" });
+  await debug.click();
+  await page
+    .getByText(
+      "Could not save this preference. Check your browser’s site storage settings and try again.",
+    )
+    .waitFor();
+  assert.equal(await debug.isChecked(), false);
+  assert.equal(await page.locator(".runtime-debug").count(), 0);
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
 });
 
 test("console browser flow keeps Namespace URL state across global pages and logout", async (t) => {
@@ -2881,7 +2932,9 @@ test("compact navigation preserves the page position while its drawer can still 
     JSON.stringify(returned),
   );
 
-  await page.goto(`${fixture.origin}${secretsPath}&debug=true`);
+  await page.goto(`${fixture.origin}/console/settings?namespace=${namespace.id}`);
+  await page.getByRole("switch", { name: "Debug mode" }).check();
+  await page.goto(`${fixture.origin}${secretsPath}`);
   await page.locator(settledView).waitFor();
   await toggle.click();
   const diagnostics = page.getByRole("region", { name: "Build and runtime images" });

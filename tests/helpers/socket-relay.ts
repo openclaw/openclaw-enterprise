@@ -1,3 +1,5 @@
+import type { Duplex } from "node:stream";
+
 // Relays bytes both ways between two connected stream sockets, as a test TCP forwarder or
 // HTTP CONNECT tunnel does. When one side closes after a clean end, the other side is ended
 // and destroyed only after its queued writes finish: the credential gateway closes each
@@ -7,11 +9,11 @@
 //
 // Keep this function self-contained: runtime-image-startup.test.mjs ships its source into a
 // container forwarder.
-export function relaySockets(a, b) {
+export function relaySockets(a: Duplex, b: Duplex) {
   for (const [from, to] of [
     [a, b],
     [b, a],
-  ]) {
+  ] satisfies [Duplex, Duplex][]) {
     // `close` follows every socket error, so the close handler below propagates failures.
     from.on("error", () => {});
     from.on("close", () => {

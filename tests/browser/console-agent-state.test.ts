@@ -1369,7 +1369,7 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
     .getByText("Accepted startup values are unavailable for this Driver.", { exact: true })
     .waitFor();
   assert.equal(await secret.locator("pre").count(), 0);
-  // Both columns belong to one document scroll; the profile reaches the long page's bottom.
+  // Long Settings content scrolls while the account control stays within the viewport.
   const desktop = await page.evaluate(() => {
     const shellElement = globalThis.document.querySelector(".shell");
     const sidebarElement = globalThis.document.querySelector(".sidebar");
@@ -1389,9 +1389,13 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
     };
   });
   assert.ok(desktop.shellHeight > desktop.viewport * 1.5, "exercise a genuinely long page");
-  assert.ok(desktop.sidebarHeight >= desktop.shellHeight - 1, JSON.stringify(desktop));
+  assert.ok(Math.abs(desktop.sidebarHeight - desktop.viewport) <= 1, JSON.stringify(desktop));
   assert.ok(desktop.bottomGap >= 0 && desktop.bottomGap <= 32, JSON.stringify(desktop));
   assert.equal(desktop.fits, true);
+  await page.evaluate(() => globalThis.window.scrollTo(0, document.body.scrollHeight));
+  const account = await page.locator(".sidebar .account-toggle").boundingBox();
+  assert.ok(account);
+  assert.ok(account.y >= 0 && account.y + account.height <= desktop.viewport);
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(
     await page.evaluate(
