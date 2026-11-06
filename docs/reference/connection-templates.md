@@ -43,7 +43,8 @@ OCC handles browser consent and the callback. After exchange, OCC registers the 
 
 1. Use a signed-in browser session. List available templates at
    `GET /namespaces/{namespaceId}/connection-templates`. OCC requires
-   `credential_source:create` for that Namespace.
+   `credential_source:create` for that Namespace. A template appears here once
+   its current version has an OAuth client.
 2. Send the chosen `connectionTemplateId` to
    `POST /namespaces/{namespaceId}/connections`. For a template with no configured scope list, supply optional `selectedScopes` or omit them to use provider defaults. A manual template with configured scopes uses the full list. For MCP, include every scope required by the resource and stay within any configured list. Open the returned
    `authorizationUrl` in the same browser and approve the request.

@@ -201,8 +201,20 @@ test(
       revocationUrl: `${issuer}/protocol/openid-connect/revoke`,
     });
     assert.equal(template.statusCode, 201, template.body);
+    const manual = { connectionTemplateId: template.json().data.id };
+    const listsManualTemplate = async (path: string) => {
+      const result = await inject("GET", path);
+      assert.equal(result.statusCode, 200, result.body);
+      return result
+        .json()
+        .data.some((entry: { id: string }) => entry.id === manual.connectionTemplateId);
+    };
+    // Admins can configure a saved template before a person can use it to start consent.
+    assert.equal(await listsManualTemplate("/connection-templates"), true);
+    assert.equal(await listsManualTemplate(`${base}/connection-templates`), false);
+    assert.equal((await inject("POST", connections, manual)).statusCode, 409);
     const registered = await inject("POST", "/oauth-clients", {
-      connectionTemplateId: template.json().data.id,
+      connectionTemplateId: manual.connectionTemplateId,
       connectionTemplateVersion: template.json().data.current.version,
       displayName: "Saved accounts",
       clientId,
@@ -211,8 +223,8 @@ test(
     });
     assert.equal(registered.statusCode, 201, registered.body);
     const oauthClientId = registered.json().data.id;
-    const manual = { connectionTemplateId: template.json().data.id };
     // Registering the first client makes the current template ready for consent.
+    assert.equal(await listsManualTemplate(`${base}/connection-templates`), true);
     const manualStart = await inject("POST", connections, manual);
     assert.equal(manualStart.statusCode, 201, manualStart.body);
     // A cancelled browser attempt has no outstanding gateway write. An admin can retire it immediately.

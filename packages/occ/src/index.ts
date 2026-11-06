@@ -4603,7 +4603,9 @@ export class OpenClawController {
       await this.exactNamespace(state, namespaceId);
       const templates = await state.connectionTemplates.listConnectionTemplates();
       return templates.filter(
-        (template) => template.namespaceId === undefined || template.namespaceId === namespaceId,
+        (template) =>
+          template.current.oauthClientId !== undefined &&
+          (template.namespaceId === undefined || template.namespaceId === namespaceId),
       );
     });
   }
