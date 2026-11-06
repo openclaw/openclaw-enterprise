@@ -172,6 +172,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 72 && completedCount > 72) {
     return "preRequestCredentialApprovals";
   }
+  if (count === 73 && completedCount > 73) {
+    return "preSavedConnectionGrantScopes";
+  }
   if (count === completedCount) {
     return "completed";
   }

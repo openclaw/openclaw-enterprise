@@ -389,7 +389,16 @@ test("Standalone consent selects the returned account in the new Agent draft bef
     });
   });
   await page.context().route("https://consent.example.test/**", (route) => {
-    if (new URL(route.request().url()).pathname === "/approve") {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/scope-mismatch") {
+      return route.fulfill({
+        status: 303,
+        headers: {
+          location: fixture.origin + "/console/?connection=failed&reason=grant_scope_mismatch",
+        },
+      });
+    }
+    if (path === "/approve") {
       return route.fulfill({
         status: 303,
         headers: {
@@ -397,7 +406,10 @@ test("Standalone consent selects the returned account in the new Agent draft bef
         },
       });
     }
-    return route.fulfill({ contentType: "text/html", body: '<a href="/approve">Approve</a>' });
+    return route.fulfill({
+      contentType: "text/html",
+      body: '<a href="/approve">Approve</a> <a href="/scope-mismatch">Return with incompatible scopes</a>',
+    });
   });
   const url = fixture.origin + `/console/agents/new?namespace=${namespace.id}`;
   await login(page, fixture, url);
@@ -456,15 +468,16 @@ test("Standalone consent selects the returned account in the new Agent draft bef
   });
   assert.ok(scrolled);
   assert.deepEqual(await footer.boundingBox(), before);
-  for (const outcome of ["missing", "edited", "saved"] as const) {
+  for (const outcome of ["scope-mismatch", "missing", "edited", "saved"] as const) {
     if (outcome === "saved") {
       await dialog.getByRole("button", { name: "Choose a connection template" }).click();
       await consent.getByLabel("Connection template for Slack user account").selectOption("demo");
     }
     const next = page.context().waitForEvent("page");
-    await (outcome === "edited" ? dialog : consent)
+    const retry = outcome === "edited" || outcome === "missing";
+    await (retry ? dialog : consent)
       .getByRole("button", {
-        name: outcome === "edited" ? "Try again" : "Connect account",
+        name: retry ? "Try again" : "Connect account",
         exact: true,
       })
       .click();
@@ -475,13 +488,20 @@ test("Standalone consent selects the returned account in the new Agent draft bef
       // A user can change the slot while the separate provider tab remains open.
       await picker.selectOption("");
     }
-    if (outcome !== "missing") {
+    if (outcome === "edited" || outcome === "saved") {
       savedAccounts.push({ id: issued, name: "Connected account " + outcome });
     }
     const closed = provider.waitForEvent("close");
-    await provider.getByRole("link", { name: "Approve" }).click();
+    await provider
+      .getByRole("link", {
+        name: outcome === "scope-mismatch" ? "Return with incompatible scopes" : "Approve",
+      })
+      .click();
     await closed;
-    if (outcome === "edited") {
+    if (outcome === "scope-mismatch") {
+      await dialog.getByText(/OCE could not read the provider’s scope response/).waitFor();
+      assert.equal(await picker.inputValue(), prior);
+    } else if (outcome === "edited") {
       await dialog.getByText(/Account saved. The draft changed/).waitFor();
       await picker
         .getByRole("option", { name: "Connected account edited" })
@@ -507,7 +527,7 @@ test("Standalone consent selects the returned account in the new Agent draft bef
   const reduced = ["channels:read", "files:read", "custom:read"];
   assert.deepEqual(
     requestedScopes,
-    [reduced, reduced, offeredScopes].map((selectedScopes) => ({
+    [reduced, reduced, reduced, offeredScopes].map((selectedScopes) => ({
       connectionTemplateId: "demo",
       selectedScopes,
     })),
@@ -2426,21 +2446,25 @@ test("Agent plugin editor preserves its tab and draft when external consent comp
     if (new URL(route.request().url()).pathname === "/allow") {
       selected = true;
     }
-    const outcome = new URL(route.request().url()).pathname === "/deny" ? "failed" : "attached";
+    const path = new URL(route.request().url()).pathname;
+    const callbackReason = new Map([
+      ["/deny", "consent_denied"],
+      ["/untrusted", "fabricated-provider-detail"],
+    ]).get(path);
     await route.fulfill(
       new URL(route.request().url()).pathname === "/authorize"
         ? {
             headers: { "Cross-Origin-Opener-Policy": "same-origin" },
             contentType: "text/html",
-            body: '<a href="/allow">Approve</a> <a href="/deny">Decline</a> <a href="/unconfirmed">Return without binding</a>',
+            body: '<a href="/allow">Approve</a> <a href="/deny">Decline</a> <a href="/untrusted">Return unknown failure</a> <a href="/unconfirmed">Return without binding</a>',
           }
         : {
             status: 303,
             headers: {
               location:
                 origin +
-                (outcome === "failed"
-                  ? "/console/?connection=failed"
+                (callbackReason
+                  ? "/console/?connection=failed&reason=" + callbackReason
                   : originalPath + "&connection=attached"),
             },
           },
@@ -2480,7 +2504,7 @@ test("Agent plugin editor preserves its tab and draft when external consent comp
   await page.getByText(/Allow pop-ups for this Console/).waitFor();
   assert.equal(begins, 0);
   await sameDraft();
-  for (const mode of ["close", "denied", "unconfirmed", "success"] as const) {
+  for (const mode of ["close", "denied", "untrusted", "unconfirmed", "success"] as const) {
     const next = context.waitForEvent("page");
     await action.click();
     const provider = await next;
@@ -2500,14 +2524,23 @@ test("Agent plugin editor preserves its tab and draft when external consent comp
       const ended = provider.waitForEvent("close");
       await provider
         .getByRole("link", {
-          name: { success: "Approve", unconfirmed: "Return without binding", denied: "Decline" }[
-            mode
-          ],
+          name: {
+            success: "Approve",
+            unconfirmed: "Return without binding",
+            denied: "Decline",
+            untrusted: "Return unknown failure",
+          }[mode],
         })
         .click();
       await ended;
       if (mode === "denied") {
-        await page.getByText(/Authorization did not finish/).waitFor();
+        await editor.getByText(/Access was declined at the provider/).waitFor();
+      } else if (mode === "untrusted") {
+        await editor.getByText(/Authorization did not finish/).waitFor();
+        assert.equal(
+          await page.getByText("fabricated-provider-detail", { exact: false }).count(),
+          0,
+        );
       } else if (mode === "unconfirmed") {
         await page.getByText(/binding could not be confirmed/).waitFor();
         assert.equal(await page.getByText("Account attached.", { exact: true }).count(), 0);
@@ -2521,7 +2554,7 @@ test("Agent plugin editor preserves its tab and draft when external consent comp
     }
     await sameDraft();
   }
-  assert.equal(begins, 4);
+  assert.equal(begins, 6);
   assert.equal(
     JSON.parse(await page.locator("#agent-plugins").inputValue())[pluginId].driverPolicy.credentials
       .account,

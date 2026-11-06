@@ -378,6 +378,41 @@ async function oauthAccounts(
     assert.deepEqual(defaultAccount.requestedScopes, []);
     assert.deepEqual(defaultAccount.grantedScopes, ["profile"]);
     assert.deepEqual(defaultAccount.destinations, manualDestinations);
+    // Keycloak also grants this client's default profile scope when the person requests only
+    // openid. Completing the real callback must retain both the request and what Keycloak granted.
+    const broader = await owner("POST", connections, {
+      connectionTemplateId: unrestrictedManual.json().data.id,
+      selectedScopes: ["openid"],
+    });
+    assert.equal(broader.statusCode, 201, broader.body);
+    const { authorizationUrl, credentialSourceId: broaderId } = broader.json().data;
+    assert.equal(new URL(authorizationUrl).searchParams.get("scope"), "openid");
+    const callback = await owner(
+      "GET",
+      await consentRedirect(authorizationUrl, "alice", secrets.users.alice.password),
+    );
+    assert.match(String(callback.headers.location), /connection=connected/);
+    const connection = (await owner("GET", connections))
+      .json()
+      .data.find((row: { credentialSourceId: string }) => row.credentialSourceId === broaderId);
+    assert.deepEqual(connection.requestedScopes, ["openid"]);
+    assert.deepEqual([...connection.grantedScopes].sort(), ["openid", "profile"]);
+    // The database still forbids widening an existing grant after a renewal narrowed it.
+    const db = await pool.connect();
+    try {
+      await db.query("BEGIN");
+      const setGrant = (scopes: string[]) =>
+        db.query(
+          "UPDATE occ.saved_connections SET granted_scopes=$2 WHERE credential_source_id=$1",
+          [broaderId, scopes],
+        );
+      await setGrant(["profile"]);
+      await assert.rejects(setGrant(["openid", "profile"]), { code: "55000" });
+    } finally {
+      await db.query("ROLLBACK");
+      db.release();
+    }
+    assert.equal((await owner("DELETE", connections + "/" + broaderId)).statusCode, 204);
     // Administrators change delivery for existing accounts without rewriting the consent receipt.
     const widened = [
       ...manualDestinations,

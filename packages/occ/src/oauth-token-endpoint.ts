@@ -7,6 +7,7 @@ import { BrowserAuthorizationError } from "./errors.ts";
 import { asRecord, isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 
 const OAUTH_EXCHANGE_TIMEOUT_MS = 15_000;
+const SLACK_MCP_TOKEN_ENDPOINT = "https://slack.com/api/oauth.v2.user.access";
 
 async function readResponse(response: Response): Promise<Record<string, unknown> | undefined> {
   const reader = response.body?.getReader();
@@ -42,7 +43,7 @@ async function readResponse(response: Response): Promise<Record<string, unknown>
 export async function requestOAuthTokens(
   tokenUrl: string,
   parameters: URLSearchParams,
-  scopeLimit: readonly string[] | undefined,
+  scopes: readonly string[],
   client: Pick<OAuthConnectionRegistration, "clientId" | "tokenEndpointAuthMethod" | "resource">,
   clientSecret: string | undefined,
   signal: AbortSignal,
@@ -115,16 +116,24 @@ export async function requestOAuthTokens(
   if (refreshToken !== undefined && !isNonEmptyString(refreshToken)) {
     throw new BrowserAuthorizationError("invalid_refresh_token", "fix_configuration");
   }
-  // Only the first exchange with no explicit scopes can accept issuer-chosen defaults.
-  // On refresh, even an empty list is a ceiling: no reported scopes can gain authority.
-  let grantedScopes = scopeLimit ?? [];
+  // An omitted scope inherits the request, as in RFC 6749 section 5.1. An
+  // explicit response records the issuer's grant, which may differ from consent's request.
+  let grantedScopes = scopes;
   if (body.scope !== undefined) {
-    const reported = typeof body.scope === "string" ? body.scope.split(" ") : [];
-    const allowed = scopeLimit && new Set(scopeLimit);
-    if (
-      !reported.length ||
-      reported.some((scope) => !isOAuthScopeToken(scope) || (allowed && !allowed.has(scope)))
-    ) {
+    if (typeof body.scope !== "string") {
+      throw new BrowserAuthorizationError("grant_scope_mismatch", "fix_configuration");
+    }
+    // Slack's MCP user-token endpoint reports comma-separated scopes. A comma
+    // is a valid character inside an RFC 6749 scope token at other endpoints.
+    const separator =
+      tokenUrl === SLACK_MCP_TOKEN_ENDPOINT && body.scope.includes(",") ? /, */ : " ";
+    const reported = body.scope === "" ? [] : body.scope.split(separator);
+    if (reported.some((scope) => !isOAuthScopeToken(scope))) {
+      throw new BrowserAuthorizationError("grant_scope_mismatch", "fix_configuration");
+    }
+    // A refresh can retain or narrow the previous grant, including an empty one.
+    const allowed = parameters.get("grant_type") === "refresh_token" ? new Set(scopes) : undefined;
+    if (allowed && reported.some((scope) => !allowed.has(scope))) {
       throw new BrowserAuthorizationError("grant_scope_mismatch", "fix_configuration");
     }
     grantedScopes = [...new Set(reported)];

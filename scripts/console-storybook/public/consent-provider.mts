@@ -12,7 +12,11 @@ if (attempt && /^storybook\.pluginConsent\.[a-f0-9-]{36}$/.test(attempt)) {
     if (outcome !== "failed") {
       localStorage.setItem(attempt!, outcome);
     }
-    history.replaceState(null, "", "/console/?connection=" + outcome);
+    const landing = new URLSearchParams({ connection: outcome });
+    if (outcome === "failed") {
+      landing.set("reason", "consent_denied");
+    }
+    history.replaceState(null, "", "/console/?" + landing);
     const callbackModule = "/console/agents/plugin-connection.mjs";
     const { finishPluginConsentTab } = await import(callbackModule);
     finishPluginConsentTab();

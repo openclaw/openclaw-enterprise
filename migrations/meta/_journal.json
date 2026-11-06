@@ -512,6 +512,13 @@
       "when": 1787000000073,
       "tag": "0073_request_credential_approvals",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1787000000074,
+      "tag": "0074_saved_connection_grant_scopes",
+      "breakpoints": true
     }
   ]
 }

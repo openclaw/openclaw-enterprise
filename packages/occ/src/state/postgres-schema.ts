@@ -2559,7 +2559,7 @@ export const savedConnections = occSchema.table(
     ),
     check(
       "saved_connections_granted_scopes",
-      sql`array_position(${table.grantedScopes},NULL) IS NULL AND (cardinality(${table.requestedScopes}) = 0 OR ${table.grantedScopes} <@ ${table.requestedScopes})`,
+      sql`array_position(${table.grantedScopes},NULL) IS NULL`,
     ),
     foreignKey({
       name: "saved_connections_source_owner",

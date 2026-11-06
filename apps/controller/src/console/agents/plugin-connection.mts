@@ -11,6 +11,68 @@ export type SlotTemplate = PluginConnectionTemplateChoice;
 const pluginConsentKey = "oce.pluginAccountConsent";
 
 type ConsentOutcome = "attached" | "saved" | "unconfirmed" | "failed" | "expired" | "cancelled";
+// Only OCC's known callback categories can cross from the landing tab to the Agent editor.
+const sessionFailure =
+  "OCE could not verify this sign-in attempt. Start a new connection from the same signed-in browser.";
+const issuerFailure =
+  "OCE could not verify the provider’s issuer. Ask an Installation administrator to check the connection template and its issuer.";
+const failures = new Map<string, string>([
+  ["session_required", "Sign in to OCE, then start a new account connection."],
+  ["missing_state", sessionFailure],
+  ["unknown_session", sessionFailure],
+  ["invalid_session", sessionFailure],
+  [
+    "consent_denied",
+    "Access was declined at the provider. Start sign-in again if you want to connect this account.",
+  ],
+  [
+    "provider_error",
+    "The provider returned an authorization error. Check the account and requested permissions before connecting again.",
+  ],
+  ["issuer_required", issuerFailure],
+  ["issuer_mismatch", issuerFailure],
+  [
+    "client_unavailable",
+    "OCE could not use the registered OAuth client. Ask an Installation administrator to check the registration in Credentials.",
+  ],
+  [
+    "client_refused",
+    "The provider rejected the OAuth client. Ask an Installation administrator to check its client ID, authentication method and secret in Credentials.",
+  ],
+  [
+    "grant_refused",
+    "The provider rejected this authorization grant. Start a new sign-in to request a fresh grant.",
+  ],
+  [
+    "exchange_refused",
+    "The provider rejected the token exchange. Ask an Installation administrator to check the OAuth client and token endpoint.",
+  ],
+  [
+    "no_refresh_token",
+    "The provider did not issue a refresh token. Ask an Installation administrator to check the OAuth client’s refresh or offline access settings.",
+  ],
+  [
+    "invalid_refresh_token",
+    "The provider returned an unusable refresh token. Ask an Installation administrator to check the OAuth client’s refresh settings.",
+  ],
+  [
+    "invalid_access_token",
+    "The provider did not return a usable expiring bearer token. Ask an Installation administrator to check the OAuth token endpoint and token settings.",
+  ],
+  [
+    "invalid_token_expiry",
+    "The provider returned an unusable token lifetime. Ask an Installation administrator to check the provider’s token expiry settings.",
+  ],
+  [
+    "grant_scope_mismatch",
+    "OCE could not read the provider’s scope response. The account was not saved. Ask an Installation administrator to check the response format.",
+  ],
+  [
+    "unavailable",
+    "OCE could not complete the connection. Ask an Installation administrator to check the callback audit and connectivity to the provider.",
+  ],
+]);
+
 type ConsentStart = { authorizationUrl: string; credentialSourceId: string; expiresAt: string };
 
 /** Only the separately opened tab holds this channel name. The server has already consumed the OAuth callback. */
@@ -32,7 +94,10 @@ export function finishPluginConsentTab() {
     return false;
   }
   const channel = new BroadcastChannel(name);
-  channel.postMessage(outcome);
+  const reason = url.searchParams.get("reason");
+  channel.postMessage(
+    outcome === "failed" && reason && failures.has(reason) ? { outcome, reason } : outcome,
+  );
   channel.close();
   document.body.replaceChildren(
     element("p", { role: "status" }, "Return to the Agent tab to check your connection."),
@@ -76,8 +141,14 @@ export async function authorizePluginInNewTab(
     if (tab.closed || signal.aborted) {
       return { message: "Sign-in was closed. Try again to connect an account." } as const;
     }
+    let failure = "Authorization did not finish. Try again to connect the account.";
     const outcome = await new Promise<ConsentOutcome>((resolve) => {
       channel!.onmessage = ({ data }) => {
+        if (data?.outcome === "failed") {
+          failure = failures.get(data.reason) ?? failure;
+          resolve("failed");
+          return;
+        }
         if (
           data === "attached" ||
           data === "saved" ||
@@ -97,7 +168,9 @@ export async function authorizePluginInNewTab(
       // for the callback and let the user check or retry from the original editor.
       waiting(start.credentialSourceId, () => resolve("attached"));
     });
-    return { outcome, sourceId: start.credentialSourceId } as const;
+    return outcome === "failed"
+      ? ({ outcome, sourceId: start.credentialSourceId, failure } as const)
+      : ({ outcome, sourceId: start.credentialSourceId } as const);
   } finally {
     finished.abort();
     clearTimeout(timeout);

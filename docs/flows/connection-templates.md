@@ -71,6 +71,8 @@ On callback, OCC consumes the matching attempt once and rechecks the person's se
 
 At startup, the API and worker each install an `oauth_refresh_token` issuer in their Token Service. After exchange, OCC registers the grant with that kind, naming the pending source, approved template version and selected OAuth client. The service checks that approval against the source and reads the issuer, token endpoint, authentication method and MCP resource from the stored configuration. It stores the access token and refresh grant in a private Secret. OCC records the approved recipient, reported scopes and template version, marks the account ready and grants its owner access. When the provider omits scopes after a provider-default request, the receipt records an empty list.
 
+OCC parses the provider’s reported scope list before it hands the grant to Token Service. It records the requested scopes and the provider’s actual grant independently. A difference between them does not prevent account creation. The Slack MCP user-token endpoint returns scopes separated by commas. Other endpoints use OAuth’s space separator. A callback error that identifies a scope problem returns that reason to the original plugin editor without sending it provider response text.
+
 ### 5. Resolve current destinations and renew the grant
 
 `packages/occ/src/index.ts:effectiveConnectionDestinations` and `apps/controller/src/backends/token-service/oauth-connection.ts:renew`

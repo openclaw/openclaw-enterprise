@@ -365,7 +365,7 @@ export function renderAgentPlugins(
           }
           if (!selection || bound !== result.sourceId) {
             if (result.outcome === "failed") {
-              return "Authorization did not finish. Try again to connect the account.";
+              return result.failure;
             }
             if (result.outcome === "saved" || result.outcome === "unconfirmed") {
               showConsentReturn(result.outcome, result.sourceId);

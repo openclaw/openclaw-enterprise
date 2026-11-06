@@ -1934,7 +1934,7 @@ function renderAgentForm(
           return result.message;
         }
         if (result.outcome === "failed") {
-          return "Authorization did not finish. Try again to connect an account.";
+          return result.failure;
         }
         const detail = await readAccount(result.sourceId);
         if (attempt.signal.aborted || !context.isCurrent() || pending || savedAgent) {

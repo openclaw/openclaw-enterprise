@@ -2005,6 +2005,7 @@ test(
       [70, "preDefaultUsers"],
       [71, "preConnectionAttachmentIntent"],
       [72, "preRequestCredentialApprovals"],
+      [73, "preSavedConnectionGrantScopes"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });

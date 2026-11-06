@@ -56,14 +56,24 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
   assert.deepEqual((await exchange()).grantedScopes, ["read", "write"]);
   responseScope = "read";
   assert.deepEqual((await exchange()).grantedScopes, ["read"]);
-  for (responseScope of ["read admin", ["read"], ""]) {
+  responseScope = "read admin";
+  assert.deepEqual((await exchange()).grantedScopes, ["read", "admin"]);
+  responseScope = "";
+  const empty = await exchange();
+  assert.deepEqual(empty.requestedScopes, request.scopes);
+  assert.deepEqual(empty.grantedScopes, []);
+  for (responseScope of [["read"], "read  write"]) {
     await assert.rejects(exchange(), {
       name: "BrowserAuthorizationError",
       code: "grant_scope_mismatch",
       recoveryAction: "fix_configuration",
     });
   }
-  // Only a default-scope request may adopt a provider-reported initial grant.
+  // At an ordinary token endpoint a comma belongs to one scope name.
+  responseScope = "read,write";
+  assert.deepEqual((await exchange(["read,write"])).grantedScopes, ["read,write"]);
+  assert.deepEqual((await exchange()).grantedScopes, ["read,write"]);
+  // The issuer may also choose scopes for a request that omitted them.
   responseScope = "provider.default";
   const defaults = await exchange([]);
   assert.deepEqual(defaults.grantedScopes, ["provider.default"]);
@@ -88,6 +98,76 @@ async function oauthCustody() {
   const custody = await service.reserve({ namespaceId: "ns_test", sourceId: "source" });
   return { driver, custody, service, worker };
 }
+
+test("Slack MCP records the issuer's grant and refreshes with only the scopes it still grants", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-01-01T00:00:00Z") });
+  const registration = {
+    issuer: "https://mcp.slack.com",
+    tokenUrl: "https://slack.com/api/oauth.v2.user.access",
+    resource: "https://mcp.slack.com/mcp",
+    oauthClientId: "registration",
+    clientId: "test-client",
+    tokenEndpointAuthMethod: "client_secret_post",
+  };
+  const scopes = ["channels:read", "files:read"];
+  const granted = ["channels:read", "users:read", "users:read.email"];
+  const renewed = ["channels:read", "users:read.email"];
+  const request = { ...registration, scopes, redirectUri: "https://oce.example.test/callback" };
+  const clientSecret = randomUUID();
+  const refreshScopes = [];
+  let responseScope = granted.join(",");
+  // Exercise the production exchange and Token Service. Only Slack's HTTPS response is synthetic.
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    assert.equal(url, registration.tokenUrl);
+    assert.equal(options.body.get("client_secret"), clientSecret);
+    if (options.body.get("grant_type") === "refresh_token") {
+      refreshScopes.push(options.body.get("scope"));
+    }
+    return Response.json({
+      access_token: randomUUID(),
+      token_type: "Bearer",
+      expires_in: 120,
+      refresh_token: randomUUID(),
+      scope: responseScope,
+    });
+  });
+  const exchange = () =>
+    exchangeAuthorizationCode(request, "test-verifier", randomUUID(), clientSecret, t.signal);
+  const initial = await exchange();
+  const { driver, service, custody } = await oauthCustody();
+  await service.storeInitialGrant(custody, { ...registration, ...initial }, t.signal);
+  const savedScopes = () =>
+    driver.withValue(custody.secret, (value) => {
+      const { requestedScopes, grantedScopes } = JSON.parse(value);
+      return { requestedScopes, grantedScopes };
+    });
+  assert.deepEqual(await savedScopes(), {
+    requestedScopes: scopes,
+    grantedScopes: granted,
+  });
+
+  assert.deepEqual((await service.observe(custody, t.signal, 0)).token.grantedScopes, granted);
+
+  responseScope = renewed.join(",");
+  const resolveClient = async () => ({ registration, readSecret: async () => clientSecret });
+  t.mock.timers.tick(65_000);
+  assert.equal((await service.renew(custody, t.signal, resolveClient)).state, "ready");
+  assert.deepEqual(await savedScopes(), {
+    requestedScopes: scopes,
+    grantedScopes: renewed,
+  });
+
+  // Slack cannot add back a previously approved scope after a narrower renewal.
+  t.mock.timers.tick(65_000);
+  responseScope = "channels:read,users:read";
+  assert.equal(
+    (await service.renew(custody, t.signal, resolveClient)).failureCode,
+    "grant_scope_mismatch",
+  );
+  assert.deepEqual(refreshScopes, [granted.join(" "), renewed.join(" ")]);
+  responseScope = "files:read,,users:read";
+  await assert.rejects(exchange(), { code: "grant_scope_mismatch" });
+});
 
 test("the Token Service keeps the first access token in custody and serializes rotation", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-01-01T00:00:00Z") });
@@ -142,10 +222,9 @@ test("the Token Service keeps the first access token in custody and serializes r
   const request = {
     issuer,
     oauthClientId: "registration",
-    requestedScopes: ["read", "write"],
     tokenEndpointAuthMethod: "client_secret_basic",
     clientId: "test:client",
-    scopes: ["read", "write"],
+    scopes: ["read", "write", "admin"],
     resource: "https://mcp.example.test/mcp",
     tokenUrl: issuer + "/token",
     redirectUri: "https://oce.example.test/callback",
@@ -164,6 +243,9 @@ test("the Token Service keeps the first access token in custody and serializes r
     readSecret: async () => rotatedClientSecret,
   });
   const stored = driver.valueFor(custody.secret);
+  const { requestedScopes, grantedScopes } = JSON.parse(stored);
+  assert.deepEqual(requestedScopes, ["read", "write", "admin"]);
+  assert.deepEqual(grantedScopes, ["read", "write"]);
   assert.ok(!stored.includes(clientSecret));
   assert.equal(Object.hasOwn(JSON.parse(stored), "clientSecret"), false);
   const accepted = (await worker.observe(custody, t.signal, 0)).token;

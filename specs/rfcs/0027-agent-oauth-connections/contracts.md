@@ -75,10 +75,7 @@ A public client uses `none` and needs only its client ID. For `client_secret_bas
 At the initial code exchange, OCC resolves the current secret for the pinned registration if its authentication method requires one. A successful exchange hands the user's refresh grant and first access token to the Token Service. On subsequent renewal the Token Service obtains the same registration's current client authentication for the pinned issuer and token endpoint. Rotation at the same registration applies to existing accounts. If the provider rejects the client secret, the administrator can fix the registration and retry. Revoking the user's grant requires new consent.
 
 OCC registers the exchanged grant with the Token Service and keeps the stable account reference. Resolution checks the token’s remaining lifetime. Authorized delivery can start or join renewal as [RFC-0023 specifies](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle). The Token Service records the requested scopes and the scopes the provider granted.
-When the provider omits `scope`, the Token Service records the requested
-scopes. If both omitted it, it records no known scopes. Explicit requests and
-renewals cannot acquire permissions beyond those requested or previously
-granted. Only an authorized consumer with a compatible destination receives
+At consent, OCC records requested and issued scopes separately. The provider may grant fewer, more or different scopes. An omitted `scope` defaults to the request, or an empty list if neither side specifies scopes. Renewal uses the last grant and can narrow it. Only an authorized consumer with a compatible destination receives
 prepared material. Its binding supplies local delivery names.
 
 ### Named plugin accounts
@@ -208,7 +205,7 @@ sender cannot enforce the policy.
 | Token custody unavailable before source creation            | Connection cannot start                        | Restore the Token Service and Secret Driver    |
 | OIDC metadata mismatch or unreachable provider              | Version rejected with `400`                    | Administrator corrects `issuer` or URLs        |
 | ID token from a wrong issuer, untrusted key, or wrong nonce | Source deleted; `fix_configuration`            | Administrator checks the provider; reconnect   |
-| Manual destination rows edited                              | Next request uses the current rows    | Check the deployed Sandbox policy                  |
+| Manual destination rows edited                              | Next request uses the current rows             | Check the deployed Sandbox policy              |
 | OAuth identity or MCP target changed                        | Original grant cannot authorize the new target | Owner reconnects for the new identity          |
 | Provider rejects the current client secret                  | Client authentication fails                    | Admin corrects secret, then refresh retries    |
 
