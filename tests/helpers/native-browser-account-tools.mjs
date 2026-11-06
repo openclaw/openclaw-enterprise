@@ -53,6 +53,7 @@ export async function verifyNativeBrowserAccountTools({
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   const closed = once(native, "close");
+  const timeout = setTimeout(() => native.kill(), 90_000).unref();
   const lines = createInterface({ input: native.stdout });
   const ready = (async () => {
     for await (const line of lines) {
@@ -62,14 +63,8 @@ export async function verifyNativeBrowserAccountTools({
     }
     throw new Error("Native OpenShell relay exited before startup.");
   })();
-  // Drain the test runner's stderr. It must not become part of credential-bearing failure reports.
-  const relayErrors = [];
-  native.stderr.on("data", (chunk) => {
-    for (const m of String(chunk).matchAll(
-      /OCE_RELAY_REASON=[a-z_0-9]+|UnknownIssuer|InvalidCertificate|BadCertificate|ConnectionRefused|PermissionDenied|invalid L7 policy|TLS handshake/gi,
-    ))
-      relayErrors.push(m[0]);
-  });
+  // Relay and SDK diagnostics can contain request details. Only controlled fixture results go to CI.
+  native.stderr.resume();
   try {
     await origin.workerPort.release();
     const url = new URL(origin.url);
@@ -112,26 +107,8 @@ export async function verifyNativeBrowserAccountTools({
       stdio: ["pipe", "pipe", "pipe"],
     });
     const workerClosed = once(worker, "close");
-    const workerErrors = [];
-    worker.stderr.on("data", (chunk) => {
-      for (const line of String(chunk).split("\n")) {
-        if (/node host MCP server|^AssertionError|^Error:/.test(line)) {
-          // Only classify known fixture failures; never surface HTTP headers or bodies.
-          const categories = line.match(
-            /HTTP [0-9]{3}|\b[45][0-9][0-9]\b|[A-Z_]{3,}|blocked|private network|internal IP|authentication refused|transport error|worker must project|missing|Invalid managed|disallowed|fetch failed|Unsupported|Cannot find module|certificate|permission denied|not allowed|unexpected response|invalid response|MCP error|SDK error|connection closed|server disconnected|Invalid content.type/g,
-          );
-          workerErrors.push(...(categories ?? ["unclassified MCP failure"]));
-          if (line.startsWith("node host MCP server")) {
-            const message = line.split("failed: ")[1] ?? "";
-            workerErrors.push(
-              message
-                .replace(/[A-Za-z0-9._/+:-]{24,}|Bearer +[^ ]+|https?:\/\/[^ ]+/gi, "[redacted]")
-                .slice(0, 100),
-            );
-          }
-        }
-      }
-    });
+    const workerTimeout = setTimeout(() => worker.kill(), 90_000).unref();
+    worker.stderr.resume();
     const replies = createInterface({ input: worker.stdout });
     try {
       worker.stdin.write(
@@ -152,19 +129,17 @@ export async function verifyNativeBrowserAccountTools({
           return result;
         }
       }
+      const [exitCode, signal] = await workerClosed;
       throw new Error(
-        "The worker did not verify the selected identities and withdrawal. Worker: " +
-          workerErrors.slice(-15).join(" ") +
-          "; native: " +
-          relayErrors.slice(-8).join(" ") +
-          "; last origin methods: " +
-          origin.responses.slice(-9).join(","),
+        `The native worker exited before verifying both accounts and withdrawal (${signal ?? exitCode}).`,
       );
     } finally {
+      clearTimeout(workerTimeout);
       worker.kill();
       replies.close();
     }
   } finally {
+    clearTimeout(timeout);
     native.kill();
     await closed;
     lines.close();

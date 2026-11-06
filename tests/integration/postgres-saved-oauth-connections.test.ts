@@ -54,6 +54,9 @@ const publicOrigin = "https://occ-connections.test";
 const redirectUri = `${publicOrigin}/oauth/callback`;
 
 /** Follow the issuer's real browser login. The test submits the returned URL through the owner's OCC session. */
+// Each of the two MCP sessions can issue an event-stream GET and a discovery POST together.
+const sandboxOperationShare = 4;
+
 async function consentRedirect(
   browser: Browser,
   authorizationUrl: string,
@@ -199,7 +202,7 @@ async function oauthAccounts(
         preparedTokens,
         ...(pluginWorkflow && {
           nativeWorkerSupport: "custom-image",
-          credentialProxyCapacity: { sandboxOperations: 2 },
+          credentialProxyCapacity: { sandboxOperations: sandboxOperationShare },
           driverConfigurations: [savedAccountSandboxRegistration],
         }),
       },
@@ -1736,13 +1739,17 @@ test(
       "withValue",
       async (...args: Parameters<typeof read>) => {
         const selected = await read(...args);
-        if (++heldReads === 2) observed.resolve();
+        if (++heldReads === sandboxOperationShare) {
+          observed.resolve();
+        }
         await release.promise;
         return selected;
       },
-      { times: 2 },
+      { times: sandboxOperationShare },
     );
-    const inFlight = Promise.all([call(agentA.peer), call(agentA.peer)]);
+    const inFlight = Promise.all(
+      Array.from({ length: sandboxOperationShare }, () => call(agentA.peer)),
+    );
     try {
       await Promise.race([
         observed.promise,
@@ -1753,7 +1760,7 @@ test(
       assert.equal(
         await call(agentA.peer),
         false,
-        "two held requests fill this Sandbox’s configured operation share",
+        "held requests fill this Sandbox’s configured operation share",
       );
       const clear = await owner("PATCH", path(agentA.id), {
         configurationId: config.json().data.id,
@@ -1766,7 +1773,7 @@ test(
       release.resolve();
       pendingRead.mock.restore();
     }
-    assert.deepEqual(await inFlight, [false, false]);
+    assert.deepEqual(await inFlight, Array(sandboxOperationShare).fill(false));
     const beforeDenied = secretDriver.calls.length;
     assert.equal(await call(agentA.peer), false);
     assert.equal(
@@ -1868,7 +1875,12 @@ test(
         assert.ok(token);
         assert.equal(await keycloakSubject(token), accounts[index]!.expectedSubject);
       }
-      if (process.env.OCC_TEST_BROWSER_ACCOUNT_WORKER)
+      assert.equal(
+        Boolean(process.env.OCC_TEST_BROWSER_ACCOUNT_WORKER),
+        Boolean(process.env.OCC_TEST_OPENSHELL_BROWSER_ACCOUNT_RELAY),
+        "Select the browser-account worker and OpenShell relay together.",
+      );
+      if (process.env.OCC_TEST_BROWSER_ACCOUNT_WORKER) {
         await t.test(
           "the same native worker tool resolves two browser grants per request",
           async () => {
@@ -1931,8 +1943,16 @@ test(
               ),
               new Set([carol.id, alice.id]),
             );
+            t.diagnostic(
+              "The same whoami reached the HTTPS recipient as Work reports (Carol) and Personal reports (Alice). Withdrawing Carol prevented another recipient request and Alice succeeded again.",
+            );
           },
         );
+      } else {
+        t.diagnostic(
+          "Two-browser consent and signed gRPC account selection verified. Set both native qualification variables to exercise the OpenClaw worker and OpenShell relay.",
+        );
+      }
     }
     t.diagnostic(
       process.env.OCC_TEST_OPENSHELL_CREDENTIAL_SENDER

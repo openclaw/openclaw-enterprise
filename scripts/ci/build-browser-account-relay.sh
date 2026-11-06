@@ -18,7 +18,7 @@ printf '\ninclude!("browser_account_relay.rs");\n' >> "$module/request_credentia
 cargo test --locked -p openshell-supervisor-network --lib --no-run --message-format=json > build.jsonl
 artifact=$(node --input-type=module -e '
 import {readFileSync} from "node:fs";
-const rows=readFileSync("build.jsonl","utf8").trim().split("\n").map(JSON.parse);
+const rows=readFileSync("build.jsonl","utf8").trim().split("\n").map(line => JSON.parse(line));
 const binary=rows.find(row=>row.reason==="compiler-artifact" && row.target.name==="openshell_supervisor_network" && row.profile.test && row.executable);
 if(!binary) throw new Error("Missing native credential relay test binary");
 console.log(binary.executable);

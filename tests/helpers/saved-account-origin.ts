@@ -34,7 +34,6 @@ export async function createSavedAccountOrigin(t: TestContext, issuer: string) {
   const root = await readFile(ca.caPath, "utf8");
   const recipientAgent = new Agent({ secureContext: createSecureContext({ ca: root }) });
   t.after(() => recipientAgent.destroy());
-  const responses: string[] = [];
   const requests: { tokenHash: string; subject: string; tool: string }[] = [];
   const server = createServer({ key: leaf.key, cert: leaf.cert }, async (req, res) => {
     const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
@@ -46,13 +45,17 @@ export async function createSavedAccountOrigin(t: TestContext, issuer: string) {
       tool: "",
     };
     requests.push(observed);
-    res.once("finish", () => responses.push([req.method, observed.tool, res.statusCode].join("/")));
     if (req.method === "GET" || req.method === "DELETE") {
       observed.tool = req.method;
       res.writeHead(405, { Allow: "POST" }).end();
       return;
     }
     try {
+      assert.equal(
+        req.headers["x-oce-account-binding"],
+        undefined,
+        "OCC consumes the private account selector before the request reaches the recipient.",
+      );
       assert.equal(req.method, "POST");
       assert.equal(req.url, "/mcp");
       let bytes = "";
@@ -135,7 +138,6 @@ export async function createSavedAccountOrigin(t: TestContext, issuer: string) {
   return {
     url: url.href,
     requests,
-    responses,
     workerPort,
     tls: { caPem: root, caPath: ca.caPath, certificatePem: leaf.cert, privateKeyPem: leaf.key },
     originAddress: `127.0.0.1:${address.port}`,

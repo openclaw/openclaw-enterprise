@@ -27,27 +27,6 @@ struct WorkerRelay {
 #[ignore = "requires the browser-account worker, OCC authority and HTTPS recipient"]
 async fn external_browser_account_worker_stream() {
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject};
-    let events = openshell_ocsf::test_support::OcsfCapture::default();
-    let _trace = events.install();
-    tokio::spawn(async move {
-        let mut offset = 0;
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let snapshot = events.json_events();
-            for item in &snapshot[offset..] {
-                let reason = item["status_detail"].as_str().unwrap_or("");
-                if !reason.is_empty()
-                    && reason.len() < 80
-                    && reason
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '_')
-                {
-                    eprintln!("OCE_RELAY_REASON={reason}");
-                }
-            }
-            offset = snapshot.len();
-        }
-    });
     let input: WorkerRelay =
         serde_json::from_reader(std::io::stdin()).expect("read local fixture configuration");
     let registry = authenticated_registry(

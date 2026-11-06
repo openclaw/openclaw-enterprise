@@ -1,15 +1,5 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { channel } from "node:diagnostics_channel";
-channel("undici:request:headers").subscribe(({ request, response }) => {
-  if (response.statusCode >= 400)
-    console.warn(
-      "node host MCP server downstream failed: HTTP " +
-        response.statusCode +
-        " on " +
-        request.method,
-    );
-});
 import { mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createInterface } from "node:readline";
