@@ -13,7 +13,7 @@ import {
   embeddedGatewayRecoveryPreamble,
 } from "../../apps/controller/src/drivers/compute/embedded-gateway-owner.ts";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
-import { changeSignal, followContainer } from "./docker-follow.mjs";
+import { changeSignal, followContainer } from "./docker-follow.ts";
 import {
   COMPUTE_AGENT_RUNTIME_ENTRYPOINT as AGENT_RUNTIME_ENTRYPOINT,
   gatewayRuntimeEntrypoint,
