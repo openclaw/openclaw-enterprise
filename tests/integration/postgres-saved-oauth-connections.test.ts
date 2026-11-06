@@ -1727,6 +1727,11 @@ test(
               403,
               "discovering with an Agent grant must not give its editor personal use",
             );
+            const clear = await owner("PATCH", path(savedAgent), {
+              configurationId: config.json().data.id,
+              plugins: { [pluginId]: { enabled: true } },
+            });
+            assert.equal(clear.statusCode, 200, clear.body);
             const detach = await owner("DELETE", `${path(savedAgent)}/connections/${report.id}`);
             assert.equal(detach.statusCode, 204, detach.body);
             assert.equal(await canUse(savedAgent, report.id), false);
