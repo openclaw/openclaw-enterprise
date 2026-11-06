@@ -40,6 +40,16 @@ async function serveNativePage(t: TestContext, tls: { cert: Buffer; key: Buffer 
   return { requests, port: address.port };
 }
 
+export function nativeBrowserSupported(t: TestContext) {
+  if (process.platform === "linux") {
+    return true;
+  }
+  t.skip(
+    "Native Agent HTTPS requires Linux Chromium's NSS trust store. See docs/testing/local.md.",
+  );
+  return false;
+}
+
 export async function createNativeConsoleFixture<Options extends object>(
   t: TestContext,
   options: Options,

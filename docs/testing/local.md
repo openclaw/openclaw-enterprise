@@ -78,11 +78,11 @@ Set `OCC_TEST_BROWSER_EXECUTABLE` to use an approved existing browser. The test
 fails if no browser is available; it does not install one. Do not change managed
 browser policies. Set `OCC_TEST_CONSOLE_ARTIFACT_DIR` to retain screenshots.
 
-The native Agent admin cases use Linux Chromium's NSS trust store. On macOS or
-Windows, open the checkout in a disposable Ubuntu VM with Chromium sandbox
-support. Set up the repository as above, install `libnss3-tools` in the VM,
-and use the Go version in `go.mod`. Run the Console browser command above or
-run just the Agent detail cases:
+The three native Agent admin cases use Linux Chromium's NSS trust store. The
+Console browser command reports these three as skipped on macOS and Windows.
+For the full suite, use a disposable Ubuntu VM with Chromium sandbox support,
+`libnss3-tools`, and the Go version in `go.mod`. Set up the checkout as above,
+then run the Console browser command or just the Agent detail cases:
 
 ```sh
 node --test 'tests/browser/console-agent-detail-2.test.{mjs,ts}'

@@ -5,7 +5,7 @@ import test from "node:test";
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 
 import { fileConsoleApp } from "../helpers/console-app.mjs";
-import { createNativeConsoleFixture } from "./console-native-ingress.ts";
+import { createNativeConsoleFixture, nativeBrowserSupported } from "./console-native-ingress.ts";
 
 import {
   apiRequests,
@@ -51,6 +51,7 @@ const detailApp = fileConsoleApp();
 registerDeletionAndNavigationCases(detailApp);
 
 test("Agent detail opens native admin UI only after real API access checks pass", async (t) => {
+  if (!nativeBrowserSupported(t)) return;
   const disabledFixture = await detailApp(t);
   const disabledNamespace = await disabledFixture.createNamespace("Native admin disabled", {
     ready: true,
@@ -324,6 +325,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
 });
 
 test("Agent detail rereads native admin access once when a pending deployment activates, and Refresh access keeps keyboard focus", async (t) => {
+  if (!nativeBrowserSupported(t)) return;
   const { fixture, browserOptions } = await createNativeConsoleFixture(t, {
     nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
     agentGatewayManagedMode: false,
@@ -443,6 +445,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
 registerSettingsRefocusAndTabsCases(detailApp);
 
 test("Agent sharing grants existing people exact discovery and native access, then removes only the selected binding", async (t) => {
+  if (!nativeBrowserSupported(t)) return;
   const { fixture, browserOptions } = await createNativeConsoleFixture(t, {
     provisionedPeople: ["shared-person"],
     nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
