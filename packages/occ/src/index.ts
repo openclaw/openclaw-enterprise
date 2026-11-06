@@ -15195,17 +15195,24 @@ export class OpenClawController {
       );
       return { snapshots: [] };
     }
+    const attachedAccounts = new Set(
+      (await state.savedConnections.listAgentConnections(agent.namespaceId, agent.id)).map(
+        ({ credentialSourceId }) => credentialSourceId,
+      ),
+    );
+    // A grant can exist without a deployment. Other source bindings require a Sandbox.
+    if (!sandbox && bindings.some(({ sourceId }) => !attachedAccounts.has(sourceId))) {
+      throw new ResourceStateConflictError(
+        "Agent credential sources require a selected Sandbox Driver.",
+      );
+    }
     const sources = await this.authorizeAgentCredentialSources(
       state,
       principalId,
       agent.namespaceId,
       bindings,
       agent.harnessAuth,
-      new Set(
-        (await state.savedConnections.listAgentConnections(agent.namespaceId, agent.id)).map(
-          ({ credentialSourceId }) => credentialSourceId,
-        ),
-      ),
+      attachedAccounts,
     );
     await this.validatePluginCredentialSources(
       state,
@@ -15235,12 +15242,6 @@ export class OpenClawController {
           savedSourceIds.push(sourceId);
         }
         continue;
-      }
-      // A state refusal, so HTTP keeps the message instead of the generic "already exists".
-      if (sandbox === undefined) {
-        throw new ResourceStateConflictError(
-          "Agent credential sources require a selected Sandbox Driver.",
-        );
       }
       const owner = this.credentialSourceOwner(source);
       if (owner.kind === "proxy") {

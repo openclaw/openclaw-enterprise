@@ -35,7 +35,9 @@ export async function installEgressAuthority(
       // Return only the transport contract, not the controller or the proxy's internal ports.
       return Object.freeze({
         resolve: proxy.resolve.bind(proxy),
-        resolveSavedAccount: proxy.resolveSavedAccount.bind(proxy),
+        ...(driver.savedAccountMiddleware && {
+          resolveSavedAccount: proxy.resolveSavedAccount.bind(proxy),
+        }),
         authorizeSend: proxy.authorizeSend.bind(proxy),
         beginResponse: proxy.beginResponse.bind(proxy),
         renewResponse: proxy.renewResponse.bind(proxy),
