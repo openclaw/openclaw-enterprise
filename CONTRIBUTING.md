@@ -166,7 +166,14 @@ either in one PR or as linked PRs merged in dependency order. Core team members
 do not wait for an RFC response unless a specific decision or hold requires it.
 
 Use `node scripts/pr-status.ts PR_NUMBER` to inspect a PR before the final
-checks. The command is read-only; it does not establish merge readiness. After
+checks. If repository inference fails, such as with a local-clone Git remote,
+pass `OWNER/REPOSITORY` as the second argument:
+
+```sh
+node scripts/pr-status.ts PR_NUMBER openclaw/openclaw-enterprise
+```
+
+The command is read-only; it does not establish merge readiness. After
 the applicable checks and review, set `PR_NUMBER` and `HEAD_SHA` to the observed
 PR number and final head, then merge from this checkout:
 
