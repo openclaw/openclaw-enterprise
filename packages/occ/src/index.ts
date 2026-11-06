@@ -12362,12 +12362,12 @@ export class OpenClawController {
             namespaceId: namespace.id,
             id: sourceId,
           };
-          await this.authorize(principalId, "read", resource);
           await this.authorize(principalId, "operate", resource);
           const account = await state.savedConnections.findSavedConnection(namespace.id, sourceId);
           if (!account) {
             continue; // Ordinary Gateway sources must already be listed on the Agent.
           }
+          await this.authorize(principalId, "read", resource);
           if (
             account.revocationRequestedBy ||
             !slot.issuers.includes(account.issuer) ||
@@ -15010,7 +15010,7 @@ export class OpenClawController {
           // TODO: Admit the slot when Credential Proxy supports saved OAuth account dispatch
           // and the sender can inject its resolved bearer on each authorized request.
           throw new ResourceStateConflictError(
-            "Credential Proxy does not yet support request-time injection for saved OAuth accounts. Clear the plugin account binding before deploying this Agent.",
+            "Credential Proxy does not yet support request-time injection for saved OAuth accounts.",
           );
         }
         continue;

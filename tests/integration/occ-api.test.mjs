@@ -11671,8 +11671,18 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   assert.match(refused.body.error.message, /Select distinct literal Slack tool names/);
   // Discovery offers both tools. The operator selects one, and deployment freezes that subset.
   const approved = pluginsFor(["slack_send_message"]);
+  // Binding this known, attached Gateway source requires operate even when its metadata is private.
+  state.restrictions.push({
+    id: "private-slack-source",
+    namespaceId: namespace.id,
+    resourceKind: "credential_source",
+    resourceId: source.data.id,
+    action: "read",
+    effect: "deny",
+  });
   const saved = await save(approved);
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  state.restrictions.pop();
   assert.deepEqual(saved.data.plugins[pluginId].driverPolicy.toolNames, ["slack_send_message"]);
   const deployed = await controller.request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
