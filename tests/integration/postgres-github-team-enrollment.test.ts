@@ -18,12 +18,25 @@ import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
+type SignInInstallation = Awaited<ReturnType<typeof preparePostgresSignInInstallation>>;
+type App = Awaited<ReturnType<SignInInstallation["composeApp"]>>;
+type SignInResponse = Awaited<ReturnType<App["inject"]>>;
+type Account = { id: string; email: string; password: string };
+type GitHubFixture = {
+  paths: string[];
+  membership: ((path: string, subject: number) => string | number) | undefined;
+  emails: ((subject: number) => unknown) | undefined;
+  profile: ((subject: number) => { id: number; login: string }) | undefined;
+};
+
 const groupId = "team.platform";
 const firstSubject = 8_100_001;
 const existingSubject = 8_100_002;
 const concurrentSubject = 8_100_003;
-const primaryEmail = (email) => [{ email, primary: true, verified: true, visibility: null }];
-const subjectEmail = (subject) => `team-${subject}@example.test`;
+const primaryEmail = (email: string) => [
+  { email, primary: true, verified: true, visibility: null },
+];
+const subjectEmail = (subject: number) => `team-${subject}@example.test`;
 
 // Only the upstream GitHub HTTP responses and passive Compute are fixtures. Production
 // Fastify, PostgreSQL, session issuance, IAM and the ordinary Agent API own the outcome.
@@ -31,29 +44,36 @@ test(
   "GitHub team enrollment creates one account with configured Group access and refuses unsafe enrollment",
   requiresPostgres,
   async (t) => {
-    let app;
-    const { pool, state, github, onboard, composeApp } = await preparePostgresSignInInstallation(
-      t,
-      () => [app],
-      {
-        email: "team-enrollment-recovery@example.test",
-        password: "team-enrollment-member-password",
-        secrets: {
-          "occ-auth/secret": "team-enrollment-auth-secret-at-least-32-bytes",
-          "occ-github-login/client-id": "team-enrollment-client-id",
-          "occ-github-login/client-secret": "team-enrollment-client-secret",
-        },
+    let app: App;
+    const {
+      pool,
+      state,
+      github: fixture,
+      onboard,
+      composeApp,
+    } = await preparePostgresSignInInstallation(t, () => [app], {
+      email: "team-enrollment-recovery@example.test",
+      password: "team-enrollment-member-password",
+      secrets: {
+        "occ-auth/secret": "team-enrollment-auth-secret-at-least-32-bytes",
+        "occ-github-login/client-id": "team-enrollment-client-id",
+        "occ-github-login/client-secret": "team-enrollment-client-secret",
       },
-    );
+    });
+    assert.ok(fixture);
+    const github: GitHubFixture = fixture;
     const address = clientAddresses("198.19");
-    const { admin, roles, accounts } = await onboard({
+    const { admin, roles, accounts } = (await onboard({
       remoteAddress: address(),
       accounts: {
         existing: { email: "team-existing@example.test" },
         disabled: { email: "team-disabled@example.test" },
         stale: { email: "team-stale@example.test" },
       },
-    });
+    })) as Awaited<ReturnType<typeof onboard>> & {
+      admin: Account;
+      accounts: Record<"existing" | "disabled" | "stale", Account>;
+    };
     // Groups have no management API yet. Seed an existing operator-managed Group using
     // the application's real INSERT privileges; enrollment must not create its grants.
     await pool.query("INSERT INTO occ.iam_groups (id, name) VALUES ($1, $2)", [
@@ -70,7 +90,7 @@ test(
       OCC_AUTH_GITHUB_ALLOWED_TEAMS: "example/maintainers",
       OCC_AUTH_GITHUB_AUTO_ENROLL_GROUP_ID: groupId,
     };
-    let teamMembership = "active";
+    let teamMembership: string | number = "active";
     github.membership = (path, subject) => {
       if (path === "/user/memberships/orgs/example") {
         return "active";
@@ -80,11 +100,11 @@ test(
       }
       return 404;
     };
-    const ordinaryEmails = (subject) => primaryEmail(subjectEmail(subject));
+    const ordinaryEmails = (subject: number) => primaryEmail(subjectEmail(subject));
     github.emails = ordinaryEmails;
     app = await composeApp(settings);
     const adminHeaders = await signedInHeaders(app, origin, admin, address());
-    const signIn = (subject) => githubSignIn(app, origin, subject, address());
+    const signIn = (subject: number) => githubSignIn(app, origin, subject, address());
     const rowCounts = async () =>
       (
         await pool.query(`SELECT
@@ -95,9 +115,9 @@ test(
           (SELECT count(*)::int FROM occ.iam_group_memberships) AS memberships,
           (SELECT count(*)::int FROM occ.session) AS sessions`)
       ).rows[0];
-    const assertNoCookie = (callback) =>
+    const assertNoCookie = (callback: SignInResponse) =>
       assert.equal(String(callback.headers["set-cookie"] ?? "").includes(sessionCookieName), false);
-    async function refused(subject, expectedLocation) {
+    async function refused(subject: number, expectedLocation?: string) {
       const before = await rowCounts();
       const { callback } = await signIn(subject);
       assert.equal(callback.statusCode, 302, callback.body);
@@ -109,8 +129,8 @@ test(
       assertNoCookie(callback);
       assert.deepEqual(await rowCounts(), before, "no partial account, grant, or session");
     }
-    let member;
-    let memberHeaders;
+    let member: Pick<Account, "id" | "email">;
+    let memberHeaders: { cookie: string; origin: string };
     await t.test(
       "a first login receives Group access through the ordinary Agent workflow",
       async () => {
@@ -365,7 +385,7 @@ test(
       for (const [subject, changed] of [
         [8_100_015, { id: 8_100_099, login: "fixture-8100015" }],
         [8_100_016, { id: 8_100_016, login: "renamed-member" }],
-      ]) {
+      ] as const) {
         let reads = 0;
         github.profile = (authenticatedSubject) => {
           assert.equal(authenticatedSubject, subject, "both profiles use the same access token");
@@ -392,7 +412,7 @@ test(
       "overlapping first logins converge on one account and retain the attempt fence",
       async () => {
         const before = await rowCounts();
-        const bothArrived = Promise.withResolvers();
+        const bothArrived = Promise.withResolvers<void>();
         let arrivals = 0;
         github.emails = async (subject) => {
           if (subject === concurrentSubject) {
@@ -420,9 +440,13 @@ test(
           1,
           "the older competing attempt must retry after attachment",
         );
-        assertNoCookie(
-          results.find(({ callback }) => callback.headers.location !== "/console/").callback,
+        const refusedResult = results.find(
+          ({ callback }) => callback.headers.location !== "/console/",
         );
+        assert.ok(refusedResult);
+        assertNoCookie(refusedResult.callback);
+        const successfulResult = successful[0];
+        assert.ok(successfulResult);
         const after = await rowCounts();
         assert.deepEqual(after, {
           users: before.users + 1,
@@ -435,7 +459,7 @@ test(
         const concurrentUser = (
           await currentSession(
             app,
-            cookieHeaderFromSetCookie(successful[0].callback.headers["set-cookie"]),
+            cookieHeaderFromSetCookie(successfulResult.callback.headers["set-cookie"]),
           )
         ).user;
         await assertConsoleSignIn(
@@ -454,20 +478,25 @@ test(
         const beforeAudit = await auditCount();
         const query = pg.Client.prototype.query;
         let corrupted = false;
-        auditTest.mock.method(pg.Client.prototype, "query", function (sql, ...args) {
-          // Reject the membership audit after the account and membership writes. The
-          // real database constraint must undo both writes and the earlier account audit.
-          if (
-            !corrupted &&
-            typeof sql === "string" &&
-            sql.includes("INSERT INTO occ.audit_events") &&
-            args[0]?.[4] === "authentication.group.enrol"
-          ) {
-            corrupted = true;
-            args[0] = ["invalid-audit-id", ...args[0].slice(1)];
-          }
-          return query.call(this, sql, ...args);
-        });
+        auditTest.mock.method(
+          pg.Client.prototype,
+          "query",
+          function (this: pg.Client, sql: unknown, ...args: unknown[]) {
+            // Reject the membership audit after the account and membership writes. The
+            // real database constraint must undo both writes and the earlier account audit.
+            if (
+              !corrupted &&
+              typeof sql === "string" &&
+              sql.includes("INSERT INTO occ.audit_events") &&
+              Array.isArray(args[0]) &&
+              args[0][4] === "authentication.group.enrol"
+            ) {
+              corrupted = true;
+              args[0] = ["invalid-audit-id", ...args[0].slice(1)];
+            }
+            return Reflect.apply(query, this, [sql, ...args]);
+          },
+        );
         const { callback } = await signIn(8_100_013);
         assert.equal(corrupted, true);
         assertNoCookie(callback);

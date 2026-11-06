@@ -2248,20 +2248,6 @@ test("preflight rejects external sign-in Secret names Kubernetes refuses", async
     ["google", { github: undefined, google: { secretName: "Bad_Name" } }],
     ["oidc", { github: undefined, oidc: { ...oidc, secretName: "Bad_Name" } }],
   ]) {
-    for (const github of [
-      { autoEnrollGroupId: "team.platform" },
-      {
-        autoEnrollGroupId: "team.platform",
-        allowedTeams: ["acme/platform"],
-        allowedOrgs: ["acme"],
-      },
-    ]) {
-      await assertPreflightFailure(
-        "openclaw",
-        externalSignInInput({ github }),
-        /autoEnrollGroupId requires allowedTeams and no allowedOrgs/,
-      );
-    }
     await assertPreflightFailure(
       "openclaw",
       externalSignInInput(signIn),
@@ -2278,6 +2264,20 @@ test("preflight rejects external sign-in Secret names Kubernetes refuses", async
 });
 
 test("preflight rejects external sign-in and trusted proxy inputs Helm would reject", async () => {
+  for (const github of [
+    { autoEnrollGroupId: "team.platform" },
+    {
+      autoEnrollGroupId: "team.platform",
+      allowedTeams: ["acme/platform"],
+      allowedOrgs: ["acme"],
+    },
+  ]) {
+    await assertPreflightFailure(
+      "openclaw",
+      externalSignInInput({ github }),
+      /autoEnrollGroupId requires allowedTeams and no allowedOrgs/,
+    );
+  }
   await assertPreflightFailure(
     "openclaw",
     externalSignInInput({ github: { allowedTeams: ["platform"] } }),

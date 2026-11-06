@@ -316,7 +316,7 @@ issuing its cookie. Group bindings supply permission; this path creates none.
 
 Run `tests/integration/` files with `node --test`.
 
-- `node --test tests/integration/postgres-github-team-enrollment.test.mjs` uses
+- `node --test tests/integration/postgres-github-team-enrollment.test.ts` uses
   production authentication, PostgreSQL and IAM through the ordinary Agent API.
   Upstream GitHub responses and Compute are fixtures; it does not verify live
   GitHub registration or deployment.
