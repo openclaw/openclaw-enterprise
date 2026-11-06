@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
 updated: "2026-11-05"
-last_updated_session: authoring-run/dce55ffb-40ba-44e5-8165-4ceb2605cbba
+last_updated_session: authoring-run/d4af6731-99c5-4748-a8e4-0b063c19a426
 ---
 
 # Public GitHub read flow
@@ -105,6 +105,19 @@ injection for a private issuer; Harness trust alone does not configure it.
 Compute's NetworkPolicy grants reader egress to the selected ordinary Harness or
 the exact trusted supervisor peer; a protected workload receives no direct grant.
 
+`apps/controller/src/drivers/compute/kubernetes/index.ts:pluginRuntimeSnapshot`
+selects Harness ownership before the public-reader launcher. Compute-owned Codex
+launches compose public material setup over the initialize-RPC readiness entrypoint;
+provider-owned launches retain their matching commands and provider readiness.
+Both selections carry the matching workspace-node wrapper.
+The Deployment mounts the capability Secret only for Compute-owned Harnesses;
+provider-owned Harnesses use provider material delivery.
+
+Compute ConfigMaps and OpenShell provider files deliver the nonsecret transport.
+`openshell.ts:harnessRuntimeFiles` embeds its source in the profile's
+64 KiB file template, outside provider config's 8 KiB value limit.
+The launcher verifies a regular file of at most 64 KiB against its baked-in SHA-256
+before copying or execution. Missing, stale or altered source fails closed.
 The admitted launcher places helper source, combined public CA, transport config
 and Git wrappers below `$HOME/.oce-public-git`, in private generated children.
 It rejects symlinked, foreign-owned or nonprivate material parents. The Gateway's
@@ -258,6 +271,8 @@ that the owning runtime has stopped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 21:26: Correct transport projection (accompanying fix; authoring-run/d4af6731-99c5-4748-a8e4-0b063c19a426 - 9b94488677213a4cc92375aa52940d86856d3763)
 
 - 2026-11-05 18:03: Compact retired grants, maintain independent leases and close transfer and diagnostic leaks (accompanying corrections; authoring-run/dce55ffb-40ba-44e5-8165-4ceb2605cbba - ed566e82a68f58ce1d5d1755bc01ef1fc2f2744f)
 

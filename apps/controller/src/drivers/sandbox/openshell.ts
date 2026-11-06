@@ -936,7 +936,9 @@ function harnessRuntimeFiles(
   const nodeCa = nodeCaEntries[0];
   const config = Object.freeze({
     ...Object.fromEntries(
-      files.map((file) => [RUNTIME_FILE_CONFIG_KEYS[file.name]!, file.content]),
+      files
+        .filter((file) => file.name !== PUBLIC_GITHUB_READ_TRANSPORT_FILE)
+        .map((file) => [RUNTIME_FILE_CONFIG_KEYS[file.name]!, file.content]),
     ),
     [WORKSPACE_NODE_SETUP_CONFIG]: "{}",
     node_ca_pem: nodeCa === undefined || "valueFrom" in nodeCa ? "" : nodeCa.value,
@@ -961,7 +963,12 @@ function harnessRuntimeFiles(
     files: [
       ...files.map((file) => ({
         path: file.name,
-        content: `{{config.${RUNTIME_FILE_CONFIG_KEYS[file.name]!}}}`,
+        // The shipped source is immutable and non-secret. Keep it in the profile's
+        // 64 KiB file template rather than a provider config value (8 KiB maximum).
+        content:
+          file.name === PUBLIC_GITHUB_READ_TRANSPORT_FILE
+            ? PUBLIC_GITHUB_READ_TRANSPORT_SOURCE
+            : `{{config.${RUNTIME_FILE_CONFIG_KEYS[file.name]!}}}`,
         environmentVariable: file.environmentVariable,
       })),
       {
