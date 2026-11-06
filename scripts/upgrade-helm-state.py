@@ -31,21 +31,37 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def write(path, data):
-    with path.open("xb") as target:
-        os.chmod(path, 0o600)
-        target.write(data)
-        target.flush()
-        os.fsync(target.fileno())
-    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+def sync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
 
 
+def write(path, data):
+    with path.open("xb") as target:
+        os.chmod(path, 0o600)
+        target.write(data)
+        target.flush()
+        os.fsync(target.fileno())
+    sync_directory(path.parent)
+
+
 def write_json(path, value):
     write(path, (json.dumps(value, sort_keys=True) + "\n").encode())
+
+
+def stage_json(path, value):
+    # A crash before publication may leave this immutable write complete.
+    # Reuse only identical private evidence; never infer that Helm was sent.
+    try:
+        write_json(path, value)
+    except FileExistsError:
+        require(load(path) == value, "staged Helm submission intent changed")
+        with path.open("rb") as staged:
+            os.fsync(staged.fileno())
+        sync_directory(path.parent)
 
 
 def command(args, failure_path=None, **kwargs):
@@ -54,7 +70,8 @@ def command(args, failure_path=None, **kwargs):
     except subprocess.CalledProcessError as error:
         if failure_path is not None:
             write(failure_path, (error.stdout or b"") + (error.stderr or b""))
-            raise ValueError(f"Helm preparation failed; inspect {failure_path}") from error
+            print(f"Helm preparation failed; inspect {failure_path}", file=sys.stderr)
+            raise SystemExit(error.returncode if error.returncode > 0 else 128 - error.returncode) from error
         raise
 
 
@@ -102,8 +119,13 @@ def attempt(directory, nonce=None):
                        "renderedSha256": sha(read(root / "rendered.yaml"))},
             "Helm attempt evidence changed")
     if (directory / "helm-started").exists():
-        require(load(directory / "helm-started")["attempt"] == record,
-                "Helm submission does not match its attempt")
+        submission = load(directory / "helm-started")
+        require(submission["attempt"] == record and load(root / "intent.json") == submission
+                and type(submission.get("previousRevision")) is int and submission["previousRevision"] > 0
+                and type(submission.get("expectedRevision")) is int
+                and submission["expectedRevision"] == submission["previousRevision"] + 1
+                and submission["predecessor"]["version"] == submission["previousRevision"],
+                "Helm submission intent does not match its immutable attempt")
     else:
         require(load(directory / "prepared-helm-attempt.json") == record,
                 "prepared Helm attempt changed")
@@ -145,19 +167,24 @@ def record_submission(directory, nonce):
     current = load(directory / "before-helm-submission.json")
     version = current["version"]
     require(type(version) is int and version > 0, "invalid prior Helm revision")
-    intent = {"previousRevision": version, "expectedRevision": version + 1, "attempt": record}
-    write_json(root / "intent.json", intent)
+    intent = {"previousRevision": version, "expectedRevision": version + 1,
+              "attempt": record, "predecessor": current}
+    stage_json(root / "intent.json", intent)
     staged = root / "helm-started.tmp"
-    write_json(staged, intent)
+    stage_json(staged, intent)
     destination = directory / "helm-started"
     if destination.exists() or destination.is_symlink():
         read(destination)
     os.replace(staged, destination)
-    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    sync_directory(directory)
+
+
+def predecessor_matches(directory):
+    attempt(directory)
+    predecessor = load(directory / "helm-started")["predecessor"]
+    require(predecessor == load(directory / "current-helm-status.json")
+            and predecessor["config"] == documents(read(directory / "current-live-values.yaml"))[0],
+            "live Helm values do not match the exact recorded predecessor")
 
 
 ATTEMPT_ANNOTATION = "openclaw.dev/upgrade-attempt"
@@ -194,8 +221,12 @@ def pod_matches(actual, expected):
         if len(left) != len(right):
             return False
         for live, candidate in zip(left, right):
-            if any(live.get(key, []) != candidate.get(key, []) for key in ("command", "args")):
-                return False
+            # These fields are not harmless API defaults: additions change
+            # executed code, its inputs, filesystem or execution location.
+            for key in ("command", "args", "env", "envFrom", "volumeMounts", "volumeDevices",
+                        "workingDir", "lifecycle", "livenessProbe", "readinessProbe", "startupProbe"):
+                if live.get(key) != candidate.get(key):
+                    return False
     return True
 
 
@@ -231,13 +262,15 @@ def recover(directory, release, kubeconfig, context, namespace):
             and submission["expectedRevision"] == submission["previousRevision"] + 1,
             "original Helm submission intent changed")
     helm_args = ["--kubeconfig", kubeconfig, "--kube-context", context, "--namespace", namespace]
-    kube = ["kubectl", "--kubeconfig", kubeconfig, "--context", context, "--namespace", namespace]
+    kube = ["kubectl", "--kubeconfig", kubeconfig, "--context", context]
 
     def status():
         return json.loads(command(["helm", "status", release, *helm_args, "--output", "json"]))
 
     def get(manifest):
-        result = json.loads(command([*kube, "get", "--filename", "-", "--output", "json"],
+        selected_namespace = manifest["metadata"].get("namespace", namespace)
+        result = json.loads(command([*kube, "--namespace", selected_namespace,
+                                     "get", "--filename", "-", "--output", "json"],
                                     input=json.dumps(manifest).encode()))
         require(result.get("kind") == "List" and len(result.get("items", [])) == 1,
                 "expected exactly one live recovery resource")
@@ -266,7 +299,8 @@ def recover(directory, release, kubeconfig, context, namespace):
                         and not actual.get("status", {}).get("active", 0)
                         and not actual.get("status", {}).get("failed", 0),
                         "initializer Job has not completed successfully")
-                pods = json.loads(command([*kube, "get", "pods", "--selector",
+                pods = json.loads(command([*kube, "--namespace", metadata["namespace"],
+                                           "get", "pods", "--selector",
                                            f"batch.kubernetes.io/controller-uid={metadata['uid']}",
                                            "--output", "json"]))["items"]
                 require(len(pods) == 1, "initializer must retain exactly one successful Pod")
@@ -304,6 +338,8 @@ def recover(directory, release, kubeconfig, context, namespace):
     observed.append((secret, secret))
     target = directory / "helm-recovery"
     target.mkdir(mode=0o700)
+    # The exclusive marker's parent entry must survive a host crash too.
+    sync_directory(directory)
     intent = {"submissionSha256": sha(read(root / "intent.json")), "attempt": record,
               "expectedRevision": submission["expectedRevision"] + 1,
               "release": release, "namespace": namespace,
@@ -374,6 +410,8 @@ def main():
         new_attempt(directory, args[0], args[1:])
     elif action == "select":
         print(attempt(directory)[1]["nonce"])
+    elif action == "predecessor":
+        predecessor_matches(directory)
     elif action == "record":
         record_submission(directory, args[0])
     elif action == "recover":

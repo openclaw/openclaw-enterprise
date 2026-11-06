@@ -84,15 +84,15 @@ the API may already be stopped. Reconcile `current-<component>-deployment.json`
 and `quiescence-<component>-patch.json` against live state before resuming.
 
 Helm failure or disconnection does not prove migration rollback. Inspect live
-Helm status/history, initialization Job/Pod outcomes and the retained database;
-`current-helm-status.json` may be stale. Keep the operator freeze. Stop and
-reconcile the original Helm client before retry or recovery. Resolve `pending-*`
-releases with the release owner. Revision checks cannot fence concurrent clients.
+Helm status/history, initialization Job/Pod outcomes and the database;
+`current-helm-status.json` may be stale. Keep the freeze. Reconcile the stopped
+Helm client before retry or recovery. Resolve `pending-*` releases with the
+release owner. Revision checks cannot fence concurrent clients.
 
-Ordinary resume requires `helm-started`'s expected deployed revision and candidate
-values/Installation. Invalid intents or other revisions refuse it, regardless of
-`--migration-history-checked`. For interrupted candidates with completed
-initialization, see [same-candidate Helm recovery](production-helm-recovery.md).
+Ordinary resume skips Helm at the expected deployed revision with candidate
+values/Installation. It can retry the recorded prior or failed expected revision
+after the checks below. Invalid intents and other revisions refuse.
+For completed initialization, see [same-candidate Helm recovery](production-helm-recovery.md).
 
 If external recovery moves outside this pair, preserve intent and evidence
 unchanged. The release owner must verify the

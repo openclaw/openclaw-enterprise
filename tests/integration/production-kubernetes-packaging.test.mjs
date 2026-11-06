@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isIP } from "node:net";
 import { checkServerIdentity } from "node:tls";
@@ -2672,7 +2672,12 @@ esac
         `${controllerImage}|${brokerImage}|linux/amd64\n`,
       );
       if (!failure) {
-        const candidate = await resources(await readFile(join(evidence, "rendered.yaml"), "utf8"));
+        // A failed dry-run has a render but no successful-preparation pointer.
+        const attempts = await readdir(join(evidence, "helm-attempts"));
+        assert.equal(attempts.length, 1);
+        const candidate = await resources(
+          await readFile(join(evidence, "helm-attempts", attempts[0], "rendered.yaml"), "utf8"),
+        );
         const deployment = candidate.find(
           ({ kind, metadata }) =>
             kind === "Deployment" && metadata.name === "openclaw-enterprise-worker",

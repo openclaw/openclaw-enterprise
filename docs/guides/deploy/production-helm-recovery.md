@@ -44,11 +44,12 @@ The candidate's exact revision, stored values, ordinary manifests and hook set
 must match its original attempt. The command verifies the attempt UUID on the
 live hooks, initializer Job and its successful owned Pod. It compares the Job
 and Pod specifications, including images and commands, with the candidate.
-Missing, deleting, failed or mismatched objects stop recovery. Additional
-executable containers or changed lists introduced by admission also stop it.
+Missing, deleting, failed or mismatched objects stop recovery. Admission-added execution behavior, inputs, mounts, probes or lifecycle handlers
+also stop recovery; only unrelated API defaults are tolerated.
 
-The command checks current Helm resource ownership and the original
-Installation and API/worker identities. It records the observed resource UIDs
+The command reads each resource in its declared namespace (defaulting to the
+release namespace), then checks Helm ownership against the original release.
+It preserves the original Installation and API/worker identities. It records the observed resource UIDs
 and versions, then reads them again before submitting recovery. These are
 recovery-time observations, not proof that every object retained its original
 UID throughout the interruption. The attempt UUID does not detect a privileged
@@ -68,9 +69,11 @@ not only Helm's hook status.
 ## Keep the recovery records
 
 `helm-attempts/<UUID>/` retains each submission's effective values, render and
-intent. A normal authorized retry gets a new UUID. Staging another attempt does
-not replace the published `helm-started` intent. Do not edit these files or replay
-the effective values manually.
+intent and observed predecessor. A normal authorized retry gets a new UUID.
+If Helm never accepts that retry, resume admits its exact recorded predecessor
+at the recorded revision. Staging another attempt does not replace the published
+`helm-started` intent. An interrupted first publication can finish only from
+identical staged evidence. Do not edit these files or replay values manually.
 
 If interruption leaves staged values in the protected local file before intent
 publication, resume refuses them. Reconcile that file with the published

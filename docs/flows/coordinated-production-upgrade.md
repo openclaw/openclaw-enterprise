@@ -171,14 +171,16 @@ drafts per the [production guide](../guides/deploy/production-upgrade.md).
 
 `scripts/upgrade-production-images` binds resume to the prepared inputs, directory,
 source and cluster, requalifies the image pair, and rejects changed eligible nodes.
-Values must match baseline or candidate; Installation identity and unrelated Secret
-data must match baseline. Ordinary resume accepts only the recorded prior/expected
-revisions. Retrying requires migration-history review and terminal initializer Jobs/Pods.
+Values must match baseline, candidate or the exact recorded predecessor at its
+revision. Installation identity and unrelated Secret data remain unchanged.
+Resume checks immutable intent equality. Retries require migration-history review
+and terminal initializer Jobs/Pods.
 
 For [same-candidate recovery](../guides/deploy/production-helm-recovery.md),
 `scripts/upgrade-helm-state.py:recover` checks the original Helm payload, ownership,
-completed Job and owned Pod. It records an exclusive intent, rereads identities,
-and rolls back to that candidate with hooks enabled. Only pre-upgrade hooks are
+completed Job and owned Pod, rejecting added execution behavior. Reads use each
+manifest's namespace; ownership stays bound to the release. It durably records
+exclusive intent, rereads identities and rolls back with hooks enabled. Only pre-upgrade hooks are
 supported. Resume requires the acknowledged successor; lost acknowledgement
 refuses replay. Client shutdown, exclusive ownership, resource reconciliation and
 database history remain operator attestations.
@@ -196,14 +198,13 @@ rewritten; both OCC templates include its checksum.
 
 `upgrade-helm-state.py:new_attempt` renders and dry-runs immutable values with a
 fresh `installation.upgradeAttemptId`, copied to hooks and the initializer Pod.
-`record_submission` saves revision/hash intent before atomically publishing
-`helm-started`. Staged retries cannot replace published intent. Initialization
-checks Installation, migrates and bootstraps before rollout; failures require
-release and database reconciliation.
+`record_submission` saves intent and predecessor before publishing `helm-started`.
+Identical interrupted staging can finish; staged retries cannot replace published
+intent. Initialization checks Installation, migrates and bootstraps before rollout.
 
 ### 4. Verify control-plane recovery
 
-`scripts/upgrade-production-images:1596`
+`scripts/upgrade-production-images:1671`
 
 The script waits for both OCC Deployments and checks controller images,
 replica counts, and changed Installation checksums. Each component needs
@@ -234,8 +235,8 @@ remain stable across that check and before dispatch and completion.
 `scripts/upgrade-production-images:confirmed_deployment_status` and
 `scripts/upgrade-dispatch-state.py:transition`
 
-The helper flushes intent before each deploy and starts the eligible batch
-before collecting replies. An unresolved intent blocks later sends on resume.
+The helper flushes intent and starts eligible deployments before collecting
+replies. Unresolved intent blocks later sends.
 The journal records accepted revisions and definite refusals. Resume can retry
 a refusal. It keeps superseded receipts and uses the journal's current revision.
 A new replacement receipt must name the current failed revision. If an outcome
@@ -330,7 +331,8 @@ saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 
 ## Changelog
 
-- 2026-11-06: Bind attempts and acknowledge same-candidate recovery. (authoring-run/9507f38c-1639-4152-a4ae-0de499d7ca5d - 1b6c65cc)
+- 2026-11-06 23:37: Fix retry publication, resource lookup and execution checks. (authoring-run/9507f38c-1639-4152-a4ae-0de499d7ca5d - bbf4891d)
+- 2026-11-06 23:24: Bind attempts and acknowledge same-candidate recovery. (authoring-run/9507f38c-1639-4152-a4ae-0de499d7ca5d - 1b6c65cc)
 
 - 2026-11-06 19:10: Bind resume to each submitted Helm revision. (authoring-run/9ac3c663-290c-4524-94bd-7157cbd44914 - f1c0865be4c523090af0dccc29c613ad1d47d542)
 

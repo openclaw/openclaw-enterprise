@@ -1488,7 +1488,9 @@ matches_yaml "$values" "$evidence_dir/before-values.yaml" ||
 matches_yaml "$installation" "$evidence_dir/before-installation.yaml" ||
   matches_yaml "$installation" "$candidate_installation" || die "protected Installation changed outside this upgrade."
 matches_yaml "$evidence_dir/current-live-values.yaml" "$evidence_dir/before-live-values.yaml" ||
-  matches_yaml "$evidence_dir/current-live-values.yaml" "$candidate_values" || die "live Helm values changed outside this upgrade."
+  matches_yaml "$evidence_dir/current-live-values.yaml" "$candidate_values" ||
+  { [[ -f "$evidence_dir/helm-started" ]] && python3 scripts/upgrade-helm-state.py predecessor "$evidence_dir"; } ||
+  die "live Helm values changed outside this upgrade."
 
 live_secret="$evidence_dir/current-live-installation-secret.json"
 "${kube[@]}" --namespace "$namespace" get secret "$installation_secret" --output json >"$live_secret"
@@ -1652,7 +1654,7 @@ PYTHON
   fi
   helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/before-helm-submission.json"
   jq -e --slurpfile observed "$evidence_dir/current-helm-status.json" '
-    .version == $observed[0].version and .info.status == $observed[0].info.status
+    . == $observed[0]
   ' "$evidence_dir/before-helm-submission.json" >/dev/null ||
     die "the Helm release changed before submission; investigate before continuing."
   python3 scripts/upgrade-helm-state.py record "$evidence_dir" "$helm_attempt"

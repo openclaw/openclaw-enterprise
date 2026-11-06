@@ -416,6 +416,9 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       out(
         args.includes("json")
           ? {
+              name: state.release,
+              namespace: "system",
+              config: await yamlFile(join(root, "live-values")),
               ...state.recoveryRelease,
               version: state.version,
               info: { ...state.recoveryRelease?.info, status: state.helmStatus },
@@ -5519,6 +5522,122 @@ test("a staged retry cannot replace the published Helm attempt and an actual ret
   await f.run("--resume");
 });
 
+test("a retry published before Helm accepts it can resume from its exact predecessor", async (t) => {
+  const f = await fixture(t);
+  await f.failNext("fail-migration");
+  await assert.rejects(f.run(), injectedFault);
+  const original = await assertHelmIntent(f, 1, 2);
+  // B is published, but Helm refuses it before creating a revision. A remains live.
+  await f.failNext("reject-helm-submission");
+  await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
+  const retry = await assertHelmIntent(f, 2, 3);
+  assert.notEqual(retry.attempt.nonce, original.attempt.nonce);
+  const predecessor = await f.state();
+  assert.equal(predecessor.version, 2);
+  const events = await f.events();
+  // The retained values belong only to the exact predecessor revision.
+  await writeFile(join(f.directory, "state.json"), JSON.stringify({ ...predecessor, version: 3 }));
+  await assert.rejects(f.run("--resume", "--migration-history-checked"), /live Helm values/);
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(predecessor));
+  const liveValues = await readFile(join(f.directory, "live-values"), "utf8");
+  await writeFile(
+    join(f.directory, "live-values"),
+    JSON.stringify({ ...loadYaml(liveValues), unrelated: true }),
+  );
+  await assert.rejects(f.run("--resume", "--migration-history-checked"), /live Helm values/);
+  await writeFile(join(f.directory, "live-values"), liveValues);
+  assert.deepEqual(await f.events(), events);
+  await f.run("--resume", "--migration-history-checked");
+  assert.equal((await f.state()).version, 3);
+  assert.equal((await f.events()).filter((event) => event === "migration").length, 2);
+});
+
+test("a first intent interrupted before publication can finish its identical staged write", async (t) => {
+  for (const stagedFileExists of [false, true]) {
+    await t.test(stagedFileExists ? "after staging" : "before staging", async (subtest) => {
+      const f = await fixture(subtest);
+      await f.failNext("reject-helm-submission");
+      await assert.rejects(f.run(), injectedFault);
+      const intent = await assertHelmIntent(f, 1, 2);
+      const original = await readFile(join(f.evidence, "helm-started"), "utf8");
+      const directory = join(f.evidence, "helm-attempts", intent.attempt.nonce);
+      // Retain the exact real intent, modeling interruption after its exclusive
+      // creation but before publication. No Helm revision or migration was created.
+      await rm(join(f.evidence, "helm-started"));
+      if (stagedFileExists) {
+        const staged = join(directory, "helm-started.tmp");
+        await writeFile(staged, JSON.stringify({ ...intent, expectedRevision: 3 }), {
+          mode: 0o600,
+        });
+        await assert.rejects(f.run("--resume"), /staged Helm submission intent changed/);
+        assert.equal((await f.state()).helmSubmissions, 1);
+        await writeFile(staged, original);
+      }
+      await f.run("--resume");
+      assert.equal(await readFile(join(directory, "intent.json"), "utf8"), original);
+      assert.equal((await f.state()).version, 2);
+      assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+    });
+  }
+});
+
+test("ordinary resume rejects a well-formed revision pair that differs from the immutable intent", async (t) => {
+  const f = await fixture(t);
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  const original = await assertHelmIntent(f, 1, 2);
+  const state = await f.state();
+  state.version = 3;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  await writeFile(
+    join(f.evidence, "helm-started"),
+    JSON.stringify({
+      ...original,
+      previousRevision: 2,
+      expectedRevision: 3,
+    }),
+  );
+  const events = await f.events();
+  await assert.rejects(f.run("--resume"), /submission intent/);
+  assert.deepEqual(await f.events(), events);
+  assert.equal(existsSync(join(f.evidence, "completed")), false);
+});
+
+test("recovery rejects admission-added execution settings even when absent from the candidate", async (t) => {
+  const f = await fixture(t, { recoveryHooks: true });
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  const original = await completedHookInPendingRelease(f);
+  for (const [field, value] of [
+    ["lifecycle", { postStart: { exec: { command: ["unreviewed"] } } }],
+    ["env", [{ name: "NODE_OPTIONS", value: "--require=/unreviewed.js" }]],
+    ["envFrom", [{ secretRef: { name: "unreviewed" } }]],
+    ["workingDir", "/unreviewed"],
+    ["startupProbe", { exec: { command: ["unreviewed"] } }],
+    ["volumeMounts", [{ name: "unreviewed", mountPath: "/unreviewed" }]],
+    ["volumeDevices", [{ name: "unreviewed", devicePath: "/dev/unreviewed" }]],
+  ]) {
+    await t.test(field, async () => {
+      const state = structuredClone(original);
+      state.recoveryPod.spec.containers[0][field] = value;
+      if (field === "volumeMounts" || field === "volumeDevices") {
+        state.recoveryPod.spec.volumes = [
+          {
+            name: "unreviewed",
+            ...(field === "volumeDevices"
+              ? { persistentVolumeClaim: { claimName: "unreviewed-block" } }
+              : { emptyDir: {} }),
+          },
+        ];
+      }
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      await assert.rejects(f.run(...recoverHelm), /Pod identity/);
+      assert.equal((await f.state()).rollbackSubmissions, undefined);
+      assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+    });
+  }
+});
+
 test("an unacknowledged same-candidate rollback cannot be replayed or silently adopted", async (t) => {
   const f = await fixture(t, { recoveryHooks: true });
   await f.failNext("lost-helm-response");
@@ -5562,7 +5681,11 @@ test("a staged retry with replaced local values still cannot replace the publish
 test("failed attempt preparation preserves native dry-run diagnostics before stopping writers", async (t) => {
   const f = await fixture(t);
   await f.failNext("fail-server-dry-run");
-  await assert.rejects(f.run(), /Helm preparation failed/);
+  await assert.rejects(f.run(), (error) => {
+    assert.equal(error.code, 9);
+    assert.match(error.stderr, /Helm preparation failed/);
+    return true;
+  });
   const attempts = await readdir(join(f.evidence, "helm-attempts"));
   assert.equal(attempts.length, 1);
   await assertPrivateReceipt(
