@@ -3774,7 +3774,10 @@ async function deployAdditionalCredentialAgent(topology, modelSourceId, toolSour
       300_000,
     );
   } catch (error) {
-    await diagnoseAdditionalAgent(topology, agent.data.id, deployed.data.id, deploymentPath);
+    // Preserve the activation error if its best-effort diagnostic fails.
+    await diagnoseAdditionalAgent(topology, agent.data.id, deployed.data.id, deploymentPath).catch(
+      () => undefined,
+    );
     throw error;
   }
   await waitForProviderHarnessPod(topology.placement, deployed.data);
