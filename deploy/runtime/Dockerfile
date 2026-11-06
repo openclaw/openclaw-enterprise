@@ -10,6 +10,27 @@ FROM ${NODE_BASE_IMAGE} AS node-build-base
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
+# Compile the managed Google CLI for each target with the same toolchain and source.
+FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm@sha256:dc0963f32053e4bc451d24d87e3892d42d01021b61f093e98eb95c0352bb84b0 AS gog-build
+ARG TARGETARCH
+WORKDIR /build/gog
+COPY deploy/runtime/google/gog-account-binding.patch /tmp/gog-account-binding.patch
+RUN --mount=type=secret,id=build-ca,required=false \
+    --mount=type=bind,source=scripts/ci/download-pinned.sh,target=/tmp/download-pinned.sh \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
+    bash /tmp/download-pinned.sh https://codeload.github.com/openclaw/gogcli/tar.gz/e0e3cb9c80eb4f1fb8051766e52841b8cd7ab965 /tmp/gog-source.tar.gz ec6ca5507407fde889c9c44bb2c64005aaa7ebe4319f08913dd726dc5528c2b2; \
+    tar -xzf /tmp/gog-source.tar.gz --strip-components=1; \
+    echo '1b4d719b23dbdc6c4ad61edc18852fac1141c7464b3aa94a532c13e174938293  /tmp/gog-account-binding.patch' | sha256sum --check --strict; \
+    git apply --unidiff-zero /tmp/gog-account-binding.patch
+RUN --mount=type=secret,id=build-ca,required=false \
+    --mount=type=bind,source=deploy/runtime/google/build-gog.sh,target=/tmp/build-gog.sh \
+    --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export SSL_CERT_FILE=/run/secrets/build-ca; fi; \
+    bash /tmp/build-gog.sh "$TARGETARCH" /build/gog-cli
+
 FROM node-build-base AS curl-packages
 COPY deploy/runtime/curl /tmp/curl
 RUN --mount=type=secret,id=build-ca,required=false \
@@ -427,12 +448,13 @@ COPY apps/controller/plugins/oce-google-workspace/skills/ /usr/local/lib/oce/plu
 COPY apps/controller/plugins/oce-google-workspace/ai.openclaw.oce/release.json /usr/local/lib/oce/plugins/google/release.json
 
 RUN --mount=type=secret,id=build-ca,required=false \
+    --mount=type=bind,from=gog-build,source=/build/gog-cli,target=/tmp/managed-gog \
     --mount=type=bind,source=deploy/runtime/google/install-gog.mts,target=/tmp/install-gog.mts \
     --mount=type=bind,source=scripts/ci/download-pinned.sh,target=/tmp/download-pinned.sh \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
     mkdir -p /usr/local/lib/oce/plugins/google/bin; \
-    node /tmp/install-gog.mts /usr/local/lib/oce/plugins/google "linux-${TARGETARCH:-amd64}" /usr/local/lib/oce/plugins/google/bin /tmp/download-pinned.sh
+    node /tmp/install-gog.mts /usr/local/lib/oce/plugins/google "linux-${TARGETARCH:-amd64}" /usr/local/lib/oce/plugins/google/bin /tmp/download-pinned.sh /tmp/managed-gog
 
 COPY apps/controller/plugins/ /usr/local/lib/oce/plugin-catalog/
 # Give each reviewed CLI its own command on PATH when an Agent binds accounts.

@@ -2412,7 +2412,7 @@ Example request
   "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
   "connectionTemplateVersion": 1,
   "expectedCredentialSourceIds": [],
-  "pluginId": "occ-plugin:google@1.0.0",
+  "pluginId": "occ-plugin:google@1.1.0",
   "releaseSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "slotId": "account"
 }
@@ -2551,7 +2551,7 @@ List compatible OAuth templates for a saved Agent plugin slot
 | --- | --- | --- | --- | --- | --- |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
-| `pluginId` | path | `string` | Yes | min length: 1; max length: 256 | "occ-plugin:google@1.0.0" |
+| `pluginId` | path | `string` | Yes | min length: 1; max length: 256 | "occ-plugin:google@1.1.0" |
 | `slotId` | path | `string` | Yes | min length: 1; max length: 128 | "account" |
 
 ##### Responses

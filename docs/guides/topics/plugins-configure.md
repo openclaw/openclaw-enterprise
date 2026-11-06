@@ -18,7 +18,7 @@ Use **Configure plugins** to edit saved selections and tool policy. On a dedicat
 OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, choose
 **Google Workspace** and add it. Select the saved Google accounts the Agent should
 use, or leave every box clear to install the CLI without a credential.
-Use distinct account names such as “Work mail” and “Personal mail”. Save and deploy.
+Use distinct account names such as “Work mail” and “Personal mail”. Save and deploy. If your Agent still selects `occ-plugin:google@1.0.0`, remove that selection, add Google Workspace 1.1.0 and select its accounts before deploying.
 
 Under **Accounts**, each slot lists compatible saved accounts. Select the accounts you want the Agent to use, then select **Save plugin selections**. OCC grants the Agent access to each selected OAuth account. To add an account, save the enabled plugin and select **Connect new account** in the intended slot. In the dialog, choose a connection template, enter an optional account name, review the permissions and select **Connect and attach**. The provider asks which account to authorize. When consent completes, OCC adds the account to the slot.
 

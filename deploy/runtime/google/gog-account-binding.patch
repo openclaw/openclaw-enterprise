@@ -1,0 +1,55 @@
+--- a/internal/googleapi/client.go
++++ b/internal/googleapi/client.go
+@@ -15,0 +16 @@ import (
++	"github.com/openclaw/gogcli/internal/ocebinding"
+@@ -244 +245 @@ func newAuthenticatedRetryTransport(ctx
+-		Base:   quotaProjectTransportFromContext(ctx, newBaseTransport()),
++		Base:   ocebinding.Transport{Base: quotaProjectTransportFromContext(ctx, newBaseTransport())},
+--- a/internal/discoveryapi/discovery.go
++++ b/internal/discoveryapi/discovery.go
+@@ -16,0 +17,2 @@ import (
++
++	"github.com/openclaw/gogcli/internal/ocebinding"
+@@ -61 +63 @@ func (c Client) httpClient() *http.Clien
+-	return &http.Client{Timeout: 30 * time.Second}
++	return &http.Client{Timeout: 30 * time.Second, Transport: ocebinding.Transport{Base: http.DefaultTransport, Discovery: true}}
+--- /dev/null
++++ b/internal/ocebinding/transport.go
+@@ -0,0 +1,37 @@
++// Package ocebinding presents the selected saved account to OpenShell's terminal Credential Proxy.
++package ocebinding
++
++import (
++	"net/http"
++	"os"
++	"regexp"
++	"strings"
++)
++
++var savedAccount = regexp.MustCompile(`^oce:saved-account:GOG_ACCESS_TOKEN_[0-9A-F]{24}:([0-9a-f]{64})$`)
++
++type Transport struct {
++	Base      http.RoundTripper
++	Discovery bool
++}
++
++func (t Transport) RoundTrip(req *http.Request) (*http.Response, error) {
++	var token string
++	if t.Discovery {
++		// Public descriptions carry no bearer. Identify the selected slot only at Google's
++		// Discovery endpoints, including when the client follows a redirect.
++		if req.URL.Scheme != "https" || !strings.HasSuffix(req.URL.Host, ".googleapis.com") ||
++			!(req.URL.Path == "/discovery/v1/apis" || strings.HasPrefix(req.URL.Path, "/discovery/v1/apis/") || req.URL.Path == "/$discovery/rest") {
++			return t.Base.RoundTrip(req)
++		}
++		token = os.Getenv("GOG_ACCESS_TOKEN")
++	} else if bearer, ok := strings.CutPrefix(req.Header.Get("Authorization"), "Bearer "); ok {
++		token = bearer
++	}
++	if marker := savedAccount.FindStringSubmatch(token); marker != nil {
++		req = req.Clone(req.Context())
++		req.Header.Del("Authorization")
++		req.Header.Set("X-OCE-Account-Binding", marker[1])
++	}
++	return t.Base.RoundTrip(req)
++}

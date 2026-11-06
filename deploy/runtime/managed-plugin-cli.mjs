@@ -23,8 +23,10 @@ if (!account || !Object.hasOwn(accounts, account)) {
   process.exit(2);
 }
 const marker = process.env[accounts[account]];
-const match = /^openshell:resolve:env:s[0-9a-f]{64}_([A-Z][A-Z0-9_]*)$/.exec(marker ?? "");
-if (!match || accounts[account] !== "OCE_MANAGED_CLI_" + match[1]) {
+const saved = /^oce:saved-account:([A-Z][A-Z0-9_]*):[0-9a-f]{64}$/.exec(marker ?? "");
+const native = /^openshell:resolve:env:s[0-9a-f]{64}_([A-Z][A-Z0-9_]*)$/.exec(marker ?? "");
+const selectedEnv = saved?.[1] ?? native?.[1];
+if (!selectedEnv || accounts[account] !== "OCE_MANAGED_CLI_" + selectedEnv) {
   process.stderr.write("The selected plugin account is unavailable.\n");
   process.exit(2);
 }

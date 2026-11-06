@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "oce-google-workspace",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Install the pinned gog Google Workspace CLI on a dedicated OpenClaw worker using Kubernetes Compute.",
   "author": { "name": "OpenClaw Enterprise" },
   "repository": "https://github.com/openclaw/openclaw-enterprise",

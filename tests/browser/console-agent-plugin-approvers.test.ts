@@ -140,7 +140,7 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
     }),
   );
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  const id = "occ-plugin:google@1.0.0";
+  const id = "occ-plugin:google@1.1.0";
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
@@ -1285,7 +1285,7 @@ test("plugin prefetch remains usable after leaving during its debounce", async (
     }),
   );
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  const initialSelections = { "occ-plugin:google@1.0.0": { enabled: false } };
+  const initialSelections = { "occ-plugin:google@1.1.0": { enabled: false } };
   const saved = record(
     await fixture.request("PATCH", agentPath, {
       body: { configurationId: agent.configurationId, plugins: initialSelections },

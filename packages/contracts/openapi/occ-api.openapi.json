@@ -22018,7 +22018,7 @@
                     "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                     "connectionTemplateVersion": 1,
                     "expectedCredentialSourceIds": [],
-                    "pluginId": "occ-plugin:google@1.0.0",
+                    "pluginId": "occ-plugin:google@1.1.0",
                     "releaseSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "slotId": "account"
                   }
@@ -28707,7 +28707,7 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "occ-plugin:google@1.0.0"
+                "value": "occ-plugin:google@1.1.0"
               }
             },
             "in": "path",

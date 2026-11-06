@@ -237,8 +237,10 @@ process.exit(r.error ? 0 : r.status);`;
         worker(expected, mounts, environment, bindings, [
           "/tmp/google-account-calls.mjs",
           JSON.stringify(
-            expectedCalls.map(({ args, marker }) => ({
+            expectedCalls.map(({ args, marker, bindingId, discovery }) => ({
               args,
+              bindingId,
+              discovery,
               bearerHash:
                 marker &&
                 createHash("sha256")
@@ -259,6 +261,23 @@ process.exit(r.error ? 0 : r.status);`;
           { args: ["--oce-account", "cs_unknown"] },
           { args: ["--oce-account", withdrawn.id] },
           { args: ["--oce-account", west.id, "--access-token=controlled-test-override"] },
+        ],
+      );
+      // The real gog transport selects a browser account by its nonsecret binding ID.
+      // The terminal proxy supplies the bearer after checking this particular request.
+      const workBinding = "3".repeat(64);
+      const personalBinding = "4".repeat(64);
+      await capture(
+        [west, east],
+        [
+          `${west.env}=oce:saved-account:${west.env}:${workBinding}`,
+          `${east.env}=oce:saved-account:${east.env}:${personalBinding}`,
+        ],
+        [
+          { args: ["--oce-account", west.id], bindingId: workBinding },
+          { args: ["--oce-account", east.id], bindingId: personalBinding },
+          { args: ["--oce-account", west.id], bindingId: workBinding, discovery: true },
+          { args: ["--oce-account", east.id], bindingId: personalBinding, discovery: true },
         ],
       );
       await assert.rejects(worker(expected, [], [west.env + "=raw"], [west]), (error) =>

@@ -205,7 +205,7 @@ export function createAgentDetailScenarios({
   const slackSourceId = "cs_00000000-0000-4000-8000-000000000001";
   const secondSlackSourceId = "cs_00000000-0000-4000-8000-000000000002";
 
-  const googleEntry = { id: "occ-plugin:google@1.0.0", name: "Google Workspace", tools: [] };
+  const googleEntry = { id: "occ-plugin:google@1.1.0", name: "Google Workspace", tools: [] };
   const googleAccounts = [
     { id: "cs_00000000-0000-4000-8000-000000000003", name: "Work mail" },
     { id: "cs_00000000-0000-4000-8000-000000000004", name: "Personal mail" },

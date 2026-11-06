@@ -6055,7 +6055,7 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
   );
   const driver = new OCCPluginDriver();
   controller.fixture.controller.installPluginDrivers([driver, new CodexPluginDriver()]);
-  const packageId = "occ-plugin:google@1.0.0";
+  const packageId = "occ-plugin:google@1.1.0";
   const plugins = { [packageId]: { enabled: true } };
   const agentsPath = `/namespaces/${namespace.id}/agents`;
   const created = await controller.request("POST", agentsPath, {
@@ -11673,7 +11673,7 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     ]),
   );
   assert.equal(slot.toolDiscovery, true);
-  const google = { "occ-plugin:google@1.0.0": { enabled: true } };
+  const google = { "occ-plugin:google@1.1.0": { enabled: true } };
   const pluginsFor = (toolNames, account = source.data.id) => ({
     ...google,
     [pluginId]: {
@@ -11798,7 +11798,7 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
   assert.equal(offered.catalog.status, 200);
   assert.deepEqual(
     offered.catalog.data.plugins.map((entry) => entry.id),
-    ["occ-plugin:google@1.0.0", packageId],
+    ["occ-plugin:google@1.1.0", packageId],
   );
   assert.equal(offered.details.status, 200, JSON.stringify(offered.details.body));
   assert.equal(offered.details.data.id, packageId);
@@ -11806,7 +11806,8 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
   // Finding 2790: an ID the catalog does not offer is the caller's error, not a catalog
   // failure to retry. The unversioned package ID names its versioned one.
   for (const [pluginId, advice] of [
-    ["occ-plugin:google", "Use occ-plugin:google@1.0.0."],
+    ["occ-plugin:google", "Use occ-plugin:google@1.1.0."],
+    ["occ-plugin:google@1.0.0", "Use occ-plugin:google@1.1.0."],
     [
       "occ-plugin:nope@1.0.0",
       "Check each plugin ID and its Driver prefix against the catalog for the Agent's Harness.",
@@ -11832,6 +11833,16 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
     body: { configurationId: configuration.id, plugins: {} },
   });
   assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+
+  // A saved selection for the retired worker must not authorize the new binary.
+  const retired = await controller.request("PATCH", path, {
+    body: {
+      configurationId: configuration.id,
+      plugins: { "occ-plugin:google@1.0.0": { enabled: true } },
+    },
+  });
+  assertApiError(retired, 400, "INVALID_REQUEST");
+  assert.match(retired.body.error.message, /Use occ-plugin:google@1\.1\.0\./);
 
   // The same Agent on the Codex Harness: save refuses the package, so discovery hides it.
   const codex = await controller.request(

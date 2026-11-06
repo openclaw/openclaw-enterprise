@@ -48,7 +48,7 @@ export type ConnectionPreview =
   "choose" | "bound" | "empty" | "denied" | "loading" | "named" | "unrestricted";
 
 function googleSlotStory(preview: ConnectionPreview) {
-  const pluginId = "occ-plugin:google@1.0.0";
+  const pluginId = "occ-plugin:google@1.1.0";
   const releaseSha256 = "a".repeat(64);
   const boundId = "cs_00000000-0000-4000-8000-000000000010";
   return {
@@ -433,13 +433,13 @@ export const pluginsScenarios = {
     pluginCapabilities: {
       ...pluginCapabilities,
       driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-      policyScopeByPlugin: { "occ-plugin:google@1.0.0": "enablement_only" },
+      policyScopeByPlugin: { "occ-plugin:google@1.1.0": "enablement_only" },
     },
     pluginCatalog: {
       status: "ready",
       entries: [
         {
-          id: "occ-plugin:google@1.0.0",
+          id: "occ-plugin:google@1.1.0",
           name: "Google Workspace",
           description:
             "Install the pinned gog Google Workspace CLI on a dedicated OpenClaw worker using Kubernetes Compute.",
