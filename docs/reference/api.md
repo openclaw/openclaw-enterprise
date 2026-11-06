@@ -5037,6 +5037,13 @@ Example request
 | `data.credentialSlots[].sources[].authorization` | `"required"` | No | — |
 | `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.credentialSlots[].sources[].name` | `string` | Yes | — |
+| `data.credentialSlots[].templateSetup` | `object` | No | — |
+| `data.credentialSlots[].templateSetup.issuers` | `array<string>` | Yes | — |
+| `data.credentialSlots[].templateSetup.mcpServerUrl` | `string` | No | — |
+| `data.credentialSlots[].templateSetup.unregisteredTemplates` | `array<object>` | Yes | — |
+| `data.credentialSlots[].templateSetup.unregisteredTemplates[].displayName` | `string` | Yes | — |
+| `data.credentialSlots[].templateSetup.unregisteredTemplates[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.credentialSlots[].templateSetup.unregisteredTemplates[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.credentialSlots[].toolDiscovery` | `true` | No | — |
 | `data.description` | `string` | No | — |
 | `data.id` | `string` | Yes | — |
@@ -7224,6 +7231,13 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 | `data.credentialSlots[].sources[].authorization` | `"required"` | No | — |
 | `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.credentialSlots[].sources[].name` | `string` | Yes | — |
+| `data.credentialSlots[].templateSetup` | `object` | No | — |
+| `data.credentialSlots[].templateSetup.issuers` | `array<string>` | Yes | — |
+| `data.credentialSlots[].templateSetup.mcpServerUrl` | `string` | No | — |
+| `data.credentialSlots[].templateSetup.unregisteredTemplates` | `array<object>` | Yes | — |
+| `data.credentialSlots[].templateSetup.unregisteredTemplates[].displayName` | `string` | Yes | — |
+| `data.credentialSlots[].templateSetup.unregisteredTemplates[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.credentialSlots[].templateSetup.unregisteredTemplates[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.credentialSlots[].toolDiscovery` | `true` | No | — |
 | `data.discoveryCredential` | `"required" or "none"` | Yes | — |
 | `data.driver` | `PluginDriverIdentity` | Yes | — |

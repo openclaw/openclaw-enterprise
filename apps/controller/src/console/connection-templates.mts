@@ -181,6 +181,7 @@ export function renderConnectionTemplates(
   let clients: OAuthClient[] = [];
   let savedTemplates: ConnectionTemplate[] = [];
   let redirectUri: string | undefined;
+  let linkedEditor: URLSearchParams | undefined = new URLSearchParams(location.search);
   async function refresh(saved?: string) {
     create.disabled = true;
     list.replaceChildren();
@@ -220,6 +221,30 @@ export function renderConnectionTemplates(
       notice.textContent =
         saved ||
         (savedTemplates.length ? "" : "No connection templates are available for this selection.");
+      if (linkedEditor) {
+        const params = linkedEditor;
+        linkedEditor = undefined;
+        const id = params.get("edit");
+        if (id || params.get("create") === "1") {
+          if (params.get("namespace") !== currentNamespace) {
+            notice.textContent =
+              "Select the requested Namespace to configure this connection template.";
+          } else if (id) {
+            const template = savedTemplates.find((item) => item.id === id);
+            if (template) {
+              edit(template);
+            } else {
+              notice.textContent =
+                "This connection template is no longer available in this Namespace.";
+            }
+          } else {
+            edit(undefined, {
+              ...(params.get("mcpServerUrl") && { mcpServerUrl: params.get("mcpServerUrl")! }),
+              ...(params.get("issuer") && { issuer: params.get("issuer")! }),
+            });
+          }
+        }
+      }
       create.disabled = false;
       return true;
     } catch (cause) {
@@ -235,13 +260,14 @@ export function renderConnectionTemplates(
     }
   }
 
-  function edit(template?: ConnectionTemplate) {
+  function edit(template?: ConnectionTemplate, defaults?: TemplateDefaults) {
     openConnectionTemplateEditor(context, {
       parent: section,
       namespaces,
       currentNamespace,
       clients,
       template,
+      defaults,
       onSaved(saved) {
         void refresh(`Saved ${saved.displayName}, version ${saved.current.version}.`);
       },
@@ -270,6 +296,8 @@ export function renderConnectionTemplates(
   return section;
 }
 
+type TemplateDefaults = { mcpServerUrl?: string; issuer?: string };
+
 export function openConnectionTemplateEditor(
   context: Context,
   options: {
@@ -278,6 +306,7 @@ export function openConnectionTemplateEditor(
     currentNamespace: string | null;
     clients: readonly OAuthClient[];
     template?: ConnectionTemplate | undefined;
+    defaults?: TemplateDefaults | undefined;
     onSaved: (saved: ConnectionTemplate) => void;
     onUnconfirmed: () => void;
     onRegister?: (saved: ConnectionTemplate) => void;
@@ -301,11 +330,11 @@ export function openConnectionTemplateEditor(
     option("manual", "Enter OAuth details manually"),
     option("mcp_discovery", "Discover from an MCP server URL"),
   );
-  mode.value = version?.mode ?? "manual";
+  mode.value = version?.mode ?? (options.defaults?.mcpServerUrl ? "mcp_discovery" : "manual");
   const issuer = element("input", {
     type: "url",
     required: true,
-    value: version?.issuer ?? "",
+    value: version?.issuer ?? options.defaults?.issuer ?? "",
   });
   const authorizationUrl = element("input", {
     type: "url",
@@ -343,12 +372,22 @@ export function openConnectionTemplateEditor(
     id: "connection-template-server",
     type: "url",
     required: true,
-    value: version?.mcp?.serverUrl ?? "",
+    value: version?.mcp?.serverUrl ?? options.defaults?.mcpServerUrl ?? "",
   });
   const authority = element("select");
   const authorityField = field({ label: "Authorization server", control: authority });
   const observation = element("div");
-  const discover = button("Discover OAuth settings", () => void inspect(), { size: "sm" });
+  const discover = button(
+    "Discover OAuth settings",
+    () => {
+      const preferred =
+        options.defaults?.mcpServerUrl === server.value.trim()
+          ? options.defaults.issuer
+          : undefined;
+      void inspect(preferred);
+    },
+    { size: "sm" },
+  );
   const remote = element(
     "fieldset",
     { className: "connection-template-fields" },

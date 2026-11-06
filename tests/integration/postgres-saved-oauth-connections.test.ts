@@ -1097,6 +1097,8 @@ test(
       return new Set(["list_reports"]);
     });
     const {
+      app,
+      makeNamespace,
       controller,
       state,
       pool,
@@ -1369,16 +1371,136 @@ test(
         ),
       "the completed account stays available to its owner",
     );
-    const reportTemplate = await inject("POST", "/connection-templates", {
+    const reportValues = {
       mode: "mcp_discovery",
-      namespaceId,
-      displayName: "Reports",
       serverUrl: reportsUrl,
       issuer,
-      oauthClientId,
       scopes: ["openid"],
+    };
+    const reportTemplate = await inject("POST", "/connection-templates", {
+      ...reportValues,
+      namespaceId,
+      displayName: "Reports",
     });
     assert.equal(reportTemplate.statusCode, 201, reportTemplate.body);
+    const reportTemplateId = reportTemplate.json().data.id as string;
+    await t.test(
+      "only administrators can configure a missing OAuth client from a compatible plugin slot",
+      async () => {
+        const reportsSlot = (slots: readonly AgentPluginCredentialSlot[]) => {
+          const slot = slots.find(
+            (choice) => choice.pluginId === pluginId && choice.id === "reports",
+          );
+          assert.ok(slot);
+          return slot;
+        };
+        const details = (actor = owner) =>
+          actor("POST", agents + "/plugins/details", {
+            harnessId: "openclaw",
+            executionMode: "dedicated",
+            pluginId: remoteId,
+          });
+        // One matching template is shared by the Installation, one by this Namespace.
+        // A third belongs to a different Namespace. The registered Google-style manual
+        // template has the same issuer but cannot authorize this MCP recipient.
+        const global = await inject("POST", "/connection-templates", {
+          ...reportValues,
+          displayName: "Reports",
+        });
+        assert.equal(global.statusCode, 201, global.body);
+        const elsewhere = await inject("POST", "/connection-templates", {
+          ...reportValues,
+          displayName: "Other reports",
+          namespaceId: await makeNamespace(),
+        });
+        assert.equal(elsewhere.statusCode, 201, elsewhere.body);
+        const before = await details();
+        assert.equal(before.statusCode, 200, before.body);
+        const slots = before.json().data.credentialSlots as NonNullable<
+          import("@openclaw-enterprise/contracts").NamespaceAgentPluginDetails["credentialSlots"]
+        >;
+        const target = reportsSlot(slots);
+        const setup = target.templateSetup;
+        assert.ok(setup);
+        const savedEditor = await owner("GET", path(b) + "/plugins/capabilities");
+        assert.equal(savedEditor.statusCode, 200, savedEditor.body);
+        assert.deepEqual(reportsSlot(savedEditor.json().data.credentialSlots).templateSetup, setup);
+        assert.deepEqual(setup.issuers, [issuer]);
+        assert.equal(setup.mcpServerUrl, reportsUrl);
+        assert.deepEqual(
+          [...setup.unregisteredTemplates].sort((a, b) => a.id.localeCompare(b.id)),
+          [
+            { id: global.json().data.id, displayName: "Reports" },
+            { id: reportTemplateId, displayName: "Reports", namespaceId },
+          ].sort((a, b) => a.id.localeCompare(b.id)),
+        );
+        assert.deepEqual(slots.find((slot) => slot.id === "reports")?.connectionTemplates, []);
+        assert.deepEqual(
+          slots.find((slot) => slot.id === "unrelated")?.templateSetup?.unregisteredTemplates,
+          [],
+        );
+        const unavailable = await owner("POST", connections, {
+          connectionTemplateId: reportTemplateId,
+          selectedScopes: ["openid"],
+        });
+        assert.equal(unavailable.statusCode, 409, unavailable.body);
+
+        // Enroll a second user with a configured Role that can create Agents and
+        // credentials. Being able to connect an account must not expose admin setup.
+        const email = `slot-editor-${randomUUID()}@example.test`;
+        const password = randomUUID();
+        const human = await inject("POST", "/api/auth/accounts", {
+          name: "Slot editor",
+          email,
+          password,
+        });
+        assert.equal(human.statusCode, 201, human.body);
+        // The exact-resource IAM API cannot grant collection create. Seed the Namespace
+        // Role and binding that a configured Agent/credential creator holds.
+        await pool.query(
+          `WITH role AS (
+             INSERT INTO occ.iam_roles (id, namespace_id, name, permissions)
+             VALUES ($1, $2, 'Agent and connection creator', $3::jsonb) RETURNING id
+           )
+           INSERT INTO occ.iam_access_bindings (id, namespace_id, identity_subject_id, role_id)
+           SELECT $4, $2, $5, id FROM role`,
+          [
+            `role_slot_creator_${randomUUID()}`,
+            namespaceId,
+            JSON.stringify([
+              { action: "create", resourceKind: "agent" },
+              { action: "create", resourceKind: "credential_source" },
+            ]),
+            `binding_${randomUUID()}`,
+            human.json().data.principalId,
+          ],
+        );
+        const member = await accountSession(app, email, password);
+        const memberDetails = await details(member);
+        assert.equal(memberDetails.statusCode, 200, memberDetails.body);
+        const memberSlot = reportsSlot(memberDetails.json().data.credentialSlots);
+        assert.equal(memberSlot.connectAccount, true);
+        assert.equal(memberSlot.templateSetup, undefined);
+        assert.equal((await member("GET", "/connection-templates")).statusCode, 403);
+
+        // Assigning a registered client makes only that template eligible at the next read.
+        const updated = await inject("PATCH", "/connection-templates/" + reportTemplateId, {
+          ...reportValues,
+          oauthClientId,
+        });
+        assert.equal(updated.statusCode, 200, updated.body);
+        const after = await details();
+        assert.equal(after.statusCode, 200, after.body);
+        const ready = (after.json().data.credentialSlots as typeof slots).find(
+          (slot) => slot.id === "reports",
+        );
+        assert.deepEqual(
+          ready?.connectionTemplates?.map(({ id }) => id),
+          [reportTemplateId],
+        );
+        assert.equal(ready?.templateSetup, undefined);
+      },
+    );
     const reportInput = {
       connectionTemplateId: reportTemplate.json().data.id,
       selectedScopes: ["openid"],
@@ -1607,9 +1729,18 @@ test(
 
     // Replacing an already-saved slot requires the previous ID and fresh consent. Other
     // bindings and previously delegated usage survive the replacement.
+    const currentOptions = await owner(
+      "GET",
+      `${path(slotAgent)}/plugins/${pluginId}/credentials/reports/connection-templates`,
+    );
+    assert.equal(currentOptions.statusCode, 200, currentOptions.body);
+    const currentReport = currentOptions
+      .json()
+      .data.find((item: { id: string }) => item.id === reportTemplateId);
+    assert.ok(currentReport);
     const replacement = await begin(`${path(slotAgent)}/connections`, {
       ...reportInput,
-      connectionTemplateVersion: 1,
+      connectionTemplateVersion: currentReport.version,
       pluginId,
       slotId: "reports",
       releaseSha256,

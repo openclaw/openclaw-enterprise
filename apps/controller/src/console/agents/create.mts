@@ -1876,14 +1876,16 @@ function renderAgentForm(
     },
     async list(slot) {
       const detail = await pluginDiscovery.readDetail(slot.pluginId);
-      return (
-        detail.credentialSlots?.find(
-          (candidate) =>
-            candidate.pluginId === slot.pluginId &&
-            candidate.id === slot.id &&
-            candidate.releaseSha256 === slot.releaseSha256,
-        )?.connectionTemplates ?? []
+      const current = detail.credentialSlots?.find(
+        (candidate) =>
+          candidate.pluginId === slot.pluginId &&
+          candidate.id === slot.id &&
+          candidate.releaseSha256 === slot.releaseSha256,
       );
+      return {
+        templates: current?.connectionTemplates ?? [],
+        ...(current?.templateSetup && { setup: { ...current.templateSetup, namespaceId } }),
+      };
     },
     async start(slot, template, selectedScopes, waiting, stage) {
       consentAttempt?.abort();

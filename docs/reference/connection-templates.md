@@ -73,7 +73,9 @@ and the worker can finish an interrupted disconnect.
 
 ## Use a saved account in an Agent plugin
 
-In the Agent's plugin settings, select an account for each named slot. The picker shows accounts you can use from an issuer that the slot accepts. **Authorize for this server** starts consent for the required protected resource and destination. For an MCP template you select the scopes for this consent. The provider and the plugin's request policy enforce operations.
+In the Agent's plugin settings, select an account for each named slot. The picker shows accounts you can use from an issuer that the slot accepts. **Authorize for this server** starts consent for the required protected resource and destination. For an MCP template, the dialog initially selects its configured scopes. If the template has no scope limit, it selects the advertised scopes and accepts additional scope names. The user can clear optional scopes before consent. The provider and the plugin's request policy enforce operations.
+
+A slot offers consent through templates that match its issuer and destination and have a registered OAuth client. When no template is ready, the plugin picker lets an Installation administrator finish a matching template or create one for that slot. The template editor controls availability and client registration.
 
 On the Create Agent form, consent saves the account for the user. The form holds its credential source ID for the selected release and slot. OCC checks the caller, account and slot again when it creates the Agent, then commits the Agent, slot binding and use grant together. Provisioning applies that grant when its worker creates the Agent. Leaving the form keeps the account available to its owner.
 

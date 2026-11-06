@@ -793,15 +793,25 @@ export interface PluginPolicyCapabilities {
   readonly driverPolicySchema: JSONSchema;
 }
 
-/** Ready choices for a slot in the saved Agent's plugin picker. */
+/** The account choices the Agent editor offers for a named plugin slot. */
 export interface AgentPluginCredentialSlot {
   readonly pluginId: string;
   readonly releaseSha256: string;
   readonly id: string;
   readonly label: string;
   readonly toolDiscovery?: true;
-  /** OCC permits this caller to connect an account to the saved slot. */
+  /** OCC permits the caller to start OAuth consent for this slot. */
   readonly connectAccount?: true;
+  /** OCC supplies setup details only to Installation administrators when no template can start consent. */
+  readonly templateSetup?: {
+    readonly issuers: readonly string[];
+    readonly mcpServerUrl?: string;
+    readonly unregisteredTemplates: readonly {
+      readonly id: string;
+      readonly displayName: string;
+      readonly namespaceId?: string;
+    }[];
+  };
   readonly sources: readonly {
     readonly id: string;
     readonly name: string;

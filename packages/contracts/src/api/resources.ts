@@ -1,5 +1,6 @@
 import { SandboxPolicyDecisionSchema } from "../sandbox-policy.ts";
 import { Type } from "typebox";
+import { ConnectionTemplateId } from "./connection-templates.ts";
 import { PluginTemplateChoicesResponse } from "./connections.ts";
 import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.ts";
 
@@ -180,6 +181,25 @@ const PluginCredentialSlotSchema = Type.Object(
     label: Type.String(),
     toolDiscovery: Type.Optional(Type.Literal(true)),
     connectAccount: Type.Optional(Type.Literal(true)),
+    templateSetup: Type.Optional(
+      Type.Object(
+        {
+          issuers: Type.Array(Type.String()),
+          mcpServerUrl: Type.Optional(Type.String()),
+          unregisteredTemplates: Type.Array(
+            Type.Object(
+              {
+                id: ConnectionTemplateId,
+                displayName: Type.String(),
+                namespaceId: Type.Optional(NamespaceId),
+              },
+              { additionalProperties: false },
+            ),
+          ),
+        },
+        { additionalProperties: false },
+      ),
+    ),
     sources: Type.Array(
       Type.Object(
         {

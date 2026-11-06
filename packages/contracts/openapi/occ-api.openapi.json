@@ -18735,6 +18735,34 @@
                                 },
                                 "type": "array"
                               },
+                              "templateSetup": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "issuers": { "items": { "type": "string" }, "type": "array" },
+                                  "mcpServerUrl": { "type": "string" },
+                                  "unregisteredTemplates": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "displayName": { "type": "string" },
+                                        "id": {
+                                          "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                          "type": "string"
+                                        },
+                                        "namespaceId": {
+                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": ["id", "displayName"],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  }
+                                },
+                                "required": ["issuers", "unregisteredTemplates"],
+                                "type": "object"
+                              },
                               "toolDiscovery": { "const": true, "type": "boolean" }
                             },
                             "required": ["pluginId", "releaseSha256", "id", "label", "sources"],
@@ -28683,6 +28711,34 @@
                                   "type": "object"
                                 },
                                 "type": "array"
+                              },
+                              "templateSetup": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "issuers": { "items": { "type": "string" }, "type": "array" },
+                                  "mcpServerUrl": { "type": "string" },
+                                  "unregisteredTemplates": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "displayName": { "type": "string" },
+                                        "id": {
+                                          "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                          "type": "string"
+                                        },
+                                        "namespaceId": {
+                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": ["id", "displayName"],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  }
+                                },
+                                "required": ["issuers", "unregisteredTemplates"],
+                                "type": "object"
                               },
                               "toolDiscovery": { "const": true, "type": "boolean" }
                             },

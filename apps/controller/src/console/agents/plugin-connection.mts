@@ -2,8 +2,9 @@ import type {
   AgentPluginCredentialSlot,
   PluginConnectionTemplateChoice,
 } from "@openclaw-enterprise/contracts";
-import { button, element } from "../dom.mjs";
+import { button, dismissOnBackdrop, element, field, mayReturnFocus } from "../dom.mjs";
 import { requestFailure } from "../api-client.mjs";
+import { connectionTemplatesPage } from "../navigation.mjs";
 
 export type SlotTemplate = PluginConnectionTemplateChoice;
 
@@ -105,11 +106,18 @@ export async function authorizePluginInNewTab(
   }
 }
 
+type TemplateSetup = NonNullable<AgentPluginCredentialSlot["templateSetup"]> & {
+  namespaceId: string;
+};
+
 export interface SlotConnection {
   grantOnCreate?: true;
   unavailable(slot: AgentPluginCredentialSlot): string | undefined;
   feedback?(slot: AgentPluginCredentialSlot, sourceId?: string): string | undefined;
-  list(slot: AgentPluginCredentialSlot): Promise<readonly SlotTemplate[]>;
+  list(slot: AgentPluginCredentialSlot): Promise<{
+    templates: readonly SlotTemplate[];
+    setup?: TemplateSetup;
+  }>;
   start(
     slot: AgentPluginCredentialSlot,
     template: SlotTemplate,
@@ -126,11 +134,15 @@ function consentScopes(template: SlotTemplate, setSelection: (scopes: string[] |
     { className: "stack" },
     element("legend", {}, "Permissions for this connection"),
   );
+  const fixed = template.mode === "manual" && !unrestricted;
   const suggestions = unrestricted ? template.offeredScopes : template.scopes;
+  const incompatible =
+    !unrestricted && template.requiredScopes.some((scope) => !template.scopes.includes(scope));
   const choices = [...new Set([...template.requiredScopes, ...suggestions])].map((scope) => {
-    const required = template.requiredScopes.includes(scope);
+    const required = fixed || template.requiredScopes.includes(scope);
     const input = element("input", { type: "checkbox", value: scope });
-    input.checked = input.disabled = required;
+    input.checked = true;
+    input.disabled = required;
     fieldset.append(
       element(
         "label",
@@ -141,6 +153,24 @@ function consentScopes(template: SlotTemplate, setSelection: (scopes: string[] |
     );
     return input;
   });
+  const optional = choices.filter((input) => !input.disabled);
+  const toggle = button(
+    "Unselect all",
+    () => {
+      const select = optional.some((input) => !input.checked);
+      for (const input of optional) {
+        input.checked = select;
+      }
+      update();
+    },
+    { tone: "secondary", size: "sm" },
+  );
+  if (optional.length) {
+    fieldset.insertBefore(
+      element("div", { className: "form-actions" }, toggle),
+      fieldset.children[1] ?? null,
+    );
+  }
   const extra = unrestricted
     ? element("input", {
         type: "text",
@@ -151,10 +181,18 @@ function consentScopes(template: SlotTemplate, setSelection: (scopes: string[] |
     : null;
   const problem = element("p", { className: "hint", role: "status" });
   if (extra) {
+    // A text input in the new Agent's picker would otherwise submit its enclosing form.
+    extra.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+      }
+    });
     fieldset.append(
-      element("label", { className: "plugin-control" }, "Additional scopes", extra),
-      element("p", { className: "hint" }, "Separate scope names with spaces."),
-      problem,
+      field({
+        label: "Additional scopes",
+        control: extra,
+        help: "Separate scope names with spaces.",
+      }),
     );
     if (template.requiredScopes.length === 0) {
       fieldset.append(
@@ -162,27 +200,81 @@ function consentScopes(template: SlotTemplate, setSelection: (scopes: string[] |
       );
     }
   }
+  fieldset.append(problem);
   function update() {
+    toggle.textContent = optional.every((input) => input.checked) ? "Unselect all" : "Select all";
     const checked = choices.filter((input) => input.checked).map((input) => input.value);
     const added = extra?.value.trim().split(/\s+/).filter(Boolean) ?? [];
     const invalid = added.some(
       (scope) => scope.length > 512 || !/^[\x21\x23-\x5b\x5d-\x7e]+$/.test(scope),
     );
-    const message = invalid
-      ? "Use printable ASCII scope names of up to 512 characters, without double quotes or backslashes."
-      : "";
+    const message = incompatible
+      ? "The server requires a scope outside the template’s approved scopes."
+      : invalid
+        ? "Use printable ASCII scope names of up to 512 characters, without double quotes or backslashes."
+        : "";
     if (extra) {
       extra.setCustomValidity(message);
       extra.setAttribute("aria-invalid", String(invalid));
-      problem.textContent = message;
-      problem.hidden = !message;
     }
+    problem.textContent = message;
+    problem.hidden = !message;
     const selected = [...new Set([...checked, ...added])];
-    setSelection(invalid || (!unrestricted && !selected.length) ? null : selected);
+    setSelection(message || (!unrestricted && !selected.length) ? null : selected);
   }
   fieldset.addEventListener("input", update);
   update();
   return fieldset;
+}
+
+function templateSetupActions(setup: TemplateSetup, refresh: () => void) {
+  const settings = new URL(`/console/${connectionTemplatesPage}`, location.origin);
+  settings.searchParams.set("namespace", setup.namespaceId);
+  const link = (url: URL, label: string) =>
+    element(
+      "a",
+      {
+        className: "button button--secondary button--sm",
+        href: url.href,
+        target: "_blank",
+        rel: "noopener noreferrer",
+      },
+      label,
+    );
+  const drafts = setup.unregisteredTemplates;
+  const actions = element("div", { className: "form-actions" });
+  const guidance = drafts.length
+    ? "Assign an OAuth client to a compatible template in Credentials, then refresh templates here."
+    : "Create a connection template and assign an OAuth client in Credentials, then refresh templates here.";
+
+  for (const draft of drafts) {
+    const url = new URL(settings);
+    url.searchParams.set("edit", draft.id);
+    const sameName = drafts.filter((other) => other.displayName === draft.displayName);
+    const sameScope = sameName.filter((other) => other.namespaceId === draft.namespaceId);
+    const scope = draft.namespaceId ? "this Namespace" : "Installation-wide";
+    const qualifier =
+      sameScope.length > 1 ? ` (${scope}, ${draft.id})` : sameName.length > 1 ? ` (${scope})` : "";
+    actions.append(link(url, `Configure ${draft.displayName}${qualifier}`));
+  }
+  if (!drafts.length) {
+    settings.searchParams.set("create", "1");
+    if (setup.mcpServerUrl) {
+      settings.searchParams.set("mcpServerUrl", setup.mcpServerUrl);
+    }
+    if (setup.issuers.length === 1) {
+      settings.searchParams.set("issuer", setup.issuers[0]!);
+    }
+    actions.append(link(settings, "Create connection template"));
+  }
+  actions.append(button("Refresh templates", refresh, { tone: "secondary", size: "sm" }));
+
+  return element(
+    "div",
+    { className: "stack" },
+    element("p", { className: "hint" }, guidance),
+    actions,
+  );
 }
 
 export function pluginConnectionControl(
@@ -196,7 +288,7 @@ export function pluginConnectionControl(
   const needsConsent = currentSourceId
     ? currentSource?.authorization === "required"
     : slot.sources.some((source) => source.authorization === "required");
-  if (!slot.connectAccount) {
+  if (!slot.connectAccount && !slot.templateSetup) {
     return needsConsent
       ? element(
           "p",
@@ -213,141 +305,218 @@ export function pluginConnectionControl(
   } else if (connections.grantOnCreate && currentSource && !currentSource.authorization) {
     notice.textContent = "Creating the Agent grants it access to this account.";
   }
-  const panel = element("div");
   let busy = false;
   let attempt = 0;
   let checkButton: HTMLButtonElement | undefined;
+  let retryButton: HTMLButtonElement | undefined;
   const open = button(
-    needsConsent
-      ? "Authorize for this server"
-      : currentName
-        ? "Connect a different account"
-        : "Choose a connection template",
-    () => void choose(),
-    {
-      tone: "secondary",
-      size: "sm",
-    },
+    !slot.connectAccount
+      ? "Configure connection template"
+      : needsConsent
+        ? "Authorize for this server"
+        : currentName
+          ? "Connect a different account"
+          : "Choose a connection template",
+    choose,
+    { tone: "secondary", size: "sm" },
   );
-  const root = element("div", { className: "stack" }, open, panel, notice);
+  const root = element("div", { className: "stack" }, open, notice);
   const unavailable = connections.unavailable(slot);
   if (unavailable) {
     open.hidden = true;
     notice.textContent = unavailable;
   }
-
-  function available() {
-    const reason = connections.unavailable(slot);
-    if (reason) {
-      notice.textContent = reason;
-    }
-    return !busy && !reason;
-  }
-  function showError(cause: unknown) {
+  function describeError(cause: unknown) {
     const { status } = requestFailure(cause);
-    notice.textContent =
-      status === 403
-        ? connections.grantOnCreate
-          ? "You need permission to connect an account in this Namespace."
-          : "You need permission to update this Agent and connect an account in this Namespace."
-        : status === 409
-          ? "The template or plugin selection changed. Reload the Agent before connecting."
-          : status === 401
-            ? "Your session expired. Sign in before connecting an account."
-            : "The connection could not start. Check the connection templates and try again.";
+    if (status === 401) {
+      return "Your session expired. Sign in before connecting an account.";
+    }
+    if (status === 403) {
+      return connections.grantOnCreate
+        ? "You need permission to connect an account in this Namespace."
+        : "You need permission to update this Agent and connect an account in this Namespace.";
+    }
+    if (status === 409) {
+      return "The template or plugin selection changed. Reload the Agent before connecting.";
+    }
+    return "Could not load or start the connection. Check the connection templates and try again.";
   }
-  async function choose() {
-    if (!available()) {
+  function choose() {
+    if (busy || connections.unavailable(slot)) {
       return;
     }
-    busy = true;
-    open.disabled = true;
-    panel.replaceChildren();
-    notice.textContent = "Loading compatible templates…";
-    try {
-      const templates = await connections.list(slot);
-      if (!templates.length) {
-        notice.textContent =
-          "No compatible OAuth template is available for this slot in this Namespace. Ask an Installation administrator to configure this server.";
-        return;
+    const title = "Connect an account";
+    const dialog = element("dialog", {
+      className: "dialog dialog--framed plugin-consent-dialog",
+      "aria-label": title,
+    });
+    const content = element("div");
+    const status = element("p", { className: "hint", role: "status" });
+    const body = element("div", { className: "dialog-body" }, content, status);
+    let template: SlotTemplate | undefined;
+    let selectedScopes: readonly string[] | null | undefined;
+    let starting = false;
+    const action = button(
+      connections.grantOnCreate
+        ? "Connect account"
+        : currentName
+          ? "Authorize and replace account"
+          : "Connect and attach",
+      async () => {
+        if (
+          !template ||
+          selectedScopes === null ||
+          starting ||
+          busy ||
+          connections.unavailable(slot)
+        ) {
+          return;
+        }
+        starting = true;
+        cancel.disabled = true;
+        const close = () => {
+          starting = false;
+          dialog.close();
+        };
+        await start(template, selectedScopes, action, status, close);
+        starting = false;
+        cancel.disabled = false;
+      },
+      { tone: "primary" },
+    );
+    const cancel = button("Cancel", () => dialog.close(), { tone: "secondary" });
+    const footer = element("div", { className: "dialog-actions" }, cancel, action);
+    dialog.append(
+      element(
+        "div",
+        { className: "dialog-header" },
+        element("p", {}, slot.label),
+        element("h2", {}, title),
+      ),
+      body,
+      footer,
+    );
+    dismissOnBackdrop(dialog);
+    dialog.addEventListener("cancel", (event) => {
+      if (starting) {
+        event.preventDefault();
       }
-      const picker = element(
-        "select",
-        { "aria-label": `Connection template for ${slot.label}` },
-        element("option", { value: "" }, "Choose a template"),
-        ...templates.map((item) => element("option", { value: item.id }, item.displayName)),
-      );
-      const scopeChoices = element("div");
-      let selectedScopes: string[] | null | undefined;
-      const consent = button(
-        connections.grantOnCreate
-          ? "Connect account"
-          : currentName
-            ? "Authorize and replace account"
-            : "Connect and attach",
-        () => {
-          const template = templates.find((item) => item.id === picker.value);
-          if (template && available() && selectedScopes !== null) {
-            void start(template, consent, selectedScopes);
+    });
+    dialog.addEventListener(
+      "close",
+      () => {
+        const restore = mayReturnFocus(dialog);
+        dialog.remove();
+        if (restore && open.isConnected && !open.disabled) {
+          open.focus();
+        }
+      },
+      { once: true },
+    );
+    root.append(dialog);
+    dialog.showModal();
+    void refresh();
+    async function refresh() {
+      action.hidden = true;
+      template = undefined;
+      content.replaceChildren();
+      status.textContent = "Loading compatible templates…";
+      try {
+        const { templates, setup } = await connections.list(slot);
+        if (!dialog.open || !dialog.isConnected) {
+          return;
+        }
+        if (!templates.length) {
+          if (!setup) {
+            status.textContent = slot.connectAccount
+              ? "No compatible OAuth template is available for this slot in this Namespace. Ask an Installation administrator to configure this server."
+              : "You need permission to connect an account in this Namespace.";
+            return;
           }
-        },
-        { tone: "primary" },
-      );
-      consent.disabled = true;
-      picker.addEventListener("change", () => {
-        const template = templates.find((item) => item.id === picker.value);
-        scopeChoices.replaceChildren();
-        selectedScopes = undefined;
-        consent.disabled = !template;
-        if (template && (template.mode === "mcp_discovery" || template.scopes.length === 0)) {
-          scopeChoices.append(
-            consentScopes(template, (scopes) => {
-              selectedScopes = scopes;
-              consent.disabled = scopes === null;
-            }),
+          const controls = templateSetupActions(setup, () => void refresh());
+          content.append(controls);
+          status.textContent = "";
+          controls.querySelector("a")?.focus();
+          return;
+        }
+        const picker = element(
+          "select",
+          { "aria-label": `Connection template for ${slot.label}` },
+          element("option", { value: "" }, "Choose a template"),
+          ...templates.map((item) => element("option", { value: item.id }, item.displayName)),
+        );
+        const scopes = element("div");
+        content.append(
+          element("label", { className: "plugin-control" }, "Connection template", picker),
+          scopes,
+        );
+        status.textContent = currentName
+          ? `After authorization, this account will replace ${currentName} in the ${slot.label} slot.`
+          : "";
+        action.hidden = false;
+        action.disabled = true;
+        const selectTemplate = () => {
+          template = templates.find((item) => item.id === picker.value);
+          selectedScopes = undefined;
+          scopes.replaceChildren();
+          action.disabled = !template;
+          if (template) {
+            const fixed = template.mode === "manual" && template.scopes.length > 0;
+            scopes.append(
+              consentScopes(template, (selection) => {
+                selectedScopes = fixed ? undefined : selection;
+                action.disabled = selection === null;
+              }),
+            );
+          }
+        };
+        picker.addEventListener("change", selectTemplate);
+        if (templates.length === 1) {
+          picker.value = templates[0]!.id;
+          selectTemplate();
+        }
+        picker.focus();
+      } catch (cause) {
+        if (dialog.open) {
+          status.textContent = describeError(cause);
+          content.replaceChildren(
+            button("Refresh templates", () => void refresh(), { tone: "secondary", size: "sm" }),
           );
         }
-      });
-      open.hidden = true;
-      panel.replaceChildren(
-        element("label", { className: "plugin-control" }, "Connection template", picker),
-        scopeChoices,
-        element("div", { className: "form-actions" }, consent),
-      );
-      notice.textContent = connections.grantOnCreate
-        ? "Sign in to save your account. Creating the Agent will grant it access to the account selected here."
-        : currentName
-          ? `After you authorize the account at the provider for this server, it will replace ${currentName} in the ${slot.label} slot.`
-          : needsConsent
-            ? `Choose the account at the provider. After you approve access to this server, OCE will attach the approved account to the ${slot.label} slot.`
-            : `Approving the provider will save your account and attach it to this Agent’s ${slot.label} slot.`;
-    } catch (error) {
-      showError(error);
-    } finally {
-      busy = false;
-      open.disabled = false;
+      }
     }
   }
   async function start(
     template: SlotTemplate,
+    selectedScopes: readonly string[] | undefined,
     action: HTMLButtonElement,
-    selectedScopes?: readonly string[],
+    status: HTMLElement,
+    close?: () => void,
   ) {
+    if (busy || connections.unavailable(slot)) {
+      return;
+    }
     const current = ++attempt;
     checkButton?.remove();
-    busy = true;
-    action.disabled = true;
-    open.disabled = true;
-    notice.textContent = "Opening the provider for your consent…";
+    busy = open.disabled = action.disabled = true;
+    status.textContent = "Opening the provider for your consent…";
     try {
       const message = await connections.start(
         slot,
         template,
         selectedScopes,
         (check) => {
-          busy = false;
-          action.disabled = false;
-          action.textContent = "Try again";
+          if (current !== attempt) {
+            return;
+          }
+          close?.();
+          busy = open.disabled = false;
+          retryButton?.remove();
+          retryButton = button(
+            "Try again",
+            () => void start(template, selectedScopes, retryButton!, notice),
+            { tone: "primary" },
+          );
           notice.textContent =
             "Finish sign-in in the new tab. If you closed it, you can try again.";
           const checkNow = button(
@@ -359,9 +528,9 @@ export function pluginConnectionControl(
                 if (current === attempt && checkNow.isConnected && message) {
                   notice.textContent = message;
                 }
-              } catch (error) {
+              } catch (cause) {
                 if (current === attempt && checkNow.isConnected) {
-                  showError(error);
+                  notice.textContent = describeError(cause);
                 }
               } finally {
                 checkNow.disabled = false;
@@ -370,24 +539,22 @@ export function pluginConnectionControl(
             { tone: "secondary" },
           );
           checkButton = checkNow;
-          action.after(checkNow);
+          root.append(retryButton, checkNow);
         },
         stage,
       );
       if (current === attempt && message) {
-        notice.textContent = message;
+        (status.isConnected ? status : notice).textContent = message;
         action.textContent = "Try again";
       }
-    } catch (error) {
+    } catch (cause) {
       if (current === attempt) {
+        (status.isConnected ? status : notice).textContent = describeError(cause);
         action.textContent = "Try again";
-        showError(error);
       }
     } finally {
       if (current === attempt) {
-        busy = false;
-        action.disabled = false;
-        open.disabled = false;
+        busy = open.disabled = action.disabled = false;
         checkButton?.remove();
       }
     }

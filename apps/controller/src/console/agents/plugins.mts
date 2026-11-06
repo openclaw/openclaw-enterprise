@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentPluginCredentialSlot,
   AgentRevision,
   Configuration,
   InstallationCapabilities,
@@ -257,9 +258,31 @@ export function renderAgentPlugins(
         return undefined;
       },
       async list(slot) {
-        return (await context.request(
+        const capabilities = (await context.request(`${path}/plugins/capabilities`)) as {
+          credentialSlots?: readonly AgentPluginCredentialSlot[];
+        };
+        const current = capabilities.credentialSlots?.find(
+          (candidate) =>
+            candidate.pluginId === slot.pluginId &&
+            candidate.id === slot.id &&
+            candidate.releaseSha256 === slot.releaseSha256,
+        );
+        if (!current) {
+          throw Object.assign(new Error("The plugin slot changed."), { status: 409 });
+        }
+        if (current.templateSetup) {
+          return {
+            templates: [],
+            setup: { ...current.templateSetup, namespaceId: context.namespaceId },
+          };
+        }
+        if (!current.connectAccount) {
+          return { templates: [] };
+        }
+        const templates = (await context.request(
           `${path}/plugins/${encodeURIComponent(slot.pluginId)}/credentials/${encodeURIComponent(slot.id)}/connection-templates`,
         )) as readonly SlotTemplate[];
+        return { templates };
       },
       async start(slot, template, selectedScopes, waiting) {
         consentAttempt?.abort();

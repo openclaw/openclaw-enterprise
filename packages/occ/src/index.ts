@@ -4937,14 +4937,17 @@ export class OpenClawController {
       acceptsRecipient(target: PluginAccountTarget): boolean;
     },
   ) {
-    return templates
-      .filter(
-        (template) =>
-          (template.namespaceId === undefined || template.namespaceId === namespaceId) &&
-          template.current.oauthClientId !== undefined &&
-          slot.issuers.includes(template.current.issuer) &&
-          slot.acceptsRecipient(template.current),
-      )
+    return templates.filter(
+      (template) =>
+        (template.namespaceId === undefined || template.namespaceId === namespaceId) &&
+        slot.issuers.includes(template.current.issuer) &&
+        slot.acceptsRecipient(template.current),
+    );
+  }
+
+  private connectablePluginTemplates(compatible: readonly ConnectionTemplate[]) {
+    return compatible
+      .filter((template) => template.current.oauthClientId !== undefined)
       .map(({ id, displayName, current }) => ({
         id,
         displayName,
@@ -4980,7 +4983,9 @@ export class OpenClawController {
           return [];
         }
         const templates = await state.connectionTemplates.listConnectionTemplates();
-        return this.compatiblePluginTemplates(templates, input.namespaceId, slot);
+        return this.connectablePluginTemplates(
+          this.compatiblePluginTemplates(templates, input.namespaceId, slot),
+        );
       },
     );
   }
@@ -11464,10 +11469,18 @@ export class OpenClawController {
           namespaceId,
         })
       ).decision.allowed;
+    const canConfigure =
+      credentials.connectionSlot &&
+      (
+        await this.authorizationDecision(principalId, "administer", {
+          kind: "installation",
+          id: this.installation.id,
+        })
+      ).decision.allowed;
     const templates =
-      canConnect && pluginId !== undefined
+      canConfigure || (canConnect && pluginId !== undefined)
         ? await state.connectionTemplates.listConnectionTemplates()
-        : undefined;
+        : [];
     return choices.map((choice) => {
       const slot = credentials.connectionSlot?.(plugins, choice.pluginId, choice.id);
       // OCC owns connect permission and account visibility. A pre-save choice has no
@@ -11492,15 +11505,30 @@ export class OpenClawController {
             authorization: "required" as const,
           }),
         }));
+      const compatible = plugins[choice.pluginId]?.enabled
+        ? this.compatiblePluginTemplates(templates, namespaceId, slot)
+        : [];
+      const connectable = this.connectablePluginTemplates(compatible);
       return {
         ...metadata,
         sources: [...metadata.sources, ...candidates],
         ...(canConnect &&
           plugins[choice.pluginId]?.enabled && {
             connectAccount: true as const,
-            ...(templates && {
-              connectionTemplates: this.compatiblePluginTemplates(templates, namespaceId, slot),
-            }),
+            ...(pluginId !== undefined && { connectionTemplates: connectable }),
+          }),
+        ...(canConfigure &&
+          plugins[choice.pluginId]?.enabled &&
+          connectable.length === 0 && {
+            templateSetup: {
+              issuers: slot.issuers,
+              ...(slot.mcpServerUrl && { mcpServerUrl: slot.mcpServerUrl }),
+              unregisteredTemplates: compatible.map(({ id, displayName, namespaceId }) => ({
+                id,
+                displayName,
+                ...(namespaceId && { namespaceId }),
+              })),
+            },
           }),
       };
     });

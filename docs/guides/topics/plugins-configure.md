@@ -13,7 +13,11 @@ whose selections belonged to the Codex Driver.
 
 ## Use the console
 
-When creating a dedicated OpenClaw Agent on Kubernetes, open **Configure plugins** and enable Google Workspace or Slack. In the plugin’s account field, select a saved account or choose **Choose a connection template** → **Connect account**. Complete consent in the new tab. The form selects your saved account after it confirms the connection. Choose **Done**, then **Create Agent** to grant the new Agent access. If you leave the form, you can choose the saved account the next time you configure a compatible slot. Open the saved Agent’s **Plugins** tab to discover and select MCP tools.
+On a new dedicated OpenClaw Agent on Kubernetes, open **Configure plugins**, enable the plugin and select a saved account or **Choose a connection template**. **Done** keeps the choice in the draft. **Create Agent** grants access. Leaving the form keeps the account with its owner.
+
+The connection dialog selects the permitted MCP scopes. **Unselect all** clears optional scopes. **Select all** restores them. An unrestricted template also accepts space-separated **Additional scopes**. **Connect account** (new Agent) or **Connect and attach** (saved Agent) opens provider consent in another tab.
+
+If no template is ready, Installation administrators can configure a matching template or choose **Create connection template**. In Credentials, check the Namespace and MCP URL, assign a client and save. Return to the open dialog and select **Refresh templates**.
 
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
 Use **Configure plugins** to edit saved selections and tool policy. On a dedicated

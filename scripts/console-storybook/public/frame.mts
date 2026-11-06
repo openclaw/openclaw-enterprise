@@ -136,64 +136,82 @@ if (scenario.component === "plugins") {
           if (scenario.connectionPreview === "loading") {
             return await new Promise<never>(() => {});
           }
-          if (scenario.connectionPreview === "named") {
-            return [
-              {
-                id: "support",
-                displayName: "Support server access",
-                version: 1,
-                mode: "mcp_discovery",
-                scopes: ["messages.read", "messages.write"],
-                requiredScopes: ["messages.read"],
-                offeredScopes: ["messages.read", "messages.write"],
+          if (scenario.connectionPreview === "unregistered") {
+            return {
+              templates: [],
+              setup: {
+                namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+                issuers: ["https://accounts.google.com"],
+                unregisteredTemplates: [
+                  { id: "ctp_00000000-0000-4000-8000-000000000003", displayName: "Google OAuth" },
+                ],
               },
-            ];
+            };
+          }
+          if (scenario.connectionPreview === "named") {
+            return {
+              templates: [
+                {
+                  id: "support",
+                  displayName: "Support server access",
+                  version: 1,
+                  mode: "mcp_discovery",
+                  scopes: ["messages.read", "messages.write"],
+                  requiredScopes: ["messages.read"],
+                  offeredScopes: ["messages.read", "messages.write"],
+                },
+              ],
+            };
           }
           if (scenario.connectionPreview === "unrestricted") {
-            return [
+            return {
+              templates: [
+                {
+                  id: "discovered-open",
+                  displayName: "Support MCP",
+                  version: 1,
+                  mode: "mcp_discovery",
+                  scopes: [],
+                  requiredScopes: ["messages.read"],
+                  offeredScopes: ["messages.read", "messages.write"],
+                },
+                {
+                  id: "manual-open",
+                  displayName: "Support OAuth",
+                  version: 1,
+                  mode: "manual",
+                  scopes: [],
+                  requiredScopes: [],
+                  offeredScopes: [],
+                },
+              ],
+            };
+          }
+          if (scenario.connectionPreview === "empty") {
+            return { templates: [] };
+          }
+          return {
+            templates: [
               {
-                id: "discovered-open",
-                displayName: "Support MCP",
-                version: 1,
-                mode: "mcp_discovery",
-                scopes: [],
-                requiredScopes: ["messages.read"],
-                offeredScopes: ["messages.read", "messages.write"],
-              },
-              {
-                id: "manual-open",
-                displayName: "Support OAuth",
-                version: 1,
+                id: "first",
+                displayName: "Engineering Gmail",
+                version: 2,
                 mode: "manual",
-                scopes: [],
+                scopes: ["gmail.readonly"],
                 requiredScopes: [],
                 offeredScopes: [],
               },
-            ];
-          }
-          if (scenario.connectionPreview === "empty") {
-            return [];
-          }
-          return [
-            {
-              id: "first",
-              displayName: "Engineering Gmail",
-              version: 2,
-              mode: "manual",
-              scopes: ["gmail.readonly"],
-              requiredScopes: [],
-              offeredScopes: [],
-            },
-            {
-              id: "second",
-              displayName: "Shared Gmail",
-              version: 1,
-              mode: "manual",
-              scopes: ["gmail.readonly"],
-              requiredScopes: [],
-              offeredScopes: [],
-            },
-          ];
+              {
+                id: "second",
+                displayName: "Shared Gmail",
+                version: 1,
+                mode: "manual",
+                scopes: ["gmail.readonly"],
+                requiredScopes: [],
+                offeredScopes: [],
+              },
+            ],
+          };
         },
         async start(_slot, template, selectedScopes) {
           document.querySelector<HTMLDialogElement>("dialog[open]")?.close();

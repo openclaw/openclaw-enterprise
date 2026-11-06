@@ -24,6 +24,7 @@ export const ManagedGoogleInstall = story("managedGoogleInstall");
 export const ChooseConnectionTemplate = story("pluginConnectChoose");
 export const ExistingPluginAccount = story("pluginConnectBound");
 export const NoCompatibleTemplate = story("pluginConnectEmpty");
+export const TemplateNeedsOAuthClient = story("pluginConnectNoClient");
 export const ConnectionPermissionDenied = story("pluginConnectDenied");
 export const ConnectionTemplatesLoading = story("pluginConnectLoading");
 
