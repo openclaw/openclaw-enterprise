@@ -11,7 +11,13 @@ test(
   "PostgreSQL preserves Harness destinations across restart and default replacement",
   requiresPostgres,
   async (t) => {
-    const { fixture, revisions } = await exerciseHarnessOverrides(t, { appFactory: postgresApp });
+    // This fixture uses Native IAM in the same PostgreSQL State, including its transactional
+    // deployment grants; the shared HTTP fixture uses an independently stored policy instead.
+    const { fixture, revisions } = await exerciseHarnessOverrides(
+      t,
+      { appFactory: postgresApp },
+      true,
+    );
     assert.ok("pool" in fixture);
     // A fresh State reader and Compute instance cannot reconstruct old routes from new defaults.
     const restarted = new PostgresPlatformState(fixture.pool);

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
-import type { AgentRevision, EgressRoute } from "../../packages/contracts/src/index.ts";
+import type {
+  AccessBinding,
+  AgentRevision,
+  EgressRoute,
+} from "../../packages/contracts/src/index.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
 import { staticEgressFixture } from "./static-egress.mjs";
 
@@ -9,6 +13,7 @@ import { staticEgressFixture } from "./static-egress.mjs";
 export async function exerciseHarnessOverrides(
   t: TestContext,
   options: Parameters<typeof staticEgressFixture>[1] = {},
+  grantSourceOnDeployment = false,
 ) {
   const f = await staticEgressFixture(t, { ...options, admitRevision: false });
   assert.ok("grant" in f);
@@ -112,10 +117,48 @@ export async function exerciseHarnessOverrides(
     harnessAuth: { method: "credential_source", sourceId: source.id },
     credentialSources: [{ sourceId: source.id }],
   });
-  const denied = await f.request("POST", `${root}/agents/${ungranted.id}/deploy`, {
-    body: { harnessOverrides: overrides },
-  });
-  assert.equal(denied.status, 403, "an override never grants the Agent access to its source");
+  const revisions = [standard, evaluation, defaults];
+  if (grantSourceOnDeployment) {
+    const bindingsForAgent = async () => {
+      const result = await f.request("GET", `${root}/iam/access-bindings`);
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      return result.data.filter(
+        (binding: AccessBinding) => binding.subjectId === ungranted.servicePrincipalId,
+      );
+    };
+    assert.deepEqual(await bindingsForAgent(), []);
+    // Native IAM can grant caller-authorized sources during admission. A destination
+    // mismatch must roll that transaction back, leaving neither a revision nor a grant.
+    const mismatch = await f.request("POST", `${root}/agents/${ungranted.id}/deploy`, {
+      body: { harnessOverrides: { modelProvider: f.modelProvider } },
+    });
+    assert.equal(mismatch.status, 409, JSON.stringify(mismatch.body));
+    assert.deepEqual(await bindingsForAgent(), []);
+    assert.deepEqual((await f.request("GET", `${root}/agents/${ungranted.id}/revisions`)).data, []);
+    const admitted = await post(
+      `/agents/${ungranted.id}/deploy`,
+      { harnessOverrides: overrides },
+      202,
+    );
+    const bindings = await bindingsForAgent();
+    assert.equal(bindings.length, 1, "admission grants only the referenced source");
+    assert.equal(bindings[0].subjectKind, "identity");
+    assert.equal(bindings[0].namespaceId, f.namespace.id);
+    assert.equal(bindings[0].resourceKind, "credential_source");
+    assert.equal(bindings[0].resourceId, source.id);
+    assert.equal(admitted.harness.configuration.modelProvider.baseUrl, destination);
+    revisions.push(admitted);
+  } else {
+    // An IAM policy outside this State cannot receive an automatic deployment grant.
+    const denied = await f.request("POST", `${root}/agents/${ungranted.id}/deploy`, {
+      body: { harnessOverrides: overrides },
+    });
+    assert.equal(
+      denied.status,
+      403,
+      "external policy still requires the Agent's explicit source grant",
+    );
+  }
 
   const first = await create("first-evaluation", source.id);
   const configuration = await f.request("GET", `${root}/configurations/${first.configurationId}`);
@@ -157,5 +200,5 @@ export async function exerciseHarnessOverrides(
   );
   assert.equal(recovery.status, 200, JSON.stringify(recovery.body));
   assert.equal(recovery.data.revisionId, receipt.revisionId);
-  return { fixture: f, revisions: [standard, evaluation, defaults] };
+  return { fixture: f, revisions };
 }
