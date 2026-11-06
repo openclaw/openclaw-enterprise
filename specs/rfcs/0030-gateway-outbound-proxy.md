@@ -8,7 +8,7 @@ author: miguelbranco80
 
 - **ID:** RFC-0030
 - **Created:** 2026-11-05
-- **Last updated:** 2026-11-05
+- **Last updated:** 2026-11-06
 - **RFC and implementation PR:** [#36](https://github.com/raw-labs/openclaw-enterprise/pull/36)
 - **Implementation plan:** [TASK-0051](../plans/0051-gateway-outbound-proxy.md)
 - **Related:** [Installation profiles](0018-installation-profiles-design/index.md),
@@ -42,11 +42,18 @@ restore that connection without exempting other destinations.
 
 Extend the existing profile renderer, Helm chart, and Kubernetes Compute Driver:
 
-| Interface            | Proposed configuration                                                              |
-| -------------------- | ----------------------------------------------------------------------------------- |
-| Installation profile | `proxy.bundled: true`, optionally `proxy.allowedHosts`; alternatively `proxy.url`   |
-| Helm                 | `gatewayProxy.enabled`, `allowedHosts`, and external `url`                          |
-| Kubernetes Compute   | `runtime.proxy.proxyUrl`, with an exact `managedProxy` peer for the bundled Service |
+| Interface                               | Previous configuration                                       | Proposed replacement                                                      |
+| --------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| Installation profile: endpoints         | `channels.runtimeProxyUrl`, `channels.directoryProxyUrl`     | One shared `proxy.url`                                                    |
+| Installation profile: bundled selection | `channels.managedSlackProxy`                                 | `proxy.bundled`                                                           |
+| Helm: bundled server                    | `slackProxy.*`                                               | `gatewayProxy.*`                                                          |
+| Helm: directory endpoint                | `api.channelDirectoryProxyUrl`                               | Shared `gatewayProxy.url` or the bundled endpoint                         |
+| Kubernetes Compute                      | `runtime.channels.proxyUrl`, `runtime.channels.managedProxy` | `runtime.proxy.proxyUrl`, `runtime.proxy.managedProxy`                    |
+| Bundled host policy                     | Fixed Slack host list                                        | New `proxy.allowedHosts` in profiles; `gatewayProxy.allowedHosts` in Helm |
+
+Select the bundled proxy with `proxy.bundled: true` in a profile or
+`gatewayProxy.enabled: true` in Helm. Compute uses an exact `managedProxy` peer
+for the bundled Service.
 
 The renderer writes both Helm and Compute configuration from one selection.
 Compute keeps its existing configuration schema, structured validation errors,
@@ -54,6 +61,12 @@ and schema-driven value inspection. No separate configuration registry or UI is 
 Direct Helm users must provide the matching Compute endpoint. Bundled and
 external selections are mutually exclusive. Replace the old channel-specific
 proxy keys; reject them rather than silently keeping two routes.
+
+Both clients remain: Gateways send outbound requests, and the OCE API makes
+channel-directory requests. Helm still sets `OCC_CHANNEL_DIRECTORY_PROXY_URL`,
+but uses the selected Gateway proxy endpoint. This is two clients sharing one
+proxy, not two proxy servers. The API environment variable and Compute endpoint
+remain separate inputs underneath; manual configuration can make them differ.
 
 These are deployment-time operator settings, not per-Agent permissions. The
 bundled default permits Slack. An explicit `allowedHosts` list replaces that
