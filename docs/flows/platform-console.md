@@ -8,8 +8,7 @@ last_updated_session: authoring-run/4f118861-18d8-403b-a287-90ac81564c99
 
 ## Overview
 
-`/console/` renders session-authorized resources.
-See the [console reference](../reference/console.md).
+[Console reference](../reference/console.md).
 
 ## Entry Points
 
@@ -111,17 +110,17 @@ ConfigMap links stay inside the bundle. `renderConsoleThemeShell` escapes brandi
 `console/shell.mts:brandContents` renders names as text. `/console/theme/` serves
 images and generated CSS with `no-store`; missing assets return 404.
 
-Startup passes Backend `{id,type}` summaries to `createFastifyApp`.
+Startup passes Backend `{id,type}` to `createFastifyApp`.
 [Backend-managed delivery](service-account-driver-credential-delivery.md) owns activation.
 
-`apps/controller/src/console-assets.ts:readConsoleAsset` serves allowlisted HTML and assets with MIME types and same-origin CSP. Unknown paths return the
-shell with 404; API errors remain JSON. `encodedAsset` caches brotli/gzip output
+`apps/controller/src/console-assets.ts:readConsoleAsset` serves allowlisted HTML and assets with MIME types and same-origin CSP. Unknown paths return HTML 404s; API errors stay JSON. `encodedAsset` caches brotli/gzip output
 according to `Accept-Encoding` and `Vary`; higher-weight `identity` wins.
 HTML, including sign-in, stays uncompressed.
 
 `scripts/build-console-metadata.mjs` stamps `OCC_BUILD_REVISION` into HTML.
-`internal/occdev/openshell_k3d.go:importDevelopmentController` calls `scripts/build-controller.mjs`
-to resolve Git `HEAD`, excluding uncommitted edits; missing metadata stops builds.
+`internal/occdev/openshell_k3d.go:importDevelopmentController` resolves Git `HEAD`
+and runs the engine directly for cancellation and timing. Missing metadata
+stops builds; the SHA excludes uncommitted edits.
 `shell.mts:renderShell` displays it in Debug mode.
 
 `console.mts:readDebugPreference` enables diagnostics only for local-storage

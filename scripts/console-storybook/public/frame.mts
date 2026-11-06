@@ -87,7 +87,7 @@ const evidence: FrameEvidence = {
 };
 Object.assign(window, { __consoleStory: evidence });
 installFixture(scenario, evidence);
-localStorage.setItem("oce.console.debug", String(scenario.debugEnabled ?? false));
+localStorage.setItem("oce.console.debug", scenario.debugEnabled === true ? "true" : "false");
 if (scenario.storageUnavailable) {
   Object.defineProperty(window, "localStorage", {
     get() {
