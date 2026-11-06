@@ -4867,38 +4867,48 @@ async function holdNativeOpenClawDemo(context, topology) {
   }
 }
 
-async function assertAuthenticatedNativePolicyScopes(topology) {
+async function assertAuthenticatedNativePolicyScopes(topology, receipt) {
+  receipt.primaryCheck = "agent.get";
   const current = await topology.request(
     "GET",
     `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`,
   );
+  receipt.primaryCheck = "agent.status-200";
   assert.equal(current.status, 200, JSON.stringify(current.error));
+  receipt.primaryCheck = "agent.active-revision";
   assert.ok(current.data.activeRevisionId);
+  receipt.primaryCheck = "sandbox.wait-active";
   const activeSandbox = await waitForSandbox(topology.placement, {
     id: current.data.activeRevisionId,
     agentId: topology.agent.id,
   });
+  receipt.primaryCheck = "sandbox.native-address";
   const nativeRequest = {
     workspace: topology.placement,
     sandbox: activeSandbox.metadata.name,
   };
+  receipt.primaryCheck = "baseline.policy-status";
   const before = await topology
     .gatewayClient()
     .getPolicyStatus(nativeRequest, AbortSignal.timeout(10_000));
+  receipt.primaryCheck = "baseline.sandbox";
   const sandbox = await topology
     .gatewayClient()
     .getSandbox(
       { workspace: nativeRequest.workspace, name: nativeRequest.sandbox },
       AbortSignal.timeout(10_000),
     );
+  receipt.primaryCheck = "baseline.resource-version";
   assert.ok(sandbox?.resourceVersion);
+  receipt.primaryCheck = "fixture.make-directory";
   const directory = await mkdtemp(join(tmpdir(), "oce-policy-scopes-"));
   const clients = [];
   const release = `openshell-${hash(topology.placement, 10)}`;
   const originalPath = join(directory, "original-values.json");
   const authenticatedPath = join(directory, "authenticated-values.json");
   let savedValues = false;
-  const configureAuthentication = async (enabled) => {
+  const configureAuthentication = async (enabled, enterCheck) => {
+    enterCheck("helm-upgrade");
     await executeFile(
       openShellHelmPath,
       [
@@ -4920,11 +4930,42 @@ async function assertAuthenticatedNativePolicyScopes(topology) {
       ],
       { timeout: 300_000, maxBuffer: 8 * 1024 * 1024 },
     );
+    enterCheck("gateway-ready");
     await waitForOpenShellGateway(topology.placement);
+    enterCheck("restart-forward");
     await topology.restartGatewayForward();
   };
+  const cleanup = async () => {
+    let cleanupCheck = "cleanup.close-client";
+    try {
+      for (const client of clients) {
+        client.close();
+      }
+      try {
+        if (savedValues) {
+          await configureAuthentication(false, (check) => {
+            cleanupCheck = "cleanup.restore-auth." + check;
+          });
+        }
+      } catch (error) {
+        // A later cleanup can replace this error; keep the first cleanup checkpoint.
+        receipt.cleanupCheck = cleanupCheck;
+        throw error;
+      } finally {
+        cleanupCheck = "cleanup.remove-directory";
+        await rm(directory, { recursive: true, force: true });
+        cleanupCheck = "cleanup.resume-worker";
+        await topology.resumeWorker();
+      }
+    } catch (error) {
+      receipt.cleanupCheck ??= cleanupCheck;
+      throw error;
+    }
+  };
+  receipt.primaryCheck = "fixture.pause-worker";
   await topology.pauseWorker();
   try {
+    receipt.primaryCheck = "fixture.read-helm-values";
     const original = await executeFile(
       openShellHelmPath,
       [
@@ -4941,9 +4982,12 @@ async function assertAuthenticatedNativePolicyScopes(topology) {
       ],
       { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
     );
+    receipt.primaryCheck = "fixture.save-helm-values";
     await writeFile(originalPath, original.stdout, { mode: 0o600 });
     savedValues = true;
+    receipt.primaryCheck = "fixture.parse-helm-values";
     const values = JSON.parse(original.stdout);
+    receipt.primaryCheck = "fixture.prepare-auth-values";
     values.gatewayConfig = {
       ...values.gatewayConfig,
       "openshell.gateway.auth": { allow_unauthenticated_users: false },
@@ -4957,10 +5001,13 @@ async function assertAuthenticatedNativePolicyScopes(topology) {
       },
     };
     values.server.oidc = { ...values.server.oidc, caConfigMapName: "oce-gateway-extra-trust" };
+    receipt.primaryCheck = "fixture.write-auth-values";
     await writeFile(authenticatedPath, JSON.stringify(values), { mode: 0o600 });
     // Replace the unauthenticated management configuration with the real HTTPS issuer.
     // Role-free OIDC mode still enforces each RPC's independently declared scopes.
-    await configureAuthentication(true);
+    await configureAuthentication(true, (check) => {
+      receipt.primaryCheck = "auth." + check;
+    });
     const scopedClient = async (name) => {
       const path = join(directory, name);
       await writeFile(path, await topology.keycloak.scopedClientToken(name), { mode: 0o600 });
@@ -4968,9 +5015,13 @@ async function assertAuthenticatedNativePolicyScopes(topology) {
       clients.push(client);
       return client;
     };
+    receipt.primaryCheck = "client.reader";
     const reader = await scopedClient("policy-reader");
+    receipt.primaryCheck = "client.recommender";
     const recommender = await scopedClient("policy-recommender");
+    receipt.primaryCheck = "client.writer";
     const writer = await scopedClient("policy-writer");
+    receipt.primaryCheck = "client.no-scopes";
     const noScopes = await scopedClient("policy-no-scopes");
     const read = (client) => client.getPolicyStatus(nativeRequest, AbortSignal.timeout(10_000));
     const recommendations = (client) =>
@@ -4985,21 +5036,35 @@ async function assertAuthenticatedNativePolicyScopes(topology) {
         },
         AbortSignal.timeout(10_000),
       );
+    receipt.primaryCheck = "read.unauthenticated-code-16";
     await assert.rejects(read(topology.gatewayClient()), { code: 16 });
+    receipt.primaryCheck = "read.reader-equals-baseline";
     assert.deepEqual(await read(reader), before);
+    receipt.primaryCheck = "read.no-scopes-code-7";
     await assert.rejects(read(noScopes), { code: 7 });
+    receipt.primaryCheck = "drafts.reader-code-7";
     await assert.rejects(recommendations(reader), { code: 7 });
+    receipt.primaryCheck = "drafts.no-scopes-code-7";
     await assert.rejects(recommendations(noScopes), { code: 7 });
+    receipt.primaryCheck = "drafts.recommender-rpc";
     const suggested = await recommendations(recommender);
+    receipt.primaryCheck = "drafts.recommender-chunks-array";
     assert.ok(Array.isArray(suggested.chunks));
+    receipt.primaryCheck = "read.recommender-code-7";
     await assert.rejects(read(recommender), { code: 7 });
+    receipt.primaryCheck = "update.reader-code-7";
     await assert.rejects(update(reader), { code: 7 });
+    receipt.primaryCheck = "update.no-scopes-code-7";
     await assert.rejects(update(noScopes), { code: 7 });
+    receipt.primaryCheck = "read.writer-code-7";
     await assert.rejects(read(writer), { code: 7 });
+    receipt.primaryCheck = "read.reader-unchanged-after-denials";
     assert.deepEqual(await read(reader), before, "rejected writes must preserve native state");
     // OpenShell deduplicates an unchanged loaded policy. A writer may resubmit it,
     // while the reader independently confirms that enforcement remains loaded.
+    receipt.primaryCheck = "update.writer-rpc";
     await update(writer);
+    receipt.primaryCheck = "read.reader-wait-loaded";
     const loaded = await waitFor(
       "authenticated native policy update to load",
       async () => {
@@ -5012,22 +5077,15 @@ async function assertAuthenticatedNativePolicyScopes(topology) {
       },
       30_000,
     );
+    receipt.primaryCheck = "read.loaded-policy-equals-baseline";
     assert.deepEqual(loaded.policy, before.policy);
+    receipt.primaryCheck = "fixture.write-success-marker";
     process.stderr.write(
       "OpenShell integration: authenticated sandbox:read, config:read and config:write policy boundaries passed.\n",
     );
+    receipt.primaryCheck = null;
   } finally {
-    for (const client of clients) {
-      client.close();
-    }
-    try {
-      if (savedValues) {
-        await configureAuthentication(false);
-      }
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-      await topology.resumeWorker();
-    }
+    await cleanup();
   }
 }
 
@@ -8588,9 +8646,22 @@ export function registerProviderLifecycleTest(workflow) {
           process.stderr.write(
             "OpenShell integration: testing authenticated native policy scopes.\n",
           );
-          await measureOpenShellStage(testContext, "native-policy", () =>
-            assertAuthenticatedNativePolicyScopes(topology),
-          );
+          const receipt = { primaryCheck: null, cleanupCheck: null };
+          try {
+            await measureOpenShellStage(testContext, "native-policy", () =>
+              assertAuthenticatedNativePolicyScopes(topology, receipt),
+            );
+          } catch (error) {
+            testContext.diagnostic(
+              "openclaw-ci-measurement " +
+                JSON.stringify({
+                  kind: "openshell-native-policy-check",
+                  stage: "native-policy-scopes",
+                  ...receipt,
+                }),
+            );
+            throw error;
+          }
         }
         return;
       }
