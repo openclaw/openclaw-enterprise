@@ -28,6 +28,10 @@ simulated data.
    **Destructive tools** to **Disabled**, read its hint, and check that
    **Calendar tools enabled by default** still says **Inherit default policy**.
    The preview exercises the form; it does not submit a policy to a Controller.
+   In **Components / Plugins / Install Google Workspace**, confirm Google
+   Workspace appears and its policy controls are visible. This component fixture
+   supplies catalog data directly. The saved-Agent browser test checks discovery
+   through the Controller for a dedicated Agent using the default Harness.
    In **Pages / Create Agent / Short window plugin picker** (1440×480), expand
    and collapse **Access and credential setup**. Scroll the catalog browser:
    plugin names stay readable, Calendar opens its details, and pagination is
@@ -81,3 +85,7 @@ return to Plugins, and open Configure plugins. The catalog must load instead of
 staying on Loading plugins. Calendar's saved selection and policy stay unchanged.
 Close and reopen the picker, then Reset story and repeat. This scenario simulates
 catalog responses; it does not establish plugin installation or runtime access.
+
+## Choose OpenClaw plugins on a new Agent
+
+Open **Pages / Create Agent / OpenClaw Plugin Catalog** over HTTPS. Add **Google Workspace**. Select **Choose a connection template**, choose **Workspace OAuth**, then click **Connect account**. Approve the simulated provider in the separate tab. The original editor selects **New Workspace account** and explains when the Agent receives access. Close the picker and verify the Agent name still reads **Research assistant**. The Agent and its grant are created only when the operator submits the form.

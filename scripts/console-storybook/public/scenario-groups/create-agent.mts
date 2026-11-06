@@ -91,6 +91,16 @@ type CreateAgentScenario = {
 };
 
 // The OpenShell Sandbox Driver's refusal of Dedicated OpenClaw on its settings alone.
+const openClawCatalogEntries = [
+  {
+    id: "occ-plugin:google@1.0.0",
+    name: "Google Workspace",
+    selectableWithoutTools: true,
+    tools: [],
+  },
+  { id: "occ-plugin:slack@1.0.0", name: "Slack", selectableWithoutTools: true, tools: [] },
+];
+
 const openShellUserNamespacesRefusal =
   "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
 
@@ -416,6 +426,80 @@ export const createAgentFormScenarios = {
       "Read the error under the editor: A number is too large or too small to save. Use a number closer to zero. Check that Configuration JSON has focus, its exact text is unchanged, and neither an Agent nor a Configuration is written.",
       "If the form shows a model list, select Enter model ID manually. Change Model ID and leave the field. Check that the range error focuses Configuration JSON and the rejected draft is not rewritten. Restore the original Model ID, change only 1e400 to 2, and select Create Agent. Inspect the created Agent's Configuration for [1,2,3]. All saves and deployment state in this story are simulated.",
     ],
+  },
+  createOpenClawPluginCatalog: {
+    group: "Pages/Create Agent",
+    name: "Choose bundled plugins before creating an OpenClaw Agent",
+    path: create,
+    openclawExecutionModes: ["dedicated"],
+    pluginCapabilities: {
+      ...pluginCapabilities,
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      policyScopeByPlugin: Object.fromEntries(
+        openClawCatalogEntries.map(({ id }) => [id, "enablement_only" as const]),
+      ),
+    },
+    pluginDiscoveryCredential: "none",
+    pluginDiscovery: {
+      pages: { initial: { plugins: openClawCatalogEntries, nextCursor: null } },
+      draftAccount: {
+        id: "cs_00000000-0000-4000-8000-000000000099",
+        name: "New Workspace account",
+        pluginId: openClawCatalogEntries[0]!.id,
+        slotId: "account",
+      },
+      details: Object.fromEntries(
+        openClawCatalogEntries.map((entry) => [
+          entry.id,
+          entry === openClawCatalogEntries[0]
+            ? {
+                ...entry,
+                credentialSlots: [
+                  {
+                    pluginId: entry.id,
+                    id: "account",
+                    label: "Google account",
+                    releaseSha256: "a".repeat(64),
+                    connectAccount: true,
+                    sources: [
+                      {
+                        id: "cs_00000000-0000-4000-8000-000000000098",
+                        name: "Existing Workspace account",
+                      },
+                    ],
+                    connectionTemplates: [
+                      {
+                        id: "workspace-oauth",
+                        displayName: "Workspace OAuth",
+                        version: 1,
+                        mode: "manual",
+                        scopes: ["gmail.readonly"],
+                        requiredScopes: [],
+                        offeredScopes: ["gmail.readonly"],
+                      },
+                    ],
+                  },
+                ],
+              }
+            : entry,
+        ]),
+      ),
+    },
+    actions: [
+      click("Start without Preset"),
+      { selector: "#agent-name", value: "Research assistant" },
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+      { selector: "#execution-mode", value: "dedicated" },
+      click("Configure plugins"),
+    ],
+    description:
+      "Select a saved Google account or connect one while the new dedicated OpenClaw Agent is still a draft.",
+    steps: [
+      "Add Google Workspace. Choose an existing account, or open Choose a connection template and select Workspace OAuth. In an HTTPS preview, Connect account opens a simulated provider in a separate tab.",
+      "Approve the test account and return to the original form. The new account is selected for Google Workspace. Choose Done to keep editing the unsaved Agent.",
+    ],
+    gap: "Storybook simulates provider consent and compatible account discovery. The recording ends before Agent creation or any grant.",
   },
   createPluginsUnavailable: {
     group: "Pages/Create Agent",
@@ -2261,27 +2345,45 @@ export const createAgentProvisioningScenarios = {
     actions: form,
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
-      "A member whose Namespace grants Agent create cannot read the Installation. The form goes on: an info status above it says why, the badge names the Preset, and Create Agent stays available; the API still decides at the preflight and at create.",
+      "A member whose Namespace grants Agent create cannot read the Installation, so the form reads the Namespace's Agent capabilities instead. The form goes on: an info status above it says why, the badge names the Preset, and Create Agent stays available; the API still decides at the preflight and at create.",
     steps: [
-      'Above the form, "Your access" says you can create Agents in Engineering and that an Installation administrator then gives the new Agent access to its Secrets.',
+      'Above the form, "Your access" says you can create Agents in Engineering and that deploying the new Agent gives it access to the Secrets and credential sources it uses.',
+      "The request log shows GET /installation refused and GET /namespaces/…/agent-capabilities answered.",
       'The form starts with the badge "From Preset · default-codex", and no mid-form note asks for Installation access.',
     ],
     gap: "The member creation browser test uses a member account and the real Installation permission check.",
   },
   createMemberGrantRefused: {
     group: "Pages/Create Agent",
-    name: "Member Agent created, grant needs an administrator",
+    name: "Member Agent created, opens its draft",
     path: create,
     observabilityDenied: true,
     actions: [...readyForm, click("Create Agent")],
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
-      "The session already knows this member does not administer the Installation, so after the Agent saves the form sends no IAM read for its credential grant. It names the administrator step at once and offers Open saved Agent, with no Retry credential access.",
+      "The session already knows this member does not administer the Installation. The member's deploy gives the Agent access to its Secrets (RFC-0026), so after the Agent saves the form sends no IAM request and opens the Agent's draft, where the member deploys it.",
     steps: [
-      "Read the alert: giving the Agent access to its Secrets needs Installation administration, so it asks an Installation administrator to open the saved Agent and grant it.",
-      "The saved-resources line identifies the Configuration and Agent, offers Open saved Agent, and does not promise a retry.",
-      "The request log shows no /iam/ request. Only Cancel and Start over remain beside the saved-resources line.",
+      "After Create Agent, the Agent page opens on its draft.",
+      "The request log shows no /iam/ request.",
     ],
+  },
+  createMemberCredentialGateway: {
+    group: "Pages/Create Agent",
+    name: "Member on a Credential Gateway Installation",
+    path: create,
+    observabilityDenied: true,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    unsupportedProvisioning: true,
+    actions: readyForm,
+    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    description:
+      "A member cannot read the Installation, but the Namespace's Agent capabilities list the Credential Gateway's model source types. Create Agent registers the selected model Secret as a credential source before it saves the Agent, so the deploy is not refused for Secret-backed Harness authentication.",
+    steps: [
+      "The request log shows GET /installation refused and GET /namespaces/…/agent-capabilities answered with the model credential source types.",
+      "Enable Native admin UI is unavailable, and its hint says native admin setup needs guided provisioning, which only an Installation administrator can use.",
+      "Create the Agent and inspect the requests: POST …/credential-sources precedes POST …/agents, whose harnessAuth names the new source. The Agent page opens on its draft.",
+    ],
+    gap: "The fixture simulates the Credential Gateway. The Default users PostgreSQL test reads the route from the real API.",
   },
   createRestricted: {
     group: "Pages/Create Agent",

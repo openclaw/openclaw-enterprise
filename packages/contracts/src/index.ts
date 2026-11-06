@@ -810,6 +810,24 @@ export interface AgentPluginCredentialSlot {
   }[];
 }
 
+/** A connectable template for one plugin account slot, including its consent scope choices. */
+export interface PluginConnectionTemplateChoice {
+  readonly id: string;
+  readonly displayName: string;
+  readonly version: number;
+  readonly mode: "manual" | "mcp_discovery";
+  readonly scopes: readonly string[];
+  readonly requiredScopes: readonly string[];
+  readonly offeredScopes: readonly string[];
+}
+
+/** Namespace details add the account choices OCC authorizes for a new Agent. */
+export interface NamespaceAgentPluginDetails extends PluginCatalogEntry {
+  readonly credentialSlots?: readonly (AgentPluginCredentialSlot & {
+    readonly connectionTemplates?: readonly PluginConnectionTemplateChoice[];
+  })[];
+}
+
 export interface PluginCatalogLink {
   readonly label: string;
   readonly url: string;
@@ -1338,6 +1356,21 @@ export interface Role extends Scope {
   readonly permissions: readonly Permission[];
 }
 
+/**
+ * ID prefixes of the Roles, Groups, and Group bindings that OCC writes from the Installation
+ * `iam` configuration (RFC-0026). OCC adds, changes, and deletes only rows with these prefixes
+ * when the configuration changes.
+ */
+export const CONFIGURED_IAM_ID_PREFIXES = Object.freeze({
+  role: "role_config_",
+  group: "group_config_",
+  binding: "binding_config_",
+} as const);
+
+export function isConfiguredRoleId(roleId: string): boolean {
+  return roleId.startsWith(CONFIGURED_IAM_ID_PREFIXES.role);
+}
+
 export interface Group extends Scope {
   readonly id: string;
   readonly namespaceId?: string;
@@ -1371,10 +1404,22 @@ export interface Restriction extends Scope {
   readonly effect: "deny";
 }
 
+/** Resource kinds that belong to one Agent, so an exact binding on that Agent applies to them. */
+export const AGENT_CHILD_RESOURCE_KINDS = Object.freeze([
+  "agent_revision",
+  "sandbox_policy",
+] as const);
+
 export interface AuthorizationRequest {
   readonly principalId: string;
   readonly action: PermissionAction;
   readonly resource: ResourceRef;
+  /**
+   * The Agent that owns an `agent_revision` or `sandbox_policy` resource, supplied by OCC from
+   * stored state. An exact binding on this Agent also applies its Role's permissions for the
+   * requested kind. Absent for every other kind.
+   */
+  readonly parentAgentId?: string;
 }
 
 /** Asks whether one identity already holds every grant of another identity. */
@@ -1459,6 +1504,10 @@ export type {
   IAMManagedRoleInput,
   IAMManagedAccessBindingInput,
   IAMManagedServicePrincipalInput,
+  IAMOwnerBindingInput,
+  IAMConfiguredPolicy,
+  IAMConfiguredPolicyInput,
+  IAMConfiguredPolicyChanges,
 } from "./drivers/iam/index.ts";
 export type { ServiceAccountDriver } from "./drivers/service-account/index.ts";
 export type {

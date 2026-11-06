@@ -94,6 +94,8 @@ cursor?, q?}, signal?)` returns `{plugins, nextCursor, setup?}`, and
 `pluginId` is the opaque `remoteId` from a discovery entry; the entry's `id` is
 the stable selection key. The HTTP routes are `POST /namespaces/:namespaceId/agents/plugins`
 and its `/details` child. Include the target `harnessId` in each request.
+Include `executionMode` to see packages the Installation can place for that Harness and mode.
+OCC rejects an unavailable mode before opening a discovery credential. Omitting the mode returns the Harness catalog independent of placement.
 OCC resolves the catalog before it reads a credential. The selected Driver reports `pluginDiscovery.credential`
 in Installation capabilities as `required` or `none`. When required, supply
 exactly one of `accessToken`, `secretRef`, or `credentialSource`. Stored references

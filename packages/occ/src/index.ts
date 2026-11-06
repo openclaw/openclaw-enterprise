@@ -31,6 +31,7 @@ export {
 } from "./state/prepared-github-state.ts";
 export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-state.ts";
 import {
+  CONFIGURED_IAM_ID_PREFIXES,
   connectionValuesChanged,
   isOAuthScopeToken,
   normalizeConnectionDestinations,
@@ -195,8 +196,11 @@ import type {
   CredentialSourceDeviceAuthorization,
   CredentialSourceDeviceAuthorizationResult,
   HarnessExecutionMode,
+  IAMConfiguredPolicy,
+  IAMConfiguredPolicyChanges,
   IAMDriver,
   Installation,
+  InstallationCapabilities,
   InstallationDeploymentInventory,
   Namespace,
   NamespaceDeleteResult,
@@ -213,6 +217,7 @@ import type {
   PluginDesiredState,
   PluginApprovers,
   PluginCatalogEntry,
+  NamespaceAgentPluginDetails,
   PluginDiscoveryAuthentication,
   PluginCatalogPage,
   PluginDriver,
@@ -801,6 +806,29 @@ export interface RuntimeLogReadGrant {
  */
 export type RuntimeLogReadAdmission = <T>(read: () => Promise<T>) => Promise<T>;
 
+/** Holds the caller's authority in a unit of work; throws when it is no longer current. */
+export type AuthorityFence = (state: PlatformUnitOfWork) => Promise<void>;
+
+/**
+ * The Installation `iam` configuration (RFC-0026), with the configuration's own names. OCC writes
+ * each Role, Group, and binding as an ordinary IAM row with a configured ID prefix.
+ */
+export interface InstallationIAMConfiguration {
+  readonly roles: readonly {
+    readonly id: string;
+    readonly permissions: readonly Permission[];
+  }[];
+  /** Groups that each account created through `POST /api/auth/accounts` joins. */
+  readonly defaultUserGroups: readonly string[];
+  /** The configured Role that OCC binds to each creator on what it creates. */
+  readonly ownerRole?: string;
+  readonly roleBindings: readonly {
+    readonly group: string;
+    readonly role: string;
+    readonly scope: "installation" | { readonly namespace: string };
+  }[];
+}
+
 export interface ControllerOptions {
   /** Code-only composition binding for the bundled retained-source plugin reader. */
   readonly pluginSourceReader?: {
@@ -810,6 +838,8 @@ export interface ControllerOptions {
   readonly preparedTokens?: TokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
+  /** Installation configuration `iam`; `applyIAMConfiguration` writes it to IAM policy. */
+  readonly iamConfiguration?: InstallationIAMConfiguration;
   readonly authorize?: (
     request: AuthorizationRequest,
   ) => AuthorizationDecision | Promise<AuthorizationDecision>;
@@ -1276,6 +1306,30 @@ const HARNESS_LOST_CODES: ReadonlySet<string> = new Set<SandboxHarnessLostCode>(
   "SANDBOX_FAILED",
   "HARNESS_EXITED",
 ]);
+/**
+ * A resource to authorize. For an `agent_revision`, OCC also names the Agent that owns it, taken
+ * from stored state or from the route whose later lookups are scoped to that Agent; IAM then
+ * applies that Agent's exact bindings to the revision (RFC-0026).
+ */
+type AuthorizationTarget = ResourceRef & { readonly parentAgentId?: string };
+
+function authorizationResource({ kind, id, namespaceId }: AuthorizationTarget): ResourceRef {
+  return namespaceId === undefined ? { kind, id } : { kind, id, namespaceId };
+}
+
+/**
+ * The Agent that owns the target. A sandbox policy's ID derives from its Agent's ID, which the
+ * database enforces (migration 0058), so OCC supplies its parent without a lookup.
+ */
+function authorizationParentAgentId(target: AuthorizationTarget): string | undefined {
+  if (target.kind === "agent_revision") {
+    return target.parentAgentId;
+  }
+  if (target.kind === "sandbox_policy" && /^sbp_[0-9a-f-]{36}$/.test(target.id)) {
+    return `agt_${target.id.slice(4)}`;
+  }
+  return undefined;
+}
 
 /**
  * A Credential Gateway must finish any effect of an aborted registration within
@@ -2206,11 +2260,13 @@ export class OpenClawController {
   private readonly configurations = new DriverConfigurationRegistry();
 
   private readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
+  private readonly iamConfiguration?: InstallationIAMConfiguration;
   private readonly authorization?: ControllerOptions["authorize"];
   private readonly clock: () => Date;
   private readonly identifier?: ControllerOptions["createId"];
   private readonly state: PlatformStateStore;
   private readonly transactionContext = new AsyncLocalStorage<PlatformUnitOfWork>();
+  private readonly authorityFence = new AsyncLocalStorage<AuthorityFence>();
   private readonly provisioningContext = new AsyncLocalStorage<ClaimedWork>();
   private readonly mutationRollbacks = new AsyncLocalStorage<(() => Promise<void>)[]>();
   private readonly shouldRecordOperations: boolean;
@@ -2254,6 +2310,9 @@ export class OpenClawController {
       "/sandboxNetworkPolicyCeiling",
     );
     this.sandboxNetworkPolicyCeiling = immutableCopy(options.sandboxNetworkPolicyCeiling ?? []);
+    if (options.iamConfiguration !== undefined) {
+      this.iamConfiguration = options.iamConfiguration;
+    }
     for (const registration of options.driverConfigurations ?? []) {
       this.configurations.register(registration);
     }
@@ -2466,6 +2525,29 @@ export class OpenClawController {
       kind: "installation",
       id: this.installation.id,
     });
+    return immutableCopy({ ...this.installation, capabilities: await this.capabilities() });
+  }
+
+  /**
+   * The capabilities Agent creation in a Namespace needs, for a caller who may create Agents
+   * there but cannot read the Installation, such as a Default user (RFC-0026). Guided provisioning
+   * and its native admin option need Installation administration, so neither is reported.
+   */
+  async getNamespaceAgentCapabilities(
+    principalId: string,
+    namespaceId: string,
+  ): Promise<Readonly<Omit<InstallationCapabilities, "nativeAdmin" | "agentProvisioning">>> {
+    this.namespaceIdentity(namespaceId);
+    await this.authorize(principalId, "create", { kind: "agent", namespaceId, id: namespaceId });
+    const {
+      nativeAdmin: _provisioningOnly,
+      agentProvisioning: _administratorOnly,
+      ...capabilities
+    } = await this.capabilities();
+    return immutableCopy(capabilities);
+  }
+
+  private async capabilities(): Promise<InstallationCapabilities> {
     // openclaw lists the execution modes admission accepts for OpenClaw; an empty list means
     // none (#2670), and sandboxDriverUnavailable says that is an outage, not the Installation's
     // shape (finding 1624). nativeWorkers promises that dedicated native OpenClaw can be
@@ -2508,13 +2590,10 @@ export class OpenClawController {
         ? { pluginDiscovery: { credential: driver.discoveryCredential ?? "required" } }
         : {}),
     }));
-    return immutableCopy({
-      ...this.installation,
-      capabilities: {
-        ...capabilities,
-        ...(catalogs.length > 0 ? { pluginCatalogs: catalogs } : {}),
-      },
-    });
+    return {
+      ...capabilities,
+      ...(catalogs.length > 0 ? { pluginCatalogs: catalogs } : {}),
+    };
   }
 
   /**
@@ -2620,6 +2699,7 @@ export class OpenClawController {
               kind: "agent_revision",
               id: agent.activeRevisionId,
               namespaceId: namespace.id,
+              parentAgentId: agent.id,
             });
           }
           agents.push(
@@ -2779,6 +2859,18 @@ export class OpenClawController {
         driver.listNamespaceAccessBindings!({ policy: state.iamPolicy }, namespace.id),
       ),
     );
+  }
+
+  /**
+   * Configured Group IDs that each account created through the API joins: none when the
+   * selected IAM Driver does not hold configured policy in this State.
+   */
+  get defaultUserGroupIds(): readonly string[] {
+    const groups = this.iamConfiguration?.defaultUserGroups ?? [];
+    if (groups.length === 0 || this.occBindingDriver("applyConfiguredPolicy") === undefined) {
+      return Object.freeze([]);
+    }
+    return Object.freeze(groups.map(configuredGroupId));
   }
 
   async createIAMAccessBinding(
@@ -3529,9 +3621,14 @@ export class OpenClawController {
         pluginApprovers,
         () => configurationInput.values,
       );
-      // Provisioning creates the Agent before it has tool sources. Bind the account
-      // on the saved Agent after the initial install.
-      await this.validatePluginCredentialSources(state, driver, plugins, []);
+      await this.provisioningPluginAccounts(
+        state,
+        principalId,
+        namespace.id,
+        driver,
+        plugins,
+        harnessAuth,
+      );
       await this.authorizeProvisioningSources(
         state,
         principalId,
@@ -3709,6 +3806,7 @@ export class OpenClawController {
         kind: "agent_revision",
         id: revisionId,
         namespaceId: record.namespaceId,
+        parentAgentId: record.agentId,
       }))
     ) {
       return undefined;
@@ -4680,6 +4778,111 @@ export class OpenClawController {
     });
   }
 
+  /** The caller can delegate a saved account only through a slot that accepts its recipient. */
+  private async selectedPluginAccounts(
+    state: PlatformReadView,
+    principalId: string,
+    namespaceId: string,
+    driver: PluginDriver | undefined,
+    plugins: PluginDesiredState | undefined,
+    previous?: PluginDesiredState,
+  ): Promise<CredentialSource[]> {
+    const accounts = new Map<string, CredentialSource>();
+    const retained = this.pluginAccountBindings(driver, previous);
+    for (const { pluginId, id, sourceId, slot } of this.pluginAccountBindings(driver, plugins)) {
+      if (
+        retained.some(
+          (binding) =>
+            binding.pluginId === pluginId && binding.id === id && binding.sourceId === sourceId,
+        )
+      ) {
+        continue;
+      }
+      const resource = { kind: "credential_source" as const, namespaceId, id: sourceId };
+      await this.authorize(principalId, "operate", resource);
+      const account = await state.savedConnections.findSavedConnection(namespaceId, sourceId);
+      if (!account) {
+        continue; // Ordinary Gateway sources must be explicitly listed on the Agent.
+      }
+      await this.authorize(principalId, "read", resource);
+      const source = await state.credentialSources.findCredentialSource(namespaceId, sourceId);
+      if (
+        source?.ownerCapability !== "token_service" ||
+        source.state !== "ready" ||
+        account.revocationRequestedBy ||
+        !slot.issuers.includes(account.issuer) ||
+        !slot.acceptsRecipient(await this.accountTarget(state, account))
+      ) {
+        throw new ResourceStateConflictError(
+          "Authorize an account for this plugin server before binding it.",
+        );
+      }
+      accounts.set(sourceId, source);
+    }
+    return [...accounts.values()];
+  }
+
+  /** Provisioning has one model credential and only the saved accounts selected by its plugin slots. */
+  private async provisioningPluginAccounts(
+    state: PlatformReadView,
+    principalId: string,
+    namespaceId: string,
+    driver: PluginDriver | undefined,
+    plugins: PluginDesiredState | undefined,
+    harnessAuth: HarnessAuthBinding | null,
+  ) {
+    const accounts = await this.selectedPluginAccounts(
+      state,
+      principalId,
+      namespaceId,
+      driver,
+      plugins,
+    );
+    const modelSourceId =
+      harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined;
+    if (plugins && driver?.credentials) {
+      driver.credentials.validate(plugins, accounts, modelSourceId);
+    }
+    return {
+      accounts,
+      bindings: this.withPluginAccounts(
+        modelSourceId ? [{ sourceId: modelSourceId }] : undefined,
+        accounts,
+      ),
+    };
+  }
+
+  private grantPluginAccounts(
+    state: PlatformUnitOfWork,
+    agent: Readonly<Agent>,
+    accounts: readonly CredentialSource[],
+  ) {
+    return this.ensureAgentOperateGrants(
+      state,
+      agent.namespaceId,
+      agent,
+      accounts.map(({ id, namespaceId }) => ({ kind: "credential_source", namespaceId, id })),
+    );
+  }
+
+  private withPluginAccounts(
+    bindings: readonly AgentCredentialSourceBinding[] | undefined,
+    accounts: readonly CredentialSource[],
+  ) {
+    const additions = accounts.filter(
+      ({ id }) => !bindings?.some(({ sourceId }) => id === sourceId),
+    );
+    if (additions.length === 0) {
+      return bindings;
+    }
+    if ((bindings?.length ?? 0) + additions.length > MAX_AGENT_CREDENTIAL_SOURCES) {
+      throw new ResourceStateConflictError(
+        `The Agent already lists ${MAX_AGENT_CREDENTIAL_SOURCES} credential sources.`,
+      );
+    }
+    return [...(bindings ?? []), ...additions.map(({ id }) => ({ sourceId: id }))];
+  }
+
   private async savedPluginSlot(
     state: PlatformReadView,
     principalId: string,
@@ -4726,6 +4929,33 @@ export class OpenClawController {
     };
   }
 
+  private compatiblePluginTemplates(
+    templates: readonly ConnectionTemplate[],
+    namespaceId: string,
+    slot: {
+      readonly issuers: readonly string[];
+      acceptsRecipient(target: PluginAccountTarget): boolean;
+    },
+  ) {
+    return templates
+      .filter(
+        (template) =>
+          (template.namespaceId === undefined || template.namespaceId === namespaceId) &&
+          template.current.oauthClientId !== undefined &&
+          slot.issuers.includes(template.current.issuer) &&
+          slot.acceptsRecipient(template.current),
+      )
+      .map(({ id, displayName, current }) => ({
+        id,
+        displayName,
+        version: current.version,
+        mode: current.mode,
+        scopes: current.scopes,
+        requiredScopes: current.observed?.requestedScopes ?? [],
+        offeredScopes: current.observed?.resourceScopes ?? current.observed?.supportedScopes ?? [],
+      }));
+  }
+
   async listAgentPluginConnectionTemplates(
     principalId: string,
     input: Pick<ConnectionAttachmentIntent, "agentId" | "pluginId" | "slotId"> & {
@@ -4750,24 +4980,7 @@ export class OpenClawController {
           return [];
         }
         const templates = await state.connectionTemplates.listConnectionTemplates();
-        return templates
-          .filter(
-            (template) =>
-              (template.namespaceId === undefined || template.namespaceId === input.namespaceId) &&
-              template.current.oauthClientId !== undefined &&
-              slot.issuers.includes(template.current.issuer) &&
-              slot.acceptsRecipient(template.current),
-          )
-          .map(({ id, displayName, current }) => ({
-            id,
-            displayName,
-            version: current.version,
-            mode: current.mode,
-            scopes: current.scopes,
-            requiredScopes: current.observed?.requestedScopes ?? [],
-            offeredScopes:
-              current.observed?.resourceScopes ?? current.observed?.supportedScopes ?? [],
-          }));
+        return this.compatiblePluginTemplates(templates, input.namespaceId, slot);
       },
     );
   }
@@ -6194,6 +6407,7 @@ export class OpenClawController {
               kind: "agent_revision",
               id: revision.id,
               namespaceId: agent.namespaceId,
+              parentAgentId: agent.id,
             }))
           ) {
             continue;
@@ -6226,10 +6440,13 @@ export class OpenClawController {
     if (!isNonEmptyString(revisionId)) {
       throw new ScopeViolationError("The exact AgentRevision identity is missing.");
     }
+    // The route's Agent is the parent: the lookups below accept only this Agent's revision, so a
+    // revision of another Agent ends as not found, as an unknown ID does.
     await this.authorize(principalId, "read", {
       kind: "agent_revision",
       id: revisionId,
       namespaceId,
+      parentAgentId: agentId,
     });
     return this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
@@ -6264,10 +6481,13 @@ export class OpenClawController {
     if (!isNonEmptyString(revisionId)) {
       throw new ScopeViolationError("The exact AgentRevision identity is missing.");
     }
+    // The route's Agent is the parent: the lookups below accept only this Agent's revision, so a
+    // revision of another Agent ends as not found, as an unknown ID does.
     await this.authorize(principalId, "read", {
       kind: "agent_revision",
       id: revisionId,
       namespaceId,
+      parentAgentId: agentId,
     });
     return this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
@@ -6533,6 +6753,7 @@ export class OpenClawController {
       throw new ScopeViolationError("The Namespace name is invalid.");
     }
     return this.mutate(async (state) => {
+      await this.holdAuthority(state);
       const target: ResourceRef = {
         kind: "namespace",
         id: this.installation.id,
@@ -6566,6 +6787,14 @@ export class OpenClawController {
         status: "provisioning",
         createdAt: this.timestamp(),
       });
+      // The creator's Namespace-wide Owner grant lets the same unit create the default Presets.
+      await this.bindCreator(state, principalId, {
+        kind: "namespace",
+        id: namespace.id,
+        namespaceId: namespace.id,
+      });
+      // Configured Group bindings that name this Namespace, such as Agent creation in default.
+      await this.applyConfiguredPolicy(state, principalId, namespace);
       await this.ensureNamespaceDefaultPresets(state, principalId, namespace);
       await this.record(state, {
         kind: "namespace",
@@ -6576,6 +6805,292 @@ export class OpenClawController {
         actorId: principalId,
       });
       return namespace;
+    });
+  }
+
+  /**
+   * The IAM Driver that writes configured policy, Owner bindings, and deploy-time grants, or
+   * undefined when it has no such member or
+   * this controller's State is not where its policy lives: decisions from the `authorize`
+   * option, or a Native IAM Driver that reads another store. Only the Driver's own policy
+   * source can hold bindings it will read.
+   */
+  private occBindingDriver(
+    method: "createOwnerBinding" | "applyConfiguredPolicy" | "createNamespaceAccessBinding",
+  ): IAMDriver | undefined {
+    if (this.authorization !== undefined) {
+      return undefined;
+    }
+    const driver = this.selectedDriver("iam");
+    if (
+      driver[method] === undefined ||
+      (driver instanceof NativeIAMDriver &&
+        !NativeIAMDriver.usesStateForAuthorization(driver, driver.authorize, this.state))
+    ) {
+      return undefined;
+    }
+    if (driver.namespacePolicyTransaction !== "platform-unit-of-work") {
+      throw new DependencyUnavailableError(
+        "Configured IAM policy requires transactional IAM Driver support.",
+      );
+    }
+    return driver;
+  }
+
+  /**
+   * Runs `work` with a fence that each transaction writing durable authority applies first: the
+   * HTTP layer holds the caller's session through COMMIT, as Namespace policy writes do, so a
+   * sign-out or account disable cannot commit in between (#2311).
+   */
+  withAuthorityFence<T>(fence: AuthorityFence, work: () => Promise<T>): Promise<T> {
+    return this.authorityFence.run(fence, work);
+  }
+
+  /**
+   * Fences a transaction that writes durable authority (an Owner binding or deploy-time grants)
+   * before it authorizes. It applies the caller's session fence, if any, then holds the IAM
+   * configuration lock shared. Applying a changed `iam` configuration takes that lock
+   * exclusively, so it commits either before this, and the authorization below sees it, or
+   * after this COMMIT.
+   */
+  private async holdAuthority(state: PlatformUnitOfWork): Promise<void> {
+    await this.authorityFence.getStore()?.(state);
+    await state.installations.holdIAMConfiguration("shared");
+  }
+
+  /**
+   * The creator of a resource gets the configured Owner Role on it, in the creating unit
+   * (RFC-0026): Namespace-wide for a Namespace, exact for anything else. Without `ownerRole`,
+   * OCC writes no Owner binding.
+   */
+  private async bindCreator(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    resource: ResourceRef & { readonly namespaceId: string },
+  ): Promise<void> {
+    const ownerRole = this.iamConfiguration?.ownerRole;
+    if (ownerRole === undefined) {
+      return;
+    }
+    const driver = this.occBindingDriver("createOwnerBinding");
+    if (driver === undefined) {
+      return;
+    }
+    const binding = await this.iamPolicyOperation(() =>
+      driver.createOwnerBinding!(
+        { policy: state.iamPolicy },
+        {
+          id: `binding_owner_${resource.id}`,
+          namespaceId: resource.namespaceId,
+          principalId,
+          roleId: configuredRoleId(ownerRole),
+          ...(resource.kind === "namespace"
+            ? {}
+            : { resourceKind: resource.kind, resourceId: resource.id }),
+        },
+      ),
+    );
+    await this.auditBinding(state, principalId, binding, resource, { reason: "creator" });
+  }
+
+  /**
+   * The configured policy that OCC writes: each Role and Group with its configured ID, and each
+   * Group binding in its scope. A binding that names a Namespace is written for each of
+   * `namespaces` with that name.
+   */
+  private configuredPolicy(namespaces: readonly Readonly<Namespace>[]): IAMConfiguredPolicy {
+    const configuration = this.iamConfiguration;
+    if (configuration === undefined) {
+      return Object.freeze({ roles: [], groups: [], bindings: [] });
+    }
+    const groupNames = new Set([
+      ...configuration.defaultUserGroups,
+      ...configuration.roleBindings.map((binding) => binding.group),
+    ]);
+    const bindings: AccessBinding[] = [];
+    for (const { group, role, scope } of configuration.roleBindings) {
+      const namespaceIds =
+        scope === "installation"
+          ? [undefined]
+          : namespaces
+              .filter((namespace) => namespace.name === scope.namespace)
+              .map((namespace) => namespace.id);
+      for (const namespaceId of namespaceIds) {
+        bindings.push({
+          id: configuredBindingId(group, role, namespaceId),
+          ...(namespaceId === undefined ? {} : { namespaceId }),
+          subjectKind: "group",
+          subjectId: configuredGroupId(group),
+          roleId: configuredRoleId(role),
+        });
+      }
+    }
+    return Object.freeze({
+      roles: configuration.roles.map((role) => ({
+        id: configuredRoleId(role.id),
+        name: role.id,
+        permissions: role.permissions,
+      })),
+      groups: [...groupNames].map((name) => ({ id: configuredGroupId(name), name })),
+      bindings,
+    });
+  }
+
+  /**
+   * Writes the configured Group bindings that name a Namespace OCC just created, in the unit that
+   * creates it. The creator's authority fence holds the IAM configuration lock shared.
+   */
+  private async applyConfiguredPolicy(
+    state: PlatformUnitOfWork,
+    actorId: string,
+    namespace: Readonly<Namespace>,
+  ): Promise<void> {
+    const driver = this.occBindingDriver("applyConfiguredPolicy");
+    if (driver === undefined || this.iamConfiguration === undefined) {
+      return;
+    }
+    const changes = await this.iamPolicyOperation(() =>
+      driver.applyConfiguredPolicy!(
+        { policy: state.iamPolicy },
+        { policy: this.configuredPolicy([namespace]), namespaceId: namespace.id },
+      ),
+    );
+    await this.auditConfiguredPolicy(state, actorId, changes, "namespace_create");
+  }
+
+  /** Audits each change that applying the configured policy made. */
+  private async auditConfiguredPolicy(
+    state: PlatformUnitOfWork,
+    actorId: string,
+    changes: IAMConfiguredPolicyChanges,
+    reason: "installation_configuration" | "namespace_create",
+  ): Promise<void> {
+    const installation: ResourceRef = { kind: "installation", id: this.installation.id };
+    const bindingResource = (binding: Readonly<AccessBinding>): ResourceRef =>
+      binding.namespaceId === undefined
+        ? installation
+        : { kind: "namespace", id: binding.namespaceId, namespaceId: binding.namespaceId };
+    for (const binding of changes.bindings.deleted) {
+      await this.auditBinding(state, actorId, binding, bindingResource(binding), {
+        reason,
+        deleted: true,
+      });
+    }
+    for (const binding of changes.bindings.created) {
+      await this.auditBinding(state, actorId, binding, bindingResource(binding), { reason });
+    }
+    const policyChanges: [string, Record<string, unknown>][] = [
+      ...changes.roles.created.map((role): [string, Record<string, unknown>] => [
+        "openclaw.iam.roles.create",
+        { roleId: role.id, permissions: role.permissions },
+      ]),
+      ...changes.roles.updated.map((role): [string, Record<string, unknown>] => [
+        "openclaw.iam.roles.update",
+        { roleId: role.id, permissions: role.permissions },
+      ]),
+      ...changes.roles.deleted.map((roleId): [string, Record<string, unknown>] => [
+        "openclaw.iam.roles.delete",
+        { roleId },
+      ]),
+      ...changes.groups.created.map((groupId): [string, Record<string, unknown>] => [
+        "openclaw.iam.groups.create",
+        { groupId },
+      ]),
+      ...changes.groups.deleted.map((groupId): [string, Record<string, unknown>] => [
+        "openclaw.iam.groups.delete",
+        { groupId },
+      ]),
+    ];
+    for (const [action, details] of policyChanges) {
+      await state.audit.append({
+        id: `aud_${crypto.randomUUID()}`,
+        installationId: this.installation.id,
+        occurredAt: this.timestamp(),
+        kind: "mutation",
+        actorId,
+        source: "occ",
+        action,
+        resource: installation,
+        outcome: "success",
+        details: { ...details, reason },
+      });
+    }
+  }
+
+  private async auditBinding(
+    state: PlatformUnitOfWork,
+    actorId: string,
+    binding: Readonly<AccessBinding>,
+    resource: ResourceRef,
+    details: { readonly reason: string; readonly deleted?: boolean },
+  ): Promise<void> {
+    await state.audit.append({
+      id: `aud_${crypto.randomUUID()}`,
+      installationId: this.installation.id,
+      ...(resource.namespaceId === undefined ? {} : { namespaceId: resource.namespaceId }),
+      occurredAt: this.timestamp(),
+      kind: "mutation",
+      actorId,
+      source: "occ",
+      action:
+        details.deleted === true
+          ? "openclaw.iam.access_bindings.delete"
+          : "openclaw.iam.access_bindings.create",
+      resource,
+      outcome: "success",
+      details: {
+        bindingId: binding.id,
+        subjectKind: binding.subjectKind,
+        subjectId: binding.subjectId,
+        roleId: binding.roleId,
+        reason: details.reason,
+      },
+    });
+  }
+
+  /**
+   * Makes the configured Roles, Groups, and Group bindings in IAM policy match the `iam`
+   * configuration. The composition calls it at startup, and Installation bootstrap calls it once
+   * the Installation exists. It holds the IAM configuration lock exclusively, so a write of
+   * durable authority commits wholly before or after it. Owner bindings, deploy-time grants, and
+   * Group memberships stay when the configuration changes.
+   */
+  async applyIAMConfiguration(): Promise<void> {
+    const driver = this.occBindingDriver("applyConfiguredPolicy");
+    if (driver === undefined) {
+      return;
+    }
+    await this.mutate(async (state) => {
+      await state.installations.holdIAMConfiguration("exclusive");
+      const namespaces = await state.namespaces.listNamespaces();
+      const available = namespaces.filter(
+        (namespace) => namespace.status === "provisioning" || namespace.status === "ready",
+      );
+      const desired = this.configuredPolicy(available);
+      // A Namespace that cannot take new policy now, such as a failed one, keeps the configured
+      // bindings it has that the configuration still lists; Namespace deletion removes them with
+      // the rest of its policy.
+      const listed = new Set(this.configuredPolicy(namespaces).bindings.map(({ id }) => id));
+      const availableIds = new Set(available.map((namespace) => namespace.id));
+      const kept = (await state.iamPolicy.listConfiguredPolicy()).bindings.filter(
+        (binding) =>
+          binding.namespaceId !== undefined &&
+          !availableIds.has(binding.namespaceId) &&
+          listed.has(binding.id),
+      );
+      const policy: IAMConfiguredPolicy = {
+        ...desired,
+        bindings: [...desired.bindings, ...kept],
+      };
+      const changes = await this.iamPolicyOperation(() =>
+        driver.applyConfiguredPolicy!({ policy: state.iamPolicy }, { policy }),
+      );
+      await this.auditConfiguredPolicy(
+        state,
+        this.installation.id,
+        changes,
+        "installation_configuration",
+      );
     });
   }
 
@@ -6680,6 +7195,11 @@ export class OpenClawController {
         name: preset.name,
         template,
         createdAt: this.timestamp(),
+      });
+      await this.bindCreator(state, principalId, {
+        kind: "preset",
+        id: created.id,
+        namespaceId: namespace.id,
       });
       await state.audit.append({
         id: `aud_${crypto.randomUUID()}`,
@@ -6802,23 +7322,34 @@ export class OpenClawController {
     }
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
-      await this.authorize(principalId, "create", {
+      await this.holdAuthority(state);
+      const target: ResourceRef = {
         kind: "preset",
         id: input.namespaceId,
         namespaceId: input.namespaceId,
-      });
+      };
+      await this.authorize(principalId, "create", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
+      // AccessBinding deletes hold this lock: authorize again so a revocation that committed
+      // while this write waited stops it before it leaves a durable Owner binding or grant.
+      await this.authorize(principalId, "create", target);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
       const template = await this.admitPresetTemplate(input.template, namespace.id);
-      return state.presets.createPreset({
+      const preset = await state.presets.createPreset({
         id: this.nextIdentifier("preset"),
         namespaceId: namespace.id,
         name: input.name,
         template,
         createdAt: this.timestamp(),
       });
+      await this.bindCreator(state, principalId, {
+        kind: "preset",
+        id: preset.id,
+        namespaceId: namespace.id,
+      });
+      return preset;
     });
   }
 
@@ -7166,12 +7697,17 @@ export class OpenClawController {
     }
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
-      await this.authorize(principalId, "create", {
+      await this.holdAuthority(state);
+      const target: ResourceRef = {
         kind: "secret",
         id: input.namespaceId,
         namespaceId: input.namespaceId,
-      });
+      };
+      await this.authorize(principalId, "create", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
+      // AccessBinding deletes hold this lock: authorize again so a revocation that committed
+      // while this write waited stops it before it leaves a durable Owner binding or grant.
+      await this.authorize(principalId, "create", target);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -7191,6 +7727,11 @@ export class OpenClawController {
       // Compensate only a known failed OCC transaction, never an unknown COMMIT outcome.
       this.registerRollback(() => this.secretOperation(() => driver.delete(secret)));
       await state.secrets.createSecret(secret);
+      await this.bindCreator(state, principalId, {
+        kind: "secret",
+        id: secret.id,
+        namespaceId: namespace.id,
+      });
       return this.secretMetadata(secret);
     });
   }
@@ -8565,12 +9106,17 @@ export class OpenClawController {
     const secretRefs = Object.freeze({ ...(input.secrets ?? {}) });
     this.namespaceIdentity(input.namespaceId);
     const registration = await this.mutate(async (state) => {
-      await this.authorize(principalId, "create", {
+      await this.holdAuthority(state);
+      const target: ResourceRef = {
         kind: "credential_source",
         id: input.namespaceId,
         namespaceId: input.namespaceId,
-      });
+      };
+      await this.authorize(principalId, "create", target);
       const locked = await this.lockNamespace(state, input.namespaceId);
+      // AccessBinding deletes hold this lock: authorize again so a revocation that committed
+      // while this write waited stops it before it leaves a durable Owner binding or grant.
+      await this.authorize(principalId, "create", target);
       // An Installation property, so it is reported before any Namespace state.
       this.assertCredentialSourceOwnerSelected();
       const protectedType = this.protectedSourceTypes().find((p) => p.type.type === input.type);
@@ -8648,6 +9194,11 @@ export class OpenClawController {
           createdAt: this.timestamp(),
         }),
       );
+      await this.bindCreator(state, principalId, {
+        kind: "credential_source",
+        id: registering.id,
+        namespaceId: locked.id,
+      });
       if (registrationAudit !== undefined) {
         await state.audit.append(registrationAudit(this.credentialSourceMetadata(registering)));
       }
@@ -9405,12 +9956,17 @@ export class OpenClawController {
     const values = frozenValues(input.values);
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
-      await this.authorize(principalId, "create", {
+      await this.holdAuthority(state);
+      const target: ResourceRef = {
         kind: "configuration",
         id: input.namespaceId,
         namespaceId: input.namespaceId,
-      });
+      };
+      await this.authorize(principalId, "create", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
+      // AccessBinding deletes hold this lock: authorize again so a revocation that committed
+      // while this write waited stops it before it leaves a durable Owner binding or grant.
+      await this.authorize(principalId, "create", target);
       // Checked after authorization: the conflict names the Namespace state.
       if (namespace.status !== "provisioning" && namespace.status !== "ready") {
         throw new ResourceStateConflictError("The Namespace does not accept new Configurations.");
@@ -9441,6 +9997,11 @@ export class OpenClawController {
         generation: configuration.generation,
         ...(Object.keys(secretBindings).length === 0 ? {} : { secretBindings }),
         createdAt: configuration.createdAt,
+      });
+      await this.bindCreator(state, principalId, {
+        kind: "configuration",
+        id: metadata.id,
+        namespaceId: namespace.id,
       });
       // Registered before the write: a create that applied but answered with an error (a
       // timeout, a lost response) would otherwise leave a ConfigMap without metadata (finding
@@ -9477,12 +10038,17 @@ export class OpenClawController {
     }
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
-      await this.authorize(principalId, "create", {
+      await this.holdAuthority(state);
+      const target: ResourceRef = {
         kind: "service_account",
         id: input.namespaceId,
         namespaceId: input.namespaceId,
-      });
-      const namespace = await this.exactNamespace(state, input.namespaceId);
+      };
+      await this.authorize(principalId, "create", target);
+      const namespace = await this.lockNamespace(state, input.namespaceId);
+      // AccessBinding deletes hold this lock: authorize again so a revocation that committed
+      // while this write waited stops it before it leaves a durable Owner binding or grant.
+      await this.authorize(principalId, "create", target);
       // Checked after authorization: the conflict names the Namespace state.
       if (namespace.status !== "provisioning" && namespace.status !== "ready") {
         throw new ResourceStateConflictError("The Namespace does not accept new ServiceAccounts.");
@@ -9491,6 +10057,11 @@ export class OpenClawController {
         id: this.nextIdentifier("service_account"),
         namespaceId: namespace.id,
         name: input.name,
+      });
+      await this.bindCreator(state, principalId, {
+        kind: "service_account",
+        id: account.id,
+        namespaceId: namespace.id,
       });
       const driver = this.serviceAccountDriver();
       if (driver !== undefined) {
@@ -10320,31 +10891,45 @@ export class OpenClawController {
     namespaceId: string,
     input: PluginDiscoveryCredential & {
       readonly harnessId: string;
+      readonly executionMode?: HarnessExecutionMode;
       readonly cursor?: string;
       readonly q?: string;
     },
     signal?: AbortSignal,
   ): Promise<PluginCatalogPage> {
-    return this.withNamespacePluginCredential(principalId, namespaceId, input, signal, (driver) => {
-      if (!driver.discoverCatalog) {
-        throw new NotImplementedError(
-          "agent_plugins.discovery",
-          "Plugin discovery is unavailable.",
-        );
-      }
-      return (authentication) => {
-        if (authentication.accessToken === undefined && driver.discoveryCredential !== "none") {
-          throw new PluginDiscoveryError("credentials_rejected");
+    const { value: page, driver } = await this.withNamespacePluginCredential(
+      principalId,
+      namespaceId,
+      input,
+      signal,
+      (driver) => {
+        if (!driver.discoverCatalog) {
+          throw new NotImplementedError(
+            "agent_plugins.discovery",
+            "Plugin discovery is unavailable.",
+          );
         }
-        return driver.discoverCatalog!(
-          {
-            ...authentication,
-            ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
-            ...(input.q === undefined ? {} : { q: input.q }),
-          },
-          signal,
-        );
-      };
+        return (authentication) => {
+          if (authentication.accessToken === undefined && driver.discoveryCredential !== "none") {
+            throw new PluginDiscoveryError("credentials_rejected");
+          }
+          return driver.discoverCatalog!(
+            {
+              ...authentication,
+              ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+              ...(input.q === undefined ? {} : { q: input.q }),
+            },
+            signal,
+          );
+        };
+      },
+    );
+    if (input.executionMode === undefined) {
+      return page;
+    }
+    return this.pluginCatalogForPlacement(page, driver, {
+      id: driver.harnessId,
+      mode: input.executionMode,
     });
   }
 
@@ -10539,38 +11124,99 @@ export class OpenClawController {
   async discoverAgentPluginDetails(
     principalId: string,
     namespaceId: string,
-    input: PluginDiscoveryCredential & { readonly harnessId: string; readonly pluginId: string },
+    input: PluginDiscoveryCredential & {
+      readonly harnessId: string;
+      readonly pluginId: string;
+      readonly executionMode?: HarnessExecutionMode;
+    },
     signal?: AbortSignal,
-  ): Promise<PluginCatalogEntry> {
-    return this.withNamespacePluginCredential(principalId, namespaceId, input, signal, (driver) => {
-      if (!driver.getCatalogPlugin) {
-        throw new NotImplementedError(
-          "agent_plugins.discovery",
-          "Plugin tool discovery is unavailable.",
-        );
-      }
-      return (authentication) => {
-        if (authentication.accessToken === undefined && driver.discoveryCredential !== "none") {
-          throw new PluginDiscoveryError("credentials_rejected");
+  ): Promise<NamespaceAgentPluginDetails> {
+    const { value: entry, driver } = await this.withNamespacePluginCredential(
+      principalId,
+      namespaceId,
+      input,
+      signal,
+      (driver) => {
+        if (!driver.getCatalogPlugin) {
+          throw new NotImplementedError(
+            "agent_plugins.discovery",
+            "Plugin tool discovery is unavailable.",
+          );
         }
-        return driver.getCatalogPlugin!({ ...authentication, pluginId: input.pluginId }, signal);
-      };
+        return (authentication) => {
+          if (authentication.accessToken === undefined && driver.discoveryCredential !== "none") {
+            throw new PluginDiscoveryError("credentials_rejected");
+          }
+          return driver.getCatalogPlugin!({ ...authentication, pluginId: input.pluginId }, signal);
+        };
+      },
+    );
+    if (input.executionMode !== undefined) {
+      this.validatePluginPlacement(
+        driver,
+        { [entry.id]: { enabled: true } },
+        { id: driver.harnessId, mode: input.executionMode },
+      );
+    }
+    // Only OCC adds account choices after checking the caller's Namespace permissions.
+    const { credentialSlots: _driverChoices, ...publicEntry } =
+      entry as NamespaceAgentPluginDetails;
+    if (input.executionMode !== "dedicated" || !driver.credentials?.connectionSlot) {
+      return publicEntry;
+    }
+    if (entry.id !== input.pluginId && entry.remoteId !== input.pluginId) {
+      throw new PluginDiscoveryError("invalid_response");
+    }
+    const credentials = driver.credentials;
+    const credentialSlots = await this.read(async (state) => {
+      await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
+      if (this.pluginDriver(input.harnessId) !== driver) {
+        throw new ResourceStateConflictError("The plugin catalog changed. Refresh and retry.");
+      }
+      return this.pluginCredentialSlots(
+        state,
+        principalId,
+        namespaceId,
+        credentials,
+        { [entry.id]: { enabled: true } },
+        [],
+        entry.id,
+      );
     });
+    return { ...publicEntry, credentialSlots };
   }
 
   private async withNamespacePluginCredential<T>(
     principalId: string,
     namespaceId: string,
-    input: PluginDiscoveryCredential & { readonly harnessId: string },
+    input: PluginDiscoveryCredential & {
+      readonly harnessId: string;
+      readonly executionMode?: HarnessExecutionMode;
+    },
     signal: AbortSignal | undefined,
     prepareDiscovery: (
       driver: PluginDriver,
     ) => (authentication: PluginDiscoveryAuthentication) => Promise<T>,
-  ): Promise<T> {
+  ): Promise<{ value: T; driver: PluginDriver }> {
     const agentScope = { kind: "agent" as const, id: namespaceId, namespaceId };
     await this.authorize(principalId, "create", agentScope);
     await this.read((state) => this.exactNamespace(state, namespaceId));
-    const getDriver = () => this.pluginDriver(input.harnessId);
+    const getDriver = () => {
+      const driver = this.pluginDriver(input.harnessId);
+      const mode = input.executionMode;
+      if (
+        mode !== undefined &&
+        (pluginRuntimeHarnessRequirement(driver.implementation, { id: driver.harnessId, mode }) !==
+          undefined ||
+          (driver.harnessId === "openclaw" &&
+            !this.openClawExecutionModes().executionModes.includes(mode)))
+      ) {
+        throw new ConfigurationHarnessError(
+          `This Installation cannot run ${driver.harnessId} in ${mode} mode.`,
+        );
+      }
+      return driver;
+    };
     return this.withPluginDiscoveryCredential(
       principalId,
       namespaceId,
@@ -10605,7 +11251,7 @@ export class OpenClawController {
       source: SecretReference | CredentialSourceReference | undefined,
     ) => Promise<void>,
     signal?: AbortSignal,
-  ): Promise<T> {
+  ): Promise<{ value: T; driver: PluginDriver }> {
     const { credentialSource, accessToken, secretRef } = credential;
     const source = secretRef ?? credentialSource;
     if (source !== undefined) {
@@ -10650,7 +11296,7 @@ export class OpenClawController {
       if (signal !== undefined) {
         context.signal = AbortSignal.any([context.signal, signal]);
       }
-      return this.invokePluginDiscovery(
+      const value = await this.invokePluginDiscovery(
         driver,
         discover,
         (invoke) =>
@@ -10668,8 +11314,9 @@ export class OpenClawController {
         },
         signal,
       );
+      return { value, driver };
     }
-    return this.invokePluginDiscovery(
+    const value = await this.invokePluginDiscovery(
       driver,
       discover,
       (invoke) => {
@@ -10683,6 +11330,7 @@ export class OpenClawController {
       recheck,
       signal,
     );
+    return { value, driver };
   }
 
   private async invokePluginDiscovery<T>(
@@ -10768,6 +11416,96 @@ export class OpenClawController {
     );
   }
 
+  private async pluginCredentialSlots(
+    state: PlatformReadView,
+    principalId: string,
+    namespaceId: string,
+    credentials: NonNullable<PluginDriver["credentials"]>,
+    plugins: PluginDesiredState,
+    sources: readonly CredentialSource[],
+    pluginId?: string,
+  ) {
+    const choices = credentials
+      .choices(sources)
+      .filter((choice) => pluginId === undefined || choice.pluginId === pluginId);
+    if (choices.length === 0) {
+      return [];
+    }
+    const accounts: { account: SavedConnection; target: PluginAccountTarget; name: string }[] = [];
+    if (credentials.connectionSlot) {
+      for (const account of await state.savedConnections.listNamespaceConnections(namespaceId)) {
+        const ref = {
+          kind: "credential_source" as const,
+          namespaceId,
+          id: account.credentialSourceId,
+        };
+        if (
+          !(await this.canRead(principalId, ref)) ||
+          !(await this.authorizationDecision(principalId, "operate", ref)).decision.allowed
+        ) {
+          continue;
+        }
+        const source = await state.credentialSources.findCredentialSource(namespaceId, ref.id);
+        if (source?.state === "ready") {
+          accounts.push({
+            account,
+            target: await this.accountTarget(state, account),
+            name: source.name,
+          });
+        }
+      }
+    }
+    const canConnect =
+      credentials.connectionSlot &&
+      (
+        await this.authorizationDecision(principalId, "create", {
+          kind: "credential_source",
+          id: namespaceId,
+          namespaceId,
+        })
+      ).decision.allowed;
+    const templates =
+      canConnect && pluginId !== undefined
+        ? await state.connectionTemplates.listConnectionTemplates()
+        : undefined;
+    return choices.map((choice) => {
+      const slot = credentials.connectionSlot?.(plugins, choice.pluginId, choice.id);
+      // OCC owns connect permission and account visibility. A pre-save choice has no
+      // Agent-bound Gateway sources, and cannot inherit any candidates from the Driver.
+      const metadata = {
+        pluginId: choice.pluginId,
+        id: choice.id,
+        label: choice.label,
+        releaseSha256: choice.releaseSha256,
+        ...(choice.toolDiscovery && { toolDiscovery: choice.toolDiscovery }),
+        sources: pluginId === undefined ? choice.sources : [],
+      };
+      if (!slot || slot.releaseSha256 !== choice.releaseSha256) {
+        return metadata;
+      }
+      const candidates = accounts
+        .filter(({ account }) => slot.issuers.includes(account.issuer))
+        .map(({ account, target, name }) => ({
+          id: account.credentialSourceId,
+          name,
+          ...(!slot.acceptsRecipient(target) && {
+            authorization: "required" as const,
+          }),
+        }));
+      return {
+        ...metadata,
+        sources: [...metadata.sources, ...candidates],
+        ...(canConnect &&
+          plugins[choice.pluginId]?.enabled && {
+            connectAccount: true as const,
+            ...(templates && {
+              connectionTemplates: this.compatiblePluginTemplates(templates, namespaceId, slot),
+            }),
+          }),
+      };
+    });
+  }
+
   async getSavedAgentPluginPolicyCapabilities(
     principalId: string,
     namespaceId: string,
@@ -10799,69 +11537,16 @@ export class OpenClawController {
             }
           }
         }
-        const accounts: { account: SavedConnection; target: PluginAccountTarget; name: string }[] =
-          [];
-        if (credentials?.connectionSlot) {
-          for (const account of await state.savedConnections.listNamespaceConnections(
+        const credentialSlots =
+          credentials &&
+          (await this.pluginCredentialSlots(
+            state,
+            principalId,
             namespaceId,
-          )) {
-            const ref = {
-              kind: "credential_source" as const,
-              namespaceId,
-              id: account.credentialSourceId,
-            };
-            if (
-              !(await this.canRead(principalId, ref)) ||
-              !(await this.authorizationDecision(principalId, "operate", ref)).decision.allowed
-            ) {
-              continue;
-            }
-            const source = await state.credentialSources.findCredentialSource(namespaceId, ref.id);
-            if (source?.state === "ready") {
-              accounts.push({
-                account,
-                target: await this.accountTarget(state, account),
-                name: source.name,
-              });
-            }
-          }
-        }
-        const canConnect =
-          credentials?.connectionSlot &&
-          (
-            await this.authorizationDecision(principalId, "create", {
-              kind: "credential_source",
-              id: namespaceId,
-              namespaceId,
-            })
-          ).decision.allowed;
-        const credentialSlots = credentials?.choices(sources).map((choice) => {
-          const slot = credentials.connectionSlot?.(
+            credentials,
             agent.plugins ?? {},
-            choice.pluginId,
-            choice.id,
-          );
-          if (!slot) {
-            return choice;
-          }
-          const candidates = accounts
-            .filter(({ account }) => slot.issuers.includes(account.issuer))
-            .map(({ account, target, name }) => ({
-              id: account.credentialSourceId,
-              name,
-              ...(!slot.acceptsRecipient(target) && {
-                authorization: "required" as const,
-              }),
-            }));
-          return {
-            ...choice,
-            sources: [...choice.sources, ...candidates],
-            ...(canConnect &&
-              agent.plugins?.[choice.pluginId]?.enabled && {
-                connectAccount: true as const,
-              }),
-          };
-        });
+            sources,
+          ));
         return immutableCopy({
           driver: { id: driver.id, implementation: driver.implementation },
           ...driver.policyCapabilities,
@@ -10911,6 +11596,14 @@ export class OpenClawController {
       input.credentialSource,
       signal,
     );
+    return this.pluginCatalogForPlacement(page, driver, harness);
+  }
+
+  private pluginCatalogForPlacement(
+    page: PluginCatalogPage,
+    driver: PluginDriver,
+    harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
+  ): PluginCatalogPage {
     if (page.plugins.length === 0) {
       return page;
     }
@@ -11221,7 +11914,7 @@ export class OpenClawController {
         );
       }
     };
-    const value = await this.withPluginDiscoveryCredential(
+    const { value } = await this.withPluginDiscoveryCredential(
       principalId,
       namespaceId,
       credential,
@@ -12098,7 +12791,7 @@ export class OpenClawController {
       throw new ScopeViolationError("The initial workspace setup input is invalid.");
     }
     const harnessAuth = this.harnessAuthBinding(input.harnessAuth ?? null);
-    const credentialSources = this.agentCredentialSources(input.credentialSources);
+    const requestedSources = this.agentCredentialSources(input.credentialSources);
     const executionMode = input.executionMode ?? "embedded";
     if (!validExecutionMode(executionMode)) {
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
@@ -12112,6 +12805,7 @@ export class OpenClawController {
     const pluginApprovers = normalizeAgentPluginApprovers(input.pluginApprovers);
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
+      await this.holdAuthority(state);
       const target: ResourceRef = {
         kind: "agent",
         id: input.namespaceId,
@@ -12121,6 +12815,9 @@ export class OpenClawController {
       await this.authorizeGatewayManagedModeChange(principalId, input.gatewayManagedMode === false);
       this.requireGatewayManagedModeSupport(gatewayManagedMode);
       const namespace = await this.lockNamespace(state, input.namespaceId);
+      // AccessBinding deletes hold this lock: authorize again so a revocation that committed
+      // while this write waited stops it before it leaves a durable Owner binding or grant.
+      await this.authorize(principalId, "create", target);
       // Checked after authorization: the conflict names the Namespace state.
       if (namespace.status !== "provisioning" && namespace.status !== "ready") {
         throw new ResourceStateConflictError("The Namespace does not accept new Agents.");
@@ -12142,13 +12839,8 @@ export class OpenClawController {
       await this.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
       rejectCrossNamespaceSecretSources(namespace.id, undefined, harnessAuth);
       await this.authorizeHarnessAuthSource(state, principalId, namespace.id, harnessAuth);
-      const sources = await this.authorizeAgentCredentialSources(
-        state,
-        principalId,
-        namespace.id,
-        credentialSources ?? [],
-        harnessAuth,
-      );
+      // Authorize explicit bindings before reading Configuration content or consulting its catalog.
+      await this.authorizeBoundCredentialSources(principalId, namespace.id, requestedSources ?? []);
       const agentId = this.nextIdentifier("agent");
       await this.authorizeBindings(
         state,
@@ -12161,6 +12853,22 @@ export class OpenClawController {
         plugins,
         pluginApprovers,
         async () => (await savedConfiguration()).values,
+      );
+      const accounts = await this.selectedPluginAccounts(
+        state,
+        principalId,
+        namespace.id,
+        driver,
+        plugins,
+      );
+      const credentialSources = this.withPluginAccounts(requestedSources, accounts);
+      const sources = await this.authorizeAgentCredentialSources(
+        state,
+        principalId,
+        namespace.id,
+        credentialSources ?? [],
+        harnessAuth,
+        new Set(accounts.map(({ id }) => id)),
       );
       await this.validatePluginCredentialSources(state, driver, plugins, sources, harnessAuth);
       const { repositoryBindings, repositoryAccess } = this.repositorySettings(namespace.id, input);
@@ -12202,6 +12910,12 @@ export class OpenClawController {
         status: "active",
         createdAt: this.timestamp(),
       });
+      await this.bindCreator(state, principalId, {
+        kind: "agent",
+        id: agent.id,
+        namespaceId: namespace.id,
+      });
+      await this.grantPluginAccounts(state, agent, accounts);
       if (initialWorkspaceFiles !== undefined) {
         await state.workspaceSetups.create({
           id: crypto.randomUUID(),
@@ -12287,6 +13001,7 @@ export class OpenClawController {
       await this.configurationDriver().validateSize?.(values);
       this.validateConfigurationContent(values, undefined, secretBindings);
       const driver = await this.validateAgentPlugins(plugins, pluginApprovers, () => values);
+      await this.selectedPluginAccounts(state, principalId, namespace.id, driver, plugins);
       // Shaped like the saved Configuration createAgent reads; only its values are checked.
       const configuration: () => Promise<Readonly<Configuration>> = async () =>
         Object.freeze({
@@ -12595,48 +13310,23 @@ export class OpenClawController {
         plugins === undefined ? "stored" : "request",
       );
       if (plugins) {
-        const previous = this.pluginAccountBindings(driver, agent.plugins);
-        for (const { pluginId, id, sourceId, slot } of this.pluginAccountBindings(
+        const selectedAccounts = await this.selectedPluginAccounts(
+          state,
+          principalId,
+          namespace.id,
           driver,
           plugins,
-        )) {
-          if (
-            previous.some((b) => b.pluginId === pluginId && b.id === id && b.sourceId === sourceId)
-          ) {
-            continue;
-          }
-          const resource = {
-            kind: "credential_source" as const,
-            namespaceId: namespace.id,
-            id: sourceId,
-          };
-          await this.authorize(principalId, "operate", resource);
-          const account = await state.savedConnections.findSavedConnection(namespace.id, sourceId);
-          if (!account) {
-            continue; // Ordinary Gateway sources must already be listed on the Agent.
-          }
-          await this.authorize(principalId, "read", resource);
-          if (
-            account.revocationRequestedBy ||
-            !slot.issuers.includes(account.issuer) ||
-            !slot.acceptsRecipient(await this.accountTarget(state, account))
-          ) {
-            throw new ResourceStateConflictError(
-              "Authorize an account for this plugin server before binding it.",
-            );
-          }
-          if (!attached.has(sourceId)) {
-            const bindings = resultingSources ?? agent.credentialSources ?? [];
-            if (!bindings.some((b) => b.sourceId === sourceId)) {
-              if (bindings.length >= MAX_AGENT_CREDENTIAL_SOURCES) {
-                throw new ResourceStateConflictError(
-                  `The Agent already lists ${MAX_AGENT_CREDENTIAL_SOURCES} credential sources.`,
-                );
-              }
-              resultingSources = [...bindings, { sourceId }];
-            }
-            await this.ensureAgentOperateGrants(state, namespace.id, agent, [resource]);
-            attached.add(sourceId);
+          agent.plugins,
+        );
+        const newAccounts = selectedAccounts.filter(({ id }) => !attached.has(id));
+        if (newAccounts.length) {
+          resultingSources = this.withPluginAccounts(
+            resultingSources ?? agent.credentialSources ?? [],
+            newAccounts,
+          );
+          await this.grantPluginAccounts(state, agent, newAccounts);
+          for (const { id } of newAccounts) {
+            attached.add(id);
           }
         }
       }
@@ -13208,12 +13898,17 @@ export class OpenClawController {
     }
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
-      let authorization = await this.authorize(principalId, "deploy", {
+      await this.holdAuthority(state);
+      const target: ResourceRef = {
         kind: "agent",
         id: input.agentId,
         namespaceId: input.namespaceId,
-      });
+      };
+      await this.authorize(principalId, "deploy", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
+      // AccessBinding deletes hold this lock: authorize again so a revocation that committed
+      // while this deploy waited stops it before it writes Agent grants.
+      let authorization = await this.authorize(principalId, "deploy", target);
       const agent = await state.agents.findAgent(namespace.id, input.agentId);
       if (!agent) {
         throw new ScopeViolationError(
@@ -13369,6 +14064,12 @@ export class OpenClawController {
       requireDedicatedNativeSupport(revisionHarness, sandbox, this.nativeWorkers, {
         configuration: configuration.values,
       });
+      await this.grantDeployedAgentSources(
+        state,
+        principalId,
+        lockedAgent,
+        this.bindings(metadata.secretBindings),
+      );
       const [harnessAuth, credentialSourceType] = await this.admitHarnessAuth(
         state,
         principalId,
@@ -13524,7 +14225,7 @@ export class OpenClawController {
             namespace.id,
             [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
             "saved",
-            this.selectedStandingRepositoryAdmission(),
+            this.installationRepositoryAdmission,
           )!;
           const scope = eligibleRepositoryApprovalScope(resolved.driver, {
             namespaceId: namespace.id,
@@ -14571,16 +15272,16 @@ export class OpenClawController {
   private async authorize(
     principalId: string,
     action: AuthorizationRequest["action"],
-    resource: ResourceRef,
+    target: AuthorizationTarget,
   ): Promise<Readonly<DeployAgentAuthorization>> {
-    const authorization = await this.authorizationDecision(principalId, action, resource);
+    const authorization = await this.authorizationDecision(principalId, action, target);
     if (!authorization.decision.allowed) {
       throw new AuthorizationDeniedError(
         isNonEmptyString(authorization.decision.reason)
           ? authorization.decision.reason
           : "The exact operation was denied.",
         authorization.decision.evidence,
-        { action, resource },
+        { action, resource: authorizationResource(target) },
         principalId,
       );
     }
@@ -14626,8 +15327,8 @@ export class OpenClawController {
     }
   }
 
-  private async canRead(principalId: string, resource: ResourceRef): Promise<boolean> {
-    return (await this.authorizationDecision(principalId, "read", resource)).decision.allowed;
+  private async canRead(principalId: string, target: AuthorizationTarget): Promise<boolean> {
+    return (await this.authorizationDecision(principalId, "read", target)).decision.allowed;
   }
 
   /**
@@ -14788,14 +15489,16 @@ export class OpenClawController {
   private async authorizationDecision(
     principalId: string,
     action: AuthorizationRequest["action"],
-    resource: ResourceRef,
+    target: AuthorizationTarget,
     selected: IAMDriver = this.authorizationAuthority(principalId),
     authorize?: IAMDriver["authorize"],
   ): Promise<Readonly<DeployAgentAuthorization>> {
-    const request = Object.freeze({
+    const parentAgentId = authorizationParentAgentId(target);
+    const request: AuthorizationRequest = Object.freeze({
       principalId,
       action,
-      resource: Object.freeze({ ...resource }),
+      resource: Object.freeze(authorizationResource(target)),
+      ...(parentAgentId === undefined ? {} : { parentAgentId }),
     });
     let decision: AuthorizationDecision;
     try {
@@ -15540,6 +16243,16 @@ export class OpenClawController {
         },
         "stored",
       );
+      if (!agent) {
+        await this.provisioningPluginAccounts(
+          state,
+          principalId,
+          namespaceId,
+          driver,
+          plugins,
+          plan.harnessAuth,
+        );
+      }
       if (driver) {
         this.validatePluginPlacement(driver, plugins, harness);
       }
@@ -15775,6 +16488,11 @@ export class OpenClawController {
     if (record === undefined) {
       throw new WorkClaimLostError();
     }
+    // Hold the IAM configuration lock so a configuration change that revokes the requester's
+    // Group binding commits before this check or after the Owner bindings provisioning writes.
+    // Take it before the Namespace lock: applying the configuration holds it exclusively and
+    // then locks each Namespace it writes a configured binding into.
+    await state.installations.holdIAMConfiguration("shared");
     const namespace = await this.lockNamespace(state, record.namespaceId);
     if (namespace.status !== "ready") {
       throw new NamespaceNotReadyError();
@@ -16302,9 +17020,9 @@ export class OpenClawController {
         namespace.id,
         configurationId,
       );
-      const metadata =
-        existingMetadata ??
-        (await state.configurations.createConfiguration({
+      let metadata = existingMetadata;
+      if (metadata === undefined) {
+        metadata = await state.configurations.createConfiguration({
           id: configurationId,
           namespaceId: namespace.id,
           kind: "agent",
@@ -16313,7 +17031,14 @@ export class OpenClawController {
             ? {}
             : { secretBindings: plan.configuration.secretBindings }),
           createdAt: configuration.createdAt,
-        }));
+        });
+        // The person who requested provisioning creates its resources and owns them.
+        await this.bindCreator(state, record.actorId, {
+          kind: "configuration",
+          id: metadata.id,
+          namespaceId: namespace.id,
+        });
+      }
       const agentId =
         current.agentId ??
         (isNonEmptyString(planRecord.reservedAgentId)
@@ -16322,6 +17047,27 @@ export class OpenClawController {
       let agent = await state.agents.lockAgent(namespace.id, agentId);
       const createdAgent = agent === undefined;
       if (agent === undefined) {
+        const driver = await this.validateAgentPlugins(
+          plugins,
+          pluginApprovers,
+          () => configuration.values,
+          {
+            ...(plugins && { plugins }),
+            ...(validPluginDriverIdentity(planRecord.pluginDriver) && {
+              pluginDriver: planRecord.pluginDriver,
+            }),
+          },
+          "stored",
+        );
+        // The actor may lose access after the plan is queued. This transaction owns both the Agent and its grants.
+        const { accounts, bindings } = await this.provisioningPluginAccounts(
+          state,
+          record.actorId,
+          namespace.id,
+          driver,
+          plugins,
+          plan.harnessAuth,
+        );
         agent = await state.agents.createAgent({
           id: agentId,
           namespaceId: namespace.id,
@@ -16329,11 +17075,7 @@ export class OpenClawController {
           configurationId: metadata.id,
           backendId,
           harnessAuth: plan.harnessAuth,
-          // Guided provisioning has one model source; store it in the canonical
-          // list so the same binding and withdrawal invariants govern deployment.
-          ...(plan.harnessAuth.method === "credential_source"
-            ? { credentialSources: [{ sourceId: plan.harnessAuth.sourceId }] }
-            : {}),
+          ...(bindings && { credentialSources: bindings }),
           executionMode: plan.executionMode,
           gatewayManagedMode: plan.gatewayManagedMode,
           ...(plugins === undefined ? {} : { plugins }),
@@ -16347,6 +17089,12 @@ export class OpenClawController {
           desiredRuntimeState: "stopped",
           status: "active",
           createdAt: this.timestamp(),
+        });
+        await this.grantPluginAccounts(state, agent, accounts);
+        await this.bindCreator(state, record.actorId, {
+          kind: "agent",
+          id: agent.id,
+          namespaceId: namespace.id,
         });
       }
       if (createdAgent && workspace.initialWorkspaceFiles !== undefined) {
@@ -16580,14 +17328,16 @@ export class OpenClawController {
     }
   }
 
+  /** Returns the AccessBindings it created; existing exact grants are kept. */
   private async ensureAgentOperateGrants(
     state: PlatformUnitOfWork,
     namespaceId: string,
     agent: Readonly<Agent>,
     sources: readonly (SecretReference | CredentialSourceReference)[],
-  ): Promise<void> {
+  ): Promise<readonly Readonly<AccessBinding>[]> {
+    const created: Readonly<AccessBinding>[] = [];
     if (sources.length === 0) {
-      return;
+      return created;
     }
     const driver = this.iamPolicyDriver("createNamespaceAccessBinding");
     if (driver.namespacePolicyTransaction !== "platform-unit-of-work") {
@@ -16640,21 +17390,98 @@ export class OpenClawController {
         if (exists) {
           continue;
         }
-        await this.iamPolicyOperation(() =>
-          driver.createNamespaceAccessBinding!(
-            { policy: state.iamPolicy },
-            {
-              id: `binding_${agent.id}_${source.id}_operate`,
-              namespaceId,
-              subjectKind: "identity",
-              subjectId: agent.servicePrincipalId,
-              roleId,
-              resourceKind,
-              resourceId: source.id,
-            },
+        created.push(
+          await this.iamPolicyOperation(() =>
+            driver.createNamespaceAccessBinding!(
+              { policy: state.iamPolicy },
+              {
+                id: `binding_${agent.id}_${source.id}_operate`,
+                namespaceId,
+                subjectKind: "identity",
+                subjectId: agent.servicePrincipalId,
+                roleId,
+                resourceKind,
+                resourceId: source.id,
+              },
+            ),
           ),
         );
       }
+    }
+    return created;
+  }
+
+  /**
+   * A caller allowed to deploy the Agent gives its ServicePrincipal the exact operate grant it
+   * lacks on each referenced Secret and credential source that the caller can operate, in the
+   * deploy unit (RFC-0026). A source the caller cannot operate gets no grant; the Agent principal
+   * checks that follow then refuse the deploy.
+   */
+  private async grantDeployedAgentSources(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    agent: Readonly<Agent>,
+    secretBindings: SecretBindings,
+  ): Promise<void> {
+    if (this.occBindingDriver("createNamespaceAccessBinding") === undefined) {
+      return;
+    }
+    const referenced = new Map<string, SecretReference | CredentialSourceReference>();
+    const add = (kind: "secret" | "credential_source", id: string): void => {
+      referenced.set(`${kind}\u0000${id}`, { kind, namespaceId: agent.namespaceId, id });
+    };
+    for (const binding of Object.values(secretBindings)) {
+      add("secret", binding.source.id);
+    }
+    if (isSecretHarnessAuth(agent.harnessAuth)) {
+      add("secret", agent.harnessAuth.source.id);
+    } else if (agent.harnessAuth?.method === "credential_source") {
+      add("credential_source", agent.harnessAuth.sourceId);
+    }
+    for (const { sourceId } of agent.credentialSources ?? []) {
+      add("credential_source", sourceId);
+    }
+    const missing: (SecretReference | CredentialSourceReference)[] = [];
+    for (const source of referenced.values()) {
+      const caller = (await this.authorizationDecision(principalId, "operate", source)).decision;
+      if (!caller.allowed) {
+        continue;
+      }
+      const current = await this.authorizationDecision(agent.servicePrincipalId, "operate", source);
+      if (!current.decision.allowed) {
+        missing.push(source);
+      }
+    }
+    for (const binding of await this.ensureAgentOperateGrants(
+      state,
+      agent.namespaceId,
+      agent,
+      missing,
+    )) {
+      await state.audit.append({
+        id: `aud_${crypto.randomUUID()}`,
+        installationId: this.installation.id,
+        namespaceId: agent.namespaceId,
+        occurredAt: this.timestamp(),
+        kind: "mutation",
+        actorId: principalId,
+        source: "occ",
+        action: "openclaw.iam.access_bindings.create",
+        resource: {
+          kind: binding.resourceKind as "secret" | "credential_source",
+          id: binding.resourceId as string,
+          namespaceId: agent.namespaceId,
+        },
+        outcome: "success",
+        details: {
+          bindingId: binding.id,
+          subjectKind: binding.subjectKind,
+          subjectId: binding.subjectId,
+          roleId: binding.roleId,
+          reason: "agent_deploy",
+          agentId: agent.id,
+        },
+      });
     }
   }
 
@@ -18636,6 +19463,23 @@ export class OpenClawController {
 }
 export { PostgresMetricsSnapshot } from "./state/postgres-metrics.ts";
 export type { PlatformMetricsSnapshot } from "./state/postgres-metrics.ts";
+
+function configuredRoleId(id: string): string {
+  return `${CONFIGURED_IAM_ID_PREFIXES.role}${id}`;
+}
+
+function configuredGroupId(name: string): string {
+  return `${CONFIGURED_IAM_ID_PREFIXES.group}${name}`;
+}
+
+/** A configured Group binding's ID: a digest, because configured names may contain `_`. */
+function configuredBindingId(group: string, role: string, namespaceId: string | undefined): string {
+  const digest = createHash("sha256")
+    .update(JSON.stringify([group, role, namespaceId ?? null]))
+    .digest("hex")
+    .slice(0, 32);
+  return `${CONFIGURED_IAM_ID_PREFIXES.binding}${digest}`;
+}
 
 /** Keep internal reduction custody out of caller-visible withdrawal status. */
 function credentialWithdrawalStatus(

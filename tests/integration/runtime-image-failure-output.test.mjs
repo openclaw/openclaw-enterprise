@@ -89,7 +89,7 @@ const {
   waitForDockerLog,
   waitForGatewayReady,
 } = await import("../helpers/runtime-image-startup.mjs");
-const { followContainer } = await import("../helpers/docker-follow.mjs");
+const { followContainer } = await import("../helpers/docker-follow.ts");
 
 test("failureTail keeps short output and the end of long output from a line start", () => {
   assert.equal(failureTail("short output", 64), "short output");

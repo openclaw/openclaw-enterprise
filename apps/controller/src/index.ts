@@ -44,6 +44,7 @@ import {
   type SecretDriver,
   type SecretReference,
   type CredentialSourceReference,
+  type HarnessExecutionMode,
   type UpdateWorkspaceFileBody,
   type WorkspaceFileName,
 } from "@openclaw-enterprise/contracts";
@@ -2200,6 +2201,25 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     );
   }
 
+  // Each OCC transaction that writes durable authority (an Owner binding or deploy-time grants)
+  // holds a session caller's session through COMMIT, as Namespace policy writes do (#2311), so a
+  // sign-out or account disable cannot commit in between. Other work runs unchanged.
+  function performFenced(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    operation: OccApiRoute,
+  ): Promise<void> {
+    const admitted = admissions.get(request);
+    if (controller === undefined || admitted?.method !== "session") {
+      return perform(request, reply, operation);
+    }
+    const { session } = admitted;
+    return controller.withAuthorityFence(
+      (unit) => options.auth.holdSession(unit, session, request),
+      () => perform(request, reply, operation),
+    );
+  }
+
   async function perform(
     request: FastifyRequest,
     reply: FastifyReply,
@@ -2271,6 +2291,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             event(operation, request, target, "bootstrap", context, decision.evidence),
           );
         });
+        await created.applyIAMConfiguration();
         controller = created;
         reply.status(201).send({
           data: clientInstallation(
@@ -2430,6 +2451,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    if (operation.operationId === "getNamespaceAgentCapabilities") {
+      reply.send({
+        data: {
+          capabilities: await controller.getNamespaceAgentCapabilities(
+            context.actorId,
+            namespaceId,
+          ),
+        },
+        meta: { requestId: request.id },
+      });
+      return;
+    }
+
     if (operation.operationId === "getNamespaceCallerPermissions") {
       await controller.getNamespace(context.actorId, namespaceId);
       // Targets match Namespace deletion, operationTarget() for creation, and
@@ -2579,6 +2613,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         namespaceId,
         {
           harnessId: body?.harnessId as "codex" | "openclaw",
+          ...(body?.executionMode === undefined
+            ? {}
+            : { executionMode: body.executionMode as HarnessExecutionMode }),
           ...(body?.credentialSource === undefined
             ? {}
             : { credentialSource: body.credentialSource as CredentialSourceReference }),
@@ -2601,6 +2638,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         namespaceId,
         {
           harnessId: body?.harnessId as "codex" | "openclaw",
+          ...(body?.executionMode === undefined
+            ? {}
+            : { executionMode: body.executionMode as HarnessExecutionMode }),
           ...(body?.credentialSource === undefined
             ? {}
             : { credentialSource: body.credentialSource as CredentialSourceReference }),
@@ -4456,10 +4496,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           password,
           ...(name === undefined ? {} : { name }),
         });
-        const seed = options.auth.principalSeed(
-          prepared,
-          roleId === undefined ? { grant: "none" } : { roleId },
-        );
+        // Each new account joins the configured `iam.defaultUserGroups` in its creating unit.
+        const groupIds = controller?.defaultUserGroupIds ?? [];
+        const seed = {
+          ...options.auth.principalSeed(
+            prepared,
+            roleId === undefined ? { grant: "none" } : { roleId },
+          ),
+          ...(groupIds.length === 0 ? {} : { groupIds }),
+        };
         const baseAuditEvent = event(
           createAuthAccountOperation,
           request,
@@ -4475,6 +4520,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ...baseAuditEvent.details,
             principalId: seed.principal.id,
             ...(roleId === undefined ? { grant: "none" } : { roleId }),
+            ...(groupIds.length === 0 ? {} : { groupIds }),
           },
         };
         try {
@@ -4645,7 +4691,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         ...(authorizesBeforeBody(operation)
           ? {}
           : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
-        handler: async (request, reply) => perform(request, reply, operation),
+        handler: async (request, reply) => performFenced(request, reply, operation),
       });
     }
   });

@@ -212,9 +212,8 @@ export function renderAgentPlugins(
   const hasBoundCredential =
     agent.harnessAuth?.method === "credential_source" ||
     (agent.harnessAuth?.method === "codex_pat" && agent.harnessAuth.source?.kind === "secret");
-  const harnessId = configuredHarnessId(snapshot.values);
-  const codex = harnessId === "codex";
-  const dedicatedOpenClaw = harnessId === "openclaw" && agent.executionMode === "dedicated";
+  const codex = configuredHarnessId(snapshot.values) === "codex";
+  // The saved capabilities already resolve the OpenClaw Harness, including the default.
   let openClawDriver = false;
   // Codex serves curated plugins only to ChatGPT logins; an API-key Agent gets each
   // selected plugin disabled at deployment with PLUGIN_AUTH_REQUIRED.
@@ -229,13 +228,16 @@ export function renderAgentPlugins(
     context,
     input,
     catalogPath: `${path}/plugins`,
-    slotConnection: {
-      confirmed(slot, sourceId) {
-        return (
+    getSlotConnection: () => ({
+      feedback(slot, sourceId) {
+        if (
           confirmed?.pluginId === slot.pluginId &&
           confirmed.slotId === slot.id &&
           confirmed.sourceId === sourceId
-        );
+        ) {
+          return "Account attached.";
+        }
+        return undefined;
       },
       unavailable(slot) {
         if (updateDenied) {
@@ -384,12 +386,12 @@ export function renderAgentPlugins(
           }
         }
       },
-    },
+    }),
     requestBody: (body) => body,
     canDiscover: () =>
       !updateDenied &&
       (openClawDriver
-        ? dedicatedOpenClaw && catalogCredential === "none"
+        ? agent.executionMode === "dedicated" && catalogCredential === "none"
         : codex &&
           !apiKeyAuth &&
           (catalogCredential === "none" ||

@@ -1,8 +1,12 @@
-import type { PluginCatalogEntry, PluginCatalogPage } from "@openclaw-enterprise/contracts";
+import type {
+  NamespaceAgentPluginDetails,
+  PluginCatalogPage,
+} from "@openclaw-enterprise/contracts";
 
 interface PluginDiscoveryFixture {
   pages: Readonly<Record<string, PluginCatalogPage>> & { initial: PluginCatalogPage };
-  details: Readonly<Record<string, PluginCatalogEntry>>;
+  details: Readonly<Record<string, NamespaceAgentPluginDetails>>;
+  draftAccount?: { id: string; name: string; pluginId: string; slotId: string };
 }
 
 type DiscoveryError =
@@ -18,7 +22,7 @@ export function servePluginDiscovery(
   fixture: PluginDiscoveryFixture,
   operation: "catalog" | "details",
   body: unknown,
-  response: (data: PluginCatalogPage | PluginCatalogEntry) => Response,
+  response: (data: PluginCatalogPage | NamespaceAgentPluginDetails) => Response,
   error: (status: number, code: DiscoveryError) => Response,
 ): Response {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {

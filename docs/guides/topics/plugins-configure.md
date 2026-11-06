@@ -13,6 +13,8 @@ whose selections belonged to the Codex Driver.
 
 ## Use the console
 
+When creating a dedicated OpenClaw Agent on Kubernetes, open **Configure plugins** and enable Google Workspace or Slack. In the plugin’s account field, select a saved account or choose **Choose a connection template** → **Connect account**. Complete consent in the new tab. The form selects your saved account after it confirms the connection. Choose **Done**, then **Create Agent** to grant the new Agent access. If you leave the form, you can choose the saved account the next time you configure a compatible slot. Open the saved Agent’s **Plugins** tab to discover and select MCP tools.
+
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
 Use **Configure plugins** to edit saved selections and tool policy. On a dedicated
 OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, choose

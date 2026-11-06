@@ -3,7 +3,7 @@ import type {
   InstallationCapabilities,
   PluginApprovalMode,
   PluginApprovers,
-  PluginCatalogEntry,
+  NamespaceAgentPluginDetails,
   PluginCatalogPage,
   PluginDesiredSelection,
   PluginPolicyCapabilities,
@@ -31,7 +31,7 @@ export type ManagedToolDiscovery = {
   tools?: readonly PluginToolCatalogEntry[];
   message?: string;
 };
-export type CatalogEntry = PluginCatalogEntry & {
+export type CatalogEntry = NamespaceAgentPluginDetails & {
   managedTools?: ManagedToolDiscovery | undefined;
   toolStatus?: "loading" | "loaded" | undefined;
   toolError?: string | undefined;
@@ -72,7 +72,7 @@ export interface PluginFieldsOptions {
   onCancelDiscovery?: (() => void) | null;
   onLoadTools?: ((id: string, managedConnection?: ManagedToolConnection) => void) | null;
   saveHint?: string;
-  slotConnection?: SlotConnection;
+  getSlotConnection?(): SlotConnection | undefined;
   createApproverField?: (options: ApproverFieldOptions) => HTMLElement & {
     refreshNames?(): void;
     pauseNames?(): void;
@@ -210,7 +210,7 @@ export function createPluginFields({
   onLoadTools = null,
   saveHint = "Changes are saved when you create the Agent.",
   createApproverField,
-  slotConnection,
+  getSlotConnection,
 }: PluginFieldsOptions) {
   let disabled = false;
   let configuredOnly = false;
@@ -398,6 +398,7 @@ export function createPluginFields({
   }
 
   function showPlugin(entry: CatalogEntry) {
+    const slotConnection = getSlotConnection?.();
     if (tabState().activeId !== entry.id) {
       clearDetails(tabState());
       tabState().activeId = entry.id;
@@ -405,8 +406,9 @@ export function createPluginFields({
     render();
     detail.querySelector("h3")?.focus();
     if (
-      entry.remoteId &&
-      entry.tools === null &&
+      ((entry.remoteId && entry.tools === null) ||
+        (slotConnection?.grantOnCreate &&
+          capabilities?.driver?.implementation === "occ/openclaw-plugin")) &&
       entry.toolStatus !== "loaded" &&
       !entry.toolError &&
       catalog?.canLoad
@@ -799,6 +801,7 @@ export function createPluginFields({
   }
 
   function render() {
+    const slotConnection = getSlotConnection?.();
     rememberExpandedTools();
     const active = document.activeElement;
     const focused = active?.getAttribute("aria-label");
@@ -929,6 +932,10 @@ export function createPluginFields({
         ),
         entry.available === false ? unavailableMessage(entry) : null,
       );
+      const credentialSlots =
+        entry.credentialSlots ??
+        capabilities?.credentialSlots?.filter((slot) => slot.pluginId === entry.id) ??
+        [];
       if (selected) {
         const enabled = element("input", {
           type: "checkbox",
@@ -938,10 +945,7 @@ export function createPluginFields({
         enabled.addEventListener("change", () =>
           updateSelection(entry.id, (selection) => {
             selection.enabled = enabled.checked;
-            if (
-              !enabled.checked &&
-              capabilities?.credentialSlots?.some((slot) => slot.pluginId === entry.id)
-            ) {
+            if (!enabled.checked && credentialSlots.length) {
               delete selection.driverPolicy;
             }
           }),
@@ -973,8 +977,6 @@ export function createPluginFields({
           ),
         );
       }
-      const credentialSlots =
-        capabilities?.credentialSlots?.filter((slot) => slot.pluginId === entry.id) ?? [];
       const hasManagedTools = credentialSlots.some((slot) => slot.toolDiscovery);
       if (selected?.enabled) {
         for (const slot of credentialSlots) {
@@ -994,39 +996,42 @@ export function createPluginFields({
           if (stale) {
             options.push(["stale", "Release changed — select an account again", true]);
           }
+          function setAccount(sourceId: string) {
+            updateSelection(slot.pluginId, (selection) => {
+              const bindings = selection.driverPolicy?.credentials;
+              if (sourceId) {
+                selection.driverPolicy = {
+                  ...selection.driverPolicy,
+                  releaseSha256: slot.releaseSha256,
+                  credentials: {
+                    ...(isObject(bindings) && !stale ? bindings : {}),
+                    [slot.id]: sourceId,
+                  },
+                };
+              } else if (selection.driverPolicy && isObject(bindings)) {
+                const credentials = { ...bindings };
+                delete credentials[slot.id];
+                const {
+                  credentials: _old,
+                  releaseSha256: _release,
+                  ...otherPolicy
+                } = selection.driverPolicy;
+                if (Object.keys(credentials).length) {
+                  selection.driverPolicy = { ...selection.driverPolicy, credentials };
+                } else if (Object.keys(otherPolicy).length) {
+                  selection.driverPolicy = otherPolicy;
+                } else {
+                  delete selection.driverPolicy;
+                }
+              }
+            });
+          }
           details.append(
             select(
               slot.label,
               stale ? "stale" : typeof current === "string" ? current : "",
               options,
-              (sourceId) =>
-                updateSelection(entry.id, (selection) => {
-                  if (sourceId) {
-                    selection.driverPolicy = {
-                      ...selection.driverPolicy,
-                      releaseSha256: slot.releaseSha256,
-                      credentials: {
-                        ...(isObject(bindings) && !stale ? bindings : {}),
-                        [slot.id]: sourceId,
-                      },
-                    };
-                  } else if (selection.driverPolicy && isObject(bindings)) {
-                    const credentials = { ...bindings };
-                    delete credentials[slot.id];
-                    const {
-                      credentials: _old,
-                      releaseSha256: _release,
-                      ...otherPolicy
-                    } = selection.driverPolicy;
-                    if (Object.keys(credentials).length) {
-                      selection.driverPolicy = { ...selection.driverPolicy, credentials };
-                    } else if (Object.keys(otherPolicy).length) {
-                      selection.driverPolicy = otherPolicy;
-                    } else {
-                      delete selection.driverPolicy;
-                    }
-                  }
-                }),
+              setAccount,
             ),
           );
           if (slotConnection && !stale) {
@@ -1034,17 +1039,40 @@ export function createPluginFields({
               slot,
               slotConnection,
               typeof current === "string" ? current : undefined,
+              (sourceId) => {
+                const active = selections()?.[entry.id];
+                const policy = active?.driverPolicy;
+                const target = isObject(policy?.credentials)
+                  ? policy.credentials[slot.id]
+                  : undefined;
+                if (
+                  disabled ||
+                  !active?.enabled ||
+                  target !== current ||
+                  (policy?.releaseSha256 !== undefined &&
+                    policy.releaseSha256 !== slot.releaseSha256)
+                ) {
+                  return false;
+                }
+                setAccount(sourceId);
+                return true;
+              },
             );
             if (control) {
               details.append(control);
             }
           }
-          if (slot.sources.some((source) => !source.authorization)) {
+          if (
+            slot.sources.some((source) => !source.authorization) &&
+            (!slotConnection?.grantOnCreate || !slot.connectAccount)
+          ) {
             details.append(
               element(
                 "p",
                 { className: "hint" },
-                "Save plugin selections to bind a selected account and grant this Agent access.",
+                slotConnection?.grantOnCreate
+                  ? "Creating the Agent grants it access to the selected account."
+                  : "Save plugin selections to bind a selected account and grant this Agent access.",
               ),
             );
           }
@@ -1058,6 +1086,7 @@ export function createPluginFields({
             );
           }
           if (
+            !slotConnection?.grantOnCreate &&
             slot.toolDiscovery &&
             !current &&
             slot.sources.some((source) => !source.authorization)
@@ -1065,6 +1094,7 @@ export function createPluginFields({
             details.append(element("p", { className: "hint" }, "Select an account to load tools."));
           }
           if (
+            !slotConnection?.grantOnCreate &&
             slot.toolDiscovery &&
             !stale &&
             typeof current === "string" &&
@@ -1236,9 +1266,23 @@ export function createPluginFields({
           ),
         );
       }
+      if (
+        entry.toolError &&
+        slotConnection?.grantOnCreate &&
+        capabilities?.driver?.implementation === "occ/openclaw-plugin"
+      ) {
+        details.append(
+          element("p", { className: "hint", role: "status" }, entry.toolError),
+          button("Retry plugin details", () => onLoadTools?.(entry.id), { tone: "secondary" }),
+        );
+      }
       if (entry.toolStatus === "loading") {
         details.append(
-          element("p", { className: "hint plugin-loading", role: "status" }, "Loading tools…"),
+          element(
+            "p",
+            { className: "hint plugin-loading", role: "status" },
+            slotConnection?.grantOnCreate ? "Loading plugin details…" : "Loading tools…",
+          ),
         );
       } else if (entry.tools === null && (!enablementOnly || entry.remoteId)) {
         if (!enablementOnly) {

@@ -1,16 +1,11 @@
-import type { AgentPluginCredentialSlot } from "@openclaw-enterprise/contracts";
+import type {
+  AgentPluginCredentialSlot,
+  PluginConnectionTemplateChoice,
+} from "@openclaw-enterprise/contracts";
 import { button, element } from "../dom.mjs";
 import { requestFailure } from "../api-client.mjs";
 
-export interface SlotTemplate {
-  id: string;
-  displayName: string;
-  version: number;
-  mode: "manual" | "mcp_discovery";
-  scopes: readonly string[];
-  requiredScopes: readonly string[];
-  offeredScopes: readonly string[];
-}
+export type SlotTemplate = PluginConnectionTemplateChoice;
 
 const pluginConsentKey = "oce.pluginAccountConsent";
 
@@ -20,7 +15,8 @@ type ConsentStart = { authorizationUrl: string; credentialSourceId: string; expi
 /** Only the separately opened tab holds this channel name. The server has already consumed the OAuth callback. */
 export function finishPluginConsentTab() {
   const url = new URL(location.href);
-  const outcome = url.searchParams.get("connection");
+  const returned = url.searchParams.get("connection");
+  const outcome = returned === "connected" ? "saved" : returned;
   if (!["attached", "saved", "unconfirmed", "failed"].includes(outcome ?? "")) {
     return false;
   }
@@ -110,14 +106,16 @@ export async function authorizePluginInNewTab(
 }
 
 export interface SlotConnection {
+  grantOnCreate?: true;
   unavailable(slot: AgentPluginCredentialSlot): string | undefined;
-  confirmed?(slot: AgentPluginCredentialSlot, sourceId: string): boolean;
+  feedback?(slot: AgentPluginCredentialSlot, sourceId?: string): string | undefined;
   list(slot: AgentPluginCredentialSlot): Promise<readonly SlotTemplate[]>;
   start(
     slot: AgentPluginCredentialSlot,
     template: SlotTemplate,
     selectedScopes: readonly string[] | undefined,
     waiting: (check: () => Promise<string | undefined>) => void,
+    stage: (sourceId: string) => boolean,
   ): Promise<string | void>;
 }
 
@@ -190,7 +188,8 @@ function consentScopes(template: SlotTemplate, setSelection: (scopes: string[] |
 export function pluginConnectionControl(
   slot: AgentPluginCredentialSlot,
   connections: SlotConnection,
-  currentSourceId?: string,
+  currentSourceId: string | undefined,
+  stage: (sourceId: string) => boolean,
 ) {
   const currentSource = slot.sources.find((source) => source.id === currentSourceId);
   const currentName = currentSourceId ? (currentSource?.name ?? "the current account") : undefined;
@@ -208,8 +207,11 @@ export function pluginConnectionControl(
       : null;
   }
   const notice = element("p", { className: "hint", role: "status" });
-  if (currentSourceId && connections.confirmed?.(slot, currentSourceId)) {
-    notice.textContent = "Account attached.";
+  const feedback = connections.feedback?.(slot, currentSourceId);
+  if (feedback) {
+    notice.textContent = feedback;
+  } else if (connections.grantOnCreate && currentSource && !currentSource.authorization) {
+    notice.textContent = "Creating the Agent grants it access to this account.";
   }
   const panel = element("div");
   let busy = false;
@@ -245,7 +247,9 @@ export function pluginConnectionControl(
     const { status } = requestFailure(cause);
     notice.textContent =
       status === 403
-        ? "You need permission to update this Agent and connect an account in this Namespace."
+        ? connections.grantOnCreate
+          ? "You need permission to connect an account in this Namespace."
+          : "You need permission to update this Agent and connect an account in this Namespace."
         : status === 409
           ? "The template or plugin selection changed. Reload the Agent before connecting."
           : status === 401
@@ -276,7 +280,11 @@ export function pluginConnectionControl(
       const scopeChoices = element("div");
       let selectedScopes: string[] | null | undefined;
       const consent = button(
-        currentName ? "Authorize and replace account" : "Connect and attach",
+        connections.grantOnCreate
+          ? "Connect account"
+          : currentName
+            ? "Authorize and replace account"
+            : "Connect and attach",
         () => {
           const template = templates.find((item) => item.id === picker.value);
           if (template && available() && selectedScopes !== null) {
@@ -306,11 +314,13 @@ export function pluginConnectionControl(
         scopeChoices,
         element("div", { className: "form-actions" }, consent),
       );
-      notice.textContent = currentName
-        ? `After you authorize the account at the provider for this server, it will replace ${currentName} in the ${slot.label} slot.`
-        : needsConsent
-          ? `Choose the account at the provider. After you approve access to this server, OCE will attach the approved account to the ${slot.label} slot.`
-          : `Approving the provider will save your account and attach it to this Agent’s ${slot.label} slot.`;
+      notice.textContent = connections.grantOnCreate
+        ? "Sign in to save your account. Creating the Agent will grant it access to the account selected here."
+        : currentName
+          ? `After you authorize the account at the provider for this server, it will replace ${currentName} in the ${slot.label} slot.`
+          : needsConsent
+            ? `Choose the account at the provider. After you approve access to this server, OCE will attach the approved account to the ${slot.label} slot.`
+            : `Approving the provider will save your account and attach it to this Agent’s ${slot.label} slot.`;
     } catch (error) {
       showError(error);
     } finally {
@@ -330,33 +340,40 @@ export function pluginConnectionControl(
     open.disabled = true;
     notice.textContent = "Opening the provider for your consent…";
     try {
-      const message = await connections.start(slot, template, selectedScopes, (check) => {
-        busy = false;
-        action.disabled = false;
-        action.textContent = "Try again";
-        notice.textContent = "Finish sign-in in the new tab. If you closed it, you can try again.";
-        const checkNow = button(
-          "Check connection",
-          async () => {
-            checkNow.disabled = true;
-            try {
-              const message = await check();
-              if (current === attempt && checkNow.isConnected && message) {
-                notice.textContent = message;
+      const message = await connections.start(
+        slot,
+        template,
+        selectedScopes,
+        (check) => {
+          busy = false;
+          action.disabled = false;
+          action.textContent = "Try again";
+          notice.textContent =
+            "Finish sign-in in the new tab. If you closed it, you can try again.";
+          const checkNow = button(
+            "Check connection",
+            async () => {
+              checkNow.disabled = true;
+              try {
+                const message = await check();
+                if (current === attempt && checkNow.isConnected && message) {
+                  notice.textContent = message;
+                }
+              } catch (error) {
+                if (current === attempt && checkNow.isConnected) {
+                  showError(error);
+                }
+              } finally {
+                checkNow.disabled = false;
               }
-            } catch (error) {
-              if (current === attempt && checkNow.isConnected) {
-                showError(error);
-              }
-            } finally {
-              checkNow.disabled = false;
-            }
-          },
-          { tone: "secondary" },
-        );
-        checkButton = checkNow;
-        action.after(checkNow);
-      });
+            },
+            { tone: "secondary" },
+          );
+          checkButton = checkNow;
+          action.after(checkNow);
+        },
+        stage,
+      );
       if (current === attempt && message) {
         notice.textContent = message;
         action.textContent = "Try again";

@@ -1,5 +1,6 @@
 import { SandboxPolicyDecisionSchema } from "../sandbox-policy.ts";
 import { Type } from "typebox";
+import { PluginTemplateChoicesResponse } from "./connections.ts";
 import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.ts";
 
 import {
@@ -171,6 +172,51 @@ export const AgentPluginCatalogResponse = Type.Object(
   { additionalProperties: false },
 );
 
+const PluginCredentialSlotSchema = Type.Object(
+  {
+    pluginId: Type.String(),
+    releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    id: Type.String(),
+    label: Type.String(),
+    toolDiscovery: Type.Optional(Type.Literal(true)),
+    connectAccount: Type.Optional(Type.Literal(true)),
+    sources: Type.Array(
+      Type.Object(
+        {
+          id: CredentialSourceId,
+          name: Type.String(),
+          authorization: Type.Optional(Type.Literal("required")),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
+export const NamespaceAgentPluginDetailsResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        ...PluginCatalogEntrySchema.properties,
+        credentialSlots: Type.Optional(
+          Type.Array(
+            Type.Object(
+              {
+                ...PluginCredentialSlotSchema.properties,
+                connectionTemplates: Type.Optional(PluginTemplateChoicesResponse.properties.data),
+              },
+              { additionalProperties: false },
+            ),
+          ),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
 export const AgentPluginDetailsResponse = Type.Object(
   { data: PluginCatalogEntrySchema, meta: Meta },
   { additionalProperties: false },
@@ -251,31 +297,7 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
       {
         ...PluginPolicyCapabilitiesSchema.properties,
         discoveryCredential: PluginDiscoveryCredentialSchema,
-        credentialSlots: Type.Optional(
-          Type.Array(
-            Type.Object(
-              {
-                pluginId: Type.String(),
-                releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
-                id: Type.String(),
-                label: Type.String(),
-                toolDiscovery: Type.Optional(Type.Literal(true)),
-                connectAccount: Type.Optional(Type.Literal(true)),
-                sources: Type.Array(
-                  Type.Object(
-                    {
-                      id: CredentialSourceId,
-                      name: Type.String(),
-                      authorization: Type.Optional(Type.Literal("required")),
-                    },
-                    { additionalProperties: false },
-                  ),
-                ),
-              },
-              { additionalProperties: false },
-            ),
-          ),
-        ),
+        credentialSlots: Type.Optional(Type.Array(PluginCredentialSlotSchema)),
       },
       { additionalProperties: false },
     ),
@@ -863,6 +885,29 @@ export const NamespaceSecretPermissionsResponse = Type.Object(
           description:
             "The IDs of the Namespace's Secrets that the caller may read but the selected IAM Driver does not allow Secret operate on now, sorted. Agent creation needs Secret operate on each Secret it binds or uses: its Harness authentication source, its Configuration's Secret bindings, and a directory search Secret. Empty when it is not reported: reported only to a caller who may create an Agent in this Namespace. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
         }),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
+// A member who may create Agents here cannot read the Installation; this answer gives that caller
+// the capabilities the Agent create form needs (RFC-0026).
+export const NamespaceAgentCapabilitiesResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        capabilities: Type.Omit(
+          InstallationCapabilitiesSchema,
+          ["nativeAdmin", "agentProvisioning"],
+          {
+            additionalProperties: false,
+            description:
+              "The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It omits nativeAdmin and agentProvisioning, which apply only to guided provisioning and need Installation administration.",
+          },
+        ),
       },
       { additionalProperties: false },
     ),
@@ -2043,6 +2088,9 @@ export type AgentRevisionWire = Type.Static<typeof AgentRevisionSchema>;
 export type AgentDeploymentStatusWire = Type.Static<typeof AgentDeploymentStatusSchema>;
 export type AgentDeploymentDiagnosticsWire = Type.Static<typeof AgentDeploymentDiagnosticsSchema>;
 export type InstallationResponse = Type.Static<typeof InstallationResponse>;
+export type NamespaceAgentCapabilitiesResponse = Type.Static<
+  typeof NamespaceAgentCapabilitiesResponse
+>;
 export type InstallationDeploymentInventoryResponse = Type.Static<
   typeof InstallationDeploymentInventoryResponse
 >;

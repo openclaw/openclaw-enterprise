@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
+import { Pool } from "pg";
 import type { AgentPluginCredentialSlot, PluginDriver } from "@openclaw-enterprise/contracts";
 import {
   CodexPluginDriver,
@@ -12,6 +13,10 @@ import {
   managedMcpInstalls,
   managedPluginAccountSlot,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
+import { createRuntimeComputeDriver } from "../helpers/provisioning-compute.mjs";
+import { claimIsolatedWork } from "../helpers/postgres-work-claim.mjs";
 import { createSavedAccountOrigin } from "../helpers/saved-account-origin.ts";
 import {
   installSavedAccountPlacement,
@@ -1103,6 +1108,7 @@ test(
       connections,
       input,
       owner,
+      ownerId,
       begin,
       oauthClientId,
       tokenUrl,
@@ -1110,6 +1116,7 @@ test(
       setIssuedLifetime,
     } = await oauthAccounts(t, { url: reportsUrl, readTools });
     const pluginId = "test-keycloak";
+    const remoteId = "catalog/reports-and-mail";
     const slotId = "account";
     const releaseSha256 = "a".repeat(64);
     const cli = managedCliInstalls[0]!;
@@ -1159,14 +1166,15 @@ test(
       harnessId: "openclaw",
       capability: "plugin",
       implementation: "keycloak-fixture",
+      discoveryCredential: "none",
       policyCapabilities: new OCCPluginDriver().policyCapabilities,
       validatePolicies() {},
       async listCatalog() {
         return [];
       },
       async getCatalogPlugin({ pluginId: requested }) {
-        assert.equal(requested, pluginId);
-        return { id: pluginId, name: "Reports and mail", tools: [] };
+        assert.ok(requested === pluginId || requested === remoteId);
+        return { id: pluginId, remoteId, name: "Reports and mail", tools: [] };
       },
       credentials: {
         choices() {
@@ -1380,6 +1388,157 @@ test(
       String((await owner("GET", report.callback)).headers.location),
       /connection=connected/,
     );
+    await t.test(
+      "standalone consent stages a slot until Agent creation grants access",
+      async () => {
+        const readAgents = async () => {
+          const result = await owner("GET", agents);
+          assert.equal(result.statusCode, 200, result.body);
+          return result
+            .json()
+            .data.map((entry: { id: string }) => entry.id)
+            .sort();
+        };
+        const originalAgents = await readAgents();
+        const details = await owner("POST", agents + "/plugins/details", {
+          harnessId: "openclaw",
+          executionMode: "dedicated",
+          pluginId: remoteId,
+        });
+        assert.equal(details.statusCode, 200, details.body);
+        const slots = details.json().data.credentialSlots as NonNullable<
+          import("@openclaw-enterprise/contracts").NamespaceAgentPluginDetails["credentialSlots"]
+        >;
+        const reportsSlot = slots.find((slot) => slot.id === "reports");
+        assert.equal(reportsSlot?.releaseSha256, releaseSha256);
+        assert.ok(reportsSlot?.sources.some((source) => source.id === report.id));
+        assert.ok(
+          reportsSlot.connectionTemplates?.some(
+            (template) => template.id === reportInput.connectionTemplateId,
+          ),
+        );
+        const selection = (sourceId: string) => ({
+          [pluginId]: {
+            enabled: true,
+            driverPolicy: { releaseSha256, credentials: { reports: sourceId } },
+          },
+        });
+        const fields = {
+          name: "Reports from Create",
+          executionMode: "dedicated",
+          harnessAuth: { method: "api_key", source: harnessRef },
+        };
+        const configuration = {
+          kind: "agent",
+          values: createHarnessConfiguration("openclaw", "gpt-5.1"),
+        };
+        const plan = { ...fields, configuration, plugins: selection(report.id) };
+        const validated = await owner("POST", agents + "/validate", plan);
+        assert.equal(validated.statusCode, 204, validated.body);
+
+        // A credential for another recipient cannot grant a new Agent access. Browsing,
+        // preflight and the failed save leave the user's standalone account available.
+        const create = (sourceId: string) =>
+          owner("POST", agents, {
+            ...fields,
+            configurationId: config.json().data.id,
+            plugins: selection(sourceId),
+          });
+        const wrongRecipient = await create(grant.id);
+        assert.equal(wrongRecipient.statusCode, 409, wrongRecipient.body);
+        assert.deepEqual(await readAgents(), originalAgents);
+        assert.equal(await canUse(a, report.id), false);
+        const created = await create(report.id);
+        assert.equal(created.statusCode, 201, created.body);
+        const verifyBinding = async (id: string) => {
+          assert.equal(
+            (await draft(id)).plugins[pluginId].driverPolicy.credentials.reports,
+            report.id,
+          );
+          assert.deepEqual(await attached(id), [report.id]);
+          assert.equal(await canUse(id, report.id), true);
+          assert.equal(await canUse(id, grant.id), false);
+        };
+        await verifyBinding(created.json().data.id);
+
+        // Dedicated installations can queue Create instead. The queue request and an
+        // identical retry precede the worker's Agent row, slot binding and IAM grant.
+        const originalCompute = controller.selectedDriver("compute");
+        const originalConfiguration = controller.selectedDriver("configuration");
+        const compute = createRuntimeComputeDriver();
+        const configDriver = createTestConfigurationDriver({
+          id: "provision-saved-account",
+          exact: true,
+        });
+        controller.registerDriver(compute);
+        controller.registerDriver(configDriver);
+        controller.selectDriver("compute", compute.id);
+        controller.selectDriver("configuration", configDriver.id);
+        try {
+          const queuedInput = {
+            ...plan,
+            name: "Queued Reports Agent",
+            requestId: `req_${randomUUID()}`,
+          };
+          const queued = await owner("POST", agents + "/provision", queuedInput);
+          assert.equal(queued.statusCode, 202, queued.body);
+          const job = queued.json().data.provisioning;
+          const replay = await owner("POST", agents + "/provision", queuedInput);
+          assert.equal(replay.statusCode, 202, replay.body);
+          assert.equal(replay.json().data.provisioning.workId, job.workId);
+          assert.equal((await readAgents()).length, originalAgents.length + 1);
+          const runJob = async (workId: string) => {
+            // Use a separate test queue to lock other jobs. OCC still creates Agents
+            // and grants through its single-connection application pool.
+            const queuePool = new Pool({ ...pool.options, max: 2 });
+            const claim = await claimIsolatedWork(queuePool, { workId }).finally(() =>
+              queuePool.end(),
+            );
+            assert.ok(claim);
+            return controller.processAgentProvisioning(claim, resolveApprovedHarness);
+          };
+          await runJob(job.workId);
+          const status = await owner("GET", job.url);
+          assert.equal(status.statusCode, 200, status.body);
+          const queuedAgent = status.json().data.agentId;
+          assert.ok(queuedAgent, status.body);
+          await verifyBinding(queuedAgent);
+
+          // Withdraw use of a separate saved account after queue admission. Its
+          // durable IAM restriction must apply when the worker attempts Agent creation.
+          const withdrawn = await begin(connections, reportInput);
+          assert.equal((await owner("GET", withdrawn.callback)).statusCode, 303);
+          const later = await owner("POST", agents + "/provision", {
+            ...queuedInput,
+            plugins: selection(withdrawn.id),
+            requestId: `req_${randomUUID()}`,
+            name: "Access withdrawn before Create",
+          });
+          assert.equal(later.statusCode, 202, later.body);
+          const beforeWithdrawal = await readAgents();
+          await pool.query(
+            "INSERT INTO occ.iam_restrictions (id, namespace_id, action, resource_kind, resource_id) VALUES ($1,$2,'operate','credential_source',$3)",
+            [`restriction_${randomUUID()}`, namespaceId, withdrawn.id],
+          );
+          const outcome = await runJob(later.json().data.provisioning.workId);
+          assert.equal(outcome.outcome, "permanent");
+          assert.deepEqual(await readAgents(), beforeWithdrawal);
+        } finally {
+          controller.selectDriver("configuration", originalConfiguration.id);
+          controller.selectDriver("compute", originalCompute.id);
+        }
+        const accounts = await owner("GET", connections);
+        assert.equal(accounts.statusCode, 200, accounts.body);
+        assert.equal(
+          accounts
+            .json()
+            .data.find(
+              (item: { credentialSourceId: string }) => item.credentialSourceId === report.id,
+            ).ownerPrincipalId,
+          ownerId,
+        );
+      },
+    );
     const slotAgent = await agent("Slot assignments");
     const discover = (sourceId: string) =>
       owner("POST", path(slotAgent) + "/plugins/details", {
@@ -1564,7 +1723,7 @@ test(
     ] as const) {
       const id = await agent(name);
       const checkUnrelated = name === "Agent with renewed access";
-      const initialSources = checkUnrelated ? legacySources : [modelSource];
+      const initialSources: string[] = checkUnrelated ? legacySources : [modelSource];
       const save = await owner("PATCH", path(id), {
         configurationId: config.json().data.id,
         plugins: selectedPlugin,
@@ -1576,9 +1735,13 @@ test(
       assert.ok(principal);
       for (const sourceId of initialSources) {
         if (sourceId === unrelatedSource) {
-          // Agent authorization takes precedence over explaining which credential is out of scope.
-          const denied = await owner("POST", path(id) + "/deploy");
-          assert.equal(denied.statusCode, 403, denied.body);
+          // This deployer may delegate both references. Reject the unrelated source and roll
+          // back the temporary Agent grant added by deployment in the same transaction.
+          assert.equal(await canUse(id, sourceId), false);
+          const refused = await owner("POST", path(id) + "/deploy");
+          assert.equal(refused.statusCode, 409, refused.body);
+          assert.match(refused.json().error.message, /unrelated credential binding/i);
+          assert.equal(await canUse(id, sourceId), false);
         }
         const permission = await owner("POST", base + "/iam/access-bindings", {
           roleId: modelRole.json().data.id,

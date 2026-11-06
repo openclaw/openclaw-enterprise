@@ -31,6 +31,7 @@ export const CreateInvalidConfiguration = {
   ...story("createInvalidConfiguration"),
   name: "Invalid Configuration JSON",
 };
+export const OpenClawPluginCatalog = story("createOpenClawPluginCatalog", { openInNewTab: true });
 export const PluginsUnavailable = {
   ...story("createPluginsUnavailable"),
   name: "Plugin discovery needs a service account credential",
@@ -227,7 +228,11 @@ export const CreateMember = {
 };
 export const CreateMemberGrantRefused = {
   ...story("createMemberGrantRefused"),
-  name: "Member Agent created, grant needs an administrator",
+  name: "Member Agent created, opens its draft",
+};
+export const CreateMemberCredentialGateway = {
+  ...story("createMemberCredentialGateway"),
+  name: "Member on a Credential Gateway Installation",
 };
 export const CreateRestricted = {
   ...story("createRestricted"),

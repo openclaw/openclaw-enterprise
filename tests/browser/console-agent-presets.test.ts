@@ -998,12 +998,7 @@ test("Create Agent browses the Codex catalog and discards its selections when sw
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
-  await dialog
-    .getByText("To install Google Workspace, open Plugins on a saved dedicated OpenClaw Agent", {
-      exact: false,
-    })
-    .waitFor();
-  assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);
+  await dialog.getByRole("button", { name: "Load plugins", disabled: true }).waitFor();
   assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), {});
   assert.equal(await linear.count(), 0);
 });

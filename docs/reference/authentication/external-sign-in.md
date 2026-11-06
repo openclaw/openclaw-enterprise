@@ -1,8 +1,7 @@
 # External sign-in and account controls
 
-This page covers GitHub, Google and generic OIDC browser sign-in for existing OpenClaw Control
-Plane (OCC) accounts, and the session, recovery, and account controls that apply
-once an external provider is enabled. The [authentication reference](../authentication.md)
+This page covers GitHub, Google and generic OIDC sign-in for existing OpenClaw
+Control Plane (OCC) accounts, including session, recovery and account controls. The [authentication reference](../authentication.md)
 covers bootstrap, password sessions, request origin, provisioning, and failures.
 
 ## Console sign-in destinations
@@ -75,7 +74,7 @@ user ID (1–20 digits, no leading zero) through
 Attachment keeps the user, Principal, and grants, advances the version,
 and invalidates sessions and pending proofs. A subject another account already
 holds returns `409 RESOURCE_CONFLICT` ("The external identity is already
-assigned."), as account creation does. Email association, signup, identity
+assigned."), as account creation does. Email association, unrestricted signup, identity
 transfer, and self-service linking are rejected. For unknown identities, follow the
 [enrollment procedure](../../guides/deploy/production-installation.md#enable-github-browser-sign-in).
 
@@ -125,7 +124,7 @@ or `temporarily_unavailable`), or its token endpoint refuses the configured clie
 and registered callback), the denial is audited as `PROVIDER_UNAVAILABLE` and the API
 logs one `authentication.provider-unavailable-warning` at WARN. It carries `provider`
 (`github`, `google`, or `oidc`), the provider instance `providerId`, `step`
-(`authorization`, `token`, `jwks`, `profile`, or `membership`), a `cause` from a fixed list (`connect_refused`,
+(`authorization`, `token`, `jwks`, `profile`, `membership`, or `email`), a `cause` from a fixed list (`connect_refused`,
 `dns`, `timeout`, `tls`, `connection_reset`, `network`, `redirect`, `http_status`,
 `oversized_response`, `malformed_response`, `provider_error`, or `client_rejected`), and,
 when present, the HTTP `status` or transport `code` such as `ECONNREFUSED`. It never carries URLs,
@@ -135,6 +134,14 @@ After that denial the callback returns to
 unavailable right now instead of suggesting an attach; the failure precedes any identity lookup,
 so the reason reveals nothing about accounts. A callback that fails inside OCE (its database or
 audit store) returns with `authReason=unavailable`.
+
+### Automatic team enrollment
+
+[Automatic GitHub team enrollment](team-enrollment.md) can create an account and
+add new or existing verified team members to a configured native IAM Group.
+It is opt-in and requires a team-only allowlist; existing enrollment remains the
+default. Group bindings determine access, and account disable remains the
+supported immediate offboarding operation.
 
 ### Organization and team allowlist
 

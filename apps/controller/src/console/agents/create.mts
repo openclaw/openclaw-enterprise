@@ -38,12 +38,7 @@ import {
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { type DeviceLogin, createDeviceLogin, deviceLoginOffered } from "./device-login.mjs";
-import {
-  agentCreateDenied,
-  askAdministratorTo,
-  CONFIGURATION_CREATE_REFUSED,
-  notIncluded,
-} from "./access-reasons.mjs";
+import { agentCreateDenied, CONFIGURATION_CREATE_REFUSED, notIncluded } from "./access-reasons.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { ensureCredentialOperateBinding, secretOperateAnswer } from "./credential-access.mjs";
 import {
@@ -62,6 +57,7 @@ import {
 } from "./presets.mjs";
 import { provisioningJob } from "./provisioning-job.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
+import { authorizePluginInNewTab, type SlotConnection } from "./plugin-connection.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import { renderChannels } from "../channels.mjs";
 import {
@@ -808,10 +804,12 @@ export function renderCreateAgent(
   );
 }
 
-// A member's Agent reaches its Secrets through an Installation administrator's grant (UX plan A2).
+// A member's deploy gives the Agent access to each Secret and credential source it uses that the
+// member may operate (RFC-0026), so the member finishes without an administrator.
 const MEMBER_CREDENTIAL_ACCESS =
-  "An Installation administrator then gives the new Agent access to its Secrets.";
-const MEMBER_GRANT_REFUSED = `The Agent was created as a draft. Giving it access to its saved model and channel Secrets needs Installation administration. ${askAdministratorTo("open the saved Agent and grant it")}`;
+  "Deploying the new Agent gives it access to the Secrets and credential sources it uses.";
+const MEMBER_GRANT_REFUSED =
+  "The Agent was created as a draft. Deploy it from its page: deploying gives it access to its model and channel Secrets.";
 // The Installation read was refused and the Namespace's permission answer is unknown (its read
 // failed), so whether this account may create Agents here is not known (finding 2110).
 const PERMISSIONS_UNREAD =
@@ -1796,16 +1794,20 @@ function renderAgentForm(
   const plugins = element("textarea", { id: "agent-plugins", rows: "4", spellcheck: "false" });
   plugins.value = JSON.stringify(agent.plugins ?? {}, null, 2);
   let pluginDiscoveryCredential: "none" | "required" | null = null;
-  let savedOpenClawCatalog = false;
+  let bundledOpenClawCatalog = false;
   let catalogUnavailable = false;
   let pluginHarness = harness.value;
+  let pluginMode = mode.value;
   let installationCapabilities: InstallationCapabilities | undefined;
   // Codex serves curated plugins only to ChatGPT logins; API-key Agents get them disabled.
   const apiKeyCodex = () =>
     harness.value === "codex" && (binding?.method ?? authMethod.value) === "api_key";
   function discoveryCredential() {
-    if (catalogUnavailable || savedOpenClawCatalog || apiKeyCodex()) {
+    if (catalogUnavailable || apiKeyCodex()) {
       return null;
+    }
+    if (bundledOpenClawCatalog) {
+      return mode.value === "dedicated" && openclawModeUsable("dedicated") ? {} : null;
     }
     if (harness.value === "codex" && pluginDiscoveryCredential === "none") {
       return {};
@@ -1842,36 +1844,158 @@ function renderAgentForm(
     const source = getDirectorySecretSource();
     return source?.kind === "secret" && source.namespaceId === namespaceId ? source.id : null;
   };
+  let consentAttempt: AbortController | undefined;
+  let consentResult:
+    | { pluginId: string; slotId: string; releaseSha256: string; staged: boolean; sourceId: string }
+    | undefined;
+  plugins.addEventListener("input", () => {
+    consentResult = undefined;
+  });
+  const draftConnection: SlotConnection = {
+    grantOnCreate: true,
+    unavailable() {
+      return pending || savedAgent || !bundledOpenClawCatalog || !discoveryCredential()
+        ? "Return to an editable dedicated Agent draft to select an account."
+        : undefined;
+    },
+    feedback(slot, sourceId) {
+      if (
+        !consentResult ||
+        consentResult.pluginId !== slot.pluginId ||
+        consentResult.slotId !== slot.id ||
+        consentResult.releaseSha256 !== slot.releaseSha256
+      ) {
+        return undefined;
+      }
+      if (!consentResult.staged) {
+        return "Account saved. The draft changed. Select the account in its current slot.";
+      }
+      return consentResult.sourceId === sourceId
+        ? "Account selected. Create the Agent to grant access."
+        : undefined;
+    },
+    async list(slot) {
+      const detail = await pluginDiscovery.readDetail(slot.pluginId);
+      return (
+        detail.credentialSlots?.find(
+          (candidate) =>
+            candidate.pluginId === slot.pluginId &&
+            candidate.id === slot.id &&
+            candidate.releaseSha256 === slot.releaseSha256,
+        )?.connectionTemplates ?? []
+      );
+    },
+    async start(slot, template, selectedScopes, waiting, stage) {
+      consentAttempt?.abort();
+      const attempt = new AbortController();
+      consentAttempt = attempt;
+      const unconfirmed =
+        "The account is not available for this slot yet. Finish sign-in, then check again.";
+      const readAccount = async (sourceId: string) => {
+        const detail = await pluginDiscovery.readDetail(slot.pluginId);
+        const compatible = detail.credentialSlots?.some(
+          (candidate) =>
+            candidate.pluginId === slot.pluginId &&
+            candidate.id === slot.id &&
+            candidate.releaseSha256 === slot.releaseSha256 &&
+            candidate.sources.some((source) => source.id === sourceId && !source.authorization),
+        );
+        return compatible ? detail : undefined;
+      };
+      try {
+        const result = await authorizePluginInNewTab(
+          () =>
+            request(`${namespacePath(namespaceId)}/connections`, {
+              method: "POST",
+              body: {
+                connectionTemplateId: template.id,
+                ...(selectedScopes && { selectedScopes }),
+              },
+            }) as Promise<{
+              authorizationUrl: string;
+              credentialSourceId: string;
+              expiresAt: string;
+            }>,
+          attempt.signal,
+          (sourceId, complete) =>
+            waiting(async () => {
+              if (!(await readAccount(sourceId))) {
+                return unconfirmed;
+              }
+              complete();
+            }),
+        );
+        if (attempt.signal.aborted || !context.isCurrent()) {
+          return;
+        }
+        if ("message" in result) {
+          return result.message;
+        }
+        if (result.outcome === "failed") {
+          return "Authorization did not finish. Try again to connect an account.";
+        }
+        const detail = await readAccount(result.sourceId);
+        if (attempt.signal.aborted || !context.isCurrent() || pending || savedAgent) {
+          return;
+        }
+        if (!detail) {
+          return unconfirmed;
+        }
+        // Consent saves a user-owned account. Only stage this reference if the same draft
+        // still selects this slot. The eventual Create request authorizes and grants access.
+        const staged = stage(result.sourceId);
+        consentResult = {
+          pluginId: slot.pluginId,
+          slotId: slot.id,
+          releaseSha256: slot.releaseSha256,
+          sourceId: result.sourceId,
+          staged,
+        };
+        pluginDiscovery.rememberDetail(detail);
+      } finally {
+        if (consentAttempt === attempt) {
+          consentAttempt = undefined;
+        }
+      }
+    },
+  };
   const pluginDiscovery = createPluginDiscovery({
     context,
     input: plugins,
+    getSlotConnection: () => (bundledOpenClawCatalog ? draftConnection : undefined),
     canDiscover: () => Boolean(discoveryCredential()),
     canPrefetch: () =>
-      pluginDiscoveryCredential !== null &&
-      ["codex_pat", "credential_source"].includes(binding?.method ?? authMethod.value) &&
-      Boolean(boundSource ?? modelCredentialSource ?? apiKey.value.trim()),
+      bundledOpenClawCatalog ||
+      (pluginDiscoveryCredential !== null &&
+        ["codex_pat", "credential_source"].includes(binding?.method ?? authMethod.value) &&
+        Boolean(boundSource ?? modelCredentialSource ?? apiKey.value.trim())),
     isPending: () => pending,
     requestBody: (body) => ({
       ...discoveryCredential(),
       harnessId: harness.value,
+      ...(bundledOpenClawCatalog && { executionMode: mode.value }),
       ...body,
     }),
     unavailableMessage: () => {
       if (catalogUnavailable) {
         return "This Installation has no plugin catalog for the selected Harness.";
       }
-      return savedOpenClawCatalog
-        ? "To install Google Workspace, open Plugins on a saved dedicated OpenClaw Agent using Kubernetes Compute."
+      return bundledOpenClawCatalog
+        ? "Managed OpenClaw plugins require dedicated OpenClaw on Kubernetes Compute."
         : apiKeyCodex()
           ? "Codex plugins need a ChatGPT login. With an OpenAI API key, each selected plugin is disabled when the Agent deploys (PLUGIN_AUTH_REQUIRED). Choose Service Accounts or ChatGPT OAuth to browse and use plugins."
           : pluginDiscoveryCredential === "none"
             ? "Choose the Codex harness to browse this Installation's curated plugin catalog."
             : "For discovery, choose ChatGPT OAuth (Experimental) and sign in, or choose Service Accounts with the Codex harness and select a Secret or enter a preview token.";
     },
-    availableMessage: () =>
-      pluginDiscoveryCredential === "none"
+    availableMessage: () => {
+      if (bundledOpenClawCatalog) {
+        return "Choose plugins and select the accounts this Agent can use.";
+      }
+      return pluginDiscoveryCredential === "none"
         ? "Load the installation's curated plugin catalog. Access and tool availability are checked separately."
-        : "Load plugins available to the selected credential. Your plugin selections stay unchanged.",
+        : "Load plugins available to the selected credential. Your plugin selections stay unchanged.";
+    },
     createApproverField: (options) =>
       createSlackApproverField({
         context,
@@ -1887,7 +2011,7 @@ function renderAgentForm(
     );
     const policies = catalog?.pluginPolicies;
     const discovery = catalog?.pluginDiscovery;
-    savedOpenClawCatalog = policies?.driver.implementation === "occ/openclaw-plugin";
+    bundledOpenClawCatalog = policies?.driver.implementation === "occ/openclaw-plugin";
     catalogUnavailable = capabilities !== undefined && discovery === undefined;
     pluginDiscoveryCredential = discovery?.credential ?? (catalogUnavailable ? null : "required");
     pluginFields.setCapabilities(policies ?? null);
@@ -1900,6 +2024,8 @@ function renderAgentForm(
     }
   }
   function resetPluginDiscovery() {
+    consentAttempt?.abort();
+    pluginMode = mode.value;
     if (pluginHarness !== harness.value) {
       pluginHarness = harness.value;
       plugins.value = "{}";
@@ -1977,9 +2103,10 @@ function renderAgentForm(
   let capabilityDiscoveryFailed = false;
   let capabilityDiscoveryDenied = false;
   // The Installation read is refused, but the Namespace's permission answer grants Agent create
-  // (UX plan A2, finding 1901). The form proceeds without the Installation's capabilities, so it
-  // refuses no option the API might accept: the preflight and Agent create still decide, before
-  // and when anything is saved. capabilityDiscoveryDone stays false, so no hint claims an outcome.
+  // (UX plan A2, finding 1901). The form then reads the Namespace's Agent capabilities (RFC-0026);
+  // when that read succeeds, capabilityDiscoveryDone is set as for an administrator. Otherwise the
+  // form refuses no option the API might accept: the preflight and Agent create still decide,
+  // before and when anything is saved, and no hint claims an outcome.
   let capabilitiesUnreadable = false;
   const capabilitiesSettled = () => capabilityDiscoveryDone || capabilitiesUnreadable;
   // A refused create shows the API's 400 sentence. Its denial names nobody to ask once the
@@ -2888,10 +3015,12 @@ function renderAgentForm(
     );
     return true;
   }
+  // A member cannot provision, so its form registers the model source and saves a draft that the
+  // member deploys (RFC-0026); an administrator's form provisions.
   const credentialSourceRefused = () =>
     credentialSourceTypes !== undefined &&
     (binding?.method ?? authMethod.value) !== "credential_source" &&
-    (!shouldProvision() || !modelSourceType());
+    (!(shouldProvision() || capabilitiesUnreadable) || !modelSourceType());
   const updateControls = () => {
     setText(intro, introText(!repositories.unavailable()));
     const saved = Boolean(savedConfiguration || savedAgent || provisioningAttempt);
@@ -2931,6 +3060,10 @@ function renderAgentForm(
       "Chat with this Agent through its OCE URL after deployment. Requires Agent administer permission; enables native administration and trusted-proxy device approval.";
     if (!capabilityDiscoveryDone) {
       nativeAdminHint = "Native admin UI availability depends on installation capabilities.";
+    } else if (!nativeAdminAvailable && capabilitiesUnreadable) {
+      // Native admin is set up by guided provisioning, which needs Installation administration.
+      nativeAdminHint =
+        "Native admin UI setup needs guided provisioning, which only an Installation administrator can use.";
     } else if (!nativeAdminAvailable) {
       nativeAdminHint =
         "Native admin UI access is not enabled on this installation. Ask an Installation administrator to enable it.";
@@ -2941,7 +3074,7 @@ function renderAgentForm(
     if (!planLocked && capabilityDiscoveryDone && (!nativeAdminAvailable || !shouldProvision())) {
       nativeAdmin.checked = false;
     }
-    if (pluginHarness !== harness.value) {
+    if (pluginHarness !== harness.value || (bundledOpenClawCatalog && pluginMode !== mode.value)) {
       resetPluginDiscovery();
     } else {
       pluginDiscovery.update();
@@ -3383,26 +3516,7 @@ function renderAgentForm(
       if (!context.isCurrent()) {
         return;
       }
-      installationCapabilities = installation.capabilities;
-      applyPluginCapabilities();
-      nativeAdminAvailable = installation.capabilities?.nativeAdmin === true;
-      nativeWorkersAvailable = installation.capabilities?.nativeWorkers !== undefined;
-      const openclawModes = installation.capabilities?.openclaw?.executionModes;
-      openclawExecutionModes = Array.isArray(openclawModes) ? new Set(openclawModes) : undefined;
-      sandboxDriverUnavailable =
-        installation.capabilities?.openclaw?.sandboxDriverUnavailable === true;
-      const settingRefusal = installation.capabilities?.openclaw?.settingRefusals?.dedicated;
-      dedicatedSettingRefusal =
-        typeof settingRefusal === "string" && settingRefusal ? settingRefusal : undefined;
-      credentialSourceTypes = installation.capabilities?.credentialSources?.types;
-      // Drivers that offer no device login refuse every start (finding 2991).
-      oauthLogin.setOffered(deviceLoginOffered(installation.capabilities));
-      provisionableExecutionModes.clear();
-      for (const executionMode of installation.capabilities?.agentProvisioning?.executionModes ??
-        []) {
-        provisionableExecutionModes.add(executionMode);
-      }
-      capabilityDiscoveryDone = true;
+      applyCapabilities(installation.capabilities);
       // A readable Installation is an administrator's: without a permission answer, the form
       // goes on as allowed, and so do its repository choices. A known refusal (a kept draft a
       // Restriction now refuses) reads none and says why: nothing else on the form does.
@@ -3411,20 +3525,7 @@ function renderAgentForm(
       } else {
         repositories.start();
       }
-      // A mode the form chose but the Installation refuses becomes the usable one, if any.
-      if (
-        openclawExecutionModes !== undefined &&
-        modeDefaulted &&
-        harness.value === "openclaw" &&
-        !embeddedRequired() &&
-        !savedConfiguration &&
-        !openclawModeUsable(mode.value) &&
-        openclawModeUsable(defaultOpenClawMode())
-      ) {
-        mode.value = defaultOpenClawMode();
-        renderChannelEditor();
-      }
-      void checkRuntimeBinding();
+      afterCapabilities();
     } catch (error) {
       if (!context.isCurrent()) {
         return;
@@ -3438,7 +3539,7 @@ function renderAgentForm(
       // A denial is permanent for this account, so retrying the read cannot help.
       capabilityDiscoveryDenied = status === 403;
       if (capabilityDiscoveryDenied) {
-        settleRefusedCapabilities();
+        await settleRefusedCapabilities();
         return;
       }
       capabilityStatus.textContent = `Installation capabilities unavailable. ${message(error)} Retry before creating an Agent.`;
@@ -3448,12 +3549,48 @@ function renderAgentForm(
       }
     }
   }
+  function applyCapabilities(capabilities: InstallationCapabilities | undefined) {
+    installationCapabilities = capabilities;
+    applyPluginCapabilities();
+    nativeAdminAvailable = capabilities?.nativeAdmin === true;
+    nativeWorkersAvailable = capabilities?.nativeWorkers !== undefined;
+    const openclawModes = capabilities?.openclaw?.executionModes;
+    openclawExecutionModes = Array.isArray(openclawModes) ? new Set(openclawModes) : undefined;
+    sandboxDriverUnavailable = capabilities?.openclaw?.sandboxDriverUnavailable === true;
+    const settingRefusal = capabilities?.openclaw?.settingRefusals?.dedicated;
+    dedicatedSettingRefusal =
+      typeof settingRefusal === "string" && settingRefusal ? settingRefusal : undefined;
+    credentialSourceTypes = capabilities?.credentialSources?.types;
+    // Drivers that offer no device login refuse every start (finding 2991).
+    oauthLogin.setOffered(deviceLoginOffered(capabilities));
+    provisionableExecutionModes.clear();
+    for (const executionMode of capabilities?.agentProvisioning?.executionModes ?? []) {
+      provisionableExecutionModes.add(executionMode);
+    }
+    capabilityDiscoveryDone = true;
+  }
+  function afterCapabilities() {
+    // A mode the form chose but the Installation refuses becomes the usable one, if any.
+    if (
+      openclawExecutionModes !== undefined &&
+      modeDefaulted &&
+      harness.value === "openclaw" &&
+      !embeddedRequired() &&
+      !savedConfiguration &&
+      !openclawModeUsable(mode.value) &&
+      openclawModeUsable(defaultOpenClawMode())
+    ) {
+      mode.value = defaultOpenClawMode();
+      renderChannelEditor();
+    }
+    void checkRuntimeBinding();
+  }
   // After a refused Installation read, the permission answer decides. A member the Namespace lets
   // create Agents goes on without the Installation's capabilities (UX plan A2); only an explicit
   // grant does. An unknown answer says the check failed and offers a retry of it (finding 2110).
   // A known denial shows what a fresh load with that answer shows: the refusal instead of the form
   // (finding 2908). A form that already saved resources keeps them in view, under the same refusal.
-  function settleRefusedCapabilities() {
+  async function settleRefusedCapabilities() {
     const create = namespacePermissions?.agents?.create;
     permissionsUnknown = typeof create !== "boolean";
     capabilityStatus.textContent = "";
@@ -3461,6 +3598,7 @@ function renderAgentForm(
       capabilitiesUnreadable = true;
       showAccess("info", memberAccess);
       repositories.start();
+      await loadNamespaceCapabilities();
       return;
     }
     if (permissionsUnknown) {
@@ -3472,6 +3610,29 @@ function renderAgentForm(
       showAccess("danger", agentCreateDenied(namespacePermissions));
       // The block above gives the reason; the held repository line no longer waits for anything.
       repositories.refuse();
+    }
+  }
+  // A member cannot read the Installation, so the Namespace answers the capabilities Agent create
+  // needs, such as the Credential Gateway's source types (RFC-0026). A failed read leaves the form
+  // as it was without them: the preflight and Agent create still decide.
+  async function loadNamespaceCapabilities() {
+    try {
+      const answer = (await request(`${namespacePath(namespaceId)}/agent-capabilities`)) as {
+        capabilities?: InstallationCapabilities;
+      };
+      if (!context.isCurrent()) {
+        return;
+      }
+      applyCapabilities(answer.capabilities);
+      afterCapabilities();
+    } catch (error) {
+      if (context.isCurrent() && requestFailure(error).status === 401) {
+        context.onExpired();
+      }
+    } finally {
+      if (context.isCurrent()) {
+        updateControls();
+      }
     }
   }
   async function rereadPermissions() {
@@ -3500,7 +3661,10 @@ function renderAgentForm(
     // failed again; once answered it hides and the answer takes focus rather than the page.
     const active = document.activeElement;
     const focusOutcome = !active || active === document.body || active === retryPermissionCheck;
-    settleRefusedCapabilities();
+    await settleRefusedCapabilities();
+    if (!context.isCurrent()) {
+      return;
+    }
     if (!form.isConnected) {
       // The refusal replaced the form: it is the answer.
       const refusal = context.view.querySelector<HTMLElement>(".state-panel");
@@ -4153,13 +4317,8 @@ function renderAgentForm(
         Object.values(savedConfiguration.secretBindings ?? {}).some(
           (binding) => binding?.source?.kind === "secret",
         );
-      if (needsCredentialAccess) {
-        if (context.installationAdmin === false) {
-          credentialGrantRefused = true;
-          feedback.textContent = MEMBER_GRANT_REFUSED;
-          focusFeedbackLine(feedback);
-          return;
-        }
+      // A member's deploy writes these grants (RFC-0026), so only an administrator grants here.
+      if (needsCredentialAccess && context.installationAdmin !== false) {
         // IAM binds a credential to a principal, not to an Agent ID. Confirm the principal on
         // the saved Agent before granting access. An explicit retry reads that same Agent again;
         // it never reuses a principal from a create response we could not confirm.
