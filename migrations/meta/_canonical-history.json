@@ -566,7 +566,15 @@
       "idx": 71,
       "version": "7",
       "when": 1787000000071,
-      "tag": "0071_namespace_plugin_releases",
+      "tag": "0071_default_users",
+      "breakpoints": true,
+      "sha256": "a4f7c22caf4f9dcb548cad3f3a069a0f66ea941a0b43f9fe2087b5f72803cce9"
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1787000000072,
+      "tag": "0072_namespace_plugin_releases",
       "breakpoints": true,
       "sha256": "5e8721b6587b5f827a33206d605e4e3cfbc11decd9b872a3d0251216b273d606"
     }
@@ -635,9 +643,13 @@
       "b4b910d5ee9a960c7e04e15f67de57099824a4520fc78d70e05a03784f2578cd",
       "7bdc8785ed987aa51c70d912e72db9f8542f9bfe0203f8a1d1a3b5c4622eebbe"
     ],
-    "5c6147172ba252df64433612537cb69c7ec3006ca65f7a1dae9901a125cc2dc8": [
-      "b024cb5428e4758d4473f5ce9a68dbb930345ebe204d8548c49543ccfbca6f67",
-      "934f3be1f196237bbd4b7c25ee5211b7270c3054813be5bbddbd029a1c3ef9ff"
+    "451fc5103dcacb194c7decfd419da6444995d78ddbd4f44ee4f69217b4cb6c5b": [
+      "165f0af55446f21086a75defc11d8451bc06500493d3241db50dc19d3d93f486",
+      "3fcb47801057d81e978101111e1cc921b39e075c97b12e891aea3fc26de49a57"
+    ],
+    "51a9f7971d30512426e4196b9d11fa9b49d57045813b7d3c51f4e73e01174fe5": [
+      "1948cd806e7a29ef7f7232e793e49256d7d98d2b251bde4f88bbe59de8a8d6a3",
+      "51b9a88c7c18c42fc359be8ee4927734c5d5f08c3ed4f0b500a44f3779d0f014"
     ]
   },
   "catalogs": {
@@ -646,7 +658,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "5c6147172ba252df64433612537cb69c7ec3006ca65f7a1dae9901a125cc2dc8",
+    "completed": "51a9f7971d30512426e4196b9d11fa9b49d57045813b7d3c51f4e73e01174fe5",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -687,7 +699,8 @@
     "preAgentPluginDriver": "c74762d7f4d45b4215f42fcc8cf9e43d01fae03dbb80522d84c4e17370a2f7c3",
     "preConnectionTemplates": "8fc3e20bcb36ad9b2afe8ab96077139b12b50c825dd18ff323603d0e0540b250",
     "preSavedConnections": "1989ad2291a59e5d15e7f35fd008677449cac6cd11e653605b3d48675655dba9",
-    "preNamespacePluginReleases": "b3d9b0b499a4ea4a0cab68cd2836ab6ceba96be82c3f2bb6faac5e7fcb2a06c4"
+    "preDefaultUsers": "b3d9b0b499a4ea4a0cab68cd2836ab6ceba96be82c3f2bb6faac5e7fcb2a06c4",
+    "preNamespacePluginReleases": "451fc5103dcacb194c7decfd419da6444995d78ddbd4f44ee4f69217b4cb6c5b"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

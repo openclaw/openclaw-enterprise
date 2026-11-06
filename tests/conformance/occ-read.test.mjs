@@ -26,7 +26,7 @@ async function createFixture() {
   const exactNamespaceId = "ns_00000000-0000-4000-8000-000000000001";
   const scopedNamespaceId = "ns_00000000-0000-4000-8000-000000000002";
   const iamState = principalIAMState(
-    ["principal-admin", "principal-exact-a", "principal-scoped-b"],
+    ["principal-admin", "principal-exact-a", "principal-scoped-b", "principal-agent-a"],
     "https://identity.example.com",
   );
   const { identities, roles } = iamState;
@@ -43,19 +43,39 @@ async function createFixture() {
     },
   });
   const reads = { namespace: ["read"], agent: ["read"], agent_revision: ["read"] };
+  // One Role per exact binding: an exact Agent binding also applies its Role's agent_revision
+  // permissions to every revision of that Agent, so revision-level filtering needs an Agent
+  // binding whose Role cannot read revisions.
+  for (const [kind, id] of [
+    ["namespace", exactNamespaceId],
+    ["agent", "agent-3"],
+    ["agent_revision", "agent_revision-6"],
+  ]) {
+    roles.push({
+      id: `role-principal-exact-a-${kind}`,
+      namespaceId: exactNamespaceId,
+      permissions: permissionsFor({ [kind]: ["read"] }),
+    });
+    bindRole(iamState, "principal-exact-a", {
+      id: `binding-a-${kind}`,
+      roleId: `role-principal-exact-a-${kind}`,
+      namespaceId: exactNamespaceId,
+      resource: { kind, id },
+    });
+  }
+  // An owner-style grant: one Role that reads Agents and revisions, bound exactly to Agent A.
   roles.push({
-    id: "role-principal-exact-a",
+    id: "role-principal-agent-a",
     namespaceId: exactNamespaceId,
     permissions: permissionsFor(reads),
   });
   for (const [kind, id] of [
     ["namespace", exactNamespaceId],
     ["agent", "agent-3"],
-    ["agent_revision", "agent_revision-6"],
   ]) {
-    bindRole(iamState, "principal-exact-a", {
-      id: `binding-a-${kind}`,
-      roleId: "role-principal-exact-a",
+    bindRole(iamState, "principal-agent-a", {
+      id: `binding-agent-a-${kind}`,
+      roleId: "role-principal-agent-a",
       namespaceId: exactNamespaceId,
       resource: { kind, id },
     });
@@ -298,6 +318,35 @@ test("collection reads filter every exact Namespace, Agent, and AgentRevision", 
       ({ id }) => id,
     ),
     [revisionB.id],
+  );
+});
+
+test("an exact Agent binding applies its revision permissions to that Agent's revisions only", async () => {
+  const { controller, namespaceA, agentA, hiddenAgentA, revisionA, hiddenRevisionA } =
+    await createFixture();
+
+  // RFC-0026 parent checks: OCC names each revision's Agent, so the Agent binding covers both of
+  // Agent A's revisions, including the one no revision binding names.
+  const listed = await controller.listRevisions("principal-agent-a", namespaceA.id, agentA.id);
+  assert.deepEqual(
+    listed.revisions.map(({ id }) => id).sort(),
+    [revisionA.id, hiddenRevisionA.id].sort(),
+  );
+  assert.equal(
+    (
+      await controller.getRevision(
+        "principal-agent-a",
+        namespaceA.id,
+        agentA.id,
+        hiddenRevisionA.id,
+      )
+    ).id,
+    hiddenRevisionA.id,
+  );
+  // It grants nothing on a sibling Agent or its revisions.
+  await assert.rejects(
+    controller.listRevisions("principal-agent-a", namespaceA.id, hiddenAgentA.id),
+    AuthorizationDeniedError,
   );
 });
 

@@ -2261,27 +2261,45 @@ export const createAgentProvisioningScenarios = {
     actions: form,
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
-      "A member whose Namespace grants Agent create cannot read the Installation. The form goes on: an info status above it says why, the badge names the Preset, and Create Agent stays available; the API still decides at the preflight and at create.",
+      "A member whose Namespace grants Agent create cannot read the Installation, so the form reads the Namespace's Agent capabilities instead. The form goes on: an info status above it says why, the badge names the Preset, and Create Agent stays available; the API still decides at the preflight and at create.",
     steps: [
-      'Above the form, "Your access" says you can create Agents in Engineering and that an Installation administrator then gives the new Agent access to its Secrets.',
+      'Above the form, "Your access" says you can create Agents in Engineering and that deploying the new Agent gives it access to the Secrets and credential sources it uses.',
+      "The request log shows GET /installation refused and GET /namespaces/…/agent-capabilities answered.",
       'The form starts with the badge "From Preset · default-codex", and no mid-form note asks for Installation access.',
     ],
     gap: "The member creation browser test uses a member account and the real Installation permission check.",
   },
   createMemberGrantRefused: {
     group: "Pages/Create Agent",
-    name: "Member Agent created, grant needs an administrator",
+    name: "Member Agent created, opens its draft",
     path: create,
     observabilityDenied: true,
     actions: [...readyForm, click("Create Agent")],
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
-      "The session already knows this member does not administer the Installation, so after the Agent saves the form sends no IAM read for its credential grant. It names the administrator step at once and offers Open saved Agent, with no Retry credential access.",
+      "The session already knows this member does not administer the Installation. The member's deploy gives the Agent access to its Secrets (RFC-0026), so after the Agent saves the form sends no IAM request and opens the Agent's draft, where the member deploys it.",
     steps: [
-      "Read the alert: giving the Agent access to its Secrets needs Installation administration, so it asks an Installation administrator to open the saved Agent and grant it.",
-      "The saved-resources line identifies the Configuration and Agent, offers Open saved Agent, and does not promise a retry.",
-      "The request log shows no /iam/ request. Only Cancel and Start over remain beside the saved-resources line.",
+      "After Create Agent, the Agent page opens on its draft.",
+      "The request log shows no /iam/ request.",
     ],
+  },
+  createMemberCredentialGateway: {
+    group: "Pages/Create Agent",
+    name: "Member on a Credential Gateway Installation",
+    path: create,
+    observabilityDenied: true,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    unsupportedProvisioning: true,
+    actions: readyForm,
+    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    description:
+      "A member cannot read the Installation, but the Namespace's Agent capabilities list the Credential Gateway's model source types. Create Agent registers the selected model Secret as a credential source before it saves the Agent, so the deploy is not refused for Secret-backed Harness authentication.",
+    steps: [
+      "The request log shows GET /installation refused and GET /namespaces/…/agent-capabilities answered with the model credential source types.",
+      "Enable Native admin UI is unavailable, and its hint says native admin setup needs guided provisioning, which only an Installation administrator can use.",
+      "Create the Agent and inspect the requests: POST …/credential-sources precedes POST …/agents, whose harnessAuth names the new source. The Agent page opens on its draft.",
+    ],
+    gap: "The fixture simulates the Credential Gateway. The Default users PostgreSQL test reads the route from the real API.",
   },
   createRestricted: {
     group: "Pages/Create Agent",

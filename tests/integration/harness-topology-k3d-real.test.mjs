@@ -41,6 +41,41 @@ const topologyTeardown = (testContext) =>
   boundedTeardown(testContext, { label: "production topology teardown" });
 
 test(
+  "production Default user deploys embedded OpenClaw in the default Namespace with owner grants",
+  { ...requiresProductionCluster, timeout: 900_000 },
+  async (testContext) => {
+    const { context } = topologyTeardown(testContext);
+    // First in this file: each case's teardown deletes its tenant namespace, and Default users
+    // create Agents only in default, so this case must be the one that creates the Installation.
+    // The Installation configuration declares the Default users Roles, Group, and bindings. The
+    // caller is an ordinary account the administrator created, which joined the default-user
+    // Group as it was created. It creates the model Secret, Configuration, and Agent in default
+    // and deploys with no other grant; arrangeProductionTopology asserts its Owner bindings and
+    // the deploy-written grant.
+    const topology = await arrangeProductionTopology(context, "embedded", undefined, {
+      defaultUser: true,
+    });
+    assert.equal(topology.harnessPod, undefined, "embedded execution must not create a Codex Pod");
+    assert.equal(topology.gatewayPod.spec.serviceAccountName, topology.agentServiceName);
+    const environment = await inspectWorkloadEnvironment(
+      topology.gatewayPlacement,
+      topology.gatewayPod.metadata.name,
+    );
+    // The deploy-written grant is what lets the worker project the owner's model Secret.
+    assert.equal(environment.OPENAI_API_KEY, true);
+    // Parent checks: the owner reads its own deployment's status through its Agent binding.
+    const deployment = await topology.request(
+      "GET",
+      `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deployments/${topology.revision.id}`,
+    );
+    assert.equal(deployment.status, 200, JSON.stringify(deployment.error));
+    assert.equal(deployment.data.status, "succeeded");
+    await resource("networkpolicy", "default-deny", topology.placement);
+    await assertActualModelTurn(topology);
+  },
+);
+
+test(
   "production dedicated Skill source uploads honor default and denied node-write policy",
   { ...requiresProductionCluster, timeout: 1_200_000 },
   async (testContext) => {
