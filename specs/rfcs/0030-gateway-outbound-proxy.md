@@ -20,9 +20,10 @@ author: miguelbranco80
 ## Summary
 
 Let an Installation operator select one outbound proxy for Kubernetes-managed
-OpenClaw Gateways and OCE's channel-directory client. Use either the existing
+OpenClaw Gateways. OCE's channel-directory client shares it by default, with an
+optional separate endpoint. Use either the existing
 bundled CONNECT server with a configurable host list, or an external proxy.
-Do not add a Console editor or a separate Slack route.
+Do not add a Console editor or split traffic inside a Gateway across proxies.
 
 ## Problem
 
@@ -42,31 +43,42 @@ restore that connection without exempting other destinations.
 
 Extend the existing profile renderer, Helm chart, and Kubernetes Compute Driver:
 
-| Interface                               | Previous configuration                                       | Proposed replacement                                                      |
-| --------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------- |
-| Installation profile: endpoints         | `channels.runtimeProxyUrl`, `channels.directoryProxyUrl`     | One shared `proxy.url`                                                    |
-| Installation profile: bundled selection | `channels.managedSlackProxy`                                 | `proxy.bundled`                                                           |
-| Helm: bundled server                    | `slackProxy.*`                                               | `gatewayProxy.*`                                                          |
-| Helm: directory endpoint                | `api.channelDirectoryProxyUrl`                               | Shared `gatewayProxy.url` or the bundled endpoint                         |
-| Kubernetes Compute                      | `runtime.channels.proxyUrl`, `runtime.channels.managedProxy` | `runtime.proxy.proxyUrl`, `runtime.proxy.managedProxy`                    |
-| Bundled host policy                     | Fixed Slack host list                                        | New `proxy.allowedHosts` in profiles; `gatewayProxy.allowedHosts` in Helm |
+| Interface                                | Previous configuration                                       | Proposed replacement                                                      |
+| ---------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| Installation profile: Gateway endpoint   | `channels.runtimeProxyUrl`                                   | `proxy.url`, also the directory default                                   |
+| Installation profile: directory override | `channels.directoryProxyUrl`                                 | Retained; overrides only the directory endpoint                           |
+| Installation profile: bundled selection  | `channels.managedSlackProxy`                                 | `proxy.bundled`                                                           |
+| Helm: bundled server                     | `slackProxy.*`                                               | `gatewayProxy.*`                                                          |
+| Helm: directory endpoint                 | `api.channelDirectoryProxyUrl`                               | Retained; empty inherits the selected Gateway proxy                       |
+| Kubernetes Compute                       | `runtime.channels.proxyUrl`, `runtime.channels.managedProxy` | `runtime.proxy.proxyUrl`, `runtime.proxy.managedProxy`                    |
+| Bundled host policy                      | Fixed Slack host list                                        | New `proxy.allowedHosts` in profiles; `gatewayProxy.allowedHosts` in Helm |
 
 Select the bundled proxy with `proxy.bundled: true` in a profile or
 `gatewayProxy.enabled: true` in Helm. Compute uses an exact `managedProxy` peer
 for the bundled Service.
 
-The renderer writes both Helm and Compute configuration from one selection.
+The renderer writes both Helm and Compute configuration from the Gateway selection.
 Compute keeps its existing configuration schema, structured validation errors,
 and schema-driven value inspection. No separate configuration registry or UI is added.
 Direct Helm users must provide the matching Compute endpoint. Bundled and
-external selections are mutually exclusive. Replace the old channel-specific
-proxy keys; reject them rather than silently keeping two routes.
+external Gateway selections are mutually exclusive. Replace the old
+Gateway-specific proxy keys; retain the directory override.
 
 Both clients remain: Gateways send outbound requests, and the OCE API makes
-channel-directory requests. Helm still sets `OCC_CHANNEL_DIRECTORY_PROXY_URL`,
-but uses the selected Gateway proxy endpoint. This is two clients sharing one
-proxy, not two proxy servers. The API environment variable and Compute endpoint
-remain separate inputs underneath; manual configuration can make them differ.
+channel-directory requests. Helm still sets `OCC_CHANNEL_DIRECTORY_PROXY_URL`.
+An explicit `api.channelDirectoryProxyUrl` takes precedence; otherwise Helm uses
+the selected Gateway proxy endpoint. Profiles pass `channels.directoryProxyUrl`
+to that Helm setting. The override also works without a Gateway proxy selection.
+An empty Helm override means inherit, not disable. Without either endpoint,
+directory behavior stays unchanged. Neither endpoint failure causes fallback to
+the other proxy.
+
+Sharing one proxy reduces configuration and gives both clients the same default
+route. Retaining the directory override supports separate network locations or
+destination policies. With an override, Helm grants API directory egress only to
+that endpoint, not also to the default Gateway proxy. Gateway configuration and
+permissions do not change. The operator must keep two services reachable when
+the endpoints differ; sharing one endpoint instead couples their availability.
 
 These are deployment-time operator settings, not per-Agent permissions. The
 bundled default permits Slack. An explicit `allowedHosts` list replaces that
@@ -80,8 +92,8 @@ supply their credentials.
 
 ### Ownership and networking
 
-Helm runs the bundled server and routes API directory requests to the selected
-proxy. The server permits CONNECT only on TCP 443. Its Kubernetes policy permits
+Helm runs the bundled server and routes API directory requests to the override
+or, by default, the selected Gateway proxy. The server permits CONNECT only on TCP 443. Its Kubernetes policy permits
 public IPv4 upstreams and excludes private and reserved ranges. TLS stays
 end-to-end; the server does not inspect plaintext or inject credentials. An
 external proxy owns its own destination policy.
@@ -126,8 +138,12 @@ changes, not exceptions in the image-only upgrade command.
 - **Require an external proxy:** simpler OCE packaging, but every installation
   must operate another service. Generalizing the existing bundled server gives
   small installations an option without adding another proxy implementation.
-- **Split Slack and general traffic across two proxies:** requires routing rules
-  and more failure modes. One selected endpoint can permit both.
+- **Require the directory client to share the Gateway proxy:** removes an option,
+  but prevents separate client routing when network access or policies differ.
+  Use sharing as the default, not a requirement.
+- **Split one Gateway's Slack and general traffic across two proxies:** requires
+  destination routing rules. The directory override does not add those rules;
+  it selects a route for a separate API client.
 - **Allow direct public Gateway egress:** avoids a proxy, but loses the selected
   destination policy and weakens dedicated Gateway isolation.
 - **Add a Console policy editor:** adds lifecycle and authorization work for an
