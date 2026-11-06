@@ -91,6 +91,16 @@ type CreateAgentScenario = {
 };
 
 // The OpenShell Sandbox Driver's refusal of Dedicated OpenClaw on its settings alone.
+const openClawCatalogEntries = [
+  {
+    id: "occ-plugin:google@1.0.0",
+    name: "Google Workspace",
+    selectableWithoutTools: true,
+    tools: [],
+  },
+  { id: "occ-plugin:slack@1.0.0", name: "Slack", selectableWithoutTools: true, tools: [] },
+];
+
 const openShellUserNamespacesRefusal =
   "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
 
@@ -416,6 +426,112 @@ export const createAgentFormScenarios = {
       "Read the error under the editor: A number is too large or too small to save. Use a number closer to zero. Check that Configuration JSON has focus, its exact text is unchanged, and neither an Agent nor a Configuration is written.",
       "If the form shows a model list, select Enter model ID manually. Change Model ID and leave the field. Check that the range error focuses Configuration JSON and the rejected draft is not rewritten. Restore the original Model ID, change only 1e400 to 2, and select Create Agent. Inspect the created Agent's Configuration for [1,2,3]. All saves and deployment state in this story are simulated.",
     ],
+  },
+  createOpenClawPluginCatalog: {
+    group: "Pages/Create Agent",
+    name: "Choose bundled plugins before creating an OpenClaw Agent",
+    path: create,
+    openclawExecutionModes: ["dedicated"],
+    pluginCapabilities: {
+      ...pluginCapabilities,
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      policyScopeByPlugin: Object.fromEntries(
+        openClawCatalogEntries.map(({ id }) => [id, "enablement_only" as const]),
+      ),
+    },
+    pluginDiscoveryCredential: "none",
+    pluginDiscovery: {
+      pages: { initial: { plugins: openClawCatalogEntries, nextCursor: null } },
+      draftAccount: {
+        id: "cs_00000000-0000-4000-8000-000000000099",
+        name: "New Workspace account",
+        pluginId: openClawCatalogEntries[0]!.id,
+        slotId: "account",
+      },
+      details: Object.fromEntries(
+        openClawCatalogEntries.map((entry) => [
+          entry.id,
+          entry === openClawCatalogEntries[0]
+            ? {
+                ...entry,
+                credentialSlots: [
+                  {
+                    pluginId: entry.id,
+                    id: "account",
+                    label: "Google account",
+                    releaseSha256: "a".repeat(64),
+                    connectAccount: true,
+                    sources: [
+                      {
+                        id: "cs_00000000-0000-4000-8000-000000000098",
+                        name: "Existing Workspace account",
+                      },
+                    ],
+                    connectionTemplates: [
+                      {
+                        id: "workspace-oauth",
+                        displayName: "Workspace OAuth",
+                        version: 1,
+                        mode: "manual",
+                        scopes: ["gmail.readonly"],
+                        requiredScopes: [],
+                        offeredScopes: [],
+                      },
+                    ],
+                  },
+                ],
+              }
+            : {
+                ...entry,
+                tools: ["slack_search_public", "slack_send_message"].map((name) => ({
+                  id: name,
+                  name,
+                  ownerId: entry.id,
+                })),
+                credentialSlots: [
+                  {
+                    pluginId: entry.id,
+                    id: "account",
+                    label: "Slack user account",
+                    releaseSha256: "b".repeat(64),
+                    connectAccount: true,
+                    toolDiscovery: true,
+                    sources: [
+                      {
+                        id: "cs_00000000-0000-4000-8000-000000000097",
+                        name: "Existing Slack account",
+                        toolDiscovery: "caller" as const,
+                      },
+                    ],
+                    connectionTemplates: [],
+                    templateSetup: {
+                      issuers: ["https://slack.com"],
+                      mcpServerUrl: "https://mcp.slack.com/mcp",
+                      unregisteredTemplates: [],
+                    },
+                  },
+                ],
+              },
+        ]),
+      ),
+    },
+    actions: [
+      click("Start without Preset"),
+      { selector: "#agent-name", value: "Research assistant" },
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+      { selector: "#execution-mode", value: "dedicated" },
+      click("Configure plugins"),
+    ],
+    description:
+      "Select a saved Google account or connect one while the new dedicated OpenClaw Agent is still a draft.",
+    steps: [
+      "Add Google Workspace and choose a connection template. In Connect an account, select Workspace OAuth, review its fixed gmail.readonly scope, then choose Connect account in an HTTPS preview.",
+      "Approve the test account and return to the original form. The new account is selected for Google Workspace. Choose Done to keep editing the unsaved Agent.",
+      "Add Slack, select Existing Slack account, and load tools. Both begin enabled. Filter for send, turn off slack_send_message, and reload to check your choice before creating the Agent.",
+      "Choose a connection template for Slack. The Installation admin can open Create connection template for this MCP server or refresh the choices after setup.",
+    ],
+    gap: "Storybook simulates provider consent and compatible account discovery. The recording ends before Agent creation or any grant.",
   },
   createPluginsUnavailable: {
     group: "Pages/Create Agent",

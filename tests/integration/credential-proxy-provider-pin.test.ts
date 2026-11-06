@@ -20,6 +20,33 @@ import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-sta
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { staticEgressFixture, syntheticDispatchFixture } from "../helpers/static-egress.mjs";
 
+test("default protected model registration cannot fall back to a Gateway provider", async (t) => {
+  const f = await staticEgressFixture(t);
+  assert.ok("egress" in f);
+  assert.equal(f.source.egress?.adoption, "live");
+  const providersBefore = f.providers.size;
+  f.observed.available = false;
+  const result = await f.request("POST", f.path, {
+    body: {
+      name: "Key with unavailable protected sender",
+      type: "openai",
+      config: { authorized_base_url: f.modelProvider.baseUrl },
+      secrets: { api_key: f.secret.ref },
+    },
+  });
+  assert.equal(result.status, 503, JSON.stringify(result.body));
+  assert.match(result.body.error.message, /protected egress middleware/i);
+  assert.equal(f.providers.size, providersBefore);
+  const stored = await f.controller.transact((unit: PlatformUnitOfWork) =>
+    unit.credentialSources.listCredentialSources(f.namespace.id),
+  );
+  assert.ok(
+    !stored.some(
+      (source: CredentialSource) => source.name === "Key with unavailable protected sender",
+    ),
+  );
+});
+
 test("fresh static source refuses duplicate provider identity in either catalog order", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f && "createNamespaceMember" in f && "signIn" in f);

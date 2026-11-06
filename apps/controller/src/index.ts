@@ -44,6 +44,7 @@ import {
   type SecretDriver,
   type SecretReference,
   type CredentialSourceReference,
+  type HarnessExecutionMode,
   type UpdateWorkspaceFileBody,
   type WorkspaceFileName,
 } from "@openclaw-enterprise/contracts";
@@ -450,7 +451,10 @@ function validateConfiguration(value: unknown, depth = 0, path = ""): void {
   for (const [key, entry] of Object.entries(value)) {
     if (key === "__proto__" || key === "constructor" || key === "prototype") {
       throw failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.", [
-        { path: cappedPath(`${path}/${jsonPointer(key)}`), code: "INVALID_VALUE" },
+        {
+          path: cappedPath(`${path}/${jsonPointer(key)}`),
+          code: "INVALID_VALUE",
+        },
       ]);
     }
     validateConfiguration(entry, depth + 1, `${path}/${jsonPointer(key)}`);
@@ -580,6 +584,29 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     resourceKind: operation.resourceKind,
   };
 
+  if (
+    operation.operationId === "startAgentPluginConnection" ||
+    operation.operationId === "listAgentPluginConnectionTemplates"
+  ) {
+    return [
+      { ...permission, scope: "requested" },
+      {
+        action: "create",
+        resourceKind: "credential_source",
+        scope: "namespace",
+      },
+    ];
+  }
+  if (operation.operationId === "attachAgentConnection") {
+    return [
+      { ...permission, scope: "requested" },
+      {
+        action: "operate",
+        resourceKind: "credential_source",
+        scope: "requested",
+      },
+    ];
+  }
   if (operation.operationId === "disconnectNamespaceConnection") {
     return [{ ...permission, scope: "requested", condition: "unless_consent_owner" }];
   }
@@ -1671,7 +1698,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     resource: ResourceRef,
     context: RequestContext,
     filename: WorkspaceFileName,
-    result?: { readonly outcome: "success" | "failure"; readonly reasonCode?: string },
+    result?: {
+      readonly outcome: "success" | "failure";
+      readonly reasonCode?: string;
+    },
   ): AuditEvent {
     const base = event(operation, request, resource, "mutation", context, undefined, result);
     return {
@@ -2583,6 +2613,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         namespaceId,
         {
           harnessId: body?.harnessId as "codex" | "openclaw",
+          ...(body?.executionMode === undefined
+            ? {}
+            : { executionMode: body.executionMode as HarnessExecutionMode }),
           ...(body?.credentialSource === undefined
             ? {}
             : { credentialSource: body.credentialSource as CredentialSourceReference }),
@@ -2605,6 +2638,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         namespaceId,
         {
           harnessId: body?.harnessId as "codex" | "openclaw",
+          ...(body?.executionMode === undefined
+            ? {}
+            : { executionMode: body.executionMode as HarnessExecutionMode }),
           ...(body?.credentialSource === undefined
             ? {}
             : { credentialSource: body.credentialSource as CredentialSourceReference }),
@@ -2647,6 +2683,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       );
       reply.header("cache-control", "no-store");
       reply.send({ data: catalog, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "discoverCredentialSourceMcpTools") {
+      const plugin = await controller.discoverCredentialSourceMcpTools(
+        context.actorId,
+        namespaceId,
+        params.credentialSourceId as string,
+        { pluginId: body?.pluginId as string, slot: body?.slot as string },
+        options.readManagedMcpToolNames ?? listManagedMcpToolNames,
+        pluginDiscoveryRequestSignal(reply),
+      );
+      reply.header("cache-control", "no-store");
+      reply.send({ data: plugin, meta: { requestId: request.id } });
       return;
     }
 
@@ -2996,7 +3046,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw dependencyUnavailable();
           }
           const isWellFormed = (
-            String.prototype as unknown as { isWellFormed: (this: string) => boolean }
+            String.prototype as unknown as {
+              isWellFormed: (this: string) => boolean;
+            }
           ).isWellFormed;
           if (
             Buffer.byteLength(result.file.content, "utf8") > WORKSPACE_FILE_CONTENT_LIMIT ||
@@ -3981,7 +4033,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           if (!options.auth.readAccount || !options.auth.changeAccount) {
             throw accountControlsUnsupported();
           }
-          const { expectedVersion } = request.body as { expectedVersion: number };
+          const { expectedVersion } = request.body as {
+            expectedVersion: number;
+          };
           if (operationName === "github") {
             if (!options.auth.attachGitHub || !options.auth.githubEnabled) {
               throw failure(409, "RESOURCE_CONFLICT", "GitHub sign-in is not configured.");

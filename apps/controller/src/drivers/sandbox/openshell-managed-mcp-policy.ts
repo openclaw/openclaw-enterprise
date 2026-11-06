@@ -59,6 +59,9 @@ function openShellManagedMcpPolicy(
   installationProviders: readonly string[],
 ) {
   const binding = managedMcpCredentialBinding(revision.plugins?.plugins, install);
+  if (binding && revision.plugins?.savedAccounts?.sourceIds.includes(binding.sourceId)) {
+    return undefined; // The revision-scoped token-grant provider owns this slot.
+  }
   const { host, port, path } = install.endpoint;
   const attached = requirements.credentialAttachments.filter(
     ({ sourceId, requestScope }) =>

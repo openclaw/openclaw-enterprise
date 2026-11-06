@@ -140,3 +140,7 @@ Switch back to verify the entire card disappears.
     In **First deployment queued**, confirm Stop and check **Deployment cancellation
     requested**, not a claim that cleanup finished. The lifecycle browser regression
     covers another actor deploying and stopping later; that read must remove the old result.
+
+## Connect a saved account in a provider tab
+
+Open **Pages / Agent detail / Plugin Consent Popup** on an HTTPS Storybook preview. Select **Configure plugins → Google Workspace → Choose a connection template**, select **Workspace OAuth**, then choose **Connect and attach**. The original plugin editor keeps the account slot open with **Check connection** and **Try again** while the test provider asks for approval in a separate tab. Approve there and verify the original editor selects **Existing Gmail account**. Reset the story and cancel at the provider. The original account slot reports that access was declined and keeps **Try again** available. The template, provider response and Agent state are fixtures. This story exercises the Console handoff and its reread of the saved selection.

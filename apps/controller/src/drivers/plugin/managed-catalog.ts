@@ -3,12 +3,15 @@ import { readFileSync } from "node:fs";
 import {
   isAllowedSecretBindingDestination,
   type CredentialSource,
+  type CredentialHttpRequest,
+  type PluginAccountTarget,
   type PluginCatalogEntry,
   type PluginDesiredState,
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { exactDnsName } from "../credential-source-endpoint.ts";
+import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
 import { googleWorkspaceCredentialPolicy } from "./google-workspace/credential-policy.ts";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
@@ -400,7 +403,168 @@ export function managedMcpSlotAcceptsSource(
   );
 }
 
+const mcpClientHeaders = new Set([
+  "accept",
+  "accept-encoding",
+  "accept-language",
+  "cache-control",
+  "content-type",
+  "last-event-id",
+  "mcp-method",
+  "mcp-name",
+  "mcp-protocol-version",
+  "mcp-session-id",
+  "pragma",
+  "sec-fetch-mode",
+  "user-agent",
+]);
+
+/** The receiver can act on only the MCP methods and literal tools admitted for this release. */
+function allowsMcpAccountRequest(
+  install: ManagedMcpInstall,
+  toolNames: readonly string[],
+  request: CredentialHttpRequest,
+) {
+  const { host, port, path, query, method } = request.target;
+  if (
+    host !== install.endpoint.host ||
+    port !== install.endpoint.port ||
+    path !== install.endpoint.path ||
+    new Set(request.headers.map(([header]) => header)).size !== request.headers.length ||
+    request.headers.some(([header]) => !mcpClientHeaders.has(header)) ||
+    query
+  ) {
+    return false;
+  }
+  if (method === "GET" || method === "DELETE") {
+    return toolNames.length > 0 && request.body.length === 0;
+  }
+  if (
+    method !== "POST" ||
+    !/^application\/json(?:;\s*charset=utf-8)?$/i.test(
+      request.headers.find(([name]) => name === "content-type")?.[1] ?? "",
+    )
+  ) {
+    return false;
+  }
+  const rpc = asRecord(
+    parseUnambiguousJson(new TextDecoder("utf-8", { fatal: true }).decode(request.body)),
+  );
+  if (!rpc || rpc.jsonrpc !== "2.0" || typeof rpc.method !== "string") {
+    return false;
+  }
+  const name = asRecord(rpc.params)?.name;
+  for (const [header, value] of request.headers) {
+    if (
+      (header === "mcp-method" && value !== rpc.method) ||
+      (header === "mcp-name" && value !== name)
+    ) {
+      return false;
+    }
+  }
+  if (rpc.method === "ping") {
+    return true;
+  }
+  return (
+    toolNames.length > 0 &&
+    (["initialize", "notifications/initialized", "tools/list"].includes(rpc.method) ||
+      (rpc.method === "tools/call" && typeof name === "string" && toolNames.includes(name)))
+  );
+}
+
+/** Resolve the release's named account independently of any account currently bound to it. */
+export function managedPluginAccountSlot(
+  install: ManagedCliInstall | ManagedMcpInstall,
+  selections: PluginDesiredState,
+  slotId: string,
+) {
+  const cliPolicy = install.kind === "cli" ? cliCredentialPolicy(install) : undefined;
+  if (!Object.hasOwn(install.credentials, slotId) || (install.kind === "cli" && !cliPolicy)) {
+    return undefined;
+  }
+  const selection = selections[install.id];
+  const policy = selection?.driverPolicy;
+  const bindings = asRecord(policy?.credentials);
+  const current = bindings?.[slotId];
+  const slot = install.credentials[slotId]!;
+  function acceptsRecipient(target: PluginAccountTarget) {
+    const { destinations, mcp } = target;
+    if (target.issuer !== slot.issuer) {
+      return false;
+    }
+    if (install.kind === "mcp") {
+      const [endpoint] = destinations;
+      return (
+        destinations.length === 1 &&
+        endpoint !== undefined &&
+        mcp?.serverUrl === install.url &&
+        mcp.resource === install.credentials[slotId]!.mcp.resource &&
+        endpoint.host === install.endpoint.host &&
+        endpoint.port === install.endpoint.port &&
+        endpoint.path === install.endpoint.path
+      );
+    }
+    return (
+      !mcp &&
+      target.tokenUrl === install.credentials[slotId]!.tokenEndpoint &&
+      cliPolicy !== undefined &&
+      destinations.some(cliPolicy.acceptsAccountDestination)
+    );
+  }
+  return {
+    releaseSha256: install.releaseSha256,
+    credentialSourceId: typeof current === "string" ? current : null,
+    issuers: [slot.issuer],
+    ...(install.kind === "mcp" && { mcpServerUrl: install.url }),
+    acceptsRecipient,
+    authorizeRequest(
+      target: PluginAccountTarget,
+      grantedScopes: readonly string[],
+      request: CredentialHttpRequest,
+    ): "credential" | "public" | "deny" {
+      if (
+        !selection?.enabled ||
+        selection.driverPolicy?.releaseSha256 !== install.releaseSha256 ||
+        !current ||
+        request.target.reportedScheme !== "https" ||
+        !acceptsRecipient(target)
+      ) {
+        return "deny";
+      }
+      try {
+        if (install.kind === "mcp") {
+          const binding = managedMcpCredentialBinding(selections, install);
+          return binding && allowsMcpAccountRequest(install, binding.toolNames, request)
+            ? "credential"
+            : "deny";
+        }
+        return (
+          cliPolicy?.authorizeAccountRequest(target.destinations, grantedScopes, request) ?? "deny"
+        );
+      } catch {
+        // Malformed encodings and ambiguous JSON cannot identify an authorized operation.
+        return "deny";
+      }
+    },
+    bind(sourceId: string) {
+      return {
+        ...selection,
+        enabled: true,
+        driverPolicy: {
+          ...policy,
+          releaseSha256: install.releaseSha256,
+          credentials: { ...bindings, [slotId]: sourceId },
+        },
+      };
+    },
+  };
+}
+
 export const managedPluginCredentials = {
+  connectionSlot(selections: PluginDesiredState, pluginId: string, slotId: string) {
+    const install = managedInstalls.find(({ id }) => id === pluginId);
+    return install && managedPluginAccountSlot(install, selections, slotId);
+  },
   mcpToolDiscovery(pluginId: string, slotId: string, source: CredentialSource) {
     const install = managedMcpInstalls.find(({ id }) => id === pluginId);
     if (!install || slotId !== install.slotId || !managedMcpSlotAcceptsSource(install, source)) {
@@ -441,6 +605,16 @@ export const managedPluginCredentials = {
         continue;
       }
       const source = sources.find(({ id }) => id === binding.sourceId);
+      // OCC verifies the grant and current template recipient before asking the Driver to
+      // validate the selection. A saved account requires no native provider configuration.
+      if (
+        source?.ownerCapability === "token_service" &&
+        source.type === "oauth2-refresh-token" &&
+        source.state === "ready" &&
+        source.id !== modelSourceId
+      ) {
+        continue;
+      }
       const accepts =
         source &&
         (install.kind === "mcp"

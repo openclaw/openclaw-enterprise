@@ -513,11 +513,13 @@ export const PluginCatalogHarnessId = Type.Union([Type.Literal("openclaw"), Type
 
 const PluginCatalogPageFields = {
   harnessId: PluginCatalogHarnessId,
+  executionMode: Type.Optional(HarnessExecutionModeSchema),
   cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
   q: Type.Optional(Type.String({ maxLength: 1024 })),
 };
 const PluginCatalogDetailsFields = {
   harnessId: PluginCatalogHarnessId,
+  executionMode: Type.Optional(HarnessExecutionModeSchema),
   pluginId: Type.String({ minLength: 1, maxLength: 256 }),
 };
 

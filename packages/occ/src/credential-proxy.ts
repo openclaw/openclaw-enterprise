@@ -6,13 +6,21 @@ import type {
   AcceptedEgressAssociation,
   AuthorizedSend,
 } from "./egress-send-receipts.ts";
+import type { RequestCredentialApproval } from "./ports/request-credential-approvals.ts";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
   CapturedEgressUse,
   CredentialProxyExchange,
+  OAuthAccountRef,
+  OAuthConnectionAccessToken,
+  RequestCredentialInput,
+  RequestCredentialGrant,
+  ResolvedToken,
+  TokenResolveOptions,
   EgressExchangeOwner,
   EgressPeer,
+  EgressRef,
   EgressResolution,
   EgressSendDecision,
   EgressStreamLease,
@@ -79,6 +87,19 @@ export interface EgressAuthorityPorts {
     isProviderCurrent: () => boolean,
   ): Promise<VersionedSecretValue & { readonly materialId: string }>;
   readonly resolvePrepared?: PreparedTokenIssuer["resolve"];
+  readonly requestCredentials?: {
+    readonly sender: EgressRef;
+    check(
+      request: RequestCredentialInput | RequestCredentialApproval,
+      signal: AbortSignal,
+      selected?: Pick<OAuthConnectionAccessToken, "version" | "grantedScopes">,
+    ): Promise<OAuthAccountRef | "without_credential" | undefined>;
+    consume(grant: RequestCredentialGrant): Promise<RequestCredentialApproval | undefined>;
+    resolve(
+      ref: OAuthAccountRef,
+      options: TokenResolveOptions,
+    ): Promise<OAuthConnectionAccessToken | undefined>;
+  };
   /** Check the exact selection, then mint once immediately before the possible-send receipt. */
   authorizeSend(
     use: CapturedEgressUse,
@@ -406,11 +427,114 @@ export class CredentialProxy implements CredentialProxyExchange {
     this.capacity = resolved.capacity;
   }
 
+  private async withRequestCredential<T>(
+    recipientId: string,
+    deadlineAt: string,
+    signal: AbortSignal,
+    operation: (
+      ports: NonNullable<EgressAuthorityPorts["requestCredentials"]>,
+      signal: AbortSignal,
+    ) => Promise<T | undefined>,
+  ): Promise<T | undefined> {
+    const ports = this.ports.requestCredentials;
+    const deadline = Date.parse(deadlineAt);
+    const budget = Math.ceil(deadline - this.ports.now());
+    if (!ports || signal.aborted || !(budget > 0 && budget <= 30_000)) {
+      return undefined;
+    }
+    const charge = this.reserveOperation(JSON.stringify([ports.sender, recipientId]));
+    if (!charge) {
+      return undefined;
+    }
+    try {
+      const lifetime = AbortSignal.any([signal, AbortSignal.timeout(budget)]);
+      const result = await operation(ports, lifetime);
+      return lifetime.aborted || this.ports.now() >= deadline ? undefined : result;
+    } finally {
+      this.releaseCharge(charge);
+    }
+  }
+
+  authorizeRequestCredential(request: RequestCredentialInput, signal: AbortSignal) {
+    return this.withRequestCredential<"credential" | "without_credential">(
+      request.recipient.id,
+      request.deadlineAt,
+      signal,
+      async (ports, lifetime) => {
+        const approved = await ports.check(request, lifetime);
+        return typeof approved === "object" ? "credential" : approved;
+      },
+    );
+  }
+
+  resolveRequestCredential(grant: RequestCredentialGrant, signal: AbortSignal) {
+    return this.withRequestCredential<ResolvedToken>(
+      grant.recipientId,
+      grant.deadlineAt,
+      signal,
+      async (ports, lifetime) => {
+        const approval = await ports.consume(grant);
+        if (!approval || lifetime.aborted) {
+          return undefined;
+        }
+        const deadline = Math.min(Date.parse(approval.deadlineAt), Date.parse(grant.deadlineAt));
+        const remaining = Math.ceil(deadline - this.ports.now());
+        if (!(remaining > 0)) {
+          return undefined;
+        }
+        const approvedLifetime = AbortSignal.any([lifetime, AbortSignal.timeout(remaining)]);
+        const ref = await ports.check(approval, approvedLifetime);
+        if (!ref || ref === "without_credential" || approvedLifetime.aborted) {
+          return undefined;
+        }
+        // Refresh outside the policy transaction. Never release a token for an expired or withdrawn approval.
+        const token = await ports.resolve(ref, {
+          signal: approvedLifetime,
+          deadlineAt: new Date(deadline).toISOString(),
+          minimumValidityMs: remaining,
+        });
+        if (!token || approvedLifetime.aborted || !(Date.parse(token.expiresAt) > deadline)) {
+          return undefined;
+        }
+        const current = await ports.check(approval, approvedLifetime, {
+          version: token.version,
+          grantedScopes: token.grantedScopes,
+        });
+        if (
+          !isDeepStrictEqual(current, ref) ||
+          approvedLifetime.aborted ||
+          this.ports.now() >= deadline
+        ) {
+          return undefined;
+        }
+        return { accessToken: token.accessToken, expiresAt: token.expiresAt };
+      },
+    );
+  }
+
   private async verifyPeer(authorization: string): Promise<EgressPeer | undefined> {
     const peer = await this.ports.exchangeOwner.verify(authorization);
     // Driver-owned descriptors may be reused. Detach identity, including sender,
     // before any subsequent Driver, policy or receipt await can change it.
     return peer === undefined ? undefined : immutableCopy(peer);
+  }
+
+  private reserveOperation(authenticatedShare?: string): OperationCharge | undefined {
+    if (
+      this.activeOperations >= this.capacity.operations ||
+      (authenticatedShare === undefined &&
+        this.authenticating >= this.capacity.authenticatingOperations)
+    ) {
+      return undefined;
+    }
+    this.activeOperations += 1;
+    this.authenticating += 1;
+    const charge: OperationCharge = { holds: 1 };
+    if (authenticatedShare !== undefined && !this.chargeShare(charge, authenticatedShare)) {
+      this.releaseCharge(charge);
+      return undefined;
+    }
+    return charge;
   }
 
   private releaseCharge(charge: OperationCharge): void {
@@ -512,15 +636,10 @@ export class CredentialProxy implements CredentialProxyExchange {
     this.pruneReplay(now);
     // Reserve before authentication or any other await. Pending Secret/policy I/O
     // consumes the same capacity as an outstanding material handle.
-    if (
-      this.activeOperations >= this.capacity.operations ||
-      this.authenticating >= this.capacity.authenticatingOperations
-    ) {
+    const charge = this.reserveOperation();
+    if (!charge) {
       return { kind: "refused", error: { kind: "unavailable", code: "resolver" } };
     }
-    this.activeOperations += 1;
-    this.authenticating += 1;
-    const charge: OperationCharge = { holds: 1 };
     try {
       // Copy body bytes separately without moving the field: the sender's request digest
       // covers their original serialization order. Uint8Array also detaches a Node Buffer.

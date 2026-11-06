@@ -1,7 +1,11 @@
 import type { Static } from "typebox";
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type { ComputeAgentProvisioningCapabilities } from "./drivers/compute/index.ts";
-import type { DriverCapability } from "./drivers/index.ts";
+import {
+  validDriverRegistrationRef,
+  type DriverCapability,
+  type DriverRegistrationRef,
+} from "./drivers/index.ts";
 import type {
   ExecutionAdmission,
   ProtectedEgressSource,
@@ -46,6 +50,9 @@ export type {
 export type {
   CredentialProxyBinding,
   CredentialProxyExchange,
+  CredentialHttpRequest,
+  RequestCredentialInput,
+  RequestCredentialGrant,
   EgressPeer,
   CapturedEgressUse,
   EgressExchangeOwner,
@@ -161,6 +168,7 @@ export type {
   ConnectionTemplate,
   ConnectionTemplateValues,
   OAuthConnectionTemplateVersion,
+  ConnectionAttachmentIntent,
   ConnectionSession,
   SavedConnection,
 } from "./connection-templates.ts";
@@ -176,7 +184,7 @@ export {
 export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";
 export { isComputePreparationFailureEvidence } from "./compute-preparation.ts";
 
-import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { asRecord, immutableCopy, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
 import {
   PluginDesiredSelectionSchema,
   PluginDesiredStateSchema,
@@ -785,14 +793,51 @@ export interface PluginPolicyCapabilities {
   readonly driverPolicySchema: JSONSchema;
 }
 
-/** Ready choices for a slot in the saved Agent's plugin picker. */
+/** The account choices the Agent editor offers for a named plugin slot. */
 export interface AgentPluginCredentialSlot {
   readonly pluginId: string;
   readonly releaseSha256: string;
   readonly id: string;
   readonly label: string;
   readonly toolDiscovery?: true;
-  readonly sources: readonly { readonly id: string; readonly name: string }[];
+  /** OCC permits the caller to start OAuth consent for this slot. */
+  readonly connectAccount?: true;
+  /** OCC supplies setup details only to Installation administrators when no template can start consent. */
+  readonly templateSetup?: {
+    readonly issuers: readonly string[];
+    readonly mcpServerUrl?: string;
+    readonly unregisteredTemplates: readonly {
+      readonly id: string;
+      readonly displayName: string;
+      readonly namespaceId?: string;
+    }[];
+  };
+  readonly sources: readonly {
+    readonly id: string;
+    readonly name: string;
+    /** The authority OCC can use to list MCP tools for this source and slot. */
+    readonly toolDiscovery?: "caller" | "agent";
+    /** Same issuer, but a new grant is needed for this receiver. */
+    readonly authorization?: "required";
+  }[];
+}
+
+/** A connectable template for one plugin account slot, including its consent scope choices. */
+export interface PluginConnectionTemplateChoice {
+  readonly id: string;
+  readonly displayName: string;
+  readonly version: number;
+  readonly mode: "manual" | "mcp_discovery";
+  readonly scopes: readonly string[];
+  readonly requiredScopes: readonly string[];
+  readonly offeredScopes: readonly string[];
+}
+
+/** Namespace details add the account choices OCC authorizes for a new Agent. */
+export interface NamespaceAgentPluginDetails extends PluginCatalogEntry {
+  readonly credentialSlots?: readonly (AgentPluginCredentialSlot & {
+    readonly connectionTemplates?: readonly PluginConnectionTemplateChoice[];
+  })[];
 }
 
 export interface PluginCatalogLink {
@@ -823,7 +868,22 @@ export interface PluginCatalogPage {
   readonly setup?: { readonly message: string; readonly links: readonly PluginCatalogLink[] };
 }
 
+/** Bind one slot and source to the execution in which OCC admitted them. */
+export function savedAccountBindingId(
+  revisionId: string,
+  pluginId: string,
+  slotId: string,
+  sourceId: string,
+): string {
+  return sha256Hex(JSON.stringify([revisionId, pluginId, slotId, sourceId]));
+}
+
 export interface PluginRevisionState {
+  /** Saved OAuth selections are authorized at send time by this admitted Credential Proxy. */
+  readonly savedAccounts?: {
+    readonly driver: DriverRegistrationRef;
+    readonly sourceIds: readonly string[];
+  };
   readonly driver: PluginDriverIdentity;
   readonly plugins: PluginDesiredState;
 }
@@ -884,12 +944,28 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
   const record = asRecord(value);
   if (
     record === undefined ||
-    Object.keys(record).some((key) => key !== "driver" && key !== "plugins")
+    Object.keys(record).some(
+      (key) => key !== "driver" && key !== "plugins" && key !== "savedAccounts",
+    )
   ) {
     return false;
   }
   if (!validPluginDriverIdentity(record.driver) || record.plugins === undefined) {
     return false;
+  }
+  if (record.savedAccounts !== undefined) {
+    const saved = asRecord(record.savedAccounts);
+    if (
+      !saved ||
+      Object.keys(saved).some((key) => key !== "driver" && key !== "sourceIds") ||
+      !validDriverRegistrationRef(saved.driver) ||
+      !Array.isArray(saved.sourceIds) ||
+      saved.sourceIds.length === 0 ||
+      !saved.sourceIds.every(isNonEmptyString) ||
+      new Set(saved.sourceIds).size !== saved.sourceIds.length
+    ) {
+      return false;
+    }
   }
   try {
     normalizePluginDesiredState(record.plugins, (message) => {
@@ -1494,6 +1570,7 @@ export type {
 } from "./drivers/sandbox/index.ts";
 export type {
   PluginDriver,
+  PluginAccountTarget,
   PluginDriverContext,
   PluginDiscoveryAuthentication,
 } from "./drivers/plugin/index.ts";

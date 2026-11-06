@@ -11546,14 +11546,18 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     resourceKind: "agent",
     resourceId: created.data.id,
   });
-  const forbidden = await controller.request("POST", `${agentPath}/plugins/details`, {
-    body: discovery,
-    session: editor.session,
-  });
-  assertApiError(forbidden, 403, "FORBIDDEN");
-  assert.match(forbidden.body.error.message, /CredentialSource operate/);
-  assert.equal(tokenReads, 0);
-  assert.deepEqual(upstream, []);
+  const discoverAsEditor = () =>
+    controller.request("POST", `${agentPath}/plugins/details`, {
+      body: discovery,
+      session: editor.session,
+    });
+  // The editor can list tools through this Agent's existing source grant.
+  const delegated = await discoverAsEditor();
+  assert.equal(delegated.status, 200, JSON.stringify(delegated.body));
+  assert.deepEqual(delegated.data.tools, detail.data.tools);
+  assert.equal(tokenReads, 1);
+  tokenReads = 0;
+  upstream.length = 0;
   // The editor loses source access while the external Configuration Driver resolves the
   // pre-dispatch placement. Their grant must be checked again before the peer sees a bearer.
   const editorSource = {
@@ -11576,22 +11580,36 @@ test("deploying Google Workspace and Slack together freezes both selections and 
       return saved;
     };
   };
-  const revoked = await controller.request("POST", `${agentPath}/plugins/details`, {
-    body: discovery,
-    session: editor.session,
-  });
+  const revoked = await discoverAsEditor();
   assertApiError(revoked, 403, "FORBIDDEN");
   assert.equal(tokenReads, 1);
   assert.deepEqual(upstream, []);
   beforeTokenUse = () => {};
   tokenReads = 0;
-  state.bindings.pop();
 
-  const agentBinding = state.bindings.pop();
-  assert.equal(agentBinding.resourceId, source.data.id);
-  assertApiError(await discover(), 403, "FORBIDDEN");
+  const agentBinding = state.bindings.find(
+    ({ subjectId, resourceId }) =>
+      subjectId === created.data.servicePrincipalId && resourceId === source.data.id,
+  );
+  assert.ok(agentBinding);
+  state.bindings.splice(state.bindings.indexOf(agentBinding), 1);
+  assertApiError(await discoverAsEditor(), 403, "FORBIDDEN");
   assert.equal(tokenReads, 0);
   assert.deepEqual(upstream, []);
+
+  // A caller who can operate this exact Gateway source can use it without any Agent grant.
+  const direct = await controller.request(
+    "POST",
+    `${base}/credential-sources/${source.data.id}/mcp-tools`,
+    {
+      body: { pluginId, slot: "account" },
+    },
+  );
+  assert.equal(direct.status, 200, JSON.stringify(direct.body));
+  assert.deepEqual(direct.data.tools, detail.data.tools);
+  assert.equal(tokenReads, 1);
+  tokenReads = 0;
+  upstream.length = 0;
 
   state.bindings.push(agentBinding);
   assertApiError(
@@ -11623,7 +11641,7 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     },
   });
   assert.equal(detached.status, 200, JSON.stringify(detached.body));
-  assertApiError(await discover(), 409, "RESOURCE_CONFLICT");
+  assertApiError(await discoverAsEditor(), 404, "NOT_FOUND");
   assert.equal(tokenReads, 0);
   assert.deepEqual(upstream, []);
   const restored = await controller.request("PATCH", agentPath, {
@@ -11633,7 +11651,7 @@ test("deploying Google Workspace and Slack together freezes both selections and 
 
   // An Agent's grant may change during the backend read. Recheck it before calling Slack.
   beforeTokenUse = () => state.bindings.pop();
-  assertApiError(await discover(), 403, "FORBIDDEN");
+  assertApiError(await discoverAsEditor(), 403, "FORBIDDEN");
   assert.equal(tokenReads, 1);
   assert.deepEqual(upstream, []);
   beforeTokenUse = () => {};
@@ -11648,7 +11666,9 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   const capabilities = await controller.request("GET", `${agentPath}/plugins/capabilities`);
   assert.equal(capabilities.status, 200, JSON.stringify(capabilities.body));
   const slot = capabilities.data.credentialSlots.find((entry) => entry.pluginId === pluginId);
-  assert.deepEqual(slot.sources, [{ id: source.data.id, name: "Slack account" }]);
+  assert.deepEqual(slot.sources, [
+    { id: source.data.id, name: "Slack account", toolDiscovery: "caller" },
+  ]);
   assert.equal(slot.toolDiscovery, true);
   const google = { "occ-plugin:google@1.0.0": { enabled: true } };
   const pluginsFor = (toolNames) => ({
@@ -11671,8 +11691,18 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   assert.match(refused.body.error.message, /Select distinct literal Slack tool names/);
   // Discovery offers both tools. The operator selects one, and deployment freezes that subset.
   const approved = pluginsFor(["slack_send_message"]);
+  // Binding this known, attached Gateway source requires operate even when its metadata is private.
+  state.restrictions.push({
+    id: "private-slack-source",
+    namespaceId: namespace.id,
+    resourceKind: "credential_source",
+    resourceId: source.data.id,
+    action: "read",
+    effect: "deny",
+  });
   const saved = await save(approved);
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  state.restrictions.pop();
   assert.deepEqual(saved.data.plugins[pluginId].driverPolicy.toolNames, ["slack_send_message"]);
   const deployed = await controller.request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));

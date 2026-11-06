@@ -1,4 +1,4 @@
-import type { PluginCatalogEntry, PluginCatalogPage } from "@openclaw-enterprise/contracts";
+import type { PluginCatalogPage } from "@openclaw-enterprise/contracts";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
 import {
   type CatalogDirection,
@@ -25,7 +25,7 @@ type CatalogRequest = { cursor?: string; q?: string } | { pluginId: string };
 
 interface PluginDiscoveryOptions extends Pick<
   PluginFieldsOptions,
-  "input" | "saveHint" | "createApproverField"
+  "input" | "saveHint" | "createApproverField" | "getSlotConnection"
 > {
   context: PluginDiscoveryContext;
   canDiscover(): boolean;
@@ -83,6 +83,7 @@ export function createPluginDiscovery({
   unsupportedMessage = "This Installation's Plugin Driver does not offer catalog browsing. You can edit configured selections or JSON, or ask an operator to select a catalog-capable Driver.",
   availableMessage = "Load plugins available to this credential. Your plugin selections stay unchanged.",
   createApproverField,
+  getSlotConnection,
 }: PluginDiscoveryOptions) {
   let generation = 0;
   let prefetched = false;
@@ -101,6 +102,7 @@ export function createPluginDiscovery({
     input,
     ...(saveHint !== undefined ? { saveHint } : {}),
     ...(createApproverField ? { createApproverField } : {}),
+    ...(getSlotConnection ? { getSlotConnection } : {}),
     onLoadPlugins: (direction, q) => {
       if (direction === "search") {
         scheduleSearch(q);
@@ -109,7 +111,7 @@ export function createPluginDiscovery({
       }
     },
     onCancelDiscovery: cancel,
-    onLoadTools: (id, connection) => void loadTools(id, connection),
+    onLoadTools: loadTools,
   });
 
   function render() {
@@ -298,7 +300,10 @@ export function createPluginDiscovery({
     if (pending) {
       entries.set(id, { ...entry, managedTools: pending });
     } else {
-      if (!entry.remoteId || entry.toolStatus === "loading") {
+      if (
+        (!entry.remoteId && !getSlotConnection?.()?.grantOnCreate) ||
+        entry.toolStatus === "loading"
+      ) {
         return;
       }
       entries.set(id, { ...entry, toolStatus: "loading", toolError: undefined });
@@ -314,14 +319,25 @@ export function createPluginDiscovery({
     };
     render();
     try {
-      const detail = (await context.request(`${catalogPath}/details`, {
-        method: "POST",
-        readOnly: true,
-        signal: requests.signal,
-        body: connection
-          ? { pluginId: id, managedConnection: connection }
-          : requestBody({ pluginId: entry.remoteId! }),
-      })) as PluginCatalogEntry;
+      let detail: CatalogEntry;
+      if (connection) {
+        const { slot, sourceId } = connection;
+        const useCaller = connection.toolDiscovery === "caller";
+        const pluginId = entry.remoteId ?? id;
+        const path = useCaller
+          ? `${namespacePath(context.namespaceId)}/credential-sources/${encodeURIComponent(sourceId)}/mcp-tools`
+          : `${catalogPath}/details`;
+        detail = (await context.request(path, {
+          method: "POST",
+          readOnly: true,
+          signal: requests.signal,
+          body: useCaller
+            ? { pluginId, slot }
+            : { pluginId, managedConnection: { slot, sourceId } },
+        })) as CatalogEntry;
+      } else {
+        detail = await readDetail(id);
+      }
       const current = currentEntry();
       if (!current) {
         return;
@@ -335,6 +351,9 @@ export function createPluginDiscovery({
             }
           : { ...current, ...detail, toolStatus: "loaded", toolError: undefined },
       );
+      if (connection) {
+        return detail.tools ?? undefined;
+      }
     } catch (cause) {
       const current = currentEntry();
       if (!current) {
@@ -345,11 +364,13 @@ export function createPluginDiscovery({
         context.onExpired();
         return;
       }
+      const accountDenied =
+        connection?.toolDiscovery === "caller"
+          ? "You need permission to use the selected account to load its tools."
+          : "You need permission to edit this Agent, and the Agent needs access to the selected credential.";
       const message = discoveryError(
         error,
-        pending
-          ? "Tool discovery requires Agent edit access and permission to use the selected credential."
-          : deniedMessage,
+        pending ? accountDenied : deniedMessage,
         pending
           ? "Authenticated tool discovery is unavailable for this connection."
           : unsupportedMessage,
@@ -368,5 +389,24 @@ export function createPluginDiscovery({
   }
 
   render();
-  return { fields, reset, update };
+  async function readDetail(id: string): Promise<CatalogEntry> {
+    const entry = entries.get(id);
+    if (!entry) {
+      throw new Error("Reload the plugin catalog before checking this account.");
+    }
+    return (await context.request(`${catalogPath}/details`, {
+      method: "POST",
+      readOnly: true,
+      signal: requests.signal,
+      body: requestBody({ pluginId: entry.remoteId ?? id }),
+    })) as CatalogEntry;
+  }
+  function rememberDetail(entry: CatalogEntry) {
+    const current = entries.get(entry.id);
+    if (current) {
+      entries.set(entry.id, { ...current, ...entry, toolStatus: "loaded" });
+      render();
+    }
+  }
+  return { fields, reset, update, readDetail, rememberDetail };
 }

@@ -228,7 +228,7 @@ export interface ComputeDriver extends Driver {
   ): Promise<SandboxHarnessObservation>;
   /** Admission capability check, not release authority. Missing support fails closed. */
   validateExecutionAdmission?(
-    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+    revision: Readonly<AgentRevision> | Pick<AgentRevision, "executionAdmission" | "egressPlan">,
     /** Only the release of a revision already in durable custody can use its historical contract. */
     source?: SelectedDriverRegistration | "stored",
   ): void;

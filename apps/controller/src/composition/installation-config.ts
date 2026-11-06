@@ -1024,6 +1024,25 @@ export async function loadInstallationConfiguration(options: {
   }
 
   requireChartListener(egressAuthority, environment, chartListeners.egressAuthority);
+  const tokenGrant = (proxySelection?.configuration as unknown as OpenShellProxyOptions | undefined)
+    ?.tokenGrant;
+  if (tokenGrant && egressAuthority) {
+    requireChartListener(
+      { host: egressAuthority.host, port: tokenGrant.port, bundlePath: tokenGrant.bundlePath },
+      environment,
+      {
+        path: "drivers.credential_proxy.configuration.tokenGrant",
+        chart: "egressAuthority.tokenGrant",
+        variable: "OCC_OPENSHELL_TOKEN_GRANT_PORT",
+        files: {
+          bundlePath: [
+            "/etc/openclaw/egress/issuer/spiffe-bundle.json",
+            "egressAuthority.issuerSecretName",
+          ],
+        },
+      },
+    );
+  }
   requireChartListener(
     repositoryTransportConfiguration?.authority,
     environment,

@@ -245,6 +245,8 @@ const savedAccount = {
 
 export const parameterExamples = {
   oauthClientId,
+  pluginId: "occ-plugin:google@1.0.0",
+  slotId: "account",
   connectionTemplateId,
   key: "review-1",
   expectedConfigurationId: configurationId,
@@ -288,6 +290,14 @@ export const parameterExamples = {
 };
 
 export const requestExamples = {
+  startAgentPluginConnection: {
+    connectionTemplateId,
+    connectionTemplateVersion: 1,
+    pluginId: "occ-plugin:google@1.0.0",
+    slotId: "account",
+    expectedCredentialSourceId: null,
+    releaseSha256: "a".repeat(64),
+  },
   startNamespaceConnection: { connectionTemplateId },
   createConnectionTemplate: {
     ...connectionTemplateInput,
@@ -363,6 +373,7 @@ export const requestExamples = {
   discoverAgentPluginDetails: { harnessId: "codex", secretRef, pluginId: plugin.id },
   discoverSavedAgentPlugins: {},
   discoverSavedAgentPluginDetails: { pluginId: plugin.id },
+  discoverCredentialSourceMcpTools: { pluginId: "occ-plugin:slack@1.0.0", slot: "account" },
   lookupChannelDirectory: { kind: "channels", secretId: secret.id, query: "engineering" },
   startAgentDeviceAuthorization: { harnessId: "codex" },
   startSavedAgentDeviceAuthorization: { harnessId: "codex" },
@@ -405,6 +416,22 @@ export const requestExamples = {
 
 // Values below are data members. The generator adds the common meta envelope.
 export const responseExamples = {
+  listAgentPluginConnectionTemplates: [
+    {
+      id: connectionTemplateId,
+      displayName: "Engineering account",
+      version: 1,
+      mode: "manual",
+      scopes: ["profile"],
+      requiredScopes: [],
+      offeredScopes: [],
+    },
+  ],
+  startAgentPluginConnection: {
+    credentialSourceId: source.id,
+    authorizationUrl: "https://accounts.example.com/authorize?state=example-state",
+    expiresAt: time,
+  },
   listUsableConnectionTemplates: [connectionTemplate],
   listNamespaceConnections: [savedAccount],
   startNamespaceConnection: {
@@ -583,6 +610,13 @@ export const responseExamples = {
   discoverSavedAgentPlugins: catalog,
   discoverAgentPluginDetails: plugin,
   discoverSavedAgentPluginDetails: plugin,
+  discoverCredentialSourceMcpTools: {
+    id: "occ-plugin:slack@1.0.0",
+    name: "Slack",
+    tools: [
+      { id: "slack_search_public", name: "slack_search_public", ownerId: "occ-plugin:slack@1.0.0" },
+    ],
+  },
   getSavedAgentPluginPolicyCapabilities: {
     driver: { id: "codex", implementation: "codex" },
     discoveryCredential: "required",

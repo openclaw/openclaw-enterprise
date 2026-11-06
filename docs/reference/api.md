@@ -83,7 +83,7 @@ the paths.
 | --- | --- |
 | [Authentication](#authentication) | 27 operations |
 | [Backends](#backends) | 1 operation |
-| [Connections](#connections) | 15 operations |
+| [Connections](#connections) | 20 operations |
 | [Installation](#installation) | 5 operations |
 | [Namespaces](#namespaces) | 7 operations |
 | [Agents](#agents) | 50 operations |
@@ -1719,10 +1719,15 @@ Example response
 | [`DELETE /connection-templates/{connectionTemplateId}`](#delete-connectiontemplatesconnectiontemplateid) | Delete a connection template |
 | [`GET /connection-templates/{connectionTemplateId}`](#get-connectiontemplatesconnectiontemplateid) | Get one connection template |
 | [`PATCH /connection-templates/{connectionTemplateId}`](#patch-connectiontemplatesconnectiontemplateid) | Rename a connection template, or create a version with new approved values |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/connections`](#post-namespacesnamespaceidagentsagentidconnections) | Connect an account and attach it to a saved Agent plugin slot |
+| [`DELETE /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`](#delete-namespacesnamespaceidagentsagentidconnectionscredentialsourceid) | Detach an account from this Agent and withdraw its access |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`](#post-namespacesnamespaceidagentsagentidconnectionscredentialsourceid) | Attach a completed account and grant this Agent access to its source |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/plugins/{pluginId}/credentials/{slotId}/connection-templates`](#get-namespacesnamespaceidagentsagentidpluginspluginidcredentialsslotidconnectiontemplates) | List compatible OAuth templates for a saved Agent plugin slot |
 | [`GET /namespaces/{namespaceId}/connection-templates`](#get-namespacesnamespaceidconnectiontemplates) | List connection templates the caller may connect in this Namespace |
 | [`GET /namespaces/{namespaceId}/connections`](#get-namespacesnamespaceidconnections) | List completed connections the caller can read in this Namespace |
 | [`POST /namespaces/{namespaceId}/connections`](#post-namespacesnamespaceidconnections) | Start consent for a reusable account in this Namespace |
 | [`DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}`](#delete-namespacesnamespaceidconnectionscredentialsourceid) | Disconnect a saved account and retire its OAuth grant |
+| [`POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/mcp-tools`](#post-namespacesnamespaceidcredentialsourcescredentialsourceidmcptools) | List tools at a plugin slot's MCP endpoint using a credential the caller can operate |
 | [`GET /oauth-clients`](#get-oauthclients) | List registered OAuth clients |
 | [`POST /oauth-clients`](#post-oauthclients) | Register an OAuth client from a connection template |
 | [`DELETE /oauth-clients/{oauthClientId}`](#delete-oauthclientsoauthclientid) | Delete an unused OAuth client |
@@ -2362,6 +2367,251 @@ Example response
 }
 ```
 
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/connections`
+
+<span id="post-namespacesnamespaceidagentsagentidconnections"></span>
+
+Connect an account and attach it to a saved Agent plugin slot
+
+**Operation ID:** `startAgentPluginConnection`
+
+**Permissions:** Requires update permission on the requested Agent. Requires create permission for CredentialSource resources in the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `update` | `agent` | `requested` |
+| `create` | `credential_source` | `namespace` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
+| `expectedCredentialSourceId` | `string or null` | Yes | — |
+| `pluginId` | `string` | Yes | min length: 1; max length: 256 |
+| `releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `selectedScopes` | `array<string>` | No | — |
+| `slotId` | `string` | Yes | min length: 1; max length: 128 |
+
+Example request
+```json
+{
+  "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+  "connectionTemplateVersion": 1,
+  "expectedCredentialSourceId": null,
+  "pluginId": "occ-plugin:google@1.0.0",
+  "releaseSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "slotId": "account"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `201` | Created |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
+
+**`201` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.authorizationUrl` | `string` | Yes | — |
+| `data.credentialSourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.expiresAt` | `string` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "authorizationUrl": "https://accounts.example.com/authorize?state=example-state",
+    "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
+    "expiresAt": "2026-10-01T12:00:00.000Z"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `DELETE /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`
+
+<span id="delete-namespacesnamespaceidagentsagentidconnectionscredentialsourceid"></span>
+
+Detach an account from this Agent and withdraw its access
+
+**Operation ID:** `detachAgentConnection`
+
+**Permissions:** Requires update permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `update` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "cs_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `204` | No Content |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`
+
+<span id="post-namespacesnamespaceidagentsagentidconnectionscredentialsourceid"></span>
+
+Attach a completed account and grant this Agent access to its source
+
+**Operation ID:** `attachAgentConnection`
+
+**Permissions:** Requires update permission on the requested Agent. Requires operate permission on the requested CredentialSource.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `update` | `agent` | `requested` |
+| `operate` | `credential_source` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "cs_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `204` | No Content |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/plugins/{pluginId}/credentials/{slotId}/connection-templates`
+
+<span id="get-namespacesnamespaceidagentsagentidpluginspluginidcredentialsslotidconnectiontemplates"></span>
+
+List compatible OAuth templates for a saved Agent plugin slot
+
+**Operation ID:** `listAgentPluginConnectionTemplates`
+
+**Permissions:** Requires update permission on the requested Agent. Requires create permission for CredentialSource resources in the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `update` | `agent` | `requested` |
+| `create` | `credential_source` | `namespace` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `pluginId` | path | `string` | Yes | min length: 1; max length: 256 | "occ-plugin:google@1.0.0" |
+| `slotId` | path | `string` | Yes | min length: 1; max length: 128 | "account" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `array<object>` | Yes | — |
+| `data[].displayName` | `string` | Yes | — |
+| `data[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].mode` | `"manual" or "mcp_discovery"` | Yes | — |
+| `data[].offeredScopes` | `array<string>` | Yes | — |
+| `data[].requiredScopes` | `array<string>` | Yes | — |
+| `data[].scopes` | `array<string>` | Yes | — |
+| `data[].version` | `integer` | Yes | minimum: 1 |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "displayName": "Engineering account",
+      "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
+      "mode": "manual",
+      "offeredScopes": [],
+      "requiredScopes": [],
+      "scopes": [
+        "profile"
+      ],
+      "version": 1
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /namespaces/{namespaceId}/connection-templates`
 
 <span id="get-namespacesnamespaceidconnectiontemplates"></span>
@@ -2703,6 +2953,106 @@ Disconnect a saved account and retire its OAuth grant
 | `409` | The requested operation conflicts with the current resource state. |
 | `500` | The platform request could not be completed. |
 | `503` | A required dependency is unavailable. |
+
+#### `POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/mcp-tools`
+
+<span id="post-namespacesnamespaceidcredentialsourcescredentialsourceidmcptools"></span>
+
+List tools at a plugin slot's MCP endpoint using a credential the caller can operate
+
+**Operation ID:** `discoverCredentialSourceMcpTools`
+
+**Permissions:** Requires operate permission on the requested CredentialSource.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `credential_source` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "cs_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `pluginId` | `string` | Yes | min length: 1; max length: 256 |
+| `slot` | `string` | Yes | min length: 1; max length: 64 |
+
+Example request
+```json
+{
+  "pluginId": "occ-plugin:slack@1.0.0",
+  "slot": "account"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.available` | `boolean` | No | — |
+| `data.description` | `string` | No | — |
+| `data.id` | `string` | Yes | — |
+| `data.logoUrl` | `string` | No | — |
+| `data.name` | `string` | Yes | — |
+| `data.privacyPolicyUrl` | `string` | No | — |
+| `data.remoteId` | `string` | No | — |
+| `data.selectableWithoutTools` | `boolean` | No | — |
+| `data.termsOfServiceUrl` | `string` | No | — |
+| `data.tools` | `null or array<object>` | Yes | — |
+| `data.unavailableHelp` | `object` | No | — |
+| `data.unavailableHelp.label` | `string` | Yes | — |
+| `data.unavailableHelp.url` | `string` | Yes | — |
+| `data.unavailableReason` | `string` | No | — |
+| `data.websiteUrl` | `string` | No | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "occ-plugin:slack@1.0.0",
+    "name": "Slack",
+    "tools": [
+      {
+        "id": "slack_search_public",
+        "name": "slack_search_public",
+        "ownerId": "occ-plugin:slack@1.0.0"
+      }
+    ]
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /oauth-clients`
 
@@ -4015,7 +4365,7 @@ Example response
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/permissions/secrets`](#get-namespacesnamespaceidagentsagentidpermissionssecrets) | Report the readable Secrets that the caller may not bind to a readable Agent, not authorization for a later operation |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins`](#post-namespacesnamespaceidagentsagentidplugins) | List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/plugins/capabilities`](#get-namespacesnamespaceidagentsagentidpluginscapabilities) | Read selected Plugin Driver policy capabilities for an active Agent with caller Agent read/update permission |
-| [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins/details`](#post-namespacesnamespaceidagentsagentidpluginsdetails) | Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins/details`](#post-namespacesnamespaceidagentsagentidpluginsdetails) | Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery requires caller use or the Agent's existing access to its attached credential |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/repository-approval-scopes`](#get-namespacesnamespaceidagentsagentidrepositoryapprovalscopes) | Review resolved repository scope before explicitly approving it |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/repository-approvals`](#get-namespacesnamespaceidagentsagentidrepositoryapprovals) | Read attributable repository approvals and removed generations for one Agent |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/repository-approvals/{approvalId}/remove`](#post-namespacesnamespaceidagentsagentidrepositoryapprovalsapprovalidremove) | Remove repository approval independently of configuration or runtime cleanup |
@@ -4770,6 +5120,33 @@ Example request
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.available` | `boolean` | No | — |
+| `data.credentialSlots` | `array<object>` | No | — |
+| `data.credentialSlots[].connectAccount` | `true` | No | — |
+| `data.credentialSlots[].connectionTemplates` | `array<object>` | No | — |
+| `data.credentialSlots[].connectionTemplates[].displayName` | `string` | Yes | — |
+| `data.credentialSlots[].connectionTemplates[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.credentialSlots[].connectionTemplates[].mode` | `"manual" or "mcp_discovery"` | Yes | — |
+| `data.credentialSlots[].connectionTemplates[].offeredScopes` | `array<string>` | Yes | — |
+| `data.credentialSlots[].connectionTemplates[].requiredScopes` | `array<string>` | Yes | — |
+| `data.credentialSlots[].connectionTemplates[].scopes` | `array<string>` | Yes | — |
+| `data.credentialSlots[].connectionTemplates[].version` | `integer` | Yes | minimum: 1 |
+| `data.credentialSlots[].id` | `string` | Yes | — |
+| `data.credentialSlots[].label` | `string` | Yes | — |
+| `data.credentialSlots[].pluginId` | `string` | Yes | — |
+| `data.credentialSlots[].releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.credentialSlots[].sources` | `array<object>` | Yes | — |
+| `data.credentialSlots[].sources[].authorization` | `"required"` | No | — |
+| `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.credentialSlots[].sources[].name` | `string` | Yes | — |
+| `data.credentialSlots[].sources[].toolDiscovery` | `"caller" or "agent"` | No | — |
+| `data.credentialSlots[].templateSetup` | `object` | No | — |
+| `data.credentialSlots[].templateSetup.issuers` | `array<string>` | Yes | — |
+| `data.credentialSlots[].templateSetup.mcpServerUrl` | `string` | No | — |
+| `data.credentialSlots[].templateSetup.unregisteredTemplates` | `array<object>` | Yes | — |
+| `data.credentialSlots[].templateSetup.unregisteredTemplates[].displayName` | `string` | Yes | — |
+| `data.credentialSlots[].templateSetup.unregisteredTemplates[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.credentialSlots[].templateSetup.unregisteredTemplates[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.credentialSlots[].toolDiscovery` | `true` | No | — |
 | `data.description` | `string` | No | — |
 | `data.id` | `string` | Yes | — |
 | `data.logoUrl` | `string` | No | — |
@@ -6947,13 +7324,23 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 | `data.approvers.plugin` | `boolean` | Yes | — |
 | `data.approvers.tools` | `boolean` | Yes | — |
 | `data.credentialSlots` | `array<object>` | No | — |
+| `data.credentialSlots[].connectAccount` | `true` | No | — |
 | `data.credentialSlots[].id` | `string` | Yes | — |
 | `data.credentialSlots[].label` | `string` | Yes | — |
 | `data.credentialSlots[].pluginId` | `string` | Yes | — |
 | `data.credentialSlots[].releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
 | `data.credentialSlots[].sources` | `array<object>` | Yes | — |
+| `data.credentialSlots[].sources[].authorization` | `"required"` | No | — |
 | `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.credentialSlots[].sources[].name` | `string` | Yes | — |
+| `data.credentialSlots[].sources[].toolDiscovery` | `"caller" or "agent"` | No | — |
+| `data.credentialSlots[].templateSetup` | `object` | No | — |
+| `data.credentialSlots[].templateSetup.issuers` | `array<string>` | Yes | — |
+| `data.credentialSlots[].templateSetup.mcpServerUrl` | `string` | No | — |
+| `data.credentialSlots[].templateSetup.unregisteredTemplates` | `array<object>` | Yes | — |
+| `data.credentialSlots[].templateSetup.unregisteredTemplates[].displayName` | `string` | Yes | — |
+| `data.credentialSlots[].templateSetup.unregisteredTemplates[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.credentialSlots[].templateSetup.unregisteredTemplates[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.credentialSlots[].toolDiscovery` | `true` | No | — |
 | `data.discoveryCredential` | `"required" or "none"` | Yes | — |
 | `data.driver` | `PluginDriverIdentity` | Yes | — |
@@ -7011,7 +7398,7 @@ Example response
 
 <span id="post-namespacesnamespaceidagentsagentidpluginsdetails"></span>
 
-Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential
+Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery requires caller use or the Agent's existing access to its attached credential
 
 **Operation ID:** `discoverSavedAgentPluginDetails`
 

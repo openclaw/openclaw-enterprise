@@ -10,12 +10,61 @@ import type {
   EgressRoute,
 } from "./drivers/credential-proxy/index.ts";
 
+import type { ResolvedToken } from "./prepared-token.ts";
+
+/** The actual HTTPS request inspected by the sender, before secret headers are injected. */
+export interface CredentialHttpRequest {
+  readonly target: {
+    readonly reportedScheme: "https";
+    readonly host: string;
+    readonly port: number;
+    readonly path: string;
+    readonly query: string;
+    readonly method: string;
+  };
+  readonly headers: readonly (readonly [string, string])[];
+  readonly body: Uint8Array;
+}
+
+/** The installed sender supplies its authenticated recipient and the binding for this request. */
+export interface RequestCredentialInput {
+  readonly recipient: {
+    /** Authenticated by the sender. OCC uses this ID for per-recipient capacity limits. */
+    readonly id: string;
+    /** Passed back unchanged to the same Driver for verification against the revision. */
+    readonly context?: unknown;
+  };
+  readonly requestId: string;
+  readonly deadlineAt: string;
+  readonly bindingId: string;
+  readonly execution: Pick<EgressExecution, "namespaceId" | "agentId" | "revisionId">;
+  readonly http: CredentialHttpRequest;
+}
+
+/** The token transport has independently authenticated the recipient for this request. */
+export interface RequestCredentialGrant {
+  readonly recipientId: string;
+  readonly requestId: string;
+  readonly bindingId: string;
+  readonly deadlineAt: string;
+}
+
 export interface CredentialProxyBinding {
   close(): void | Promise<void>;
 }
 
 /** Request, send and response decisions available only to the selected transport. */
 export interface CredentialProxyExchange {
+  /** Authorize the operation before injection. A public request creates no token grant. */
+  authorizeRequestCredential?(
+    request: RequestCredentialInput,
+    signal: AbortSignal,
+  ): Promise<"credential" | "without_credential" | undefined>;
+  /** Redeem the same request, binding and authenticated recipient once. */
+  resolveRequestCredential?(
+    grant: RequestCredentialGrant,
+    signal: AbortSignal,
+  ): Promise<ResolvedToken | undefined>;
   resolve(
     authorization: string,
     sandboxId: string,

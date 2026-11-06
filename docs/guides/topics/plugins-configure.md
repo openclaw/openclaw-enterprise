@@ -13,6 +13,12 @@ whose selections belonged to the Codex Driver.
 
 ## Use the console
 
+On a new dedicated OpenClaw Agent on Kubernetes, open **Configure plugins**, enable the plugin and select a saved account or **Choose a connection template**. **Done** keeps the choice in the draft. **Create Agent** grants access. Leaving the form keeps the account with its owner.
+
+The connection dialog selects the permitted MCP scopes. **Unselect all** clears optional scopes. **Select all** restores them. An unrestricted template also accepts space-separated **Additional scopes**. **Connect account** (new Agent) or **Connect and attach** (saved Agent) opens provider consent in another tab.
+
+If no template is ready, Installation administrators can configure a matching template or choose **Create connection template**. In Credentials, check the Namespace and MCP URL, assign a client and save. Return to the open dialog and select **Refresh templates**.
+
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
 Use **Configure plugins** to edit saved selections and tool policy. On a dedicated
 OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, choose
@@ -21,10 +27,13 @@ to verify the installation with `gog --version`. To make Google API calls, choos
 **Google account**, save the selection and deploy. The worker receives an
 OpenShell placeholder for that account. The Gateway loads the skill. The worker can use mapped operations within the account’s configured host, path and OAuth scopes. A command that calls multiple Google services may need more destinations than the selected source permits.
 
-The picker lists compatible sources attached to the Agent. Other sources can stay attached with their own authority. OpenShell requires distinct placeholder names and refuses another credential on a host covered by the Google request guard. The caller needs
-`read` and `operate` on the source, and the Agent needs `operate`. If the
-package digest changes, select the account again. Clearing the slot or removing
-the plugin takes effect on the next deployment. The Agent keeps its separately attached credentials. To stop a running version from using a credential, [withdraw the source](../../reference/credential-sources/withdrawal.md). [Enable the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+Each account field names a plugin slot. Choose a saved account that you can read and use in this Namespace, then select **Save plugin selections**. OCC binds the selected account and grants this Agent access. If a plugin declares two slots, you can choose a different account for each one.
+
+The picker shows accounts from issuers accepted by the slot. If the account needs consent for this server, select **Authorize for this server**. To connect a new account, save the enabled plugin, choose a compatible connection template, then review the permissions before selecting **Connect and attach**. Required MCP scopes are already selected. On a template with no scope limit, you can enter additional scopes or use provider defaults if the server requires none. The provider opens in a separate tab. The Agent editor keeps your draft and confirms the account after rereading the saved plugin slot. If you close the provider tab, select **Check connection** or **Try again**. You can replace an existing binding this way.
+
+If the slot or your permission to update the Agent changes during consent, the account stays saved in the Namespace. You can attach it later. You can use **Load tools** with a saved MCP account. To deploy the saved selection, the Installation needs a [Credential Proxy and OpenShell sender that support saved accounts](../../reference/drivers/credential-proxy.md#saved-oauth-accounts). Clearing a slot keeps the separate [Agent grant](../../reference/connection-templates.md#use-a-saved-account-in-an-agent-plugin).
+
+The Google request guard limits operations at the approved destination. Enable it before deploying a credentialed Google plugin. [Configure the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
 
 Dedicated Codex Agents with a supported login can browse their app catalog.
 For other Agents, use **Plugin selections JSON** to enter a known plugin ID.
@@ -63,7 +72,7 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
 
 A hosted MCP package pins its server endpoint and declares a credential slot.
 OCE discovers available tools using the selected account. On a dedicated OpenClaw
-Agent, select an attached credential for that slot and the upstream tool names
+Agent, choose an authorized account for that slot and the upstream tool names
 the Agent may call. The worker advertises those tools; the Sandbox enforces the
 selection for both worker and script calls.
 [Managed MCP plugins](../../reference/agent-plugins.md#current-support)
@@ -82,10 +91,12 @@ set Helm `api.pluginDiscoveryCidrs` to the endpoint's IPv4 `/32` hosts and refre
 them when DNS changes. Other ports need the Installation's managed egress policy.
 This setting is separate from model discovery. Worker calls use the Sandbox policy.
 
-Open **Plugins**, add the plugin, choose the account, and choose **Load tools**.
-Choose the tools to enable, then save and deploy. Loading tools again refreshes
-the inventory. Additional tools require selection and deployment before the Agent
-can use them. An empty selection leaves the worker server disabled.
+In **Configure plugins**, add the plugin, choose the account, and select **Load tools**.
+You can do this on the Create Agent form or on a saved Agent.
+The first load enables all returned tools in the draft. Use **Filter tools** to find
+a tool and turn it off, then save and deploy. **Reload tools** keeps your choices.
+If the server adds a tool later, enable it and deploy to grant the Agent access.
+Turning off every tool disables the worker server.
 Removing the plugin keeps its independently attached
 credential; [withdraw the source](../../reference/credential-sources/withdrawal.md)
 to revoke a running version's credential access.

@@ -109,7 +109,10 @@ function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, u
     sandboxDriverId: revision.sandboxDriverId,
     secretDriverId: revision.secretDriverId,
     secretBindings: revision.secretBindings,
-    plugins: revision.plugins,
+    plugins: revision.plugins && {
+      driver: revision.plugins.driver,
+      plugins: revision.plugins.plugins,
+    },
     pluginApprovers: revision.pluginApprovers,
     ...(revision.repositoryCredentials === undefined
       ? {}
@@ -388,9 +391,9 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
     }) {
       const agentId = params.agentId!;
       const update = body as Omit<UpdateAgentInput, "namespaceId" | "agentId">;
-      // Standing approval changes hold the same session authority as an IAM policy write.
+      // Standing approvals and plugin account bindings can grant the Agent access.
       const transact =
-        update.repositoryStandingApproval === undefined
+        update.repositoryStandingApproval === undefined && update.plugins === undefined
           ? controller.transact.bind(controller)
           : transactIAM;
       const agent = await transact(async (unit) => {

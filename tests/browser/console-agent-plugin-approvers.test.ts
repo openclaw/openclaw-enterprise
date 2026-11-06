@@ -5,6 +5,9 @@ import {
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { Locator } from "playwright";
@@ -36,6 +39,7 @@ import {
   statusTone,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
+import { nativeSandboxDriver } from "./console-agents-test-support.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   callerDenied,
@@ -43,7 +47,7 @@ import {
   SECRET_CREATE_DENIED,
   SLACK_LOOKUP_DENIED,
 } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { grantRole, restrict } from "../helpers/iam-grants.mjs";
 
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 
@@ -122,6 +126,589 @@ declare global {
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
 
+test("Create Agent can select installed packages for dedicated OpenClaw before saving", async (t) => {
+  const { fixture, namespace: namespaceValue } = await createReadyConsoleNamespace(
+    t,
+    "Create package Agent",
+    { nativeWorkerSupport: "custom-image" },
+  );
+  const namespace = entity(namespaceValue);
+  const platform = controller(fixture);
+  const plugin = new OCCPluginDriver();
+  platform.registerDriver(plugin);
+  platform.selectDriver("plugin", plugin.id);
+  const google = "occ-plugin:google@1.0.0";
+  const { page } = await newPage(t, fixture, { browser });
+  const openCreatePlugins = async () => {
+    await page.goto(fixture.origin + `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: "Start without Preset" }).click();
+    await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+    await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  };
+  await login(page, fixture, "/console/agents");
+  await openCreatePlugins();
+  const embedded = page.getByRole("dialog", { name: "Configure plugins" });
+  await embedded
+    .getByText("Managed OpenClaw plugins require dedicated OpenClaw on Kubernetes Compute.")
+    .waitFor();
+  assert.equal(
+    await embedded.getByRole("button", { name: "Google Workspace", exact: true }).count(),
+    0,
+  );
+  await embedded.getByRole("button", { name: "Done", exact: true }).click();
+  const sandbox = nativeSandboxDriver();
+  platform.registerDriver(sandbox);
+  platform.selectDriver("sandbox", sandbox.id);
+  // This Sandbox supports dedicated execution, but the current Compute cannot place the packages.
+  await openCreatePlugins();
+  await page.getByText("No plugins were returned.", { exact: true }).waitFor();
+  const compute = createTestKubernetesComputeDriver("compute-create-package");
+  platform.registerDriver(compute);
+  platform.selectDriver("compute", compute.id);
+  await openCreatePlugins();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins" });
+  await dialog.getByRole("button", { name: "Slack", exact: true }).waitFor();
+  await dialog.getByRole("button", { name: "Google Workspace", exact: true }).click();
+  await dialog.getByRole("button", { name: "Add Google Workspace", exact: true }).click();
+  await dialog.getByLabel("Google account", { exact: true }).waitFor();
+  assert.equal(await dialog.getByLabel("Google account", { exact: true }).inputValue(), "");
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), {
+    [google]: { enabled: true },
+  });
+});
+
+test("An administrator configures a missing template and OAuth client from the unsaved plugin slot", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Plugin setup", {
+    nativeWorkerSupport: "custom-image",
+    publicOrigin: true,
+  });
+  for (const driver of [
+    new OCCPluginDriver(),
+    nativeSandboxDriver(),
+    createTestKubernetesComputeDriver("setup-compute"),
+  ]) {
+    controller(fixture).registerDriver(driver);
+    controller(fixture).selectDriver(driver.capability, driver.id);
+  }
+  // Exercise both empty states by starting this Installation without its Google template.
+  const google = (await fixture.request("GET", "/connection-templates")).data.find(
+    (template: { displayName: string }) => template.displayName === "Google OAuth",
+  );
+  assert.ok(google);
+  assert.equal((await fixture.request("DELETE", "/connection-templates/" + google.id)).status, 204);
+  const { page } = await newPage(t, fixture, { browser });
+  const url = fixture.origin + `/console/agents/new?namespace=${namespace.id}`;
+  await login(page, fixture, url);
+  const requests = apiRequests(page, fixture.origin);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("My unsaved Agent");
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const picker = page.getByRole("dialog", { name: "Configure plugins" });
+  await picker.getByRole("button", { name: "Google Workspace", exact: true }).click();
+  await picker.getByRole("button", { name: "Add Google Workspace", exact: true }).click();
+  await picker.getByRole("button", { name: "Choose a connection template" }).click();
+  const consent = page.getByRole("dialog", { name: "Connect an account", exact: true });
+  const openNewTab = async (label: string) => {
+    const next = page.context().waitForEvent("page");
+    await consent.getByRole("link", { name: label, exact: true }).click();
+    const tab = await next;
+    await tab.waitForURL("**/console/credentials/connection-templates?**");
+    assert.ok(await tab.evaluate(() => window.opener === null));
+    return tab;
+  };
+  const createTab = await openNewTab("Create connection template");
+  const create = createTab.getByRole("dialog", { name: "Create connection template", exact: true });
+  assert.equal(await create.getByLabel("Template availability").inputValue(), namespace.id);
+  assert.equal(
+    await create.getByLabel("Issuer URL", { exact: true }).inputValue(),
+    google.current.issuer,
+  );
+  await create.getByLabel("Template name").fill("Workspace connector");
+  await create.getByLabel("Authorization URL").fill(google.current.authorizationUrl);
+  await create.getByLabel("Token URL").fill(google.current.tokenUrl);
+  // Use an actual destination reviewed by the installed Google Workspace release.
+  const destination = google.current.destinations[0];
+  const hosts = create.getByRole("textbox", { name: "Host", exact: true });
+  if (!(await hosts.isVisible())) {
+    await create.locator("summary").filter({ hasText: "API destinations" }).click();
+  }
+  await hosts.fill(destination.host);
+  await create.getByLabel("Path", { exact: true }).fill(destination.path);
+  await create.getByRole("button", { name: "Create template", exact: true }).click();
+  await createTab.getByRole("rowheader", { name: "Workspace connector", exact: true }).waitFor();
+  await createTab.close();
+  await consent.getByRole("button", { name: "Refresh templates" }).click();
+  const configure = consent.getByRole("link", {
+    name: "Configure Workspace connector",
+    exact: true,
+  });
+  await configure.waitFor();
+  assert.equal(await consent.getByRole("link", { name: "Create connection template" }).count(), 0);
+  const editTab = await openNewTab("Configure Workspace connector");
+  const edit = editTab.getByRole("dialog", { name: "Edit connection template" });
+  assert.equal(await edit.getByLabel("Template name").inputValue(), "Workspace connector");
+  await edit.getByRole("button", { name: "Register a new OAuth client" }).click();
+  const registration = editTab.getByRole("dialog", { name: "Register OAuth client" });
+  await registration.getByLabel("OAuth client name").fill("Workspace client");
+  await registration.getByLabel("Client ID", { exact: true }).fill("preview-client");
+  await registration.getByLabel("Client type").selectOption("public");
+  await registration.getByRole("button", { name: "Register OAuth client", exact: true }).click();
+  await edit
+    .getByLabel("OAuth client", { exact: true })
+    .locator("option:checked")
+    .filter({ hasText: "Workspace client" })
+    .waitFor({ state: "attached" });
+  await editTab.close();
+  await consent.getByRole("button", { name: "Refresh templates" }).click();
+  const templates = consent.getByLabel("Connection template for Google account");
+  await templates
+    .locator("option:checked")
+    .filter({ hasText: "Workspace connector" })
+    .waitFor({ state: "attached" });
+  await consent.getByRole("button", { name: "Connect account", exact: true }).waitFor();
+  await consent.getByRole("button", { name: "Cancel", exact: true }).click();
+  assert.equal(await page.getByLabel("Agent name").inputValue(), "My unsaved Agent");
+  assert.equal(page.url(), url);
+  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents`).length, 0);
+  // An MCP slot opens discovery with its declared HTTPS URL. Following the link alone must
+  // not contact the server or create a template.
+  await picker.getByRole("button", { name: "Slack", exact: true }).click();
+  await picker.getByRole("button", { name: "Add Slack", exact: true }).click();
+  await picker.getByRole("button", { name: "Choose a connection template" }).click();
+  const discovery: string[] = [];
+  page.context().on("request", (r) => {
+    if (new URL(r.url()).pathname === "/connection-templates/discover") {
+      discovery.push(r.url());
+    }
+  });
+  const slackTab = await openNewTab("Create connection template");
+  const slackEditor = slackTab.getByRole("dialog", { name: "Create connection template" });
+  assert.equal(
+    await slackEditor.getByLabel("MCP server URL").inputValue(),
+    "https://mcp.slack.com/mcp",
+  );
+  assert.equal(await slackEditor.getByLabel("Template availability").inputValue(), namespace.id);
+  assert.deepEqual(discovery, []);
+  await slackTab.close();
+});
+
+test("Standalone consent selects the returned account in the new Agent draft before creation", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "New Agent consent", {
+    nativeWorkerSupport: "custom-image",
+  });
+  const slack = "occ-plugin:slack@1.0.0";
+  const lookupId = "remote-slack-package";
+  // Drivers can expose opaque detail IDs while the installed selection uses its stable ID.
+  class OpaquePackageCatalog extends OCCPluginDriver {
+    override async discoverCatalog(input: Parameters<OCCPluginDriver["discoverCatalog"]>[0]) {
+      const page = await super.discoverCatalog(input);
+      return {
+        ...page,
+        plugins: page.plugins.map((entry) =>
+          entry.id === slack ? { ...entry, remoteId: lookupId } : entry,
+        ),
+      };
+    }
+    override async getCatalogPlugin({ pluginId }: { pluginId: string }) {
+      assert.notEqual(pluginId, slack, "This catalog only accepts its remote lookup ID.");
+      const entry = await super.getCatalogPlugin({
+        pluginId: pluginId === lookupId ? slack : pluginId,
+      });
+      return pluginId === lookupId ? { ...entry, remoteId: lookupId } : entry;
+    }
+  }
+  for (const driver of [
+    new OpaquePackageCatalog(),
+    nativeSandboxDriver(),
+    createTestKubernetesComputeDriver("draft-compute"),
+  ]) {
+    controller(fixture).registerDriver(driver);
+    controller(fixture).selectDriver(driver.capability, driver.id);
+  }
+  const base = `/namespaces/${namespace.id}`;
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  let issued = "";
+  const savedAccounts: { id: string; name: string }[] = [];
+  const prior = "cs_00000000-0000-4000-8000-000000000004";
+  const offeredScopes = [
+    "channels:read",
+    "chat:write",
+    ...[
+      "files",
+      "reactions",
+      "pins",
+      "bookmarks",
+      "users",
+      "groups",
+      "im",
+      "mpim",
+      "canvases",
+      "lists",
+      "reminders",
+    ].flatMap((name) => [name + ":read", name + ":write"]),
+  ];
+  const consent = page.getByRole("dialog", { name: "Connect an account", exact: true });
+  let release: string;
+  // Use the real installed package's slot. Supply a controlled provider result separately
+  // from the callback URL to exercise the browser's trust and draft-preservation boundary.
+  await page.route(`**${base}/agents/plugins/details`, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    if (route.request().postDataJSON().pluginId === lookupId) {
+      const slot = body.data.credentialSlots.find(
+        (entry: { id: string }) => entry.id === "account",
+      );
+      release = slot.releaseSha256;
+
+      slot.connectionTemplates = [
+        {
+          id: "demo",
+          displayName: "Workspace OAuth",
+          version: 1,
+          mode: "mcp_discovery",
+          scopes: [],
+          requiredScopes: ["channels:read"],
+          offeredScopes,
+        },
+      ];
+      slot.sources = [
+        { id: prior, name: "Existing account" },
+        ...savedAccounts.map((source) => ({ ...source, toolDiscovery: "caller" })),
+      ];
+    }
+    await route.fulfill({ response, json: body });
+  });
+  await page.route(`**${base}/connections`, (route) => {
+    issued = "cs_" + crypto.randomUUID();
+    return route.fulfill({
+      status: 201,
+      json: {
+        data: {
+          credentialSourceId: issued,
+          authorizationUrl: "https://consent.example.test/authorize",
+          expiresAt: new Date(Date.now() + 120000).toISOString(),
+        },
+      },
+    });
+  });
+  await page.context().route("https://consent.example.test/**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/scope-mismatch") {
+      return route.fulfill({
+        status: 303,
+        headers: {
+          location: fixture.origin + "/console/?connection=failed&reason=grant_scope_mismatch",
+        },
+      });
+    }
+    if (path === "/approve") {
+      return route.fulfill({
+        status: 303,
+        headers: {
+          location: fixture.origin + `/console/?namespace=${namespace.id}&connection=connected`,
+        },
+      });
+    }
+    return route.fulfill({
+      contentType: "text/html",
+      body: '<a href="/approve">Approve</a> <a href="/scope-mismatch">Return with incompatible scopes</a>',
+    });
+  });
+  const url = fixture.origin + `/console/agents/new?namespace=${namespace.id}`;
+  await login(page, fixture, url);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Keep my draft");
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins" });
+  await dialog.getByRole("button", { name: "Slack", exact: true }).click();
+  await dialog.getByRole("button", { name: "Add Slack", exact: true }).click();
+  const picker = dialog.getByLabel("Slack user account", { exact: true });
+  await picker.selectOption(prior);
+  await dialog.getByRole("button", { name: "Connect a different account" }).click();
+  await consent.getByLabel("Connection template for Slack user account").selectOption("demo");
+  const checkboxes = consent.getByRole("checkbox");
+  assert.equal(await checkboxes.count(), offeredScopes.length);
+  assert.equal(await consent.locator("input:checked").count(), offeredScopes.length);
+  assert.equal(
+    await consent.getByRole("checkbox", { name: "channels:read (required)" }).isDisabled(),
+    true,
+  );
+  const extra = consent.getByLabel("Additional scopes");
+  await extra.fill("custom:read");
+  // Enter edits the scope text inside a nested modal. It must not activate the outer
+  // Agent form, even when the browser would normally submit or validate that form.
+  const formEvents = await extra.evaluateHandle((input) => {
+    const form = (input as HTMLInputElement).form;
+    if (!form) {
+      throw new Error("Expected the Create Agent form to own this input.");
+    }
+    const events: string[] = [];
+    for (const type of ["invalid", "submit"]) {
+      form.addEventListener(type, (event) => events.push(event.type), true);
+    }
+    return events;
+  });
+  await extra.press("Enter");
+  assert.deepEqual(await formEvents.jsonValue(), []);
+  assert.ok(await consent.isVisible());
+  assert.equal(pathRequests(requests, "POST", base + "/connections").length, 0);
+  assert.equal(pathRequests(requests, "POST", base + "/agents/validate").length, 0);
+  assert.equal(pathRequests(requests, "POST", base + "/agents/provision").length, 0);
+  await consent.getByRole("button", { name: "Unselect all", exact: true }).click();
+  assert.equal(await consent.locator("input:checked").count(), 1);
+  await consent.getByRole("checkbox", { name: "files:read", exact: true }).check();
+  await consent.getByRole("button", { name: "Select all", exact: true }).click();
+  assert.equal(await consent.locator("input:checked").count(), offeredScopes.length);
+  await consent.getByRole("button", { name: "Unselect all", exact: true }).click();
+  await consent.getByRole("checkbox", { name: "files:read", exact: true }).check();
+  assert.equal(await extra.inputValue(), "custom:read");
+  const footer = consent.getByRole("button", { name: "Connect account", exact: true });
+  const before = await footer.boundingBox();
+  const scrolled = await consent.locator(".dialog-body").evaluate((body) => {
+    body.scrollTop = body.scrollHeight;
+    return body.scrollTop > 0;
+  });
+  assert.ok(scrolled);
+  assert.deepEqual(await footer.boundingBox(), before);
+  for (const outcome of ["scope-mismatch", "missing", "edited", "saved"] as const) {
+    if (outcome === "saved") {
+      await dialog.getByRole("button", { name: "Choose a connection template" }).click();
+      await consent.getByLabel("Connection template for Slack user account").selectOption("demo");
+    }
+    const next = page.context().waitForEvent("page");
+    const retry = outcome === "edited" || outcome === "missing";
+    await (retry ? dialog : consent)
+      .getByRole("button", {
+        name: retry ? "Try again" : "Connect account",
+        exact: true,
+      })
+      .click();
+    const provider = await next;
+    await provider.getByRole("link", { name: "Approve" }).waitFor();
+    assert.ok(await provider.evaluate(() => window.opener === null));
+    if (outcome === "edited") {
+      // A user can change the slot while the separate provider tab remains open.
+      await picker.selectOption("");
+    }
+    if (outcome === "edited" || outcome === "saved") {
+      savedAccounts.push({ id: issued, name: "Connected account " + outcome });
+    }
+    const closed = provider.waitForEvent("close");
+    await provider
+      .getByRole("link", {
+        name: outcome === "scope-mismatch" ? "Return with incompatible scopes" : "Approve",
+      })
+      .click();
+    await closed;
+    if (outcome === "scope-mismatch") {
+      await dialog.getByText(/OCE could not read the provider’s scope response/).waitFor();
+      assert.equal(await picker.inputValue(), prior);
+    } else if (outcome === "edited") {
+      await dialog.getByText(/Account saved. The draft changed/).waitFor();
+      await picker
+        .getByRole("option", { name: "Connected account edited" })
+        .waitFor({ state: "attached" });
+      assert.equal(await picker.inputValue(), "");
+    } else if (outcome === "missing") {
+      await dialog.getByText(/The account is not available for this slot yet/).waitFor();
+      assert.equal(await picker.inputValue(), prior);
+    }
+  }
+  await dialog.getByText("Account selected. Create the Agent to grant access.").waitFor();
+  assert.equal(await picker.inputValue(), issued);
+  assert.equal(await page.getByLabel("Agent name").inputValue(), "Keep my draft");
+  assert.equal(page.url(), url);
+  // The new Agent still has no identity. Only the selected user's account is used
+  // for tool discovery. This inventory is controlled independently of the browser.
+  const inventoryPath = `${base}/credential-sources/${issued}/mcp-tools`;
+  await page.route(`**${inventoryPath}`, (route) => {
+    assert.deepEqual(route.request().postDataJSON(), { pluginId: lookupId, slot: "account" });
+    return route.fulfill({
+      json: {
+        data: {
+          id: slack,
+          remoteId: lookupId,
+          name: "Slack",
+          tools: ["slack_search", "slack_send_message"].map((name) => ({
+            id: name,
+            name,
+            ownerId: slack,
+          })),
+        },
+      },
+    });
+  });
+  await dialog.getByRole("button", { name: "Load tools for Slack" }).click();
+  const searchTool = dialog.getByRole("checkbox", { name: "slack_search", exact: true });
+  const sendTool = dialog.getByRole("checkbox", { name: "slack_send_message", exact: true });
+  await sendTool.waitFor();
+  assert.equal(await searchTool.isChecked(), true);
+  assert.equal(await sendTool.isChecked(), true);
+  await sendTool.uncheck();
+  const staged = JSON.parse(await page.locator("#agent-plugins").inputValue());
+  assert.deepEqual(staged[slack].driverPolicy, {
+    releaseSha256: release!,
+    credentials: { account: issued },
+    toolNames: ["slack_search"],
+  });
+  const requestedScopes = pathRequests(requests, "POST", base + "/connections").map(
+    (record) => record.body,
+  );
+  const reduced = ["channels:read", "files:read", "custom:read"];
+  assert.deepEqual(
+    requestedScopes,
+    [reduced, reduced, reduced, offeredScopes].map((selectedScopes) => ({
+      connectionTemplateId: "demo",
+      selectedScopes,
+    })),
+  );
+  for (const target of [base + "/agents", base + "/agents/provision"]) {
+    assert.equal(pathRequests(requests, "POST", target).length, 0);
+  }
+});
+
+test("Slack tool discovery stages all names once and preserves the saved allowlist on reload", async (t) => {
+  const { backend, sandboxDriver: sandbox, driverConfigurations } = openShellSandbox(t);
+  const gateway = new OpenShellCredentialGatewayDriver(
+    { binaries: ["/usr/local/bin/openclaw"] },
+    { id: text(backend.drivers.credential_gateway), backend },
+  );
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Managed tool selection", {
+    provisionedPeople: [],
+    sandboxDriver: sandbox,
+    credentialGatewayDriver: gateway,
+    driverConfigurations,
+  });
+  for (const driver of [
+    gateway,
+    new OCCPluginDriver(),
+    createTestKubernetesComputeDriver("compute-slack", {
+      sandboxDriver: sandbox,
+      credentialGatewayDriver: gateway,
+    }),
+  ]) {
+    controller(fixture).registerDriver(driver);
+    controller(fixture).selectDriver(driver.capability, driver.id);
+  }
+  controller(fixture).selectDriver("sandbox", sandbox.id);
+  // Start with an already registered, compatible bearer. The only remote response
+  // controlled below is its MCP inventory; saving and reading the Agent use OCC.
+  const secret = await fixture.createSecret(namespace.id, "Slack test bearer", randomUUID());
+  const source = await controller(fixture).transact((state) =>
+    state.credentialSources.createCredentialSource({
+      id: `cs_${randomUUID()}`,
+      namespaceId: namespace.id,
+      name: "Managed Slack account",
+      type: "bearer-token",
+      config: {
+        protocol: "mcp",
+        host: "mcp.slack.com",
+        port: "443",
+        path: "/mcp",
+        env_var: "SLACK_MCP_TOKEN",
+      },
+      secrets: { token: secret.ref },
+      ownerCapability: "credential_gateway",
+      driverId: gateway.id,
+      state: "ready",
+      createdAt: new Date().toISOString(),
+    }),
+  );
+  const agent = entity(
+    await fixture.createAgent(namespace.id, "Slack Agent", nativeValues("slack"), {
+      executionMode: "dedicated",
+      harnessAuth: null,
+      credentialSources: [{ sourceId: source.id }],
+    }),
+  );
+  const principalId = text(agent.servicePrincipalId);
+  grantRole(fixture.policy, principalId, {
+    id: "slack-account-use",
+    namespaceId: namespace.id,
+    permissions: { credential_source: ["operate"] },
+    resource: { kind: "credential_source", id: source.id },
+  });
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const pluginId = "occ-plugin:slack@1.0.0";
+  const search = "slack_search";
+  const write = "slack_send_message";
+  const newTool = "slack_delete_message";
+  let advertised = [search, write];
+  const { page } = await newPage(t, fixture, { browser });
+  await page.route(`**${path}/plugins/details`, async (route) => {
+    if (route.request().postDataJSON().managedConnection) {
+      throw new Error("Personal discovery must use the credential-source route");
+    }
+    await route.continue();
+  });
+  await page.route(`**/credential-sources/${source.id}/mcp-tools`, async (route) => {
+    assert.deepEqual(route.request().postDataJSON(), { pluginId, slot: "account" });
+    await route.fulfill({
+      json: {
+        data: {
+          id: pluginId,
+          name: "Slack",
+          tools: advertised.map((name) => ({ id: name, name, ownerId: pluginId })),
+        },
+      },
+    });
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  const dialog = page.getByRole("dialog", { name: "Configure plugins" });
+  async function openSlack() {
+    await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+    await dialog.getByRole("button", { name: "Slack", exact: true }).click();
+  }
+  const tool = (name: string) => dialog.getByRole("checkbox", { name, exact: true });
+  async function loadTools() {
+    await dialog.getByRole("button", { name: /(?:re)?load tools for Slack/i }).click();
+    await tool(advertised.at(-1)!).waitFor();
+  }
+  async function save(expected: string[]) {
+    await dialog.getByRole("button", { name: "Done", exact: true }).click();
+    const saved = responseTo(page, "PATCH", new URL(path, fixture.origin).href);
+    await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+    const response = await saved;
+    assert.equal(response.status(), 200, await response.text());
+    const plugins = record(responseData(await fixture.request("GET", path)).plugins);
+    assert.deepEqual(record(record(plugins[pluginId]).driverPolicy).toolNames, expected);
+    await page.getByText("Plugin selections saved.", { exact: true }).waitFor();
+    await page.reload();
+    await openSlack();
+  }
+  await openSlack();
+  await dialog.getByRole("button", { name: "Add Slack", exact: true }).click();
+  await dialog.getByLabel("Slack user account", { exact: true }).selectOption(source.id);
+  await loadTools();
+  assert.equal(await tool(search).isChecked(), true);
+  assert.equal(await tool(write).isChecked(), true);
+  const filter = dialog.getByRole("searchbox", { name: "Filter tools" });
+  await filter.fill("send");
+  assert.equal(await tool(search).count(), 0);
+  await filter.fill("");
+  await save([search, write]);
+  await loadTools();
+  await tool(write).uncheck();
+  await save([search]);
+
+  // A newly advertised write tool and a previously deselected tool stay off.
+  advertised = [search, write, newTool];
+  await loadTools();
+  assert.equal(await tool(search).isChecked(), true);
+  assert.equal(await tool(write).isChecked(), false);
+  assert.equal(await tool(newTool).isChecked(), false);
+  await tool(search).uncheck();
+  await save([]);
+  await loadTools();
+  for (const name of advertised) {
+    assert.equal(await tool(name).isChecked(), false);
+  }
+});
+
 test("A dedicated OpenClaw Agent can enable and disable Google Workspace without a connection", async (t) => {
   const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
     await createReadyConsoleNamespace(t, "Package installation");
@@ -190,6 +777,11 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
   const enabled = dialog.getByLabel(`Enable ${id}`, { exact: true });
   assert.equal(await enabled.isChecked(), true);
   await checkPolicySupport(id);
+  await dialog.getByRole("button", { name: "Choose a connection template" }).click();
+  const setup = page.getByRole("dialog", { name: "Connect an account", exact: true });
+  await setup.getByRole("link", { name: "Configure Google OAuth", exact: true }).waitFor();
+  await setup.getByRole("button", { name: "Cancel", exact: true }).click();
+
   assert.equal(await dialog.getByLabel(/plugin approvers mode/).count(), 0);
   assert.equal(await dialog.getByLabel("Filter tools").count(), 0);
   await enabled.uncheck();
@@ -1721,4 +2313,428 @@ test("driver policy controls distinguish saved types, empty strings, and inherit
     });
     assert.equal(await input.inputValue(), retained);
   }
+});
+
+test("plugin account replacement and new OAuth consent follow the selected source and requested scopes", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, "/console");
+  await page.locator(settledView).waitFor();
+
+  // Exercise the served plugin editor with a saved account approved for this server and
+  // another account that still needs consent. The provider redirect is covered in integration.
+  async function mountPicker({
+    capabilities,
+    canConnect,
+  }: {
+    capabilities: OCCPluginDriver["policyCapabilities"];
+    canConnect: boolean;
+  }) {
+    const path = "/console/agents/plugin-fields.mjs";
+    const { createPluginFields } = (await import(
+      path
+    )) as typeof import("../../apps/controller/src/console/agents/plugin-fields.mjs");
+    const output = document.createElement("output");
+    output.id = "chosen-scopes";
+    const pluginId = "occ-plugin:support@1.0.0";
+    const releaseSha256 = "0".repeat(64);
+    const source = {
+      id: "cs_00000000-0000-4000-8000-000000000001",
+      name: "Service desk",
+      toolDiscovery: "agent" as const,
+    };
+    const input = document.createElement("textarea");
+    input.value = JSON.stringify({
+      [pluginId]: {
+        enabled: true,
+        driverPolicy: { releaseSha256, credentials: { support: source.id } },
+      },
+    });
+    const picker = createPluginFields({
+      input,
+      capabilities: {
+        ...capabilities,
+        driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+        credentialSlots: [
+          {
+            id: "support",
+            pluginId,
+            releaseSha256,
+            label: "Support account",
+            ...(canConnect ? { connectAccount: true } : {}),
+            toolDiscovery: true,
+            sources: [
+              source,
+              {
+                id: "cs_00000000-0000-4000-8000-000000000002",
+                name: "Reporting",
+                authorization: "required",
+              },
+            ],
+          },
+        ],
+      },
+      catalog: {
+        status: "ready",
+        entries: [
+          {
+            id: pluginId,
+            name: "Support",
+            selectableWithoutTools: true,
+            tools: [],
+            managedTools: {
+              connection: { slot: "support", sourceId: source.id, toolDiscovery: "agent" },
+              status: "loaded",
+              tools: [{ id: "ticket_get", ownerId: pluginId, name: "ticket_get" }],
+            },
+          },
+        ],
+      },
+      getSlotConnection: () => ({
+        unavailable: () => undefined,
+        async list() {
+          return {
+            templates: [
+              {
+                id: "mcp",
+                displayName: "Support MCP",
+                version: 1,
+                mode: "mcp_discovery",
+                scopes: [],
+                offeredScopes: ["read", "write"],
+                requiredScopes: ["read"],
+              },
+              {
+                id: "limited",
+                displayName: "Limited Support MCP",
+                version: 1,
+                mode: "mcp_discovery",
+                scopes: ["read", "admin-approved"],
+                requiredScopes: ["read"],
+                offeredScopes: ["read", "server-only"],
+              },
+              {
+                id: "fixed",
+                displayName: "Fixed Support OAuth",
+                version: 1,
+                mode: "manual",
+                scopes: ["fixed-scope"],
+                offeredScopes: [],
+                requiredScopes: [],
+              },
+              {
+                id: "manual",
+                displayName: "Support OAuth",
+                version: 1,
+                mode: "manual",
+                scopes: [],
+                offeredScopes: [],
+                requiredScopes: [],
+              },
+            ],
+          };
+        },
+        async start(_slot, _template, selected) {
+          output.value = selected === undefined ? "fixed" : JSON.stringify(selected);
+        },
+      }),
+    });
+    document.body.replaceChildren(picker.section, output);
+  }
+  const editor = page.getByRole("dialog", { name: "Configure plugins" });
+  async function openEditor(canConnect: boolean) {
+    await page.evaluate(mountPicker, {
+      capabilities: new OCCPluginDriver().policyCapabilities,
+      canConnect,
+    });
+    await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+    await editor.getByRole("button", { name: "Support", exact: true }).click();
+  }
+
+  // A member who can use the saved account only needs help with consent after clearing it.
+  await openEditor(false);
+  const supportAccount = editor.getByLabel("Support account", { exact: true });
+  const permissionHint = editor.getByText(
+    "This slot needs a connection template and permission to start consent for this server.",
+    { exact: true },
+  );
+  assert.equal(await supportAccount.locator("option:checked").textContent(), "Service desk");
+  assert.equal(await permissionHint.count(), 0);
+  await supportAccount.selectOption("");
+  await permissionHint.waitFor();
+
+  await openEditor(true);
+  await editor.getByRole("checkbox", { name: "ticket_get", exact: true }).waitFor();
+  assert.equal(
+    await editor.getByText("No tools listed for this plugin.", { exact: true }).count(),
+    0,
+  );
+  await editor.getByRole("button", { name: "Connect a different account", exact: true }).click();
+  await editor
+    .getByRole("button", { name: "Authorize and replace account", exact: true })
+    .waitFor();
+  const consent = page.getByRole("dialog", { name: "Connect an account", exact: true });
+  await consent.getByText(/replace Service desk in the Support account slot/).waitFor();
+  await consent.getByRole("button", { name: "Cancel", exact: true }).click();
+
+  // Clearing the selected account restores the authorization action before a new connection.
+  await editor.getByLabel("Support account", { exact: true }).selectOption("");
+  await editor.getByRole("button", { name: "Authorize for this server", exact: true }).click();
+  const template = page.getByRole("combobox", { name: "Connection template for Support account" });
+  assert.equal(await template.inputValue(), "");
+  assert.equal(
+    await consent.getByRole("button", { name: "Connect and attach", exact: true }).isDisabled(),
+    true,
+  );
+  await template.selectOption("mcp");
+  const required = page.getByRole("checkbox", { name: "read (required)" });
+  assert.ok((await required.isDisabled()) && (await required.isChecked()));
+  const writeScope = page.getByRole("checkbox", { name: "write" });
+  assert.equal(await writeScope.isChecked(), true);
+  await writeScope.uncheck();
+  const extra = page.getByLabel("Additional scopes");
+  const connect = page.getByRole("button", { name: "Connect and attach" });
+  await extra.fill('bad"scope');
+  assert.equal(await connect.isEnabled(), false);
+  await extra.fill("archive read archive");
+  await connect.click();
+  assert.equal(await page.locator("#chosen-scopes").textContent(), '["read","archive"]');
+  // The provider's suggestions may be incomplete. The configured allowlist decides
+  // which scopes a bounded template offers, including scopes the provider omitted.
+  await template.selectOption("limited");
+  assert.equal(
+    await consent.getByRole("checkbox", { name: "admin-approved", exact: true }).isChecked(),
+    true,
+  );
+  assert.equal(
+    await consent.getByRole("checkbox", { name: "server-only", exact: true }).count(),
+    0,
+  );
+  await connect.click();
+  assert.equal(await page.locator("#chosen-scopes").textContent(), '["read","admin-approved"]');
+  await template.selectOption("fixed");
+  assert.equal(
+    await consent
+      .getByRole("checkbox", { name: "fixed-scope (required)", exact: true })
+      .isDisabled(),
+    true,
+  );
+  assert.equal(await consent.getByRole("button", { name: /^(Unselect|Select) all$/ }).count(), 0);
+  await connect.click();
+  assert.equal(await page.locator("#chosen-scopes").textContent(), "fixed");
+  await template.selectOption("manual");
+  await connect.click();
+  assert.equal(await page.locator("#chosen-scopes").textContent(), "[]");
+});
+
+test("Agent plugin editor preserves its tab and draft when external consent completes, is cancelled or blocked", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth popup");
+  for (const driver of [
+    new OCCPluginDriver(),
+    createTestKubernetesComputeDriver("popup-compute"),
+  ]) {
+    controller(fixture).registerDriver(driver);
+    controller(fixture).selectDriver(driver.capability, driver.id);
+  }
+  const agent = agentEntity(
+    await fixture.createAgent(namespace.id, "OAuth popup", nativeValues("popup"), {
+      executionMode: "dedicated",
+      harnessAuth: null,
+    }),
+  );
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const pluginId = "occ-plugin:google@1.0.0";
+  const plugins = { [pluginId]: { enabled: true } };
+  const saved = await fixture.request("PATCH", path, {
+    body: { configurationId: agent.configurationId, plugins },
+  });
+  assert.equal(saved.status, 200);
+  const { page } = await newPage(t, fixture, { browser });
+  const original = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
+  const origin = original.origin;
+  const originalPath = original.pathname + original.search;
+  const context = page.context();
+  const sourceId = "cs_00000000-0000-4000-8000-000000000003";
+  let digest: string;
+  let selected = false;
+  let begins = 0;
+  // The real Agent page and driver expose the saved plugin slot. Control the external consent
+  // result separately from its redirect so a success URL alone cannot pass the readback test.
+  await page.route(`**${path}/plugins/capabilities`, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const slot = body.data.credentialSlots.find(
+      (entry: { pluginId: string }) => entry.pluginId === pluginId,
+    );
+    digest = slot.releaseSha256;
+    delete slot.templateSetup;
+    if (selected) {
+      slot.sources = [
+        { id: sourceId, name: "Connected fixture account", authorization: "authorized" },
+      ];
+    }
+    await route.fulfill({ response, json: body });
+  });
+  await page.route(`**${path}/plugins/*/credentials/account/connection-templates`, (route) =>
+    route.fulfill({
+      json: {
+        data: [
+          {
+            id: "template",
+            displayName: "Fixture OAuth",
+            version: 1,
+            mode: "manual",
+            scopes: ["read"],
+            offeredScopes: [],
+            requiredScopes: [],
+          },
+        ],
+      },
+    }),
+  );
+  await page.route(`**${path}/connections`, (route) => {
+    begins++;
+    return route.fulfill({
+      status: 201,
+      json: {
+        data: {
+          authorizationUrl: "https://consent.example.test/authorize",
+          credentialSourceId: sourceId,
+          expiresAt: new Date(Date.now() + 120_000).toISOString(),
+        },
+      },
+    });
+  });
+  await page.route(`**${path}`, async (route) => {
+    if (!selected) {
+      return route.continue();
+    }
+    const response = await route.fetch();
+    const body = await response.json();
+    body.data.plugins[pluginId].driverPolicy = {
+      releaseSha256: digest,
+      credentials: { account: sourceId },
+    };
+    await route.fulfill({ response, json: body });
+  });
+  await context.route("https://consent.example.test/**", async (route) => {
+    if (new URL(route.request().url()).pathname === "/allow") {
+      selected = true;
+    }
+    const path = new URL(route.request().url()).pathname;
+    const callbackReason = new Map([
+      ["/deny", "consent_denied"],
+      ["/untrusted", "fabricated-provider-detail"],
+    ]).get(path);
+    await route.fulfill(
+      new URL(route.request().url()).pathname === "/authorize"
+        ? {
+            headers: { "Cross-Origin-Opener-Policy": "same-origin" },
+            contentType: "text/html",
+            body: '<a href="/allow">Approve</a> <a href="/deny">Decline</a> <a href="/untrusted">Return unknown failure</a> <a href="/unconfirmed">Return without binding</a>',
+          }
+        : {
+            status: 303,
+            headers: {
+              location:
+                origin +
+                (callbackReason
+                  ? "/console/?connection=failed&reason=" + callbackReason
+                  : originalPath + "&connection=attached"),
+            },
+          },
+    );
+  });
+  await login(page, fixture, original);
+  await page.getByText("Plugin selections JSON", { exact: true }).click();
+  await page
+    .locator("#agent-plugins")
+    .fill(JSON.stringify({ ...plugins, localDraft: { enabled: true } }));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await editor.getByRole("button", { name: "Google Workspace", exact: true }).click();
+  await editor.getByRole("button", { name: "Choose a connection template", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Connect an account", exact: true })
+    .getByLabel("Connection template for Google account")
+    .selectOption("template");
+  const action = page.getByRole("button", { name: /^(Connect and attach|Try again)$/ });
+  const sameDraft = async () => {
+    assert.equal(page.url(), origin + originalPath);
+    assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()).localDraft, {
+      enabled: true,
+    });
+    assert.ok(
+      await page.getByRole("dialog", { name: "Configure plugins", exact: true }).isVisible(),
+    );
+  };
+  await page.evaluate(() => {
+    const open = window.open;
+    window.open = () => {
+      window.open = open;
+      return null;
+    };
+  });
+  await action.click();
+  await page.getByText(/Allow pop-ups for this Console/).waitFor();
+  assert.equal(begins, 0);
+  await sameDraft();
+  const outcomes = ["close", "denied", "untrusted", "unconfirmed", "success"] as const;
+  for (const mode of outcomes) {
+    const next = context.waitForEvent("page");
+    await action.click();
+    const provider = await next;
+    await provider.getByRole("link", { name: "Approve" }).waitFor();
+    assert.ok(await provider.evaluate(() => window.opener === null));
+    if (mode === "close") {
+      await provider.close();
+      await page.getByRole("button", { name: "Check connection" }).click();
+      await page.getByText(/binding could not be confirmed/).waitFor();
+    } else {
+      if (mode === "success") {
+        // A read during sign-in cannot cancel the outstanding callback, even if COOP severed the opener.
+        await page.getByRole("button", { name: "Check connection" }).click();
+        await page.getByText(/binding could not be confirmed/).waitFor();
+        assert.equal(provider.isClosed(), false);
+      }
+      const ended = provider.waitForEvent("close");
+      await provider
+        .getByRole("link", {
+          name: {
+            success: "Approve",
+            unconfirmed: "Return without binding",
+            denied: "Decline",
+            untrusted: "Return unknown failure",
+          }[mode],
+        })
+        .click();
+      await ended;
+      if (mode === "denied") {
+        await editor.getByText(/Access was declined at the provider/).waitFor();
+      } else if (mode === "untrusted") {
+        await editor.getByText(/Authorization did not finish/).waitFor();
+        assert.equal(
+          await page.getByText("fabricated-provider-detail", { exact: false }).count(),
+          0,
+        );
+      } else if (mode === "unconfirmed") {
+        await page.getByText(/binding could not be confirmed/).waitFor();
+        assert.equal(await page.getByText("Account attached.", { exact: true }).count(), 0);
+      } else {
+        await page.getByText("Account attached.", { exact: true }).waitFor();
+        await page
+          .getByText("Connected fixture account", { exact: true })
+          .first()
+          .waitFor({ state: "attached" });
+      }
+    }
+    await sameDraft();
+  }
+  assert.equal(begins, outcomes.length);
+  assert.equal(
+    JSON.parse(await page.locator("#agent-plugins").inputValue())[pluginId].driverPolicy.credentials
+      .account,
+    sourceId,
+  );
 });

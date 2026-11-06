@@ -927,7 +927,7 @@ capabilities:
      other than the chart's mounts. The chart-owned private Gateway expectation also checks
      selected Kubernetes routing against the rendered resource identity and hostname. */}}
 {{- define "openclaw.listenerEnv" -}}
-{{- range $listener := list (dict "name" "OCC_EGRESS_AUTHORITY_PORT" "label" "egressAuthority.port" "values" .Values.egressAuthority) (dict "name" "OCC_OPENSHELL_GIT_PORT" "label" "openshellGit.port" "values" .Values.openshellGit) }}
+{{- range $listener := list (dict "name" "OCC_EGRESS_AUTHORITY_PORT" "label" "egressAuthority.port" "values" .Values.egressAuthority) (dict "name" "OCC_OPENSHELL_GIT_PORT" "label" "openshellGit.port" "values" .Values.openshellGit) (dict "name" "OCC_OPENSHELL_TOKEN_GRANT_PORT" "label" "egressAuthority.tokenGrant.port" "values" .Values.egressAuthority.tokenGrant) }}
 - name: {{ $listener.name }}
   value: {{ if $listener.values.enabled }}{{ include "openclaw.positiveSafeInteger" (dict "name" $listener.label "value" $listener.values.port "port" true) | quote }}{{ else }}"disabled"{{ end }}
 {{- end }}

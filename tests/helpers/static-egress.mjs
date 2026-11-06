@@ -722,7 +722,10 @@ export async function staticEgressFixture(
         },
       }
     : app.controller;
-  let authority = createOpenShellEgressAuthority(identity, authorityController);
+  let authority = createOpenShellEgressAuthority(
+    identity,
+    authorityController.createCredentialProxy(identity),
+  );
   const authorityPort = await bindOpenShellEgressAuthority(authority, "127.0.0.1:0", cert, key);
   t.after(() => authority.forceShutdown());
   const definition = loader.loadSync(
@@ -1023,7 +1026,10 @@ export async function staticEgressFixture(
     protect,
     async restartAuthority() {
       authority.forceShutdown();
-      authority = createOpenShellEgressAuthority(identity, authorityController);
+      authority = createOpenShellEgressAuthority(
+        identity,
+        authorityController.createCredentialProxy(identity),
+      );
       await bindOpenShellEgressAuthority(authority, "127.0.0.1:" + authorityPort, cert, key);
       for (const [name, client] of Object.entries(clients)) {
         client.close();

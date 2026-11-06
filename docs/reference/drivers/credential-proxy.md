@@ -29,16 +29,17 @@ and [repository delivery types](../../../packages/contracts/src/protected-reposi
 The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/index.ts) defines
 these operations:
 
-| Member                                      | Caller, inputs and result                                                                                                                                               | Requirement                                                                                              |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `sourceControl`                             | Admission and preparation use its Backend, sender, resolver and provider identities. `assertAvailable(signal, profile?)` checks the configured counterpart.             | Required property, not a method. Discovery alone is not installed enforcement evidence.                  |
-| `bindExchange(createCredentialProxy)`       | API composition supplies a factory. Call it once with the transport's `EgressExchangeOwner`; receive only the five exchange methods. Return a binding with `close()`.   | Optional on the base interface; required to connect a request-time exchange transport.                   |
-| `bindRepositoryGit(authority)`              | Worker composition supplies `ProtectedRepositoryGitAuthority`; return a binding with `close()`.                                                                         | Optional; required for selected protected repository delivery, together with Sandbox `repositoryAccess`. |
-| `configureRevision(context)`                | Compute preparation supplies Namespace, revision, admitted plan and cancellation signal. Return `ProxyWiring` with that exact plan and nonsecret Sandbox configuration. | Required. Cannot broaden the admitted plan.                                                              |
-| `wiringStatus(context, prepared)`           | Compute observes the prepared installation. Return authenticated `EgressInstallation` evidence or `undefined`.                                                          | Required. An accepted configuration request is not sufficient evidence.                                  |
-| `verifyInstallation(context, installation)` | Compute rechecks the counterpart before release, including after recording custody. Return whether the exact evidence remains valid.                                    | Required. A stored receipt is not a readiness lease.                                                     |
-| `removeRevision(context)`                   | Revision cleanup removes the owned installation and returns a boolean completion result.                                                                                | Required; failure must not be reported as completed cleanup.                                             |
-| `policyReduction`                           | Withdrawal uses versioned `apply(context, reduction)`, then independent `observe(context, reduction)`.                                                                  | Optional on the interface; required when the plan records that capability.                               |
+| Member                                      | Caller, inputs and result                                                                                                                                                       | Requirement                                                                                              |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `sourceControl`                             | Admission and preparation use its Backend, sender, resolver and provider identities. `assertAvailable(signal, profile?)` checks the configured counterpart.                     | Required property, not a method. Discovery alone is not installed enforcement evidence.                  |
+| `bindExchange(createCredentialProxy)`       | API composition supplies a factory. Bind the transport's `EgressExchangeOwner` before accepting requests. Return a binding with `close()`.                                      | Optional on the base interface; required to connect a request-time exchange transport.                   |
+| `requestTimeCredentials`                    | OCC calls `assertAvailable` at admission and `verifyRecipient` before releasing a credential for the given Namespace and Agent revision. The Driver owns sender authentication. | Optional. When present, the installed transport can authorize and redeem request credentials.            |
+| `bindRepositoryGit(authority)`              | Worker composition supplies `ProtectedRepositoryGitAuthority`; return a binding with `close()`.                                                                                 | Optional; required for selected protected repository delivery, together with Sandbox `repositoryAccess`. |
+| `configureRevision(context)`                | Compute preparation supplies Namespace, revision, admitted plan and cancellation signal. Return `ProxyWiring` with that exact plan and nonsecret Sandbox configuration.         | Required. Cannot broaden the admitted plan.                                                              |
+| `wiringStatus(context, prepared)`           | Compute observes the prepared installation. Return authenticated `EgressInstallation` evidence or `undefined`.                                                                  | Required. An accepted configuration request is not sufficient evidence.                                  |
+| `verifyInstallation(context, installation)` | Compute rechecks the counterpart before release, including after recording custody. Return whether the exact evidence remains valid.                                            | Required. A stored receipt is not a readiness lease.                                                     |
+| `removeRevision(context)`                   | Revision cleanup removes the owned installation and returns a boolean completion result.                                                                                        | Required; failure must not be reported as completed cleanup.                                             |
+| `policyReduction`                           | Withdrawal uses versioned `apply(context, reduction)`, then independent `observe(context, reduction)`.                                                                          | Optional on the interface; required when the plan records that capability.                               |
 
 There is no `withdrawBinding` member in the current interface. Use OCC withdrawal
 and the admitted `policyReduction` capability, or runtime retirement, rather than
@@ -142,6 +143,26 @@ undefined result must release no response. Positive provider rejection evidence
 identifies the rejected version; an HTTP status alone does not. Do not switch
 credentials and replay the request. See the [request flow](../../flows/credential-source-egress.md)
 for transaction and response ordering.
+
+### Saved OAuth accounts
+
+A dedicated OpenClaw Agent can use a saved OAuth account with stock OpenShell's pre-credentials request middleware and runtime `token_grant`. The Installation operator configures two endpoints on the selected Credential Proxy:
+
+- Register `configuration.middlewareName` at the TLS `authority` listener. Use its audience and the Gateway signing key. Require the pre-credentials HTTP request binding and fail closed on errors.
+- Set `configuration.tokenGrant.endpoint` to the HTTPS token URL reachable from the supervisor, `port` to the listener port, `trustDomain` to the SPIRE trust domain, and `bundlePath` to its mounted public signing bundle. Give only the supervisor access to its SPIFFE Workload API socket. Its JWT-SVID must identify `spiffe://<trust-domain>/openshell/sandbox/<sandbox-id>` and have the token endpoint as its sole audience. With Helm, set `egressAuthority.tokenGrant.enabled: true`, match its port to the listener, and include `spiffe-bundle.json` in `egressAuthority.issuerSecretName`. The supervisor must trust the TLS certificate for the token endpoint’s hostname.
+
+OCC approves the actual request after checking the Agent grant, template destination and slot operation. For MCP, that includes the protected resource and selected tool. The token endpoint matches the authenticated Sandbox, request ID and slot binding to that approval and consumes it once. The approval expires within 30 seconds. OCC makes its final grant and token-version check before returning the bearer. An authorized send can finish after detach. The detached Agent loses access on its next request. Other Agents keep their own grants.
+
+Set `drivers.credential_proxy.configuration.allowNonProxyCredentials: true` to use
+ordinary Gateway sources and supported workload Secret bindings alongside saved accounts.
+OCC registers new ordinary Gateway catalog types with the selected Credential Gateway.
+For example, OpenShell can inject the Agent’s model key on its model API route and fetch
+its Slack account token through Credential Proxy on each MCP request. Each source needs its own grant. Give ordinary sources
+distinct hosts and environment variable names from those of saved account slots. Leave the Sandbox Driver’s static `providers` list empty because it applies
+to every Sandbox. Omitting the option keeps protected admission. Existing sources keep
+their recorded delivery.
+
+For saved plugin accounts, the Driver sets the OpenShell bearer cache TTL to zero. Each credentialed plugin request obtains its token from OCC. Token Service can reuse a valid token or refresh it. On public Google discovery routes a workload may supply its own Authorization header. OpenShell sends those requests without the saved account’s bearer.
 
 ### Installed material
 

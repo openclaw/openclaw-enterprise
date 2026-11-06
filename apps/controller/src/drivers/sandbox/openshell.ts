@@ -1,3 +1,11 @@
+import {
+  assertSavedAccountRules,
+  openShellSavedAccountPolicy,
+  savedAccountProviderPrefix,
+  verifySavedAccountPolicy,
+  verifySavedAccountProfile,
+  type OpenShellCredentialMiddlewareRegistration,
+} from "./openshell-saved-account-policy.ts";
 import { managedCredentialEnvironment } from "./openshell-plugin-runtime.ts";
 import {
   openShellRepositoryAccess,
@@ -238,6 +246,7 @@ export interface OpenShellSandboxDriverOptions {
 }
 
 export interface OpenShellSandboxDriverSelection {
+  readonly credentialMiddleware?: OpenShellCredentialMiddlewareRegistration;
   readonly openShellGit?: OpenShellGitRuntime;
   readonly operatorOwnedKubernetesResources?: boolean;
   readonly id?: string;
@@ -905,16 +914,19 @@ function harnessRuntimeFiles(
     binaries: [],
     inferenceCapable: false,
   };
+  return { config, profile: managedRuntimeProfile(profileBase) };
+}
+
+function managedRuntimeProfile(
+  base: Omit<OpenShellProviderProfile, "annotations">,
+): OpenShellProviderProfile {
   return {
-    config,
-    profile: {
-      ...profileBase,
-      annotations: {
-        // TODO(openshell-stable-profile-hash): Separate ownership and digest after the
-        // pinned OpenShell release canonicalizes protobuf map fields before hashing them.
-        [RUNTIME_PROFILE_MANAGED_ANNOTATION]:
-          RUNTIME_PROFILE_MANAGED_VALUE_PREFIX + sha256Hex(JSON.stringify(profileBase)),
-      },
+    ...base,
+    annotations: {
+      // TODO(openshell-stable-profile-hash): Separate ownership and digest after the
+      // pinned OpenShell release canonicalizes protobuf map fields before hashing them.
+      [RUNTIME_PROFILE_MANAGED_ANNOTATION]:
+        RUNTIME_PROFILE_MANAGED_VALUE_PREFIX + sha256Hex(JSON.stringify(base)),
     },
   };
 }
@@ -2183,6 +2195,7 @@ function sandboxSpec(
   egressPolicy?: Readonly<Record<string, unknown>>,
   plugin?: ReturnType<typeof openShellPluginPolicy>,
   mcpPolicies: ReturnType<typeof openShellManagedMcpPolicies> = [],
+  savedAccounts?: ReturnType<typeof openShellSavedAccountPolicy>,
 ) {
   const defaults = revision.sandboxPolicy?.defaults ?? networkPolicies(options);
   const additions = openShellAgentNetworkRules(revision.sandboxPolicy?.additions ?? []);
@@ -2198,6 +2211,11 @@ function sandboxSpec(
   for (const { install } of mcpPolicies) {
     assertNoManagedMcpRouteOverlap(defaults, install);
     assertNoManagedMcpRouteOverlap(additions, install);
+  }
+  if (savedAccounts) {
+    const hosts = [...savedAccounts.hosts];
+    assertPluginNetworkInspection(defaults, hosts);
+    assertPluginNetworkInspection(additions, hosts);
   }
   const dataMount = sandboxDataMount(options, requirements);
   const workspace = workspaceVolumeMounts(requirements, dataMount, revision.id);
@@ -2241,6 +2259,7 @@ function sandboxSpec(
         workspace.workspaceMountPaths,
       ),
       ...(plugin && { [managedCredentialEnvironment]: plugin.environment }),
+      ...savedAccounts?.environment,
     },
     template: {
       image: requirements.image,
@@ -2260,12 +2279,15 @@ function sandboxSpec(
         run_as_group: options.policy.process.runAsGroup,
       },
       ...(egressPolicy && { network_middlewares: egressPolicy.network_middlewares }),
-      ...(plugin && { network_middlewares: plugin.middlewares }),
+      ...((plugin || savedAccounts) && {
+        network_middlewares: { ...plugin?.middlewares, ...savedAccounts?.middlewares },
+      }),
       network_policies: {
         // A protected execution keeps the exact policy and model attachment verified before provisioning.
         ...(egressPolicy ? asRecord(egressPolicy.network_policies) : defaults),
         ...(egressPolicy ? {} : additions),
         ...plugin?.networks,
+        ...savedAccounts?.networks,
         ...Object.fromEntries(mcpPolicies.map(({ network }) => [network.name, network])),
         ...(runtimeProvider === undefined || workspaceNodeBinding === undefined
           ? {}
@@ -2438,6 +2460,16 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
     throw new OpenShellSandboxConfigurationFailure(
       "OpenShell static providers must be nonempty names outside the OCC credential-source namespace.",
     );
+  }
+  if (options.egress?.allowNonProxyCredentials === true && options.providers?.length) {
+    throw new ConfigurationValidationError([
+      {
+        path: "/providers",
+        code: "INVALID_VALUE",
+        message:
+          "Remove static Sandbox providers when allowNonProxyCredentials is enabled. They would attach to every Agent alongside its authorized credentials.",
+      },
+    ]);
   }
   const prefix = nonempty(
     options.sandboxNamePrefix ?? DEFAULT_SANDBOX_NAME_PREFIX,
@@ -2908,6 +2940,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   static readonly configurationContributions = configurationContributions;
   readonly networkPolicy = Object.freeze({ wildcards: true, portRanges: true, live: true });
   private readonly options: OpenShellSandboxDriverOptions;
+  private readonly credentialMiddleware: OpenShellCredentialMiddlewareRegistration | undefined;
   private readonly backend: Backend<OpenShellGateway>;
   private readonly operatorOwnedKubernetesResources: boolean;
   private readonly openShellGit: OpenShellGitRuntime | undefined;
@@ -2957,6 +2990,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     });
     const git = selection.openShellGit;
     this.openShellGit = git;
+    this.credentialMiddleware = selection.credentialMiddleware;
     if (git) {
       this.repositoryAccess = openShellRepositoryAccess(git, (context) =>
         this.standingGitExecution(context),
@@ -3252,11 +3286,22 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OpenShell v0.1.5 cannot preserve an Agent ServiceAccount and projected identity token; disable ServicePrincipal credentials or select another Sandbox Driver.",
       );
     }
+    if (context.revision.plugins?.savedAccounts && this.options.providers?.length) {
+      throw new SandboxRevisionUnsupportedError(
+        "SANDBOX_HARNESS_UNSUPPORTED",
+        "Remove static Sandbox providers to deploy saved plugin accounts. Each credential must be authorized for this Agent.",
+      );
+    }
     labels(context.requirements.labels, "Harness workload labels");
     const sandbox = this.sandboxRef(context);
     const codex = context.revision.harness.id === "codex";
     const client = this.gatewayClientForNamespace(sandbox.namespaceName);
     const workspace = workspaceName(context.namespace);
+    const savedAccounts = openShellSavedAccountPolicy(
+      context.revision,
+      this.credentialMiddleware,
+      context.revision.sandboxPolicy?.defaults ?? networkPolicies(this.options),
+    );
     const plugin = openShellPluginPolicy(
       context.revision,
       context.requirements,
@@ -3309,11 +3354,14 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     const checkEffectivePolicy = async () => {
       const config =
-        plugin || mcpPolicies.length
+        plugin || mcpPolicies.length || savedAccounts
           ? await client.getSandboxConfig?.(workspace, sandbox.resourceName, context.signal)
           : undefined;
+      if (savedAccounts) {
+        verifySavedAccountPolicy(config, savedAccounts, workspace);
+      }
       if (plugin) {
-        verifyPluginRequestGuard(config, plugin, workspace);
+        verifyPluginRequestGuard(config, plugin, workspace, savedAccounts?.middlewares);
       }
       for (const policy of mcpPolicies) {
         verifyManagedMcpPolicy(config, policy, workspace);
@@ -3339,6 +3387,17 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       runtimeCredentialMaterial.credentials,
       runtimeCredentialMaterial.credentialExpirationTimes,
     );
+    for (const { name, profile } of savedAccounts?.providers ?? []) {
+      await this.ensureRuntimeProfile(
+        client,
+        workspace,
+        managedRuntimeProfile(profile),
+        context.signal,
+      );
+      const stored = await client.getProviderProfile(workspace, profile.id, context.signal);
+      verifySavedAccountProfile(stored, profile, workspace);
+      await this.ensureRuntimeProvider(client, workspace, context, profile.id, {}, {}, {}, name);
+    }
     const serviceExposures = exposed
       ? [
           {
@@ -3383,9 +3442,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         egressPolicy,
         plugin,
         mcpPolicies,
+        savedAccounts,
       ),
       serviceExposures,
     };
+    create.spec.providers.push(...(savedAccounts?.providers.map(({ name }) => name) ?? []));
     // Check the final composition against the independently validated setup binding,
     // including absence; a supplied auxiliary rule cannot establish its own authority.
     const expectedWorkspacePolicy =
@@ -3408,6 +3469,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new OpenShellSandboxConfigurationFailure(
         "Workspace enrollment policy differs from its Agent-owned binding.",
       );
+    }
+    if (savedAccounts) {
+      assertSavedAccountRules(create.spec.policy, savedAccounts);
     }
     if (git) {
       create.spec.providers.push(git.provider);
@@ -3552,7 +3616,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       !plugin &&
       managedCredentialBinding(context.revision.plugins?.plugins, managedGoogleInstall)
     ) {
-      const previous = googleRequestPolicyFromSandbox(existing.spec?.policy);
+      const previous = googleRequestPolicyFromSandbox(
+        existing.spec?.policy,
+        savedAccounts?.middlewares,
+      );
       if (previous) {
         expectedSpec = {
           ...expectedSpec,
@@ -3562,7 +3629,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           },
           policy: {
             ...expectedSpec.policy,
-            network_middlewares: previous.middlewares,
+            network_middlewares: { ...previous.middlewares, ...savedAccounts?.middlewares },
             network_policies: { ...expectedSpec.policy.network_policies, ...previous.networks },
           },
         };
@@ -4243,6 +4310,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       if (present !== undefined) {
         await refused(() => client.deleteSandbox(selector, context.signal));
       }
+      if (context.revision.plugins?.savedAccounts) {
+        await this.cleanupSavedAccountProviders(client, workspace, context, context.revision);
+      }
       const harnessId = context.revision.harness.id;
       if (
         context.revision.harness.mode === "dedicated" &&
@@ -4299,6 +4369,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           await client.deleteProvider(workspace.name, provider.name, context.signal);
         }
       }
+      await this.cleanupSavedAccountProviders(client, workspace.name, context);
       // Revisions cleaned up before finding 2206's fix left their Git providers behind.
       await deleteOpenShellPreparedGitProviders(client, workspace.name, providers, context.signal);
       for (const profileId of Object.values(RUNTIME_PROFILE_IDS)) {
@@ -4522,9 +4593,20 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new Error("Missing policy baseline.");
     }
     const candidate = openShellPolicyCandidate(baseline, input.snapshot);
-    const plugin = googleRequestPolicyFromSandbox(baseline);
+    const savedAccounts = openShellSavedAccountPolicy(
+      context.revision,
+      this.credentialMiddleware,
+      context.revision.sandboxPolicy?.defaults ?? networkPolicies(this.options),
+    );
+    if (savedAccounts) {
+      assertSavedAccountRules(candidate, savedAccounts);
+      assertPluginNetworkInspection(openShellAgentNetworkRules(input.snapshot.additions), [
+        ...savedAccounts.hosts,
+      ]);
+    }
+    const plugin = googleRequestPolicyFromSandbox(baseline, savedAccounts?.middlewares);
     if (plugin) {
-      assertPluginRequestPolicy(candidate, plugin);
+      assertPluginRequestPolicy(candidate, plugin, savedAccounts?.middlewares);
     } else {
       const binding = managedCredentialBinding(
         context.revision.plugins?.plugins,
@@ -4870,8 +4952,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     config: Readonly<Record<string, string>>,
     credentials: Readonly<Record<string, string>>,
     credentialExpirationTimes: Readonly<Record<string, string>>,
+    name = runtimeProviderName(context.revision.id),
   ): Promise<{ readonly name: string; readonly created: boolean }> {
-    const name = runtimeProviderName(context.revision.id);
     const expectedLabels = runtimeProviderLabels(context.namespace, context.revision);
     let provider = await client.getProvider(workspace, name, context.signal);
     let created = false;
@@ -4920,6 +5002,42 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     verifyRuntimeProvider(provider, name, profileId, expectedLabels, config);
     return Object.freeze({ name, created });
+  }
+
+  /** A failed creation can leave a profile before its empty provider exists. */
+  private async cleanupSavedAccountProviders(
+    client: OpenShellGatewayClient,
+    workspace: string,
+    context: SandboxNamespaceContext,
+    revision?: Readonly<AgentRevision>,
+  ): Promise<void> {
+    const prefix = revision ? savedAccountProviderPrefix(revision.id) : "oce-oauth-";
+    for (const profile of await client.listProviderProfiles(workspace, context.signal)) {
+      if (
+        !profile.id.startsWith(prefix) ||
+        !/^oce-oauth-[0-9a-f]{20}-[0-9a-f]{20}$/.test(profile.id) ||
+        profile.definition?.scope !== "workspace" ||
+        !isManagedRuntimeProfile(profile)
+      ) {
+        continue;
+      }
+      const provider = await client.getProvider(workspace, profile.id, context.signal);
+      if (provider) {
+        if (
+          provider.type !== profile.id ||
+          provider.labels[OPENSHELL_MANAGED_BY_LABEL] !== OPENSHELL_MANAGED_BY ||
+          provider.labels[OPENSHELL_NAMESPACE_ID_LABEL] !== context.namespace.id ||
+          (revision &&
+            !exactStringMap(provider.labels, runtimeProviderLabels(context.namespace, revision)))
+        ) {
+          throw new OpenShellSandboxConfigurationFailure(
+            "Refusing to remove another owner's saved account provider.",
+          );
+        }
+        await client.deleteProvider(workspace, profile.id, context.signal);
+      }
+      await client.deleteProviderProfile(workspace, profile.id, context.signal);
+    }
   }
 
   private async deleteRuntimeProfileIfUnused(

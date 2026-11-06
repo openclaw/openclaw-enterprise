@@ -1,3 +1,9 @@
+import {
+  tokenGrantSchema,
+  validTokenGrantConfiguration,
+  type OpenShellTokenGrantConfiguration,
+} from "./openshell-token-grant.ts";
+import { middlewareContract } from "./openshell-request-credential.ts";
 import type { ModelProviderConfiguration } from "../compute/model-provider.ts";
 import { wirePolicy } from "./openshell-wire-policy.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
@@ -63,7 +69,11 @@ function registeredWithoutExecution(extensions: unknown, registration: string): 
   );
 }
 
-export interface OpenShellProxyOptions {
+export interface OpenShellProxyOptions extends Pick<
+  CredentialSourceControl,
+  "allowNonProxyCredentials"
+> {
+  readonly tokenGrant?: OpenShellTokenGrantConfiguration;
   readonly middlewareName: string;
   readonly repositoryMiddlewareName?: string;
   /** Installation operator promises a dedicated, operator-controlled supported stock gateway. */
@@ -266,6 +276,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   readonly implementation = "openshell";
   readonly id: string;
   readonly sourceControl: CredentialSourceControl;
+  readonly requestTimeCredentials?: NonNullable<CredentialProxyDriver["requestTimeCredentials"]>;
   readonly bindExchange?: NonNullable<CredentialProxyDriver["bindExchange"]>;
   readonly bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>;
   private readonly mandatoryEnforcement?: OpenShellGitRuntime["mandatoryEnforcement"];
@@ -280,6 +291,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     required: ["middlewareName", "authorityScope"],
     properties: {
       middlewareName: { type: "string", minLength: 1 },
+      tokenGrant: tokenGrantSchema,
+      allowNonProxyCredentials: { type: "boolean", default: false },
       repositoryMiddlewareName: { type: "string", minLength: 1 },
       observedHookPreviewWorkspace: { type: "string", maxLength: 19, minLength: 1 },
       authorityScope: { type: "string", const: "execution" },
@@ -294,11 +307,16 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         (key) =>
           ![
             "middlewareName",
+            "allowNonProxyCredentials",
+            "tokenGrant",
             "authorityScope",
             "repositoryMiddlewareName",
             "observedHookPreviewWorkspace",
           ].includes(key),
       ) ||
+      (value.allowNonProxyCredentials !== undefined &&
+        typeof value.allowNonProxyCredentials !== "boolean") ||
+      (value.tokenGrant !== undefined && !validTokenGrantConfiguration(value.tokenGrant)) ||
       typeof value.middlewareName !== "string" ||
       !value.middlewareName.trim() ||
       (value.observedHookPreviewWorkspace !== undefined &&
@@ -341,7 +359,52 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     const exchange = selection.exchangeAuthority;
     if (exchange) {
       this.bindExchange = (createProxy) =>
-        bindOpenShellExchange(exchange, this.sourceControl.sender, createProxy);
+        bindOpenShellExchange(
+          exchange,
+          this.sourceControl.sender,
+          options.middlewareName,
+          createProxy,
+          options.tokenGrant,
+        );
+    }
+    if (exchange && options.tokenGrant) {
+      this.requestTimeCredentials = {
+        verifyRecipient: async (namespace, revision, recipient, signal) => {
+          const workspace = openShellWorkspaceName(namespace);
+          if (recipient.context !== undefined && workspace !== recipient.context) {
+            return false;
+          }
+          const ref = this.sandbox.harnessResource!({ namespace, revision });
+          const client = this.backend.client.clientForNamespace(ref.namespaceName);
+          const existing = await client.getSandbox({ workspace, name: ref.resourceName }, signal);
+          if (!existing || existing.id !== recipient.id) {
+            return false;
+          }
+          this.assertOwned(existing.annotations, { namespace, revision });
+          return true;
+        },
+        assertAvailable: async (signal) => {
+          const client = this.backend.client.clientForNamespace("");
+          const info = await client.getGatewayInfo?.(signal);
+          if (
+            !Array.isArray(info?.extensions) ||
+            !info.extensions.some((value) => {
+              const item = asRecord(value);
+              return (
+                item?.configured_name === options.middlewareName &&
+                (item.kind === 4 || item.kind === "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE") &&
+                item.protocol_major === 1 &&
+                Array.isArray(item.supported_capabilities) &&
+                item.supported_capabilities.includes(middlewareContract)
+              );
+            })
+          ) {
+            throw new DependencyUnavailableError(
+              "The selected OpenShell gateway must support request-time credential injection.",
+            );
+          }
+        },
+      };
     }
     if (options.observedHookPreviewWorkspace && selection.previewEnforcement) {
       this.previewEnforcement = selection.previewEnforcement;
@@ -354,6 +417,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     this.sandbox = selection.sandbox;
     this.options = immutableCopy(options);
     this.sourceControl = Object.freeze({
+      allowNonProxyCredentials: options.allowNonProxyCredentials ?? false,
       backend: { id: selection.backend.id, generation: 1 },
       sender: { id: `${selection.backend.id}/supervisor`, generation: 1 },
       resolver: { id: `${selection.id}/resolver`, generation: 1 },
@@ -667,7 +731,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
 
   private assertOwned(
     annotations: Readonly<Record<string, string>>,
-    context: ProxyRevisionContext,
+    context: Pick<ProxyRevisionContext, "namespace" | "revision">,
   ): void {
     if (
       annotations["openclaw.dev/namespace-id"] !== context.namespace.id ||

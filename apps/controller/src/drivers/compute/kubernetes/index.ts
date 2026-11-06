@@ -603,6 +603,7 @@ interface GatewayConfigurationSnapshot {
   readonly nativeWorkerNodeId?: string;
 }
 
+const NATIVE_CREDENTIALS_ADMISSION = "native-credentials:v1:";
 const PROTECTED_CODEX_NO_CONNECTION_RETRY = "protected-codex-no-connection-retry:v1";
 
 interface PluginRuntimeSnapshot {
@@ -6167,13 +6168,27 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   validateExecutionAdmission(
-    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+    revision: Readonly<AgentRevision> | Pick<AgentRevision, "executionAdmission" | "egressPlan">,
     source?: SelectedDriverRegistration | "stored",
   ): void {
     assertExecutionAdmission(revision);
     const plan = revision.egressPlan;
-    if (plan === undefined && this.proxyDriver === undefined) {
-      return;
+    if (plan === undefined) {
+      const full = "compute" in revision ? revision : undefined;
+      const receipt = full && this.runtimeAdmission(full);
+      if (source === "stored" && receipt?.startsWith(NATIVE_CREDENTIALS_ADMISSION)) {
+        if (full && receipt === this.nativeCredentialAdmission(full)) {
+          return;
+        }
+      } else if (!this.proxyDriver && !full?.plugins?.savedAccounts) {
+        return;
+      } else if (
+        full &&
+        source === this.protectedExecution?.owner &&
+        this.nativeCredentialAdmission(full)
+      ) {
+        return;
+      }
     }
     if (
       this.options.runtime === undefined ||
@@ -6440,6 +6455,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       revision.plugins?.plugins,
       sandboxDriver?.implementation,
       this.credentialGatewayDriver?.implementation,
+      !!revision.plugins?.savedAccounts,
     );
     requireNativeWorkerSandbox(revision.harness, sandboxDriver);
     if (sandboxDriver !== undefined && embedded) {
@@ -14402,6 +14418,81 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return saved[1] || undefined;
   }
 
+  /** OCC authorized the immutable revision. Pin its native delivery to the selected runtime. */
+  private nativeCredentialAdmission(revision: Readonly<AgentRevision>): string | undefined {
+    const release = this.protectedExecution;
+    if (
+      !release ||
+      !this.options.runtime ||
+      revision.egressPlan ||
+      revision.executionAdmission.mode !== "unprotected" ||
+      revision.harness.mode !== "dedicated" ||
+      revision.sandboxDriverId !== release.sandbox.id ||
+      revision.repositoryCredentials ||
+      (revision.harness.id !== "openclaw" && revision.harness.id !== "codex")
+    ) {
+      return undefined;
+    }
+    const sources = revision.credentialSources ?? [];
+    const gateway = this.credentialGatewayDriver;
+    if (
+      sources.some(
+        (binding) =>
+          !gateway ||
+          binding.credentialGatewayId !== gateway.id ||
+          binding.credentialProxyId !== undefined,
+      )
+    ) {
+      return undefined;
+    }
+    const auth = revision.harnessAuth;
+    if (
+      auth.method === "credential_source" &&
+      (!gateway ||
+        auth.credentialGatewayId !== gateway.id ||
+        !sources.some(
+          (binding) => binding.sourceId === auth.sourceId && binding.sourceType === auth.sourceType,
+        ))
+    ) {
+      return undefined;
+    }
+    const hasSecretBindings =
+      Object.keys(revision.secretBindings ?? {}).length > 0 ||
+      ((auth.method === "api_key" || auth.method === "codex_pat") && auth.source.kind === "secret");
+    const saved = revision.plugins?.savedAccounts;
+    if (saved) {
+      if (
+        (hasSecretBindings && !release.proxy.sourceControl.allowNonProxyCredentials) ||
+        !release.proxy.requestTimeCredentials ||
+        revision.harness.id !== "openclaw" ||
+        !saved.sourceIds.length ||
+        !isDeepStrictEqual(saved.driver, release.owner.ref)
+      ) {
+        return undefined;
+      }
+    } else {
+      if (
+        !release.proxy.sourceControl.allowNonProxyCredentials ||
+        (!sources.length && !hasSecretBindings)
+      ) {
+        return undefined;
+      }
+    }
+    const owner = release.owner.ref;
+    return (
+      NATIVE_CREDENTIALS_ADMISSION +
+      sha256Hex(
+        JSON.stringify([
+          revision.id,
+          owner.id,
+          owner.implementation,
+          owner.configurationId,
+          ...(sources.length && gateway ? [gateway.id, gateway.implementation] : []),
+        ]),
+      )
+    );
+  }
+
   admitRevision(revision: Readonly<AgentRevision>): string | undefined {
     this.validateGatewayManagedMode(revision);
     let runtime: string | undefined;
@@ -14409,6 +14500,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       runtime = PROTECTED_CODEX_NO_CONNECTION_RETRY;
     } else if (this.publicGithubReadCandidate(revision) !== undefined) {
       runtime = this.publicGithubReadAdmission();
+    } else {
+      runtime = this.nativeCredentialAdmission(revision);
     }
     const provider = this.providerAdmission(revision);
     return provider === undefined ? runtime : `model-provider:v1:${provider}:${runtime ?? ""}`;
@@ -14418,6 +14511,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (
       this.runtimeAdmission(revision) !== undefined &&
       !this.hasProtectedCodexAdmission(revision) &&
+      !/^native-credentials:v1:[a-f0-9]{64}$/.test(this.runtimeAdmission(revision) ?? "") &&
       !this.hasPublicGithubReadAdmission(revision)
     ) {
       throw new ConfigurationFailure("AgentRevision Compute admission is invalid.");

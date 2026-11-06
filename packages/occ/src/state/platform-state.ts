@@ -1,9 +1,14 @@
+import type { RequestCredentialApprovalRepository } from "../ports/request-credential-approvals.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
   assertExecutionAdmission,
   validateConnectionTemplateDestinations,
   MAX_AGENT_CREDENTIAL_SOURCES,
 } from "@openclaw-enterprise/contracts";
+import {
+  memoryRequestCredentialApprovals,
+  type StoredRequestCredentialApproval,
+} from "./request-credential-approvals.ts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { EgressSendReceiptRepository, StoredSendReceipt } from "../egress-send-receipts.ts";
 import { isDeepStrictEqual } from "node:util";
@@ -226,7 +231,9 @@ export interface AgentReadRepository {
 
 export interface AgentRepository extends AgentReadRepository {
   createAgent(
-    agent: Omit<Agent, "gatewayManagedMode"> & { readonly gatewayManagedMode?: boolean },
+    agent: Omit<Agent, "gatewayManagedMode"> & {
+      readonly gatewayManagedMode?: boolean;
+    },
   ): Promise<Readonly<Agent>>;
   setSandboxPolicyEditing(
     namespaceId: string,
@@ -434,6 +441,10 @@ export interface SavedConnectionReadRepository {
     installationId: string,
     limit: number,
     afterSourceId?: string,
+  ): Promise<readonly Readonly<SavedConnection>[]>;
+  listAgentConnections(
+    namespaceId: string,
+    agentId: string,
   ): Promise<readonly Readonly<SavedConnection>[]>;
   listNamespaceConnections(namespaceId: string): Promise<readonly Readonly<SavedConnection>[]>;
 }
@@ -992,14 +1003,23 @@ function agentCredentialSourceReference(
   return (bindings ?? []).some(({ sourceId }) => sourceId === credentialSourceId);
 }
 
-/** A revision freezes exactly the owner's non-model sources, in order. */
-export function credentialSourcesMatch(
+/** An attached account may have no sender. Every delivered source must retain its binding order. */
+export async function credentialSourcesMatch(
+  accounts: SavedConnectionRepository,
+  namespaceId: string,
   bindings: readonly AgentCredentialSourceBinding[] | undefined,
   snapshots: readonly CredentialSourceSnapshot[] | undefined,
-): boolean {
-  const owner = (bindings ?? []).map(({ sourceId }) => sourceId);
-  const frozen = (snapshots ?? []).map(({ sourceId }) => sourceId);
-  return owner.length === frozen.length && owner.every((sourceId, i) => sourceId === frozen[i]);
+): Promise<boolean> {
+  const frozen = snapshots ?? [];
+  let index = 0;
+  for (const { sourceId } of bindings ?? []) {
+    if (frozen[index]?.sourceId === sourceId) {
+      index++;
+    } else if (!(await accounts.findSavedConnection(namespaceId, sourceId))) {
+      return false;
+    }
+  }
+  return index === frozen.length;
 }
 
 export function validCredentialSourceSnapshots(value: unknown): boolean {
@@ -1189,6 +1209,7 @@ export interface PlatformReadView {
 
 export interface PlatformUnitOfWork extends PlatformReadView {
   readonly preparedTokenProof: PreparedTokenCurrentProof;
+  readonly requestCredentialApprovals: RequestCredentialApprovalRepository;
   readonly egressSendReceipts: EgressSendReceiptRepository;
   readonly sandboxPolicies: SandboxPolicyRepository;
   readonly installations: InstallationRepository;
@@ -1246,6 +1267,7 @@ interface IAMSubjectSource {
 }
 
 interface PlatformSnapshot {
+  readonly requestCredentialApprovals: Map<string, StoredRequestCredentialApproval>;
   readonly egressSendReceipts: Map<string, StoredSendReceipt>;
   installation: Readonly<Installation> | undefined;
   readonly namespaces: Map<string, Readonly<PersistedNamespace>>;
@@ -1389,6 +1411,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     presets: new Map(Array.from(snapshot.presets, ([key, preset]) => [key, storedCopy(preset)])),
     secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, storedCopy(secret)])),
     egressRejected: new Set(snapshot.egressRejected),
+    requestCredentialApprovals: new Map(snapshot.requestCredentialApprovals),
     egressSendReceipts: new Map(snapshot.egressSendReceipts),
     egressInstallations: new Map(
       Array.from(snapshot.egressInstallations, ([key, value]) => [key, storedCopy(value)]),
@@ -2309,6 +2332,21 @@ function repositories(
         snapshot.savedConnections.set(key, storedCopy({ ...current, revokedAt: at }));
       }
     },
+    listAgentConnections: async (namespaceId, agentId) => {
+      const agent = snapshot.agents.get(agentKey(namespaceId, agentId));
+      const sourceIds = new Set(agent?.credentialSources?.map(({ sourceId }) => sourceId));
+      return Object.freeze(
+        Array.from(snapshot.savedConnections.values())
+          .filter(
+            (connection) =>
+              connection.revocationRequestedBy === undefined &&
+              connection.namespaceId === namespaceId &&
+              sourceIds.has(connection.credentialSourceId),
+          )
+          .sort((a, b) => a.credentialSourceId.localeCompare(b.credentialSourceId))
+          .map((connection) => immutableCopy(connection)),
+      );
+    },
     listNamespaceConnections: async (namespaceId) =>
       Object.freeze(
         Array.from(snapshot.savedConnections.values())
@@ -2354,6 +2392,21 @@ function repositories(
     createConnectionSession: async (session) => {
       assertInitialized(snapshot);
       assertConnectionScope(session);
+      const intent = session.attachmentIntent;
+      if (
+        intent &&
+        (intent.connectionTemplateId !== session.connectionTemplateId ||
+          intent.connectionTemplateVersion !== session.connectionTemplateVersion ||
+          !/^[a-f0-9]{64}$/.test(intent.releaseSha256) ||
+          !intent.agentId ||
+          !intent.pluginId ||
+          !intent.slotId ||
+          intent.expectedCredentialSourceId === "")
+      ) {
+        throw new ResourceConflictError(
+          "The plugin attachment intent does not match this consent attempt.",
+        );
+      }
       if (snapshot.connectionSessions.has(session.stateHash)) {
         throw new ResourceConflictError("The connection session already exists.");
       }
@@ -3812,7 +3865,12 @@ function repositories(
         owner.backendId !== revision.backendId ||
         revision.gatewayManagedMode !== owner.gatewayManagedMode ||
         !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth) ||
-        !credentialSourcesMatch(owner.credentialSources, revision.credentialSources)
+        !(await credentialSourcesMatch(
+          savedConnections,
+          revision.namespaceId,
+          owner.credentialSources,
+          revision.credentialSources,
+        ))
       ) {
         throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
       }
@@ -4187,6 +4245,9 @@ function repositories(
     iamPolicy,
     repositorySessions,
     preparedTokenProof,
+    requestCredentialApprovals: memoryRequestCredentialApprovals(
+      snapshot.requestCredentialApprovals,
+    ),
     egressSendReceipts: memoryEgressSendReceipts(snapshot.egressSendReceipts),
     provisioning: {
       findByWorkId: provisioningAbsent,
@@ -4480,6 +4541,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     credentialWithdrawals: new Map(),
     egressInstallations: new Map(),
     egressRejected: new Set(),
+    requestCredentialApprovals: new Map(),
     egressSendReceipts: new Map(),
     serviceAccounts: new Map(),
     agents: new Map(),

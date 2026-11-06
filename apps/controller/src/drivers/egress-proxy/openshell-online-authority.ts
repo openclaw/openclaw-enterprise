@@ -1,5 +1,8 @@
-import { isIP } from "node:net";
-import { hasControlCharacter } from "@openclaw-enterprise/utils";
+import {
+  readOpenShellHttpRequest,
+  type OpenShellHttpRequestView,
+} from "./openshell-http-request.ts";
+
 import {
   Server,
   status,
@@ -16,6 +19,7 @@ import {
 } from "./openshell-authority.ts";
 import {
   OpenShellExtensionJwtVerifier,
+  signedSandboxId,
   type OpenShellEgressIdentityOptions,
 } from "./openshell-identity.ts";
 
@@ -80,31 +84,10 @@ export interface OpenShellOnlineHttpAuthorityOptions {
   };
 }
 
-/** Stock v0.1.4's normalized pre-credential view. Omitted headers and original framing
- * cannot be authorized here. Workspace is checked against the owner's mapping, never proof. */
-export interface OpenShellOnlineHttpRequest {
-  readonly sandboxId: string;
+export interface OpenShellOnlineHttpRequest extends OpenShellHttpRequestView {
   readonly bindingId: string;
   readonly bindingConfig?: string;
-  readonly requestId: string;
-  readonly workspace: string;
-  readonly target: {
-    readonly reportedScheme: "https";
-    readonly host: string;
-    readonly port: number;
-    readonly method: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
-    readonly path: string;
-    readonly query: string;
-  };
-  readonly headers: readonly (readonly [string, string])[];
-  readonly body: Uint8Array;
   readonly deadlineAt: string;
-}
-
-function httpMethod(value: unknown): value is OpenShellOnlineHttpRequest["target"]["method"] {
-  return (
-    typeof value === "string" && ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"].includes(value)
-  );
 }
 
 function httpRequestView(
@@ -113,79 +96,16 @@ function httpRequestView(
   deadlineAt: string,
   scoped: boolean,
 ): OpenShellOnlineHttpRequest | undefined {
-  const context = record(request.context);
-  const target = record(request.target);
   const id = bindingId(request.config, scoped);
-  const config = record(record(record(request.config).fields).request_scope).stringValue;
-  const body = request.body ?? new Uint8Array();
-  const rawHeaders = request.headers ?? [];
-  const query = target.query ?? "";
-  if (
-    request.phase !== 1 ||
-    context.sandbox_id !== sandboxId ||
-    !id ||
-    typeof context.request_id !== "string" ||
-    !/^[\x21-\x7e]{1,256}$/.test(context.request_id) ||
-    typeof context.workspace !== "string" ||
-    !/^[\x21-\x7e]{1,256}$/.test(context.workspace) ||
-    target.scheme !== "https" ||
-    !Number.isInteger(target.port) ||
-    Number(target.port) < 1 ||
-    Number(target.port) > 65535 ||
-    typeof target.host !== "string" ||
-    target.host.length > 253 ||
-    !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(
-      target.host,
-    ) ||
-    isIP(target.host) !== 0 ||
-    !httpMethod(target.method) ||
-    typeof target.path !== "string" ||
-    !/^\/[\x21-\x7e]{0,4095}$/.test(target.path) ||
-    /[?#]/.test(target.path) ||
-    typeof query !== "string" ||
-    !/^[\x21-\x7e]{0,4096}$/.test(query) ||
-    !(body instanceof Uint8Array) ||
-    body.byteLength > 4 * 1024 * 1024 ||
-    !Array.isArray(rawHeaders) ||
-    rawHeaders.length > 128
-  ) {
+  const http = readOpenShellHttpRequest(request, sandboxId);
+  if (request.phase !== 1 || !id || !http) {
     return undefined;
   }
-  const headers: [string, string][] = [];
-  let headerBytes = 0;
-  for (const raw of rawHeaders) {
-    const { name, value } = record(raw);
-    if (
-      typeof name !== "string" ||
-      !/^[a-z0-9!#$%&'*+.^_`|~-]+$/.test(name) ||
-      typeof value !== "string" ||
-      hasControlCharacter(value) ||
-      value.trim() !== value
-    ) {
-      return undefined;
-    }
-    headerBytes += Buffer.byteLength(name) + Buffer.byteLength(value);
-    if (headerBytes > 64 * 1024) {
-      return undefined;
-    }
-    headers.push([name, value]);
-  }
+  const config = record(record(record(request.config).fields).request_scope).stringValue;
   return {
-    sandboxId,
+    ...http,
     bindingId: id,
     ...(typeof config === "string" && { bindingConfig: config }),
-    requestId: context.request_id,
-    workspace: context.workspace,
-    target: {
-      reportedScheme: "https",
-      host: target.host,
-      port: Number(target.port),
-      method: target.method,
-      path: target.path,
-      query,
-    },
-    headers,
-    body,
     deadlineAt,
   };
 }
@@ -206,18 +126,6 @@ function bindingId(config: unknown, scoped = false): string | undefined {
     value.kind === "stringValue" &&
     boundedId(value.stringValue)
     ? value.stringValue
-    : undefined;
-}
-
-function supervisor(claims: Wire | undefined): string | undefined {
-  const id = claims?.sandbox_id;
-  return claims?.caller_kind === "supervisor" &&
-    typeof id === "string" &&
-    id.length > 0 &&
-    id.length <= 256 &&
-    id.trim() === id &&
-    claims.sub === `spiffe://openshell/sandbox/${id}`
-    ? id
     : undefined;
 }
 
@@ -244,7 +152,7 @@ export function createOpenShellOnlineHttpAuthority(
     (identity?.caller_kind === "gateway" &&
       identity.sub === options.identity.issuer &&
       identity.sandbox_id === undefined) ||
-    supervisor(identity) !== undefined;
+    signedSandboxId(identity) !== undefined;
   const acceptedBinding = (config: unknown) => {
     const profile = options.httpPolicySet;
     const id = bindingId(config, profile !== undefined);
@@ -284,7 +192,7 @@ export function createOpenShellOnlineHttpAuthority(
     },
     ...(options.httpPolicySet !== undefined && {
       EvaluateWebSocketSession(call: ServerDuplexStream<Wire, Wire>) {
-        const sandboxId = supervisor(claims(call));
+        const sandboxId = signedSandboxId(claims(call));
         call.once("data", (event: Wire) => {
           const preflight = record(event.preflight);
           if (!sandboxId || record(preflight.context).sandbox_id !== sandboxId) {
@@ -301,7 +209,7 @@ export function createOpenShellOnlineHttpAuthority(
       const startedAt = performance.now();
       const expiresAt = startedAt + Math.min(budgetMs, Number(call.getDeadline()) - Date.now());
       const expired = () => !(performance.now() < expiresAt);
-      const sandboxId = supervisor(claims(call));
+      const sandboxId = signedSandboxId(claims(call));
       const request =
         sandboxId &&
         !expired() &&

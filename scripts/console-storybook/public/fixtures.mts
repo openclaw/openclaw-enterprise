@@ -208,6 +208,8 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     // Simulates returning from a Google callback started in this tab.
     sessionStorage.setItem("occ.console.googleAttempt", "a".repeat(43));
   }
+  let draftConsentAttempt: string | undefined;
+  let draftAccountSaved = false;
   let serial = 100;
   const nextId = (prefix: string) =>
     `${prefix}_00000000-0000-4000-8000-${String(serial++).padStart(12, "0")}`;
@@ -215,6 +217,21 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
   const { configs } = configurationStore;
   const credentials: Parameters<typeof createAgentLifecycle>[1]["credentials"] = new Map();
   const credentialSources = new Map<string, StoredCredentialSource>();
+  const savedAccount = scenario.savedPluginAccount;
+  if (savedAccount) {
+    const source = {
+      ...savedAccount,
+      namespaceId,
+      ref: { kind: "credential_source" as const, namespaceId, id: savedAccount.id },
+      type: "oauth2-refresh-token",
+      ownerCapability: "credential_refresh",
+      driverId: "openshell-refresh",
+      state: "ready" as const,
+      config: {},
+      createdAt,
+    };
+    credentialSources.set(source.id, source);
+  }
   let credentialRegistrationFailed = false;
   const deviceLogins = new Map<string, DeviceLogin>();
   const secrets = new Map<string, ReturnType<typeof secretMetadata>>();
@@ -686,8 +703,57 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       if (resource === "agents/plugins" && method === "POST" && scenario.pluginDiscovery) {
         return servePluginDiscovery(scenario.pluginDiscovery, "catalog", body, response, error);
       }
+      const draftAccount = scenario.pluginDiscovery?.draftAccount;
+      if (resource === "connections" && method === "POST" && draftAccount) {
+        if (location.protocol !== "https:") {
+          return error(400, "Open this Storybook over HTTPS to use the simulated provider.");
+        }
+        draftConsentAttempt = "storybook.pluginConsent." + crypto.randomUUID();
+        const url = new URL("/storybook-fixtures/consent-provider.html", location.origin);
+        url.searchParams.set("attempt", draftConsentAttempt);
+        url.searchParams.set("standalone", "1");
+        return response(
+          {
+            authorizationUrl: url.href,
+            credentialSourceId: draftAccount.id,
+            expiresAt: new Date(Date.now() + 120_000).toISOString(),
+          },
+          201,
+        );
+      }
       if (resource === "agents/plugins/details" && method === "POST" && scenario.pluginDiscovery) {
-        return servePluginDiscovery(scenario.pluginDiscovery, "details", body, response, error);
+        if (draftConsentAttempt && localStorage.getItem(draftConsentAttempt) === "connected") {
+          localStorage.removeItem(draftConsentAttempt);
+          draftConsentAttempt = undefined;
+          draftAccountSaved = true;
+        }
+        return servePluginDiscovery(
+          scenario.pluginDiscovery,
+          "details",
+          body,
+          (entry) => {
+            if (
+              !draftAccountSaved ||
+              !draftAccount ||
+              !("credentialSlots" in entry) ||
+              entry.id !== draftAccount.pluginId
+            ) {
+              return response(entry);
+            }
+            return response({
+              ...entry,
+              credentialSlots: entry.credentialSlots?.map((slot) =>
+                slot.id === draftAccount.slotId
+                  ? {
+                      ...slot,
+                      sources: [...slot.sources, { id: draftAccount.id, name: draftAccount.name }],
+                    }
+                  : slot,
+              ),
+            });
+          },
+          error,
+        );
       }
       if (resource === "channel-directory/lookup" && method === "POST") {
         return serveChannelDirectory(body, secrets, evidence);
@@ -753,6 +819,14 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           }
           return response(saved, 201);
         }
+      }
+      if (
+        resource.startsWith("credential-sources/") &&
+        resource.endsWith("/mcp-tools") &&
+        method === "POST" &&
+        scenario.pluginDiscovery
+      ) {
+        return servePluginDiscovery(scenario.pluginDiscovery, "details", body, response, error);
       }
       if (resource.startsWith("credential-sources/")) {
         const id = resource.split("/")[1] ?? "";

@@ -20,9 +20,19 @@ both the admitted revision and the execution. The deployment selects the composi
 execution identity. Protection is explicit even with no plan or bindings. Fence readers that could
 ignore it, refuse missing or unsupported admission, and require a new execution to change protection.
 
+An Installation may enable `allowNonProxyCredentials` on Credential Proxy. OCC then
+registers ordinary types from the Credential Gateway catalog with that Gateway. A dedicated
+Agent may use its authorized Gateway sources and supported workload Secret bindings alongside
+a plugin’s request-time account. Existing sources keep their recorded custody and protection.
+Omitting this option preserves strict protected admission. Sender failures never change delivery.
+
+Compute checks the candidate revision before admission. The worker verifies its admission,
+driver ownership and bindings before releasing credentials. A historical unprotected
+revision alone cannot establish which delivery the Installation approved.
+
 | Protection                         | What Compute may release                                                                                                                                                                                                                                                                          |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `unprotected`                      | An explicit no-op for local development or minimal CI. The Agent has a control-plane identity, but OCE does not govern its direct requests. Refuse managed routes, bindings, preparation or clone. Supply no managed or ambient substitute credential.                                            |
+| `unprotected`                      | No protected dispatch plan. Local and minimal CI executions receive no substitute credential. A dedicated revision may carry its authorized Gateway sources, supported Secret bindings and saved plugin account sender. Refuse bindings that require protected dispatch.                                      |
 | `protected {authority: execution}` | Sandbox prevents bypass. Every process in the execution shares its egress authority. A route may explicitly require no provider credential. Zero allowed routes means deny all. Carry forward narrower legacy authority only with evidence of equivalence or fresh consent to the wider boundary. |
 
 OCC validates closed, versioned schemas before reading a Secret or causing effects. A reference is
@@ -150,7 +160,7 @@ the plan. Qualify the actual transport and [protection level](online-authorizati
 
 ## Request authorization and forwarding
 
-| Interface                                                   | Responsibility                                                                         |
+| Interface                                                                       | Responsibility                                                                                                            |
 | ----------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `CredentialProxy.capture(peer, exchange, bounds)`           | Bind and seal an exchange.                                                             |
 | `CredentialProxy.forward(operation)`                        | Own authorization, resolution, send and response protection.                           |
@@ -171,12 +181,12 @@ For a dynamic credential, OCC delegates freshness to the Token Service. The send
 receives only committed material for the authorized operation.
 
 | Interface                                                                       | Responsibility                                                                                                            |
-| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `SecretDriver.readCredentialInput(secret, material, permit, retention, bounds)` | Read the authorized static target with an immutable version, authoritative observation time and expiry where present.     |
 | `WarmCredentialReader.readWarm`                                                 | Read eligible committed material for the exact grant and isolation after the Token Service resolves freshness. |
 
 | Lifecycle owner interface                                   | Responsibility                                                                                                                                                                                                                                          |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `TokenService.configureRefresh`, `refreshStatus`             | Admit family, single owner, issuer, input authority, grant keys, renewal lead and minimum validity. Report configuration, eligibility, current attempt, activity, next renewal and required recovery separately.                                        |
 | `prepare`, `removeRefresh`                                  | Separately authorized management may ensure readiness or request rotation. Removal stops preparation and settles owned artifacts. Retain a family while another admitted source or grant depends on it.                                                 |
 | `CredentialIssuer.issue`, `inspect`, `retire`               | Bind attempt, input version, grant, family, epoch and deadline. Distinguish known refusal, no dispatch, candidate and uncertain exchange. Inspect without repeating issuance. Retire exact custody and report provider revocation only where supported. |

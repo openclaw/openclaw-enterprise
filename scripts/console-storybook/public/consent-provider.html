@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Storybook OAuth provider</title>
+    <link rel="stylesheet" href="/console/console.css" />
+    <style>
+      body {
+        display: grid;
+        min-height: 100vh;
+        place-items: center;
+      }
+      main {
+        max-width: 28rem;
+        padding: 1.8rem;
+      }
+    </style>
+    <script type="module" src="./consent-provider.mjs"></script>
+  </head>
+  <body>
+    <main class="card stack">
+      <h1>Connect your test account?</h1>
+      <p id="purpose">Allow the Storybook Agent to use the Google Workspace test account.</p>
+      <div class="form-actions">
+        <button type="button" id="cancel">Cancel</button>
+        <button class="primary" type="button" id="approve">Approve</button>
+      </div>
+    </main>
+  </body>
+</html>

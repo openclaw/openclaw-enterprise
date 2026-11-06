@@ -14,7 +14,9 @@ Open **Credentials → OAuth clients → Register OAuth client**. Select a saved
 
 List clients with `GET /oauth-clients`. Use `POST /oauth-clients/{oauthClientId}/rotate-secret` to replace the current secret. OCC replaces the secret at the same private reference. New code exchanges and later refreshes for existing accounts use the current secret. If the response is lost, retry with the same secret. To remove a registration, select the trash icon beside it in **Credentials → OAuth clients** or use `DELETE /oauth-clients/{oauthClientId}`. A template version that still references the client blocks deletion, including an older version of a template.
 
-When starting consent for an MCP template, send the nonempty `selectedScopes` the account owner chose. The choice must come from the approved version and include each scope in its resource challenge. Configured manual OAuth uses its fixed scopes. OCC keeps the selection with the private attempt and records it with the resulting grant.
+MCP consent uses the scopes the account owner selects. Include all scopes required by the resource challenge. If the template limits scopes, choose at least one from its approved list. Without a limit or required scopes, the request can use provider defaults. Configured manual OAuth uses its fixed scopes. OCC keeps the selection with the private attempt. OCC saves the account with separate requested and granted lists even when the provider approves fewer, more or different scopes. If the provider omits `scope`, OCC uses the requested list. An explicit empty `scope` records zero grants. Token Service uses the last granted set when renewing. OCC accepts Slack’s comma-separated scope format at its MCP user-token endpoint.
+
+An Agent’s plugin policy still applies to its requests. Slack MCP checks selected tool names. The Google request guard considers the provider’s actual scopes on allowed routes. For example, a grant that includes Gmail send can make sending eligible on an approved Gmail route even if this consent request listed only read scopes. [Google request guard](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker).
 
 ## Create a template
 
@@ -70,3 +72,17 @@ refresh grant, the user reconnects.
 Use `DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}` to
 disconnect the account. OCC records the request before retiring the credential
 and the worker can finish an interrupted disconnect.
+
+## Use a saved account in an Agent plugin
+
+In the Agent's plugin settings, select an account for each named slot. The picker shows accounts you can use from an issuer that the slot accepts. **Authorize for this server** starts consent for the required protected resource and destination. For an MCP template, the dialog initially selects its configured scopes. If the template has no scope limit, it selects the advertised scopes and accepts additional scope names. The user can clear optional scopes before consent. The provider and the plugin's request policy enforce operations.
+
+A slot offers consent through templates that match its issuer and destination and have a registered OAuth client. When no template is ready, the plugin picker lets an Installation administrator finish a matching template or create one for that slot. The template editor controls availability and client registration.
+
+On the Create Agent form, consent saves the account for the user. The form holds its credential source ID for the selected release and slot. OCC checks the caller, account and slot again when it creates the Agent, then commits the Agent, slot binding and use grant together. Provisioning applies that grant when its worker creates the Agent. Leaving the form keeps the account available to its owner.
+
+Updating a saved Agent requires permission to update that Agent and operate the saved credential. A completed connection from a plugin can replace that slot when its release and previous selection still match. The account remains available to its owner when the slot changes during consent. See [configure plugins](../guides/topics/plugins-configure.md#use-the-console).
+
+To detach a saved account, clear the plugin slots that use it on that Agent. Then call `DELETE /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`. OCC removes that Agent’s grant. Other Agents can still use their own grants.
+
+A person with permission to use a saved MCP account can **Load tools** before creating an Agent. On a saved Agent, its editor can also use the Agent’s existing grant to discover tools. To use a saved account from a dedicated OpenClaw worker, select an OpenShell Credential Proxy and a supervisor that supports the [saved-account request contract](drivers/credential-proxy.md#saved-oauth-accounts). OCC checks the deployed slot and the Agent’s current grant on each request. The Token Service supplies the current access token, and the supervisor injects it for that send. Stock OpenShell v0.1.7 supports saved-account delivery with the pre-credentials middleware and runtime token grant configured. A model key or another authorized Credential Gateway source can use its existing delivery alongside the saved account. See [Credential Proxy configuration](drivers/credential-proxy.md#saved-oauth-accounts).

@@ -3234,6 +3234,16 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .dialog--framed {
   width: min(38rem, calc(100% - 2 * var(--space-4)));
 }
+.dialog.plugin-consent-dialog[open] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: calc(100dvh - 2 * var(--space-4));
+  overflow: hidden;
+}
+.plugin-consent-dialog .dialog-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .connection-template-dialog {
   width: min(46rem, calc(100% - 2 * var(--space-4)));
 }
@@ -4276,6 +4286,14 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   padding: var(--space-3);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
+}
+.plugin-tool-choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  overflow-wrap: anywhere;
+  cursor: pointer;
 }
 .plugin-tool-row > summary {
   display: grid;

@@ -5,6 +5,7 @@ import {
   CONFIGURED_IAM_ID_PREFIXES,
   isConfiguredRoleId,
 } from "@openclaw-enterprise/contracts";
+import { postgresRequestCredentialApprovals } from "./request-credential-approvals.ts";
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
 import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
@@ -3825,6 +3826,9 @@ export class PostgresPlatformState implements PlatformStateStore {
       return found;
     };
 
+    const savedConnections = postgresSavedConnections(client, () =>
+      this.requireInitialized(context),
+    );
     const revisions: AgentRevisionRepository = {
       findFirstDeploymentReceipt: async (namespaceId, agentId, digest) => {
         const row = rows(
@@ -3972,7 +3976,7 @@ export class PostgresPlatformState implements PlatformStateStore {
               type: text(row, "type"),
               state: text(row, "state") as CredentialSource["state"],
               ownerCapability: text(row, "owner_capability") as CredentialSource["ownerCapability"],
-              driverId: text(row, "driver_id"),
+              ...(row.owner_capability !== "token_service" && { driverId: text(row, "driver_id") }),
             })),
         );
         const owner = await agents.findAgent(revision.namespaceId, revision.agentId);
@@ -3982,7 +3986,12 @@ export class PostgresPlatformState implements PlatformStateStore {
           owner.backendId !== revision.backendId ||
           revision.gatewayManagedMode !== owner.gatewayManagedMode ||
           !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth) ||
-          !credentialSourcesMatch(owner.credentialSources, revision.credentialSources)
+          !(await credentialSourcesMatch(
+            savedConnections,
+            revision.namespaceId,
+            owner.credentialSources,
+            revision.credentialSources,
+          ))
         ) {
           throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
         }
@@ -4550,7 +4559,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       installations,
       namespaces,
       configurations,
-      savedConnections: postgresSavedConnections(client, () => this.requireInitialized(context)),
+      savedConnections,
       connectionTemplates: postgresConnectionTemplates(client, () =>
         this.requireInitialized(context),
       ),
@@ -4565,6 +4574,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       iamPolicy,
       repositorySessions: postgresRepositorySessions(client),
       preparedTokenProof: this.preparedTokenProof(client),
+      requestCredentialApprovals: postgresRequestCredentialApprovals(client),
       egressSendReceipts: postgresEgressSendReceipts(client),
       provisioning: {
         findByWorkId: async (workId) => {

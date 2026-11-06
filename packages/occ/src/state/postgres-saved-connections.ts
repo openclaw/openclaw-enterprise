@@ -51,6 +51,13 @@ function connectionFromRow(row: Row): Readonly<SavedConnection> {
 
 function sessionFromRow(row: Row): Readonly<ConnectionSession> {
   return immutableCopy({
+    ...(row.attachment_intent === null
+      ? {}
+      : {
+          attachmentIntent: row.attachment_intent as NonNullable<
+            ConnectionSession["attachmentIntent"]
+          >,
+        }),
     stateHash: text(row, "state_hash"),
     namespaceId: text(row, "namespace_id"),
     credentialSourceId: text(row, "credential_source_id"),
@@ -184,6 +191,17 @@ export function postgresSavedConnections(
         [namespaceId, sourceId, at],
       );
     },
+    listAgentConnections: async (namespaceId, agentId) =>
+      Object.freeze(
+        (
+          await client.query(
+            `SELECT c.* FROM occ.saved_connections c
+             JOIN occ.agent_credential_sources b USING (namespace_id, credential_source_id)
+             WHERE c.namespace_id = $1 AND b.agent_id = $2 AND c.revocation_requested_by IS NULL ORDER BY c.credential_source_id`,
+            [namespaceId, agentId],
+          )
+        ).rows.map((row) => connectionFromRow(row as Row)),
+      ),
     listNamespaceConnections: async (namespaceId) =>
       Object.freeze(
         (
@@ -233,8 +251,8 @@ export function postgresSavedConnections(
       await client.query(
         `INSERT INTO occ.connection_sessions
          (state_hash, namespace_id, credential_source_id, pkce_verifier, actor_id,
-          session_id, redirect_uri, connection_template_id, connection_template_version, created_at, expires_at, issuer_required,selected_scopes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,$13)`,
+          session_id, redirect_uri, connection_template_id, connection_template_version, created_at, expires_at, issuer_required, selected_scopes, attachment_intent)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)`,
         [
           session.stateHash,
           session.namespaceId,
@@ -249,6 +267,7 @@ export function postgresSavedConnections(
           session.expiresAt,
           session.issuerRequired,
           session.selectedScopes,
+          session.attachmentIntent === undefined ? null : JSON.stringify(session.attachmentIntent),
         ],
       );
       return immutableCopy(session);

@@ -109,7 +109,7 @@ Each Installation starts with an editable Google OAuth template whose
 destinations cover the Google Workspace release’s reviewed operations. The administrator controls where existing accounts can send
 access tokens, including newly added hosts. A request must match a current row,
 the selected plugin operation and the Agent’s deployed policy. The provider
-enforces its grant. Public discovery requests carry no bearer token.
+enforces its grant. Public discovery receives no saved credential. The workload can supply its own Authorization header.
 
 An administrator registers an OAuth client against a saved template version.
 OCC takes its availability, issuer and client authentication endpoints from that
@@ -146,8 +146,8 @@ original issuer and registration.
 
 OCE resolves manual destinations by the saved account’s template ID. An
 administrator can add, narrow, remove or replace rows for that grant without
-another consent flow. OCC reconciles the senders of affected running Agents. A sender can use its
-previous policy until reconciliation completes. Changing the default client
+another consent flow. OCC checks the current rows at each send. The deployed
+Sandbox policy can further restrict the destinations. Changing the default client
 applies to future connections. Changing the issuer, setup method or MCP target
 requires a new grant for that target. OCC refuses to delete a template while a
 saved account references it.
@@ -180,12 +180,11 @@ its channels, may ask it to act with those provider permissions. The owner can
 choose an Agent with a private audience when attaching a personal account.
 [RFC-0010](../0010-agent-access.md#access-contract) governs Agent access.
 
-Detaching removes only the target Agent's authority. OCC prevents new sends
-through that attachment, withdraws it from serving revisions, and tracks cleanup
-until it succeeds or the revision retires. Other Agents' bindings and the
-underlying connection remain usable. Disconnecting the account withdraws every
-attachment and retires the saved grant. A failed withdrawal stays visible and
-can be retried without renewing the Agent's authority.
+Detaching removes the target Agent’s grant. Credential Proxy denies its next
+request, including a request waiting for token resolution when the grant is
+removed. An already authorized send may finish. Other Agents keep their grants
+to the same account. Disconnecting the account removes all its grants and
+retires it in the Token Service.
 
 ### Presets and connection templates
 

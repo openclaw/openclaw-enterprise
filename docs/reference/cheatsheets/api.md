@@ -117,7 +117,7 @@
 - [`discoverAgentModels`](../api.md#post-namespacesnamespaceidagentsmodels): List provider models for Agent creation without storing the supplied credential.
 - [`discoverAgentPluginDetails`](../api.md#post-namespacesnamespaceidagentspluginsdetails): Read plugin details using the selected Driver.
 - [`discoverAgentPlugins`](../api.md#post-namespacesnamespaceidagentsplugins): List or search available plugins for Agent creation using the selected Driver.
-- [`discoverSavedAgentPluginDetails`](../api.md#post-namespacesnamespaceidagentsagentidpluginsdetails): Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential.
+- [`discoverSavedAgentPluginDetails`](../api.md#post-namespacesnamespaceidagentsagentidpluginsdetails): Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery requires caller use or the Agent's existing access to its attached credential.
 - [`discoverSavedAgentPlugins`](../api.md#post-namespacesnamespaceidagentsagentidplugins): List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants.
 - [`lookupChannelDirectory`](../api.md#post-namespacesnamespaceidchanneldirectorylookup): Search a channel directory using an authorized Namespace Secret.
 - [`pollAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsdeviceauthorizationssecretidpoll): Experimental: Complete device login without returning credential material.
@@ -210,6 +210,7 @@
 
 ### Connections
 
+- [`listAgentPluginConnectionTemplates`](../api.md#get-namespacesnamespaceidagentsagentidpluginspluginidcredentialsslotidconnectiontemplates): List compatible OAuth templates for a saved Agent plugin slot.
 - [`listConnectionTemplates`](../api.md#get-connectiontemplates): List all Installation-wide and Namespace-scoped connection templates.
 - [`listNamespaceConnections`](../api.md#get-namespacesnamespaceidconnections): List completed connections the caller can read in this Namespace.
 - [`listOAuthClients`](../api.md#get-oauthclients): List registered OAuth clients.
@@ -219,11 +220,15 @@
 - [`createConnectionTemplate`](../api.md#post-connectiontemplates): Create an Installation-wide or Namespace-scoped connection template.
 - [`createOAuthClient`](../api.md#post-oauthclients): Register an OAuth client from a connection template.
 - [`updateConnectionTemplate`](../api.md#patch-connectiontemplatesconnectiontemplateid): Rename a connection template, or create a version with new approved values.
+- [`attachAgentConnection`](../api.md#post-namespacesnamespaceidagentsagentidconnectionscredentialsourceid): Attach a completed account and grant this Agent access to its source.
 - [`discoverConnectionTemplate`](../api.md#post-connectiontemplatesdiscover): Read public MCP resource and authorization server metadata.
+- [`discoverCredentialSourceMcpTools`](../api.md#post-namespacesnamespaceidcredentialsourcescredentialsourceidmcptools): List tools at a plugin slot's MCP endpoint using a credential the caller can operate.
 - [`rotateOAuthClientSecret`](../api.md#post-oauthclientsoauthclientidrotatesecret): Rotate an OAuth client secret.
+- [`startAgentPluginConnection`](../api.md#post-namespacesnamespaceidagentsagentidconnections): Connect an account and attach it to a saved Agent plugin slot.
 - [`startNamespaceConnection`](../api.md#post-namespacesnamespaceidconnections): Start consent for a reusable account in this Namespace.
 - [`deleteConnectionTemplate`](../api.md#delete-connectiontemplatesconnectiontemplateid): Delete a connection template.
 - [`deleteOAuthClient`](../api.md#delete-oauthclientsoauthclientid): Delete an unused OAuth client.
+- [`detachAgentConnection`](../api.md#delete-namespacesnamespaceidagentsagentidconnectionscredentialsourceid): Detach an account from this Agent and withdraw its access.
 - [`disconnectNamespaceConnection`](../api.md#delete-namespacesnamespaceidconnectionscredentialsourceid): Disconnect a saved account and retire its OAuth grant.
 
 ### Credential sources

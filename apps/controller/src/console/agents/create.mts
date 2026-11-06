@@ -57,6 +57,7 @@ import {
 } from "./presets.mjs";
 import { provisioningJob } from "./provisioning-job.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
+import { authorizePluginInNewTab, type SlotConnection } from "./plugin-connection.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import { renderChannels } from "../channels.mjs";
 import {
@@ -1797,16 +1798,20 @@ function renderAgentForm(
   const plugins = element("textarea", { id: "agent-plugins", rows: "4", spellcheck: "false" });
   plugins.value = JSON.stringify(agent.plugins ?? {}, null, 2);
   let pluginDiscoveryCredential: "none" | "required" | null = null;
-  let savedOpenClawCatalog = false;
+  let bundledOpenClawCatalog = false;
   let catalogUnavailable = false;
   let pluginHarness = harness.value;
+  let pluginMode = mode.value;
   let installationCapabilities: InstallationCapabilities | undefined;
   // Codex serves curated plugins only to ChatGPT logins; API-key Agents get them disabled.
   const apiKeyCodex = () =>
     harness.value === "codex" && (binding?.method ?? authMethod.value) === "api_key";
   function discoveryCredential() {
-    if (catalogUnavailable || savedOpenClawCatalog || apiKeyCodex()) {
+    if (catalogUnavailable || apiKeyCodex()) {
       return null;
+    }
+    if (bundledOpenClawCatalog) {
+      return mode.value === "dedicated" && openclawModeUsable("dedicated") ? {} : null;
     }
     if (harness.value === "codex" && pluginDiscoveryCredential === "none") {
       return {};
@@ -1843,36 +1848,160 @@ function renderAgentForm(
     const source = getDirectorySecretSource();
     return source?.kind === "secret" && source.namespaceId === namespaceId ? source.id : null;
   };
+  let consentAttempt: AbortController | undefined;
+  let consentResult:
+    | { pluginId: string; slotId: string; releaseSha256: string; staged: boolean; sourceId: string }
+    | undefined;
+  plugins.addEventListener("input", () => {
+    consentResult = undefined;
+  });
+  const draftConnection: SlotConnection = {
+    grantOnCreate: true,
+    unavailable() {
+      return pending || savedAgent || !bundledOpenClawCatalog || !discoveryCredential()
+        ? "Return to an editable dedicated Agent draft to select an account."
+        : undefined;
+    },
+    feedback(slot, sourceId) {
+      if (
+        !consentResult ||
+        consentResult.pluginId !== slot.pluginId ||
+        consentResult.slotId !== slot.id ||
+        consentResult.releaseSha256 !== slot.releaseSha256
+      ) {
+        return undefined;
+      }
+      if (!consentResult.staged) {
+        return "Account saved. The draft changed. Select the account in its current slot.";
+      }
+      return consentResult.sourceId === sourceId
+        ? "Account selected. Create the Agent to grant access."
+        : undefined;
+    },
+    async list(slot) {
+      const detail = await pluginDiscovery.readDetail(slot.pluginId);
+      const current = detail.credentialSlots?.find(
+        (candidate) =>
+          candidate.pluginId === slot.pluginId &&
+          candidate.id === slot.id &&
+          candidate.releaseSha256 === slot.releaseSha256,
+      );
+      return {
+        templates: current?.connectionTemplates ?? [],
+        ...(current?.templateSetup && { setup: { ...current.templateSetup, namespaceId } }),
+      };
+    },
+    async start(slot, template, selectedScopes, waiting, stage) {
+      consentAttempt?.abort();
+      const attempt = new AbortController();
+      consentAttempt = attempt;
+      const unconfirmed =
+        "The account is not available for this slot yet. Finish sign-in, then check again.";
+      const readAccount = async (sourceId: string) => {
+        const detail = await pluginDiscovery.readDetail(slot.pluginId);
+        const compatible = detail.credentialSlots?.some(
+          (candidate) =>
+            candidate.pluginId === slot.pluginId &&
+            candidate.id === slot.id &&
+            candidate.releaseSha256 === slot.releaseSha256 &&
+            candidate.sources.some((source) => source.id === sourceId && !source.authorization),
+        );
+        return compatible ? detail : undefined;
+      };
+      try {
+        const result = await authorizePluginInNewTab(
+          () =>
+            request(`${namespacePath(namespaceId)}/connections`, {
+              method: "POST",
+              body: {
+                connectionTemplateId: template.id,
+                ...(selectedScopes && { selectedScopes }),
+              },
+            }) as Promise<{
+              authorizationUrl: string;
+              credentialSourceId: string;
+              expiresAt: string;
+            }>,
+          attempt.signal,
+          (sourceId, complete) =>
+            waiting(async () => {
+              if (!(await readAccount(sourceId))) {
+                return unconfirmed;
+              }
+              complete();
+            }),
+        );
+        if (attempt.signal.aborted || !context.isCurrent()) {
+          return;
+        }
+        if ("message" in result) {
+          return result.message;
+        }
+        if (result.outcome === "failed") {
+          return result.failure;
+        }
+        const detail = await readAccount(result.sourceId);
+        if (attempt.signal.aborted || !context.isCurrent() || pending || savedAgent) {
+          return;
+        }
+        if (!detail) {
+          return unconfirmed;
+        }
+        // Consent saves a user-owned account. Only stage this reference if the same draft
+        // still selects this slot. The eventual Create request authorizes and grants access.
+        const staged = stage(result.sourceId);
+        consentResult = {
+          pluginId: slot.pluginId,
+          slotId: slot.id,
+          releaseSha256: slot.releaseSha256,
+          sourceId: result.sourceId,
+          staged,
+        };
+        pluginDiscovery.rememberDetail(detail);
+      } finally {
+        if (consentAttempt === attempt) {
+          consentAttempt = undefined;
+        }
+      }
+    },
+  };
   const pluginDiscovery = createPluginDiscovery({
     context,
     input: plugins,
+    getSlotConnection: () => (bundledOpenClawCatalog ? draftConnection : undefined),
     canDiscover: () => Boolean(discoveryCredential()),
     canPrefetch: () =>
-      pluginDiscoveryCredential !== null &&
-      ["codex_pat", "credential_source"].includes(binding?.method ?? authMethod.value) &&
-      Boolean(boundSource ?? modelCredentialSource ?? apiKey.value.trim()),
+      bundledOpenClawCatalog ||
+      (pluginDiscoveryCredential !== null &&
+        ["codex_pat", "credential_source"].includes(binding?.method ?? authMethod.value) &&
+        Boolean(boundSource ?? modelCredentialSource ?? apiKey.value.trim())),
     isPending: () => pending,
     requestBody: (body) => ({
       ...discoveryCredential(),
       harnessId: harness.value,
+      ...(bundledOpenClawCatalog && { executionMode: mode.value }),
       ...body,
     }),
     unavailableMessage: () => {
       if (catalogUnavailable) {
         return "This Installation has no plugin catalog for the selected Harness.";
       }
-      return savedOpenClawCatalog
-        ? "To install Google Workspace, open Plugins on a saved dedicated OpenClaw Agent using Kubernetes Compute."
+      return bundledOpenClawCatalog
+        ? "Managed OpenClaw plugins require dedicated OpenClaw on Kubernetes Compute."
         : apiKeyCodex()
           ? "Codex plugins need a ChatGPT login. With an OpenAI API key, each selected plugin is disabled when the Agent deploys (PLUGIN_AUTH_REQUIRED). Choose Service Accounts or ChatGPT OAuth to browse and use plugins."
           : pluginDiscoveryCredential === "none"
             ? "Choose the Codex harness to browse this Installation's curated plugin catalog."
             : "For discovery, choose ChatGPT OAuth (Experimental) and sign in, or choose Service Accounts with the Codex harness and select a Secret or enter a preview token.";
     },
-    availableMessage: () =>
-      pluginDiscoveryCredential === "none"
+    availableMessage: () => {
+      if (bundledOpenClawCatalog) {
+        return "Choose plugins and select the accounts this Agent can use.";
+      }
+      return pluginDiscoveryCredential === "none"
         ? "Load the installation's curated plugin catalog. Access and tool availability are checked separately."
-        : "Load plugins available to the selected credential. Your plugin selections stay unchanged.",
+        : "Load plugins available to the selected credential. Your plugin selections stay unchanged.";
+    },
     createApproverField: (options) =>
       createSlackApproverField({
         context,
@@ -1888,7 +2017,7 @@ function renderAgentForm(
     );
     const policies = catalog?.pluginPolicies;
     const discovery = catalog?.pluginDiscovery;
-    savedOpenClawCatalog = policies?.driver.implementation === "occ/openclaw-plugin";
+    bundledOpenClawCatalog = policies?.driver.implementation === "occ/openclaw-plugin";
     catalogUnavailable = capabilities !== undefined && discovery === undefined;
     pluginDiscoveryCredential = discovery?.credential ?? (catalogUnavailable ? null : "required");
     pluginFields.setCapabilities(policies ?? null);
@@ -1901,6 +2030,8 @@ function renderAgentForm(
     }
   }
   function resetPluginDiscovery() {
+    consentAttempt?.abort();
+    pluginMode = mode.value;
     if (pluginHarness !== harness.value) {
       pluginHarness = harness.value;
       plugins.value = "{}";
@@ -2949,7 +3080,7 @@ function renderAgentForm(
     if (!planLocked && capabilityDiscoveryDone && (!nativeAdminAvailable || !shouldProvision())) {
       nativeAdmin.checked = false;
     }
-    if (pluginHarness !== harness.value) {
+    if (pluginHarness !== harness.value || (bundledOpenClawCatalog && pluginMode !== mode.value)) {
       resetPluginDiscovery();
     } else {
       pluginDiscovery.update();

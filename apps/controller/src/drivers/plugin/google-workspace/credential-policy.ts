@@ -4,7 +4,9 @@ import {
   eligibleGoogleOperations,
   googleDiscoveryRequests,
   googleRequestScope,
+  isGoogleWorkspaceRecipient,
 } from "./operations.ts";
+import { classifyGoogleAccountRequest } from "./request-policy.ts";
 
 function sourceScope(source: CredentialSource) {
   const config = source.config;
@@ -19,6 +21,8 @@ function sourceScope(source: CredentialSource) {
 /** Google scopes and routes are connector semantics, independent of catalog presentation. */
 export const googleWorkspaceCredentialPolicy = {
   packageName: "oce-google-workspace",
+  acceptsAccountDestination: isGoogleWorkspaceRecipient,
+  authorizeAccountRequest: classifyGoogleAccountRequest,
   accepts(
     install: ManagedCliInstall,
     slot: ManagedCredentialSlot,
