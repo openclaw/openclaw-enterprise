@@ -8,6 +8,7 @@ import {
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
+  managedPluginAccountSlot,
   managedMcpCredentialBindings,
   managedMcpInstalls,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
@@ -24,6 +25,7 @@ import {
   openClawToolDenialMessage,
 } from "../../apps/controller/src/drivers/plugin/openclaw-tool-denial.ts";
 import { NativeCodexPluginCatalogReader } from "../../apps/controller/src/drivers/plugin/stdio-catalog-reader.ts";
+import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { NotImplementedError } from "../../packages/occ/src/index.ts";
 import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
@@ -480,6 +482,13 @@ test("managed plugin slots match saved accounts by issuer and reviewed API or MC
       target: { ...publicRead.target, query: "key=attacker" },
     }),
     "deny",
+  );
+
+  // A different CLI can declare the same account shape without inheriting Google permissions.
+  const otherCli = { ...managedGoogleInstall, packageName: "unregistered-cli" };
+  assert.equal(
+    managedPluginAccountSlot(otherCli, { [googleId]: slot.bind(sourceId) }, "account"),
+    undefined,
   );
 
   // An updated release cannot grant its operations to an older deployed selection.

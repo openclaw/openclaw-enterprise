@@ -127,6 +127,9 @@ export function openShellSavedAccountPolicy(
     if (!sourceId || !saved.sourceIds.includes(sourceId)) {
       continue;
     }
+    if (install.kind === "cli" && install !== managedGoogleInstall) {
+      unsupported(`OpenShell has no saved-account request policy for ${install.packageName}.`);
+    }
     const slotId = install.kind === "mcp" ? install.slotId : cli!.slot;
     const destinationHosts = install.kind === "mcp" ? [install.endpoint.host] : googleHosts;
     if (destinationHosts.some((host) => hosts.has(host))) {

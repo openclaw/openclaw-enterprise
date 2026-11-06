@@ -148,7 +148,7 @@ async function oauthAccounts(
   const { app, controller, state, principal, inject, pool, adminAccount } =
     await createPostgresAgentApp(t, {
       label: "saved-account",
-      ...(!pluginWorkflow && { poolOptions: { max: 1, connectionTimeoutMillis: 5000 } }),
+      poolOptions: { max: 1, connectionTimeoutMillis: 5000 },
       authSecret: "saved-account-test-auth-secret-minimum-32-bytes",
       secretDriver,
       ...(pluginWorkflow && {
@@ -494,6 +494,18 @@ async function oauthAccounts(
     manual,
     recipient,
     issuerAdmin: secrets.admin,
+    async setIssuedLifetime(seconds: number) {
+      const [client] = await keycloakRealmAdmin(
+        issuer!,
+        secrets.admin,
+        "GET",
+        `/clients?clientId=${clientId}`,
+      );
+      await keycloakRealmAdmin(issuer!, secrets.admin, "PUT", `/clients/${client.id}`, {
+        ...client,
+        attributes: { ...client.attributes, "access.token.lifespan": String(seconds) },
+      });
+    },
     rotateClientSecret: async (source?: string) => {
       const replacement = await rotateKeycloakClientSecret(
         issuer!,
@@ -556,7 +568,7 @@ test(
       inject,
       manual,
       recipient,
-      issuerAdmin,
+      setIssuedLifetime,
       preparedTokens,
       rotateClientSecret,
       oauthClientId,
@@ -775,18 +787,6 @@ test(
     const original = await prepared();
     const alice = await subject(original);
     assert.ok(alice);
-    async function setIssuedLifetime(seconds: number) {
-      const [client] = await keycloakRealmAdmin(
-        issuer!,
-        issuerAdmin,
-        "GET",
-        `/clients?clientId=${clientId}`,
-      );
-      await keycloakRealmAdmin(issuer!, issuerAdmin, "PUT", `/clients/${client.id}`, {
-        ...client,
-        attributes: { ...client.attributes, "access.token.lifespan": String(seconds) },
-      });
-    }
     // Only a newly issued token can satisfy this request's minimum remaining lifetime.
     await setIssuedLifetime(300);
     const [resolved, joined] = await Promise.all([prepared(120_000), prepared(120_000)]);
@@ -1107,6 +1107,7 @@ test(
       oauthClientId,
       tokenUrl,
       issuerAdmin,
+      setIssuedLifetime,
     } = await oauthAccounts(t, { url: reportsUrl, readTools });
     const pluginId = "test-keycloak";
     const slotId = "account";
@@ -1628,7 +1629,51 @@ test(
       params: { name: "list_reports", arguments: {} },
     };
     const call = (peer: typeof agentA.peer) => origin.dispatch(peer, allowed);
+    const tokenVersion = async () => {
+      const custody = await state.read((view) =>
+        view.savedConnections.findTokenCustody(namespaceId, report.id),
+      );
+      assert.ok(custody?.scheduledVersion);
+      return custody.scheduledVersion;
+    };
+    // Give the running Agents a genuinely expired token and keep their refresh grant valid.
+    // With one database connection the signed request can finish only if authorization releases
+    // its transaction before Token Service refreshes and the original request resumes.
+    const source = base + "/credential-sources/" + report.id;
+    await setIssuedLifetime(5);
+    const shortLived = await owner("POST", source + "/rotate");
+    assert.equal(shortLived.statusCode, 200, shortLived.body);
+    const oauth = preparedTokens.issuer("oauth_refresh_token");
+    assert.ok(oauth);
+    const expiring = await oauth.status(
+      { kind: "oauth_refresh_token", namespaceId, sourceId: report.id },
+      t.signal,
+    );
+    assert.ok(expiring.expiresAt);
+    const expiresAt = Date.parse(expiring.expiresAt);
+    const expiredVersion = await tokenVersion();
+    await setIssuedLifetime(300);
+    await waitFor(
+      "the plugin's saved access token to expire",
+      async () => Date.now() >= expiresAt || undefined,
+      { timeoutMs: 15_000, intervalMs: 100 },
+    );
     assert.equal(await call(agentA.peer), true);
+    const approval = await pool.query<{ expires_at: Date }>(
+      "SELECT expires_at FROM occ.request_credential_approvals WHERE recipient_id = $1 AND binding_id = $2 AND consumed",
+      [agentA.peer.sandboxId, agentA.peer.bindingConfig.binding_id],
+    );
+    assert.equal(approval.rowCount, 1);
+    assert.ok(
+      origin.requests[0]!.receivedAt < approval.rows[0]!.expires_at.getTime(),
+      "the resource received the replacement bearer within the original approval",
+    );
+    assert.equal(origin.requests.length, 1, "the first signed request reached the resource once");
+    assert.notEqual(
+      await tokenVersion(),
+      expiredVersion,
+      "that request refreshed the expired token",
+    );
     assert.equal(await call(agentB.peer), true);
     assert.deepEqual(
       origin.requests.map((r) => r.subject),
@@ -1668,16 +1713,13 @@ test(
     assert.equal(origin.requests.length, 2, "a disabled tool never reached the issuer's resource");
 
     // Refresh the stored grant using the normal API and real issuer, then use the unchanged deployments.
-    const tokenVersion = async () =>
-      (await state.read((view) => view.savedConnections.findTokenCustody(namespaceId, report.id)))
-        ?.scheduledVersion;
     const initialVersion = await tokenVersion();
-    assert.ok(initialVersion);
-    const renewed = await owner("POST", base + "/credential-sources/" + report.id + "/rotate");
+    const renewed = await owner("POST", source + "/rotate");
     assert.equal(renewed.statusCode, 200, renewed.body);
     const renewedVersion = await tokenVersion();
-    assert.ok(
-      renewedVersion && renewedVersion !== initialVersion,
+    assert.notEqual(
+      renewedVersion,
+      initialVersion,
       "Token Service committed a new version for the existing grant",
     );
     assert.equal(await call(agentA.peer), true);
@@ -1735,7 +1777,7 @@ test(
     );
     assert.equal(origin.requests.length, 3, "the detached Agent never reached the resource");
     assert.equal(await call(agentB.peer), true);
-    assert.deepEqual(origin.requests[3], {
+    assert.partialDeepStrictEqual(origin.requests[3], {
       subject: carol.id,
       tokenHash: after,
       tool: "list_reports",
@@ -1746,15 +1788,19 @@ test(
       ["oauth-credential", true],
       ["replacement-credential", false],
     ] as const) {
+      const replicaState = new PostgresPlatformState(pool);
       const restarted = new OpenClawController(controller.installation, {
-        state: new PostgresPlatformState(pool),
+        state: replicaState,
         preparedTokens,
         driverConfigurations: [savedAccountSandboxRegistration],
       });
-      for (const capability of ["iam", "compute"] as const) {
-        const driver = controller.selectedDriver(capability);
+      // Each replica's native IAM reads from that replica's current transaction.
+      const { id, implementation } = controller.selectedDriver("iam");
+      const iam = new NativeIAMDriver(replicaState, { id, implementation });
+      const compute = controller.selectedDriver("compute");
+      for (const driver of [iam, compute]) {
         restarted.registerDriver(driver);
-        restarted.selectDriver(capability, driver.id);
+        restarted.selectDriver(driver.capability, driver.id);
       }
       restarted.installPluginDrivers([codexCatalog, plugin]);
       const pair = await installSavedAccountProxy(

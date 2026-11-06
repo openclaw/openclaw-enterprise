@@ -11,8 +11,6 @@ import {
 import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { exactDnsName } from "../credential-source-endpoint.ts";
-import { isGoogleWorkspaceRecipient } from "./google-workspace/operations.ts";
-import { classifyGoogleAccountRequest } from "./google-workspace/request-policy.ts";
 import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
 import { googleWorkspaceCredentialPolicy } from "./google-workspace/credential-policy.ts";
 import { Type } from "typebox";
@@ -480,7 +478,8 @@ export function managedPluginAccountSlot(
   selections: PluginDesiredState,
   slotId: string,
 ) {
-  if (!Object.hasOwn(install.credentials, slotId)) {
+  const cliPolicy = install.kind === "cli" ? cliCredentialPolicy(install) : undefined;
+  if (!Object.hasOwn(install.credentials, slotId) || (install.kind === "cli" && !cliPolicy)) {
     return undefined;
   }
   const selection = selections[install.id];
@@ -508,7 +507,8 @@ export function managedPluginAccountSlot(
     return (
       !mcp &&
       target.tokenUrl === install.credentials[slotId]!.tokenEndpoint &&
-      destinations.some(isGoogleWorkspaceRecipient)
+      cliPolicy !== undefined &&
+      destinations.some(cliPolicy.acceptsAccountDestination)
     );
   }
   return {
@@ -538,7 +538,9 @@ export function managedPluginAccountSlot(
             ? "credential"
             : "deny";
         }
-        return classifyGoogleAccountRequest(target.destinations, grantedScopes, request);
+        return (
+          cliPolicy?.authorizeAccountRequest(target.destinations, grantedScopes, request) ?? "deny"
+        );
       } catch {
         // Malformed encodings and ambiguous JSON cannot identify an authorized operation.
         return "deny";

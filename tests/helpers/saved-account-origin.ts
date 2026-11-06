@@ -29,10 +29,11 @@ export async function createSavedAccountOrigin(t: TestContext, issuer: string) {
   const root = await readFile(ca.caPath, "utf8");
   const recipientAgent = new Agent({ secureContext: createSecureContext({ ca: root }) });
   t.after(() => recipientAgent.destroy());
-  const requests: { tokenHash: string; subject: string; tool: string }[] = [];
+  const requests: { receivedAt: number; tokenHash: string; subject: string; tool: string }[] = [];
   const server = createServer({ key: leaf.key, cert: leaf.cert }, async (req, res) => {
     const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
     const observed = {
+      receivedAt: Date.now(),
       tokenHash: createHash("sha256")
         .update(token ?? "")
         .digest("hex"),

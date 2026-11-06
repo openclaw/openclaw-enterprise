@@ -1,4 +1,4 @@
-import type { RequestCredentialApproval } from "./state/request-credential-approvals.ts";
+import type { RequestCredentialApproval } from "./ports/request-credential-approvals.ts";
 import { exchangeAuthorizationCode, startBrowserAuthorization } from "./browser-authorization.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import { isReducedCredentialPlan } from "./credential-policy-reduction.ts";

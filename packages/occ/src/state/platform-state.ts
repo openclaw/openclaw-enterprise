@@ -1,3 +1,4 @@
+import type { RequestCredentialApprovalRepository } from "../ports/request-credential-approvals.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
   assertExecutionAdmission,
@@ -6,7 +7,6 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   memoryRequestCredentialApprovals,
-  type RequestCredentialApprovalRepository,
   type StoredRequestCredentialApproval,
 } from "./request-credential-approvals.ts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";

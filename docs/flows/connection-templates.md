@@ -81,7 +81,7 @@ OCC registers the returned grant under the Namespace and credential source ID. T
 
 ### 6. Bind a saved account to a plugin
 
-OCC reads the Agent’s Configuration and selects the Plugin Driver for its Harness. That Driver identifies the named accounts in the selected release. OCC lists ready accounts the caller can operate in the Namespace whose issuer the slot accepts. It marks an account for new authorization when the approved protected resource or destination differs. A grant's scopes are available to the provider and the request policy.
+OCC reads the Agent’s Configuration and selects the Plugin Driver for its Harness. That Driver identifies the named accounts in the selected release. Each managed CLI package supplies its own rules for matching destinations and authorizing requests. A CLI without those rules exposes no saved-account slot. OCC lists ready accounts the caller can operate in the Namespace whose issuer the slot accepts. It marks an account for new authorization when the approved protected resource or destination differs. A grant's scopes are available to the provider and the request policy.
 
 Saving a selection checks the exact slot, account and Agent permissions together. Starting OAuth from a saved slot also records the release and current binding. When the browser returns, OCC checks both before replacing that slot. The account stays with its owner if the binding changed during consent.
 

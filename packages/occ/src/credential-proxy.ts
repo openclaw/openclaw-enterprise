@@ -6,7 +6,7 @@ import type {
   AcceptedEgressAssociation,
   AuthorizedSend,
 } from "./egress-send-receipts.ts";
-import type { RequestCredentialApproval } from "./state/request-credential-approvals.ts";
+import type { RequestCredentialApproval } from "./ports/request-credential-approvals.ts";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
