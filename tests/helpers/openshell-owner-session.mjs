@@ -469,7 +469,15 @@ export async function verifyOpenShellOwnerSession({
       socket.on("framereceived", (frame) => received.push({ ...frame, page, socket }));
       socket.on("framesent", ({ payload }) => {
         const frame = JSON.parse(String(payload));
-        if (frame.type === "req" && frame.method === "chat.send") {
+        // Starting a session can submit its first turn in sessions.create;
+        // creating an empty session must not count as a submitted turn.
+        if (
+          frame.type === "req" &&
+          (frame.method === "chat.send" ||
+            (frame.method === "sessions.create" &&
+              typeof frame.params?.message === "string" &&
+              frame.params.message.trim().length > 0))
+        ) {
           sends.push({ page, socket });
         }
       });
