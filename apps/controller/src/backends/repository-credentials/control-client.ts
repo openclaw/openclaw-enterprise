@@ -48,7 +48,7 @@ function unavailable(): never {
   throw new RepositoryCredentialControlError(true);
 }
 
-const { object, identity, counter } = createStatusWirePrimitives(unavailable);
+const { object, identity, counter, parseCleanup } = createStatusWirePrimitives(unavailable);
 
 function sessionId(value: unknown): string {
   if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
@@ -75,18 +75,10 @@ function status(value: unknown): SessionStatus {
     "activeUses",
     "cleanup",
   ]);
-  const cleanup = object(parsed.cleanup, [
-    "active",
-    "pending",
-    "revoked",
-    "expired",
-    "uncertain",
-    "auxiliaryPending",
-  ]);
+  const cleanup = parseCleanup(parsed.cleanup);
   const deadlineWallMs = counter(parsed.deadlineWallMs);
   if (
     (parsed.state !== "OPEN" && parsed.state !== "CLOSED" && parsed.state !== "DISPOSED") ||
-    typeof cleanup.auxiliaryPending !== "boolean" ||
     deadlineWallMs === 0
   ) {
     return unavailable();
@@ -97,14 +89,7 @@ function status(value: unknown): SessionStatus {
     deadlineWallMs,
     binding: binding(parsed.binding),
     activeUses: counter(parsed.activeUses),
-    cleanup: Object.freeze({
-      active: counter(cleanup.active),
-      pending: counter(cleanup.pending),
-      revoked: counter(cleanup.revoked),
-      expired: counter(cleanup.expired),
-      uncertain: counter(cleanup.uncertain),
-      auxiliaryPending: cleanup.auxiliaryPending,
-    }),
+    cleanup: Object.freeze(cleanup),
   });
   if (
     result.state === "DISPOSED" &&
