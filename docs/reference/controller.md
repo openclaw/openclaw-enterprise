@@ -247,10 +247,10 @@ A prepared repository App key that cannot sign stops the worker with
 - **`WORKER_READINESS_PATH_INVALID` or `WORKER_LIVENESS_PATH_INVALID` at startup:**
   The worker refuses an `OCC_WORKER_READINESS_PATH` or `OCC_WORKER_LIVENESS_PATH`
   that is relative, names a directory, or cannot be written.
-- **`EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED` at startup:** GitHub, Google
-  and OIDC sign-in support host-only cookies only, so the API refuses any of
-  them with native admin enabled, before it connects to the database. Turn off
-  native admin; the chart refuses it with these providers.
+- **`EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED` at startup:** External sign-in
+  cannot use shared-cookie native admin. With GitHub, select
+  [host-only exchange](agent-native-admin.md#host-only-session-exchange) or disable
+  native admin. Google and OIDC require native admin disabled.
 - **Configuration operations fail:** Verify exact Namespace or Configuration
   authorization, tenant-local ConfigMap CRUD, and a native JSON configuration
   document;
