@@ -24,6 +24,7 @@ import {
 import { migrateWithHistory } from "../../scripts/migration-history.mjs";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { assertReleasedControllerCompatibility } from "../helpers/released-controller-compatibility.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const migrationsDirectory = join(repositoryRoot, "migrations");
@@ -39,6 +40,16 @@ const providerMigrationTags = new Set([
   "0030_codex_pat_harness_auth",
 ]);
 const execFileAsync = promisify(execFile);
+const controllerImages = {
+  released: {
+    reference: process.env.OCC_TEST_RELEASED_CONTROLLER_IMAGE,
+    revision: process.env.OCC_TEST_RELEASED_CONTROLLER_REVISION,
+  },
+  candidate: {
+    reference: process.env.OCC_TEST_CANDIDATE_CONTROLLER_IMAGE,
+    revision: process.env.OCC_TEST_CANDIDATE_CONTROLLER_REVISION,
+  },
+};
 const dependency = createRequire(new URL("../../packages/occ/package.json", import.meta.url));
 const { drizzle } = dependency("drizzle-orm/node-postgres");
 const { migrate } = dependency("drizzle-orm/node-postgres/migrator");
@@ -3658,5 +3669,22 @@ test(
     }
     assert.equal(await authorize(principals[2], "update"), false);
     assert.equal(await authorize(principals[2], "read"), true);
+  },
+);
+
+test(
+  "Released controller remains usable across candidate database writes",
+  {
+    skip: Object.values(controllerImages).every((image) =>
+      Object.values(image).every((value) => value === undefined),
+    )
+      ? "Requires explicitly selected local released and candidate controller images and revisions."
+      : false,
+    timeout: 360_000,
+  },
+  async (t) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(t, fixture, "released_controller");
+    await assertReleasedControllerCompatibility(t, db, controllerImages);
   },
 );
