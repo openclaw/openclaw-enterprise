@@ -196,36 +196,35 @@ including `hd` and `email_verified` when allowed domains are set, and returns
 
 With the experimental OIDC trust claim configured
 ([settings](../reference/settings/oidc.md)),
-`apps/controller/src/auth/oidc.ts:exchangeOidcSubject` also compares the verified
-ID token's named claim for the exact value; only a match returns `trusted` and
-the token's email claim. An unattached match falls back to
+`apps/controller/src/auth/oidc.ts:exchangeOidcSubject` also matches the verified
+token's named claim exactly; only a match returns `trusted` and the token's
+email claim. An unattached match falls back to
 `packages/occ/src/state/human-authentication.ts:provisionTrustedExternalAccount`:
 one transaction writes the user, identity-only method, grantless Principal, and
 enrolment, auditing `authentication.account.self-enrol` before
 `authentication.login`. A savepoint wraps the writes: a uniqueness conflict —
-a concurrent enrolment or a held email — rolls back and fails
-closed; locks are user-first, and the attempt's
-creation time travels in, so an identity that appeared or changed after the
-attempt began refuses like an attached one.
+a concurrent enrolment or a held email — fails closed after rolling back;
+locks are user-first, and the attempt's creation time travels in, so an
+identity appearing or changing after the attempt began refuses like an
+attached one.
 
 `apps/controller/src/auth/client-address.ts:clientAddressConfiguration` canonicalizes
 IPv4-mapped addresses before prefix validation, refusing entries covering every
-IPv4 or IPv6 address. `resolveClientAddress` uses dotted IPv4 for mapped peers and
-header hops.
+address; `resolveClientAddress` uses dotted IPv4 for mapped peers and header hops.
 
 Password sign-in rejects unstorable email inside controller admission before
 known-device verification or account State reads, preserving budget accounting. Password-only uses `passwordSignInAudit`;
 guarded and recovery-only use `human-login.ts:recordPasswordDenial`, the same owner as
 credential refusals. Both return `400 INVALID_REQUEST` after the denial audit;
 a failed audit is a counted `503`. An exhausted shared lane rejects the invalid
-email without a reserved-account lookup. Password text is not checked.
+email without a reserved-account lookup; password text is not checked.
 Valid email enters controller admission before `/oce/password`, with the
 recovery email reserved like an administrator's. Google and OIDC share process-local rate and concurrency limits
 for start, callback and result admission (`keyedAdmission`), keyed on
 client addresses behind trusted proxies and browser cookies otherwise. Provider
-HTTP shares a deadline and response-byte cap; State bounds pending attempts and expired cleanup.
-State persists attempt and session deadlines; cookie Max-Age subtracts monotonic
-elapsed work. Expired completion releases no cookie.
+HTTP shares a deadline and response-byte cap; State bounds pending attempts and
+expired cleanup, persists attempt and session deadlines, and subtracts monotonic
+elapsed work from cookie Max-Age. Expired completion releases no cookie.
 
 `scripts/auth-maintain.mjs` parses arguments with
 `scripts/lib/auth-maintain-arguments.mjs:parseAuthMaintainArguments` before
