@@ -1117,6 +1117,7 @@ test("selected v5 timestamps distinguish re-observation from new material", asyn
   await new Promise<void>((resolve) => setTimeout(resolve, 5));
   f.owner.material = {
     ...f.owner.material,
+    preparationAttemptId: randomUUID(),
     materialVersion: randomUUID(),
     value: "controlled-version-two-token",
   };
@@ -1970,7 +1971,11 @@ for (const reason of ["withdrawn", "repository_expired", "worker_replaced"] as c
           await close();
           return writing(...args);
         };
-        f.owner.material = { ...f.owner.material, materialVersion: randomUUID() };
+        f.owner.material = {
+          ...f.owner.material,
+          preparationAttemptId: randomUUID(),
+          materialVersion: randomUUID(),
+        };
         await reconcile();
       } else {
         await close();
@@ -2052,6 +2057,7 @@ for (const outcome of [
     const nextMaterial = {
       ...f.owner.material,
       value: "synthetic-late-second-token",
+      preparationAttemptId: randomUUID(),
       materialVersion: randomUUID(),
     };
     const accepted = deferred();
@@ -2073,6 +2079,11 @@ for (const outcome of [
       assert.equal(pending.fence, entry.fence);
       assert.equal(pending.targetMaterial.materialVersion, nextMaterial.materialVersion);
       assert.equal(pending.targetMaterial.preparationAttemptId, nextMaterial.preparationAttemptId);
+      assert.notEqual(
+        pending.targetMaterial.preparationAttemptId,
+        before.material.preparationAttemptId,
+      );
+      assert.notEqual(pending.targetMaterial.materialVersion, before.material.materialVersion);
       assert.deepEqual(pending.generation, before.generation);
       assert.deepEqual(pending.material, before.material);
       const result = await update(...args);
@@ -2395,7 +2406,7 @@ for (const phase of ["before first send", "before send", "after acceptance"] as 
     const before = structuredClone(row);
     const expected = first
       ? f.owner.material
-      : { ...f.owner.material, materialVersion: randomUUID() };
+      : { ...f.owner.material, preparationAttemptId: randomUUID(), materialVersion: randomUUID() };
     const send = client.updateProviderCredentialsConditionally?.bind(client);
     assert.ok(send);
     const read = f.owner.readOpenShellMaterial.bind(f.owner);
@@ -2548,6 +2559,7 @@ for (const { first, outcome } of [true, false].flatMap((first) =>
       : {
           ...originalMaterial,
           value: "synthetic-unsent-second-token",
+          preparationAttemptId: randomUUID(),
           materialVersion: randomUUID(),
         };
     const readMaterial = f.owner.readOpenShellMaterial.bind(f.owner);

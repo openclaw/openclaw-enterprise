@@ -2032,7 +2032,7 @@ export class OpenShellGitRuntime {
 
   /**
    * `routes` persists each route this worker prepares so a restarted or replacement worker
-   * re-adopts it (finding 2128); without it a restart requires a new revision.
+   * can close it and settle its retained custody. Restarting access requires a new revision.
    */
   async start(
     owner: OnlineGitOwner,

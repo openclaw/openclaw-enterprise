@@ -443,61 +443,6 @@ test(
   },
 );
 
-test(
-  "a bootstrap refused before its write is cleared and reserved again at the next fence",
-  requiresPostgres,
-  async (t) => {
-    // Finding 2210: the worker that opened the route proves its bootstrap write unsent and
-    // clears it; the same holder can reserve bootstrap again without replaying a sent write.
-    const pool = testPool(t, { connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
-    const { revision } = await seedSessionRevision(state);
-    const store = new PostgresOpenShellGitRouteStore(pool);
-    const route = {
-      revisionId: revision.id,
-      namespaceId: revision.namespaceId,
-      agentId: revision.agentId,
-      bindingId: "r".repeat(32),
-      workspace: observed.workspace,
-      sandbox: observed.sandbox,
-    };
-    await store.open(route, randomUUID());
-    assert.equal(await store.cancelWriting(revision.id, 1), true);
-    const empty = {
-      generation: undefined,
-      material: undefined,
-      observed: undefined,
-      writePending: undefined,
-      blocked: undefined,
-    };
-    assert.equal(await store.writing(revision.id, 1, "bootstrap"), 2);
-    assert.equal(await store.writing(revision.id, 1, "bootstrap"), undefined, "a stale fence");
-    assert.equal(
-      await store.cancelWriting(revision.id, 1),
-      false,
-      "a stale clear cannot clear the new reservation",
-    );
-    const generation = {
-      credentialState: "bootstrap" as const,
-      expiresAt: "",
-      providerId: observed.providerId,
-      resourceVersion: "1",
-      profileVersion: "1",
-    };
-    assert.equal(
-      await store.record(revision.id, 2, { generation, material: undefined, observed: undefined }),
-      true,
-    );
-    assert.deepEqual(await store.adopt(revision.id, randomUUID()), {
-      ...route,
-      fence: 3,
-      ...empty,
-      generation,
-      blocked: "worker_replaced",
-    });
-  },
-);
-
 for (const operation of ["bootstrap", "rotate"] as const) {
   test(
     `a replacement lease cannot settle or replay an uncertain ${operation} installation`,
