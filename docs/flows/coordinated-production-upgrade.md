@@ -118,8 +118,8 @@ stop preflight; workers do not load themes. Both call
 Drivers and Preset files without opening the database.
 `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure` formats
 typed configuration refusals with up to 32 field diagnostics through the API/worker
-log filter. Logs are read only after validated identity, buffered, and retained
-only if the Job and child identities still match after retrieval.
+log filter. The helper checks Job and Pod identity before and after log retrieval,
+rejects NUL bytes before parsing markers, and discards unbound output.
 
 Bundled Kubernetes Compute Driver `preflight` uses Pod credentials (`inCluster`
 service account), matching startup. It refuses

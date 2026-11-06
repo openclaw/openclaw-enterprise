@@ -959,7 +959,13 @@ preflight_startup() {
         message="cannot bind the $component startup preflight logs to the original child Pod; no OCC writer was stopped."
       else
         logs_status=0
-        logs=$("${kube[@]}" --request-timeout=30s --namespace "$namespace" logs "pod/$pod" --container "$component" 2>&1) || logs_status=$?
+        # Bash drops NUL bytes; reject them before they can change a result marker.
+        logs=$("${kube[@]}" --request-timeout=30s --namespace "$namespace" logs "pod/$pod" --container "$component" 2>&1 |
+          python3 -c 'import sys
+data = sys.stdin.buffer.read()
+if b"\0" in data:
+    sys.exit(1)
+sys.stdout.buffer.write(data)') || logs_status=$?
         if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
           logs=
           message="cannot bind the $component startup preflight logs to the original child Pod; discarded unconfirmed output. No OCC writer was stopped."

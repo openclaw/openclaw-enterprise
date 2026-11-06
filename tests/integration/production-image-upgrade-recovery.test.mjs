@@ -675,6 +675,11 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       if (args.includes("logs") && object.log === undefined) {
         return fail(1, "container is waiting to start");
       }
+      if (args.includes("logs") && object.log.includes("\0")) {
+        // Emit bytes directly: the command server's ordinary Bash strings cannot hold NUL.
+        const escaped = Buffer.from(object.log).toString("hex").replace(/../g, "\\x$&");
+        return io.script(`printf '%b' ${bashString(escaped)}; exit 0`);
+      }
       out(
         args.includes("logs")
           ? object.log
@@ -4078,6 +4083,19 @@ test("a failed startup preflight reports and saves every component before cleanu
     "job.batch",
     "secret",
   ]);
+});
+
+// Bash must not remove a NUL and turn malformed output into the literal ready marker.
+test("startup preflight rejects a ready marker containing a NUL byte", async (t) => {
+  const f = await fixture(t, {
+    controllerOnly: true,
+    preflightResults: {
+      api: { phase: "Succeeded", log: "installation-startup-\0ready\n" },
+    },
+  });
+  await assert.rejects(f.run("--preflight-only"), /cannot read the api startup preflight logs/);
+  assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
+  await assertStoppedBeforeWriters(f);
 });
 
 test("a preflight Pod that outlives the timeout does not hide another component's failure", async (t) => {
