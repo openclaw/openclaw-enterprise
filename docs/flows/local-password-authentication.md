@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-11-04 11:22"
-last_updated_session: "authoring-run/d3b76aba-07fb-422b-b0fd-f5957926b7b8"
+updated: "2026-11-06 08:56"
+last_updated_session: "authoring-run/2205da1f-3410-4bcb-9697-f2bbb5ebc49a"
 ---
 
 # Bootstrap and human authentication flow
@@ -247,10 +247,11 @@ properties, exit `64` with usage. The
 [maintenance procedure](../guides/deploy/auth-maintenance.md) lists supported operations
 and exit codes.
 
-Activation is a stopped-maintenance contract: admission stopped, requests
-drained or terminated, and every old controller stopped; startup does not fence
-an old live reader. Both PostgreSQL compositions reject
-GitHub with enabled native administration, even when its cookie domain is missing.
+Activation requires stopped admission, drained or terminated requests, and every
+old controller stopped; startup cannot fence live readers. Both PostgreSQL
+compositions require GitHub native administration to use
+[host-only exchange](../reference/agent-native-admin.md#host-only-session-exchange).
+Google and OIDC require native administration disabled.
 `apps/controller/src/auth/index.ts:createPostgresControllerAuth` constructs and
 initializes authentication before activation, checking the secret, canonical HTTP
 origin, and supported profile. Invalid static configuration leaves legacy sessions,
@@ -351,6 +352,8 @@ Account creation issues no session and infers no grants.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 08:56: Document host-only GitHub native administration. (authoring-run/2205da1f-3410-4bcb-9697-f2bbb5ebc49a - 4d7abb4a7f48c9dddf19afe87bbedfa1807a5749)
 
 - 2026-11-04 11:22: Record durable password-only session revocation and storage failure handling. (authoring-run/d3b76aba-07fb-422b-b0fd-f5957926b7b8 - 0c7126dc16df1a01e2242e9bd35f9e742d6cee56)
 

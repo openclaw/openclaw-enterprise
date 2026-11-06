@@ -7,8 +7,8 @@ images:
 
 auth:
   baseUrl: https://console.oce.example.internal
-  # GitHub sign-in is a later helm upgrade, never the first install; it requires
-  # agentNativeAdmin.enabled: false. See the "Enable GitHub browser sign-in" guide.
+  # GitHub sign-in is a later helm upgrade, never the first install. Disable native admin
+  # or configure host-only-exchange; see docs/guides/deploy/native-admin.md.
   # recoveryUserId: <recovery administrator user ID>
   # github:
   #   enabled: true
