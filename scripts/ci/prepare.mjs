@@ -2642,6 +2642,10 @@ async function prepareK3dRuntimeImages(
   for (const [name, value] of Object.entries(inputs)) {
     const image = await registerImageInK3d(statePath, state, cluster, value, name);
     env[name] = image.reference;
+    if (name === "OCC_TEST_KUBERNETES_GATEWAY_IMAGE") {
+      // Host relays need the Docker image, not the cluster's imported manifest reference.
+      env.OCC_DOCKER_RUNTIME_IMAGE = image.hostImageId;
+    }
   }
   if (buildController) {
     const controller = await registerImageInK3d(
