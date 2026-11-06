@@ -560,6 +560,29 @@ export async function assertReadyGateway(namespaceName, agentId, namespaceId, sn
         },
       };
     }
+    if (snapshot.harness.id === "codex" && provider !== undefined) {
+      // Saved API-key destinations select the explicit compatible provider in the Gateway;
+      // the paired Harness alone receives the credential and performs model requests.
+      const model = snapshot.configuration.agents.defaults.model;
+      assert.equal(typeof model, "string", "these cluster fixtures select one primary model");
+      assert.ok(model.startsWith("codex/"));
+      const id = model.slice("codex/".length);
+      const rendered = `codex/openai-compatible/${id}`;
+      expectedNativeDocument.agents.defaults.model = rendered;
+      const policies = expectedNativeDocument.agents.defaults.models;
+      if (policies !== undefined) {
+        expectedNativeDocument.agents.defaults.models = Object.fromEntries(
+          Object.entries(policies).map(([ref, policy]) => [ref === model ? rendered : ref, policy]),
+        );
+      }
+      expectedNativeDocument.models = {
+        ...expectedNativeDocument.models,
+        providers: {
+          ...expectedNativeDocument.models?.providers,
+          codex: { models: [{ id: `openai-compatible/${id}`, name: id }] },
+        },
+      };
+    }
     const document = JSON.stringify(snapshot.configuration);
     for (const metadata of [deployment.metadata, deployment.spec.template.metadata]) {
       assert.equal(metadata.annotations["openclaw.dev/configuration-id"], snapshot.configurationId);

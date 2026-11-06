@@ -236,7 +236,7 @@ test(
     // Revisions pinned to another driver must never create actual tenant resources.
     assert.deepEqual(
       await driver.prepareRevision(
-        { ...firstRevision, compute: foreignCompute },
+        { ...firstRevision, compute: { ...firstRevision.compute, ...foreignCompute } },
         revisionContext(firstRevision),
       ),
       unreadyFirstRevision,
@@ -717,7 +717,10 @@ test(
     );
 
     await assert.rejects(
-      driver.retireRevision({ ...firstRevision, compute: foreignCompute }),
+      driver.retireRevision({
+        ...firstRevision,
+        compute: { ...firstRevision.compute, ...foreignCompute },
+      }),
       /another Compute Driver/i,
     );
     await resource("deployment", revisionName(secondRevision), owned[0]);
