@@ -18,13 +18,20 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
   const input = JSON.parse(await readFile(path, "utf8"));
   if (gitReplacement) {
     assert.ok(input.git?.repositoryRef, "Select an enrolled repository reference");
-    for (const address of [input.git.url, input.git.deniedUrl]) {
+    assert.ok(input.git.additionalRepositoryRef, "Select a second enrolled repository reference");
+    assert.notEqual(input.git.repositoryRef, input.git.additionalRepositoryRef);
+    assert.equal(
+      input.git.profile ?? "github-repository",
+      "github-repository",
+      "Multiple repositories require the github-repository profile",
+    );
+    for (const address of [input.git.url, input.git.additionalUrl]) {
       const url = new URL(address);
       assert.equal(url.origin, "https://github.com");
       assert.equal(url.username + url.password + url.search + url.hash, "");
       assert.match(url.pathname, /^\/[a-z0-9_.-]+\/[a-z0-9_.-]+\.git$/);
     }
-    assert.notEqual(input.git.url, input.git.deniedUrl);
+    assert.notEqual(input.git.url, input.git.additionalUrl);
   }
   const selection = {
     kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
@@ -242,63 +249,123 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
         },
         signal(),
       );
-    const fetch = (initial) =>
+    const fetch = () =>
       execute(agents[0], [
         "/bin/sh",
         "-ec",
-        initial
-          ? 'mkdir "$1"; git -C "$1" init -q; git -C "$1" remote add origin "$2"; git -C "$1" fetch -q --depth=1 origin HEAD; printf %s "$3" > "$1/retained"'
-          : 'test "$(cat "$1/retained")" = "$3"; git -C "$1" fetch -q --depth=1 origin HEAD',
+        'mkdir "$1"; git -C "$1" init -q; git -C "$1" remote add origin "$2"; git -C "$1" fetch -q --depth=1 origin HEAD; printf %s "$3" > "$1/retained"',
         "git-replacement",
         path,
         input.git.url,
         nonce,
       ]);
-    const denied = () => execute(agents[0], ["/usr/bin/git", "ls-remote", input.git.deniedUrl]);
-    assert.equal(await fetch(true), 0, "Initial revision must fetch the admitted repository");
-    assert.notEqual(await denied(), 0, "Unselected repository must be denied");
+    const denied = (url) => execute(agents[0], ["/usr/bin/git", "ls-remote", url]);
+    assert.equal(await fetch(), 0, "Initial revision must fetch the admitted repository");
+    assert.notEqual(
+      await denied(input.git.additionalUrl),
+      0,
+      "Unselected repository must be denied",
+    );
     await turn(agents[0], first);
     await turn(agents[1], peer);
-    const oldPolicy = await gateway.getPolicyStatus({ workspace, sandbox: before.name }, signal());
-    const oldProviders = [];
-    for (const name of before.spec.providers) {
-      const provider = await gateway.getProvider(workspace, name, signal());
-      if (provider?.labels["openclaw.dev/git-revision-id"] === first.id) {
-        oldProviders.push(provider);
+    let previous = first;
+    // Keep Git enabled throughout. The same revision path must add a repository and
+    // later remove the original one, without losing files or the peer's authority.
+    for (const repositories of [
+      [input.git.repositoryRef],
+      [input.git.repositoryRef, input.git.additionalRepositoryRef],
+      [input.git.additionalRepositoryRef],
+    ]) {
+      const current = await sandbox(agents[0]);
+      const oldPolicy = await gateway.getPolicyStatus(
+        { workspace, sandbox: current.name },
+        signal(),
+      );
+      const oldProviders = [];
+      for (const name of current.spec.providers) {
+        const provider = await gateway.getProvider(workspace, name, signal());
+        if (provider?.labels["openclaw.dev/git-revision-id"] === previous.id) {
+          oldProviders.push(provider);
+        }
       }
+      assert.equal(oldProviders.length, 1);
+      await api("PATCH", `${base}/agents/${agents[0].id}`, {
+        configurationId: input.configurationId,
+        repositoryBindings: repositories.map((repositoryRef) => ({
+          repositoryRef,
+          profile: "github-repository",
+        })),
+      });
+      const successor = await deploy(agents[0]);
+      const after = await sandbox(agents[0]);
+      assert.equal(after.id, before.id, "Git replacement retains the Sandbox and workspace");
+      const policy = await gateway.getPolicyStatus({ workspace, sandbox: after.name }, signal());
+      assert.equal(policy.state, "POLICY_STATUS_LOADED");
+      assert.equal(policy.activeVersion, policy.version);
+      assert.notDeepEqual(
+        policy.policy.network_middlewares["oce-prepared-git"],
+        oldPolicy.policy.network_middlewares["oce-prepared-git"],
+      );
+      for (const provider of oldProviders) {
+        assert.equal(after.spec.providers.includes(provider.name), false);
+        assert.equal(await gateway.getProvider(workspace, provider.name, signal()), undefined);
+        assert.equal(
+          await gateway.getProviderProfile(workspace, provider.type, signal()),
+          undefined,
+        );
+      }
+      // Revoking remote access does not erase data already fetched into the retained workspace.
+      assert.equal(
+        await execute(agents[0], [
+          "/bin/sh",
+          "-ec",
+          'test "$(cat "$1/retained")" = "$2"; git -C "$1" rev-parse --verify FETCH_HEAD',
+          "retained-git",
+          path,
+          nonce,
+        ]),
+        0,
+      );
+      for (const [repositoryRef, url] of [
+        [input.git.repositoryRef, input.git.url],
+        [input.git.additionalRepositoryRef, input.git.additionalUrl],
+      ]) {
+        if (repositories.includes(repositoryRef)) {
+          assert.equal(
+            await execute(agents[0], [
+              "/usr/bin/git",
+              "-C",
+              path,
+              "fetch",
+              "-q",
+              "--depth=1",
+              url,
+              "HEAD",
+            ]),
+            0,
+            "Selected repository must be fetchable",
+          );
+        } else {
+          assert.notEqual(await denied(url), 0, "Unselected or removed repository must be denied");
+        }
+      }
+      assert.equal(
+        await execute(agents[1], ["/usr/bin/git", "ls-remote", input.git.url]),
+        0,
+        "Peer Git access must survive replacement",
+      );
+      assert.notEqual(
+        await execute(agents[1], ["/usr/bin/git", "ls-remote", input.git.additionalUrl]),
+        0,
+        "Adding a repository must not broaden the peer's access",
+      );
+      await turn(agents[0], successor);
+      await turn(agents[1], peer);
+      previous = successor;
     }
-    assert.equal(oldProviders.length, 1);
-    const successor = await deploy(agents[0]);
-    const after = await sandbox(agents[0]);
-    assert.equal(after.id, before.id, "Git replacement retains the Sandbox and workspace");
-    const policy = await gateway.getPolicyStatus({ workspace, sandbox: after.name }, signal());
-    assert.equal(policy.state, "POLICY_STATUS_LOADED");
-    assert.equal(policy.activeVersion, policy.version);
-    assert.notDeepEqual(
-      policy.policy.network_middlewares["oce-prepared-git"],
-      oldPolicy.policy.network_middlewares["oce-prepared-git"],
-    );
-    for (const provider of oldProviders) {
-      assert.equal(after.spec.providers.includes(provider.name), false);
-      assert.equal(await gateway.getProvider(workspace, provider.name, signal()), undefined);
-      assert.equal(await gateway.getProviderProfile(workspace, provider.type, signal()), undefined);
-    }
-    assert.equal(
-      await fetch(false),
-      0,
-      "New revision must retain files and fetch with its new Git authorization",
-    );
-    assert.notEqual(await denied(), 0);
-    assert.equal(
-      await execute(agents[1], ["/usr/bin/git", "ls-remote", input.git.url]),
-      0,
-      "Peer Git access must survive replacement",
-    );
-    await turn(agents[0], successor);
-    await turn(agents[1], peer);
     return {
       outcome:
-        "unchanged Git redeployment, retained Sandbox/workspace, fetch before/after, denied unselected repository, retired Provider/profile and peer isolation",
+        "unchanged Git redeployment, repository addition and removal, retained Sandbox/workspace, allowed fetches, denied removed/unselected repositories, retired Provider/profile and peer isolation",
       limitation: "A successful public repository fetch does not prove credential delivery.",
     };
   }

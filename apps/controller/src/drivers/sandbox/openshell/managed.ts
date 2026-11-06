@@ -398,11 +398,9 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
         sandbox.workspace !== workspaceName(context.namespace) ||
         !sandbox.annotations[REVISION] ||
         sandbox.annotations[REVISION] === context.revision.id ||
-        sandbox.annotations[GIT_SCOPE] !== this.gitScopeAnnotations(context.revision)[GIT_SCOPE]
+        !sandbox.annotations[GIT_SCOPE]
       ) {
-        throw new Error(
-          "Git replacement requires a stopped predecessor with unchanged repository access.",
-        );
+        throw new Error("Git replacement requires a stopped Git-enabled predecessor.");
       }
       const client = this.gatewayClientForNamespace(context.namespace.name);
       // A stopped workload is insufficient: predecessor cleanup must have removed its Git route.
@@ -482,10 +480,8 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       throw new Error("Managed Sandbox disappeared after creation.");
     }
     this.verifyOwner(existing, context.namespace.id, context.revision.agentId);
-    if (existing.annotations[GIT_SCOPE] !== create.annotations[GIT_SCOPE]) {
-      throw new Error(
-        "Managed replacement requires unchanged repository selections and permissions.",
-      );
+    if (!!existing.annotations[GIT_SCOPE] !== !!create.annotations[GIT_SCOPE]) {
+      throw new Error("Managed replacement cannot enable or disable repository access.");
     }
     const matches = (value: OpenShellSandboxResponse) =>
       isDeepStrictEqual(comparableWorkload(value.spec), comparableWorkload(create.spec)) &&

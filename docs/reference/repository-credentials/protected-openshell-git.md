@@ -338,9 +338,9 @@ and verification remain refused, and denials log `no_binding`.
 Correlate revision and request IDs with `worker.openshell-git-denied`.
 
 [Managed replacement](../drivers/kubernetes-openshell-compute.md#lifecycle-and-retained-files)
-waits for durable withdrawal and removes the old middleware and Provider before
-releasing the route. The Sandbox and tombstone remain. The successor receives a
-new binding under unchanged repository scope.
+withdraws the old route and removes its middleware and Provider before creating
+the successor's binding for its admitted scope. The Sandbox and tombstone remain.
+See that reference for replacement limits.
 
 ### Execution identity
 

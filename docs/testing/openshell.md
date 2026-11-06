@@ -395,7 +395,7 @@ rejected peers, failed bootstrap, unsupported updates and lost acknowledgments.
 Test delayed stop and credential-withdrawal requests explicitly: current OpenShell
 APIs cannot fence them by launch generation.
 
-For unchanged Git revisions, use the [Git replacement scenario](openshell-git-replacement.md).
+For Git repository changes across revisions, use the [Git replacement scenario](openshell-git-replacement.md).
 
 ### Provider replacement
 
