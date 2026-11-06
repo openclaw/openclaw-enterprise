@@ -42,6 +42,45 @@ outbound proxy cannot reach the internal Harness.
 
 ## Solution
 
+### Default behavior and enabling Slack
+
+The Gateway proxy is optional and is off by default. With no proxy selected,
+keep the existing difference between the two modes:
+
+- **Embedded Gateway:** retain direct public HTTPS access for model and tool
+  requests. Operators do not need to configure a proxy or `allowedHosts: ["*"]`
+  to retain that access.
+- **Dedicated Gateway:** retain restricted networking, without general direct
+  Internet access. Internal connections continue to work.
+
+Enabling Slack does not automatically deploy or select a proxy. Before and after
+this proposal, Slack and Teams channels require dedicated mode and a configured
+proxy. Reject enabled channels in embedded mode, or in dedicated mode without a
+proxy. Configuring an API directory proxy alone does not meet this requirement.
+
+Before this proposal, the dedicated Gateway receives the configured channel
+proxy route only when channels are enabled. With this proposal, selecting a
+Gateway proxy applies it to embedded and dedicated Gateways even without
+channels. This is an Installation setting, not a per-Agent choice.
+
+If the operator selects the bundled proxy, its default host list permits Slack
+only in either mode. Thus, selecting it for an embedded Gateway restricts routed
+requests that could previously reach other public HTTPS services directly.
+Enabling another integration does not add its hosts to the list.
+
+To use the bundled proxy for Slack and other public HTTPS destinations, set this
+in the installation-profile input:
+
+```json
+{ "proxy": { "bundled": true, "allowedHosts": ["*"] } }
+```
+
+This permits all hostnames through the bundled proxy, subject to its TCP 443 and
+public-IPv4 restrictions below. It does not reproduce embedded's direct route:
+routed requests fail if the proxy is unavailable, and external services see the
+proxy's outbound address. Leave the proxy unset to preserve embedded's existing
+direct access. An external proxy instead applies its own destination policy.
+
 ### Operator interface
 
 Use the existing installation-profile renderer, Helm chart and Kubernetes
@@ -110,15 +149,15 @@ Enabling an integration does not expand either proxy's allowed destinations.
 
 Kubernetes Compute generates native OpenClaw proxy configuration and grants
 proxy egress to the selected peer and port, independently of channel enablement.
-Conflicting Agent proxy settings fail admission or preparation. Without a
-Gateway proxy selection, native Gateway configuration and networking stay
-unchanged.
+Conflicting Agent proxy settings fail admission or preparation.
 
 Apply the selection to embedded and dedicated Gateways. Separate dedicated
-Harnesses and workspace nodes do not inherit it. Embedded Gateways in the
-experimental two-cluster topology need an external endpoint reachable from the
-execution cluster; the bundled control-cluster Service is not routable there.
-Existing channel and native-worker restrictions remain unchanged.
+Harnesses and workspace nodes do not inherit it; their outbound routing and
+permissions do not change. When selecting a proxy for embedded Gateways in the
+experimental two-cluster topology, use an external endpoint reachable from the
+execution cluster. Reject the bundled control-cluster Service for that selection
+because it is not routable there. Leaving the proxy unset remains allowed.
+Existing native-worker restrictions remain unchanged.
 
 For dedicated Codex, Compute provisions the app-server URL. Its OpenClaw
 transport must register an exact-URL exception with the process proxy owner
@@ -150,15 +189,18 @@ tunnels. These changes remain outside the image-only upgrade command.
 - **Require one shared endpoint:** removes a setting but prevents independent
   API routing. Sharing by default keeps normal configuration simple without
   removing the directory override.
-- **Allow direct public Gateway egress:** avoids a proxy but loses its
-  destination policy and weakens dedicated Gateway isolation.
+- **Allow direct public egress from dedicated Gateways:** avoids a proxy but
+  loses its destination policy and weakens dedicated Gateway isolation.
 
 ## Required outcomes
 
 Validation must cover the regular OCE API/worker deployment workflow:
 
-- Embedded and dedicated Gateways use the selected proxy, with or without
-  enabled channels, subject to existing channel restrictions.
+- With no proxy selected, embedded Gateways retain direct public HTTPS access
+  and dedicated Gateways retain restricted networking.
+- Embedded and dedicated Gateways use the selected proxy without requiring
+  channels. Dedicated Gateways also use it with channels enabled. Reject enabled
+  channels in embedded mode or without a Gateway proxy.
 - Allowed destinations work; denied destinations and proxy outages do not
   cause direct fallback.
 - Directory requests share the default or use the explicit override. Their
