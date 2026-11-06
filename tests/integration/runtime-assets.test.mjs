@@ -189,6 +189,12 @@ packages:
   assert.equal(provenance.commit, sourceIdentity.commit);
   assert.equal(provenance.sourceArchiveSha256, sourceIdentity.sourceArchiveSha256);
   assert.equal(
+    provenance.openclawTrustedProxyRolePatchSha256,
+    createHash("sha256")
+      .update(await readFile("deploy/runtime/openclaw-trusted-proxy-role.patch"))
+      .digest("hex"),
+  );
+  assert.equal(
     provenance.runtimeContentsSha256,
     createHash("sha256").update(contents).digest("hex"),
   );
@@ -217,6 +223,7 @@ packages:
   // The remaining per-patch fields keep their names and values.
   for (const [field, file] of [
     ["openclawBridgePatchSha256", "openclaw-codex-read-only-paths.patch"],
+    ["openclawTrustedProxyRolePatchSha256", "openclaw-trusted-proxy-role.patch"],
     [
       "openclawRequiredWorkerAuthorityRegressionPatchSha256",
       "openclaw-required-worker-authority-regression.patch",

@@ -1242,6 +1242,7 @@ export const PERMISSION_ACTIONS = Object.freeze([
   "administer",
   "read_logs",
   "manage_policy",
+  "use",
 ] as const);
 
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number];
@@ -1272,6 +1273,7 @@ export const SUPPORTED_PERMISSION_ACTIONS: Readonly<
     "administer",
     "read_logs",
     "manage_policy",
+    "use",
   ] as const),
   agent_revision: Object.freeze(["read"] as const),
 });
@@ -1306,12 +1308,49 @@ export interface GroupMembership extends Scope {
 
 export type AccessBindingSubjectKind = "identity" | "group";
 
+/** Runtime role names are opaque to IAM; the selected Compute Driver owns their meaning. */
+export interface RuntimeAccessDecision extends AuthorizationDecision {
+  readonly runtimeRole?: string;
+}
+
+/** Explicit full runtime access, including upgrades from Agent administer grants. Compute owns its policy. */
+export const ADMINISTRATOR_RUNTIME_ROLE = "platform-administrator";
+
+export interface AgentRuntimeRole {
+  readonly id: string;
+  readonly permissions: Readonly<Record<string, unknown>>;
+}
+
+export interface AgentRuntimeRoleCatalog {
+  readonly configuration: Pick<Configuration, "id" | "generation">;
+  readonly roles: readonly AgentRuntimeRole[];
+  readonly desiredRuntimeState: AgentDesiredRuntimeState;
+  readonly activeRevision?: {
+    readonly id: string;
+    readonly roles: readonly AgentRuntimeRole[];
+  };
+}
+
+export type AgentRuntimeAccessUnavailableReason =
+  "role_unavailable" | "device_approval_required" | "transport_unsupported";
+
+export interface AgentRuntimeAccessUnavailable {
+  readonly reason: AgentRuntimeAccessUnavailableReason;
+}
+
+export interface AgentRuntimeAccess {
+  readonly endpoint: string;
+  readonly headers: Readonly<Record<string, string>>;
+}
+
 export interface AccessBinding extends Scope {
   readonly id: string;
   readonly namespaceId?: string;
   readonly subjectKind: AccessBindingSubjectKind;
   readonly subjectId: string;
   readonly roleId: string;
+  /** Exact human/Agent runtime assignment, separate from the OCE Role. */
+  readonly runtimeRole?: string;
   readonly resourceKind?: ResourceKind;
   readonly resourceId?: string;
 }

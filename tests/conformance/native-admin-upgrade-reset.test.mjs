@@ -123,14 +123,20 @@ async function transportOwner(t, { authorize, append }) {
       async resolveAgentReference(predicate) {
         return predicate(agent) ? agent : undefined;
       },
-      getAdministerableActiveAgentRevision() {
+      getUsableActiveAgentRevision() {
         entered.resolve();
-        return authorize({ agent, revision, denied });
+        return Promise.resolve(authorize({ agent, revision, denied })).then((selection) => ({
+          ...selection,
+          runtimeRole: "platform-administrator",
+        }));
       },
       selectedDriver: () => ({
         id: "compute_test",
         implementation: "native-admin-reset-test",
-        getGatewayEndpoint: () => `wss://127.0.0.1:${gateway.address().port}/`,
+        getAgentRuntimeAccess: () => ({
+          endpoint: `wss://127.0.0.1:${gateway.address().port}/`,
+          headers: {},
+        }),
       }),
     }),
     selectedIAMDriver: () => ({
@@ -459,7 +465,7 @@ function denialOwner(t, overrides = {}) {
   const denied = new Error("The exact platform operation was not authorized.");
   denied.name = "AuthorizationDeniedError";
   denied.authorization = {
-    action: "administer",
+    action: "use",
     resource: { kind: "agent", id: agent.id, namespaceId: agent.namespaceId },
   };
   const audits = [];
@@ -486,13 +492,15 @@ function denialOwner(t, overrides = {}) {
       async resolveAgentReference(predicate) {
         return predicate(agent) ? agent : undefined;
       },
-      getAdministerableActiveAgentRevision() {
-        return overrides.authorize?.({ agent, revision, denied }) ?? Promise.reject(denied);
+      getUsableActiveAgentRevision() {
+        return Promise.resolve(
+          overrides.authorize?.({ agent, revision, denied }) ?? Promise.reject(denied),
+        ).then((selection) => ({ ...selection, runtimeRole: "platform-administrator" }));
       },
       selectedDriver: () => ({
         id: "compute_test",
         implementation: "native-admin-reset-test",
-        getGatewayEndpoint: () => "wss://gateway.example.test",
+        getAgentRuntimeAccess: () => ({ endpoint: "wss://gateway.example.test", headers: {} }),
       }),
     }),
     selectedIAMDriver: () => ({
@@ -569,7 +577,7 @@ test("native-admin denial ownership closes before a delayed or rejected append",
     assert.equal(socket.destroyed, true);
     assert.equal(owner.denials().length, 1);
     assert.equal(owner.denials()[0].actor.principalId, "actor_1");
-    assert.equal(owner.denials()[0].authorization.action, "administer");
+    assert.equal(owner.denials()[0].authorization.action, "use");
     append.reject(new Error("synthetic sink failure"));
     await settleCallbacks();
     assert.equal(owner.warnings[0].event, "native_admin.websocket_denial_audit_failed");
@@ -1016,7 +1024,7 @@ test("a client reset during a pending native-admin denial still records the deni
         async resolveAgentReference(predicate) {
           return predicate(agent) ? agent : undefined;
         },
-        getAdministerableActiveAgentRevision() {
+        getUsableActiveAgentRevision() {
           admissionEntered = true;
           return admissionGate;
         },
@@ -1136,7 +1144,7 @@ for (const phase of ["admission", "gateway key"]) {
       });
     };
     const revision = nativeAdminRevision(origin);
-    const selection = { agent, revision };
+    const selection = { agent, revision, runtimeRole: "platform-administrator" };
     const crashes = [];
     const onUncaught = (error) => {
       crashes.push(error);
@@ -1157,14 +1165,17 @@ for (const phase of ["admission", "gateway key"]) {
           async resolveAgentReference(predicate) {
             return predicate(agent) ? agent : undefined;
           },
-          getAdministerableActiveAgentRevision() {
+          getUsableActiveAgentRevision() {
             return phase === "admission" ? gated("admission", selection) : selection;
           },
           selectedDriver() {
             return {
               id: "compute_test",
               implementation: "native-admin-reset-test",
-              getGatewayEndpoint: () => `wss://127.0.0.1:${gateway.address().port}/`,
+              getAgentRuntimeAccess: () => ({
+                endpoint: `wss://127.0.0.1:${gateway.address().port}/`,
+                headers: {},
+              }),
             };
           },
         };

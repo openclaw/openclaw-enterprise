@@ -54,7 +54,7 @@ import {
   renderHarnessAuthSummary,
 } from "./harness-auth.mjs";
 import { renderAgentAccess } from "./access.mjs";
-import { renderNativeAdminAccess } from "./native-admin.mjs";
+import { renderRuntimeAccess } from "./runtime-access.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
 import { createAgentStop } from "./stop.mjs";
 import { gatewaySafetyControls } from "./gateway-safety.mjs";
@@ -1612,26 +1612,21 @@ export async function renderAgentDetail(
   if (selected !== "draft") {
     detailPane.append(pageDisclosure);
   }
-  const nativeAdmin = renderNativeAdminAccess(
-    context,
-    path,
-    () => latestPermissionsRead.then((permissions) => permissions?.administer),
-    {
-      // One the caller cannot read is not named by its ID (finding D791).
-      versionLabel: () =>
-        unreadableCurrentLabel() === null ? currentVersionLabel() : "current version",
-      recovery: (status) => {
-        if (status === "stopped" || status === "unsupported") {
-          return versionLink("Open draft", "draft", "configuration");
-        }
-        const latest = visibleRevisions[0];
-        return status === "unavailable" && latest
-          ? versionLink("View deployment", latest.id, "deployment")
-          : null;
-      },
+  const runtimeAccess = renderRuntimeAccess(context, path, {
+    // One the caller cannot read is not named by its ID (finding D791).
+    versionLabel: () =>
+      unreadableCurrentLabel() === null ? currentVersionLabel() : "current version",
+    recovery: (status) => {
+      if (status === "stopped" || status === "unsupported") {
+        return versionLink("Open draft", "draft", "configuration");
+      }
+      const latest = visibleRevisions[0];
+      return status === "unavailable" && latest
+        ? versionLink("View deployment", latest.id, "deployment")
+        : null;
     },
-  );
-  headerActions.append(nativeAdmin.launch, nativeAdmin.unavailable);
+  });
+  headerActions.append(runtimeAccess.launch, runtimeAccess.unavailable);
   const recovery = createDeploymentRecovery(context, {
     path,
     selected,
@@ -1647,7 +1642,7 @@ export async function renderAgentDetail(
   );
   view.replaceChildren(
     recovery.section,
-    nativeAdmin.section,
+    runtimeAccess.section,
     deploymentAttention,
     overviewStatus,
     versionLayout,
@@ -2321,7 +2316,7 @@ export async function renderAgentDetail(
         }
       }
       // Native admin access depends on the serving version, so a finished deployment rereads it.
-      nativeAdmin.refresh();
+      runtimeAccess.refresh();
     }
     if (revisionResult) {
       renderOverview(revisionResult, snapshot);
@@ -2473,7 +2468,7 @@ export async function renderAgentDetail(
     markVersionOutcomes();
     // An unreadable current version is newer beside a succeeded deployment (finding D791).
     renderCurrentVersion();
-    nativeAdmin.updateTarget();
+    runtimeAccess.updateTarget();
     const versionContextLine = selector.querySelector(".agent-version-context");
     if (versionContextLine) {
       setText(versionContextLine, versionContext());
@@ -2833,7 +2828,7 @@ export async function renderAgentDetail(
         labels.get(id) ?? (id === currentRevisionId ? unreadableCurrentLabel() : null) ?? undefined,
     );
     renderCurrentVersion();
-    nativeAdmin.updateTarget();
+    runtimeAccess.updateTarget();
     renderVersions(revisions, snapshot, revisionResult);
     const mostRecent = revisions[0];
     if (activityRevisionId !== (mostRecent?.id ?? null)) {
@@ -2859,7 +2854,7 @@ export async function renderAgentDetail(
           activityPanel.replaceWith(panel);
           activityPanel = panel;
         }
-        void Promise.all([nativeAdmin.ready, failed ? callerPermissionsRead : null]).then(
+        void Promise.all([runtimeAccess.ready, failed ? callerPermissionsRead : null]).then(
           revealDetail,
         );
       };
@@ -3564,7 +3559,11 @@ export async function renderAgentDetail(
       ).trustedProxy;
       const proxy =
         trustedProxy !== null && typeof trustedProxy === "object" && !Array.isArray(trustedProxy)
-          ? trustedProxyIdentitiesProblem(trustedProxy as Readonly<Record<string, unknown>>)
+          ? trustedProxyIdentitiesProblem(
+              trustedProxy as Readonly<Record<string, unknown>>,
+              undefined,
+              responseFields(responseFields(checked).gateway).roles !== undefined,
+            )
           : undefined;
       if (proxy !== undefined) {
         refusals.set(

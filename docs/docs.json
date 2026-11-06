@@ -200,6 +200,10 @@
                     "label": "Native Admin UI"
                   },
                   {
+                    "page": "reference/agent-runtime-roles",
+                    "label": "Agent Runtime Roles"
+                  },
+                  {
                     "page": "guides/topics/agent-troubleshoot",
                     "label": "Troubleshoot"
                   }

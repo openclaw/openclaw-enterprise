@@ -1,7 +1,7 @@
 # Runtime image recipe
 
-Build a public local runtime image for the OpenClaw Enterprise quickstart and
-real-runtime integration tests. The image contains these runtime entrypoints:
+Build the OpenClaw Enterprise runtime image for the quickstart and integration tests.
+Entrypoints:
 
 - OpenClaw gateway: `node /app/openclaw.mjs`.
 - Dedicated OpenClaw node: `node /app/openclaw.mjs connect --target-file <private-file> --ephemeral --pair-or-reconnect`.
@@ -34,15 +34,14 @@ an equivalent implementation is available upstream, the build applies its
 `readOnlyPaths` compatibility change as
 `openclaw-codex-read-only-paths.patch`. This preserves the restricted Codex
 filesystem profile required by the repository broker and selected plugins.
-The selected source preserves `on-request` when plugins use MCP elicitation,
-reconnects `connect --ephemeral` with saved device credentials after its setup
-code expires, and retains the original caller's authority while required-worker
-placement continues after session creation is acknowledged. Scope, role, and
-profile revocation still stop dispatch. The OpenClaw build stage applies the
-checksum-verified `openclaw-required-worker-authority-regression.patch`
-and runs the real Gateway public-RPC cases without network access. The cases
-cover placement before and after acknowledgement, disconnect, and committed
-role, scope, and profile revocation.
+`openclaw-trusted-proxy-role.patch` commits verified roles before native HTTP/WebSocket admission, checks policy digests and managed identities, and closes replaced authority. Kubernetes supplies identity selectors; the bridge hardcodes no OCE namespace. See [runtime roles](../../docs/reference/agent-runtime-roles.md) for ownership and digest rules. Gateway/SQLite regressions cover `server.auth.identity-scopes.test.ts` and `server.plugin-http-role-scopes.test.ts`; `zod-schema.gateway-auth.test.ts` checks configuration. Remove after upstream supplies equivalent admission and publication guarantees.
+
+The selected source preserves MCP elicitation's `on-request`, reconnects expired
+`connect --ephemeral` setup with saved credentials, and retains caller authority
+through required-worker placement after acknowledgement. The checksum-verified
+`openclaw-required-worker-authority-regression.patch` tests public-RPC placement
+before/after acknowledgement, disconnect, and committed role, scope and profile
+revocation without network access.
 The build also applies `openclaw-codex-full-access-profile.patch`, which selects
 the native full-access Codex profile, and
 `openclaw-control-ui-browser-reconnect.patch`, which offers a browser navigation
@@ -125,8 +124,7 @@ scripts enabled and runs upstream postinstall, plugin pruning, import-closure,
 and native filesystem-addon checks. Extension tests, QA source, and documentation
 media are excluded; help text, skills, and runtime templates remain. A dependency
 walk removes unreachable pnpm store entries while retaining importer-specific
-versions and installed optional dependencies. Building
-requires registry access.
+versions and installed optional dependencies. Registry access is required.
 
 ## Resolve OpenClaw build arguments
 
@@ -148,8 +146,7 @@ while IFS= read -r argument; do
 done <<< "$source_args"
 ```
 
-Keep this shell for the build. CI and the development launchers resolve the
-same manifest automatically. An explicitly selected prebuilt runtime image
+CI and development launchers resolve the same manifest. An explicitly selected prebuilt runtime image
 keeps its own identity. The separate [local OpenClaw checkout test path](../../docs/testing/openshell.md)
 builds its selected checkout and records that checkout's commit.
 

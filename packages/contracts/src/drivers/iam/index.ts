@@ -2,6 +2,7 @@ import type { Driver } from "../index.ts";
 import type {
   AccessBinding,
   AuthorizationDecision,
+  RuntimeAccessDecision,
   AuthorizationRequest,
   Identity,
   IdentityAccessCoverageRequest,
@@ -19,6 +20,8 @@ export interface IAMDriver extends Driver {
   readonly namespacePolicyTransaction?: "platform-unit-of-work";
   lookupIdentity(input: IdentityLookup): Promise<Identity | undefined>;
   authorize(request: AuthorizationRequest): Promise<AuthorizationDecision>;
+  /** Resolve entry permission and its exact human runtime assignment from one policy snapshot. */
+  authorizeRuntimeAccess?(request: AuthorizationRequest): Promise<RuntimeAccessDecision>;
   /**
    * True only when `principalId` holds every grant of `targetIdentityId` at the
    * same or a broader scope. Credential issuance for another identity requires it;
@@ -56,6 +59,12 @@ export interface IAMDriver extends Driver {
     context: IAMPolicyManagementContext,
     input: IAMManagedAccessBindingInput,
   ): Promise<Readonly<AccessBinding>>;
+  updateNamespaceRuntimeRole?(
+    context: IAMPolicyManagementContext,
+    namespaceId: string,
+    bindingId: string,
+    runtimeRole: string,
+  ): Promise<Readonly<AccessBinding> | undefined>;
   deleteNamespaceAccessBinding?(
     context: IAMPolicyManagementContext,
     namespaceId: string,
@@ -106,6 +115,11 @@ export interface IAMPolicyRepository extends IAMPolicyReadRepository {
   createRole(role: Role): Promise<Readonly<Role>>;
   deleteRole(namespaceId: string, roleId: string): Promise<boolean>;
   createAccessBinding(binding: AccessBinding): Promise<Readonly<AccessBinding>>;
+  updateRuntimeRole(
+    namespaceId: string,
+    bindingId: string,
+    runtimeRole: string,
+  ): Promise<Readonly<AccessBinding> | undefined>;
   deleteAccessBinding(namespaceId: string, bindingId: string): Promise<boolean>;
   createServicePrincipal(servicePrincipal: ServicePrincipal): Promise<Readonly<ServicePrincipal>>;
 }
@@ -142,6 +156,7 @@ export interface IAMManagedAccessBindingInput {
   readonly subjectKind: "identity";
   readonly subjectId: string;
   readonly roleId: string;
+  readonly runtimeRole?: string;
   readonly resourceKind: ManagedIAMResourceKind;
   readonly resourceId: string;
 }

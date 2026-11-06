@@ -1,11 +1,8 @@
 # Authorization
 
-Identity and access management (IAM) determines who can read, create, change,
-or operate OpenClaw Enterprise resources. Every operation is checked against
-its exact action, resource, and [Namespace](namespaces.md). Requests without an
-explicit matching grant are denied. This page defines the current authorization
-contract; [authentication](authentication.md) defines how API clients establish
-a session or verify a service key.
+Identity and access management (IAM) checks each operation against its exact
+action, resource and [Namespace](namespaces.md). Requests require an explicit
+matching grant. [Authentication](authentication.md) defines sessions and service-key verification.
 
 ```text
 Principal, ServicePrincipal, or Group
@@ -102,6 +99,11 @@ An unknown identity is denied. Email addresses, display names, caller-supplied
 identity headers, or membership in another Namespace do not grant access.
 
 ## Permissions and Roles
+
+Agent runtime entry requires `agent:use` plus one exact direct person/Agent
+runtime assignment. Installation administration and management grants do not
+imply native permissions. See
+[Agent OpenClaw access](agent-native-admin.md#native-authority-and-drift).
 
 A Permission pairs an `action` with a `resourceKind`; a Role groups these
 Permissions. The kind selects a category such as `agent`, not an individual

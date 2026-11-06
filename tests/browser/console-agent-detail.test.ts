@@ -1460,6 +1460,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
+  const nativeStatusPath = `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`;
 
   await login(
     page,
@@ -1498,6 +1499,9 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/stop` &&
       response.request().method() === "POST",
+  );
+  const refreshedNativeStatus = page.waitForResponse(
+    (response) => response.url() === `${fixture.origin}${nativeStatusPath}`,
   );
   await dialog.getByRole("button", { name: "Stop Agent" }).click();
   const response = await stopResponse;
@@ -1542,20 +1546,18 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   assert.equal(stopped.data.activeRevisionId, active.revision.id);
   assert.deepEqual(stopped.data.harnessAuth, { method: "runtime" });
   assert.equal(stopped.data.configurationId, agent.configurationId);
-  // Changing only the requested runtime state must reload dependent panels,
-  // even while the selected revision remains unchanged pending worker shutdown.
-  const stopIndex = requests.findIndex((request) => request.path.endsWith("/stop"));
-  assert.ok(
-    requests.findIndex((request) => request.path.endsWith("/native-admin")) > stopIndex,
-    "native admin status must be reread after stop admission",
-  );
-  const revisions = wireBody(
-    fixture,
-    AgentRevisionListResponse,
-    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}/revisions`)).body,
+  // Changed runtime state refreshes availability; the disabled feature remains hidden.
+  const refreshedNative = await refreshedNativeStatus;
+  assert.equal(refreshedNative.status(), 200);
+  assert.equal((await refreshedNative.json()).data.status, "disabled");
+  const revisions = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
   );
   assert.deepEqual(
-    revisions.data.map((revision) => revision.id),
+    wireBody(fixture, AgentRevisionListResponse, revisions.body).data.map(
+      (revision) => revision.id,
+    ),
     [active.revision.id],
   );
   await page.getByRole("tab", { name: "Workspace files" }).click();

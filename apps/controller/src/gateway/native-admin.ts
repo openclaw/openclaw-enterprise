@@ -81,20 +81,9 @@ export function nativeAdminConfigurationSupported(
   origin: string,
 ): boolean {
   const gateway = asRecord(revision.configuration.gateway);
-  const auth = asRecord(gateway?.auth);
-  const proxy = asRecord(auth?.trustedProxy);
   const ui = asRecord(gateway?.controlUi);
-  const approval = asRecord(proxy?.deviceAutoApprove);
-  const scopes = asRecord(auth?.identityScopes)?.["occ-workspace-files"];
+  // Transport authentication and native role support belong to Compute's runtime-access contract.
   return (
-    auth?.mode === "trusted-proxy" &&
-    unsupportedNativeGatewayAuthFields(auth).length === 0 &&
-    proxy?.userHeader === "x-occ-identity" &&
-    Array.isArray(proxy.allowUsers) &&
-    proxy.allowUsers.includes("occ-workspace-files") &&
-    Array.isArray(scopes) &&
-    scopes.includes("operator.admin") &&
-    approval?.enabled === true &&
     ui?.enabled === true &&
     Array.isArray(ui.allowedOrigins) &&
     ui.allowedOrigins.includes(origin) &&
@@ -151,6 +140,24 @@ export function prepareNativeAdminConfiguration(
     }
     return [...new Set([...value, entry])];
   };
+  let allowUsers: string[];
+  if (gateway.roles === undefined) {
+    allowUsers = append(
+      proxy.allowUsers,
+      "occ-workspace-files",
+      "gateway.auth.trustedProxy.allowUsers",
+    );
+  } else {
+    if (
+      proxy.allowUsers !== undefined &&
+      (!Array.isArray(proxy.allowUsers) || proxy.allowUsers.length !== 0)
+    ) {
+      throw new ConfigurationHarnessError(
+        "Native role-managed access requires an empty gateway.auth.trustedProxy.allowUsers list.",
+      );
+    }
+    allowUsers = [];
+  }
   const target = new URL(input.publicOrigin);
   target.hostname = deriveNativeAdminHost(
     input.installationId,
@@ -177,11 +184,7 @@ export function prepareNativeAdminConfiguration(
         trustedProxy: {
           ...proxy,
           userHeader: "x-occ-identity",
-          allowUsers: append(
-            proxy.allowUsers,
-            "occ-workspace-files",
-            "gateway.auth.trustedProxy.allowUsers",
-          ),
+          allowUsers,
           deviceAutoApprove: {
             ...approval,
             enabled: true,

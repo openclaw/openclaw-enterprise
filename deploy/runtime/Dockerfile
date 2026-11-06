@@ -133,6 +133,10 @@ RUN --mount=type=secret,id=build-ca,required=false \
 COPY deploy/runtime/openclaw-codex-read-only-paths.patch /tmp/openclaw-codex-read-only-paths.patch
 RUN echo 'f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc  /tmp/openclaw-codex-read-only-paths.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-read-only-paths.patch
+# TODO: Remove this bridge when upstream accepts a verified proxy role at profile admission.
+COPY deploy/runtime/openclaw-trusted-proxy-role.patch /tmp/openclaw-trusted-proxy-role.patch
+RUN echo '2d9f3d89d7881cfa7bc330c9fa73e10c7f503a34442d088e31c6374120ad17e0  /tmp/openclaw-trusted-proxy-role.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-trusted-proxy-role.patch
 # TODO: Remove this bridge patch when OpenClaw selects the native full-access profile.
 COPY deploy/runtime/openclaw-codex-full-access-profile.patch /tmp/openclaw-codex-full-access-profile.patch
 RUN echo '5112e56cf2e436abf794ad538774d72327eb2a95e111b7400db4caa970328ebe  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
@@ -228,6 +232,8 @@ FROM openclaw-patched-source AS openclaw-bridge-tests
 RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
     OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
+    src/gateway/server.auth.identity-scopes.test.ts src/gateway/server.plugin-http-role-scopes.test.ts \
+    src/config/zod-schema.gateway-auth.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
     src/infra/private-store-file.test.ts \
     src/node-host/runner.test.ts \

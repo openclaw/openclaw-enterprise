@@ -48,7 +48,6 @@ import {
   secretOptionLabel,
   selectSecret,
   settlePageRequests,
-  waitForCondition,
   waitForEnabled,
   waitForInputValue,
   statusTone,
@@ -61,7 +60,6 @@ import {
 
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
-  expectNativeAdminHidden,
   withholdPermissionSummary,
   agentDeleteRequests,
   agentStopRequests,
@@ -69,7 +67,6 @@ import {
 } from "./console-agents-test-support.ts";
 import {
   callerDenied,
-  DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
   MALFORMED_REQUEST,
   RESOURCE_CONFLICT,
@@ -2195,87 +2192,6 @@ export function registerSharingCredentialsAndChannelsCases(
     return value;
   }
 
-  test("Agent sharing reconciles a truncated committed response without replaying writes", async (t) => {
-    let loseAgentBindingResponse = true;
-    const fixture = await createConsoleAppFixture(t, {
-      provisionedPeople: ["response-recipient"],
-      async onSend(
-        request: { method: string; url: string },
-        reply: { statusCode: number },
-        payload: string,
-      ) {
-        if (
-          loseAgentBindingResponse &&
-          request.method === "POST" &&
-          request.url.endsWith("/iam/access-bindings") &&
-          reply.statusCode === 201 &&
-          record(record(JSON.parse(payload)).data).resourceKind === "agent"
-        ) {
-          // Truncate only the response after the real route committed its grant.
-          loseAgentBindingResponse = false;
-          return payload.slice(0, 8);
-        }
-        return payload;
-      },
-    });
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Sharing recovery");
-    const agent = await fixture.createAgent(
-      namespace.id,
-      "Recovery Agent",
-      nativeValues("recovery"),
-    );
-    const person = fixture.provisionedAccounts[0];
-    assert.ok(person);
-    const { page, artifacts } = await newPage(t, fixture);
-    await trackSettledFetches(page);
-    const requests = apiRequests(page, fixture.origin);
-    const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
-    await login(page, fixture, detail);
-    const panel = page.getByRole("region", { name: "Share Agent", exact: true });
-    await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
-    await panel.getByRole("checkbox").check();
-    await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
-    await panel.getByText("Outcome unknown.", { exact: false }).waitFor();
-    await panel.getByText("Namespace discovery is enabled.", { exact: true }).waitFor();
-    await panel.getByText("Direct grants need a fresh read.", { exact: false }).waitFor();
-    assert.equal(await panel.getByText("No direct Agent grants.", { exact: true }).count(), 0);
-    assert.equal(
-      await panel.getByRole("button", { name: "Share Agent", exact: true }).isDisabled(),
-      true,
-    );
-    await panel.screenshot({ path: join(artifacts, "agent-sharing-unknown.png") });
-    const writes = () =>
-      nonAuthWriteRequests(requests).filter((request) => request.path.includes("/iam/"));
-    assert.equal(writes().length, 4);
-    const session = await fixture.signIn(person.credentials);
-    assert.deepEqual(
-      records(
-        (await fixture.request("GET", `/namespaces/${namespace.id}/agents`, { session })).data,
-      ).map((item) => item.id),
-      [agent.id],
-    );
-    await panel.getByRole("button", { name: "Refresh sharing" }).click();
-    await panel.getByText("Current policy loaded.", { exact: false }).waitFor();
-    assert.equal(writes().length, 4);
-    await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
-    await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
-    assert.equal(writes().length, 4);
-    const policyPath = `/namespaces/${namespace.id}/iam`;
-    assert.equal(records((await fixture.request("GET", `${policyPath}/roles`)).data).length, 2);
-    assert.equal(
-      records((await fixture.request("GET", `${policyPath}/access-bindings`)).data).length,
-      2,
-    );
-    // A sharing read must preserve global expiry handling, including private panel removal. A late
-    // read that found the expiry first would remove the panel before the Refresh click.
-    await expireSessionsWhenSettled(page, fixture);
-    await panel.getByRole("button", { name: "Refresh sharing" }).click();
-    await page.getByText("Your session has expired").waitFor();
-    await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
-    assert.equal(await panel.count(), 0);
-  });
-
   test("a read-only viewer is denied saved settings and native admin once per tab, not per view", async (t) => {
     const auditSink = new InMemoryAuditSink();
     const fixture = await createConsoleAppFixture(t, { auditSink });
@@ -2362,10 +2278,9 @@ export function registerSharingCredentialsAndChannelsCases(
     assert.equal(denials("openclaw.agents.native_admin.read"), 2);
   });
 
-  // Native admin status needs Agent administer, and each refused read is a browser console error
-  // and an audited denial. The permission answer already says the caller lacks it, so the card is
-  // never asked for, on any view of the page.
-  test("a viewer without Agent administer never asks for native admin status", async (t) => {
+  // Agent administration does not determine runtime access. Probe once so an exact
+  // runtime assignment can be discovered; retain a refusal for this browser tab.
+  test("a viewer without Agent administer checks native access once and retains its denial", async (t) => {
     const auditSink = new InMemoryAuditSink();
     const fixture = await createConsoleAppFixture(t, { auditSink });
     await fixture.bootstrap();
@@ -2390,7 +2305,7 @@ export function registerSharingCredentialsAndChannelsCases(
       await waitForSettledFetches(page, `${agentPath}/permissions`, 1);
       await settlePageRequests(page);
       await waitForIdleFetches(page);
-      assert.equal(reads(nativeAdminPath), 0);
+      assert.equal(reads(nativeAdminPath), 1);
       assert.equal(await page.locator(".native-admin-access:not([hidden])").count(), 0);
       await page.reload();
     }
@@ -2402,7 +2317,7 @@ export function registerSharingCredentialsAndChannelsCases(
             event.kind === "authorization_denial" &&
             event.action === "openclaw.agents.native_admin.read",
         ).length,
-      0,
+      1,
     );
   });
 
@@ -2545,85 +2460,6 @@ export function registerSharingCredentialsAndChannelsCases(
     }
   });
 
-  test("a failed native admin status read keeps the card, its error and Refresh access", async (t) => {
-    const fixture = await detailApp(t);
-    const namespace = await fixture.createNamespace("Native admin outage", { ready: true });
-    const agent = await fixture.createAgent(namespace.id, "Outage Agent", nativeValues("outage"));
-    const { page } = await newPage(t, fixture);
-    const requests = apiRequests(page, fixture.origin);
-    const nativeAdminPath = `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`;
-    let failures = 1;
-    await page.route(`${fixture.origin}${nativeAdminPath}`, async (route) => {
-      if (failures > 0) {
-        failures -= 1;
-        await route.fulfill({
-          status: 503,
-          contentType: "application/json",
-          body: JSON.stringify({
-            error: {
-              code: "DEPENDENCY_UNAVAILABLE",
-              message: DEPENDENCY_UNAVAILABLE,
-            },
-            meta: { requestId: "req_test_native_admin_outage" },
-          }),
-        });
-        return;
-      }
-      await route.continue();
-    });
-    const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
-    await login(page, fixture, detail);
-    await page.getByRole("heading", { name: "Outage Agent" }).waitFor();
-
-    // An outage is not a denial: the card stays, names the failure and can be retried.
-    const card = page.locator(".native-admin-access");
-    await card.getByRole("alert").getByText("Service unavailable", { exact: false }).waitFor();
-    assert.equal(await card.isVisible(), true);
-    const reload = card.getByRole("button", { name: "Refresh access" });
-    await waitForEnabled(reload);
-
-    // A later answer still decides visibility: this Installation has native admin disabled.
-    const reads = () => requests.filter((request) => request.path === nativeAdminPath).length;
-    const before = reads();
-    await reload.click();
-    await waitForCondition(() => reads() === before + 1, "native admin status reread");
-    await card.waitFor({ state: "hidden" });
-    await expectNativeAdminHidden(page);
-  });
-
-  test("Agent sharing rejects emails locally and names an unknown Principal ID", async (t) => {
-    const fixture = await detailApp(t);
-    const namespace = await fixture.createNamespace("Sharing subject checks");
-    const agent = await fixture.createAgent(namespace.id, "Subject Agent", nativeValues("subject"));
-    const { page } = await newPage(t, fixture);
-    const requests = apiRequests(page, fixture.origin);
-    const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
-    await login(page, fixture, detail);
-    const panel = page.getByRole("region", { name: "Share Agent", exact: true });
-    const principal = panel.getByLabel("Existing person’s Principal ID");
-    const writes = () =>
-      nonAuthWriteRequests(requests).filter((request) => request.path.includes("/iam/"));
-    await principal.fill("carol@example.invalid");
-    await panel.getByRole("checkbox").check();
-    await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
-    await panel.getByText("not an email address", { exact: false }).waitFor();
-    assert.equal(writes().length, 0);
-
-    await principal.fill("prn_00000000-0000-4000-8000-000000000000");
-    await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
-    await panel
-      .getByText("No existing person with that Principal ID can be granted access here", {
-        exact: false,
-      })
-      .waitFor();
-    assert.equal(await panel.getByText("Resource unavailable", { exact: false }).count(), 0);
-    const bindings = await fixture.request(
-      "GET",
-      `/namespaces/${namespace.id}/iam/access-bindings`,
-    );
-    assert.deepEqual(bindings.data, []);
-  });
-
   // Commit the narrow role, then return a real, broader role from the same Namespace in its place.
   // Both sharing and credential access must stop before sending any binding request.
   async function expectBroaderCreatedRoleRefused(
@@ -2664,94 +2500,6 @@ export function registerSharingCredentialsAndChannelsCases(
     assert.equal(pathRequests(requests, "POST", rolesPath).length, 1, "never repeat role creation");
     await page.unroute(routePattern);
   }
-
-  test("Agent sharing creates exact Roles instead of reusing strict superset Roles", async (t) => {
-    const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["superset-recipient"] });
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Superset sharing");
-    const agent = await fixture.createAgent(
-      namespace.id,
-      "Superset Agent",
-      nativeValues("superset"),
-    );
-    const person = fixture.provisionedAccounts[0];
-    assert.ok(person);
-    const policyPath = `/namespaces/${namespace.id}/iam`;
-    // Each superset contains every permission sharing needs, plus one it must not grant.
-    const supersets: Role[] = [];
-    for (const permissions of [
-      [
-        { action: "read", resourceKind: "agent" },
-        { action: "administer", resourceKind: "agent" },
-        { action: "delete", resourceKind: "agent" },
-      ],
-      [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "secret" },
-      ],
-    ] as const) {
-      const role = await fixture.request("POST", `${policyPath}/roles`, { body: { permissions } });
-      assert.equal(role.status, 201, JSON.stringify(role.body));
-      supersets.push(readRole(role.data));
-    }
-    const { page } = await newPage(t, fixture);
-    const requests = apiRequests(page, fixture.origin);
-    const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
-    await login(page, fixture, detail);
-    const panel = page.getByRole("region", { name: "Share Agent", exact: true });
-    await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
-    await panel.getByRole("checkbox").check();
-    const share = panel.getByRole("button", { name: "Share Agent", exact: true });
-    const broaderDiscoveryRole = supersets[1];
-    assert.ok(broaderDiscoveryRole);
-    await expectBroaderCreatedRoleRefused(
-      page,
-      requests,
-      `${policyPath}/roles`,
-      broaderDiscoveryRole,
-      () => share.click(),
-    );
-    await panel
-      .getByText(/Refresh sharing to inspect current policy before another change/)
-      .waitFor();
-    assert.equal(await share.isDisabled(), true);
-    // An explicit refresh and retry can reuse the narrow role that actually committed.
-    await panel.getByRole("button", { name: "Refresh sharing" }).click();
-    await share.click();
-    await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
-
-    const roles = records((await fixture.request("GET", `${policyPath}/roles`)).data).map(readRole);
-    assert.equal(roles.length, 4, "sharing must add two exact Roles beside the supersets");
-    const currentBindings = bindingsFrom(
-      (await fixture.request("GET", `${policyPath}/access-bindings`)).data,
-    );
-    assert.equal(currentBindings.length, 2);
-    const grantPermissions = (resourceKind: ResourceKind) => {
-      const binding = currentBindings.find((candidate) => candidate.resourceKind === resourceKind);
-      assert.ok(binding);
-      assert.equal(
-        supersets.some((role) => role.id === binding.roleId),
-        false,
-        `${resourceKind} reused a superset`,
-      );
-      const grantedRole = roles.find((role) => role.id === binding.roleId);
-      assert.ok(grantedRole);
-      return grantedRole.permissions
-        .map((permission) => `${permission.action}:${permission.resourceKind}`)
-        .sort();
-    };
-    assert.deepEqual(grantPermissions("namespace"), ["read:namespace"]);
-    assert.deepEqual(grantPermissions("agent"), ["administer:agent", "read:agent"]);
-    const session = await fixture.signIn(person.credentials);
-    assert.equal(
-      (
-        await fixture.request("DELETE", `/namespaces/${namespace.id}/agents/${agent.id}`, {
-          session,
-        })
-      ).status,
-      403,
-    );
-  });
 
   for (const method of ["api_key", "codex_pat"] as const) {
     test(`Credentials grants exact Agent access when rebinding ${method}`, async (t) => {

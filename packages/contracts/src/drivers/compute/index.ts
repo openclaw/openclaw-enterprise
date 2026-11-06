@@ -8,6 +8,9 @@ import type { Driver, SelectedDriverRegistration } from "../index.ts";
 import type {
   Agent,
   AgentRevision,
+  AgentRuntimeRole,
+  AgentRuntimeAccess,
+  AgentRuntimeAccessUnavailable,
   CredentialSource,
   CredentialSourceType,
   HarnessAuthSnapshot,
@@ -365,6 +368,14 @@ export interface ComputeDriver extends Driver {
     readonly secretRef: ServiceAccountCredential["secretRef"];
   }): Promise<void>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
+  /** Safe configured role catalog for the exact deployed revision. */
+  listAgentRuntimeRoles?(configuration: OpenClawConfigurationDocument): readonly AgentRuntimeRole[];
+  /** Human transport admission; must fail closed for unknown or unsupported assignments. */
+  getAgentRuntimeAccess?(
+    revision: AgentRevision,
+    principalId: string,
+    runtimeRole: string,
+  ): AgentRuntimeAccess | AgentRuntimeAccessUnavailable | undefined;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;
   deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult>;
   /**

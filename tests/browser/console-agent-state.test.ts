@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import type { Page, Locator, Route } from "playwright";
+import type { Page, Route } from "playwright";
 import type {
   AuditEvent,
   Permission,
@@ -395,12 +395,28 @@ test("Deployment polls leave an unchanged summary and status line untouched", as
 });
 
 test("Deployment activity keeps following after Back restores the cached Agent view", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
+  const fixture = await createConsoleAppFixture(t, {
+    originHost: "console.oce.example.test",
+    publicOrigin: true,
+    authCookieDomain: "oce.example.test",
+    development: { enabled: false },
+    https: true,
+    authSecureCookies: true,
+    nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
+    nativeAdmin: {
+      enabled: true,
+      domain: "agents.oce.example.test",
+      sharedCookieDomain: "oce.example.test",
+    },
+  });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Activity restore", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Restore Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, {
+    args: [...fixture.browserArgs, "--host-resolver-rules=MAP console.oce.example.test 127.0.0.1"],
+    context: { ignoreHTTPSErrors: true },
+  });
   let status = "running";
   let statusReads = 0;
   await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) => {
@@ -414,9 +430,17 @@ test("Deployment activity keeps following after Back restores the cached Agent v
   await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
   await trackSettledFetches(page);
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
+  // This person can administer the Agent but has no OpenClaw role assignment.
+  // Denial of that optional panel must not discard the rest of the cached page.
+  const accessDenied = page.waitForResponse(
+    (response) =>
+      response.url() ===
+      `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+  );
   await login(page, fixture, url.pathname + url.search);
+  assert.equal((await accessDenied).status(), 403);
   await waitForChosenVersion(page, 1);
-  const activity: Locator = await expectDeploymentOutcome(page, "In progress");
+  const activity = await expectDeploymentOutcome(page, "In progress");
   const panel = await activity.elementHandle();
   assert.ok(panel);
   // The Console caches the Agent view for Back only if its reads finished before it was left.
@@ -3145,12 +3169,12 @@ test("Plugins opened while a newer permission reread is in flight waits for it",
     requests.slice(sent).filter(({ path }) => path.endsWith("/plugins/capabilities")).length,
     0,
   );
-  // The Access tab's refused policy read is the only audited refusal.
+  // Runtime access also checks once after the revoke, then retains its denial.
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
       .map(({ action }: AuditEvent) => action),
-    ["openclaw.iam.roles.list"],
+    ["openclaw.iam.roles.list", "openclaw.agents.native_admin.read"],
   );
 });
 

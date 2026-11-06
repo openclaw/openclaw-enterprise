@@ -56,9 +56,12 @@ export function refuseInvalidTrustedProxyIdentities(
   trustedProxy: Readonly<Record<string, unknown>>,
   createError: SettingError,
   options?: ConfigurationValidationOptions,
+  managedRoles = false,
 ): void {
-  const problem = trustedProxyIdentitiesProblem(trustedProxy, (key) =>
-    waitsOnVariable(trustedProxy[key], ["gateway", "auth", "trustedProxy", key], options),
+  const problem = trustedProxyIdentitiesProblem(
+    trustedProxy,
+    (key) => waitsOnVariable(trustedProxy[key], ["gateway", "auth", "trustedProxy", key], options),
+    managedRoles,
   );
   if (problem !== undefined) {
     throw createError(problem.setting, problem.requirement);

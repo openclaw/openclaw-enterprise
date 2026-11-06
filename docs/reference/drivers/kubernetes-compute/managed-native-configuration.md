@@ -9,7 +9,9 @@ runtime Gateway images and private `gatewayRouting`, and the saved Configuration
 meets the following native admin requirements.
 
 - Trusted-proxy authentication accepts `x-occ-identity: occ-workspace-files`
-  with `operator.admin` identity scopes.
+  with `operator.admin` identity scopes. With `gateway.roles`, Compute uses managed
+  identity selectors and an empty `allowUsers` instead of the legacy allowlist;
+  see [native authority](../../agent-native-admin.md#native-authority-and-drift).
 - Trusted-proxy device auto-approval is enabled; the machine identity grant supplies administrator authority independently of device scopes.
 - `controlUi.enabled` is true and `controlUi.allowedOrigins` is nonempty.
 - Dangerous device-auth disabling and host-header origin fallback are disabled.
