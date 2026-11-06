@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-06"
-last_updated_session: "authoring-run/fd9ca628-3661-4fb1-927c-661ea85ae64d"
+last_updated_session: "authoring-run/4f41f7ed-7c0b-484d-b6b3-85c39a31a8c6"
 ---
 
 # Production image upgrade flow
@@ -188,19 +188,16 @@ committed; operator-owned checks do not roll them back.
 
 `scripts/upgrade-production-images:quiescence_remaining`
 
-Before changing the Secret or invoking Helm, the script scales the selected API
-and worker Deployments to zero, waits until their Pods disappear, and confirms
-both stay at zero, within the shutdown deadline. It cannot detect independent
-database writers, autoscalers, or partitioned nodes; the operator stops those
-writers and keeps nodes reachable.
+Before Secret changes or Helm, JSON Patch atomically tests each writer's observed
+UID, resource version and replicas before setting replicas to zero. Conflicts
+stop without retry; an earlier API stop remains. Within the shutdown deadline,
+Pods must disappear and both original Deployments remain at zero. Operators stop
+other writers and autoscalers and keep nodes reachable.
 
-The protected files are atomically replaced with the saved candidate. When the
-Installation changes, including a controller-only settings release, the script
-reads the Secret before updating its Installation key, preserving other data
-and metadata with a resource-version precondition.
-If the candidate is already present after a lost response, it does not write it
-again. The candidate Installation checksum is included in both OCC Pod
-templates.
+The script atomically replaces protected files with the saved candidate. For
+Installation changes, it reads the Secret and updates its Installation key with a resource-version precondition,
+preserving other data and metadata. An already-present candidate is not rewritten
+after a lost response. Both OCC Pod templates include its checksum.
 
 A durable marker precedes `helm upgrade`. The Helm initialization hook checks
 the Installation, then runs the candidate migrator and bootstrap, before API and
@@ -336,6 +333,7 @@ saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-06 18:44: Bind writer quiescence to observed Deployment identity and version. (authoring-run/4f41f7ed-7c0b-484d-b6b3-85c39a31a8c6 - 5b8901213714a5b0d99f82af8eae1d425ee7cd18)
 - 2026-11-06 10:19: Bind startup results and logs to controller-owned Jobs; retain dependencies until cleanup is confirmed. (authoring-run/fd9ca628-3661-4fb1-927c-661ea85ae64d - 8e8035a0c073e2779aa7b32ece5dff449449f5b2)
 
 - 2026-11-05 13:53: Require settled Doctor maintenance before runtime startup. (authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2 - 644b3f9328e9125030e958c7b4233ac37c54b139)
