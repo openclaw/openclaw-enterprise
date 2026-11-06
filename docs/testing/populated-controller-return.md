@@ -35,9 +35,8 @@ Stage two distinct, compatible controller images in Docker and k3d. Use
 [verified publications](../guides/deploy/published-images.md#check-publication-and-source)
 or transfer the OCI artifacts from successful
 [native image checks](../release/containers.md#check-native-images-without-publication).
-Public registry publication is not required. For transferred artifacts, retain
-the source SHA, native build/check run and attempt, platform receipt, and OCI
-blob hashes. Verify the archive's root, platform receipt, and reachable blobs
+Public registry publication is not required. For transferred artifacts,
+[retain and verify native export evidence](../release/containers.md#retain-native-export-evidence)
 before loading the images; the source revision label alone does not establish
 approval.
 
