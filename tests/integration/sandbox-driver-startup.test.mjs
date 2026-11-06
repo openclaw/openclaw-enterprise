@@ -1671,7 +1671,9 @@ test("OpenShell provisions saved OAuth slots with an authenticated terminal requ
   assert.deepEqual(middleware["oce-oauth-slack"].endpoints.include, [
     managedSlackInstall.endpoint.host,
   ]);
-  assert.ok(middleware["oce-oauth-google"].endpoints.include.includes("www.googleapis.com"));
+  assert.ok(
+    middleware["oce-oauth-google"].endpoints.include.some((host) => host === "www.googleapis.com"),
+  );
   assert.ok(
     routes["oce-oauth-google"].endpoints.some((endpoint) =>
       endpoint.rules?.some(
