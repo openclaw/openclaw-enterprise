@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { once } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
@@ -14,9 +16,34 @@ import { launchTrustingBrowser } from "../helpers/trusted-chromium.ts";
 const run = promisify(execFile);
 const repository = new URL("../../", import.meta.url);
 
+async function serveNativePage(t: TestContext, tls: { cert: Buffer; key: Buffer }) {
+  const requests: { host: string | undefined; cookie: string }[] = [];
+  const server = createServer(tls, (request, response) => {
+    if (request.method !== "GET" || request.url !== "/") {
+      response.writeHead(404).end();
+      return;
+    }
+    requests.push({ host: request.headers.host, cookie: request.headers.cookie ?? "" });
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end("<!doctype html><title>Native admin UI</title>");
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(async () => {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error === undefined ? resolve() : reject(error)));
+      server.closeAllConnections();
+    });
+  });
+  const address = server.address();
+  assert.ok(address !== null && typeof address !== "string");
+  return { requests, port: address.port };
+}
+
 export async function createNativeConsoleFixture<Options extends object>(
   t: TestContext,
   options: Options,
+  { serveAgentPage = false }: { serveAgentPage?: boolean } = {},
 ) {
   assert.equal(
     process.platform,
@@ -57,7 +84,17 @@ export async function createNativeConsoleFixture<Options extends object>(
       nativeAdmin: { enabled: true, domain: nativeDomain, sharedCookieDomain: cookieDomain },
     });
     t.after(remove);
+    const nativePage = serveAgentPage ? await serveNativePage(t, ingressTLS) : undefined;
+    const nativeAddress = nativePage === undefined ? undefined : `127.0.0.1:${nativePage.port}`;
+    // Preserve the browser-visible Agent origin and default port. Chromium resolves its
+    // Agent connection to the test-owned ephemeral loopback port.
     const hostsForBrowser = [
+      ...(nativeAddress === undefined
+        ? []
+        : [
+            { host: `*.${nativeDomain}`, address: nativeAddress },
+            { host: `wrong.${cookieDomain}`, address: nativeAddress },
+          ]),
       { host: `*.${cookieDomain}`, address: "127.0.0.1" },
       { host: "*", address: "~NOTFOUND" },
     ];
@@ -69,6 +106,7 @@ export async function createNativeConsoleFixture<Options extends object>(
     });
     return {
       fixture,
+      nativePage,
       consoleHost,
       nativeDomain,
       cookieDomain,

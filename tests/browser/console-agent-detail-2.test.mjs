@@ -81,16 +81,22 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     "wss://private-gateway.example.invalid/namespaces/native-admin/agents/agent";
   const {
     fixture,
+    nativePage,
     browserOptions,
     consoleHost,
     nativeDomain,
     cookieDomain,
     untrustedBrowserOptions,
-  } = await createNativeConsoleFixture(t, {
-    nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
-    agentGatewayManagedMode: false,
-    computeDriver: nativeAdminComputeDriver(gatewayEndpoint),
-  });
+  } = await createNativeConsoleFixture(
+    t,
+    {
+      nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
+      agentGatewayManagedMode: false,
+      computeDriver: nativeAdminComputeDriver(gatewayEndpoint),
+    },
+    { serveAgentPage: true },
+  );
+  assert.ok(nativePage);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Native admin access", { ready: true });
   const agent = await fixture.createAgent(
@@ -98,21 +104,25 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     "Native admin Agent",
     nativeValues("unsupported-ui"),
   );
+  const nativeProbe = `https://probe.${nativeDomain}/`;
   const untrusted = await newPage(t, fixture, untrustedBrowserOptions);
-  await assert.rejects(untrusted.page.goto(fixture.origin), /ERR_CERT_AUTHORITY_INVALID/);
+  await assert.rejects(untrusted.page.goto(nativeProbe), /ERR_CERT_AUTHORITY_INVALID/);
   await untrusted.page.close();
   let { page } = await newPage(t, fixture, browserOptions);
-  const wildcardProbe = new URL(fixture.origin);
-  wildcardProbe.hostname = `probe.${nativeDomain}`;
-  const response = await page.goto(wildcardProbe.href);
+  const wrongHost = await page.context().newPage();
+  await assert.rejects(
+    wrongHost.goto(`https://wrong.${cookieDomain}/`),
+    /ERR_CERT_COMMON_NAME_INVALID/,
+  );
+  await wrongHost.close();
+  assert.equal(nativePage.requests.length, 0, "TLS rejections must precede the Agent HTTP handler");
+  const response = await page.goto(nativeProbe);
+  assert.equal(response?.status(), 200);
   assert.ok(
     await response?.securityDetails(),
     "the Agent wildcard must complete a real TLS handshake",
   );
-  const wrongHost = await page.context().newPage();
-  wildcardProbe.hostname = `wrong.${cookieDomain}`;
-  await assert.rejects(wrongHost.goto(wildcardProbe.href), /ERR_CERT_COMMON_NAME_INVALID/);
-  await wrongHost.close();
+  assert.deepEqual(nativePage.requests, [{ host: `probe.${nativeDomain}`, cookie: "" }]);
   let requests = apiRequests(page, fixture.origin);
   const draftDetail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
 
@@ -261,17 +271,8 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.equal(sessionCookies.length, 1);
   assert.equal(sessionCookies[0].domain, `.${cookieDomain}`);
   assert.equal(sessionCookies[0].httpOnly, true);
+  assert.equal(sessionCookies[0].secure, true);
   assert.equal(sessionCookies[0].sameSite, "Lax");
-
-  let nativeRequestCookie = "";
-  await page.context().route(`${expectedAccess.data.origin}/**`, async (route) => {
-    nativeRequestCookie = (await route.request().allHeaders()).cookie ?? "";
-    return route.fulfill({
-      status: 200,
-      contentType: "text/html; charset=utf-8",
-      body: "<!doctype html><title>Native admin UI</title>",
-    });
-  });
 
   await page.context().addCookies([
     {
@@ -304,8 +305,20 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await popup.waitForLoadState("domcontentloaded");
   assert.equal(popup.url(), expectedAccess.data.url);
   assert.equal(await popup.evaluate(() => globalThis.opener === null), true);
-  assert.match(nativeRequestCookie, /(?:__Secure-)?openclaw_occ_shared\.session_token=/);
-  assert.doesNotMatch(nativeRequestCookie, /legacy-host-only/);
+  assert.equal(await popup.title(), "Native admin UI");
+  assert.equal(nativePage.requests.length, 2);
+  const nativeRequest = nativePage.requests[1];
+  assert.equal(nativeRequest.host, new URL(expectedAccess.data.url).host);
+  const names = nativeRequest.cookie.split("; ").map((pair) => pair.split("=", 1)[0]);
+  assert.ok(
+    names.includes(sessionCookies[0].name),
+    "the Agent HTTPS handler receives the shared session cookie",
+  );
+  assert.equal(
+    names.includes("openclaw_occ.session_token"),
+    false,
+    "the host-only cookie stays on the Console",
+  );
 
   assert.deepEqual([...deniedTabWrites, ...nonAuthWriteRequests(requests)], []);
 });
