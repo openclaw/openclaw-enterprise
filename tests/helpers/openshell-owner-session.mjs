@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -441,12 +441,10 @@ export async function verifyOpenShellOwnerSession({
   assert.equal(guardedAccess.sessionMode, "host-only-exchange");
   assert.equal(guardedAccess.origin, origin);
 
-  const artifacts = await mkdtemp(join(tmpdir(), "oce-native-host-only-real-"));
-  t.diagnostic(`Guarded native browser evidence: ${artifacts}`);
-  const guarded = await browser.newContext({
-    serviceWorkers: "block",
-    recordVideo: { dir: artifacts },
-  });
+  const receiptPath =
+    process.env.OCC_TEST_NATIVE_BROWSER_RECEIPT ||
+    join(await mkdtemp(join(tmpdir(), "oce-native-host-only-real-")), "receipt.json");
+  const guarded = await browser.newContext({ serviceWorkers: "block" });
   t.after(() => guarded.close());
   await guarded.route("**/*", (route) =>
     origins.has(new URL(route.request().url()).origin) ? route.continue() : route.abort(),
@@ -538,7 +536,6 @@ export async function verifyOpenShellOwnerSession({
   const conversation = first.url();
   assert.match(new URL(conversation).pathname, /^\/chat\//);
   assert.equal(sends.length, 1, "one real turn was submitted");
-  await first.screenshot({ path: join(artifacts, "completed-turn.png"), fullPage: true });
 
   // A repeated exchange for the same binding must preserve the first tab's
   // already-authorized socket through its next renewal.
@@ -550,7 +547,6 @@ export async function verifyOpenShellOwnerSession({
   assert.notEqual(secondHello.socket, terminal.socket, "each tab owns its Gateway socket");
   await second.locator(replySelector).waitFor({ state: "visible" });
   assert.equal(second.url(), conversation, "the second tab reopened the existing conversation");
-  await second.screenshot({ path: join(artifacts, "reopened-conversation.png"), fullPage: true });
   // The production native proxy renews every 25 seconds. Keep both exact
   // sockets untouched for two intervals; reconnects cannot satisfy this check.
   await delay(55_000);
@@ -584,7 +580,7 @@ export async function verifyOpenShellOwnerSession({
     cwd: import.meta.dirname,
   });
   await writeFile(
-    join(artifacts, "receipt.json"),
+    receiptPath,
     JSON.stringify(
       {
         observedAt: new Date().toISOString(),
@@ -599,23 +595,19 @@ export async function verifyOpenShellOwnerSession({
           imageID,
         })),
         provider: "GitHub protocol fixture; runtime and model are real",
-        conversation,
         reopenedSameConversation: true,
         chatSubmissions: sends.length,
         originalReplySocketSurvivedRepeatLaunchAndRenewals: true,
         renewalObservationMs: 55_000,
         distinctSocketsClosedOnParentSignOut: true,
         revokedNativeRequestStatus: refused.status(),
-        screenshots: ["completed-turn.png", "reopened-conversation.png"],
-        videos: await Promise.all(
-          [consolePage, first, second].map(async (page) => basename(await page.video().path())),
-        ),
       },
       null,
       2,
     ) + "\n",
-    { mode: 0o600 },
+    { mode: 0o600, flag: "wx" },
   );
+  t.diagnostic(`Guarded native browser receipt: ${receiptPath}`);
   t.diagnostic(
     "Guarded GitHub provider fixture: real host-only browser exchange, Gateway hello and model reply; repeated launch reopened the same conversation without a turn, the original socket survived two renewals, and parent sign-out closed both sockets.",
   );
