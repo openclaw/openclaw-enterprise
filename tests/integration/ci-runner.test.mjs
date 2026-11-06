@@ -3199,7 +3199,18 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     elapsedMs: 1_234,
   };
   const failedStage = { ...failedPhase, kind: "openshell-stage" };
-  const phaseDiagnostics = [failedPhase, failedStage].map(
+  const failedCheck = {
+    kind: "openshell-network-policy-check",
+    check: "provider-denial-observed",
+  };
+  const teardown = { kind: "openshell-fixture-teardown", outcome: "failed" };
+  const phaseDiagnostics = [
+    failedPhase,
+    failedStage,
+    failedCheck,
+    { ...failedCheck, check: "fixture-opaque-phase-detail\nunknown check" },
+    { ...teardown, outcome: "fixture-opaque-phase-detail" },
+  ].map(
     (measurement) =>
       `openclaw-ci-measurement ${JSON.stringify({ ...measurement, detail: "fixture-opaque-phase-detail" })}`,
   );
@@ -3209,7 +3220,17 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       'import assert from "node:assert/strict";',
       'import test from "node:test";',
       'test("passes", () => {});',
+      'import { writeFileSync } from "node:fs";',
+      "import { boundedTeardown } from " +
+        JSON.stringify(new URL("../helpers/kubernetes-real.mjs", import.meta.url).href) +
+        ";",
       'test("long failure", (t) => {',
+      "  const { context } = boundedTeardown(t, {",
+      "    log() {},",
+      '    onOutcome(outcome) { t.diagnostic("openclaw-ci-measurement " + JSON.stringify({ kind: "openshell-fixture-teardown", outcome })); },',
+      "  });",
+      '  context.after(() => writeFileSync("teardown-completed", "yes"));',
+      '  context.after(() => { throw new Error("fixture cleanup failed"); });',
       '  console.log("progress before the failure");',
       "  console.error(`credential ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);",
       '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
@@ -3253,7 +3274,13 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert.equal(result.status, 1);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
   assert.equal(summary.files[0].status, "failed");
-  assert.deepEqual(summary.files[0].measurements, [failedPhase, failedStage]);
+  assert.deepEqual(summary.files[0].measurements, [
+    failedPhase,
+    failedStage,
+    failedCheck,
+    teardown,
+  ]);
+  assert.equal(await readFile(join(root, "teardown-completed"), "utf8"), "yes");
   const failed = summary.files[0].tests.find(({ name }) => name === "long failure");
   // Results and the job log keep the short message only.
   assert.match(failed.error.message, /\.\.\. \[truncated\]$/);
@@ -3274,9 +3301,9 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert.equal(record.file, "tests/integration/details.test.mjs");
   assert.equal(record.omittedTests, 0);
   const detail = record.tests.find(({ name }) => name === "long failure");
-  assert.equal(detail.line, 10);
+  assert.equal(detail.line, 18);
   assert.match(detail.message, /decisive line \[env:CI_RUNNER_FIXTURE_CREDENTIAL\]$/);
-  assert.match(detail.stack, /tests\/integration\/details\.test\.mjs:10:\d+/);
+  assert.match(detail.stack, /tests\/integration\/details\.test\.mjs:18:\d+/);
   // stdout and stderr arrive on separate pipes, so only the set of lines is fixed.
   assert.deepEqual([...record.output.lines].sort(), [
     "[redacted credential-bearing line]",

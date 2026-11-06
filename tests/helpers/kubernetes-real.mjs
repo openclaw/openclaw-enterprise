@@ -386,6 +386,7 @@ export function boundedTeardown(
       process.exitCode ||= 1;
     },
     settled = testsSettled,
+    onOutcome,
   } = {},
 ) {
   // A second call for one context, in either order with withBoundedTeardown, shares the first
@@ -500,7 +501,8 @@ export function boundedTeardown(
     // A timed-out or cancelled test's signal aborts before its hooks run; its setup may still run.
     // An exit waits for it to reach its next cleanup registration, where it stops, within the limit.
     // The exit then also bounds that setup, should it hold the process (finding 1722).
-    if (testContext.signal?.aborted === true) {
+    const aborted = testContext.signal?.aborted === true;
+    if (aborted) {
       const deadline = performance.now() + stepLimitMs;
       unsettledSetups.set(after, { label, limitMs: stepLimitMs, deadline, log });
       endProcess("its test timed out or was cancelled with setup that may still run");
@@ -508,6 +510,8 @@ export function boundedTeardown(
     if (abandoned.length > 0) {
       endProcess(`abandoned cleanups ${abandoned.join(", ")}`);
     }
+    // An aborted test may still register late cleanup after this hook.
+    onOutcome?.(failures.length > 0 ? "failed" : aborted ? "incomplete" : "passed");
     if (failures.length === 1) {
       throw failures[0];
     }
