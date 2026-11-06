@@ -553,7 +553,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       let uid;
       if (raw) {
         const match =
-          /^--raw=\/(api\/v1|apis\/networking\.k8s\.io\/v1|apis\/batch\/v1)\/namespaces\/system\/(pods|secrets|networkpolicies|jobs)\/([a-z0-9-]+)$/.exec(
+          /^--raw=\/(api\/v1|apis\/networking\.k8s\.io\/v1|apis\/batch\/v1)\/namespaces\/system\/(pods|secrets|networkpolicies|jobs)\/([a-z0-9.-]+)$/.exec(
             raw,
           );
         assert.ok(match, "DELETE addresses a named Kubernetes API resource");
@@ -780,7 +780,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       args.includes("openclaw-enterprise-worker")
     ) {
       out({
-        metadata: { labels: { "app.kubernetes.io/instance": "oce" } },
+        metadata: { labels: { "app.kubernetes.io/instance": state.release } },
         spec: {
           template: {
             spec: {
@@ -831,7 +831,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
             uid: component + "-deployment-uid",
             generation: 1,
             labels: {
-              "app.kubernetes.io/instance": "oce",
+              "app.kubernetes.io/instance": state.release,
               "app.kubernetes.io/component": component,
             },
           },
@@ -1312,6 +1312,7 @@ async function fixture(
   t,
   {
     agent = false,
+    release = "oce",
     candidates = false,
     controllerOnly = false,
     repositoryCredentials = false,
@@ -1481,6 +1482,7 @@ async function fixture(
     const compute = exampleInstallation.drivers.compute.configuration;
     // The example's Gateway namespace must follow this fixture's Helm release.
     compute.gatewayRouting.gatewayNamespace = "system";
+    exampleValues.gatewayRouting.gatewayName = compute.gatewayRouting.gatewayName;
     compute.authentication = {
       mode: "kubeconfig",
       kubeconfigPath: api.kubeconfig,
@@ -1511,6 +1513,7 @@ async function fixture(
     installation = JSON.stringify(chart.installation(exampleInstallation));
   }
   const state = {
+    release,
     realChart: Boolean(chart),
     startupCheck: Boolean(chart),
     themeConfigMaps: chart?.configMaps ?? {},
@@ -1592,7 +1595,7 @@ async function fixture(
     "--namespace",
     "system",
     "--release",
-    "oce",
+    release,
     "--values",
     join(directory, "values.json"),
     "--installation",
@@ -4121,8 +4124,12 @@ test("an Installation the selected controller image loads passes the preflight a
     t.skip("helm is unavailable to render the real chart");
     return;
   }
+  // Truncating this valid release at 29 characters leaves a dot; derived Job
+  // names must still meet Kubernetes admission rules after their suffix is added.
+  const release = `${"a".repeat(28)}.b`;
   const f = await fixture(t, {
     controllerOnly: true,
+    release,
     // A 200-character name: if Kubernetes expanded $(OCC_CONFIG_PATH) in the Pod's
     // environment, the preflight would see a longer name and refuse it.
     installationName: `${"A".repeat(182)}$(OCC_CONFIG_PATH)`,
@@ -4135,6 +4142,15 @@ test("an Installation the selected controller image loads passes the preflight a
   assert.deepEqual(state.preflight.secrets, {});
   assert.deepEqual(state.preflight.pods, {});
   assert.deepEqual(state.preflight.jobs, {});
+  const jobs = state.preflight.created.filter((resource) => resource.kind === "job.batch");
+  assert.equal(jobs.length, 2);
+  for (const { name } of jobs) {
+    assert.ok(name.length <= 63, "Kubernetes Job names cannot exceed 63 characters");
+    assert.match(name, /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/);
+    assert.ok(state.preflight.deleted.includes(`job.batch/${name}`));
+  }
+  const secret = state.preflight.created.find((resource) => resource.kind === "secret");
+  assert.ok(secret.name.startsWith(`${release}-upgrade-preflight-`));
   const job = JSON.parse(await readFile(join(f.evidence, "preflight-worker-job.json"), "utf8"));
   const pod = job.spec.template;
   assert.equal(job.apiVersion, "batch/v1");
@@ -4174,7 +4190,7 @@ test("an Installation the selected controller image loads passes the preflight a
     (document) =>
       document?.apiVersion === "batch/v1" &&
       document.kind === "Job" &&
-      document.metadata.name === "oce-initialization",
+      document.metadata.name === `${release}-initialization`,
   );
   assert.ok(
     initialization?.spec.template.spec.initContainers?.some(

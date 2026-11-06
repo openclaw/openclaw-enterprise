@@ -853,7 +853,7 @@ read_preflight_child() {
 # such as split-layout Gateway storage, would otherwise crash-loop both after the
 # migration.
 preflight_startup() {
-  local suffix secret component job job_uid pod pod_uid child phase waiting deadline remaining_seconds message failures refusal name_refusal delete_options identity_valid logs logs_status
+  local suffix secret component job_prefix job job_uid pod pod_uid child phase waiting deadline remaining_seconds message failures refusal name_refusal delete_options identity_valid logs logs_status
   local job_uids=()
   local drafts='' drafts_flag=none drafts_status=0 draft_refusals
   suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
@@ -887,9 +887,11 @@ preflight_startup() {
     create_preflight - preflight-secret-create.err scrub) ||
     unconfirmed_preflight "secret/$secret" preflight-secret-create.err $?
   acknowledge_preflight secret "secret/$secret" "$delete_options"
-  # Job names are limited to 63 characters; keep the component and random suffix.
+  # Leave room for the suffix; a trailing dot would create an invalid DNS label.
+  job_prefix=${release:0:29}
+  job_prefix=${job_prefix%.}
   for component in api worker; do
-    job="${release:0:29}-upgrade-preflight-$component-$suffix"
+    job="$job_prefix-upgrade-preflight-$component-$suffix"
     node scripts/upgrade-startup-preflight.mjs job "$evidence_dir/preflight-rendered.jsonl" \
       "$component" "$job" "$namespace" "$release" "$installation_secret" "$secret" \
       "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" "$drafts_flag" \
@@ -906,7 +908,7 @@ preflight_startup() {
   deadline=$((SECONDS + timeout_seconds))
   failures=()
   for component in api worker; do
-    job="${release:0:29}-upgrade-preflight-$component-$suffix"
+    job="$job_prefix-upgrade-preflight-$component-$suffix"
     job_uid=${job_uids[0]}
     [[ "$component" != worker ]] || job_uid=${job_uids[1]}
     pod= pod_uid=

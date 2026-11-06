@@ -169,7 +169,7 @@ drafts per the [production guide](../guides/deploy/production-upgrade.md).
 
 ### 2. Reconcile a prior attempt
 
-`scripts/upgrade-production-images:1448`
+`scripts/upgrade-production-images:1450`
 
 Resume requires prepared evidence; otherwise reconcile preflight resources and
 use fresh evidence per [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
@@ -210,7 +210,7 @@ it does not start the old image to undo a committed schema change.
 
 ### 4. Verify control-plane recovery
 
-`scripts/upgrade-production-images:1594`
+`scripts/upgrade-production-images:1596`
 
 The script waits for both OCC Deployments and checks controller images,
 replica counts, and changed Installation checksums. Each component needs
