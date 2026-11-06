@@ -136,6 +136,34 @@ const openShellPolicyChecks = new Set([
   "editing-state-enforcement",
   "grant-revocation",
 ]);
+const openShellStages = new Set([
+  "installation",
+  "initial-model",
+  "filesystem-network",
+  "network-policy",
+  "credential-route",
+  "replacement",
+  "untrusted-upstream",
+  "tool-outage",
+  "model-outage",
+  "gateway-outage",
+  "oauth-refresh",
+  "non-model-source",
+  "credential-absence",
+  "credential-withdrawal",
+  "embedded-refusal",
+  "native-policy",
+]);
+const firstAgentStages = new Set([
+  "setup",
+  "cleanup",
+  "initial-deploy-and-model",
+  "reuse-model",
+  "native-deploy",
+  "native-model",
+  "native-redeploy",
+  "native-resumed-model",
+]);
 const openShellSandboxStages = new Set([
   "installation",
   "exposure-auth",
@@ -169,55 +197,10 @@ function parseMeasurement(message) {
 
 function safeMeasurement(value) {
   if (isRecord(value) && value.kind === openShellStageMeasurementKind) {
-    if (
-      ![
-        "installation",
-        "initial-model",
-        "filesystem-network",
-        "network-policy",
-        "credential-route",
-        "replacement",
-        "untrusted-upstream",
-        "tool-outage",
-        "model-outage",
-        "gateway-outage",
-        "oauth-refresh",
-        "non-model-source",
-        "credential-absence",
-        "credential-withdrawal",
-        "embedded-refusal",
-        "native-policy",
-      ].includes(value.stage) ||
-      !["passed", "failed"].includes(value.outcome) ||
-      !Number.isInteger(value.elapsedMs) ||
-      value.elapsedMs < 0 ||
-      value.elapsedMs > 7_200_000
-    ) {
-      return undefined;
-    }
-    return {
-      kind: value.kind,
-      stage: value.stage,
-      outcome: value.outcome,
-      elapsedMs: value.elapsedMs,
-    };
+    return safeStageMeasurement(value, openShellStages, 7_200_000);
   }
   if (isRecord(value) && value.kind === openShellSandboxMeasurementKind) {
-    if (
-      !openShellSandboxStages.has(value.stage) ||
-      !["passed", "failed"].includes(value.outcome) ||
-      !Number.isInteger(value.elapsedMs) ||
-      value.elapsedMs < 0 ||
-      value.elapsedMs > 2_400_000
-    ) {
-      return undefined;
-    }
-    return {
-      kind: value.kind,
-      stage: value.stage,
-      outcome: value.outcome,
-      elapsedMs: value.elapsedMs,
-    };
+    return safeStageMeasurement(value, openShellSandboxStages, 2_400_000);
   }
   if (isRecord(value) && value.kind === openShellPolicyCheckKind) {
     return openShellPolicyChecks.has(value.check)
@@ -365,30 +348,7 @@ function safeMeasurement(value) {
     return result;
   }
   if (isRecord(value) && value.kind === "local-first-agent") {
-    if (
-      ![
-        "setup",
-        "cleanup",
-        "initial-deploy-and-model",
-        "reuse-model",
-        "native-deploy",
-        "native-model",
-        "native-redeploy",
-        "native-resumed-model",
-      ].includes(value.stage) ||
-      !["passed", "failed"].includes(value.outcome) ||
-      !Number.isInteger(value.elapsedMs) ||
-      value.elapsedMs < 0 ||
-      value.elapsedMs > 7_200_000
-    ) {
-      return undefined;
-    }
-    return {
-      kind: value.kind,
-      stage: value.stage,
-      outcome: value.outcome,
-      elapsedMs: value.elapsedMs,
-    };
+    return safeStageMeasurement(value, firstAgentStages, 7_200_000);
   }
   if (isRecord(value) && value.kind === "runtime-model-probe") {
     return safeModelProbeMeasurement(value);
@@ -418,6 +378,20 @@ function safeMeasurement(value) {
     sample: value.sample,
     seconds: Math.round(value.seconds * 10) / 10,
   };
+}
+
+function safeStageMeasurement(value, stages, maxElapsedMs) {
+  const { kind, stage, outcome, elapsedMs } = value;
+  if (
+    !stages.has(stage) ||
+    (outcome !== "passed" && outcome !== "failed") ||
+    !Number.isInteger(elapsedMs) ||
+    elapsedMs < 0 ||
+    elapsedMs > maxElapsedMs
+  ) {
+    return undefined;
+  }
+  return { kind, stage, outcome, elapsedMs };
 }
 
 const modelProbeMeasurementCases = new Set([
