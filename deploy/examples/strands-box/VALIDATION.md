@@ -18,4 +18,8 @@ The direct verifier supplies the workspace, executable and sandbox policy. The G
 1. Start with the [host preparation and two-terminal native check](README.md#prepare-the-host-and-verify-box) as a nonroot user on a dedicated ARM64 Linux host. With `jq` on `PATH`, the [automation script](verify-native-ci.sh) checks the exact checkout and pinned artifacts, runs the native verifier, and cleans up. A hosted runner may stop at mount inventory before verification.
 2. Follow the [controlled Gateway chat procedure](ordinary-chat/README.md). Keep the `codex/box_repro_fixture/gpt-5` model reference. Confirm the original reply and tool result, then verify the marker independently. A chat acceptance alone is insufficient.
 
-An installed Agent still needs to complete ordinary chat and a workspace command, push to its assigned repository, and create a PR. It must also be denied an unassigned repository and lose Git access after withdrawal while the original chat continues. Live GitHub verification remains open.
+The [installed ordinary chat and workspace file check](ordinary-chat/installed.md)
+is pending. It covers one Agent revision and its original bound volume, with
+connector integrations and Git disabled. Live GitHub verification remains open
+as a separate exercise, including assigned repository access, denial for an
+unassigned repository, and withdrawal while the original chat continues.

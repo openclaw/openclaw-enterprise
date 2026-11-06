@@ -4,7 +4,8 @@ import test from "node:test";
 
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 
-import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
+import { fileConsoleApp } from "../helpers/console-app.mjs";
+import { createNativeConsoleFixture, nativeBrowserSupported } from "./console-native-ingress.ts";
 
 import {
   apiRequests,
@@ -50,6 +51,9 @@ const detailApp = fileConsoleApp();
 registerDeletionAndNavigationCases(detailApp);
 
 test("Agent detail opens native admin UI only after real API access checks pass", async (t) => {
+  if (!nativeBrowserSupported(t)) {
+    return;
+  }
   const disabledFixture = await detailApp(t);
   const disabledNamespace = await disabledFixture.createNamespace("Native admin disabled", {
     ready: true,
@@ -76,23 +80,26 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await disabledPage.getByRole("heading", { name: "Disabled native admin Agent" }).waitFor();
   await expectNativeAdminHidden(disabledPage);
 
-  const cookieDomain = "oce.example.test";
-  const consoleHost = `console.${cookieDomain}`;
-  const nativeDomain = `agents.${cookieDomain}`;
   const gatewayEndpoint =
     "wss://private-gateway.example.invalid/namespaces/native-admin/agents/agent";
-  const fixture = await createConsoleAppFixture(t, {
-    originHost: consoleHost,
-    publicOrigin: true,
-    authCookieDomain: cookieDomain,
-    development: { enabled: false },
-    https: true,
-    authSecureCookies: true,
-    nativeAdmin: { enabled: true, domain: nativeDomain, sharedCookieDomain: cookieDomain },
-    nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
-    agentGatewayManagedMode: false,
-    computeDriver: nativeAdminComputeDriver(gatewayEndpoint),
-  });
+  const {
+    fixture,
+    nativePage,
+    browserOptions,
+    consoleHost,
+    nativeDomain,
+    cookieDomain,
+    untrustedBrowserOptions,
+  } = await createNativeConsoleFixture(
+    t,
+    {
+      nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
+      agentGatewayManagedMode: false,
+      computeDriver: nativeAdminComputeDriver(gatewayEndpoint),
+    },
+    { serveAgentPage: true },
+  );
+  assert.ok(nativePage);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Native admin access", { ready: true });
   const agent = await fixture.createAgent(
@@ -100,12 +107,25 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     "Native admin Agent",
     nativeValues("unsupported-ui"),
   );
-  let { page } = await newPage(t, fixture, {
-    args: [
-      ...fixture.browserArgs,
-      `--host-resolver-rules=MAP ${consoleHost} 127.0.0.1,MAP *.${nativeDomain} 127.0.0.1`,
-    ],
-  });
+  const nativeProbe = `https://probe.${nativeDomain}/`;
+  const untrusted = await newPage(t, fixture, untrustedBrowserOptions);
+  await assert.rejects(untrusted.page.goto(nativeProbe), /ERR_CERT_AUTHORITY_INVALID/);
+  await untrusted.page.close();
+  let { page } = await newPage(t, fixture, browserOptions);
+  const wrongHost = await page.context().newPage();
+  await assert.rejects(
+    wrongHost.goto(`https://wrong.${cookieDomain}/`),
+    /ERR_CERT_COMMON_NAME_INVALID/,
+  );
+  await wrongHost.close();
+  assert.equal(nativePage.requests.length, 0, "TLS rejections must precede the Agent HTTP handler");
+  const response = await page.goto(nativeProbe);
+  assert.equal(response?.status(), 200);
+  assert.ok(
+    await response?.securityDetails(),
+    "the Agent wildcard must complete a real TLS handshake",
+  );
+  assert.deepEqual(nativePage.requests, [{ host: `probe.${nativeDomain}`, cookie: "" }]);
   let requests = apiRequests(page, fixture.origin);
   const draftDetail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
 
@@ -254,17 +274,8 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.equal(sessionCookies.length, 1);
   assert.equal(sessionCookies[0].domain, `.${cookieDomain}`);
   assert.equal(sessionCookies[0].httpOnly, true);
+  assert.equal(sessionCookies[0].secure, true);
   assert.equal(sessionCookies[0].sameSite, "Lax");
-
-  let nativeRequestCookie = "";
-  await page.context().route(`${expectedAccess.data.origin}/**`, async (route) => {
-    nativeRequestCookie = (await route.request().allHeaders()).cookie ?? "";
-    return route.fulfill({
-      status: 200,
-      contentType: "text/html; charset=utf-8",
-      body: "<!doctype html><title>Native admin UI</title>",
-    });
-  });
 
   await page.context().addCookies([
     {
@@ -297,24 +308,29 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await popup.waitForLoadState("domcontentloaded");
   assert.equal(popup.url(), expectedAccess.data.url);
   assert.equal(await popup.evaluate(() => globalThis.opener === null), true);
-  assert.match(nativeRequestCookie, /(?:__Secure-)?openclaw_occ_shared\.session_token=/);
-  assert.doesNotMatch(nativeRequestCookie, /legacy-host-only/);
+  assert.equal(await popup.title(), "Native admin UI");
+  assert.equal(nativePage.requests.length, 2);
+  const nativeRequest = nativePage.requests[1];
+  assert.equal(nativeRequest.host, new URL(expectedAccess.data.url).host);
+  const names = nativeRequest.cookie.split("; ").map((pair) => pair.split("=", 1)[0]);
+  assert.ok(
+    names.includes(sessionCookies[0].name),
+    "the Agent HTTPS handler receives the shared session cookie",
+  );
+  assert.equal(
+    names.includes("openclaw_occ.session_token"),
+    false,
+    "the host-only cookie stays on the Console",
+  );
 
   assert.deepEqual([...deniedTabWrites, ...nonAuthWriteRequests(requests)], []);
 });
 
 test("Agent detail rereads native admin access once when a pending deployment activates, and Refresh access keeps keyboard focus", async (t) => {
-  const cookieDomain = "oce.example.test";
-  const consoleHost = `console.${cookieDomain}`;
-  const nativeDomain = `agents.${cookieDomain}`;
-  const fixture = await createConsoleAppFixture(t, {
-    originHost: consoleHost,
-    publicOrigin: true,
-    authCookieDomain: cookieDomain,
-    development: { enabled: false },
-    https: true,
-    authSecureCookies: true,
-    nativeAdmin: { enabled: true, domain: nativeDomain, sharedCookieDomain: cookieDomain },
+  if (!nativeBrowserSupported(t)) {
+    return;
+  }
+  const { fixture, browserOptions } = await createNativeConsoleFixture(t, {
     nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
     agentGatewayManagedMode: false,
     computeDriver: nativeAdminComputeDriver(
@@ -331,9 +347,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   // The first deployment requests running before any version is selected for service.
   const pending = await fixture.deployAgent(namespace.id, agent.id);
   const nativeAdminPath = `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`;
-  const { page } = await newPage(t, fixture, {
-    args: [...fixture.browserArgs, `--host-resolver-rules=MAP ${consoleHost} 127.0.0.1`],
-  });
+  const { page } = await newPage(t, fixture, browserOptions);
   const requests = apiRequests(page, fixture.origin);
   // Deployment activity reads a recorded status the worker would write; the native admin
   // reads stay on the real API so the card reflects the Agent's actual active revision.
@@ -435,21 +449,11 @@ test("Agent detail rereads native admin access once when a pending deployment ac
 registerSettingsRefocusAndTabsCases(detailApp);
 
 test("Agent sharing grants existing people exact discovery and native access, then removes only the selected binding", async (t) => {
-  const cookieDomain = "oce.example.test";
-  const consoleHost = `console.${cookieDomain}`;
-  const fixture = await createConsoleAppFixture(t, {
+  if (!nativeBrowserSupported(t)) {
+    return;
+  }
+  const { fixture, browserOptions } = await createNativeConsoleFixture(t, {
     provisionedPeople: ["shared-person"],
-    originHost: consoleHost,
-    publicOrigin: true,
-    authCookieDomain: cookieDomain,
-    development: { enabled: false },
-    https: true,
-    authSecureCookies: true,
-    nativeAdmin: {
-      enabled: true,
-      domain: `agents.${cookieDomain}`,
-      sharedCookieDomain: cookieDomain,
-    },
     nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
     agentGatewayManagedMode: false,
     computeDriver: nativeAdminComputeDriver("wss://private-gateway.example.invalid/shared"),
@@ -494,9 +498,6 @@ test("Agent sharing grants existing people exact discovery and native access, th
     },
   });
   assert.equal(misleadingRole.status, 201);
-  const browserOptions = {
-    args: [...fixture.browserArgs, `--host-resolver-rules=MAP ${consoleHost} 127.0.0.1`],
-  };
   const { page, artifacts } = await newPage(t, fixture, browserOptions);
   const detail = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "access");
   await login(page, fixture, detail);

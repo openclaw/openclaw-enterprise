@@ -511,74 +511,180 @@ export class PostgresHumanAuthentication {
     auditEvent?: AuditEvent,
     external?: { readonly providerId: string; readonly subject: string },
   ): Promise<void> {
+    await this.state.transact((unit) =>
+      this.insertPasswordAccount(unit, prepared, seed, auditEvent, external),
+    );
+  }
+
+  private async insertPasswordAccount(
+    unit: PlatformUnitOfWork,
+    prepared: PreparedPasswordAccount,
+    seed: PersistedNativeIAMPrincipalSeed,
+    auditEvent?: AuditEvent,
+    external?: { readonly providerId: string; readonly subject: string },
+    actorId = auditEvent?.actorId ?? prepared.id,
+  ): Promise<void> {
     if (seed.principal.issuer !== this.issuer || seed.principal.subject !== prepared.id) {
       throw new ScopeViolationError("The account Principal must identify the new account.");
     }
     if (external?.providerId === "credential") {
       throw new ScopeViolationError("An external method cannot replace a password.");
     }
-    await this.state.transact(async (unit) => {
+    try {
+      await this.query(
+        unit,
+        `INSERT INTO occ."user" (id, name, email, email_verified, image, created_at, updated_at)
+         SELECT $1, $2, $3, true, NULL, t.now, t.now FROM (SELECT clock_timestamp() AS now) t`,
+        [prepared.id, prepared.name, prepared.email],
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "23505" &&
+        "constraint" in error &&
+        error.constraint === "user_email_key"
+      ) {
+        throw new UserAlreadyExistsError();
+      }
+      throw error;
+    }
+    await this.query(
+      unit,
+      `INSERT INTO occ.account (id, account_id, provider_id, user_id, password, created_at, updated_at)
+       SELECT $1, $2, 'credential', $2, $3, t.now, t.now FROM (SELECT clock_timestamp() AS now) t`,
+      [prepared.credentialId, prepared.id, prepared.passwordHash],
+    );
+    const installationId = await this.state.insertNativeIAMPrincipal(unit, seed);
+    if (installationId !== this.installationId) {
+      throw new ScopeViolationError("The account belongs to a different Installation.");
+    }
+    await this.query(
+      unit,
+      `INSERT INTO occ.human_authentication_accounts (user_id, installation_id, principal_id)
+       VALUES ($1, $2, $3)`,
+      [prepared.id, this.installationId, seed.principal.id],
+    );
+    await this.enrolled(unit, prepared.id);
+    if (external !== undefined) {
+      // The optional external identity attaches in the same transaction as the account.
+      const methodId = randomUUID();
       try {
         await this.query(
           unit,
-          `INSERT INTO occ."user" (id, name, email, email_verified, image, created_at, updated_at)
-           SELECT $1, $2, $3, true, NULL, t.now, t.now FROM (SELECT clock_timestamp() AS now) t`,
-          [prepared.id, prepared.name, prepared.email],
+          `INSERT INTO occ.account (id, account_id, provider_id, user_id, created_at, updated_at, identity_only)
+           VALUES ($1, $2, $3, $4, clock_timestamp(), clock_timestamp(), true)`,
+          [methodId, external.subject, external.providerId, prepared.id],
         );
       } catch (error) {
-        if (
-          error instanceof Error &&
-          "code" in error &&
-          error.code === "23505" &&
-          "constraint" in error &&
-          error.constraint === "user_email_key"
-        ) {
-          throw new UserAlreadyExistsError();
+        if (isExternalIdentityConflict(error)) {
+          throw new ResourceConflictError(EXTERNAL_IDENTITY_ASSIGNED);
         }
         throw error;
       }
-      await this.query(
+      await this.audit(unit, "authentication.method.attach", actorId, {
+        userId: prepared.id,
+        methodId,
+        principalId: seed.principal.id,
+      });
+    }
+    if (auditEvent !== undefined) {
+      await unit.audit.append(auditEvent);
+    }
+  }
+
+  /** Enrolls a provider-verified identity into an operator-selected native IAM Group. */
+  async enrollExternal(input: {
+    readonly providerId: string;
+    readonly subject: string;
+    readonly groupId: string;
+    readonly attemptCreatedAt: Date;
+    readonly account?: {
+      readonly prepared: PreparedPasswordAccount;
+      readonly seed: PersistedNativeIAMPrincipalSeed;
+    };
+  }): Promise<HumanAuthenticationSnapshot | DisabledExternalAccount | undefined> {
+    if (!this.externalProviderIds.includes(input.providerId)) {
+      throw new ScopeViolationError("The external provider is not configured.");
+    }
+    return this.state.transact(async (unit) => {
+      // Serialize first enrollment of this exact identity, including concurrent callbacks.
+      await this.query(unit, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+        JSON.stringify([
+          "external-enrollment",
+          this.installationId,
+          input.providerId,
+          input.subject,
+        ]),
+      ]);
+      const [group] = await this.query(
         unit,
-        `INSERT INTO occ.account (id, account_id, provider_id, user_id, password, created_at, updated_at)
-         SELECT $1, $2, 'credential', $2, $3, t.now, t.now FROM (SELECT clock_timestamp() AS now) t`,
-        [prepared.credentialId, prepared.id, prepared.passwordHash],
+        "SELECT id FROM occ.iam_groups WHERE id = $1 AND namespace_id IS NULL",
+        [input.groupId],
       );
-      const installationId = await this.state.insertNativeIAMPrincipal(unit, seed);
-      if (installationId !== this.installationId) {
-        throw new ScopeViolationError("The account belongs to a different Installation.");
+      if (group === undefined) {
+        throw new ScopeViolationError(
+          "Automatic enrollment requires an existing Installation Group.",
+        );
       }
-      await this.query(
+      const [method] = await this.query(
         unit,
-        `INSERT INTO occ.human_authentication_accounts (user_id, installation_id, principal_id)
-         VALUES ($1, $2, $3)`,
-        [prepared.id, this.installationId, seed.principal.id],
+        "SELECT user_id, identity_only FROM occ.account WHERE provider_id = $1 AND account_id = $2",
+        [input.providerId, input.subject],
       );
-      await this.enrolled(unit, prepared.id);
-      if (external !== undefined) {
-        // The optional external identity attaches in the same transaction as the account.
-        const methodId = randomUUID();
-        try {
-          await this.query(
-            unit,
-            `INSERT INTO occ.account (id, account_id, provider_id, user_id, created_at, updated_at, identity_only)
-             VALUES ($1, $2, $3, $4, clock_timestamp(), clock_timestamp(), true)`,
-            [methodId, external.subject, external.providerId, prepared.id],
-          );
-        } catch (error) {
-          if (isExternalIdentityConflict(error)) {
-            throw new ResourceConflictError(EXTERNAL_IDENTITY_ASSIGNED);
-          }
-          throw error;
+      let snapshot: HumanAuthenticationSnapshot | DisabledExternalAccount | undefined;
+      if (method !== undefined) {
+        if (method.identity_only !== true) {
+          return undefined;
         }
-        await this.audit(unit, "authentication.method.attach", auditEvent?.actorId ?? prepared.id, {
+        snapshot = await this.snapshotOrDisabled(
+          unit,
+          await this.lockUser(unit, method.user_id as string),
+          input.providerId,
+          input.subject,
+          input.attemptCreatedAt,
+        );
+      } else {
+        if (input.account === undefined) {
+          return undefined;
+        }
+        const { prepared, seed } = input.account;
+        // The configured Group owns grants; enrollment must not introduce another grant.
+        if (seed.roles.length !== 0 || seed.bindings.length !== 0) {
+          throw new ScopeViolationError("Automatic enrollment cannot create IAM grants.");
+        }
+        await this.insertPasswordAccount(unit, prepared, seed, undefined, input, seed.principal.id);
+        // Only this transaction's newly created identity can precede the currentness fence.
+        snapshot = await this.snapshot(
+          unit,
+          await this.lockUser(unit, prepared.id),
+          input.providerId,
+          input.subject,
+        );
+        await this.audit(unit, "authentication.account.enrol", seed.principal.id, {
           userId: prepared.id,
-          methodId,
-          principalId: seed.principal.id,
+          providerId: input.providerId,
+          subject: input.subject,
         });
       }
-      if (auditEvent !== undefined) {
-        await unit.audit.append(auditEvent);
+      if (snapshot === undefined || "disabled" in snapshot) {
+        return snapshot;
       }
+      const [membership] = await this.query(
+        unit,
+        `INSERT INTO occ.iam_group_memberships (namespace_id, group_id, principal_id)
+         VALUES (NULL, $1, $2) ON CONFLICT (group_id, principal_id) DO NOTHING RETURNING group_id`,
+        [input.groupId, snapshot.proof.principalId],
+      );
+      if (membership !== undefined) {
+        await this.audit(unit, "authentication.group.enrol", snapshot.proof.principalId, {
+          userId: snapshot.user.id,
+          groupId: input.groupId,
+          providerId: input.providerId,
+          subject: input.subject,
+        });
+      }
+      return snapshot;
     });
   }
 
@@ -595,6 +701,18 @@ export class PostgresHumanAuthentication {
       // A password proves no identity before it is checked, so a disabled account is refused
       // like a wrong password.
       return this.snapshot(unit, user, "credential");
+    });
+  }
+
+  /** Distinguishes an absent identity from an attached identity whose login proof is stale. */
+  async hasExternalMethod(providerId: string, subject: string): Promise<boolean> {
+    return this.state.transact(async (unit) => {
+      const [method] = await this.query(
+        unit,
+        "SELECT 1 FROM occ.account WHERE provider_id = $1 AND account_id = $2",
+        [providerId, subject],
+      );
+      return method !== undefined;
     });
   }
 

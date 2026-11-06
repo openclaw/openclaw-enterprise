@@ -4,12 +4,15 @@ Start with the [production installation](../../../../docs/guides/deploy/producti
 and the [Box Driver and host example](../README.md#connect-the-installation).
 Use the same checkout to build the Controller, Worker, Gateway, and Box helper.
 Use a dedicated Codex Agent with the normal Gateway authentication and a scoped
-operator. Leave Git, repository access, and protected credentials disabled.
+operator. Leave connectors, Git, repository access, and protected credentials
+disabled. The installed chat and file checks below are pending.
 
 ## Prepare the original volume
 
-Select `workspaceNodeMode: file-only-v1` in the Box Driver configuration on
+Opt in to `workspaceNodeMode: file-only-v1` in the Box Driver configuration on
 the API and Worker. Keep the [controlled inference settings](../driver/README.md#build-and-select).
+Before the first pairing, leave custom `file-transfer` configuration and node
+grants unset. Compute installs the file policy for the enrolled node.
 Choose the `gpt-5` model through the controlled provider. Create the Agent
 without initial workspace file staging, and deploy its first
 revision once. The Worker creates the Harness claim before it calls the Box
@@ -49,12 +52,14 @@ image read-only for the file node. The host needs stock Bubblewrap with
 Compile the helpers using the [host build command](../README.md#prepare-the-host-and-verify-box),
 and set `runtimeSha256` to the SHA-256 of the installed `workspace-node-runtime.mjs`.
 
-Use the real Agent node route as `workspaceNode.url`, including its DNS name,
-port above 1023, and `/node` suffix. Set its exact private IPv4 address. When
-Compute projects a Gateway CA, set `caSha256` to the SHA-256 of those PEM bytes.
-Use the existing trusted certificate chain. The tunnel forwards TLS bytes to
-that address and port. The stock file node verifies the Gateway certificate
-and uses the normal one-shot enrollment, then its own saved device credential.
+Configure the actual external Gateway listener on a port above 1023 and set
+the Installation's `gatewayRouting.endpointPort` to that port. Use the same
+port, the Gateway DNS name, and the `/node` suffix in `workspaceNode.url`.
+Set the listener's exact private IPv4 address in `workspaceNode.address`.
+When Compute projects a Gateway CA, set `caSha256` to the SHA-256 of those
+PEM bytes. The host connector forwards TLS bytes to the configured address
+and port. The stock file node verifies the Gateway certificate with the
+trusted chain, pairs once, and reconnects with its saved device credential.
 
 ## Start the controlled model
 
@@ -121,7 +126,7 @@ Run `operator.ts verify "$RUN" "$GATEWAY_CLI"`. This checks the original reply,
 tool result, marker inode, allowed tool, and refused alternate argument.
 
 Use the [live workspace API](../../../../docs/reference/agents/workspace-files.md#live-file-access)
-through the same Agent to read and update a disposable workspace document.
+through the same Agent to read and update a disposable `USER.md`.
 Check its bytes on the original volume. For a negative control, temporarily
 use a workspace document symlink to a synthetic sibling file. The read and
 write must be refused and the sibling's bytes must stay unchanged. Also

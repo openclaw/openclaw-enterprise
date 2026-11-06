@@ -1334,6 +1334,31 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   // This marker is deliberately absent from the redactor's environment secrets.
   // The native projector and reporter must remove it themselves.
   const nativePrivate = "private-native-observation-marker";
+  const nativeHistory = nativeWorkerHistoryEvidence({
+    runId: "selected",
+    toolPrefix: "proof ",
+    marker: nativePrivate,
+    command: nativePrivate,
+    messages: [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", name: "exec", arguments: { code: nativePrivate } }],
+        __openclaw: { runId: "selected" },
+      },
+      {
+        role: "toolResult",
+        toolName: "exec",
+        isError: false,
+        content: JSON.stringify({ value: { aggregated: nativePrivate, exitCode: 0 } }),
+        __openclaw: { runId: "selected" },
+      },
+    ],
+  }).observation;
+  assert.equal(nativeHistory.historyExecCodeStringCount, 1);
+  assert.equal(nativeHistory.historyExecCommandStringCount, 0);
+  assert.equal(nativeHistory.historyExecNestedExitZeroCount, 1);
+  assert.equal(nativeHistory.historyToolProofPresent, false);
+  assert.equal(nativeHistory.historyFinalProofPresent, false);
   const nativeWorker = nativeWorkerPlacementObservation({
     placement: {
       state: "failed",
@@ -2015,6 +2040,14 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
           },
         },
         {
+          name: "retains value-free native history observations through CI",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "model-history",
+            worker: { ...nativeHistory, transcript: nativePrivate },
+          },
+        },
+        {
           name: "rejects hostile native worker diagnostic fields",
           diagnostic: {
             kind: "native-first-agent-proof",
@@ -2033,6 +2066,7 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
               assistantError: nativePrivate,
               execError: nativePrivate,
               execResultCount: 4097,
+              ...Object.fromEntries(Object.keys(nativeHistory).map((key) => [key, nativePrivate])),
             },
           },
         },
@@ -2354,6 +2388,12 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   });
   assert.deepEqual(
     summary.files[0].tests.find(
+      (entry) => entry.name === "retains value-free native history observations through CI",
+    ).error.diagnostic.worker,
+    nativeHistory,
+  );
+  assert.deepEqual(
+    summary.files[0].tests.find(
       (entry) => entry.name === "rejects hostile native worker diagnostic fields",
     ).error.diagnostic.worker,
     {
@@ -2364,6 +2404,7 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
       turnError: "other",
       assistantError: "other",
       execError: "other",
+      historyExecErrorFlag: "other",
     },
   );
   for (const [, category] of turnCases) {
@@ -3199,7 +3240,37 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     elapsedMs: 1_234,
   };
   const failedStage = { ...failedPhase, kind: "openshell-stage" };
-  const phaseDiagnostics = [failedPhase, failedStage].map(
+  const failedCheck = {
+    kind: "openshell-network-policy-check",
+    check: "provider-denial-observed",
+  };
+  const teardown = { kind: "openshell-fixture-teardown", outcome: "failed" };
+  const nativeBodyCheck = {
+    kind: "openshell-native-policy-check",
+    stage: "native-policy-scopes",
+    primaryCheck: "read.unauthenticated-code-16",
+    cleanupCheck: null,
+  };
+  const nativeCleanupCheck = {
+    ...nativeBodyCheck,
+    primaryCheck: null,
+    cleanupCheck: "cleanup.restore-auth.helm-upgrade",
+  };
+  const nativeBothChecks = { ...nativeBodyCheck, cleanupCheck: nativeCleanupCheck.cleanupCheck };
+  const phaseDiagnostics = [
+    failedPhase,
+    failedStage,
+    failedCheck,
+    { ...failedCheck, check: "fixture-opaque-phase-detail\nunknown check" },
+    { ...teardown, outcome: "fixture-opaque-phase-detail" },
+    nativeBodyCheck,
+    nativeCleanupCheck,
+    nativeBothChecks,
+    { ...nativeBodyCheck, primaryCheck: "fixture-opaque-phase-detail" },
+    { ...nativeBodyCheck, cleanupCheck: "fixture-opaque-phase-detail" },
+    { ...nativeBodyCheck, stage: "fixture-opaque-phase-detail" },
+    { ...nativeBodyCheck, primaryCheck: null },
+  ].map(
     (measurement) =>
       `openclaw-ci-measurement ${JSON.stringify({ ...measurement, detail: "fixture-opaque-phase-detail" })}`,
   );
@@ -3209,7 +3280,17 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       'import assert from "node:assert/strict";',
       'import test from "node:test";',
       'test("passes", () => {});',
+      'import { writeFileSync } from "node:fs";',
+      "import { boundedTeardown } from " +
+        JSON.stringify(new URL("../helpers/kubernetes-real.mjs", import.meta.url).href) +
+        ";",
       'test("long failure", (t) => {',
+      "  const { context } = boundedTeardown(t, {",
+      "    log() {},",
+      '    onOutcome(outcome) { t.diagnostic("openclaw-ci-measurement " + JSON.stringify({ kind: "openshell-fixture-teardown", outcome })); },',
+      "  });",
+      '  context.after(() => writeFileSync("teardown-completed", "yes"));',
+      '  context.after(() => { throw new Error("fixture cleanup failed"); });',
       '  console.log("progress before the failure");',
       "  console.error(`credential ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);",
       '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
@@ -3253,7 +3334,16 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert.equal(result.status, 1);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
   assert.equal(summary.files[0].status, "failed");
-  assert.deepEqual(summary.files[0].measurements, [failedPhase, failedStage]);
+  assert.deepEqual(summary.files[0].measurements, [
+    failedPhase,
+    failedStage,
+    failedCheck,
+    nativeBodyCheck,
+    nativeCleanupCheck,
+    nativeBothChecks,
+    teardown,
+  ]);
+  assert.equal(await readFile(join(root, "teardown-completed"), "utf8"), "yes");
   const failed = summary.files[0].tests.find(({ name }) => name === "long failure");
   // Results and the job log keep the short message only.
   assert.match(failed.error.message, /\.\.\. \[truncated\]$/);
@@ -3274,9 +3364,9 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert.equal(record.file, "tests/integration/details.test.mjs");
   assert.equal(record.omittedTests, 0);
   const detail = record.tests.find(({ name }) => name === "long failure");
-  assert.equal(detail.line, 10);
+  assert.equal(detail.line, 18);
   assert.match(detail.message, /decisive line \[env:CI_RUNNER_FIXTURE_CREDENTIAL\]$/);
-  assert.match(detail.stack, /tests\/integration\/details\.test\.mjs:10:\d+/);
+  assert.match(detail.stack, /tests\/integration\/details\.test\.mjs:18:\d+/);
   // stdout and stderr arrive on separate pipes, so only the set of lines is fixed.
   assert.deepEqual([...record.output.lines].sort(), [
     "[redacted credential-bearing line]",
@@ -5251,6 +5341,123 @@ test('scenario', { signal: controller.signal }, async (t) => {
   }
 });
 
+test("first-Agent command timing pairs runtime outcomes before CI projection", async (t) => {
+  const root = await fixture(t);
+  const resultsPath = join(root, "results/runtime-outcomes.json");
+  await mkdir(join(root, "bin"));
+  await mkdir(join(root, "tests/helpers"));
+  await writeFile(
+    join(root, "tests/helpers/local-first-agent-stack.mjs"),
+    await readFile(join(repositoryRoot, "tests/helpers/local-first-agent-stack.mjs")),
+  );
+  const runtime = "[occ-dev-timing] stage=runtime-build elapsed_ms=11 failed=true";
+  const outcome = "[occ-dev-outcome] stage=runtime-build outcome=";
+  const lines = [
+    runtime,
+    outcome + "nonzero-exit",
+    outcome + "nonzero-exit",
+    runtime,
+    outcome + "signaled",
+    runtime,
+    outcome + "signaled token=private-outcome-canary",
+    runtime,
+    outcome + "private-outcome-canary",
+    runtime,
+    "unrelated child output",
+    outcome + "signaled",
+    // Legacy timing still counts this row, but its elapsed value is not canonical.
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=00011 failed=true",
+    outcome + "signaled",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=3 failed=false",
+    outcome + "signaled",
+    "[occ-dev-timing] stage=controller-build elapsed_ms=5 failed=true",
+    outcome + "signaled",
+  ];
+  await writeFile(
+    join(root, "bin/occ"),
+    [
+      "#!" + process.execPath,
+      'if (process.argv[3] === "up") {',
+      "  process.stdout.write(" + JSON.stringify(lines.join("\n") + "\n") + ");",
+      "  process.exitCode = 23;",
+      "}",
+      "",
+    ].join("\n"),
+    { mode: 0o700 },
+  );
+  const testPath = "tests/integration/runtime-outcomes.test.mjs";
+  await writeFile(
+    join(root, testPath),
+    `import assert from "node:assert/strict";
+import { syncBuiltinESMExports } from "node:module";
+import net from "node:net";
+import test from "node:test";
+// The owned CLI fixture does not bind ports. Only the port reservation is stubbed.
+net.createServer = () => ({
+  once() {},
+  listen(_address, ready) { ready(); },
+  address() { return { port: 3000 }; },
+  close(done) { done(); },
+});
+syncBuiltinESMExports();
+const { localFirstAgentStack } = await import("../helpers/local-first-agent-stack.mjs");
+test("a failed local setup reports only paired outcomes", async (t) => {
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL = "1";
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "compose";
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "none";
+  process.env.OPENAI_API_KEY = "invented-fixture-input";
+  delete process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
+  delete process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
+  await assert.rejects(localFirstAgentStack(t), /Start Local Setup exited with status 23/);
+});
+`,
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { measure: { files: [{ path: testPath }] } },
+    groups: { ci: ["measure"] },
+  });
+  const result = run(root, [
+    "run",
+    "measure",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    "state/runtime-outcomes.jsonl",
+    "--results",
+    resultsPath,
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  const artifact = await readFile(resultsPath, "utf8");
+  const measurements = JSON.parse(artifact).files[0].measurements;
+  assert.deepEqual(
+    measurements.filter(({ kind }) => kind === "local-first-agent-command"),
+    [
+      {
+        kind: "local-first-agent-command",
+        phase: "setup",
+        stage: "runtime-build",
+        count: 7,
+        failed: 6,
+        elapsedMs: 69,
+        nonzeroExitCount: 1,
+        signaledCount: 1,
+      },
+      {
+        kind: "local-first-agent-command",
+        phase: "setup",
+        stage: "controller-build",
+        count: 1,
+        failed: 1,
+        elapsedMs: 5,
+      },
+    ],
+  );
+  assert.doesNotMatch(artifact, /private-outcome-canary|invented-fixture-input/);
+});
+
 test("run records only allowlisted measurements from test diagnostics", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/measurements.json");
@@ -5260,6 +5467,14 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     stage: "exposure-auth",
     outcome: "passed",
     elapsedMs: 39_000,
+  };
+  const runtimeFailure = {
+    kind: "local-first-agent-command",
+    phase: "setup",
+    stage: "runtime-build",
+    count: 4,
+    failed: 3,
+    elapsedMs: 200,
   };
   await writeFile(
     join(root, "tests/integration/measurements.test.mjs"),
@@ -5288,6 +5503,19 @@ test("run records only allowlisted measurements from test diagnostics", async (t
           failed: 0,
           elapsedMs: 100,
           args: "secretauthvalue-args",
+        }),
+        measurement({ ...runtimeFailure, nonzeroExitCount: 1, signaledCount: 1 }),
+        measurement({
+          ...runtimeFailure,
+          elapsedMs: 201,
+          signaledCount: "secretauthvalue-outcome",
+        }),
+        measurement({ ...runtimeFailure, elapsedMs: 202, nonzeroExitCount: 2, signaledCount: 2 }),
+        measurement({
+          ...runtimeFailure,
+          elapsedMs: 203,
+          stage: "controller-build",
+          signaledCount: 1,
         }),
         measurement({
           kind: "local-first-agent-command",
@@ -5493,6 +5721,10 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       failed: 0,
       elapsedMs: 100,
     },
+    { ...runtimeFailure, nonzeroExitCount: 1, signaledCount: 1 },
+    { ...runtimeFailure, elapsedMs: 201 },
+    { ...runtimeFailure, elapsedMs: 202 },
+    { ...runtimeFailure, elapsedMs: 203, stage: "controller-build" },
     {
       kind: "local-first-agent-pod",
       stage: "native-initial",
@@ -6115,6 +6347,14 @@ test("native history proof keeps exact run, explicit success and marker predicat
     ["source echo", [{ ...tool, content: "command: " + output }, final], false, true, "false"],
     ["wrong run", [{ ...tool, __openclaw: { runId: "other" } }, final], false, true, "none"],
     ["wrong marker", [tool, { ...final, content: "Done: " + marker }], true, false, "false"],
+    ["unsupported content", [{ ...tool, content: { output } }, final], false, true, "false"],
+    [
+      "unrecognized envelope",
+      [{ ...tool, content: JSON.stringify({ output }) }, final],
+      false,
+      true,
+      "false",
+    ],
     [
       "tool continuation",
       [tool, { ...final, content: [{ type: "text", text: marker }, { type: "toolCall" }] }],
@@ -6132,11 +6372,117 @@ test("native history proof keeps exact run, explicit success and marker predicat
     assert.equal(Boolean(evidence.tool), toolPresent, name);
     assert.equal(Boolean(evidence.final), finalPresent, name);
     assert.equal(evidence.observation.historyExecErrorFlag, flag, name);
+    if (name === "source echo") {
+      assert.equal(evidence.observation.historyToolPrefixContainsCount, 1);
+      assert.equal(evidence.observation.historyToolPrefixCount, 0);
+    }
+    if (name === "wrong marker") {
+      assert.equal(evidence.observation.historyFinalMarkerContainsCount, 1);
+      assert.equal(evidence.observation.historyFinalMarkerCount, 0);
+    }
+    if (name === "unsupported content") {
+      assert.equal(evidence.observation.historyOtherContentCount, 1);
+      assert.equal(evidence.observation.historyExecNonemptyTextCount, 0);
+    }
+    if (name === "unrecognized envelope") {
+      assert.equal(evidence.observation.historyExecOtherJsonCount, 1);
+      assert.equal(evidence.observation.historyExecAggregatedCount, 0);
+    }
     assert.doesNotMatch(
       JSON.stringify(evidence.observation),
       /private-host|private-value|FIRST_AGENT_NATIVE/,
     );
   }
+  // Code Mode can succeed without producing the requested shell proof. Source
+  // mentions and nested exit codes remain observations, never proof predicates.
+  for (const [exitCode, aggregated] of [
+    ...[0, 2, undefined, null, "0", 0.5].map((code) => [code, "private-output"]),
+    [0, undefined],
+    [2, null],
+    [0, ""],
+  ]) {
+    const call = {
+      ...final,
+      stopReason: "toolUse",
+      content: [
+        {
+          type: "toolCall",
+          name: "exec",
+          arguments: { code: `console.log(${JSON.stringify(prefix)}); // private-code` },
+        },
+      ],
+    };
+    const result = {
+      ...tool,
+      content: JSON.stringify({ value: { aggregated, exitCode } }),
+    };
+    const evidence = nativeWorkerHistoryEvidence({
+      messages: [
+        call,
+        result,
+        { ...final, content: "Done" },
+        { ...call, __openclaw: { runId: "other" } },
+        { ...result, __openclaw: { runId: "other" } },
+      ],
+      runId: "selected",
+      toolPrefix: prefix,
+      marker,
+    });
+    assert.equal(evidence.observation.historyExecCodeStringCount, 1);
+    assert.equal(evidence.observation.historyExecCodeToolPrefixContainsCount, 1);
+    assert.equal(evidence.observation.historyExecCommandStringCount, 0);
+    assert.equal(
+      evidence.observation.historyExecNestedExitZeroCount,
+      exitCode === 0 && typeof aggregated === "string" ? 1 : 0,
+    );
+    assert.equal(
+      evidence.observation.historyExecNestedExitNonzeroCount,
+      exitCode === 2 && typeof aggregated === "string" ? 1 : 0,
+    );
+    assert.equal(evidence.observation.historyToolProofPresent, false);
+    assert.equal(evidence.observation.historyFinalProofPresent, false);
+    assert.doesNotMatch(JSON.stringify(evidence.observation), /private-|FIRST_AGENT_NATIVE/);
+  }
+  // Peer-supplied part names and command arguments must not become diagnostic values.
+  const command = "private-command";
+  const observed = nativeWorkerHistoryEvidence({
+    runId: "selected",
+    toolPrefix: prefix,
+    marker,
+    command,
+    messages: [
+      {
+        ...final,
+        content: [
+          { type: "toolCall", name: "exec", arguments: { command } },
+          { type: "toolCall", name: "exec", arguments: { command: "other-private-command" } },
+          { type: "text", text: "private-text" },
+          { type: "private-part-type", value: "private-value" },
+        ],
+      },
+      {
+        ...tool,
+        content: [{ type: "text", text: JSON.stringify({ value: { aggregated: output } }) }],
+      },
+      // An unrelated run cannot affect command or shape evidence.
+      {
+        ...final,
+        content: [{ type: "toolCall", name: "exec", arguments: { command } }],
+        __openclaw: { runId: "other" },
+      },
+    ],
+  });
+  assert.equal(observed.observation.historyArrayContentCount, 2);
+  assert.equal(observed.observation.historyTextPartCount, 2);
+  assert.equal(observed.observation.historyToolCallPartCount, 2);
+  assert.equal(observed.observation.historyOtherPartCount, 1);
+  assert.equal(observed.observation.historyExecCallCount, 2);
+  assert.equal(observed.observation.historyExecCommandStringCount, 2);
+  assert.equal(observed.observation.historyExecExactCommandCount, 1);
+  assert.equal(observed.observation.historyExecNonemptyTextCount, 1);
+  assert.equal(observed.observation.historyExecAggregatedCount, 1);
+  assert.equal(observed.observation.historyAssistantNonemptyTextCount, 1);
+  assert.doesNotMatch(JSON.stringify(observed.observation), /private-|FIRST_AGENT_NATIVE/);
 });
 
 test("native placement retries only the correlated pinned read-generation signal", async () => {
