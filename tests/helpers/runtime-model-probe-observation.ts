@@ -14,15 +14,15 @@ interface Stress {
 
 interface Probe {
   code?: unknown;
-  capMs?: number | undefined;
-  elapsedMs?: number | undefined;
-  cpuWaitMs?: number | null | undefined;
+  capMs?: unknown;
+  elapsedMs?: unknown;
+  cpuWaitMs?: unknown;
 }
 
 interface Snapshot extends DiagnosticSnapshot {
   running: boolean;
   probe?: Probe | null | undefined;
-  probeStage?: string | null | undefined;
+  probeStage?: unknown;
 }
 
 const observed = (events: ProbeEvent[], key: string, value: unknown) =>
@@ -81,8 +81,7 @@ export function recordModelProbeMeasurement(
   },
 ) {
   const { probe = {}, phases = [], events = [] } = run.snapshot;
-  const at = (value: number | null | undefined) =>
-    Number.isFinite(value) ? Math.round(Number(value)) : null;
+  const at = (value: unknown) => (Number.isFinite(value) ? Math.round(Number(value)) : null);
   t.diagnostic(
     `openclaw-ci-measurement ${JSON.stringify({
       kind: "runtime-model-probe",
