@@ -88,4 +88,4 @@ catalog responses; it does not establish plugin installation or runtime access.
 
 ## Choose OpenClaw plugins on a new Agent
 
-Open **Pages / Create Agent / OpenClaw Plugin Catalog**. In the dedicated OpenClaw form, open **Configure plugins** and load the catalog. Add **Google Workspace** and **Slack**, then choose **Done**. Reopen the picker and choose **Configured**. Both selections should be present, and the Agent name should still be **Research assistant**. Leave the form without submitting it.
+Open **Pages / Create Agent / OpenClaw Plugin Catalog** over HTTPS. Add **Google Workspace**. Select **Choose a connection template**, choose **Workspace OAuth**, then click **Connect account**. Approve the simulated provider in the separate tab. The original editor selects **New Workspace account** and explains when the Agent receives access. Close the picker and verify the Agent name still reads **Research assistant**. The Agent and its grant are created only when the operator submits the form.

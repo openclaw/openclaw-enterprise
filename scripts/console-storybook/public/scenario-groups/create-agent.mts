@@ -442,7 +442,48 @@ export const createAgentFormScenarios = {
     pluginDiscoveryCredential: "none",
     pluginDiscovery: {
       pages: { initial: { plugins: openClawCatalogEntries, nextCursor: null } },
-      details: Object.fromEntries(openClawCatalogEntries.map((entry) => [entry.id, entry])),
+      draftAccount: {
+        id: "cs_00000000-0000-4000-8000-000000000099",
+        name: "New Workspace account",
+        pluginId: openClawCatalogEntries[0]!.id,
+        slotId: "account",
+      },
+      details: Object.fromEntries(
+        openClawCatalogEntries.map((entry) => [
+          entry.id,
+          entry === openClawCatalogEntries[0]
+            ? {
+                ...entry,
+                credentialSlots: [
+                  {
+                    pluginId: entry.id,
+                    id: "account",
+                    label: "Google account",
+                    releaseSha256: "a".repeat(64),
+                    connectAccount: true,
+                    sources: [
+                      {
+                        id: "cs_00000000-0000-4000-8000-000000000098",
+                        name: "Existing Workspace account",
+                      },
+                    ],
+                    connectionTemplates: [
+                      {
+                        id: "workspace-oauth",
+                        displayName: "Workspace OAuth",
+                        version: 1,
+                        mode: "manual",
+                        scopes: ["gmail.readonly"],
+                        requiredScopes: [],
+                        offeredScopes: ["gmail.readonly"],
+                      },
+                    ],
+                  },
+                ],
+              }
+            : entry,
+        ]),
+      ),
     },
     actions: [
       click("Start without Preset"),
@@ -453,11 +494,12 @@ export const createAgentFormScenarios = {
       click("Configure plugins"),
     ],
     description:
-      "Choose Google Workspace or Slack for a new dedicated OpenClaw Agent before supplying account credentials.",
+      "Select a saved Google account or connect one while the new dedicated OpenClaw Agent is still a draft.",
     steps: [
-      "Select Google Workspace and enable it. Do the same for Slack, choose Done, and reopen the picker. The Configured tab shows both selections in the unsaved Agent.",
+      "Add Google Workspace. Choose an existing account, or open Choose a connection template and select Workspace OAuth. In an HTTPS preview, Connect account opens a simulated provider in a separate tab.",
+      "Approve the test account and return to the original form. The new account is selected for Google Workspace. Choose Done to keep editing the unsaved Agent.",
     ],
-    gap: "Catalog responses are simulated. This story verifies editing the new Agent form; it does not deploy a worker or authorize an account.",
+    gap: "Storybook simulates provider consent and compatible account discovery. The recording ends before Agent creation or any grant.",
   },
   createPluginsUnavailable: {
     group: "Pages/Create Agent",

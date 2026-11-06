@@ -810,6 +810,24 @@ export interface AgentPluginCredentialSlot {
   }[];
 }
 
+/** A connectable template for one plugin account slot, including its consent scope choices. */
+export interface PluginConnectionTemplateChoice {
+  readonly id: string;
+  readonly displayName: string;
+  readonly version: number;
+  readonly mode: "manual" | "mcp_discovery";
+  readonly scopes: readonly string[];
+  readonly requiredScopes: readonly string[];
+  readonly offeredScopes: readonly string[];
+}
+
+/** Namespace details add the account choices OCC authorizes for a new Agent. */
+export interface NamespaceAgentPluginDetails extends PluginCatalogEntry {
+  readonly credentialSlots?: readonly (AgentPluginCredentialSlot & {
+    readonly connectionTemplates?: readonly PluginConnectionTemplateChoice[];
+  })[];
+}
+
 export interface PluginCatalogLink {
   readonly label: string;
   readonly url: string;

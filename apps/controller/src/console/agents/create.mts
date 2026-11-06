@@ -57,6 +57,7 @@ import {
 } from "./presets.mjs";
 import { provisioningJob } from "./provisioning-job.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
+import { authorizePluginInNewTab, type SlotConnection } from "./plugin-connection.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import { renderChannels } from "../channels.mjs";
 import {
@@ -1843,9 +1844,125 @@ function renderAgentForm(
     const source = getDirectorySecretSource();
     return source?.kind === "secret" && source.namespaceId === namespaceId ? source.id : null;
   };
+  let consentAttempt: AbortController | undefined;
+  let consentResult:
+    | { pluginId: string; slotId: string; releaseSha256: string; staged: boolean; sourceId: string }
+    | undefined;
+  plugins.addEventListener("input", () => {
+    consentResult = undefined;
+  });
+  const draftConnection: SlotConnection = {
+    grantOnCreate: true,
+    unavailable() {
+      return pending || savedAgent || !bundledOpenClawCatalog || !discoveryCredential()
+        ? "Return to an editable dedicated Agent draft to select an account."
+        : undefined;
+    },
+    feedback(slot, sourceId) {
+      if (
+        !consentResult ||
+        consentResult.pluginId !== slot.pluginId ||
+        consentResult.slotId !== slot.id ||
+        consentResult.releaseSha256 !== slot.releaseSha256
+      ) {
+        return undefined;
+      }
+      if (!consentResult.staged) {
+        return "Account saved. The draft changed. Select the account in its current slot.";
+      }
+      return consentResult.sourceId === sourceId
+        ? "Account selected. Create the Agent to grant access."
+        : undefined;
+    },
+    async list(slot) {
+      const detail = await pluginDiscovery.readDetail(slot.pluginId);
+      return (
+        detail.credentialSlots?.find(
+          (candidate) =>
+            candidate.pluginId === slot.pluginId &&
+            candidate.id === slot.id &&
+            candidate.releaseSha256 === slot.releaseSha256,
+        )?.connectionTemplates ?? []
+      );
+    },
+    async start(slot, template, selectedScopes, waiting, stage) {
+      consentAttempt?.abort();
+      const attempt = new AbortController();
+      consentAttempt = attempt;
+      const unconfirmed =
+        "The account is not available for this slot yet. Finish sign-in, then check again.";
+      const readAccount = async (sourceId: string) => {
+        const detail = await pluginDiscovery.readDetail(slot.pluginId);
+        const compatible = detail.credentialSlots?.some(
+          (candidate) =>
+            candidate.pluginId === slot.pluginId &&
+            candidate.id === slot.id &&
+            candidate.releaseSha256 === slot.releaseSha256 &&
+            candidate.sources.some((source) => source.id === sourceId && !source.authorization),
+        );
+        return compatible ? detail : undefined;
+      };
+      try {
+        const result = await authorizePluginInNewTab(
+          () =>
+            request(`${namespacePath(namespaceId)}/connections`, {
+              method: "POST",
+              body: {
+                connectionTemplateId: template.id,
+                ...(selectedScopes && { selectedScopes }),
+              },
+            }) as Promise<{
+              authorizationUrl: string;
+              credentialSourceId: string;
+              expiresAt: string;
+            }>,
+          attempt.signal,
+          (sourceId, complete) =>
+            waiting(async () => {
+              if (!(await readAccount(sourceId))) {
+                return unconfirmed;
+              }
+              complete();
+            }),
+        );
+        if (attempt.signal.aborted || !context.isCurrent()) {
+          return;
+        }
+        if ("message" in result) {
+          return result.message;
+        }
+        if (result.outcome === "failed") {
+          return "Authorization did not finish. Try again to connect an account.";
+        }
+        const detail = await readAccount(result.sourceId);
+        if (attempt.signal.aborted || !context.isCurrent() || pending || savedAgent) {
+          return;
+        }
+        if (!detail) {
+          return unconfirmed;
+        }
+        // Consent saves a user-owned account. Only stage this reference if the same draft
+        // still selects this slot. The eventual Create request authorizes and grants access.
+        const staged = stage(result.sourceId);
+        consentResult = {
+          pluginId: slot.pluginId,
+          slotId: slot.id,
+          releaseSha256: slot.releaseSha256,
+          sourceId: result.sourceId,
+          staged,
+        };
+        pluginDiscovery.rememberDetail(detail);
+      } finally {
+        if (consentAttempt === attempt) {
+          consentAttempt = undefined;
+        }
+      }
+    },
+  };
   const pluginDiscovery = createPluginDiscovery({
     context,
     input: plugins,
+    slotConnection: draftConnection,
     canDiscover: () => Boolean(discoveryCredential()),
     canPrefetch: () =>
       bundledOpenClawCatalog ||
@@ -1873,7 +1990,7 @@ function renderAgentForm(
     },
     availableMessage: () => {
       if (bundledOpenClawCatalog) {
-        return "Choose plugins for this Agent. You can connect an account after saving the Agent.";
+        return "Choose plugins and select the accounts this Agent can use.";
       }
       return pluginDiscoveryCredential === "none"
         ? "Load the installation's curated plugin catalog. Access and tool availability are checked separately."
@@ -1907,6 +2024,7 @@ function renderAgentForm(
     }
   }
   function resetPluginDiscovery() {
+    consentAttempt?.abort();
     pluginMode = mode.value;
     if (pluginHarness !== harness.value) {
       pluginHarness = harness.value;

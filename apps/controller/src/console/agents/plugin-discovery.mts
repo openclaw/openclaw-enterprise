@@ -1,4 +1,4 @@
-import type { PluginCatalogEntry, PluginCatalogPage } from "@openclaw-enterprise/contracts";
+import type { PluginCatalogPage } from "@openclaw-enterprise/contracts";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
 import {
   type CatalogDirection,
@@ -300,7 +300,7 @@ export function createPluginDiscovery({
     if (pending) {
       entries.set(id, { ...entry, managedTools: pending });
     } else {
-      if (!entry.remoteId || entry.toolStatus === "loading") {
+      if ((!entry.remoteId && !slotConnection?.grantOnCreate) || entry.toolStatus === "loading") {
         return;
       }
       entries.set(id, { ...entry, toolStatus: "loading", toolError: undefined });
@@ -316,14 +316,14 @@ export function createPluginDiscovery({
     };
     render();
     try {
-      const detail = (await context.request(`${catalogPath}/details`, {
-        method: "POST",
-        readOnly: true,
-        signal: requests.signal,
-        body: connection
-          ? { pluginId: id, managedConnection: connection }
-          : requestBody({ pluginId: entry.remoteId! }),
-      })) as PluginCatalogEntry;
+      const detail = connection
+        ? ((await context.request(`${catalogPath}/details`, {
+            method: "POST",
+            readOnly: true,
+            signal: requests.signal,
+            body: { pluginId: id, managedConnection: connection },
+          })) as CatalogEntry)
+        : await readDetail(id);
       const current = currentEntry();
       if (!current) {
         return;
@@ -370,5 +370,24 @@ export function createPluginDiscovery({
   }
 
   render();
-  return { fields, reset, update };
+  async function readDetail(id: string): Promise<CatalogEntry> {
+    const entry = entries.get(id);
+    if (!entry) {
+      throw new Error("Reload the plugin catalog before checking this account.");
+    }
+    return (await context.request(`${catalogPath}/details`, {
+      method: "POST",
+      readOnly: true,
+      signal: requests.signal,
+      body: requestBody({ pluginId: entry.remoteId ?? id }),
+    })) as CatalogEntry;
+  }
+  function rememberDetail(entry: CatalogEntry) {
+    const current = entries.get(entry.id);
+    if (current) {
+      entries.set(entry.id, { ...current, ...entry, toolStatus: "loaded" });
+      render();
+    }
+  }
+  return { fields, reset, update, readDetail, rememberDetail };
 }

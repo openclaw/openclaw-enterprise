@@ -75,7 +75,9 @@ and the worker can finish an interrupted disconnect.
 
 In the Agent's plugin settings, select an account for each named slot. The picker shows accounts you can use from an issuer that the slot accepts. **Authorize for this server** starts consent for the required protected resource and destination. For an MCP template you select the scopes for this consent. The provider and the plugin's request policy enforce operations.
 
-Saving the selection requires permission to update the Agent and operate the saved credential. A completed connection from a plugin can replace that slot when its release and previous selection still match. The account remains available to its owner when the slot changes during consent. See [configure plugins](../guides/topics/plugins-configure.md#use-the-console).
+On the Create Agent form, consent saves the account for the user. The form holds its credential source ID for the selected release and slot. OCC checks the caller, account and slot again when it creates the Agent, then commits the Agent, slot binding and use grant together. Provisioning applies that grant when its worker creates the Agent. Leaving the form keeps the account available to its owner.
+
+Updating a saved Agent requires permission to update that Agent and operate the saved credential. A completed connection from a plugin can replace that slot when its release and previous selection still match. The account remains available to its owner when the slot changes during consent. See [configure plugins](../guides/topics/plugins-configure.md#use-the-console).
 
 To detach a saved account, clear the plugin slots that use it on that Agent. Then call `DELETE /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`. OCC removes that Agent’s grant. Other Agents can still use their own grants.
 

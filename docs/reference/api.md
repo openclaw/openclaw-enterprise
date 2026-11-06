@@ -5019,6 +5019,25 @@ Example request
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.available` | `boolean` | No | — |
+| `data.credentialSlots` | `array<object>` | No | — |
+| `data.credentialSlots[].connectAccount` | `true` | No | — |
+| `data.credentialSlots[].connectionTemplates` | `array<object>` | No | — |
+| `data.credentialSlots[].connectionTemplates[].displayName` | `string` | Yes | — |
+| `data.credentialSlots[].connectionTemplates[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.credentialSlots[].connectionTemplates[].mode` | `"manual" or "mcp_discovery"` | Yes | — |
+| `data.credentialSlots[].connectionTemplates[].offeredScopes` | `array<string>` | Yes | — |
+| `data.credentialSlots[].connectionTemplates[].requiredScopes` | `array<string>` | Yes | — |
+| `data.credentialSlots[].connectionTemplates[].scopes` | `array<string>` | Yes | — |
+| `data.credentialSlots[].connectionTemplates[].version` | `integer` | Yes | minimum: 1 |
+| `data.credentialSlots[].id` | `string` | Yes | — |
+| `data.credentialSlots[].label` | `string` | Yes | — |
+| `data.credentialSlots[].pluginId` | `string` | Yes | — |
+| `data.credentialSlots[].releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.credentialSlots[].sources` | `array<object>` | Yes | — |
+| `data.credentialSlots[].sources[].authorization` | `"required"` | No | — |
+| `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.credentialSlots[].sources[].name` | `string` | Yes | — |
+| `data.credentialSlots[].toolDiscovery` | `true` | No | — |
 | `data.description` | `string` | No | — |
 | `data.id` | `string` | Yes | — |
 | `data.logoUrl` | `string` | No | — |

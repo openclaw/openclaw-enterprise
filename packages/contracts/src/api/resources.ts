@@ -1,5 +1,6 @@
 import { SandboxPolicyDecisionSchema } from "../sandbox-policy.ts";
 import { Type } from "typebox";
+import { PluginTemplateChoicesResponse } from "./connections.ts";
 import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.ts";
 
 import {
@@ -171,6 +172,51 @@ export const AgentPluginCatalogResponse = Type.Object(
   { additionalProperties: false },
 );
 
+const PluginCredentialSlotSchema = Type.Object(
+  {
+    pluginId: Type.String(),
+    releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    id: Type.String(),
+    label: Type.String(),
+    toolDiscovery: Type.Optional(Type.Literal(true)),
+    connectAccount: Type.Optional(Type.Literal(true)),
+    sources: Type.Array(
+      Type.Object(
+        {
+          id: CredentialSourceId,
+          name: Type.String(),
+          authorization: Type.Optional(Type.Literal("required")),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
+export const NamespaceAgentPluginDetailsResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        ...PluginCatalogEntrySchema.properties,
+        credentialSlots: Type.Optional(
+          Type.Array(
+            Type.Object(
+              {
+                ...PluginCredentialSlotSchema.properties,
+                connectionTemplates: Type.Optional(PluginTemplateChoicesResponse.properties.data),
+              },
+              { additionalProperties: false },
+            ),
+          ),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
 export const AgentPluginDetailsResponse = Type.Object(
   { data: PluginCatalogEntrySchema, meta: Meta },
   { additionalProperties: false },
@@ -251,31 +297,7 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
       {
         ...PluginPolicyCapabilitiesSchema.properties,
         discoveryCredential: PluginDiscoveryCredentialSchema,
-        credentialSlots: Type.Optional(
-          Type.Array(
-            Type.Object(
-              {
-                pluginId: Type.String(),
-                releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
-                id: Type.String(),
-                label: Type.String(),
-                toolDiscovery: Type.Optional(Type.Literal(true)),
-                connectAccount: Type.Optional(Type.Literal(true)),
-                sources: Type.Array(
-                  Type.Object(
-                    {
-                      id: CredentialSourceId,
-                      name: Type.String(),
-                      authorization: Type.Optional(Type.Literal("required")),
-                    },
-                    { additionalProperties: false },
-                  ),
-                ),
-              },
-              { additionalProperties: false },
-            ),
-          ),
-        ),
+        credentialSlots: Type.Optional(Type.Array(PluginCredentialSlotSchema)),
       },
       { additionalProperties: false },
     ),

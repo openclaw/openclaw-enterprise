@@ -229,12 +229,15 @@ export function renderAgentPlugins(
     input,
     catalogPath: `${path}/plugins`,
     slotConnection: {
-      confirmed(slot, sourceId) {
-        return (
+      feedback(slot, sourceId) {
+        if (
           confirmed?.pluginId === slot.pluginId &&
           confirmed.slotId === slot.id &&
           confirmed.sourceId === sourceId
-        );
+        ) {
+          return "Account attached.";
+        }
+        return undefined;
       },
       unavailable(slot) {
         if (updateDenied) {

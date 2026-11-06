@@ -101,6 +101,7 @@ import {
   AgentModelListResponse,
   AgentPluginCatalogResponse,
   AgentPluginDetailsResponse,
+  NamespaceAgentPluginDetailsResponse,
   AgentPluginPolicyCapabilitiesResponse,
   ChannelDirectoryLookupResponse,
   PresetResponse,
@@ -1523,7 +1524,7 @@ export const occApiRoutes = [
       params: NamespaceParams,
       body: DiscoverAgentPluginDetailsBody,
       response: {
-        200: AgentPluginDetailsResponse,
+        200: NamespaceAgentPluginDetailsResponse,
         429: ErrorResponseRef,
         501: ErrorResponseRef,
         ...createErrors,
