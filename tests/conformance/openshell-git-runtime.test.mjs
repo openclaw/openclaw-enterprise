@@ -2013,6 +2013,12 @@ test("Git expiry observes the original model in the reduced stock installation, 
       }
       return getProfile(...args);
     };
+    const delayedWitness = [
+      "predecessor expires during report read",
+      "predecessor expires during Sandbox read",
+      "predecessor evaluation is delayed",
+    ].includes(fault);
+    let delayedReport = false;
     let delayedSandboxRead = false;
     const inspectSandbox = client.getSandbox;
     client.getSandbox = async (...args) => {
@@ -2023,6 +2029,9 @@ test("Git expiry observes the original model in the reduced stock installation, 
       return inspectSandbox(...args);
     };
     client.getSandboxProviderStatus = async (workspace, sandbox, provider, _signal, receiptId) => {
+      if (expiry && fault === "predecessor evaluation is delayed" && !delayedReport) {
+        await delay(150);
+      }
       const removed = !box.spec.providers.includes(git);
       const isGit = provider === git;
       const absent = removed && isGit;
@@ -2093,15 +2102,13 @@ test("Git expiry observes the original model in the reduced stock installation, 
         if (fault === "stale predecessor") {
           result.observedTime = new Date(Date.parse(result.evaluatedTime) - 15_000).toISOString();
         }
-        if (
-          fault === "predecessor expires during report read" ||
-          fault === "predecessor expires during Sandbox read"
-        ) {
+        if (delayedWitness && !delayedReport) {
+          delayedReport = true;
           // The report is fresh when evaluated, but expires before the caller can use it.
           result.observedTime = new Date(Date.parse(result.evaluatedTime) - 14_900).toISOString();
           if (fault === "predecessor expires during report read") {
             await delay(150);
-          } else {
+          } else if (fault === "predecessor expires during Sandbox read") {
             delayedSandboxRead = true;
           }
         }
@@ -2262,6 +2269,9 @@ test("Git expiry observes the original model in the reduced stock installation, 
     const expectedFailures =
       {
         "version churn": ["unconfirmed"],
+        "predecessor expires during report read": ["unconfirmed"],
+        "predecessor expires during Sandbox read": ["unconfirmed"],
+        "predecessor evaluation is delayed": ["unconfirmed"],
         "lost reply": ["failed"],
         "intent without effect": ["gateway_unavailable"],
         "outcome uncertain at gateway": ["timeout"],
@@ -2297,7 +2307,7 @@ test("Git expiry observes the original model in the reduced stock installation, 
       assert.deepEqual(violations, []);
       return;
     }
-    assert.equal(sends, fault === "version churn" ? 0 : 1);
+    assert.equal(sends, fault === "version churn" || delayedWitness ? 0 : 1);
     if (fault === "Sandbox moved after intent") {
       // Another change to the Sandbox lands before the next pass: the recorded request's
       // precondition can never hold again.
@@ -2364,8 +2374,9 @@ test("Git expiry observes the original model in the reduced stock installation, 
     ["generic withholding", "retire-runtime"],
     ["failed predecessor", "retire-runtime"],
     ["stale predecessor", "retire-runtime"],
-    ["predecessor expires during report read", "retire-runtime"],
-    ["predecessor expires during Sandbox read", "retire-runtime"],
+    ["predecessor expires during report read", "pending"],
+    ["predecessor expires during Sandbox read", "pending"],
+    ["predecessor evaluation is delayed", "pending"],
     ["changed predecessor", "retire-runtime"],
     ["replaced live instance", "retire-runtime"],
     ["stopped live instance", "retire-runtime"],

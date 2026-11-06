@@ -17,10 +17,11 @@
   },
   "files": [
     {
-      "path": "tests/integration/openshell-git-extraction-real.test.mjs",
+      "path": "tests/integration/openshell-git-extraction-real.test.ts",
       "expectedTests": [
         "OpenShell image extraction removes its Docker container after create cancellation",
-        "OpenShell image extraction removes its Docker container after copy cancellation"
+        "OpenShell image extraction removes its Docker container after copy cancellation",
+        "OpenShell image extraction removes its Docker container after unsettled create cancellation"
       ]
     },
     {

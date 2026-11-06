@@ -184,8 +184,9 @@ export async function extractOpenShellImageFile({
   destination,
 }) {
   const name = `oce-git-extract-${randomUUID()}`;
+  let creationAcknowledged = false;
   let removed = false;
-  const remove = async () => {
+  const remove = async (final = false) => {
     if (!removed) {
       // A lost create reply still leaves this name owned. Cleanup must outlive
       // cancellation, but shares one finite deadline for lookup and removal.
@@ -193,24 +194,47 @@ export async function extractOpenShellImageFile({
         signal: AbortSignal.timeout(30_000),
         timeout: 30_000,
       };
-      const container = (
-        await command(
-          "docker",
-          ["ps", "--all", "--quiet", "--no-trunc", "--filter", `name=^/${name}$`],
-          options,
-        )
-      ).trim();
-      if (container) {
-        assert.match(container, /^[a-f0-9]{64}$/);
-        await command("docker", ["rm", container], options);
+      try {
+        while (true) {
+          const container = (
+            await command(
+              "docker",
+              ["ps", "--all", "--quiet", "--no-trunc", "--filter", `name=^/${name}$`],
+              options,
+            )
+          ).trim();
+          if (container) {
+            assert.match(container, /^[a-f0-9]{64}$/);
+            await command("docker", ["rm", container], options);
+            removed = true;
+            return;
+          }
+          if (creationAcknowledged) {
+            removed = true;
+            return;
+          }
+          // An unanswered create can finish after this empty snapshot. Retain
+          // ownership for teardown, where bounded reconciliation must settle it.
+          if (!final) {
+            return;
+          }
+          await delay(250, undefined, { signal: options.signal });
+        }
+      } catch (error) {
+        if (options.signal.aborted) {
+          throw new Error(`Image extraction cleanup is unresolved for container ${name}`, {
+            cause: error,
+          });
+        }
+        throw error;
       }
-      removed = true;
     }
   };
-  cleanup.push(remove);
+  cleanup.push(() => remove(true));
   const errors = [];
   try {
     const container = (await command("docker", ["create", "--name", name, image])).trim();
+    creationAcknowledged = true;
     assert.match(container, /^[a-f0-9]{64}$/);
     await command("docker", ["cp", `${container}:${filename}`, destination]);
   } catch (error) {
@@ -797,12 +821,17 @@ async function installOpenShellGit(t) {
   await eventually("authenticated OpenShell workspace", async () => {
     assert.equal(forwardFailed, false, "Gateway port-forward could not start");
     assert.equal(forward.exitCode, null, "Gateway port-forward exited");
+    const deadline = AbortSignal.timeout(5000);
     try {
-      return await gatewayClient.getWorkspace(sandboxNamespace, AbortSignal.timeout(5000));
+      return await gatewayClient.getWorkspace(
+        sandboxNamespace,
+        AbortSignal.any([t.signal, deadline]),
+      );
     } catch (error) {
+      t.signal.throwIfAborted();
       // GetWorkspace already maps NOT_FOUND to absence. Only a temporarily
       // unavailable transport or request deadline can become ready on a later poll.
-      if ([4, 14].includes(error?.grpcStatus)) {
+      if ((deadline.aborted && error === deadline.reason) || [4, 14].includes(error?.grpcStatus)) {
         return undefined;
       }
       throw error;

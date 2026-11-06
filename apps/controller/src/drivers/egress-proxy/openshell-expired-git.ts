@@ -249,12 +249,18 @@ function evidence(
       evaluated !== undefined &&
       at <= evaluated &&
       // Stock reports expiry before checking its 15-second supervisor observation lease.
-      // Include read latency in the lease budget without comparing clocks on different hosts.
-      (!expired ||
-        (options?.readStartedAt !== undefined &&
-          evaluated - at + (process.hrtime.bigint() - options.readStartedAt) < 15_000_000_000n)) &&
+      (!expired || evaluated - at < 15_000_000_000n) &&
       Math.abs(Date.now() - Date.parse(status.evaluatedTime ?? "")) < 30_000,
   );
+  // Request time includes transport before evaluation. If that conservative budget
+  // is exhausted, obtain a fresh witness without treating the matching identity as unsafe.
+  if (
+    expired &&
+    (options?.readStartedAt === undefined ||
+      evaluated - at + (process.hrtime.bigint() - options.readStartedAt) >= 15_000_000_000n)
+  ) {
+    return undefined;
+  }
   return desired;
 }
 

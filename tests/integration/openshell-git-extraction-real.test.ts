@@ -6,7 +6,9 @@ import test from "node:test";
 import { run } from "../fixtures/repository-credentials/process.mjs";
 import { extractOpenShellImageFile } from "../helpers/openshell-git-installation.mjs";
 
-for (const phase of ["create", "copy"]) {
+type CommandOptions = { signal?: AbortSignal; timeout?: number };
+
+for (const phase of ["create", "copy", "unsettled create"]) {
   test(
     `OpenShell image extraction removes its Docker container after ${phase} cancellation`,
     { skip: process.env.OCC_TEST_DOCKER_COMPUTE_REAL !== "1", timeout: 90_000 },
@@ -20,8 +22,9 @@ for (const phase of ["create", "copy"]) {
           .map((name) => [name, process.env[name]]),
       );
       const controller = new AbortController();
-      const cleanup = [];
-      let container;
+      const cleanup: (() => Promise<void>)[] = [];
+      let container: string | undefined;
+      let pendingCreate: string[] | undefined;
       const remainingContainer = async () =>
         (
           await run(
@@ -40,7 +43,16 @@ for (const phase of ["create", "copy"]) {
           await rm(directory, { recursive: true, force: true });
         }
       });
-      const command = async (executable, args, options = {}) => {
+      const command = async (
+        executable: string,
+        args: string[],
+        options: CommandOptions = {},
+      ): Promise<string> => {
+        if (args[0] === "create" && phase === "unsettled create") {
+          pendingCreate = args;
+          controller.abort();
+          controller.signal.throwIfAborted();
+        }
         if (args[0] === "cp" && phase === "copy") {
           // Cancel after real Docker creation, exactly when extraction is dispatched.
           // Only cancellation is injected; creation, removal, and inspection use Docker.
@@ -70,8 +82,18 @@ for (const phase of ["create", "copy"]) {
           filename: "/etc/os-release",
           destination: join(directory, "os-release"),
         }),
-        phase === "create" ? { name: "AbortError" } : /command cancelled/,
+        phase === "copy" ? /command cancelled/ : { name: "AbortError" },
       );
+      if (pendingCreate) {
+        // Complete the real Docker operation after the initial empty lookup.
+        // This models delayed completion to prove retained cleanup ownership;
+        // it does not claim to reproduce Docker daemon scheduling.
+        container = (await run("docker", pendingCreate, { env })).stdout.trim();
+        for (const operation of cleanup) {
+          await operation();
+        }
+      }
+      assert.ok(container, "Docker created the owned test container");
       assert.match(container, /^[a-f0-9]{64}$/);
       assert.equal(
         await remainingContainer(),
