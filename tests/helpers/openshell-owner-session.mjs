@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin-host.mjs";
 import { chromium } from "playwright";
-import { launchTrustingBrowser } from "./dev-up-keycloak.mjs";
+import { launchTrustingBrowser, publishedJSON } from "./dev-up-keycloak.mjs";
 import { enableInstalledGithubNativeAdmin } from "./native-admin-github-k3d.mjs";
 import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.mjs";
 
@@ -421,15 +421,25 @@ export async function verifyOpenShellOwnerSession({
     (await readFile(join(stateDirectory, "initial-admin-password"), "utf8")).trim(),
     true,
   );
-  // Account administration requires Origin even on GET; the context request
-  // uses the fresh recovery cookies without exposing them to test code.
-  const accountResponse = await owner
-    .context()
-    .request.get(`${consoleOrigin}/api/auth/accounts/${account.id}`, {
-      headers: { origin: consoleOrigin },
-    });
-  assert.equal(accountResponse.status(), 200);
-  const currentAccount = (await accountResponse.json()).data;
+  // Account GET requires Origin, which browser fetch cannot set. Dial the
+  // owned listener with its CA and hostname; Chromium's trust does not apply to Node.
+  const accountResponse = await publishedJSON(
+    {
+      hostname: consoleHost,
+      port: browserPort,
+      ca: await readFile(join(stateDirectory, "browser-ca.crt")),
+    },
+    `/api/auth/accounts/${account.id}`,
+    {
+      headers: {
+        origin: consoleOrigin,
+        cookie: (await owner.context().cookies(consoleOrigin))
+          .map(({ name, value }) => `${name}=${value}`)
+          .join("; "),
+      },
+    },
+  );
+  const currentAccount = accountResponse.data;
   await api("POST", `/api/auth/accounts/${account.id}/providers/github`, {
     subject: github.subject,
     expectedVersion: currentAccount.version,
