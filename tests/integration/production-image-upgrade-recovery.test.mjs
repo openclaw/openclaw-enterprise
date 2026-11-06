@@ -484,7 +484,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
         }
       }
       inventory[name] = object;
-      if (object.kind === "Job") {
+      if (object.kind === "Job" && fault !== "no-child") {
         // Model the Job controller's API objects, not its scheduling or garbage collector.
         // The upgrade command must establish ownership from this owner reference.
         const child = {
@@ -511,10 +511,21 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
           },
           spec: object.spec.template.spec,
         };
-        state.preflight.pods[child.metadata.name] = {
-          ...child,
-          ...(await runPreflight(root, cwd, state, child)),
-        };
+        const result = await runPreflight(root, cwd, state, child);
+        state.preflight.pods[child.metadata.name] = { ...child, ...result };
+        const phase = result.status?.phase ?? result.phase;
+        if (phase === "Succeeded") {
+          object.status = { conditions: [{ type: "Complete", status: "True" }] };
+        } else if (phase === "Failed") {
+          object.status = {
+            conditions: [{ type: "Failed", status: "True", reason: "BackoffLimitExceeded" }],
+          };
+        }
+        if (fault === "job-deadline") {
+          object.status = {
+            conditions: [{ type: "Failed", status: "True", reason: "DeadlineExceeded" }],
+          };
+        }
         (state.preflight.children ??= []).push({
           kind: "pod",
           name: child.metadata.name,
@@ -648,6 +659,19 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
         }
         return fail(1, `Error from server (NotFound): ${resource} not found`);
       }
+      if (args.includes("logs")) {
+        const component = object.spec.containers[0].name;
+        (state.preflight.logRequests ??= []).push(component);
+        if (
+          state.preflightFault?.target === component &&
+          state.preflightFault.mode === "replace-during-logs"
+        ) {
+          // A name-based logs request races with replacement after its preceding GET.
+          object.metadata.uid = randomUUID();
+          object.log = "installation-startup-ready\nunbound-log-sentinel\n";
+        }
+        save();
+      }
       if (args.includes("logs") && object.log === undefined) {
         return fail(1, "container is waiting to start");
       }
@@ -666,11 +690,25 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
     ) {
       const selector = args.find((arg) => arg.startsWith("batch.kubernetes.io/controller-uid="));
       const ownerUid = selector.slice("batch.kubernetes.io/controller-uid=".length);
-      out({
-        items: Object.values(state.preflight.pods)
-          .filter((pod) => pod.metadata.labels["batch.kubernetes.io/controller-uid"] === ownerUid)
-          .map((pod) => ({ ...pod, status: pod.status ?? { phase: pod.phase } })),
-      });
+      const pods = Object.values(state.preflight.pods).filter(
+        (pod) => pod.metadata.labels["batch.kubernetes.io/controller-uid"] === ownerUid,
+      );
+      const changing = pods.find(
+        (pod) =>
+          state.preflightFault?.mode === "replace-after-observation" &&
+          state.preflightFault.target === pod.spec.containers[0].name,
+      );
+      if (changing) {
+        if (state.preflight.childObserved && !state.preflight.childReplaced) {
+          // The previously observed running Pod disappeared; its name now selects a new UID.
+          changing.metadata.uid = randomUUID();
+          changing.phase = "Succeeded";
+          state.preflight.childReplaced = true;
+        }
+        state.preflight.childObserved = true;
+        save();
+      }
+      out({ items: pods.map((pod) => ({ ...pod, status: pod.status ?? { phase: pod.phase } })) });
     } else if (args.includes("--raw=/readyz")) {
       out("ok");
     } else if (args.includes("rollout")) {
@@ -4875,4 +4913,71 @@ test("startup preflight retains dependencies while an acknowledged Job child rem
   );
   assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
   assert.deepEqual(await f.events(), []);
+});
+
+// The first observation establishes a Pod UID; a later same-name replacement must
+// not inherit permission to supply logs or the successful preflight result.
+for (const mode of ["replace-after-observation", "replace-during-logs"]) {
+  test(`startup preflight discards unbound logs: ${mode}`, async (t) => {
+    const f = await fixture(t, {
+      controllerOnly: true,
+      preflightFault: { target: "api", mode },
+      ...(mode === "replace-after-observation"
+        ? {
+            preflightResults: { api: { phase: "Running", log: "unbound-log-sentinel\n" } },
+          }
+        : {}),
+    });
+    const failure = await f.run("--preflight-only").catch((error) => error);
+    assert.equal(failure.code, 1);
+    const state = await f.state();
+    assert.equal(
+      (state.preflight.logRequests ?? []).includes("api"),
+      mode === "replace-during-logs",
+    );
+    const log = await readFile(join(f.evidence, "preflight-api.log"), "utf8").catch((error) => {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+      return "";
+    });
+    assert.doesNotMatch(log, /unbound-log-sentinel/);
+    assert.doesNotMatch(failure.stdout + failure.stderr, /unbound-log-sentinel/);
+    assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
+    assert.deepEqual(await f.events(), []);
+  });
+}
+
+test("startup preflight refuses a failed Job even when its retained child succeeded", async (t) => {
+  const f = await fixture(t, {
+    controllerOnly: true,
+    preflightFault: { target: "api", mode: "job-deadline" },
+  });
+  const failure = await f.run("--preflight-only").catch((error) => error);
+  assert.equal(failure.code, 1);
+  const job = JSON.parse(await readFile(join(f.evidence, "preflight-api-job-status.json"), "utf8"));
+  assert.deepEqual(job.status.conditions, [
+    { type: "Failed", status: "True", reason: "DeadlineExceeded" },
+  ]);
+  const pod = JSON.parse(await readFile(join(f.evidence, "preflight-api-status.json"), "utf8"));
+  assert.equal(pod.status.phase, "Succeeded");
+  assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
+  await assertStoppedBeforeWriters(f);
+});
+
+test("startup preflight without a child points to available timeout evidence", async (t) => {
+  const f = await fixture(t, {
+    controllerOnly: true,
+    preflightFault: { target: "api", mode: "no-child" },
+  });
+  const failure = await f.run("--preflight-only", "--timeout-seconds", "1").catch((error) => error);
+  assert.equal(failure.code, 1);
+  for (const file of ["preflight-api-job-status.json", "preflight-api-pods.json"]) {
+    assert.ok(failure.stderr.includes(file));
+    assert.doesNotThrow(() => JSON.parse(readFileSync(join(f.evidence, file), "utf8")));
+  }
+  assert.doesNotMatch(failure.stderr, /preflight-api-status\.json/);
+  assert.equal(existsSync(join(f.evidence, "preflight-api-status.json")), false);
+  assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
+  await assertStoppedBeforeWriters(f);
 });

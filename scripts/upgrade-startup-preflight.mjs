@@ -444,6 +444,9 @@ function child([jobPath, jobUid, podsPath, previousUid]) {
     fail("startup preflight Job created more than one child Pod.");
   }
   if (pods.length === 0) {
+    if (previousUid) {
+      fail("startup preflight child Pod disappeared.");
+    }
     if (
       job.status?.conditions?.some(
         (condition) =>
@@ -491,13 +494,30 @@ function remaining([jobPath, jobUid, podsPath, childPath, childUid]) {
   );
 }
 
-// Prints Succeeded, Failed, Stuck:<reason> for a waiting state that never resolves
-// without operator action, Pending:<reason> while the Pod cannot be scheduled (an
-// autoscaler may still add capacity), or Running.
-function phase([statusPath]) {
+// Prints Succeeded only after Job completion, Failed or JobFailed on failure,
+// Stuck:<reason> when operator action is required, Pending:<reason> while the Pod
+// cannot be scheduled (an autoscaler may add capacity), or Running.
+function phase([statusPath, jobPath]) {
   const status = JSON.parse(readFileSync(statusPath, "utf8")).status ?? {};
-  if (status.phase === "Succeeded" || status.phase === "Failed") {
-    return status.phase;
+  const conditions = JSON.parse(readFileSync(jobPath, "utf8")).status?.conditions ?? [];
+  // Preserve failed-child diagnostics, but never let a successful child override its Job.
+  if (status.phase === "Failed") {
+    return "Failed";
+  }
+  if (
+    conditions.some(
+      (condition) =>
+        ["Failed", "FailureTarget"].includes(condition.type) && condition.status === "True",
+    )
+  ) {
+    return "JobFailed";
+  }
+  if (status.phase === "Succeeded") {
+    return conditions.some(
+      (condition) => condition.type === "Complete" && condition.status === "True",
+    )
+      ? "Succeeded"
+      : "Running";
   }
   for (const container of status.containerStatuses ?? []) {
     const reason = container.state?.waiting?.reason;
@@ -534,7 +554,7 @@ const actions = {
   remaining: [5, remaining],
   refusals: [1, refusals],
   networkpolicy: [4, (values) => JSON.stringify(networkPolicy(values))],
-  phase: [1, phase],
+  phase: [2, phase],
 };
 if (!(action in actions) || input.length !== actions[action][0]) {
   fail(

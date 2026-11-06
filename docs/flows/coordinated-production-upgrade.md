@@ -15,10 +15,10 @@ read-only Doctor lint.
 
 ## Entry Points
 
-- Trigger: run `scripts/upgrade-production-images` with selected images, target,
-  release, source revision and protected files.
-- Required: a healthy production Helm release and matching OCC and Kubernetes
-  Installation IDs. Runtime upgrades require complete authorized inventory and no deployment in progress.
+- Run `scripts/upgrade-production-images` with images, target, release, source
+  revision and protected files.
+- Required: healthy production Helm release, matching OCC/Kubernetes Installation
+  IDs, and, for runtime upgrades, complete authorized inventory without active deployments.
 - Source: `scripts/upgrade-production-images`,
   `packages/occ/src/index.ts:OpenClawController.getInstallationDeploymentInventory`,
   and `packages/occ/src/index.ts:OpenClawController.deployAgent`.
@@ -64,15 +64,15 @@ graph TD
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
-Before protected reads, evidence writes or cluster access, the helper matches
-`HEAD` to `--source-revision`. It rejects changed, extra or missing stock chart files, symlinks,
-and baseline/evidence paths or aliases inside the chart. Keep the checkout
-unchanged; other local edits and image provenance remain unchecked.
+Before protected reads, evidence writes or cluster access, `HEAD` must match
+`--source-revision`. Changed, extra, missing or symlinked chart files and
+baseline/evidence aliases inside the chart are rejected. Keep the checkout
+unchanged; other edits and image provenance remain unchecked.
 
-Resume binds the evidence directory's canonical path, device and inode; aliases
-share its lock. Any `completed` entry refuses resume before Kubernetes/OCC calls
-or evidence changes. Runtime upgrades also lock the private sibling dispatch
-journal for the frozen fleet. Restoring evidence leaves that journal intact.
+Resume binds the evidence directory's path, device and inode; aliases share its
+lock. Any `completed` entry refuses resume before live calls or evidence changes.
+Runtime upgrades lock the private sibling dispatch journal, separate from restored
+evidence.
 
 Candidates match the [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
 as ordered YAML mappings, including images. Validate both candidates before
@@ -99,16 +99,17 @@ verifies the selected platform and blob hashes in Docker's OCI export
 through both images using synthetic inputs and a private receipt listener. It
 records the digest, platform manifest, configuration, requests and responses.
 This verifies the Driver and broker protocol; Kubernetes image availability,
-receipt durability and disposal remain unverified. The live broker hostname
-stays fixed. For restart recovery, follow the [broker procedure](../guides/repository-credentials/installation.md#install-and-verify).
+receipt durability and disposal remain unverified. The broker hostname
+stays fixed. For restart recovery, see the [broker procedure](../guides/repository-credentials/installation.md#install-and-verify).
 
 After the Helm server dry run,
 [`scripts/upgrade-startup-preflight.mjs`](../../scripts/upgrade-startup-preflight.mjs)
 copies API/worker images, environment, mounts and service accounts into Jobs,
 substituting the candidate Installation Secret. Each Job allows one completion,
 one parallel Pod, no retry, and the selected deadline. `preflight_startup` verifies
-the acknowledged Job UID and child controller reference. Missing children wait;
-replaced or multiple children refuse preparation.
+the Job UID and child controller reference. Missing children wait; replacements
+or multiple children refuse preparation. Success requires Job completion; Job
+failure overrides a successful child.
 
 An API Pod with a theme first calls
 `apps/controller/src/composition/console-theme.ts:loadConsoleTheme`. Invalid bundles
@@ -117,10 +118,11 @@ stop preflight; workers do not load themes. Both call
 Drivers and Preset files without opening the database.
 `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure` formats
 typed configuration refusals with up to 32 field diagnostics through the API/worker
-log filter. The helper saves logs before writers stop.
+log filter. Logs are read only after validated identity, buffered, and retained
+only if the Job and child identities still match after retrieval.
 
-Each Pod runs `KubernetesComputeDriver.preflight` with its Kubernetes credentials
-(service account in `inCluster` mode), matching normal startup and refusing
+With the bundled Kubernetes Compute Driver selected, `preflight` uses Pod
+credentials (`inCluster` service account), matching startup and refusing
 [split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
 The image's `isName` validates the stored name from `occ installation get`
 (`INSTALLATION_NAME_INVALID`); images without this rule skip it.
@@ -166,7 +168,7 @@ drafts per the [production guide](../guides/deploy/production-upgrade.md).
 
 ### 2. Reconcile a prior attempt
 
-`scripts/upgrade-production-images:1419`
+`scripts/upgrade-production-images:1448`
 
 Resume requires prepared evidence; otherwise reconcile preflight resources and
 use fresh evidence per [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
@@ -207,7 +209,7 @@ it does not start the old image to undo a committed schema change.
 
 ### 4. Verify control-plane recovery
 
-`scripts/upgrade-production-images:1565`
+`scripts/upgrade-production-images:1594`
 
 The script waits for both OCC Deployments and checks controller images,
 replica counts, and changed Installation checksums. Each component needs
@@ -333,7 +335,7 @@ saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 
 ## Changelog
 
-- 2026-11-06 10:19: Run startup preflight in controller-owned Jobs and retain dependencies until consumer cleanup is confirmed. (authoring-run/fd9ca628-3661-4fb1-927c-661ea85ae64d - 8e8035a0c073e2779aa7b32ece5dff449449f5b2)
+- 2026-11-06 10:19: Bind startup results and logs to controller-owned Jobs; retain dependencies until cleanup is confirmed. (authoring-run/fd9ca628-3661-4fb1-927c-661ea85ae64d - 8e8035a0c073e2779aa7b32ece5dff449449f5b2)
 
 - 2026-11-05 13:53: Require settled Doctor maintenance before runtime startup. (authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2 - 644b3f9328e9125030e958c7b4233ac37c54b139)
 
