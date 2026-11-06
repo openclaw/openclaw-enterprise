@@ -11849,9 +11849,9 @@ export class OpenClawController {
     agentId?: string,
   ): Promise<PluginCatalogEntry> {
     const sourceRef = { kind: "credential_source" as const, id: sourceId, namespaceId };
-    const agentAuthority =
-      agentId !== undefined &&
-      !(await this.authorizationDecision(principalId, "operate", sourceRef)).decision.allowed;
+    const callerCanUse = (await this.authorizationDecision(principalId, "operate", sourceRef))
+      .decision.allowed;
+    const agentAuthority = !callerCanUse && agentId !== undefined;
     const withContext = async <T>(
       use: (context: {
         state: PlatformReadView;
