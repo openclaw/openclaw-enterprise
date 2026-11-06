@@ -26,8 +26,6 @@ reaches exact IAM authorization. The
   and [`apps/controller/src/index.ts:createFastifyApp`](../../apps/controller/src/index.ts).
 - Assumptions: Migrated PostgreSQL, configured Better Auth, native IAM bootstrap,
   protected output storage, disabled public signup, and exact IAM authorization.
-  Production receives a private password path and sibling service-key path;
-  development receives only the service-key output path.
 
 ## Flow
 
@@ -68,10 +66,10 @@ loads the singleton Installation. Existing Installations only verify the
 configured administrator's immutable account/IAM identity: no key issuance,
 output changes, or identity/grant repair, including Installations predating service-administrator bootstrap.
 `verifiedWithoutAuth` first runs the same check before loading Better Auth: plain
-SQL for the administrator's `occ."user"` row, then the same IAM state and
-administrator Principal check. Success logs `installation.already-bootstrapped`
-with `step: "fast-path"`. Any miss or error runs the full Better Auth check, which
-succeeds or fails exactly as before. The base URL is checked first on both paths.
+SQL for the administrator's `occ."user"` row, then the IAM state and Principal
+check. Success logs `installation.already-bootstrapped`
+with `step: "fast-path"`. Any miss or error runs the full Better Auth check; the
+base URL is checked first on both paths.
 
 For fresh setup, production creates a Better Auth account with a random password;
 development creates the configured `OPENCLAW_DEV_EMAIL`/`OPENCLAW_DEV_PASSWORD`
@@ -91,8 +89,8 @@ startup does not expose the application until bootstrap succeeds.
 [`bootstrap-output.ts:writeProtectedBootstrapFile`](../../apps/controller/src/composition/bootstrap-output.ts)
 creates owner-only output exclusively and syncs it before OCC commit. The JSON
 contains the key response and attempt Installation ID; production also writes its
-password file on the same protected PVC, and development writes to its
-bootstrap-only volume or explicit direct-initialization path. No plaintext reaches logs, audit, HTTP
+password file on the same protected PVC, and development uses its bootstrap-only
+volume or direct-initialization path. No plaintext reaches logs, audit, HTTP
 bootstrap responses, or the worker.
 
 Both modes commit Installation/IAM/audit through the same controller
@@ -109,16 +107,13 @@ Job uses `backoffLimit: 0`. Completed tracked accounts, keys, and files,
 including partial output, remain for inspection. One pre-return Better
 Auth failure is narrower: if password `linkAccount` fails inside
 `createAccount`, the helper attempts to delete the just-created user before
-rethrowing. That is not a general artifact-recovery path; the initializer never
-automatically revokes, retries, repairs, or resets committed or uncertain state.
+rethrowing; a failed deletion is suppressed, so an orphaned account can remain
+to inspect. The initializer otherwise never revokes, retries, or
+repairs committed or uncertain state.
 
-An uncertain commit can already have persisted the seed. Before manual repair,
-the operator confirms the original transaction has finished and compares exact
-attempt IDs; file existence or another Installation is insufficient. A
-deliberate reset must identify the disposable Installation and its dedicated
-storage. The
+An uncertain commit may already have persisted the seed; the
 [recovery procedure](../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap)
-owns those operator actions.
+owns the repair preconditions.
 
 After confirmed success, the operator imports the file and retains its
 non-secret IDs. Lost output is never regenerated;
@@ -160,8 +155,8 @@ a wrong password writes no unstructured console warning.
 `requireSessionKey` checks optional `x-occ-session-key` after cookie resolution in
 `ControllerAdmissionVerifier.verify`, `session`, `resolveSession`, and `signOut`.
 An absent header changes nothing; a malformed, duplicated, or foreign key returns
-`401` without revoking or clearing the session. The header narrows but never selects
-a session; the native admin proxy strips it upstream.
+`401`. The header narrows but never selects a session; the native admin proxy
+strips it upstream.
 
 When GitHub is configured, `apps/controller/src/auth/github.ts:createHumanLogin`
 provides password, GitHub, and logout endpoints through a guarded Better Auth adapter.
@@ -194,23 +189,21 @@ redirects.
 same-origin result handler verifies signature, expiry and configured provider
 before State lookup; unfinished legacy sign-ins must restart. Wrong-provider refusals
 neither consume nor clear the receipt. Matching attempt and current cookie session
-permit one exchange per process-local ledger: record consumption until expiry,
-clear the receipt; return the session key without issuing or extending sessions. Password sign-in returns
-it. A malformed, unbound, replayed, or expired callback is refused by
-`refuseUnmatched`, which writes no audit event and increments
+permit one exchange per process-local ledger, returning the session key without
+issuing or extending sessions. Password sign-in returns it. A malformed, unbound, replayed, or expired callback is refused by
+`refuseUnmatched`, which writes no audit and increments
 [`occ_sign_in_unmatched_callbacks_total`](../reference/metrics.md#application-families).
 The callback audit records the HMAC-derived attempt ID. A verified
 GitHub profile also adds its subject and valid login to refusal or successful session
 audits; provider failures before profile verification have no identity.
 Denials after `consumeAttempt` matches are audited as
-[`PROVIDER_UNAVAILABLE`](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts),
-`EXTERNAL_IDENTITY_REJECTED` or `ACCOUNT_DISABLED`; with GitHub's
+`PROVIDER_UNAVAILABLE`, `EXTERNAL_IDENTITY_REJECTED` or `ACCOUNT_DISABLED`; with GitHub's
 [allowlist](../reference/authentication/external-sign-in.md#organization-and-team-allowlist),
-`apps/controller/src/auth/github.ts:githubMembership` runs between `GET /user` and the account
-lookup and adds `MEMBERSHIP_REQUIRED` and `MEMBERSHIP_UNAVAILABLE`. The callback route turns
-the response code of those, `ACCOUNT_DISABLED` and `PROVIDER_UNAVAILABLE` into the Console's
-`authReason`, and a callback that fails inside OCE (5xx) into `authReason=unavailable`;
-State dependency failure or uncertain session completion is not a denial. Neither path retries.
+`github.ts:githubMembership` runs between `GET /user` and the account
+lookup and adds `MEMBERSHIP_REQUIRED` and `MEMBERSHIP_UNAVAILABLE`. The callback route turns those codes into the Console's `authReason`, and a
+callback that fails inside OCE (5xx) into `authReason=unavailable`; State
+dependency failure or uncertain session completion is not a denial. Neither
+path retries.
 
 Google (and generic OIDC) reuses `apps/controller/src/auth/github.ts:externalProviderEndpoints` for
 start, callback, and result, with provider instance `google:<sha256(client ID)>`.
@@ -221,24 +214,37 @@ Google's signing keys with the shared HTTP deadline and byte limit, verifies the
 signature, issuer, audience, expiry, and nonce (plus `hd` and `email_verified` when
 allowed domains are set), and returns only `sub`. Tokens and email are discarded.
 
+With the experimental OIDC trust claim configured
+([settings](../reference/settings/oidc.md)),
+`apps/controller/src/auth/oidc.ts:exchangeOidcSubject` also matches the verified
+token's named claim exactly; only a match returns `trusted` and the token's
+email claim. An unattached match falls back to
+`packages/occ/src/state/human-authentication.ts:provisionTrustedExternalAccount`:
+one transaction writes the user, identity-only method, grantless Principal, and
+enrolment, auditing `authentication.account.self-enrol` before
+`authentication.login`. A savepoint wraps the writes: a uniqueness conflict —
+a concurrent enrolment or a held email — fails closed after rolling back;
+locks are user-first, and the attempt's creation time travels in, so an
+identity appearing or changing after the attempt began refuses like an
+attached one.
+
 `apps/controller/src/auth/client-address.ts:clientAddressConfiguration` canonicalizes
 IPv4-mapped addresses before prefix validation, refusing entries covering every
-IPv4 or IPv6 address. `resolveClientAddress` uses dotted IPv4 for mapped peers and
-header hops.
+address; `resolveClientAddress` uses dotted IPv4 for mapped peers and header hops.
 
 Password sign-in rejects unstorable email inside controller admission before
 known-device verification or account State reads, preserving budget accounting. Password-only uses `passwordSignInAudit`;
 guarded and recovery-only use `github.ts:recordPasswordDenial`, the same owner as
 credential refusals. Both return `400 INVALID_REQUEST` after the denial audit;
 a failed audit is a counted `503`. An exhausted shared lane rejects the invalid
-email without a reserved-account lookup. Password text is not checked.
+email without a reserved-account lookup; password text is not checked.
 Valid email enters controller admission before `/oce/password`, with the
 recovery email reserved like an administrator's. GitHub, Google and OIDC share process-local rate and concurrency limits
 for start, callback and result admission (`keyedAdmission`), keyed on
 client addresses behind trusted proxies and browser cookies otherwise. Provider
-HTTP shares a deadline and response-byte cap; State bounds pending attempts and expired cleanup.
-State persists attempt and session deadlines; cookie Max-Age subtracts monotonic
-elapsed work. Expired completion releases no cookie.
+HTTP shares a deadline and response-byte cap; State bounds pending attempts and
+expired cleanup, persists attempt and session deadlines, and subtracts monotonic
+elapsed work from cookie Max-Age. Expired completion releases no cookie.
 
 `scripts/auth-maintain.mjs` parses arguments with
 `scripts/lib/auth-maintain-arguments.mjs:parseAuthMaintainArguments` before
@@ -248,8 +254,8 @@ properties, exit `64` with usage. The
 and exit codes.
 
 Activation is a stopped-maintenance contract: admission stopped, requests
-drained or terminated, and every old controller stopped; startup does not fence
-an old live reader. Both PostgreSQL compositions reject
+drained or terminated, every old controller stopped; startup does not fence an
+old live reader. Both PostgreSQL compositions reject
 GitHub with enabled native administration, even when its cookie domain is missing.
 `apps/controller/src/auth/index.ts:createPostgresControllerAuth` constructs and
 initializes authentication before activation, checking the secret, canonical HTTP
@@ -269,8 +275,8 @@ that version and invalidate target sessions and proofs without changing IAM.
 A guarded read returns current account and method state, not a prior operation
 receipt. Unknown completion returns an explicit dependency failure without
 replay or compensation; operators must resolve uncertainty before a new action.
-Without GitHub or Google, the composition supplies no account operations; the routes
-still authorize the caller, then return `409 RESOURCE_CONFLICT`.
+Without GitHub or Google, the routes still authorize the caller, then return
+`409 RESOURCE_CONFLICT`.
 Logout commits deletion and audit before clearing the cookie. The [authentication reference](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
 owns configuration, recovery limits, and operator-visible behavior.
 
@@ -279,8 +285,7 @@ owns configuration, recovery limits, and operator-visible behavior.
 `ControllerAdmissionVerifier.verifyControllerRequest` applies the
 [browser origin rules](../reference/authentication.md#browser-request-origin) to
 unsafe session requests before admission, including sign-out before revocation
-and the GitHub result exchange, which shares the GitHub admission lane, before
-reading. Explicit service API keys skip this check and never fall back to a cookie.
+and the GitHub result exchange, before reading. Explicit service API keys skip this check and never fall back to a cookie.
 
 `apps/controller/src/index.ts:createFastifyApp` validates the session, resolves
 its installation-owned issuer and user ID through the selected IAM Driver, and

@@ -5,7 +5,8 @@ identity provider (IdP) such as Keycloak, Okta, Microsoft Entra ID or Auth0. It 
 like [Google sign-in](google-sign-in.md): an Installation administrator attaches a
 person's exact IdP identity to an existing OpenClaw Enterprise (OCE) account, and that
 person can then sign in with the IdP or with the account password. OIDC sign-in creates
-no account, maps no groups or roles, and never matches accounts by email address.
+no account, maps no groups or roles, and never matches accounts by email address — except
+under the experimental [trust claim](#trust-claim-enrolment-experimental) below.
 
 It uses the same guarded
 [single-controller profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
@@ -315,6 +316,45 @@ sessions, but other enabled sign-in methods remain usable.
 Accounts are created with a password, and an OIDC identity can be attached only
 afterwards. To add someone who should sign in only through the IdP, follow
 [Add a person](../topics/iam.md#add-a-person), which covers the password left behind.
+
+## Trust-claim enrolment (experimental)
+
+This capability is experimental and deliberately departs from the attached-only posture
+described above. The Helm chart does not render it yet; configure it as environment
+variables on the API Pod:
+
+| Variable                          | Value                                                                             |
+| --------------------------------- | --------------------------------------------------------------------------------- |
+| `OCC_AUTH_OIDC_TRUST_CLAIM`       | The ID-token claim name that vouches for realm members.                           |
+| `OCC_AUTH_OIDC_TRUST_VALUE`       | The exact string value that claim must carry.                                     |
+| `OCC_AUTH_OIDC_TRUST_EMAIL_CLAIM` | Optional: the claim the same token carries the account email in. Default `email`. |
+
+Set the claim and value together or not at all, or the API refuses to start; the email
+claim requires them. Configure the IdP to issue these claims into the ID token itself: the
+controller still requests only the `openid` scope, so no extra scope is asked for.
+
+When a person from the trusted realm signs in and their **verified** ID token carries the
+claim with the exact value, OCE authenticates them even though no account exists yet. It
+just-in-time provisions a human account with:
+
+- **No grants.** The account's Principal holds no Role or AccessBinding; every authorized
+  operation stays refused until an administrator grants one.
+- **The token's email address, when it carries a usable one.** The value of the configured
+  email claim (default `email`) is stored trimmed and lower-cased like every other account
+  email, and marked verified only when the token asserts `email_verified` exactly true.
+  Without a usable value the account gets a deterministic placeholder address
+  `oidc.<digest>@users.openclaw.invalid`. An address another account already holds is
+  refused, not linked: accounts are never matched by email, so attach the identity to that
+  account instead. Changing the address later is not yet implemented (follow-up).
+- No password; the IdP identity is the only sign-in method.
+
+A second sign-in of the same subject reuses the same account. A token without the claim, or
+with a different value, is refused exactly as before, and the claim never overrides account
+disablement. Pending attempts keep the attached-identity currentness rule: an account change
+after the attempt began (for example an administrator revoking its sessions) refuses the
+callback, and two simultaneous first sign-ins for one subject enroll exactly one account,
+with the later-arriving callback refused until the person signs in again. Each enrolment is
+audited as `authentication.account.self-enrol` before the `authentication.login` event.
 
 ## Changes, rotation and outages
 
