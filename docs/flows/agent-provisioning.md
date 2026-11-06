@@ -143,6 +143,13 @@ ends deployment checks for this attempt. If the read is unavailable or times out
 any wait reported by the job and checks the deployment again on the next poll. A 401 sends the
 caller to sign in again. If Create sees job success before opening Deployment, it opens Configuration.
 
+While the job is in flight, the step meter
+(`apps/controller/src/console/agents/provisioning-progress.mts`) pins in the sticky action bar
+beside Create Agent: one step per reported phase, marked done only when the job's own `phase`
+says it completed, an indeterminate throbber on the current step (static under reduced motion)
+and a silent elapsed line. A failure names its step and the job's safe reason in the bar; the
+form's error line keeps the recovery action.
+
 The **Latest visible deployment** summary shows the version's recorded wait, even with Deployment
 details folded. A temporary read failure labels a retained wait as last recorded. A refused read
 clears it.

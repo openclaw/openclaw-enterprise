@@ -80,6 +80,9 @@
       "path": "tests/browser/console-create-agent-member.test.ts"
     },
     {
+      "path": "tests/browser/console-create-agent-progress.test.ts"
+    },
+    {
       "path": "tests/browser/console-shell.test.ts"
     },
     {

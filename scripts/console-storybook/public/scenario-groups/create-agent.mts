@@ -21,6 +21,7 @@ import {
 import type { StoryAction } from "../../story-action.mts";
 import type {
   AgentDeploymentStatusWire,
+  AgentProvisioningStatusWire,
   CredentialSourceType,
   InstallationCapabilities,
   NamespaceStatus,
@@ -57,6 +58,8 @@ type CreateAgentScenario = {
   presetVariables?: Readonly<Record<string, PresetVariable>>;
   presetWorkspaceFiles?: Readonly<Record<string, string>>;
   malformedProvisioningReply?: "revision-id" | "error-message";
+  // The completed phase each provisioning status read reports, in order (the last repeats).
+  provisioningPhases?: readonly AgentProvisioningStatusWire["phase"][];
   provisionedDeploymentStatus?: AgentDeploymentStatusWire["status"];
   provisionedDeploymentAttempt?: Omit<
     NonNullable<NonNullable<AgentDeploymentStatusWire["progress"]>["lastAttempt"]>,
@@ -855,6 +858,26 @@ export const createAgentProvisioningScenarios = {
       "Confirm Deployment activity shows the first deployment still in progress, and the provisioning job is no longer polled.",
     ],
   },
+  createProvisioningSteps: {
+    group: "Pages/Create Agent",
+    name: "Provisioning progress",
+    path: create,
+    actions: [...readyForm, click("Create Agent")],
+    provisioningPhases: ["admitted", "configuration", "transport", "handoff"],
+    provisionedDeploymentStatus: "running",
+    provisionedDeploymentAttempt: {
+      code: "REVISION_INCOMPLETE",
+      message: "Waiting for the runtime to become ready.",
+    },
+    provisioningNamesDeploymentWait: true,
+    description:
+      "Each status read reports the next completed phase, so the meter advances one step at a time: waiting for the worker, creating the Configuration and Agent, creating runtime credentials, then starting the first deployment. The current step's marker spins; completed steps are marked done. No percentage is shown, because the job reports phases, not fractions.",
+    steps: [
+      "Click Create Agent. The meter appears with the first step current and the elapsed time counting.",
+      "Watch each later step become current as its phase completes; the deployment step then keeps its throbber while the runtime becomes ready.",
+    ],
+    gap: "Simulated UI proof: the phases and deployment wait are fixture answers, not a real controller or cluster.",
+  },
   createPending: {
     group: "Pages/Create Agent",
     name: "Create pending",
@@ -862,7 +885,7 @@ export const createAgentProvisioningScenarios = {
     rules: [{ suffix: "/agents/provision", method: "POST", hold: true }],
     actions: [...readyForm, click("Create Agent")],
     description:
-      "The provisioning request is held, so Create Agent stays disabled and busy: it sets aria-busy and shows the progress pointer (finding 1961).",
+      "The provisioning request is held, so Create Agent stays disabled and busy: it sets aria-busy and shows the progress pointer (finding 1961). The step meter appears with its first step current, its marker spinning while no job answer can advance it.",
     steps: ["Hover Create Agent: the pointer is progress, not not-allowed."],
     gap: "The real client gives up after 15 seconds and reports an unknown outcome, which ends the busy state; reset the story to replay it. Other controls' requests disable Create without marking it busy; the browser tests cover that, not this story.",
   },
@@ -942,10 +965,10 @@ export const createAgentProvisioningScenarios = {
     actions: readyForm,
     provisionedDeploymentStatus: "failed",
     description:
-      "The original provisioning request reports its first-deployment failure and links to the existing Agent and revision.",
+      "The original provisioning request reports its first-deployment failure. The step meter marks the deployment step failed; the error line below it leads with the reason and links to the existing Agent and revision.",
     steps: [
       "Click Create Agent and wait for the credential initialization failure.",
-      "Open the existing Agent link; confirm the form offers no retry that would create another Agent.",
+      "Confirm the meter's failed step keeps its place while the error line names the reason, and open the existing Agent link; confirm the form offers no retry that would create another Agent.",
     ],
   },
   createMalformedProvisioningRevision: {
@@ -996,7 +1019,7 @@ export const createAgentProvisioningScenarios = {
     actions: readyForm,
     provisioningCancelledByStop: true,
     description:
-      "Someone stopped the new Agent before its first version was admitted. Provisioning is cancelled, but the stopped Agent keeps its name, so the page links it instead of offering a new Agent.",
+      "Someone stopped the new Agent before its first version was admitted. Provisioning is cancelled, but the stopped Agent keeps its name, so the page links it instead of offering a new Agent. The meter marks the step where the job ended as stopped, not failed.",
     steps: [
       "Click Create Agent and wait for the cancelled provisioning.",
       "Confirm the page says Provisioning stopped, asks for no new Agent, and links the kept Agent.",
@@ -1010,7 +1033,7 @@ export const createAgentProvisioningScenarios = {
     provisionedDeploymentStatus: "failed",
     provisionedDeploymentStopped: true,
     description:
-      "Someone stopped the new Agent while its first deployment was rolling out. The request names the stop and asks for no repair.",
+      "Someone stopped the new Agent while its first deployment was rolling out. The request names the stop and asks for no repair; the meter marks the deployment step stopped, not failed.",
     steps: [
       "Click Create Agent and wait for the stopped first deployment.",
       "Confirm the message names the stop without asking to correct a cause, and open the existing Agent link.",

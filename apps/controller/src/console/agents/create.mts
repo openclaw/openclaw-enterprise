@@ -55,6 +55,10 @@ import {
   refusedPresetVariables,
 } from "./presets.mjs";
 import { provisioningJob } from "./provisioning-job.mjs";
+import {
+  createProvisioningProgress,
+  type ProvisioningProgressView,
+} from "./provisioning-progress.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import { renderChannels } from "../channels.mjs";
@@ -192,6 +196,7 @@ interface ProvisioningAttempt {
 
 type ProvisioningContext = Pick<CreateAgentContext, "request" | "namespaceId" | "isCurrent"> & {
   status: HTMLElement;
+  progress: ProvisioningProgressView;
 };
 type ProvisioningJob = ReturnType<typeof provisioningJob>;
 // The API's duplicate-name sentence. Other Agent conflicts reach the client as generic text,
@@ -543,6 +548,7 @@ function jobDeploymentWait(job: ProvisioningJob) {
 async function waitForProvisioning({
   request,
   status,
+  progress,
   first,
   namespaceId,
   observeJob,
@@ -586,6 +592,7 @@ async function waitForProvisioning({
       (deploymentRefused ? null : jobDeploymentWait(current)) ??
         provisioningStatusText(started ? "running" : current.status),
     );
+    progress.report(current);
     await nextPoll;
     if (!isCurrent()) {
       throw new DOMException("View closed", "AbortError");
@@ -606,6 +613,15 @@ async function waitForProvisioning({
           status: current.status,
           error: current.error?.code === undefined ? null : { code: current.error.code },
         });
+  // The meter marks where the job ended; the error line below owns the reason and the action.
+  progress.finish(
+    current,
+    current?.status === "succeeded"
+      ? "succeeded"
+      : neutralOutcome === "stopped" || neutralOutcome === "superseded"
+        ? "stopped"
+        : "failed",
+  );
   // A failed job's reason leads the form's error line, so its status line would only repeat
   // that it failed (finding 2423).
   status.textContent =
@@ -654,12 +670,14 @@ class ProvisioningFailure extends Error {
 async function finishProvisioningAttempt({
   request,
   status,
+  progress,
   namespaceId,
   attempt,
   retryUrl,
   isCurrent,
 }: ProvisioningContext & { attempt: ProvisioningAttempt; retryUrl?: string | undefined }) {
   status.textContent = "Submitting provisioning request…";
+  progress.begin();
   const provisionPath = `${namespacePath(namespaceId)}/agents/provision`;
   const provisioned =
     retryUrl === undefined
@@ -684,9 +702,11 @@ async function finishProvisioningAttempt({
   }
   const accepted = observeJob(provisioned);
   status.textContent = "Provisioning request accepted.";
+  progress.report(accepted);
   return waitForProvisioning({
     request,
     status,
+    progress,
     first: accepted,
     namespaceId,
     observeJob,
@@ -2081,6 +2101,9 @@ function renderAgentForm(
   let stagedChannelSecrets = draft.stagedChannelSecrets ?? [];
   const feedback = element("p", { className: "error", role: "alert" });
   const savedStatus = element("p", { className: "hint", role: "status" });
+  // The step meter for a provisioning request in flight. It reads only the polled job's own
+  // status and phase; the lines below keep their sentences (findings 1424, 2423).
+  const provisioningMeter = createProvisioningProgress();
   // Create's refusals show in the danger status block (UX plan C1). The line above keeps its
   // markup so open changes to the lines around it still merge.
   setStatusTone(feedback, "danger");
@@ -3573,6 +3596,7 @@ function renderAgentForm(
       const finishing = finishProvisioningAttempt({
         request,
         status: savedStatus,
+        progress: provisioningMeter,
         namespaceId,
         attempt,
         retryUrl,
@@ -3656,6 +3680,7 @@ function renderAgentForm(
       // A job that ended keeps its final status (none once it failed: the error line says so);
       // any other progress line spoke for the request that just ended (finding 1490).
       if (!terminal) {
+        provisioningMeter.reset();
         if (savedSecret || savedConfiguration || savedAgent) {
           showSavedStatus();
         } else {
@@ -4359,6 +4384,9 @@ function renderAgentForm(
     accessStatus,
     form,
     channelEditor,
+    // The meter leads the outcome lines while a request is in flight; the error line then
+    // leads with the reason (finding 1862), below the step the meter marks.
+    provisioningMeter.section,
     // The outcome leads; the saved-resources line identifies what was kept (finding 1862).
     feedback,
     savedStatus,

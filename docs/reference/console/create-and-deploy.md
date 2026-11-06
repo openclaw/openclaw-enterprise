@@ -75,6 +75,7 @@ as the reason Dedicated OpenClaw is disabled.
    newlines. See [initial contents](../agents.md#initial-contents-at-creation) for limits.
 8. Select **Create Agent** to submit Configuration, Secret references, Agent inputs,
    repositories, and workspace files for supported Dedicated provisioning.
+   A step meter follows the job's reported phases.
    Create opens the first revision's **Deployment** tab for progress and recovery as soon as
    it can read the deployment. If Create sees job success first, it opens **Configuration**.
    If a newer deployment takes over while Create is open, Create offers no retry or link.
