@@ -105,9 +105,11 @@ report only counts and flags, not marker values, commands or transcripts. Conten
 shape counts distinguish strings, arrays, recognized text and tool-call parts,
 and unsupported parts. Exec observations distinguish an exact requested command,
 nonempty output, and the recognized `value.aggregated` result envelope from other
-JSON. Marker containment counts distinguish missing text from text that fails the
-standalone tool-line or exact final-reply requirement; they do not relax either
-requirement. An unrecognized shape remains a failed proof.
+JSON. Read the nonempty-text, marker-containment, and strict-match counts together:
+they show whether the helper recognized text, found the marker anywhere in it,
+or found it in the required form. These counts aggregate the run; they do not
+identify the cause of an individual mismatch or relax the proof requirements.
+An unrecognized shape remains a failed proof.
 This settling bound does not reduce the model-execution budget or count a failed
 proof as a performance improvement. Before a turn, placement polling retries only
 a correlated `UNAVAILABLE` response with the pinned Gateway's explicit
