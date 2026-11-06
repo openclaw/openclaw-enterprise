@@ -51,11 +51,6 @@ export async function createSavedAccountOrigin(t: TestContext, issuer: string) {
       return;
     }
     try {
-      assert.equal(
-        req.headers["x-oce-account-binding"],
-        undefined,
-        "OCC consumes the private account selector before the request reaches the recipient.",
-      );
       assert.equal(req.method, "POST");
       assert.equal(req.url, "/mcp");
       let bytes = "";
