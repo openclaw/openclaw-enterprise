@@ -12,7 +12,7 @@ import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
 } from "./bootstrap-installation.mjs";
-import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
 import { databaseUrl } from "./postgres-database.mjs";
@@ -58,6 +58,7 @@ export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
  * @param [options.controllerOptions]
  * @param [options.stateOptions]
  * @param [options.sandboxDriver]
+ * @param [options.secretDriver]
  * @param [options.transportDatabaseUrl]
  * @param [options.poolOptions]
  * @returns `{ pool, state, controller, computeDriver, app, principal, inject, deployAgent }`.
@@ -77,6 +78,7 @@ export async function createPostgresAgentApp(
     stateOptions,
     sandboxDriver,
     transportDatabaseUrl = databaseUrl,
+    secretDriver = createTestSecretDriver({ id: `${label}-pg-secret` }),
     poolOptions = {},
   },
 ) {
@@ -96,7 +98,6 @@ export async function createPostgresAgentApp(
   const iamDriver = new NativeIAMDriver(state, { id: `${label}-pg-iam` });
   const computeDriver = createRuntimeLogComputeDriver({ id: `${label}-pg-compute` });
   const configurationDriver = createTestConfigurationDriver({ id: `${label}-pg-config` });
-  const secretDriver = createTestSecretDriver({ id: `${label}-pg-secret` });
   const controller = new OpenClawController(installation, {
     state,
     recordOperations: false,
@@ -195,5 +196,16 @@ export async function createPostgresAgentApp(
     return { namespace, secretRef, agent, revision };
   }
 
-  return { pool, state, controller, computeDriver, app, createApp, principal, inject, deployAgent };
+  return {
+    pool,
+    state,
+    controller,
+    computeDriver,
+    app,
+    createApp,
+    principal,
+    inject,
+    deployAgent,
+    adminAccount: { email: adminEmail, password: adminPassword },
+  };
 }

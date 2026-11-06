@@ -364,8 +364,9 @@ test("renderer supports exactly the openclaw and codex profiles", () => {
   const openclaw = renderCli("openclaw", baseInput());
   assert.equal(openclaw.summary.ok, true);
   assert.equal(openclaw.preflight.profile, "openclaw");
-  assert.match(openclaw.installation, /id: occ-plugin/);
-  assert.doesNotMatch(openclaw.installation, /id: codex-plugin/);
+  assert.deepEqual(loadYaml(openclaw.installation).drivers.plugin, [
+    { id: "occ-plugin", configuration: {} },
+  ]);
   assert.match(openclaw.values, /agentNativeAdmin:\n {2}enabled: true/);
   assert.match(openclaw.values, /repositoryCredentials:\n {2}enabled: false/);
   assert.match(openclaw.values, /slackProxy:\n {2}enabled: true/);
@@ -382,8 +383,9 @@ test("renderer supports exactly the openclaw and codex profiles", () => {
   const codex = renderCli("codex", codexInput());
   assert.equal(codex.summary.ok, true);
   assert.equal(codex.preflight.profile, "codex");
-  assert.match(codex.installation, /id: codex-plugin/);
-  assert.match(codex.installation, /catalogSource: hosted/);
+  assert.deepEqual(loadYaml(codex.installation).drivers.plugin, [
+    { id: "codex-plugin", configuration: { catalogSource: "hosted" } },
+  ]);
   assert.doesNotMatch(codex.installation, /service_account: chatgpt-service-accounts/);
   assert.match(codex.values, /slackProxy:\n {2}enabled: true/);
   assert.match(
@@ -776,6 +778,8 @@ test("hosted discovery DNS failures revoke stale deployment artifacts", async (t
   const preflight = JSON.parse(readFileSync(join(dns.directory, "preflight.json"), "utf8"));
   assert.equal(preflight.ok, false);
   assert.ok(preflight.errors.join("\n").includes("IPv4 addresses for chatgpt.com."));
+  // One host must resolve so a broken DNS fixture cannot satisfy the refusal case.
+  assert.doesNotMatch(preflight.errors.join("\n"), /IPv4 addresses for auth\.openai\.com\./);
   assert.match(preflight.errors.join("\n"), /modelDiscoveryCidrs/);
   assert.match(preflight.errors.join("\n"), /retry|re-?render|supply|set|provide|configure/i);
   assert.equal(existsSync(join(dns.directory, "values.yaml")), false);

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { composeConfiguration } from "../helpers/compose.mjs";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { composeConfiguration, composeConfigurationProvider } from "../helpers/compose.mjs";
+
+import { firstAgentComposeImages } from "../helpers/local-first-agent-stack.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 function volumeMounts(service) {
   // podman-compose preserves short syntax; Docker Compose expands it.
@@ -58,4 +63,39 @@ test("development packaging isolates bootstrap service key output to the bootstr
       }),
     );
   }
+});
+
+// A plain `build: null` does not remove inherited builds. Exercise Compose's
+// real merge so the prepared-image path cannot silently rebuild every service
+// or alter the bootstrap, credential-mount and readiness dependencies.
+test("prepared first-Agent Compose images replace builds and preserve service contracts", async (t) => {
+  if (composeConfigurationProvider().format !== "json") {
+    t.skip("The prepared first-Agent image path uses Docker Compose.");
+    return;
+  }
+  const directory = await temporaryDirectory(t, "first-agent-compose-images-");
+  const image = `127.0.0.1:5000/openclaw-ci-first-images-test/controller@sha256:${"a".repeat(64)}`;
+  const file = join(directory, "images.yaml");
+  await writeFile(file, firstAgentComposeImages(image));
+  const files = ["compose.yaml", "compose.kubernetes.yaml", "compose.native-admin.yaml"];
+  const environment = {
+    OCC_DEVELOPMENT_INSTALLATION_CONFIG: join(directory, "installation.yaml"),
+    OCC_DEVELOPMENT_KUBECONFIG: join(directory, "kubeconfig"),
+    OCC_DEVELOPMENT_NETWORK_NAME: "first-agent-compose-config",
+    OCC_DEVELOPMENT_BROWSER_ORIGIN: "https://console.example.test:8443",
+    OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN: "agents.example.test",
+    OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN: ".example.test",
+    OCC_DEVELOPMENT_BROWSER_PORT: "8443",
+    OCC_DEVELOPMENT_BROWSER_TLS_CERT: join(directory, "tls.crt"),
+    OCC_DEVELOPMENT_BROWSER_TLS_KEY: join(directory, "tls.key"),
+  };
+  const source = composeConfiguration(files, environment);
+  const selected = composeConfiguration([...files, file], environment);
+  for (const name of ["migrate", "bootstrap", "controller", "worker-kubernetes", "browser-proxy"]) {
+    assert.ok(source.services[name].build);
+    delete source.services[name].build;
+    source.services[name].image = image;
+  }
+  assert.deepEqual(selected, source);
+  assert.throws(() => firstAgentComposeImages(image.replace(/@.*/, ":latest")), /immutable/);
 });

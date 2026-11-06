@@ -19,6 +19,7 @@ import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from 
 import {
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
+  AGENT_WITH_NODE_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   managedInstalls,
@@ -39,10 +40,19 @@ import {
 } from "../helpers/runtime-image-startup.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
-async function startGoogleGateway(t, enabled, workspaceNodeId) {
+const slack = managedMcpInstalls.find(({ id }) => id === "occ-plugin:slack@1.0.0");
+
+function managedPackages(...packages) {
+  return "OPENCLAW_MANAGED_PLUGIN_JSON=" + JSON.stringify(packages);
+}
+
+async function startGatewayWithSlack(t, enabled, workspaceNodeId) {
   const { id, releaseSha256 } = managedGoogleInstall;
   const configurationPath = await temporaryGatewayConfiguration(t, "openclaw");
-  const manifest = { kind: "openclaw", selections: { [id]: { enabled } } };
+  const manifest = {
+    kind: "openclaw",
+    selections: { [id]: { enabled }, [slack.id]: { enabled: true } },
+  };
   return runGatewaySmoke(t, "openclaw", {
     configurationPath: "/etc/openclaw/openclaw.json",
     entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
@@ -51,14 +61,22 @@ async function startGoogleGateway(t, enabled, workspaceNodeId) {
     extraEnvironment: [
       ...(workspaceNodeId ? ["OPENCLAW_WORKSPACE_NODE_ID=" + workspaceNodeId] : []),
       "OPENCLAW_PLUGIN_RUNTIME_JSON=" + JSON.stringify({ manifest }),
-      "OPENCLAW_MANAGED_PLUGIN_JSON=" +
-        JSON.stringify({
+      managedPackages(
+        {
           kind: "cli",
           id,
           packageName: managedGoogleInstall.packageName,
           slotId: "account",
           ...(enabled && { releaseSha256 }),
-        }),
+        },
+        {
+          kind: "mcp",
+          id: slack.id,
+          packageName: slack.packageName,
+          slotId: slack.slotId,
+          releaseSha256: slack.releaseSha256,
+        },
+      ),
     ],
   });
 }
@@ -275,17 +293,28 @@ process.exit(r.status);`,
       const volume = await gatewayStateVolume(t, "/tmp/node", {
         seed: "echo retained > /tmp/node/enrollment-sentinel",
       });
-      const { packageName, slotId, releaseSha256 } = managedMcpInstalls.find(
-        ({ id }) => id === "occ-plugin:slack@1.0.0",
-      );
+      const { packageName, slotId, releaseSha256 } = slack;
+      const google = {
+        kind: "cli",
+        packageName: managedGoogleInstall.packageName,
+        slotId: "account",
+        releaseSha256: managedGoogleInstall.releaseSha256,
+      };
       const settings = (digest, toolNames) =>
-        "OPENCLAW_MANAGED_PLUGIN_JSON=" +
-        JSON.stringify({ kind: "mcp", packageName, slotId, releaseSha256: digest, toolNames });
+        digest === undefined
+          ? managedPackages(google)
+          : managedPackages(google, {
+              kind: "mcp",
+              packageName,
+              slotId,
+              releaseSha256: digest,
+              toolNames,
+            });
       const inspect = async (digest, mounts = [], toolNames) => {
         const result = await runManagedWorker(
           ["/app/openclaw.mjs", "config", "get", "nodeHost", "--json"],
           ["-v", volume + ":/tmp/node", ...mounts],
-          digest === undefined ? [] : [settings(digest, toolNames)],
+          [settings(digest, toolNames)],
         );
         return JSON.parse(result.stdout);
       };
@@ -296,15 +325,17 @@ process.exit(r.status);`,
         url: "https://mcp.slack.com/mcp",
       });
       const tools = ["slack_search_public"];
+      // Execute the Google CLI in the same child that reads the worker's Slack MCP configuration.
+      const probe = `
+require("node:child_process").execFileSync("gog", ["--version"]);
+console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8"));
+`;
       for (const marker of [
         "openshell:resolve:env:v7_SLACK_MCP_TOKEN",
         "openshell:resolve:env:s" + "a".repeat(64) + "_SLACK_MCP_TOKEN",
       ]) {
         const connected = await runManagedWorker(
-          [
-            "-e",
-            "console.log(require('node:fs').readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8'))",
-          ],
+          ["-e", probe],
           ["-v", volume + ":/tmp/node"],
           [settings(releaseSha256, tools), "SLACK_MCP_TOKEN=" + marker],
         );
@@ -344,7 +375,7 @@ process.exit(r.status);`,
   );
 
   test(
-    "the dedicated worker stages a different MCP package from its reviewed release",
+    "the dedicated worker configures two MCP servers with their own credentials and tool selections",
     imageTestOptions,
     async (t) => {
       const directory = await workerPackageDirectory(t, "oce-managed-mcp-");
@@ -367,6 +398,7 @@ process.exit(r.status);`,
       await writeFile(join(directory, "mcp.json"), manifest);
       await writeFile(join(directory, "ai.openclaw.oce/release.json"), release);
       const marker = "openshell:resolve:env:v9_DOCUMENTS_ACCESS_TOKEN";
+      const slackMarker = "openshell:resolve:env:v19_SLACK_MCP_TOKEN";
       const run = (toolNames) =>
         runManagedWorker(
           [
@@ -375,19 +407,35 @@ process.exit(r.status);`,
           ],
           ["-v", directory + ":/usr/local/lib/oce/plugin-catalog/oce-documents:ro"],
           [
-            "OPENCLAW_MANAGED_PLUGIN_JSON=" +
-              JSON.stringify({
+            managedPackages(
+              {
+                kind: "mcp",
+                packageName: slack.packageName,
+                slotId: slack.slotId,
+                releaseSha256: slack.releaseSha256,
+                toolNames: ["slack_search_public"],
+              },
+              {
                 kind: "mcp",
                 packageName: "oce-documents",
                 slotId: "workspace",
                 releaseSha256: digest(release),
                 toolNames,
-              }),
+              },
+            ),
+            "SLACK_MCP_TOKEN=" + slackMarker,
             "DOCUMENTS_ACCESS_TOKEN=" + marker,
           ],
         );
       const configured = await run(["ListItems"]);
       assert.deepEqual(JSON.parse(configured.stdout).nodeHost.mcp.servers, {
+        oce_mcp_slack: {
+          enabled: true,
+          transport: "streamable-http",
+          url: "https://mcp.slack.com/mcp",
+          headers: { Authorization: "Bearer " + slackMarker },
+          toolFilter: { include: ["slack_search_public"] },
+        },
         oce_mcp_documents: {
           enabled: true,
           transport: "streamable-http",
@@ -410,10 +458,10 @@ process.exit(r.status);`,
   );
 
   test(
-    "the native Gateway discovers the selected Google installation instructions",
+    "the native Gateway discovers the Google instructions with Slack selected alongside it",
     imageTestOptions,
     async (t) => {
-      const { containerName } = await startGoogleGateway(t, true);
+      const { containerName } = await startGatewayWithSlack(t, true);
       const { stdout } = await runDocker([
         "exec",
         "-e",
@@ -442,7 +490,7 @@ process.exit(r.status);`,
         "utf8",
       );
       for (const enabled of [false, true]) {
-        const { containerName } = await startGoogleGateway(t, enabled, "a".repeat(64));
+        const { containerName } = await startGatewayWithSlack(t, enabled, "a".repeat(64));
         await runDocker(
           [
             "exec",
@@ -461,7 +509,7 @@ process.exit(r.status);`,
   );
 
   test(
-    "runtime image enrolls the restricted workspace node and reconnects with saved credentials",
+    "runtime image recovers a lost workspace node hello and reconnects with saved credentials",
     imageTestOptions,
     async (t) => {
       // The Kubernetes entrypoint admits the workspace command grant before pairing.
@@ -475,9 +523,33 @@ process.exit(r.status);`,
         new URL("../fixtures/runtime-workspace-node.mjs", import.meta.url),
         "utf8",
       );
+      // Only the unrelated Codex sibling is inert. Native setup, the node, Gateway,
+      // and the production supervisor execute their real logic; the fixture's
+      // transport proxy drops one credential-bearing hello before node delivery.
+      const supervisor = `
+const cp = require("node:child_process");
+const originalSpawn = cp.spawn;
+cp.spawn = (command, args, options) => originalSpawn(command,
+  args[0] === "-e" ? ["-e", "setInterval(() => {}, 1000)"] : args, options);
+${AGENT_WITH_NODE_ENTRYPOINT}`;
+      await runDocker(
+        [
+          "exec",
+          "-i",
+          containerName,
+          "node",
+          "-e",
+          'const fs = require("node:fs"); const files = JSON.parse(fs.readFileSync(0, "utf8")); for (const [name, content] of Object.entries(files)) fs.writeFileSync(name, content);',
+        ],
+        {},
+        JSON.stringify({
+          "/tmp/workspace-node-supervisor.cjs": supervisor,
+          "/tmp/runtime-workspace-node.mjs": source,
+        }),
+      );
       // The fixture bounds every CLI call and wait by one deadline 10 s inside this
       // exec timeout, so a hung call fails with its own name.
-      const execTimeoutMs = 240_000 * imageSmokeTimeoutMultiplier;
+      const execTimeoutMs = 360_000 * imageSmokeTimeoutMultiplier;
       const { stdout } = await runDocker(
         [
           "exec",
@@ -485,15 +557,20 @@ process.exit(r.status);`,
           `WORKSPACE_PROOF_BUDGET_MS=${execTimeoutMs - 10_000}`,
           containerName,
           "node",
-          "--input-type=module",
-          "-e",
-          source,
+          "/tmp/runtime-workspace-node.mjs",
         ],
         { timeout: execTimeoutMs },
       );
       const result = JSON.parse(stdout);
       assert.equal(result.sameIdentityAfterRestart, true);
-      assert.equal(result.singleBootstrapCompletion, true);
+      assert.equal(result.sameIdentityAfterReplacementSetup, true);
+      assert.equal(result.stableCompletionPerSetup, true);
+      assert.equal(result.lostHelloConfirmedWithoutSavedToken, true);
+      assert.equal(result.consumedSetupRetryRejected, true);
+      assert.equal(result.sameIdentityAfterPairingRecovery, true);
+      assert.equal(result.possessionEstablishedAfterRecovery, true);
+      assert.equal(result.sameTokenAfterRedeploy, true);
+      assert.equal(result.possessionClearedOnRetirementAndReplacement, true);
       assert.equal(result.commands.length, 7);
       t.diagnostic(`slowest gateway call: ${result.slowestCallMs} ms`);
     },
@@ -574,7 +651,9 @@ process.exit(child.status ?? 1);
           "-e",
           launch,
         ],
-        {},
+        // The sequential suite's per-case deadlines total 313 seconds. Keep them
+        // intact and allow container startup/reporting beyond that combined budget.
+        { timeout: 360_000 * imageSmokeTimeoutMultiplier },
         JSON.stringify(files),
       ).catch((error) => {
         // CI truncates the error message and drops the command output, so name the

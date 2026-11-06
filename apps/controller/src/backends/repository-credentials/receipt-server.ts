@@ -1,3 +1,4 @@
+import { createStatusWirePrimitives } from "./status-wire.ts";
 import { servePrivateRepositoryRequest } from "./private-request-server.ts";
 import type { PlatformStateStore } from "@openclaw-enterprise/occ";
 import { isBoundInput, snapshotSessionInput } from "../../drivers/repo/credentials/sessions.ts";
@@ -9,18 +10,9 @@ const admissionPattern =
 const generationPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const sessionPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
-function object(value: unknown, fields: readonly string[]): Record<string, unknown> {
-  if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    Object.keys(value).length !== fields.length ||
-    fields.some((field) => !Object.hasOwn(value, field))
-  ) {
-    throw new Error("INVALID_RECEIPT_REQUEST");
-  }
-  return value as Record<string, unknown>;
-}
+const { object, identity, counter, parseCleanup } = createStatusWirePrimitives(() => {
+  throw new Error("INVALID_RECEIPT_REQUEST");
+});
 
 function status(value: unknown): SessionStatus {
   const input = object(value, [
@@ -32,39 +24,11 @@ function status(value: unknown): SessionStatus {
     "cleanup",
   ]);
   const binding = object(input.binding, ["providerInstanceId", "repositoryId", "grantId"]);
-  const cleanup = object(input.cleanup, [
-    "active",
-    "pending",
-    "revoked",
-    "expired",
-    "uncertain",
-    "auxiliaryPending",
-  ]);
-  const counter = (entry: unknown): number => {
-    if (typeof entry !== "number" || !Number.isSafeInteger(entry) || entry < 0) {
-      throw new Error("INVALID_RECEIPT_REQUEST");
-    }
-    return entry;
-  };
-  const identity = (entry: unknown): string => {
-    if (
-      typeof entry !== "string" ||
-      entry.length === 0 ||
-      Buffer.byteLength(entry) > 512 ||
-      [...entry].some((character) => {
-        const code = character.charCodeAt(0);
-        return code <= 31 || code === 127;
-      })
-    ) {
-      throw new Error("INVALID_RECEIPT_REQUEST");
-    }
-    return entry;
-  };
+  const cleanup = parseCleanup(input.cleanup);
   if (
     typeof input.sessionId !== "string" ||
     !sessionPattern.test(input.sessionId) ||
-    !["OPEN", "CLOSED", "DISPOSED"].includes(String(input.state)) ||
-    typeof cleanup.auxiliaryPending !== "boolean"
+    !["OPEN", "CLOSED", "DISPOSED"].includes(String(input.state))
   ) {
     throw new Error("INVALID_RECEIPT_REQUEST");
   }
@@ -78,14 +42,7 @@ function status(value: unknown): SessionStatus {
       grantId: identity(binding.grantId),
     },
     activeUses: counter(input.activeUses),
-    cleanup: {
-      active: counter(cleanup.active),
-      pending: counter(cleanup.pending),
-      revoked: counter(cleanup.revoked),
-      expired: counter(cleanup.expired),
-      uncertain: counter(cleanup.uncertain),
-      auxiliaryPending: cleanup.auxiliaryPending,
-    },
+    cleanup,
   };
 }
 

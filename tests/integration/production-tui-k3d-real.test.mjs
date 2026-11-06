@@ -1,5 +1,5 @@
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -1337,10 +1337,12 @@ test(
         channelDirectoryProxyUrl: "http://198.51.100.25:3128",
       };
       const candidateInstallation = JSON.parse(await run("yq", ["-o=json", ".", installationPath]));
-      candidateInstallation.drivers.plugin = {
-        id: "codex-plugin",
-        configuration: { catalogSource: "openai-curated" },
-      };
+      candidateInstallation.drivers.plugin = [
+        {
+          id: "codex-plugin",
+          configuration: { catalogSource: "openai-curated" },
+        },
+      ];
       await writeFile(candidateValuesPath, JSON.stringify(candidateValues), { mode: 0o600 });
       await writeFile(candidateInstallationPath, JSON.stringify(candidateInstallation), {
         mode: 0o600,
@@ -1435,7 +1437,7 @@ test(
       );
       const upgradedInstallation = JSON.parse(await run("yq", ["-o=json", ".", installationPath]));
       assert.equal(
-        upgradedInstallation.drivers.plugin.configuration.catalogSource,
+        upgradedInstallation.drivers.plugin[0].configuration.catalogSource,
         "openai-curated",
       );
       for (const component of ["api", "worker"]) {

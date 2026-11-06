@@ -1,13 +1,11 @@
 import type {
   AgentRuntimeDescription,
-  AgentRuntimeLogPageWire,
   AgentRuntimeLogSource,
   RuntimeLogLevel,
-  RuntimeLogRecord,
   RuntimeLogSourceId,
   RuntimeLogStream,
 } from "@openclaw-enterprise/contracts";
-import { type RequestOptions, requestFailure } from "../api-client.mjs";
+import { type RequestOptions, requestFailure, responseFields } from "../api-client.mjs";
 import {
   button,
   element,
@@ -23,7 +21,14 @@ import {
   runtimeStatusDenied,
 } from "./access-reasons.mjs";
 import { displayDate, namespacePath, retryAfterText } from "./list.mjs";
-import { fitLogTimeColumn, SOURCE_LABELS, podCard, recordRow, visibleText } from "./logs-view.mjs";
+import {
+  type LogRecordView,
+  fitLogTimeColumn,
+  SOURCE_LABELS,
+  podCard,
+  recordRow,
+  visibleText,
+} from "./logs-view.mjs";
 
 interface AgentLogsContext {
   namespaceId: string;
@@ -123,6 +128,104 @@ const STATUS_ACCESS_CHANGED =
   "Your access to this Agent changed, so its runtime status is no longer shown. Refresh to check your access, or ask an Installation administrator.";
 
 const LEVELS = ["error", "warn", "info", "debug", "unknown"] satisfies RuntimeLogLevel[];
+
+// Project only the stream fields this view consumes, not the complete wire identity.
+type LogStreamView = {
+  [Key in "source" | "pod" | "container" | "sandbox" | "restartCount"]: RuntimeLogStream[Key];
+};
+
+function logStream(value: unknown): LogStreamView | null {
+  if (value === null) {
+    return null;
+  }
+  const { source, pod, container, sandbox, restartCount } = responseFields(value);
+  if (
+    (source !== "gateway" && source !== "agent" && source !== "sandbox") ||
+    (pod !== undefined && typeof pod !== "string") ||
+    (container !== undefined && typeof container !== "string") ||
+    (sandbox !== undefined && typeof sandbox !== "string") ||
+    (restartCount !== undefined && !logCount(restartCount))
+  ) {
+    throw new Error("Invalid log stream.");
+  }
+  return { source, pod, container, sandbox, restartCount };
+}
+
+function logCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function logFields(value: unknown): value is Readonly<Record<string, string | number | boolean>> {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.values(value).every(
+      (field: unknown) =>
+        typeof field === "string" ||
+        typeof field === "boolean" ||
+        (typeof field === "number" && Number.isFinite(field)),
+    )
+  );
+}
+
+function logRecord(value: unknown): LogRecordView {
+  const record = responseFields(value);
+  if (record.type === "gap") {
+    const { reason, remedy } = record;
+    if (typeof reason !== "string" || typeof remedy !== "string") {
+      throw new Error("Invalid log gap.");
+    }
+    const { source } = responseFields(record.stream);
+    if (source !== undefined && typeof source !== "string") {
+      throw new Error("Invalid log gap source.");
+    }
+    return { type: "gap", reason, remedy, stream: source === undefined ? null : { source } };
+  }
+  if (record.type === "withheld") {
+    const { count, reason } = record;
+    if (!logCount(count) || typeof reason !== "string") {
+      throw new Error("Invalid withheld log count.");
+    }
+    return { type: "withheld", count, reason };
+  }
+  const { time, kind, level, message, subsystem, fields } = record;
+  if (
+    record.type !== "line" ||
+    (time !== null && typeof time !== "string") ||
+    typeof kind !== "string" ||
+    typeof level !== "string" ||
+    typeof message !== "string" ||
+    (subsystem !== undefined && typeof subsystem !== "string") ||
+    (fields !== undefined && !logFields(fields))
+  ) {
+    throw new Error("Invalid log line.");
+  }
+  return { type: "line", time, kind, level, message, subsystem, fields };
+}
+
+function logPage(value: unknown) {
+  const { records, cursor, stream, withheld } = responseFields(value);
+  if (
+    !Array.isArray(records) ||
+    (cursor !== null && typeof cursor !== "string") ||
+    !logCount(withheld)
+  ) {
+    throw new Error("Invalid log page.");
+  }
+  const shownStream = logStream(stream);
+  const entries: readonly unknown[] = records;
+  const projected = entries.map(logRecord);
+  // Finish rendering off-DOM before any state is committed. A later bad entry or render
+  // failure must not replace retained output, append a partial page, or advance its cursor.
+  return {
+    cursor,
+    stream: shownStream,
+    withheld,
+    hasLine: projected.some(({ type }) => type === "line"),
+    rows: projected.map(recordRow),
+  };
+}
 
 function runtimeErrorText(
   error: RequestFailure,
@@ -478,7 +581,7 @@ export function renderAgentLogs(
   // Set once this view compared a status denial with a fresh permission answer, or had no
   // reason to; Back's check revalidates the page's answer after that.
   let permissionsAsked = false;
-  let lastStream: RuntimeLogStream | null = null;
+  let lastStream: LogStreamView | null = null;
 
   const current = () => context.isCurrent();
   // Runtime reads are live and audited: a view restored by Back resumes them instead of
@@ -974,15 +1077,14 @@ export function renderAgentLogs(
     }
   }
 
-  function appendRecords(records: readonly RuntimeLogRecord[]) {
+  function appendRecords(records: readonly HTMLElement[]) {
     // An empty Follow poll writes nothing: the filter status is a live region that would be
     // announced again, and rows the reader selected text in stay as they are.
     if (records.length === 0) {
       return;
     }
     const atBottom = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 24;
-    for (const record of records) {
-      const row = recordRow(record);
+    for (const row of records) {
       row.hidden = !rowVisible(row);
       pane.append(row);
       rows += 1;
@@ -1162,11 +1264,12 @@ export function renderAgentLogs(
       if (!logsAllowed && (await permissions())?.readLogs === false) {
         throw Object.assign(new Error("Access denied."), { status: 403, code: "FORBIDDEN" });
       }
-      const page = (await read(`${base}/logs?${query}`)) as AgentRuntimeLogPageWire;
+      const response: unknown = await read(`${base}/logs?${query}`);
       if (!current() || restartPending || logsDenied) {
         restoreShownStatus();
         return;
       }
+      const page = logPage(response);
       showLogError(null);
       logsAllowed = true;
       if (restart) {
@@ -1176,13 +1279,13 @@ export function renderAgentLogs(
         updateFilterStatus();
       }
       cursor = page.cursor;
-      appendRecords(page.records);
+      appendRecords(page.rows);
       if (statusDenied) {
         // A page with no running Pod clears the last Pod, so nothing names it.
         lastStream = page.stream;
         renderPickers();
       }
-      const hasLine = page.records.some(({ type }) => type === "line");
+      const hasLine = page.hasLine;
       // A Follow poll's first line replaces an empty tail's "No output" status.
       if (restart || hasLine) {
         const text =

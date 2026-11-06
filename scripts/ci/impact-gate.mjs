@@ -15,6 +15,7 @@ const matrixLanes = [
   "images-runtime-startup-3",
   "k3d-fixture-configuration",
   "k3d-fixture-state",
+  "k3d-fixture-network",
   "k3d-fixture-plugins",
   "k3d-observability",
   "logging-collector",
@@ -64,11 +65,18 @@ function main(args) {
   }
 
   const issues = [];
+  const imageSelected =
+    mode === "full" || (tests && lanes.some((lane) => lane.startsWith("images-")));
+  const otherSelected =
+    mode === "full" ||
+    (tests && lanes.some((lane) => lane !== fixtureLane && !lane.startsWith("images-")));
   const expected = {
     impact: "success",
     // The suite audit and static checks share a required job in every mode.
     "static-checks": "success",
-    "pr-safe": mode === "docs" ? "skipped" : "success",
+    "pr-safe": otherSelected ? "success" : "skipped",
+    "image-lanes": imageSelected ? "success" : "skipped",
+    "runtime-artifact": imageSelected ? "success" : "skipped",
     "runtime-image-fixture":
       mode === "full" || (mode === "tests" && lanes.includes(fixtureLane)) ? "success" : "skipped",
   };
@@ -95,15 +103,24 @@ function main(args) {
     impact: state("impact"),
     "static-checks": state("static-checks"),
   };
+  if (imageSelected) {
+    expanded["runtime-artifact"] = state("runtime-artifact");
+  }
+  const laneJob = (lane) => {
+    if (lane === fixtureLane) {
+      return fixtureLane;
+    }
+    return lane.startsWith("images-") ? "image-lanes" : "pr-safe";
+  };
   if (mode === "full") {
     expanded["runtime-image-fixture"] = state("runtime-image-fixture");
     for (const lane of matrixLanes) {
-      expanded[lane] = state("pr-safe");
+      expanded[lane] = state(laneJob(lane));
     }
   } else if (mode === "tests") {
     // Only selected lanes are expanded; the aggregator requires each one's results.
     for (const lane of lanes) {
-      expanded[lane] = state(lane === fixtureLane ? fixtureLane : "pr-safe");
+      expanded[lane] = state(laneJob(lane));
     }
   }
   writeFileSync(outputPath, JSON.stringify(expanded));

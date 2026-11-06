@@ -4,10 +4,8 @@ Select an [Agent](../agents.md) execution mode. Creating or editing an Agent doe
 
 ## Agent service principal and workload credentials
 
-Every Agent owns exactly one stable, platform-owned service principal.
-Separate Agents receive separate service principals, even when they share a
-Namespace. The service principal is immutable, belongs to its exact Agent and
-Namespace, and remains the same across every version of that Agent.
+Each Agent has one immutable, platform-owned service principal for all its
+versions. Agents in the same Namespace have distinct service principals.
 
 Inheriting the creator's identity, permissions, session cookie, or provider
 credentials is not yet supported. An Agent service principal cannot assume
@@ -219,12 +217,12 @@ the runtime component, check, time and, when classified, a `cause`: a `kind` and
 an optional `detail` token from this closed vocabulary. A Codex `detail` ending
 `-attempt2` comes from a check retried once.
 
-| `kind`           | Meaning                                                    | `detail`                                                                                                                                                                         |
-| ---------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PROCESS_EXIT`   | The check process exited nonzero, was killed, or never ran | `exit-<status>`, `signal-<SIGNAL>`, or `error-<ERRNO>`, such as `error-ENOBUFS` (oversized output); others are dropped                                                           |
-| `PROBE_STATUS`   | The check ran and reported the model unusable              | OpenClaw `format`, `rate_limit`, `billing`, `unknown`, `no_model`, or `other`; Codex `rate_limit`, `turn-failed`, `error-event`, `tool-event`, `unexpected-event`, or `no-reply` |
-| `INVALID_OUTPUT` | The check's output was not what the runtime expects        | `json` (unparseable) or `shape` (an unexpected result, such as another provider's)                                                                                               |
-| `WRAPPER_ERROR`  | The runtime wrapper could not prepare or read the check    | none                                                                                                                                                                             |
+| `kind`           | Meaning                                                    | `detail`                                                                                                                                                                                            |
+| ---------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PROCESS_EXIT`   | The check process exited nonzero, was killed, or never ran | `exit-<status>`, `signal-<SIGNAL>`, or `error-<ERRNO>`, such as `error-ENOBUFS` (oversized output); others are dropped                                                                              |
+| `PROBE_STATUS`   | The check ran and reported the model unusable              | OpenClaw `format`, `rate_limit`, `billing`, `unknown`, `no_model`, or `other`; Codex `rate_limit`, `model_not_found`, `turn-failed`, `error-event`, `tool-event`, `unexpected-event`, or `no-reply` |
+| `INVALID_OUTPUT` | The check's output was not what the runtime expects        | `json` (unparseable) or `shape` (an unexpected result, such as another provider's)                                                                                                                  |
+| `WRAPPER_ERROR`  | The runtime wrapper could not prepare or read the check    | none                                                                                                                                                                                                |
 
 OpenClaw's `format` covers an unknown model or a request the provider rejected
 as malformed, such as invalid provider settings. A 429 or usage limit is
@@ -244,26 +242,29 @@ inspection reads its containers. It is not a health result; each version's [depl
 is. Unless Compute activates before commit, the worker sets the pointer before
 activation finishes.
 
-If a version fails before the worker sets the pointer, the pointer is
-unchanged. After a failed first deployment, the Agent has no selected version.
+Failure before the worker sets the pointer leaves it unchanged: unset for a
+first deployment.
 With [exclusive replacement](../drivers/compute.md#production-revision-stages),
 the unchanged pointer names a predecessor that was already stopped, so nothing
 serves until a new version activates. When the worker refuses such a candidate
-or any first deployment, for example because its deploying actor lost `deploy`
+or a first deployment, for example because its deploying actor lost `deploy`
 or a credential source was revoked, it stops the candidate's workload and
 records the refusal only after the stop succeeds (until then it waits as
 [`REFUSED_CANDIDATE_STOP_PENDING`](#pending-deployment-progress)). Other refused
-candidates stay until a later successful deployment, stop or delete. A candidate
-whose runtime failed by itself, such as `RUNTIME_MODEL_PROBE_FAILED` or
-`CONVERGENCE_DEADLINE_EXCEEDED`, keeps its Pods so its version's Logs tab can
-show the cause; the next deployment stops them.
+candidates stay until a later successful deployment, stop, deletion or
+[repository cleanup](../repository-credentials.md#deletion-and-restart).
+After runtime failures such as `RUNTIME_MODEL_PROBE_FAILED` or
+`CONVERGENCE_DEADLINE_EXCEEDED`, existing workloads remain for diagnosis until
+redeployment, stop, deletion or repository cleanup removes them. Container logs
+require Pods. Repository cleanup clears a stopped revision's pointer only if
+it remains selected; credential disposal may remain pending.
 Kubernetes embedded replacement reports ready while the predecessor still
 serves, so the worker sets the pointer first. Activation then replaces the
 shared gateway, and the new gateway runs the startup model probe. If that
 probe rejects the credential, the deployment fails with
 `RUNTIME_AUTHENTICATION_FAILED` (or, for a probe that timed out after its retries,
-`RUNTIME_MODEL_PROBE_TIMEOUT`). The failed version stays selected because its
-workload is the only one left; the predecessor has already been replaced. OCC
+`RUNTIME_MODEL_PROBE_TIMEOUT`). Unless cleanup stops it, the failed version stays selected;
+its predecessor has already been replaced. OCC
 never rolls back to an earlier version. To recover, correct the cause and
 deploy a new version, or stop the Agent.
 

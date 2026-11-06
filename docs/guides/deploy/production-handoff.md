@@ -9,78 +9,59 @@ commitments, regulatory compliance, and recovery targets for the workload.
 
 ## Record the initialization Job for handoff
 
-Before starting, record the trusted cluster, context, namespace and Helm release
-in your private operations record. Leave the kubeconfig and credentials out.
+Use the CLI from the chart's source revision. Exclude other install, upgrade and
+Job writers until the installer exits. Choose a new receipt directory under a
+private, durable parent for this target. Use a filesystem that enforces owner-only
+permissions and supports hard links and directory sync. Keep the receipt after install.
 
-For the documented first install (release `oce` in `openclaw-system`), run Helm
-once. If no initialization Job existed beforehand and no other install or upgrade
-can replace it, read its UID in a second terminal while Helm is running:
+The CLI syncs `intent.json` (target, attempt ID, time and input hashes) and
+`dispatch.json` before starting Helm once. While Helm waits, it can save the
+first recognized, attempt-marked Job UID in `job.json`. `helm-result.json` records
+Helm's separate outcome. A missing result means unknown. A failed or disconnected
+Helm client can leave the Job running and the database changed. Do not rerun install
+or switch to upgrade.
 
-```bash
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-  get job oce-initialization -o 'jsonpath={.metadata.uid}{"\n"}'
-```
-
-If the Job is not found yet, repeat only the read. Record the UID immediately,
-then record the Helm outcome separately (`unknown` if the response was lost).
-The UID identifies the Job; it does not mean the installation succeeded.
-
-If you cannot establish those conditions or read the UID, write `Job UID: not
-recorded`. Another install or upgrade may replace the Job after the chart checks it;
-do not substitute a later UID or rerun the install. The next operator can still
-[inspect the current Job](#resume-an-installation-in-progress) without `--expect-job-uid`.
+The installer removes private temporary copies of the kubeconfig, chart and
+values on normal exit. After a forced kill, confirm its Helm process has exited
+before removing that installation's `occ-install-*` temporary directory. A forced kill during handoff can also leave an `occ-handoff-*`
+directory with the reader's private kubeconfig.
+Share only the receipt with the authorized reader.
 
 ## Resume an installation in progress
 
-Run `occ installation doctor` and `occ installation plan` to inspect the retained
-initialization Job. Ask the installer for the Kubernetes context, namespace, Helm
-release, and Job UID if recorded. Use the [matching released CLI](../cli.md#occ-cli),
-`kubectl`, and your own trusted kubeconfig with permission to get the named Job,
-normally `<release>-initialization`. These commands read the Kubernetes API and
-do not require an OCC endpoint or service key.
+Use the matching CLI, `kubectl`, your own trusted kubeconfig, and permission to
+get the named Job (normally `<release>-initialization`). The CLI may also read API
+discovery and check whether the Namespace exists after a missing Job. Neither
+Namespace access nor permission to list Jobs or Pods is required. If the CLI
+release is unavailable, run `go run ./cmd/occ` from the matching checkout.
 
-The CLI gets the Job by name. A single `kubectl` invocation resolves the cluster
-and credentials together, including when a gateway selects the cluster by URL
-path. It may read API discovery metadata and, if the Job is not found, check
-whether the Namespace exists. You do not need permission to read the Namespace
-or list Jobs or Pods. Use the CLI from the same source revision as the chart; changed or older Job
-steps are not recognized. If the result is inconclusive, initialization is **unknown**.
-
-If a matching CLI release is not yet published, use a trusted checkout of the
-matching source with its `go.mod` toolchain installed, and substitute `go run ./cmd/occ` for `occ` in
-both commands below. Run them from the checkout root.
+Run `plan` for the Job result and recovery steps, or use `doctor` to inspect the Job.
+The example uses the release name and Kubernetes namespace from the custom Helm
+guide. Substitute the values recorded for your installation.
 
 ```bash
 target=(--kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT"
-        --kube-namespace "$NAMESPACE" --release "$RELEASE")
-# If recorded, use the UID of the Job persisted during the original installation.
-if [[ -n ${RECORDED_JOB_UID:-} ]]; then
-  target+=(--expect-job-uid "$RECORDED_JOB_UID")
-fi
-occ installation doctor "${target[@]}"
+        --kube-namespace openclaw-system --release oce)
+# For an installation started by occ, use its original receipt directory.
+target+=(--receipt "$INSTALL_RECEIPT_DIRECTORY")
+# For an older installation without a receipt, instead use
+# --expect-job-uid "$RECORDED_JOB_UID" only if captured during that attempt.
 occ installation plan "${target[@]}"
 ```
 
-`doctor` reports evidence from the retained Job. `plan` orders the checks for
-the person taking over and makes no changes. A command may read the named Job
-again if throttled; its result describes the response returned. Compare the
-observed UID with the UID recorded from the persisted Job during the original
-installation. A dry-run UID or a UID first read after Helm could have replaced
-the Job cannot identify that original. If the original UID was not recorded,
-omit `--expect-job-uid`: the commands can describe the current Job but cannot tie
-it to that earlier attempt. Interpret the result at this target:
+With a receipt, the commands compare the recorded cluster connection, namespace
+and release before reading the Job. A different context name or credential can
+select the same connection. Keep the same server URL (including path), TLS and
+kubeconfig proxy settings. Neither command changes the receipt or cluster.
 
-- **Completed.** Match the Job UID to the handoff. A later upgrade can replace this
-  named Job; keep the recorded UID. Exit zero means the returned Job has recognized
-  chart fields, no unsupported controller specified, and consistent terminal
-  completion evidence. This is consistent with migration and bootstrap
-  completing, including verification of an existing Installation. The Job read
-  does not attest execution or establish the current database state. A completed
-  Job can precede a failed Helm release. Once the original UID matches, ask the
-  release operator to verify that release's status and its API and worker
-  Deployments' rollout and readiness before using an Agent. Keep the migration
-  and bootstrap checkpoint; do not rerun initialization or expand this reader's
-  named-Job permission.
+- **Completed.** For the original checkpoint, match the first-install marker,
+  captured UID, chart steps and terminal completion. Without a captured UID, a
+  copy of the marker on a replacement can look identical. The commands report
+  the current Job but leave the original outcome unknown. For a legacy install,
+  supply only a UID recorded while the installer excluded replacement. Without
+  a receipt or UID, exit zero describes the current Job only.
+  Ask the release operator to verify Helm status and API and worker readiness.
+  Job completion does not establish current database state or authorize replay.
 - **Recorded Job replaced or missing.** Recover the original installation record.
   A later Job with the same name and a different UID cannot establish what happened
   to that attempt, even if its chart labels have changed.

@@ -9,7 +9,7 @@ import { createConnection } from "node:net";
 import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { createOpenShellOnlineGitAuthority } from "../../apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts";
-import { openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
+import { onlineGitAllow, openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
 import { invoke, token } from "../helpers/openshell-online-wire.mjs";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
@@ -83,12 +83,12 @@ test(
         identities.push(identity);
         return binding;
       },
-      approve: async (q, installed) => {
+      authorizeOnlineRequest: async (q, installed) => {
         if (unavailable) {
           throw new Error("owner unavailable");
         }
         approvals.push({ q, installed });
-        return current;
+        return current ? onlineGitAllow(q, installed) : { kind: "denied", reason: "unavailable" };
       },
       onDeny: (denial) => denials.push(denial),
     });
@@ -190,6 +190,42 @@ test(
   },
 );
 
+test("stock Git refuses malformed branch policies and wildcard draft heads before approval", async (t) => {
+  let policy = binding;
+  let approvals = 0;
+  const denials = [];
+  const { client, keys } = await openShellOnlineGitWire(t, {
+    lookupBinding: async () => policy,
+    authorizeOnlineRequest: async (q, installed) => {
+      approvals++;
+      return onlineGitAllow(q, installed);
+    },
+    onDeny: (denial) => denials.push(denial.reason),
+  });
+  const auth = token(keys, "supervisor", binding.sandboxId);
+  // Corrupt the trusted lookup boundary to verify fail-closed handling of invalid
+  // policy. Valid Git-only patterns are covered through the real runtime journey.
+  for (const pushRef of [
+    "refs/heads/review*",
+    "refs/heads/*/review",
+    "refs/heads/review/../*",
+    "refs/heads/review/\u200b*",
+  ]) {
+    policy = { ...binding, pushRef, pullRequestBase: undefined };
+    assert.deepEqual(await invoke(client, "EvaluateHttpRequest", pushRequest(), auth), {
+      decision: 2,
+      reason_code: "online_authorization_denied",
+    });
+  }
+  policy = { ...binding, pushRef: "refs/heads/review/*" };
+  assert.deepEqual(await invoke(client, "EvaluateHttpRequest", pushRequest(), auth), {
+    decision: 2,
+    reason_code: "online_authorization_denied",
+  });
+  assert.equal(approvals, 0);
+  assert.deepEqual(denials, Array(5).fill("binding_mismatch"));
+});
+
 test(
   "stock Git refuses mixed refs, identity substitution and unsupported or ambiguous input before approval",
   { timeout: 10000 },
@@ -198,9 +234,9 @@ test(
     const denials = [];
     const { client, keys } = await openShellOnlineGitWire(t, {
       lookupBinding: async () => binding,
-      approve: async () => {
+      authorizeOnlineRequest: async (q, installed) => {
         approvals++;
-        return true;
+        return onlineGitAllow(q, installed);
       },
       onDeny: (denial) => denials.push(denial.reason),
     });
@@ -283,9 +319,11 @@ test(
     let allow = true;
     const { client, keys } = await openShellOnlineGitWire(t, {
       lookupBinding: async () => binding,
-      approve: async (q) => {
+      authorizeOnlineRequest: async (q, installed) => {
         approvals.push(q);
-        return allow;
+        return allow === true
+          ? onlineGitAllow(q, installed)
+          : { kind: "denied", reason: allow === false ? "unavailable" : allow };
       },
       onDeny: (denial) => denials.push(denial),
     });
@@ -394,9 +432,9 @@ test(
     const denials = [];
     const { client, keys } = await openShellOnlineGitWire(t, {
       lookupBinding: async () => lookup,
-      approve: async () => {
+      authorizeOnlineRequest: async (q, installed) => {
         approvals++;
-        return true;
+        return onlineGitAllow(q, installed);
       },
       onDeny: (denial) => denials.push(denial),
     });
@@ -436,9 +474,9 @@ test(
     const approvals = [];
     const { client, keys } = await openShellOnlineGitWire(t, {
       lookupBinding: async () => binding,
-      approve: async (q) => {
+      authorizeOnlineRequest: async (q, installed) => {
         approvals.push(q);
-        return true;
+        return onlineGitAllow(q, installed);
       },
     });
     const bearer = token(keys, "supervisor", binding.sandboxId);
@@ -516,10 +554,14 @@ test(
   },
 );
 
-test("Git authority cannot be constructed without both trusted owner callbacks", () => {
+test("Git authority cannot be constructed without both trusted owner callbacks", async (t) => {
   assert.throws(() => createOpenShellOnlineGitAuthority({}), /live binding and durable approval/);
   assert.throws(
     () => createOpenShellOnlineGitAuthority({ lookupBinding: async () => binding }),
+    /live binding and durable approval/,
+  );
+  await assert.rejects(
+    openShellOnlineGitWire(t, { lookupBinding: async () => binding, approve: async () => true }),
     /live binding and durable approval/,
   );
 });
@@ -558,7 +600,7 @@ test("protected Git replies to this online decision before its authority deadlin
     assert.equal(result.decision, expected, decision);
   }
   // The trusted owner can return malformed runtime values despite its TypeScript contract.
-  // A structured denial must never enter the separate legacy boolean approval path.
+  // A structured denial must never be treated as an allow, even with a truthy reason.
   for (const [reason, reasonCode] of [
     ["draft_already_opened", "draft_already_opened"],
     ["access_withdrawn", "access_withdrawn"],
@@ -583,9 +625,9 @@ test("expired binding lookup cannot begin durable Git approval", { timeout: 1000
       lookupAborted.resolve();
       return binding;
     },
-    approve: async () => {
+    authorizeOnlineRequest: async (q, installed) => {
       approvals++;
-      return true;
+      return onlineGitAllow(q, installed);
     },
   });
   const result = await invoke(
@@ -827,6 +869,37 @@ test("repository API credential issuance is refused while ordinary collaboration
       assert.equal(result.has_body ?? false, false);
       assert.deepEqual(result.header_mutations ?? [], []);
     }
+    // gh 2.103.2 uses a 24-hour cache hint before PR search. The query shape
+    // comes from upstream feature_detection.go; only header names were observed
+    // in the native failure. This exercises middleware, not the gh executable.
+    const cachedSearch = (ttl = "24h0m0s") => {
+      const input = captured();
+      // Isolate the cache header so another metadata restriction cannot hide a regression.
+      input.headers = input.headers.filter(
+        (h) => h.name !== "graphql-features" && h.name !== "time-zone",
+      );
+      input.headers.push({ name: "x-gh-cache-ttl", value: ttl });
+      input.body = Buffer.from(
+        JSON.stringify({
+          query:
+            'query SearchType_enumValues { SearchType: __type(name: "SearchType") { enumValues(includeDeprecated: true) { name } } }',
+        }),
+      );
+      return input;
+    };
+    // The client owns duration parsing; OCE ignores the hint and never caches approval.
+    for (const ttl of ["24h0m0s", "5m0s", "1.5s", "ignored-by-client"]) {
+      const searchResult = await send(cachedSearch(ttl));
+      assert.equal(searchResult.decision, 1, "gh search capability query accepts its cache hint");
+      assert.equal(searchResult.has_body ?? false, false);
+      assert.deepEqual(searchResult.header_mutations ?? [], []);
+    }
+    const beforeSearchWithdrawal = approvals;
+    current = false;
+    assert.equal((await send(cachedSearch())).reason_code, "access_withdrawn");
+    assert.equal(approvals, beforeSearchWithdrawal + 1);
+    current = true;
+
     const beforeWithdrawal = approvals;
     current = false;
     assert.equal((await send(captured())).reason_code, "access_withdrawn");
@@ -855,8 +928,27 @@ test("repository API credential issuance is refused while ordinary collaboration
       ...captured(),
       body: Buffer.from(JSON.stringify({ query: "query { repository { tempCloneToken } }" })),
     });
+    const cacheHeader = { name: "x-gh-cache-ttl", value: "24h0m0s" };
+    const search = cachedSearch();
+    await refused({ ...search, headers: [...search.headers, cacheHeader] });
+    for (const ttl of ["", "24h\n", "24h\r", "24h\u0000", "24h\u007f", "1".repeat(65)]) {
+      await refused(cachedSearch(ttl));
+    }
+    for (const target of [
+      { host: "github.com" },
+      { method: "GET" },
+      { path: "/repos/openclaw/openclaw-enterprise" },
+    ]) {
+      await refused({ ...search, target: { ...search.target, ...target } });
+    }
+    await refused({ ...search, body: Buffer.from("not JSON") });
+    await refused({
+      ...search,
+      body: Buffer.from(JSON.stringify({ query: "query { repository { tempCloneToken } }" })),
+    });
     for (scope of ["github-installation", undefined]) {
       await refused(captured());
+      await refused(cachedSearch());
     }
   });
 });
@@ -908,9 +1000,9 @@ test(
               lookups++;
               return undefined;
             },
-            approve: async () => {
+            authorizeOnlineRequest: async () => {
               approvals++;
-              return false;
+              return { kind: "denied", reason: "unavailable" };
             },
           });
           const bearer = token(keys, "supervisor", binding.sandboxId);

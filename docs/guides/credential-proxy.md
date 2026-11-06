@@ -337,14 +337,14 @@ existing Gateway refresh sources use their own
 
 ## Diagnose before retrying
 
-| Observation                                       | Action and recovery evidence                                                                                                                                                 |
-| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Source `failed`, `absent`, or missing credentials | Read `credential-source get` and its `reason`; correct the owning Secret or enrollment. Require a new successful real request, not just `ready`.                             |
-| Unavailable authority or lost installation        | Check peer TLS trust, selected Driver identity, network access, and current runtime. Keep access closed until the current installation is verified.                          |
-| Prepared material is pending or expired           | Check worker custody and issuer access. Requests and readiness cannot trigger issuance. Wait for worker recovery and verify a new allowed request within existing authority. |
-| Refresh reports `reauthorize`                     | Obtain new provider authorization through the source's supported enrollment; do not replay an old refresh token.                                                             |
-| Installation or send outcome is unknown           | Preserve the original operation and custody. Fence the old worker/recipient and reconcile through its owner; do not resend or fabricate success.                             |
-| Withdrawal remains `pending`                      | Inspect its reason and `withdrawalInProgress`; follow the withdrawal recovery procedure. Do not report revocation as complete.                                               |
+| Observation                                       | Action and recovery evidence                                                                                                                                                                                         |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Source `failed`, `absent`, or missing credentials | Read `credential-source get` and its `reason`; correct the owning Secret or enrollment. Require a new successful real request, not just `ready`.                                                                     |
+| Unavailable authority or lost installation        | Check peer TLS trust, selected Driver identity, network access, and current runtime. Keep access closed until the current installation is verified.                                                                  |
+| Prepared material is pending or expired           | Check the Token Service’s issuer access. An authorized GitHub metadata request can start or join renewal until its deadline. Readiness checks and native Git broker requests still depend on background preparation. |
+| Refresh reports `reauthorize`                     | Obtain new provider authorization through the source's supported enrollment; do not replay an old refresh token.                                                                                                     |
+| Installation or send outcome is unknown           | Preserve the original operation and custody. Fence the old worker/recipient and reconcile through its owner; do not resend or fabricate success.                                                                     |
+| Withdrawal remains `pending`                      | Inspect its reason and `withdrawalInProgress`; follow the withdrawal recovery procedure. Do not report revocation as complete.                                                                                       |
 
 Public deployment status is not a token-custody ledger. If the selected owner
 cannot establish whether issuance, installation, or retirement completed, stop

@@ -68,6 +68,7 @@ export const InvalidConfigurationInvisibleCharacters = story(
 );
 export const InvalidConfigurationCurlyQuotes = story("invalidConfigurationCurlyQuotes");
 export const ConfigurationChangedElsewhereMerged = story("configurationChangedElsewhereMerged");
+export const ConfigurationConflictFocus = story("configurationConflictFocus");
 export const Admitted = story("admitted");
 export const RepositoryDraft = {
   ...story("repositoryDraft"),
@@ -82,6 +83,10 @@ export const DeploymentDeferred = story("deploymentDeferred");
 export const DeploymentRetrying = story("deploymentRetrying");
 export const DeploymentRunning = story("deploymentRunning");
 export const DeploymentRunningActivates = story("deploymentRunningActivates");
+export const DeploymentCompletionFocus = {
+  ...story("deploymentCompletionFocus", { openInNewTab: true }),
+  name: "Diagnostics focus when deployment completes",
+};
 export const DeploymentCompletesRereadFails = story("deploymentCompletesRereadFails");
 export const DeploymentStatusReadRecovers = {
   ...story("deploymentStatusReadRecovers"),
@@ -123,7 +128,7 @@ export const DeploymentModelProbeFailedDeployOnlyUnreadable = story(
 export const DeploymentFailedAfterSelection = story("deploymentFailedAfterSelection");
 export const DeploymentStopped = story("deploymentStopped");
 export const DeploymentSuperseded = story("deploymentSuperseded");
-export const DeploymentSucceeded = story("deploymentSucceeded");
+export const DeploymentSucceeded = story("deploymentSucceeded", { openInNewTab: true });
 export const DeploymentUnavailable = story("deploymentUnavailable");
 export const DiagnosticsSuccess = story("diagnosticsSuccess");
 export const DiagnosticsFast = story("diagnosticsFast");
@@ -157,6 +162,10 @@ export const RuntimeLogsReaderDownload = story("runtimeLogsReaderDownload");
 export const RuntimeLogsReaderNoPodDownload = story("runtimeLogsReaderNoPodDownload");
 export const RuntimeLogsClusterRbac = story("runtimeLogsClusterRbac");
 export const AgentMissing = { ...story("agentMissing"), name: "Agent unavailable" };
+export const AgentReadInterrupted = {
+  ...story("agentReadInterrupted", { openInNewTab: true }),
+  name: "Retry a direct Agent link",
+};
 export const ConfigurationError = {
   ...story("configurationError"),
   name: "Configuration unavailable",
@@ -168,6 +177,7 @@ export const ConfigurationReadDeniedReloadRefocus = {
 export const UnreadableAgentConfiguration = story("unreadableAgentConfiguration");
 export const UnreadableRevisionConfiguration = story("unreadableRevisionConfiguration");
 export const RevisionError = { ...story("revisionError"), name: "Revision history unavailable" };
+export const RevisionRejected = story("revisionRejected");
 export const DeployDenied = { ...story("deployDenied"), name: "Deployment denied" };
 export const TabLinkUnavailable = {
   ...story("tabLinkUnavailable"),

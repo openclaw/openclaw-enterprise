@@ -318,6 +318,22 @@ export class DeviceAuthorizationStartError extends Error {
   }
 }
 
+/**
+ * A definite browser authorization failure. `code` is implementation-owned and carries no
+ * provider text; `recoveryAction` tells OCC who acts next.
+ */
+export class BrowserAuthorizationError extends Error {
+  readonly code: string;
+  readonly recoveryAction: "retry" | "fix_configuration";
+
+  constructor(code: string, recoveryAction: BrowserAuthorizationError["recoveryAction"]) {
+    super("The browser authorization did not complete.");
+    this.name = "BrowserAuthorizationError";
+    this.code = /^[a-z][a-z0-9_]{0,63}$/.test(code) ? code : "unclassified";
+    this.recoveryAction = recoveryAction;
+  }
+}
+
 /** Safe discovery outcomes carry no upstream response, credential, or error cause. */
 export class PluginDiscoveryError extends Error {
   readonly reason: "credentials_rejected" | "rate_limited" | "unavailable" | "invalid_response";
@@ -391,7 +407,7 @@ export class RepositoryBindingSelectionError extends ScopeViolationError {
     "Send repositoryAccess or repositoryBindings, not both. In repositoryAccess, list each repository once, at most 16, with a defaultProfile other than github-installation.";
   // The Driver refuses a whole selection without saying which entry; this text lists its rules.
   static readonly notApproved =
-    "These repository selections are not approved for this Namespace: each repository must be approved here for its profile and listed once, at most 16. Choose from the repository options, or ask an Installation administrator to approve it.";
+    "Choose up to 16 distinct repositories approved for this Namespace and profile. For github-repository, all selections must have the same configured permissions. Ask an Installation administrator to check the available options.";
 
   constructor(message: string = RepositoryBindingSelectionError.installationAccessAlone) {
     super(message);
@@ -1728,6 +1744,7 @@ export class PluginPolicyValidationError extends Error {
       | "tools[id].reviewer"
       | "approvers"
       | "aliasedPlugin"
+      | "conflictingEnablementDefaults"
       | "unknownPlugin",
     driverId?: string,
     pluginId?: string,
@@ -1743,9 +1760,12 @@ export class PluginPolicyValidationError extends Error {
         driverId === undefined ? "" : ` (${driverId})`
       } does not offer${pluginId === undefined ? "" : `: ${pluginId}`}. ${
         offeredId === undefined
-          ? "Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver."
+          ? "Check each plugin ID and its Driver prefix against the catalog for the Agent's Harness."
           : `Use ${offeredId}.`
       }`;
+    } else if (field === "conflictingEnablementDefaults") {
+      message =
+        'These defaults conflict. Choose "Inherit default policy" for either "tools enabled by default" (toolDefaults.enabled) or "Destructive tools" (driverPolicy.destructiveEnabled), keeping the other. API clients: omit either field.';
     } else if (field === "aliasedPlugin") {
       message =
         'Two plugin selections name the same plugin (a native ID and its driver-prefixed ID, such as "diffs" and "occ-plugin:diffs"). Keep one selection per plugin.';

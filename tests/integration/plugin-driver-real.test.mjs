@@ -349,13 +349,16 @@ test(
       codexCredential: credential,
     });
     const path = `/namespaces/${fixture.namespaceId}/agents/plugins`;
-    const catalog = await fixture.request("POST", path, {});
+    const catalog = await fixture.request("POST", path, { harnessId: "codex" });
     assert.equal(catalog.status, 200, JSON.stringify(catalog.error));
     const linear = catalog.data.plugins.find(
       (entry) => entry.id === "codex-plugin:linear@openai-curated-remote",
     );
     assert.ok(linear, "the configured catalog must offer Linear without a discovery token.");
-    const detail = await fixture.request("POST", `${path}/details`, { pluginId: linear.remoteId });
+    const detail = await fixture.request("POST", `${path}/details`, {
+      harnessId: "codex",
+      pluginId: linear.remoteId,
+    });
     assert.equal(detail.status, 200, JSON.stringify(detail.error));
     assert.equal(detail.data.id, linear.id);
 
