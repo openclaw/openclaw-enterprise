@@ -1005,14 +1005,20 @@ export function nativePlacementReadRetryable(error, correlatedResponse) {
 
 // Keep exact run, explicit success, standalone tool output and final-marker
 // predicates together. Only the fixed observation is retained in diagnostics.
-export function nativeWorkerHistoryEvidence({ messages: history, runId, toolPrefix, marker }) {
+export function nativeWorkerHistoryEvidence({
+  messages: history,
+  runId,
+  toolPrefix,
+  marker,
+  command,
+}) {
   if (!Array.isArray(history)) {
     throw new Error("Invalid native history");
   }
   const text = (content) =>
     typeof content === "string"
       ? content
-      : (content ?? [])
+      : (Array.isArray(content) ? content : [])
           .filter((part) => part?.type === "text" && typeof part.text === "string")
           .map((part) => part.text)
           .join("\n");
@@ -1072,6 +1078,23 @@ export function nativeWorkerHistoryEvidence({ messages: history, runId, toolPref
     flag = [...flags][0];
   }
   const assistants = messages.filter((message) => message.role === "assistant");
+  // Classify only fixed shapes and comparisons; never retain peer-supplied types or values.
+  const parts = messages.flatMap((message) =>
+    Array.isArray(message.content) ? message.content : [],
+  );
+  const calls = assistants.flatMap((message) =>
+    Array.isArray(message.content)
+      ? message.content.filter((part) => part?.type === "toolCall" && part.name === "exec")
+      : [],
+  );
+  const envelopes = exec.map((message) => {
+    try {
+      const value = JSON.parse(text(message.content));
+      return typeof value?.value?.aggregated === "string" ? "aggregated" : "other";
+    } catch {
+      return "plain";
+    }
+  });
   return {
     tool,
     final,
@@ -1083,6 +1106,41 @@ export function nativeWorkerHistoryEvidence({ messages: history, runId, toolPref
       historyExecCount: exec.length,
       historyExplicitSuccessCount: exec.filter((message) => message.isError === false).length,
       historyExecErrorFlag: flag,
+      historyStringContentCount: messages.filter((message) => typeof message.content === "string")
+        .length,
+      historyArrayContentCount: messages.filter((message) => Array.isArray(message.content)).length,
+      historyOtherContentCount: messages.filter(
+        (message) => typeof message.content !== "string" && !Array.isArray(message.content),
+      ).length,
+      historyTextPartCount: parts.filter(
+        (part) => part?.type === "text" && typeof part.text === "string",
+      ).length,
+      historyToolCallPartCount: parts.filter((part) => part?.type === "toolCall").length,
+      historyOtherPartCount: parts.filter(
+        (part) =>
+          part?.type !== "toolCall" && !(part?.type === "text" && typeof part.text === "string"),
+      ).length,
+      historyExecCallCount: calls.length,
+      historyExecCommandStringCount: calls.filter(
+        (part) => typeof part.arguments?.command === "string",
+      ).length,
+      historyExecExactCommandCount: calls.filter(
+        (part) => typeof command === "string" && part.arguments?.command === command,
+      ).length,
+      historyExecNonemptyTextCount: exec.filter(
+        (message) => execOutput(message.content).trim().length > 0,
+      ).length,
+      historyExecAggregatedCount: envelopes.filter((shape) => shape === "aggregated").length,
+      historyExecOtherJsonCount: envelopes.filter((shape) => shape === "other").length,
+      historyToolPrefixContainsCount: exec.filter((message) =>
+        execOutput(message.content).includes(toolPrefix),
+      ).length,
+      historyAssistantNonemptyTextCount: assistants.filter(
+        (message) => text(message.content).trim().length > 0,
+      ).length,
+      historyFinalMarkerContainsCount: assistants.filter((message) =>
+        text(message.content).includes(marker),
+      ).length,
       historyToolPrefixCount: exec.filter((message) =>
         execOutput(message.content)
           .split(/\r?\n/)
@@ -1335,6 +1393,7 @@ async function nativeWorkerProof({
         runId: sent.runId,
         toolPrefix,
         marker,
+        command,
       });
       historyPredicates = evidence.observation;
       const { tool, final, messages } = evidence;
