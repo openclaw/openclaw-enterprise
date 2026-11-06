@@ -484,7 +484,8 @@ test("Agent admission refuses projected identity only for OpenShell-owned Harnes
 });
 
 test("Credential-source deployment refuses OpenShell projected identity before creating a revision", async (t) => {
-  const sandbox = openShellSandbox(t);
+  // Codex with user namespaces needs no Gateway workspace lookup before admission.
+  const sandbox = openShellSandbox(t, { userNamespaces: true });
   const gateway = new OpenShellCredentialGatewayDriver(
     { binaries: ["/app/bin/codex"] },
     { id: "workspace-openshell-credentials", backend: sandbox.backend },
