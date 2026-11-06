@@ -259,6 +259,7 @@ export function createBackendWorkerDrivers(
   return {
     installation,
     computeDriver,
+    ...(options.tokenService && { tokenService: options.tokenService }),
     configurationDriver: createTestConfigurationDriver({
       id: installation.drivers.configuration.id,
     }),
