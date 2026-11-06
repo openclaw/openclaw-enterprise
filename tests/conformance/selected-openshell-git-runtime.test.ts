@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
@@ -98,7 +98,7 @@ async function selectedV5(t: TestContext) {
     authorization: "online-request",
   });
   assert.ok(admitted);
-  const executionId = randomUUID();
+  const executionId = randomBytes(24).toString("base64url");
   const revision = {
     ...f.revision,
     executionAdmission: { version: 5, mode: "protected" },
