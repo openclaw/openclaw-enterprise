@@ -35,7 +35,7 @@ jobs:
   prepare:
     name: Prepare ${{ matrix.image }} (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.image == 'runtime' && 240 || 60 }}
     strategy:
       fail-fast: false
       matrix:
@@ -118,6 +118,7 @@ jobs:
               max-parallelism = 2
       - name: Build native OCI image without publication
         id: build
+        timeout-minutes: ${{ matrix.image == 'runtime' && 180 || 60 }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
           DOCKER_BUILD_RECORD_UPLOAD: "false"
