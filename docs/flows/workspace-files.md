@@ -1,24 +1,19 @@
 ---
 created: 2026-08-31
-updated: 2026-11-05
-last_updated_session: authoring-run/813d3dd8-d371-45db-a6f1-d70156152311
+updated: 2026-11-06
+last_updated_session: authoring-run/688598e9-946b-4fea-a06b-36204b72b61f
 ---
 
 # Agent Workspace Files Flow
 
 ## Overview
 
-OCC privately stages authenticated creation inputs: `AGENTS.md`, `SOUL.md`,
-`IDENTITY.md`, and `USER.md`. Compute prepares storage; the execution provider
-initializes it before activation.
+OCC stages initial files privately. Compute prepares storage and the execution
+provider initializes it. Live operations authorize the exact active Agent
+through its private Envoy route.
 
-File operations authorize the exact active Agent through its Compute-resolved
-private Envoy endpoint.
-
-Dedicated execution initializes the Harness workspace for Codex and native
-OpenClaw; see [workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
-
-See [two-cluster transport](../testing/kubernetes.md#two-cluster-validation) for CP/DP routing.
+See [dedicated workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation)
+and [two-cluster transport](../testing/kubernetes.md#two-cluster-validation).
 
 ## Entry Points
 
@@ -92,18 +87,17 @@ checked on each update.
 
 ### 2. Deployment initializes storage before execution
 
-`apps/controller/src/worker.ts` reads private setup state into
-`ComputeRevisionContext`. A Driver without `supportsWorkspaceSetup` returns
-`WORKSPACE_SETUP_UNSUPPORTED`. The worker serializes Agent startup and passes `workspaceSetup` to Compute.
+`apps/controller/src/worker.ts` serializes startup and passes private
+`workspaceSetup` in `ComputeRevisionContext`. A Driver without
+`supportsWorkspaceSetup` returns `WORKSPACE_SETUP_UNSUPPORTED`.
 
 Bundled Drivers use
 `apps/controller/src/drivers/compute/workspace-setup-runtime.ts:WORKSPACE_SETUP_RUNTIME`.
 Kubernetes delivers an Agent-owned Secret to the workspace owner's init container
-(Gateway when embedded, Harness when dedicated); Docker uses a setup container
-and durable volumes; SSH uses the protected Agent directory. Provider-owned
-Harnesses require the Sandbox's `validateWorkspaceSetup(harness, configuration)`:
-Compute delegates validation of the relocated workspace, or returns `409` before
-staging inputs. Preparation repeats this check.
+(embedded Gateway or dedicated Harness). Docker uses an initializer and durable
+volumes. SSH uses the protected Agent directory. Compute requires a provider
+Sandbox's `validateWorkspaceSetup(harness, configuration)` before staging
+relocated workspaces, returns `409` on refusal, and rechecks during preparation.
 
 OpenShell separately prepares native OpenClaw's private writable PVC subpaths,
 preserving retained entries. Ownership/mode checks, UID-fenced deletion and writer
@@ -132,6 +126,9 @@ reruns setup for `BOOTSTRAP.md`, verifies results, and atomically writes
 Matching markers skip replay; incomplete writes retry the same checks.
 Missing or mismatched markers after recorded completion block startup, preserving
 later edits. Errors omit document contents.
+
+The Box example shares a pinned workspace between its Harness and a separate
+file node. Compute observes that node through normal Gateway enrollment.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:safeRuntimeFailureObservation`
 reports refusals (exit 2) as `WORKSPACE_SETUP_REFUSED`; OpenShell raises
@@ -376,6 +373,8 @@ replays it. Cleanup closes the native client.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 09:08: Trace the separate installed file node and original Harness owner. (authoring-run/688598e9-946b-4fea-a06b-36204b72b61f - fa3be58025052da2e18dc57f1a333bbf6e27c262)
 
 - 2026-11-05 00:00: Clarify enrollment limits. (authoring-run/813d3dd8-d371-45db-a6f1-d70156152311 - a23d33a4d561d0678410a993e5c10a8cddf1a720)
 

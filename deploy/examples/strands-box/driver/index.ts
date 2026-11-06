@@ -31,6 +31,10 @@ import {
   sameOwner,
   type Execution,
   type Owner,
+  type WorkspaceNodeMode,
+  type WorkspaceVolume,
+  sameWorkspaceVolume,
+  workspaceVolume,
 } from "./control.ts";
 import { nativeStatus } from "./native.ts";
 import { readObject, Relay, relayName, type RelayOptions } from "./relay.ts";
@@ -43,6 +47,7 @@ interface Options {
   readonly workspaceRoot: string;
   readonly relay: RelayOptions;
   readonly controlledInference?: { readonly modelBaseUrl: string };
+  readonly workspaceNodeMode?: WorkspaceNodeMode;
 }
 
 const DNS_LABEL = "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$";
@@ -69,6 +74,7 @@ export const configurationSchema: NonNullable<DriverImplementation["configuratio
     nativeEndpoint: { type: "string", minLength: 1, maxLength: 256 },
     nativeCaBundle: { type: "string", minLength: 1, maxLength: 32768 },
     workspaceRoot: { type: "string", minLength: 1, maxLength: 1024 },
+    workspaceNodeMode: { type: "string", enum: ["file-only-v1"] },
     controlledInference: {
       type: "object",
       additionalProperties: false,
@@ -203,6 +209,9 @@ export function validateConfiguration(
       "Use the single private HTTPS /v1 origin of the controlled model fixture.",
     );
   }
+  if (options.workspaceNodeMode !== undefined && options.controlledInference === undefined) {
+    invalid("/workspaceNodeMode", "The file-only workspace node requires controlled inference.");
+  }
   return errors;
 }
 
@@ -262,6 +271,14 @@ class StrandsBoxDriver implements SandboxDriver {
     const entries = record(plugins?.entries);
     const codex = record(entries?.codex);
     const appServer = record(record(codex?.config)?.appServer);
+    if (
+      this.options.workspaceNodeMode !== undefined &&
+      record(entries?.["file-transfer"])?.config !== undefined
+    ) {
+      throw new ConfigurationHarnessError(
+        "The file-only workspace node uses the Gateway's exact workspace file policy.",
+      );
+    }
     const sandbox = appServer?.sandbox;
     const proxy = record(appServer?.networkProxy);
     if (sandbox !== "read-only" && sandbox !== "workspace-write") {
@@ -315,12 +332,31 @@ class StrandsBoxDriver implements SandboxDriver {
       );
     }
     const { setup, model } = this.secretReferences(requirements);
+    if (
+      this.options.workspaceNodeMode !== undefined &&
+      (setup === undefined || model === undefined)
+    ) {
+      this.refuse(
+        "The file-only workspace node requires the stock pairing and controlled inference projections.",
+      );
+    }
+    const volume = await this.readWorkspaceVolume(context);
     const requirementsDigest = digest(requirements);
-    const admission = { owner, requirementsDigest, requirements };
+    const admission = {
+      owner,
+      requirementsDigest,
+      requirements,
+      ...(volume === undefined ? {} : { workspaceVolume: volume }),
+    };
     let execution = await this.readExecution(context.signal);
     if (execution === undefined) {
       if (
-        (await requestAdmission(this.options.controlSocket, admission, context.signal)) === "held"
+        (await requestAdmission(
+          this.options.controlSocket,
+          admission,
+          context.signal,
+          this.options.workspaceNodeMode,
+        )) === "held"
       ) {
         throw new TransientDependencyError(
           "sandbox_gateway",
@@ -329,7 +365,9 @@ class StrandsBoxDriver implements SandboxDriver {
         );
       }
       if (model) await this.confirmControlledModelMarker(context, model);
+      await this.assertWorkspaceVolume(context, volume);
       const setupMaterial = setup === undefined ? undefined : await this.setupCode(context, setup);
+      await this.assertWorkspaceVolume(context, volume);
       // Do not send a one-shot code after another execution appeared during the Secret read.
       execution = await this.readExecution(context.signal);
       if (execution === undefined) {
@@ -357,6 +395,7 @@ class StrandsBoxDriver implements SandboxDriver {
     if (
       !execution ||
       !sameOwner(execution.owner, owner) ||
+      !sameWorkspaceVolume(execution.workspaceVolume, volume) ||
       execution.requirementsDigest !== requirementsDigest
     ) {
       throw new DependencyUnavailableError(
@@ -400,6 +439,7 @@ class StrandsBoxDriver implements SandboxDriver {
       this.options.nativeCaBundle,
       context.transportToken,
       context.signal,
+      before.generationSha256,
     );
     const after = await this.current(context);
     if (!sameExecution(before, after)) {
@@ -615,8 +655,12 @@ class StrandsBoxDriver implements SandboxDriver {
     }
   }
 
-  private readExecution(signal: AbortSignal) {
-    return control(this.options.controlSocket, { method: "GET" }, signal);
+  private async readExecution(signal: AbortSignal) {
+    const execution = await control(this.options.controlSocket, { method: "GET" }, signal);
+    if (execution !== undefined && execution.workspaceNodeMode !== this.options.workspaceNodeMode) {
+      throw new DependencyUnavailableError("The Strands Box host workspace node mode changed.");
+    }
+    return execution;
   }
 
   private async current(context: SandboxHarnessContext): Promise<Execution> {
@@ -629,8 +673,66 @@ class StrandsBoxDriver implements SandboxDriver {
         "The current Strands Box execution does not own this revision.",
       );
     }
+    await this.assertWorkspaceVolume(context, result.workspaceVolume);
     await this.relay.assertCurrent(context, result);
     return result;
+  }
+
+  private async assertWorkspaceVolume(
+    context: SandboxHarnessContext,
+    expected?: WorkspaceVolume,
+  ): Promise<void> {
+    if (!sameWorkspaceVolume(await this.readWorkspaceVolume(context), expected)) {
+      throw new DependencyUnavailableError(
+        "The file-only node workspace claim is not the pinned bound volume.",
+      );
+    }
+  }
+
+  private async readWorkspaceVolume(
+    context: SandboxHarnessContext,
+  ): Promise<WorkspaceVolume | undefined> {
+    if (this.options.workspaceNodeMode === undefined) return undefined;
+    const name = context.requirements.workspaceMounts.find(
+      ({ mountPath }) => mountPath === this.options.workspaceRoot,
+    )?.claimName;
+    if (
+      name === undefined ||
+      context.requirements.workspaceMounts.some(({ claimName }) => claimName !== name)
+    ) {
+      this.refuse("The file-only workspace node requires the same Harness workspace claim.");
+    }
+    const namespace = context.namespace.name;
+    const claim = record(
+      await readObject(context, {
+        apiVersion: "v1",
+        kind: "PersistentVolumeClaim",
+        metadata: { name, namespace },
+      }),
+    );
+    const metadata = record(claim?.metadata);
+    const labels = record(metadata?.labels);
+    const volume = workspaceVolume({
+      claimUid: metadata?.uid,
+      volumeName: record(claim?.spec)?.volumeName,
+    });
+    if (
+      claim?.kind !== "PersistentVolumeClaim" ||
+      metadata?.name !== name ||
+      metadata.namespace !== namespace ||
+      metadata.deletionTimestamp !== undefined ||
+      labels?.["openclaw.dev/namespace"] !== context.namespace.id ||
+      labels["openclaw.dev/agent"] !== context.revision.agentId ||
+      record(claim.status)?.phase !== "Bound" ||
+      volume === undefined
+    ) {
+      throw new TransientDependencyError(
+        "sandbox_gateway",
+        "unavailable",
+        "The exact file-only node workspace claim is not bound.",
+      );
+    }
+    return volume;
   }
 
   private exactEndpoint(execution: Execution): SandboxHarnessEndpoint {
@@ -642,7 +744,20 @@ class StrandsBoxDriver implements SandboxDriver {
         "The Strands Box endpoint differs from the Installation's exact origin and workspace.",
       );
     }
-    return { ...execution.endpoint, tls: { caBundle: this.options.nativeCaBundle } };
+    if (execution.workspaceNodeMode !== undefined && execution.generationSha256 === undefined) {
+      throw new TransientDependencyError(
+        "sandbox_gateway",
+        "unavailable",
+        "The original Strands Box workspace owner is still starting.",
+      );
+    }
+    return {
+      ...execution.endpoint,
+      tls: { caBundle: this.options.nativeCaBundle },
+      ...(execution.generationSha256 === undefined
+        ? {}
+        : { externalWorkspaceOwner: { generationSha256: execution.generationSha256 } }),
+    };
   }
 
   private refuse(message: string): never {

@@ -35,6 +35,7 @@
     "browser/console-agent-detail-deployment.ts",
     "../scripts/verify-console-release.ts",
     "../deploy/examples/strands-box/**/*.ts",
+    "../deploy/examples/strands-box/host/workspace-node-runtime.mts",
     "conformance/strands-box-ordinary-chat.test.ts",
     "../deploy/runtime/google/install-gog.mts",
     "../scripts/console-storybook/*.stories.ts",

@@ -6,6 +6,7 @@
   "agentBuildDir": "/opt/oce-box/compiled-agent",
   "runtimeDir": "/run/oce-box/revision",
   "workspace": "/home/node/workspace",
+  "workspaceVerifierSha256": "0000000000000000000000000000000000000000000000000000000000000000",
   "read": ["/app", "/opt/oce/runtime"],
   "exec": ["/usr/bin/tini"],
   "owner": {
@@ -34,7 +35,20 @@
     "/home/node/.local",
     "/home/node/openclaw-runtime-assets"
   ],
-  "workspaceNode": { "url": "wss://gateway.example.invalid:8443/", "address": "10.0.0.1" },
+  "workspaceNode": {
+    "url": "wss://gateway.example.invalid:8443/agents/agt_example/node",
+    "address": "10.0.0.1"
+  },
+  "separateWorkspaceNode": {
+    "mode": "file-only-v1",
+    "rootfs": "/srv/oce-file-node/runtime",
+    "rootfsIdentity": { "dev": "0", "ino": "1" },
+    "runtimeSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "workspaceVolume": {
+      "claimUid": "00000000-0000-0000-0000-000000000000",
+      "volumeName": "volume-example"
+    }
+  },
   "controlledInference": {
     "url": "https://inference.example.invalid:8444/v1",
     "address": "10.0.0.2"

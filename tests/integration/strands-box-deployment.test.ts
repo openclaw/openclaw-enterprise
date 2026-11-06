@@ -53,13 +53,14 @@ interface ObjectRef {
 
 type ApiObject = ObjectRef & {
   readonly status?: Readonly<Record<string, unknown>>;
+  readonly spec?: Readonly<Record<string, unknown>>;
   readonly data?: Readonly<Record<string, string>>;
   readonly stringData?: Readonly<Record<string, string>>;
 };
 
 // Only the Kubernetes API boundary is controlled. Store the stock drivers' actual
 // objects, and let the test separately observe the prerequisite Gateway rollout.
-function kubernetesApi() {
+function kubernetesApi(workspaceVolume: { claimUid: string; volumeName: string }) {
   const objects = new Map<string, ApiObject>();
   const providerSecretReads: string[] = [];
   const missing = () => Object.assign(new Error("Fixture object is absent"), { statusCode: 404 });
@@ -80,10 +81,22 @@ function kubernetesApi() {
       ...old,
       ...resource,
       ...(body.kind === "Namespace" ? { status: { phase: "Active" } } : {}),
+      ...(body.kind === "PersistentVolumeClaim" &&
+      body.metadata.name.startsWith("workspace-") &&
+      old === undefined
+        ? {
+            status: { phase: "Bound" },
+            spec: { ...resource.spec, volumeName: workspaceVolume.volumeName },
+          }
+        : {}),
       metadata: {
         ...old?.metadata,
         ...body.metadata,
-        uid: old?.metadata.uid ?? randomUUID(),
+        uid:
+          old?.metadata.uid ??
+          (body.kind === "PersistentVolumeClaim" && body.metadata.name.startsWith("workspace-")
+            ? workspaceVolume.claimUid
+            : randomUUID()),
         resourceVersion: String(Number(old?.metadata.resourceVersion ?? 0) + 1),
         generation: old?.metadata.generation ?? 1,
       },
@@ -168,6 +181,7 @@ function kubernetesApi() {
       },
       create: save,
       patch: save,
+      delete: () => assert.fail("the held Driver must not delete Kubernetes objects"),
       list: (_version: string, kind: string, namespace: string) => list(kind, namespace),
     },
     version: {
@@ -258,11 +272,16 @@ interface Admission {
   };
   readonly requirementsDigest: string;
   readonly requirements: HarnessWorkloadRequirements;
+  readonly workspaceVolume: { readonly claimUid: string; readonly volumeName: string };
 }
 
 // This wire peer exercises the real installed Driver through its hold boundary.
 // It has no launch, authenticated native endpoint, or approval authority.
-async function heldHostPeer(t: TestContext, directory: string) {
+async function heldHostPeer(
+  t: TestContext,
+  directory: string,
+  expectedVolume: Admission["workspaceVolume"],
+) {
   const path = join(directory, "control.sock");
   const calls: string[] = [];
   const admissions: Admission[] = [];
@@ -276,11 +295,20 @@ async function heldHostPeer(t: TestContext, directory: string) {
     if (operation === "POST /v1/admission") {
       const admission = (await json(request)) as Admission;
       admissions.push(admission);
+      if (
+        admission.workspaceVolume.claimUid !== expectedVolume.claimUid ||
+        admission.workspaceVolume.volumeName !== expectedVolume.volumeName
+      ) {
+        response.writeHead(409).end();
+        return;
+      }
       response.writeHead(200, { "content-type": "application/json" }).end(
         JSON.stringify({
           state: "held",
           owner: admission.owner,
           requirementsDigest: admission.requirementsDigest,
+          workspaceNodeMode: "file-only-v1",
+          workspaceVolume: admission.workspaceVolume,
         }),
       );
       return;
@@ -302,7 +330,7 @@ async function heldHostPeer(t: TestContext, directory: string) {
 }
 
 test(
-  "the normal Worker sends an admitted dedicated Codex deployment to the installed Box Driver and stays held",
+  "the normal Worker holds an installed file-only Box deployment on its exact bound workspace claim",
   {
     ...requiresPostgres,
     timeout: 60_000,
@@ -310,8 +338,9 @@ test(
   async (t) => {
     assert.ok(databaseUrl);
     const installed = await installedPackage(t);
-    const host = await heldHostPeer(t, installed.directory);
-    const api = kubernetesApi();
+    const workspaceVolume = { claimUid: randomUUID(), volumeName: "pilot-workspace-volume" };
+    const host = await heldHostPeer(t, installed.directory, workspaceVolume);
+    const api = kubernetesApi(workspaceVolume);
     const fixture = await createPostgresAgentApp(t, {
       label: "strands-box",
       authSecret: "test-only-strands-box-controller-session-secret",
@@ -352,6 +381,7 @@ test(
               nativeCaBundle: installed.ca,
               workspaceRoot: "/home/node/workspace",
               controlledInference: { modelBaseUrl: modelOrigin },
+              workspaceNodeMode: "file-only-v1",
               relay: {
                 image: `registry.example/relay@sha256:${"f".repeat(64)}`,
                 hostAddress: "10.0.0.7",
@@ -547,6 +577,32 @@ test(
     assert.ok(admission.requirements.environment.some(({ name }) => name === "OPENAI_API_KEY"));
     assert.ok(!admission.requirements.environment.some(({ name }) => name === "APP_SERVER_TOKEN"));
     assert.deepEqual(api.providerSecretReads, [], "the packed Driver reads no Secrets while held");
+    const workspaceClaim = admission.requirements.workspaceMounts.find(
+      ({ mountPath }) => mountPath === "/home/node/workspace",
+    );
+    assert.ok(workspaceClaim);
+    const claim = api.get("PersistentVolumeClaim", workspaceClaim.claimName, kubeNamespace);
+    assert.ok(claim);
+    assert.equal(claim.metadata.uid, workspaceVolume.claimUid);
+    assert.equal(claim.spec?.volumeName, workspaceVolume.volumeName);
+    assert.deepEqual(admission.workspaceVolume, workspaceVolume);
+    api.save({ ...claim, spec: { ...claim.spec, volumeName: "replacement-volume" } });
+    const previousHostCalls = host.calls.length;
+    await assert.rejects(
+      drivers.sandboxDriver.provisionHarness!({
+        namespace: { ...namespace, name: kubeNamespace },
+        revision,
+        requirements: admission.requirements,
+        kubernetes: api.clients.objects,
+        signal: new AbortController().signal,
+      }),
+      /did not confirm the exact pending workload/,
+    );
+    assert.deepEqual(host.calls.slice(previousHostCalls), [
+      "GET /v1/execution",
+      "POST /v1/admission",
+    ]);
+    assert.deepEqual(api.providerSecretReads, [], "a replacement claim cannot reach a Secret read");
     assert.ok(!JSON.stringify(admission).includes(setupCode));
     assert.ok(!JSON.stringify(admission).includes(modelMarker));
     assert.ok(

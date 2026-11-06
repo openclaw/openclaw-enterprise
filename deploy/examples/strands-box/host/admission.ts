@@ -27,6 +27,11 @@ export interface Pending {
   profileSha256: string;
   image: string;
   commandSha256: string;
+  workspaceNode?: {
+    readonly mode: "file-only-v1";
+    readonly planSha256: string;
+    readonly workspaceVolume: { readonly claimUid: string; readonly volumeName: string };
+  };
   counts: { environment: number; files: number; mounts: number };
   controller: ControllerIdentity;
 }

@@ -52,6 +52,7 @@ drivers:
         <public ingress CA certificate>
         -----END CERTIFICATE-----
       workspaceRoot: /home/node/workspace
+      workspaceNodeMode: file-only-v1
       relay:
         image: registry.example/strands-box-relay@sha256:<relay image digest>
         hostAddress: 10.0.0.7
@@ -130,7 +131,15 @@ afterward. During removal, the Driver
 uses Kubernetes deletion preconditions, confirms the relay Pods are gone,
 retires the exact host execution and checks for its absence.
 
-The stock workspace node connects back to its Agent Gateway on a separate
-route. Configure and qualify that route before expecting deployment to serve.
-Packaging and conformance checks do not qualify a physical Box, model
-conversation, or an installed Agent.
+For the [ordinary installed example](../ordinary-chat/installed.md), select
+`workspaceNodeMode: file-only-v1` alongside `controlledInference`. The Driver
+reads the bound workspace claim through its existing namespaced object client.
+The host must match that UID and volume name to its own pinned mount before
+admission. The host starts the stock file-only node outside Box on a fixed TLS
+route to its Agent Gateway. The node keeps its own device state.
+
+After the original Box listener starts, the Driver carries its receipt digest to
+Compute and checks that same digest on the authenticated native upgrade.
+Compute installs the binding with the ingress CA for that revision. The Gateway
+checks the binding before using Box's restricted workspace policy. The ordinary
+source and packaging tests do not qualify the installed network or volume.

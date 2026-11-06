@@ -133,16 +133,24 @@ function reply(res: ServerResponse, content: string | Obj) {
   res.end();
 }
 export function controlledModel(nonce: string, receipt: (row: Obj) => void) {
+  return createServer(controlledModelRequests(nonce, receipt, { address: "127.0.0.1" }));
+}
+
+export function controlledModelRequests(
+  nonce: string,
+  receipt: (row: Obj) => void,
+  peer: { readonly address: string; readonly authorization?: string },
+) {
   const prompt = promptFor(nonce);
   let phase: "ready" | "sent" | "done" = "ready";
   const callId = `call_${randomUUID()}`;
-  return createServer(async (req: IncomingMessage, res) => {
+  return async (req: IncomingMessage, res: ServerResponse) => {
     try {
       if (
-        req.socket.remoteAddress !== "127.0.0.1" ||
+        req.socket.remoteAddress !== peer.address ||
         req.method !== "POST" ||
         req.url !== "/v1/responses" ||
-        req.headers.authorization !== undefined
+        req.headers.authorization !== peer.authorization
       ) {
         res.writeHead(404).end();
         return;
@@ -240,7 +248,7 @@ export function controlledModel(nonce: string, receipt: (row: Obj) => void) {
       if (!res.headersSent) res.writeHead(422).end();
       else res.destroy();
     }
-  });
+  };
 }
 async function main() {
   const [nonce, codex, ...args] = process.argv.slice(2);

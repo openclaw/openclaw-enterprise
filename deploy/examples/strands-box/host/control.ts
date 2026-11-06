@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, readFileSync } from "node:fs";
+import { constants, lstatSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, resolve, sep } from "node:path";
@@ -14,6 +14,7 @@ import {
   object,
   privateDirectory,
   readConfig,
+  READY_FILE,
   start,
   string,
 } from "./launch.ts";
@@ -29,6 +30,19 @@ import {
   sameOwner,
 } from "./admission.ts";
 import type { Owner, OwnerPin, Pending } from "./admission.ts";
+import {
+  assertNodeInputs,
+  assertPinnedDirectory,
+  FILE_NODE_STATE,
+  mountIdentity,
+  nodeRuntimeBytes,
+  nodeInstallation,
+  splitStockCommand,
+  startWorkspaceNode,
+  type MountIdentity,
+  type NodeInstallation,
+  type NodeLaunch,
+} from "./installed-workspace-node.ts";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const CONTROL = "/v1/execution";
@@ -39,7 +53,7 @@ const MOUNTS = {
   [WORKSPACE]: "workspace",
   "/home/node/.codex/generated_images": "generated-images",
   "/home/node/.codex/sessions": "codex-sessions",
-  "/home/node/.openclaw-node": "node",
+  [FILE_NODE_STATE]: "node",
 } as const;
 
 interface InstalledConfig extends HostConfig {
@@ -49,10 +63,11 @@ interface InstalledConfig extends HostConfig {
   approvalDir?: string;
   endpoint: { url: string; workspaceRoot: string };
   workspaceClaim: string;
-  mountIdentities: ReadonlyMap<string, { dev: string; ino: string }>;
+  mountIdentities: ReadonlyMap<string, MountIdentity>;
   workspaceSetupId?: string;
   writableState: string[];
   workspaceNode?: EgressRoute;
+  separateWorkspaceNode?: NodeInstallation;
   controlledInference?: EgressRoute;
 }
 
@@ -62,6 +77,66 @@ interface RecordView {
   executionId: string;
   state: "starting" | "running" | "failed";
   endpoint: InstalledConfig["endpoint"];
+  workspaceNodeMode?: NodeInstallation["mode"];
+  workspaceVolume?: NodeInstallation["workspaceVolume"];
+  generationSha256?: string;
+}
+
+interface LaunchPlan extends StartInput {
+  readonly separateNode?: NodeLaunch;
+}
+
+function approvedWorkspaceNode(plan: LaunchPlan): Pending["workspaceNode"] {
+  if (plan.separateNode === undefined) return undefined;
+  const { installation, workspace, volumeMounts, route, displayName } = plan.separateNode;
+  return {
+    mode: installation.mode,
+    workspaceVolume: installation.workspaceVolume,
+    planSha256: digest({
+      command: plan.command,
+      installation,
+      workspace,
+      volumeMounts,
+      route,
+      displayName,
+    }),
+  };
+}
+
+function startInstalledExecution(config: InstalledConfig, plan: LaunchPlan): Execution {
+  const box = start(config, plan);
+  const input = plan.separateNode;
+  if (input === undefined) return box;
+
+  const abort = new AbortController();
+  const node = startWorkspaceNode(input, join(config.runtimeDir, "file-node"), abort.signal);
+  const nodeDone = node.then(
+    (process) => process.done,
+    () => 1,
+  );
+  const watcher = setInterval(() => {
+    try {
+      assertNodeInputs(input);
+    } catch {
+      abort.abort();
+      void box.stop().catch(() => undefined);
+    }
+  }, 1_000);
+  watcher.unref();
+  const boxDone = box.done.finally(() => {
+    clearInterval(watcher);
+    abort.abort();
+  });
+  void nodeDone.then(() => box.stop()).catch(() => undefined);
+  return {
+    ready: Promise.all([box.ready, node]).then(([ready]) => ready),
+    done: Promise.all([boxDone, nodeDone]).then(([code]) => code),
+    async stop() {
+      abort.abort();
+      const [code] = await Promise.all([box.stop(), nodeDone]);
+      return code;
+    },
+  };
 }
 
 interface LiveRecord {
@@ -140,12 +215,6 @@ export function reserveExecution(
   });
 }
 
-function fileIdentity(path: string): { dev: string; ino: string } {
-  const dir = privateDirectory(path);
-  const stat = lstatSync(dir, { bigint: true });
-  return { dev: String(stat.dev), ino: String(stat.ino) };
-}
-
 const WRITABLE_HARNESS_STATE = new Set([
   "/home/node/.codex",
   "/home/node/.openclaw",
@@ -209,6 +278,7 @@ function installedConfig(value: unknown): InstalledConfig {
     "workspaceSetupId",
     "writableState",
     "workspaceNode",
+    "separateWorkspaceNode",
     "controlledInference",
   ]);
   if (config.workspace !== WORKSPACE) throw new Error("unsupported_workspace_path");
@@ -241,18 +311,51 @@ function installedConfig(value: unknown): InstalledConfig {
   const identity = object(data.mountIdentities);
   fields(identity, Object.keys(MOUNTS));
   const mountIdentities = new Map(
-    Object.entries(identity).map(([path, record]) => {
-      const pinned = object(record);
-      fields(pinned, ["dev", "ino"]);
-      const dev = string(pinned.dev);
-      const ino = string(pinned.ino);
-      if (!/^\d+$/.test(dev) || !/^[1-9]\d*$/.test(ino)) throw new Error("invalid_mount_identity");
-      return [path, { dev, ino }] as const;
-    }),
+    Object.entries(identity).map(([path, record]) => [path, mountIdentity(record)] as const),
   );
   const writableState = validateInstalledGrants(data.writableState, config.read, config.exec).map(
     privateDirectory,
   );
+  const workspaceNode =
+    data.workspaceNode === undefined ? undefined : parseRoute(data.workspaceNode, "workspace-node");
+  const separateWorkspaceNode =
+    data.separateWorkspaceNode === undefined
+      ? undefined
+      : nodeInstallation(data.separateWorkspaceNode);
+  if (separateWorkspaceNode !== undefined) {
+    // The file node's state and root image may never be present in a Box grant.
+    const isolated = [FILE_NODE_STATE, separateWorkspaceNode.rootfs];
+    const otherPaths = [
+      ...Object.keys(MOUNTS).filter((path) => path !== FILE_NODE_STATE),
+      ...config.read,
+      ...config.exec,
+      ...writableState,
+      config.agentBuildDir,
+      config.nodeBin,
+      config.codexBin,
+      config.boxBin,
+      config.runtimeDir,
+      ...(approvalDir === undefined ? [] : [approvalDir]),
+    ];
+    if (
+      approvalDir === undefined ||
+      workspaceNode === undefined ||
+      data.controlledInference === undefined ||
+      !mountIdentities.has(FILE_NODE_STATE) ||
+      config.read.length !== 2 ||
+      !config.read.includes("/app") ||
+      !config.read.includes("/opt/oce/runtime") ||
+      config.exec.length !== 1 ||
+      config.exec[0] !== "/usr/bin/tini" ||
+      contains(FILE_NODE_STATE, separateWorkspaceNode.rootfs) ||
+      contains(separateWorkspaceNode.rootfs, FILE_NODE_STATE) ||
+      isolated.some((isolatedPath) =>
+        otherPaths.some((path) => contains(path, isolatedPath) || contains(isolatedPath, path)),
+      )
+    ) {
+      throw new Error("file_node_authority_overlap_or_missing_owner");
+    }
+  }
   if (approvalDir !== undefined) {
     for (const path of [
       config.runtimeDir,
@@ -284,9 +387,8 @@ function installedConfig(value: unknown): InstalledConfig {
     ...(data.workspaceSetupId === undefined
       ? {}
       : { workspaceSetupId: string(data.workspaceSetupId) }),
-    ...(data.workspaceNode === undefined
-      ? {}
-      : { workspaceNode: parseRoute(data.workspaceNode, "workspace-node") }),
+    ...(workspaceNode === undefined ? {} : { workspaceNode }),
+    ...(separateWorkspaceNode === undefined ? {} : { separateWorkspaceNode }),
     ...(data.controlledInference === undefined
       ? {}
       : { controlledInference: parseRoute(data.controlledInference, "controlled-inference") }),
@@ -302,7 +404,10 @@ const STOCK_LOADER =
 const STOCK_PIECE_BYTES = 32 * 1024;
 const MAX_STOCK_PIECES = 8;
 
-export function stockHarnessCommand(value: unknown): readonly string[] {
+function parseStockHarnessCommand(value: unknown): {
+  readonly command: readonly string[];
+  readonly program: Buffer;
+} {
   if (
     !Array.isArray(value) ||
     value.length < STOCK_WRAPPER.length + 2 ||
@@ -336,10 +441,14 @@ export function stockHarnessCommand(value: unknown): readonly string[] {
       throw new Error("unsupported_command");
     }
     new TextDecoder("utf-8", { fatal: true }).decode(decoded.buffer);
+    return { command: [...STOCK_WRAPPER, STOCK_LOADER, ...pieces], program: decoded.buffer };
   } catch {
     throw new Error("unsupported_command");
   }
-  return [...STOCK_WRAPPER, STOCK_LOADER, ...pieces];
+}
+
+export function stockHarnessCommand(value: unknown): readonly string[] {
+  return parseStockHarnessCommand(value).command;
 }
 
 function admitted(
@@ -347,7 +456,7 @@ function admitted(
   requested: Owner,
   request: Record<string, unknown>,
   phase: "observe" | "start",
-): StartInput {
+): LaunchPlan {
   const requirements = object(request.requirements);
   fields(requirements, [
     "loginMode",
@@ -400,7 +509,7 @@ function admitted(
     if (JSON.stringify(JSON.parse(readFileSync(marker, "utf8"))) !== JSON.stringify(expected))
       throw new Error("workspace_setup_not_staged");
   } else if (config.workspaceSetupId !== undefined) throw new Error("unexpected_workspace_setup");
-  const command = stockHarnessCommand(requirements.command);
+  const stock = parseStockHarnessCommand(requirements.command);
   if (
     !Array.isArray(requirements.workspaceMounts) ||
     requirements.workspaceMounts.length < 3 ||
@@ -419,15 +528,14 @@ function admitted(
       mounts.has(path) ||
       mount.claimName !== config.workspaceClaim ||
       mount.readOnly !== false ||
-      (path === "/home/node/.openclaw-node"
+      (path === FILE_NODE_STATE
         ? !/^workspace-node-[a-f0-9]{12}-[a-f0-9]{12}$/.test(subPath)
         : MOUNTS[path as keyof typeof MOUNTS] !== subPath)
     )
       throw new Error("unsupported_workspace_mounts");
-    const identity = fileIdentity(path);
     const pin = config.mountIdentities.get(path);
-    if (pin === undefined || pin.dev !== identity.dev || pin.ino !== identity.ino)
-      throw new Error("workspace_mount_replaced");
+    if (pin === undefined) throw new Error("workspace_mount_replaced");
+    assertPinnedDirectory(path, pin);
     mounts.set(path, subPath);
   }
   if (
@@ -459,7 +567,7 @@ function admitted(
       if (
         name === "OPENCLAW_NODE_SETUP_CODE" &&
         ref.key === "setupCode" &&
-        ref.name === mounts.get("/home/node/.openclaw-node")
+        ref.name === mounts.get(FILE_NODE_STATE)
       ) {
         needsSetupCode = true;
       } else if (
@@ -515,7 +623,7 @@ function admitted(
     } finally {
       decoded.fill(0);
     }
-    egress.push(config.workspaceNode);
+    if (config.separateWorkspaceNode === undefined) egress.push(config.workspaceNode);
   }
   if (
     !SHA256.test(environment.APP_TOKEN_SHA ?? "") ||
@@ -551,16 +659,68 @@ function admitted(
     environment.OPENAI_API_KEY = CONTROLLED_INFERENCE_MARKER;
     egress.push(config.controlledInference);
   }
+  let separateNode: NodeLaunch | undefined;
+  if ((request.workspaceVolume === undefined) !== (config.separateWorkspaceNode === undefined)) {
+    throw new Error("file_node_workspace_volume_missing_or_unselected");
+  }
+  if (config.separateWorkspaceNode !== undefined) {
+    const workspaceIdentity = config.mountIdentities.get(config.workspace);
+    const stateIdentity = config.mountIdentities.get(FILE_NODE_STATE);
+    const displayName = `agent-${createHash("sha256").update(requested.agentId).digest("hex").slice(0, 12)}-workspace`;
+    if (
+      !needsSetupCode ||
+      !needsControlledInference ||
+      config.workspaceNode === undefined ||
+      workspaceIdentity === undefined ||
+      stateIdentity === undefined ||
+      environment.OPENCLAW_NODE_STATE_DIR !== FILE_NODE_STATE ||
+      environment.OPENCLAW_NODE_DISPLAY_NAME !== displayName ||
+      canonical(request.workspaceVolume) !==
+        canonical(config.separateWorkspaceNode.workspaceVolume) ||
+      requirements.workspaceSetup !== undefined
+    ) {
+      throw new Error("file_node_requires_stock_ordinary_inputs");
+    }
+    separateNode = {
+      installation: config.separateWorkspaceNode,
+      workspace: config.workspace,
+      workspaceIdentity,
+      stateIdentity,
+      volumeMounts: [...mounts].map(([path, subPath]) => ({
+        path,
+        subPath,
+        identity: config.mountIdentities.get(path)!,
+      })),
+      runtime: join(config.agentBuildDir, "workspace-node-runtime.mjs"),
+      route: config.workspaceNode,
+      ...(environment.OPENCLAW_NODE_CA_PEM === undefined
+        ? {}
+        : { ca: environment.OPENCLAW_NODE_CA_PEM }),
+      displayName,
+      ...(typeof setupCode === "string" && expiresAt !== undefined ? { setupCode, expiresAt } : {}),
+    };
+    assertNodeInputs(separateNode);
+    nodeRuntimeBytes(separateNode);
+    for (const key of [
+      "OPENCLAW_NODE_CA_PEM",
+      "OPENCLAW_NODE_DISPLAY_NAME",
+      "OPENCLAW_NODE_STATE_DIR",
+      "OPENCLAW_WORKSPACE_BOOTSTRAP",
+    ])
+      delete environment[key];
+    mounts.delete(FILE_NODE_STATE);
+  }
   return {
-    command,
+    command: separateNode === undefined ? stock.command : splitStockCommand(stock.program),
     environment,
     files,
     readOnly: [],
     writable: [...mounts.keys(), ...config.writableState],
     egress,
-    ...(typeof setupCode === "string" && expiresAt !== undefined
+    ...(separateNode === undefined && typeof setupCode === "string" && expiresAt !== undefined
       ? { workspaceNodeSetupCode: setupCode, workspaceNodeSetupExpiresAt: expiresAt }
       : {}),
+    ...(separateNode === undefined ? {} : { separateNode }),
   };
 }
 
@@ -674,10 +834,13 @@ async function serve(config: InstalledConfig): Promise<void> {
       return;
     }
     if (observing) {
-      fields(data, ["owner", "requirementsDigest", "requirements"]);
+      fields(data, ["owner", "requirementsDigest", "requirements", "workspaceVolume"]);
       if (digest(data.requirements) !== requirementsDigest)
         throw new Error("requirements_digest_mismatch");
-      const exact = canonical(data.requirements);
+      const exact = canonical({
+        requirements: data.requirements,
+        ...(data.workspaceVolume === undefined ? {} : { workspaceVolume: data.workspaceVolume }),
+      });
       if (
         pending !== undefined &&
         (!sameOwner(pending.view.owner, supplied) ||
@@ -689,6 +852,7 @@ async function serve(config: InstalledConfig): Promise<void> {
       }
       if (pending === undefined) {
         const plan = admitted(config, supplied, data, "observe");
+        const workspaceNode = approvedWorkspaceNode(plan);
         const view: Pending = {
           version: 1,
           owner: supplied,
@@ -696,6 +860,7 @@ async function serve(config: InstalledConfig): Promise<void> {
           profileSha256: profileDigest(data.requirements),
           image: config.image,
           commandSha256: digest(plan.command),
+          ...(workspaceNode === undefined ? {} : { workspaceNode }),
           counts: {
             environment: Object.keys(plan.environment).length,
             files: plan.files?.length ?? 0,
@@ -712,6 +877,12 @@ async function serve(config: InstalledConfig): Promise<void> {
         state: allowed ? "approved" : "held",
         owner: pending.view.owner,
         requirementsDigest,
+        ...(pending.view.workspaceNode === undefined
+          ? {}
+          : {
+              workspaceNodeMode: pending.view.workspaceNode.mode,
+              workspaceVolume: pending.view.workspaceNode.workspaceVolume,
+            }),
       });
       return;
     }
@@ -720,6 +891,7 @@ async function serve(config: InstalledConfig): Promise<void> {
         "owner",
         "requirementsDigest",
         "requirements",
+        "workspaceVolume",
         "workspaceNodeSetupCode",
         "controlledInference",
       ]);
@@ -729,7 +901,8 @@ async function serve(config: InstalledConfig): Promise<void> {
         if (
           current.retiring ||
           !sameOwner(current.view.owner, supplied) ||
-          current.view.requirementsDigest !== requirementsDigest
+          current.view.requirementsDigest !== requirementsDigest ||
+          digest(current.view.workspaceVolume ?? null) !== digest(data.workspaceVolume ?? null)
         )
           reply(response, 409, { error: "execution_conflict" });
         else reply(response, 200, current.view);
@@ -743,19 +916,35 @@ async function serve(config: InstalledConfig): Promise<void> {
         pending === undefined ||
         !sameOwner(pending.view.owner, supplied) ||
         pending.view.requirementsDigest !== requirementsDigest ||
-        pending.requirements !== canonical(data.requirements) ||
+        pending.requirements !==
+          canonical({
+            requirements: data.requirements,
+            ...(data.workspaceVolume === undefined
+              ? {}
+              : { workspaceVolume: data.workspaceVolume }),
+          }) ||
         (config.approvalDir !== undefined && !isApproved(config.approvalDir, pending.view))
       ) {
         reply(response, 409, { error: "owner_admission_not_approved" });
         return;
       }
       const input = admitted(config, supplied, data, "start");
+      const workspaceNode = approvedWorkspaceNode(input);
+      if (workspaceNode?.planSha256 !== pending.view.workspaceNode?.planSha256) {
+        throw new Error("file_node_admitted_plan_changed");
+      }
       const view: RecordView = {
         owner: supplied,
         requirementsDigest,
         executionId: randomUUID(),
         state: "starting",
         endpoint: config.endpoint,
+        ...(workspaceNode === undefined
+          ? {}
+          : {
+              workspaceNodeMode: workspaceNode.mode,
+              workspaceVolume: workspaceNode.workspaceVolume,
+            }),
       };
       attempted = true;
       reserveExecution(config.runtimeDir, view);
@@ -763,7 +952,7 @@ async function serve(config: InstalledConfig): Promise<void> {
       current = running;
       let execution: Execution;
       try {
-        execution = start(config, input);
+        execution = startInstalledExecution(config, input);
         running.execution = execution;
       } catch {
         view.state = "failed";
@@ -771,8 +960,22 @@ async function serve(config: InstalledConfig): Promise<void> {
         return;
       }
       void execution.ready.then(
-        () => {
-          view.state = "running";
+        (receipt) => {
+          try {
+            if (workspaceNode !== undefined) {
+              const bytes = readFileSync(join(config.runtimeDir, READY_FILE), {
+                flag: constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+              });
+              if (!bytes.equals(Buffer.from(`${JSON.stringify(receipt)}\n`))) {
+                throw new Error("original_ready_receipt_changed");
+              }
+              view.generationSha256 = createHash("sha256").update(bytes).digest("hex");
+            }
+            view.state = "running";
+          } catch {
+            view.state = "failed";
+            void execution.stop().catch(() => undefined);
+          }
         },
         () => {
           view.state = "failed";

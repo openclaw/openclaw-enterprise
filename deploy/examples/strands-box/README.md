@@ -107,13 +107,11 @@ joins that declared tool to one authenticated Gateway turn using a local synthet
 
 ## Connect the installation
 
-**Enrollment gate:** Box v0.2.1's HTTP egress proxy
-[refuses protocol upgrades](https://github.com/strands-agents/box/blob/e39544d49188b82933264b83159c7ccc278ced5a/crates/egress-gateway/src/intercept/mitm/http1.rs#L271-L289).
-The outbound workspace-node WebSocket cannot use that proxy. Continue only if
-the installation has a supported, verified route for the original node. The
-inbound Harness route below is separate. The controlled inference fixture also
-needs a certificate trusted by Box's upstream client. The Box CLI
-[does not accept a custom upstream CA](https://github.com/strands-agents/box/blob/e39544d49188b82933264b83159c7ccc278ced5a/crates/box/tests/box_credentials.rs#L480-L490).
+Use the [installed ordinary chat and workspace procedure](ordinary-chat/installed.md)
+for the file-only workspace node. Box v0.2.1's HTTP egress proxy
+[refuses protocol upgrades](https://github.com/strands-agents/box/blob/e39544d49188b82933264b83159c7ccc278ced5a/crates/egress-gateway/src/intercept/mitm/http1.rs#L271-L289),
+so the file node has a separate route to the Agent Gateway. The Box Harness
+still connects to the Gateway over the installed relay.
 
 Start with the [production installation guide](../../../docs/guides/deploy/production-installation.md)
 for the control plane. Review the [example Driver](driver/README.md#build-and-select),
@@ -130,10 +128,10 @@ controller's authority. Use the same package and configuration on API and Worker
    for this example. Keep real model credentials out of Box.
    Copy the [installed configuration](host/installed.example.json) and replace
    the example values with the actual Driver, Namespace and Agent identities,
-   image digest, staged workspace claim and endpoint. For each staged mount,
-   record its device and inode with `stat -c '%d %i'`. Set the workspace node's
-   Gateway WSS URL and private IPv4 address. Configure a controlled inference
-   route only for the installation's test fixture. Use a new mode `0700`
+   image digest, staged workspace claim and endpoint. Prepare the
+   [same bound volume and node state](ordinary-chat/installed.md#prepare-the-original-volume).
+   Set the workspace node's Gateway WSS URL and private IPv4 address. Configure
+   a controlled inference route for the installation's test fixture. Use a new mode `0700`
    `approvalDir` outside both the Worker's socket mount and Box's file grants.
 3. Give only the Worker access to the owner-only Unix control socket. Set
    `BOX_INSTALLED_CONFIG` to the absolute path to the mode `0600` installed
@@ -148,7 +146,8 @@ controller's authority. Use the same package and configuration on API and Worker
    the Agent once. The host writes `runtimeDir/pending.json` before the Worker
    reads the workspace setup Secret. Compare the pending owner, revision and
    requirements with the original deployment through OCE. Set `BOX_REVISION_ID`
-   and `BOX_REQUIREMENTS_DIGEST` to the reviewed values. Approve that request
+   and `BOX_REQUIREMENTS_DIGEST` to the reviewed values. Confirm the receipt's
+   file-only mode, volume UID and name, and launch plan digest. Approve that request
    from the Box host.
 
    ```bash

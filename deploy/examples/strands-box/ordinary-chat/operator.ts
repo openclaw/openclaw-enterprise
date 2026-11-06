@@ -192,6 +192,7 @@ export function gatewayChatCall(
   key: string,
   runId: string,
   nonce: string,
+  expectedUrl = gatewayUrl,
 ) {
   const params =
     method === "chat.send"
@@ -210,7 +211,7 @@ export function gatewayChatCall(
     "call",
     method,
     "--expect-url",
-    gatewayUrl,
+    expectedUrl,
     "--params",
     JSON.stringify(params),
     "--json",
@@ -228,6 +229,33 @@ function runDirectory(root: string | undefined): string {
   if (!st.isDirectory() || st.uid !== process.getuid?.() || (st.mode & 0o077) !== 0)
     throw Error("REPRO_ROOT_REFUSED");
   return root;
+}
+
+function installedGatewayUrl(root: string): string {
+  const file = join(root, "gateway.json");
+  let contents: string;
+  try {
+    contents = privateRead(file, 2048);
+  } catch (error) {
+    if (obj(error).code === "ENOENT") return gatewayUrl;
+    throw error;
+  }
+  const gateway = obj(JSON.parse(contents));
+  if (Object.keys(gateway).length !== 1 || typeof gateway.url !== "string") {
+    throw Error("INSTALLED_GATEWAY_ORIGIN_REFUSED");
+  }
+  const url = new URL(gateway.url);
+  if (
+    url.protocol !== "wss:" ||
+    url.href !== gateway.url ||
+    url.username ||
+    url.password ||
+    url.hash ||
+    url.search
+  ) {
+    throw Error("INSTALLED_GATEWAY_ORIGIN_REFUSED");
+  }
+  return url.href;
 }
 export function seededNonce(root: string | undefined): string {
   const expected = obj(
@@ -248,6 +276,7 @@ function main() {
   const expected = obj(JSON.parse(privateRead(join(root, "expected.json"), 2048)) as unknown);
   const nonce = expected.nonce;
   if (!isNonce(nonce)) throw Error("PROBE_NONCE_REFUSED");
+  const expectedUrl = installedGatewayUrl(root);
   const current = checkMarker();
   const key = expected.sessionKey;
   if (
@@ -269,8 +298,9 @@ function main() {
       runId,
       nonce,
       prompt: promptFor(nonce),
+      gatewayUrl: expectedUrl,
     });
-    const result = callGateway(cli, gatewayChatCall("chat.send", key, runId, nonce));
+    const result = callGateway(cli, gatewayChatCall("chat.send", key, runId, nonce, expectedUrl));
     const reply = result.status === 0 ? obj(JSON.parse(result.stdout) as unknown) : {};
     const accepted =
       reply.runId === runId && (reply.status === "started" || reply.status === "accepted");
@@ -285,6 +315,7 @@ function main() {
       intent.sessionKey !== key ||
       intent.nonce !== nonce ||
       intent.prompt !== promptFor(nonce) ||
+      (intent.gatewayUrl ?? gatewayUrl) !== expectedUrl ||
       intent.generationSha256 !== ownerReceipt(root, false) ||
       typeof intent.runId !== "string" ||
       !/^[a-f0-9-]{36}$/.test(intent.runId)
@@ -292,10 +323,16 @@ function main() {
       throw Error("ORIGINAL_CHAT_INTENT_REQUIRED");
     if (!inspectPolicyRecords(privateRead(join(root, "box-records.jsonl"), 1024 * 1024)))
       throw Error("STOCK_POLICY_RECEIPT_REQUIRED");
-    const waited = callGateway(cli, gatewayChatCall("agent.wait", key, intent.runId, nonce));
+    const waited = callGateway(
+      cli,
+      gatewayChatCall("agent.wait", key, intent.runId, nonce, expectedUrl),
+    );
     if (waited.status !== 0 || !inspectTerminal(JSON.parse(waited.stdout) as unknown, intent.runId))
       throw Error("ORIGINAL_CHAT_TERMINAL_REQUIRED");
-    const read = callGateway(cli, gatewayChatCall("chat.history", key, intent.runId, nonce));
+    const read = callGateway(
+      cli,
+      gatewayChatCall("chat.history", key, intent.runId, nonce, expectedUrl),
+    );
     if (
       read.status !== 0 ||
       !inspectHistory(JSON.parse(read.stdout) as unknown, key, nonce, current.markerSha256)

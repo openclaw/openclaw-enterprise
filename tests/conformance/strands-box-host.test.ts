@@ -11,6 +11,8 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  renameSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -27,6 +29,12 @@ import {
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { inflateRawSync } from "node:zlib";
+import {
+  assertPinnedDirectory,
+  fileIdentity,
+  splitStockCommand,
+} from "../../deploy/examples/strands-box/host/installed-workspace-node.ts";
 import {
   canonical,
   digest,
@@ -66,6 +74,37 @@ const unsupported = process.platform !== "linux" || process.getuid?.() === 0;
 function temporary(): string {
   return mkdtempSync(join(realpathSync(tmpdir()), "oce-box-test-"));
 }
+
+test("the file-only mode refuses modified stock commands and replacement mounts", () => {
+  const stockArgs = nodeProgramArguments(AGENT_WITH_NODE_ENTRYPOINT);
+  const stock = inflateRawSync(Buffer.from(stockArgs.slice(1).join(""), "base64"));
+  assert.throws(
+    () => splitStockCommand(Buffer.concat([stock, Buffer.from("\nvoid 0;")])),
+    /unrecognized_combined_workspace_node_command/,
+  );
+  const launcher = splitStockCommand(stock);
+  const harness = inflateRawSync(
+    Buffer.from(launcher.slice(RUNTIME_WRAPPER_COMMAND.length + 1).join(""), "base64"),
+  ).toString();
+  assert.doesNotMatch(harness, /pair-or-reconnect|OPENCLAW_NODE_SETUP_CODE/);
+  assert.match(harness, /ws-token-sha256/);
+  const directory = temporary();
+  const original = join(directory, "workspace");
+  const moved = join(directory, "moved");
+  try {
+    mkdirSync(original, { mode: 0o700 });
+    const pin = fileIdentity(original);
+    assertPinnedDirectory(original, pin);
+    renameSync(original, moved);
+    mkdirSync(original, { mode: 0o700 });
+    assert.throws(() => assertPinnedDirectory(original, pin), /workspace_mount_replaced/);
+    rmSync(original, { recursive: true });
+    symlinkSync(moved, original, "dir");
+    assert.throws(() => assertPinnedDirectory(original, pin), /noncanonical_path/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 function close(server: Server): Promise<void> {
   return new Promise((resolve) => server.close(() => resolve()));

@@ -20,6 +20,15 @@ export interface Execution {
   readonly executionId: string;
   readonly state: "starting" | "running" | "failed";
   readonly endpoint: { readonly url: string; readonly workspaceRoot: string };
+  readonly workspaceNodeMode?: WorkspaceNodeMode;
+  readonly workspaceVolume?: WorkspaceVolume;
+  readonly generationSha256?: string;
+}
+
+export type WorkspaceNodeMode = "file-only-v1";
+export interface WorkspaceVolume {
+  readonly claimUid: string;
+  readonly volumeName: string;
 }
 
 const EXECUTION_PATH = "/v1/execution";
@@ -65,9 +74,30 @@ export function sameExecution(a: Execution, b: Execution): boolean {
     sameOwner(a.owner, b.owner) &&
     a.executionId === b.executionId &&
     a.requirementsDigest === b.requirementsDigest &&
+    a.workspaceNodeMode === b.workspaceNodeMode &&
+    sameWorkspaceVolume(a.workspaceVolume, b.workspaceVolume) &&
+    a.generationSha256 === b.generationSha256 &&
     a.endpoint.url === b.endpoint.url &&
     a.endpoint.workspaceRoot === b.endpoint.workspaceRoot
   );
+}
+
+export function workspaceVolume(value: unknown): WorkspaceVolume | undefined {
+  const volume = record(value);
+  if (
+    volume === undefined ||
+    Object.keys(volume).length !== 2 ||
+    typeof volume.claimUid !== "string" ||
+    !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(volume.claimUid) ||
+    typeof volume.volumeName !== "string" ||
+    !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(volume.volumeName)
+  )
+    return undefined;
+  return { claimUid: volume.claimUid, volumeName: volume.volumeName };
+}
+
+export function sameWorkspaceVolume(a?: WorkspaceVolume, b?: WorkspaceVolume): boolean {
+  return a?.claimUid === b?.claimUid && a?.volumeName === b?.volumeName;
 }
 
 function parseOwner(value: unknown): Owner | undefined {
@@ -97,6 +127,7 @@ function parseExecution(value: unknown): Execution {
   const document = record(value);
   const owner = parseOwner(document?.owner);
   const endpoint = record(document?.endpoint);
+  const volume = workspaceVolume(document?.workspaceVolume);
   if (
     !owner ||
     !endpoint ||
@@ -106,7 +137,19 @@ function parseExecution(value: unknown): Execution {
     !/^[a-zA-Z0-9_.:-]{1,128}$/.test(document.executionId) ||
     typeof document.requirementsDigest !== "string" ||
     !/^[a-f0-9]{64}$/.test(document.requirementsDigest) ||
-    (document.state !== "starting" && document.state !== "running" && document.state !== "failed")
+    (document.state !== "starting" &&
+      document.state !== "running" &&
+      document.state !== "failed") ||
+    (document.workspaceNodeMode !== undefined && document.workspaceNodeMode !== "file-only-v1") ||
+    (document.workspaceVolume !== undefined && volume === undefined) ||
+    (document.workspaceNodeMode === undefined) !== (volume === undefined) ||
+    (document.generationSha256 !== undefined &&
+      (document.workspaceNodeMode === undefined ||
+        typeof document.generationSha256 !== "string" ||
+        !/^[a-f0-9]{64}$/.test(document.generationSha256))) ||
+    (document.workspaceNodeMode !== undefined &&
+      document.state === "running" &&
+      document.generationSha256 === undefined)
   ) {
     throw new DependencyUnavailableError("Strands Box returned invalid execution evidence.");
   }
@@ -116,6 +159,13 @@ function parseExecution(value: unknown): Execution {
     executionId: document.executionId,
     state: document.state,
     endpoint: { url: endpoint.url, workspaceRoot: endpoint.workspaceRoot },
+    ...(document.workspaceNodeMode === undefined
+      ? {}
+      : { workspaceNodeMode: document.workspaceNodeMode }),
+    ...(volume === undefined ? {} : { workspaceVolume: volume }),
+    ...(document.generationSha256 === undefined
+      ? {}
+      : { generationSha256: document.generationSha256 }),
   };
 }
 
@@ -123,6 +173,7 @@ interface AdmissionRequest {
   readonly owner: Owner;
   readonly requirementsDigest: string;
   readonly requirements: HarnessWorkloadRequirements;
+  readonly workspaceVolume?: WorkspaceVolume;
 }
 
 type ControlRequest =
@@ -171,6 +222,7 @@ export async function requestAdmission(
   socketPath: string,
   input: AdmissionRequest,
   signal: AbortSignal,
+  workspaceNodeMode?: WorkspaceNodeMode,
 ): Promise<"held" | "approved"> {
   try {
     const reply = await send(socketPath, "POST", ADMISSION_PATH, input, signal);
@@ -181,6 +233,10 @@ export async function requestAdmission(
       !owner ||
       !sameOwner(owner, input.owner) ||
       value?.requirementsDigest !== input.requirementsDigest ||
+      value.workspaceNodeMode !== workspaceNodeMode ||
+      (value.workspaceVolume !== undefined &&
+        workspaceVolume(value.workspaceVolume) === undefined) ||
+      !sameWorkspaceVolume(workspaceVolume(value.workspaceVolume), input.workspaceVolume) ||
       (value.state !== "held" && value.state !== "approved")
     ) {
       throw new Error("Mismatched admission receipt");

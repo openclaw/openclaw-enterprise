@@ -946,6 +946,7 @@ async function readinessFixture(t: TestContext) {
     ca: string,
     token: string,
     signal: AbortSignal,
+    generationSha256?: string,
   ) => Promise<unknown>;
   return { probe, ca: x.ca, tls: { key: await readFile(x.certKey), cert: x.ca } };
 }
@@ -1036,6 +1037,8 @@ test(
     let mode: "upgrade-only" | "wrong-id" | "bad-result" | "initialize" | "held" | "silent" =
       "upgrade-only";
     const observations: string[] = [];
+    const generation = "a".repeat(64);
+    let ownerHeaders: string[] = [];
     let sawSilentRequest = false;
     const server = createHttpsServer(tls, (request, response) => {
       assert.equal(request.url, "/openclaw/runtime/status");
@@ -1065,7 +1068,9 @@ test(
         .update(challenge + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
         .digest("base64");
       socket.write(
-        `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
+        `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n` +
+          ownerHeaders.map((value) => `X-OpenClaw-Box-Owner: ${value}\r\n`).join("") +
+          "\r\n",
       );
       firstClientFrame(socket, (rpc) => {
         observations.push(current);
@@ -1108,6 +1113,12 @@ test(
     await assert.rejects(probe(url, ca, token, signal), /did not confirm readiness/);
     mode = "initialize";
     assert.deepEqual(await probe(url, ca, token, signal), { state: "serving" });
+    for (const headers of [[], ["b".repeat(64)], [generation, generation]]) {
+      ownerHeaders = headers;
+      await assert.rejects(probe(url, ca, token, signal, generation), /did not confirm readiness/);
+    }
+    ownerHeaders = [generation];
+    assert.deepEqual(await probe(url, ca, token, signal, generation), { state: "serving" });
     await assert.rejects(
       probe(`wss://localhost:${port}/`, ca, token, signal),
       /did not confirm readiness/,
@@ -1133,6 +1144,7 @@ test(
       "upgrade-only",
       "wrong-id",
       "bad-result",
+      "initialize",
       "initialize",
       "held",
       "status",

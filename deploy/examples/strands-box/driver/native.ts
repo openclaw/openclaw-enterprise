@@ -11,6 +11,7 @@ const MAX_BODY = 16_384;
 const MAX_WIRE = 32_768;
 const MAX_FRAMES = 64;
 const STATUS_PATH = "/openclaw/runtime/status";
+const OWNER_HEADER = "x-openclaw-box-owner";
 
 function clientFrame(opcode: number, payload: Buffer): Buffer {
   const short = payload.length <= 125;
@@ -186,6 +187,7 @@ export async function nativeStatus(
   ca: string,
   token: string,
   signal: AbortSignal,
+  generationSha256?: string,
 ): Promise<
   { state: "starting" } | { state: "serving" } | { state: "failed"; runtimeFailure: unknown }
 > {
@@ -240,6 +242,10 @@ export async function nativeStatus(
         resolve(response.statusCode ?? 0);
       });
       pending.once("upgrade", (response, socket, head) => {
+        const generation = response.rawHeaders.filter(
+          (_value, index, headers) =>
+            index % 2 === 1 && headers[index - 1]?.toLowerCase() === OWNER_HEADER,
+        );
         if (
           response.statusCode !== 101 ||
           response.headers.upgrade?.toLowerCase() !== "websocket" ||
@@ -249,7 +255,9 @@ export async function nativeStatus(
             .some((part) => part.trim() === "upgrade") ||
           response.headers["sec-websocket-accept"] !== expected ||
           response.headers["sec-websocket-extensions"] !== undefined ||
-          response.headers["sec-websocket-protocol"] !== undefined
+          response.headers["sec-websocket-protocol"] !== undefined ||
+          (generationSha256 !== undefined &&
+            (generation.length !== 1 || generation[0] !== generationSha256))
         ) {
           socket.destroy();
           reject(new Error("Invalid WebSocket upgrade"));
@@ -261,7 +269,7 @@ export async function nativeStatus(
     });
     signal.throwIfAborted();
     if (status === 101) return { state: "serving" };
-    if (status !== 503) return { state: "starting" };
+    if (status !== 503 || generationSha256 !== undefined) return { state: "starting" };
     const failure = await new Promise<unknown>((resolve, reject) => {
       const pending = request(new URL(STATUS_PATH, https), options, (response) => {
         if (response.statusCode !== 200) {
