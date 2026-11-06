@@ -28,6 +28,8 @@ See [Service API Keys](authentication/service-api-keys.md) for issuing or rotati
 keys.
 
 Ctrl-C or `SIGTERM` cancels in-flight requests and exits with an error.
+If local I/O or cleanup still blocks the command, a second interrupt terminates
+it immediately; cleanup may remain incomplete.
 
 ## Resource commands
 
