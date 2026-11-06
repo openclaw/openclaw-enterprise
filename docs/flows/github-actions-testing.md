@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: 2026-11-05
-last_updated_session: authoring-run/14bcb9d6-2d4c-449d-8bbc-b64e3ef7e632
+updated: 2026-11-06
+last_updated_session: authoring-run/acefb857-8e57-4f00-b7f5-ed9224944d88
 ---
 
 # GitHub Actions testing flow
@@ -231,10 +231,11 @@ timeouts and continues disposal. Root hooks allow two seconds for reports before
 exit; cleanup failure arms that grace immediately. A 60-second backstop covers
 skipped hooks. The parent runner accounts for failures. Failed resources stay in state; cleanup continues.
 
-`CI Required` checks jobs even after failures. Full-mode aggregation verifies
-matching commit SHAs, success, required evidence and cleanup; the runner
-validates cases. Docs mode checks documentation, audit and skipped test jobs
-without aggregation, proving only those checks. Full Integration accounts for
+`scripts/ci/impact-gate.mjs:main` retains each matrix job's result with its selected
+lanes; Full Integration does likewise. `scripts/ci/run-tests.mjs:aggregateGroup`
+requires one job owner per selected lane, successful jobs, and matching-source
+lane artifacts, evidence and cleanup. Parent failure fails the gate; lane
+artifacts identify failing lanes. Full Integration accounts for
 its selected `full` group or lane. `ssh-host` stays outside automatic groups until
 an operator prepares its [disposable host](../testing/ssh.md#ssh-raw-hosts).
 Abrupt runner loss can prevent teardown and loses private `RUNNER_TEMP` state.
@@ -261,6 +262,8 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 08:54: Separate matrix job status from lane artifact outcomes. (authoring-run/acefb857-8e57-4f00-b7f5-ed9224944d88 - 3d59dcb51718a0242962b073089f66c402632e92)
 
 - 2026-11-04 12:10: Isolate the Codex Git proof queue without Slack. (authoring-run/14bcb9d6-2d4c-449d-8bbc-b64e3ef7e632 - aa60a72115e342ec020d1083fb5e30c139202c84)
 
