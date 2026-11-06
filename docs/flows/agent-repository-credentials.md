@@ -306,8 +306,8 @@ reminting; cleanup permits deployment.
 erases standing tokens after verified expiry plus skew; uncertain revocations remain unresolved.
 
 [Preview, save and deploy](../../packages/occ/src/index.ts) require standing permission and current scope.
-The [worker](../../apps/controller/src/worker/repository-credentials.ts) uses Installation policy,
-or the registered Repo Driver when unbound; contradictory selection prevents startup.
+[Reconciliation](../../apps/controller/src/worker/repository-credentials.ts) retains its startup policy:
+bound Installation policy or unbound Repo Driver. Conflicts prevent startup.
 [Eligibility](../../packages/occ/src/repository-approval.ts) is rechecked under Namespace then Agent locks.
 Withdrawal or scope changes raise `REPOSITORY_STANDING_POLICY_CHANGED` before successor release.
 The [GitHub registry](../../apps/controller/src/drivers/repo/github/credentials/registry.ts)
