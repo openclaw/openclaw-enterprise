@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "oce-github",
   "version": "1.0.0",
-  "description": "Use GitHub's hosted MCP tools with a GitHub personal access token.",
+  "description": "Use GitHub's hosted MCP tools with a connected GitHub account or a personal access token.",
   "author": { "name": "OpenClaw Enterprise" },
   "homepage": "https://github.com/github/github-mcp-server",
   "repository": "https://github.com/openclaw/openclaw-enterprise",

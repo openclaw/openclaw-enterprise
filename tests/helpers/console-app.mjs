@@ -399,6 +399,8 @@ export async function createConsoleAppFixture(t, options = {}) {
   const appOptions = {
     metrics: options.metrics,
     ...(options.logger === undefined ? {} : { logger: options.logger }),
+    discoverMcpAuthorization: options.discoverMcpAuthorization,
+    readManagedMcpToolNames: options.readManagedMcpToolNames,
     workspaceFilesAccess: options.workspaceFilesAccess,
     auth,
     iamDriver,
@@ -864,6 +866,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     browserArgs,
     credentials,
     memoryDatabase,
+    platformState,
     provisionedAccounts,
     policy,
     // The sink State and the API audit to: `options.auditSink`, or one the fixture made.

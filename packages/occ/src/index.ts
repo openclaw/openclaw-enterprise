@@ -1062,6 +1062,19 @@ type TemplateInput = ApprovedTemplateSettings &
       }
     | { readonly mode: "mcp_discovery"; readonly serverUrl: string; readonly issuer: string }
   );
+function advertisedMcpScopes(observed: McpAuthorizationMetadata): readonly string[] {
+  const scopes = new Set([...observed.requestedScopes, ...(observed.resourceScopes ?? [])]);
+  if (!scopes.size) {
+    return observed.supportedScopes ?? [];
+  }
+  // The resource advertises its API scopes. RFC 8414 permits the issuer to omit them.
+  // offline_access requests renewal from the issuer, independent of resource permissions.
+  if (observed.supportedScopes?.includes("offline_access")) {
+    scopes.add("offline_access");
+  }
+  return [...scopes];
+}
+
 function templateAcceptsAuthMethod(
   observed: McpAuthorizationMetadata | undefined,
   method: OAuthClient["tokenEndpointAuthMethod"],
@@ -4766,8 +4779,7 @@ export class OpenClawController {
             mode: current.mode,
             scopes: current.scopes,
             requiredScopes: current.observed?.requestedScopes ?? [],
-            offeredScopes:
-              current.observed?.resourceScopes ?? current.observed?.supportedScopes ?? [],
+            offeredScopes: current.observed ? advertisedMcpScopes(current.observed) : [],
           }));
       },
     );
@@ -5668,9 +5680,7 @@ export class OpenClawController {
           "Choose a verified issuer for this MCP server.",
         );
       }
-      const offered = [...observed.requestedScopes, ...(observed.resourceScopes ?? [])];
-      const allowed = new Set(offered.length ? offered : observed.supportedScopes);
-      const supported = observed.supportedScopes && new Set(observed.supportedScopes);
+      const allowed = new Set(advertisedMcpScopes(observed));
       const approved = new Set(settings.scopes);
       if (approved.size && observed.requestedScopes.some((scope) => !approved.has(scope))) {
         throw new ConnectionTemplateValidationError(
@@ -5678,9 +5688,7 @@ export class OpenClawController {
           "Include the scopes required by the MCP server or choose no template limit.",
         );
       }
-      if (
-        settings.scopes.some((scope) => !allowed.has(scope) || (supported && !supported.has(scope)))
-      ) {
+      if (settings.scopes.some((scope) => !allowed.has(scope))) {
         throw new ConnectionTemplateValidationError(
           "scopes",
           "Choose only scopes advertised for this MCP resource.",

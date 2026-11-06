@@ -4,9 +4,21 @@ On a dedicated OpenClaw Agent on Kubernetes, open **Create new version → Plugi
 
 ## GitHub
 
-Create a fine-grained GitHub personal access token. Select the repositories the Agent needs and grant the permissions for the tools you intend to enable. For example, give the token read access to issues to look up an issue in a selected repository. The GitHub plugin uses GitHub.com's hosted MCP server at `https://api.githubcopilot.com/mcp/`, including the trailing slash. [GitHub's remote MCP setup](https://docs.github.com/en/copilot/how-tos/copilot-in-your-ide/customize-copilot/extend-copilot-with-tools-and-context/set-up-the-github-mcp-server#remote-mcp-server-configuration-with-pat)
+Use GitHub.com’s hosted MCP server at `https://api.githubcopilot.com/mcp/`, including the trailing slash. You can sign in with GitHub or supply a fine-grained personal access token.
 
-Under **GitHub account**, [register the token](#register-a-token-and-deploy) or select an existing compatible source. To verify read access, enable `issue_read` if the account offers it, deploy, and ask the Agent for the title of a known issue.
+### Sign in with GitHub
+
+1. An Installation admin creates a [connection template](../../reference/connection-templates.md#register-a-client). Choose **Discover from an MCP server URL**, enter the GitHub MCP URL, and choose **Limit to approved scopes**. For a GitHub App, enter `offline_access`. For an OAuth App, also enter the GitHub API scopes you intend to request.
+2. Register a GitHub App with the exact public OCC callback URL shown in Console (ending in `/oauth/callback`). Enable expiring user access tokens. Grant the app the repository permissions its tools need and install it on the intended repositories. For example, **Issues: Read-only** allows a user who can read the repository to look up an issue. In OCE, register the app’s client ID and secret as a **Confidential** client for the template. [GitHub App user tokens](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app)
+3. In **Plugins**, add **GitHub** and choose **Save plugin selections**. Under **GitHub account**, choose **Connect with OAuth** or **Choose a connection template**. Select the template, select `offline_access`, then choose **Connect and attach**. Approve the request in GitHub. You can also select a previously connected account and save. Deployment with OAuth requires a [sender that supports saved accounts](../../reference/drivers/credential-proxy.md#saved-oauth-accounts).
+
+A registered GitHub OAuth App can also issue renewable user tokens. Request `offline_access` along with the API scopes the Agent needs, or configure the app to issue expiring tokens. [GitHub OAuth App token expiration](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#expiring-access-tokens)
+
+### Use a personal access token
+
+Create a fine-grained GitHub personal access token for the required repositories and permissions. Under **GitHub account**, [register the token](#register-a-token-and-deploy) or select an existing compatible source. [GitHub’s remote MCP setup](https://docs.github.com/en/copilot/how-tos/copilot-in-your-ide/customize-copilot/extend-copilot-with-tools-and-context/set-up-the-github-mcp-server#remote-mcp-server-configuration-with-pat)
+
+With either account type, choose **Load tools** and enable `issue_read` if the account offers it. Save, deploy and ask the Agent for the title of a known issue in an approved repository.
 
 ## Microsoft 365 Work IQ
 

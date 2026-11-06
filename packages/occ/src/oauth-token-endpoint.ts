@@ -8,6 +8,35 @@ import { asRecord, isNonEmptyString, isPositiveSafeInteger } from "@openclaw-ent
 
 const OAUTH_EXCHANGE_TIMEOUT_MS = 15_000;
 
+// RFC 6749 uses a space and permits a comma inside a single scope name.
+// Select nonstandard separators by the pinned token endpoint, never by the response text.
+const tokenResponseScopeSeparators = new Map<string, RegExp>([
+  ["https://github.com/login/oauth/access_token", /, *| /u],
+]);
+
+function readGrantedScopes(
+  value: unknown,
+  scopeLimit: readonly string[] | undefined,
+  tokenUrl: string,
+): readonly string[] {
+  if (value === undefined) {
+    return scopeLimit ?? [];
+  }
+  if (value === "") {
+    return [];
+  }
+  const separator = tokenResponseScopeSeparators.get(tokenUrl) ?? " ";
+  const reported = typeof value === "string" ? value.split(separator) : [];
+  const allowed = scopeLimit && new Set(scopeLimit);
+  if (
+    !reported.length ||
+    reported.some((scope) => !isOAuthScopeToken(scope) || (allowed && !allowed.has(scope)))
+  ) {
+    throw new BrowserAuthorizationError("grant_scope_mismatch", "fix_configuration");
+  }
+  return [...new Set(reported)];
+}
+
 async function readResponse(response: Response): Promise<Record<string, unknown> | undefined> {
   const reader = response.body?.getReader();
   if (!reader) {
@@ -88,6 +117,9 @@ export async function requestOAuthTokens(
     throw new Error("The outcome of the OAuth token exchange is unknown.");
   }
   const body = await readResponse(response);
+  if (body?.error === "bad_refresh_token" && parameters.get("grant_type") === "refresh_token") {
+    throw new BrowserAuthorizationError("grant_refused", "retry");
+  }
   if (!response.ok) {
     // Never include the issuer's text, credential bytes or endpoint in errors or audit.
     if (body?.error === "invalid_grant" || body?.error === "access_denied") {
@@ -117,18 +149,7 @@ export async function requestOAuthTokens(
   }
   // Only the first exchange with no explicit scopes can accept issuer-chosen defaults.
   // On refresh, even an empty list is a ceiling: no reported scopes can gain authority.
-  let grantedScopes = scopeLimit ?? [];
-  if (body.scope !== undefined) {
-    const reported = typeof body.scope === "string" ? body.scope.split(" ") : [];
-    const allowed = scopeLimit && new Set(scopeLimit);
-    if (
-      !reported.length ||
-      reported.some((scope) => !isOAuthScopeToken(scope) || (allowed && !allowed.has(scope)))
-    ) {
-      throw new BrowserAuthorizationError("grant_scope_mismatch", "fix_configuration");
-    }
-    grantedScopes = [...new Set(reported)];
-  }
+  const grantedScopes = readGrantedScopes(body.scope, scopeLimit, tokenUrl);
   return {
     accessToken: body.access_token,
     ...(refreshToken === undefined ? {} : { refreshToken }),

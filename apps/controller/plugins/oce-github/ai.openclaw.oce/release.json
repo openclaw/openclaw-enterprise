@@ -10,7 +10,7 @@
   "credentials": {
     "account": {
       "label": "GitHub account",
-      "sourceTypes": ["bearer-token"],
+      "sourceTypes": ["bearer-token", "oauth2-refresh-token"],
       "issuer": "https://github.com/login/oauth",
       "delivery": { "role": "harness", "env": "GITHUB_MCP_TOKEN", "presentation": "bearer" },
       "mcp": {
