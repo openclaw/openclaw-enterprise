@@ -1186,7 +1186,7 @@ export class ControllerWorker {
   private readonly proxyDriver: CredentialProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
   private readonly preparedTokens:
-    import("@openclaw-enterprise/contracts").PreparedTokenService | undefined;
+    import("@openclaw-enterprise/contracts").TokenService | undefined;
   private readonly backends: readonly BackendDefinition[];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
   private readonly requireComputePreflight: boolean;
