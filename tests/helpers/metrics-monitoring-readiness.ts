@@ -15,7 +15,11 @@ function setProperty(value: unknown, key: string, data: unknown): void {
     throw new TypeError(`Cannot set properties of ${value} (setting '${key}')`);
   }
   const receiver: unknown = Object(value);
-  if (typeof receiver === "object" && receiver !== null && !Reflect.set(receiver, key, data, value)) {
+  if (
+    typeof receiver === "object" &&
+    receiver !== null &&
+    !Reflect.set(receiver, key, data, value)
+  ) {
     throw new TypeError(`Cannot assign to property '${key}'`);
   }
 }
@@ -74,7 +78,8 @@ export async function waitForMonitoring(
       }
       const connectionError = isConnectionError(error);
       const serverError =
-        Number(property(error, "httpStatus")) >= 500 && Number(property(error, "httpStatus")) <= 599;
+        Number(property(error, "httpStatus")) >= 500 &&
+        Number(property(error, "httpStatus")) <= 599;
       const datasourceProvisioning =
         stage === "grafana-datasource" && includes([400, 404], property(error, "httpStatus"));
       if (
