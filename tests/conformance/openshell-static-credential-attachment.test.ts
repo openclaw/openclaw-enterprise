@@ -9,16 +9,22 @@ import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/driv
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
+import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import {
   workspaceSetupFixture,
   type FixtureDriver,
 } from "../helpers/kubernetes-workspace-setup.ts";
-import { tenant } from "../helpers/kubernetes-routed-scenarios.mjs";
+import { installationControllerOptions } from "../../apps/controller/src/composition/installation-config.ts";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
+import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
+import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { tenant, digest } from "../helpers/kubernetes-routed-scenarios.mjs";
 import type {
-  AgentRevision,
   ComputeRevisionContext,
   CredentialSource,
+  CredentialSourceSnapshot,
 } from "../../packages/contracts/src/index.ts";
 import type {
   OpenShellGatewayClient,
@@ -49,7 +55,7 @@ type Configuration = ReturnType<typeof createCredentialProxyInstallationConfigur
 test("startup composes both OpenShell members from one Backend for static source preparation", async (t) => {
   const fixture = workspaceSetupFixture(false);
   const { state, objects, namespace } = fixture;
-  const revision = fixture.revision as unknown as Mutable<AgentRevision>;
+  const fixtureRevision = fixture.revision;
   const context = fixture.context as Mutable<ComputeRevisionContext>;
   const configuration = createCredentialProxyInstallationConfiguration() as Configuration;
   delete configuration.drivers.credential_proxy;
@@ -83,6 +89,12 @@ test("startup composes both OpenShell members from one Backend for static source
     driverId: "openshell-credentials",
     state: "ready",
     createdAt: tenant.createdAt,
+  };
+  const otherSource: CredentialSource = {
+    ...source,
+    id: "cs_00000000-0000-4000-8000-000000000002",
+    name: "Other model",
+    type: "openai",
   };
   const providerName = openShellProviderName(source.id);
   const calls: unknown[][] = [];
@@ -247,22 +259,157 @@ test("startup composes both OpenShell members from one Backend for static source
       return { setupId: "setup-1", setupCode, expiresAtMs };
     },
   };
-  revision.id = "rev_00000000-0000-4000-8000-000000000003";
-  revision.compute = { id: driver.id, implementation: driver.implementation };
-  revision.sandboxDriverId = loaded.sandboxDriver.id;
-  const agents = revision.configuration.agents;
-  assert.ok(agents && typeof agents === "object" && !Array.isArray(agents) && "defaults" in agents);
-  const defaults = agents.defaults;
-  assert.ok(defaults && typeof defaults === "object");
-  Object.assign(defaults, { workspace: "/sandbox/enterprise" });
-  revision.harnessAuth = {
-    method: "credential_source",
-    sourceId: source.id,
-    credentialGatewayId: gateway.id,
-    sourceType: "openai",
-    loginMode: "api_key",
-  };
-  Object.assign(context, { harnessAuth: { ...revision.harnessAuth, source } });
+  // OCC freezes the full source list, including the Harness source. Seed the
+  // initialized infrastructure; create and deploy the Agent through OCC.
+  const admissionState = new InMemoryPlatformState();
+  const controller = new OpenClawController(
+    {
+      id: "installation-static-attachment",
+      name: "Static attachment",
+      createdAt: tenant.createdAt,
+    },
+    {
+      ...installationControllerOptions(loaded.installation),
+      state: admissionState,
+      createId(kind) {
+        if (kind === "namespace") {
+          return tenant.id;
+        }
+        if (kind === "agent") {
+          return fixtureRevision.agentId;
+        }
+        if (kind === "configuration") {
+          return fixtureRevision.configurationId;
+        }
+        return `${kind === "agent_revision" ? "rev" : kind}_${randomUUID()}`;
+      },
+    },
+  );
+  const principal = "attachment-administrator";
+  const iam = new NativeIAMDriver({
+    async loadNativeIAMState() {
+      return {
+        identities: [
+          { kind: "principal", id: principal, issuer: "test", subject: principal },
+          {
+            kind: "service_principal",
+            id: `service-agent-${fixtureRevision.agentId}`,
+            namespaceId: tenant.id,
+            agentId: fixtureRevision.agentId,
+          },
+        ],
+        groups: [],
+        memberships: [],
+        restrictions: [],
+        roles: [
+          {
+            id: "administrator",
+            permissions: [
+              { action: "administer", resourceKind: "installation" },
+              { action: "create", resourceKind: "namespace" },
+              { action: "read", resourceKind: "namespace" },
+              { action: "create", resourceKind: "configuration" },
+              { action: "read", resourceKind: "configuration" },
+              { action: "create", resourceKind: "agent" },
+              { action: "read", resourceKind: "agent" },
+              { action: "update", resourceKind: "agent" },
+              { action: "deploy", resourceKind: "agent" },
+              { action: "operate", resourceKind: "agent" },
+              { action: "read", resourceKind: "credential_source" },
+              { action: "operate", resourceKind: "credential_source" },
+            ],
+          },
+          {
+            id: "source-operator",
+            permissions: [{ action: "operate", resourceKind: "credential_source" }],
+          },
+        ],
+        bindings: [
+          {
+            id: "administrator",
+            subjectKind: "identity",
+            subjectId: principal,
+            roleId: "administrator",
+          },
+          ...[source, otherSource].map(
+            (bound) =>
+              ({
+                id: `source-operator-${bound.id}`,
+                subjectKind: "identity",
+                subjectId: `service-agent-${fixtureRevision.agentId}`,
+                roleId: "source-operator",
+                namespaceId: tenant.id,
+                resourceKind: "credential_source",
+                resourceId: bound.id,
+              }) as const,
+          ),
+        ],
+      };
+    },
+  });
+  for (const selected of [
+    iam,
+    createTestConfigurationDriver(),
+    loaded.computeDriver,
+    gateway,
+    loaded.sandboxDriver,
+  ]) {
+    controller.registerDriver(selected);
+    controller.selectDriver(selected.capability, selected.id);
+  }
+  // The Kubernetes fixture represents an initialized Namespace and registered source.
+  await controller.transact(async (unit) => {
+    await unit.namespaces.createNamespace({ ...tenant, status: "ready" });
+    await unit.credentialSources.createCredentialSource(source);
+  });
+  const saved = await controller.createConfiguration(principal, {
+    namespaceId: tenant.id,
+    kind: "agent",
+    values: {
+      ...fixtureRevision.configuration,
+      agents: {
+        defaults: {
+          model: "codex/gpt-5.6-sol",
+          workspace: "/sandbox/enterprise",
+          models: { "codex/gpt-5.6-sol": { agentRuntime: { id: "codex" } } },
+        },
+      },
+    },
+  });
+  const agent = await controller.createAgent(principal, {
+    namespaceId: tenant.id,
+    name: "Static attachment",
+    configurationId: saved.id,
+    executionMode: "dedicated",
+    harnessAuth: { method: "credential_source", sourceId: source.id },
+    credentialSources: [{ sourceId: source.id }],
+  });
+  const transport = objects.get(`Secret:${namespace}:transport-${digest(agent.id)}`);
+  assert.ok(transport);
+  const passwordName = `gateway-password-${digest(agent.id)}`;
+  objects.set(`Secret:${namespace}:${passwordName}`, {
+    ...transport,
+    metadata: { ...transport.metadata, name: passwordName, uid: "gateway-password-uid" },
+    data: { "gateway-password": Buffer.from("fixture-gateway-password").toString("base64") },
+  });
+  const revision = await controller.deployAgent(
+    principal,
+    {
+      namespaceId: tenant.id,
+      agentId: agent.id,
+    },
+    resolveApprovedHarness,
+  );
+  assert.deepEqual(revision.credentialSources, [
+    { sourceId: source.id, credentialGatewayId: gateway.id, sourceType: "openai" },
+  ]);
+  // The Kubernetes fixture observes the admitted IDs; it does not choose the route.
+  Object.assign(fixtureRevision, revision);
+  // Worker delivery separates the Harness source from the live non-Harness list.
+  Object.assign(context, {
+    harnessAuth: { ...revision.harnessAuth, source },
+    credentialSources: [],
+  });
   objects.delete(`Secret:${namespace}:occ-model-key`);
   state.ready = true;
   const legacy: string[] = [];
@@ -319,16 +466,27 @@ test("startup composes both OpenShell members from one Backend for static source
     async () => {
       // Withdrawal receives one live source even when admission recorded more. The
       // revision's full admission must keep this operation on the public Gateway.
-      const mixedRevision = {
-        ...revision,
-        credentialSources: [
-          {
-            sourceId: "cs_00000000-0000-4000-8000-000000000002",
-            credentialGatewayId: gateway.id,
-            sourceType: "bearer-token",
-          },
-        ],
-      };
+      await controller.transact((unit) =>
+        unit.credentialSources.createCredentialSource(otherSource),
+      );
+      await controller.updateAgent(principal, {
+        namespaceId: tenant.id,
+        agentId: agent.id,
+        configurationId: saved.id,
+        credentialSources: [{ sourceId: source.id }, { sourceId: otherSource.id }],
+      });
+      const mixedRevision = await controller.deployAgent(
+        principal,
+        {
+          namespaceId: tenant.id,
+          agentId: agent.id,
+        },
+        resolveApprovedHarness,
+      );
+      assert.deepEqual(mixedRevision.credentialSources, [
+        { sourceId: source.id, credentialGatewayId: gateway.id, sourceType: source.type },
+        { sourceId: otherSource.id, credentialGatewayId: gateway.id, sourceType: otherSource.type },
+      ]);
       const withdrawals: Parameters<typeof gateway.withdraw>[0][] = [];
       const withdraw = gateway.withdraw;
       const before = calls.length;
@@ -351,18 +509,106 @@ test("startup composes both OpenShell members from one Backend for static source
         assert.equal(withdrawals[0].sourceId, source.id);
         assert.equal(withdrawals[0].revision, mixedRevision);
         assert.equal(withdrawals[0].namespace.id, source.namespaceId);
-        assert.deepEqual(withdrawals[0].sandbox, {
-          namespaceName: namespace,
-          resourceName: sandbox.name,
-          agentId: mixedRevision.agentId,
-          revisionId: mixedRevision.id,
-        });
+        assert.equal(withdrawals[0].sandbox.namespaceName, namespace);
+        assert.equal(withdrawals[0].sandbox.agentId, mixedRevision.agentId);
+        assert.equal(withdrawals[0].sandbox.revisionId, mixedRevision.id);
         assert.deepEqual(legacy, []);
       } finally {
         gateway.withdraw = withdraw;
       }
     },
   );
+
+  const snapshot: CredentialSourceSnapshot = {
+    sourceId: source.id,
+    credentialGatewayId: gateway.id,
+    sourceType: source.type,
+  };
+  for (const [name, credentialSources] of [
+    ["duplicate snapshot", [snapshot, snapshot]],
+    ["different source", [{ ...snapshot, sourceId: otherSource.id }]],
+    ["different type", [{ ...snapshot, sourceType: "bearer-token" }]],
+    ["different Gateway", [{ ...snapshot, credentialGatewayId: "other-gateway" }]],
+    [
+      "Proxy owner",
+      [{ sourceId: source.id, sourceType: source.type, credentialProxyId: "other-proxy" }],
+    ],
+  ] satisfies [string, CredentialSourceSnapshot[]][]) {
+    await t.test(`${name} cannot select direct attachment`, async () => {
+      const attach = gateway.attachForRevision;
+      const refusal = new Error("public Gateway selected for inconsistent admission");
+      let publicCalls = 0;
+      const before = calls.length;
+      const beforeWrites = writes.length;
+      gateway.attachForRevision = async () => {
+        publicCalls++;
+        throw refusal;
+      };
+      try {
+        await assert.rejects(
+          driver.prepareRevision({ ...revision, credentialSources }, context),
+          (error) => error === refusal,
+        );
+        assert.equal(publicCalls, 1);
+        assert.equal(calls.length, before);
+        assert.equal(writes.length, beforeWrites);
+      } finally {
+        gateway.attachForRevision = attach;
+      }
+    });
+  }
+  await t.test("duplicate live source refuses without public fallback", async () => {
+    const before = calls.length;
+    await assert.rejects(
+      driver.prepareRevision(revision, { ...context, credentialSources: [source] }),
+      {
+        message:
+          "The direct OpenShell attachment requires the exact admitted Harness source and Namespace.",
+      },
+    );
+    assert.equal(calls.length, before);
+    assert.deepEqual(legacy, []);
+  });
+  for (const [name, changed] of [
+    ["Namespace", { namespaceId: "ns_00000000-0000-4000-8000-000000000002" }],
+    ["source ID", { id: otherSource.id }],
+    ["source type", { type: "bearer-token" }],
+    ["source owner", { driverId: "other-gateway" }],
+  ] satisfies [string, Partial<CredentialSource>][]) {
+    await t.test(`changed live ${name} refuses without public fallback`, async () => {
+      assert.equal(revision.harnessAuth.method, "credential_source");
+      if (revision.harnessAuth.method !== "credential_source") {
+        throw new Error("missing Harness source");
+      }
+      const before = calls.length;
+      await assert.rejects(
+        driver.prepareRevision(revision, {
+          ...context,
+          harnessAuth: { ...revision.harnessAuth, source: { ...source, ...changed } },
+        }),
+        { message: "Harness credential source does not match the admitted source." },
+      );
+      assert.equal(calls.length, before);
+      assert.deepEqual(legacy, []);
+    });
+  }
+  for (const credentialSources of [undefined, []]) {
+    await t.test(
+      `legacy ${credentialSources === undefined ? "absent" : "empty"} source list retains direct withdrawal`,
+      async () => {
+        const { credentialSources: _admitted, ...oldRevision } = revision;
+        const compatible =
+          credentialSources === undefined ? oldRevision : { ...oldRevision, credentialSources };
+        const before = calls.length;
+        await driver.withdrawCredentialSource(compatible, source, AbortSignal.timeout(2000));
+        assert.deepEqual(calls.slice(before), [
+          ["detach", workspace, sandbox.name, providerName],
+          ["status", workspace, sandbox.name, providerName, "withdrawal-1"],
+        ]);
+        assert.deepEqual(legacy, []);
+      },
+    );
+  }
 
   await t.test(
     "changed login mode refuses before attachment and stale Gateway refuses before catalog",

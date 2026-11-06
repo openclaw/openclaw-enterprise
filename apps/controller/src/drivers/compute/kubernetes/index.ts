@@ -11317,11 +11317,26 @@ export class KubernetesComputeDriver implements ComputeDriver {
       revision.egressPlan !== undefined ||
       revision.harness.mode !== "dedicated" ||
       (revision.harness.id !== "codex" && revision.harness.id !== "openclaw") ||
-      (revision.credentialSources?.length ?? 0) !== 0 ||
       auth.method !== "credential_source" ||
       auth.sourceType !== "openai" ||
       auth.loginMode !== "api_key" ||
       auth.credentialGatewayId !== this.credentialGatewayDriver?.id
+    ) {
+      return undefined;
+    }
+    // OCC lists the Harness credential too. Only its exact snapshot is redundant;
+    // additional, duplicate, or inconsistent admission stays on the public Gateway.
+    // An absent/empty list remains supported for revisions predating this source list.
+    const admitted = revision.credentialSources ?? [];
+    if (
+      admitted.length > 1 ||
+      admitted.some(
+        (snapshot) =>
+          snapshot.sourceId !== auth.sourceId ||
+          snapshot.sourceType !== auth.sourceType ||
+          snapshot.credentialGatewayId !== auth.credentialGatewayId ||
+          snapshot.credentialProxyId !== undefined,
+      )
     ) {
       return undefined;
     }
