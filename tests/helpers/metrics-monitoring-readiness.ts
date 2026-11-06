@@ -5,7 +5,7 @@ function property(value: unknown, key: string): unknown {
     throw new TypeError(`Cannot read properties of ${value} (reading '${key}')`);
   }
   const receiver: unknown = Object(value);
-  return typeof receiver === "object" && receiver !== null
+  return (typeof receiver === "object" && receiver !== null) || typeof receiver === "function"
     ? Reflect.get(receiver, key, value)
     : undefined;
 }
@@ -16,8 +16,7 @@ function setProperty(value: unknown, key: string, data: unknown): void {
   }
   const receiver: unknown = Object(value);
   if (
-    typeof receiver === "object" &&
-    receiver !== null &&
+    ((typeof receiver === "object" && receiver !== null) || typeof receiver === "function") &&
     !Reflect.set(receiver, key, data, value)
   ) {
     throw new TypeError(`Cannot assign to property '${key}'`);

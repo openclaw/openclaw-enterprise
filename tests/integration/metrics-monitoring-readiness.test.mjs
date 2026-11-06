@@ -175,6 +175,39 @@ test("null or malformed Prometheus responses retain their stage and status", asy
   }
 });
 
+test("callable query diagnostics preserve the thrown identity", async () => {
+  const failure = () => {};
+  failure.openclawCiDiagnostic = { reason: "query-error" };
+  await assert.rejects(
+    waitForMonitoring(
+      "prometheus-up",
+      () => {
+        throw failure;
+      },
+      [],
+    ),
+    (error) => error === failure,
+  );
+});
+
+test("callable connection causes preserve Prometheus response failures", async (t) => {
+  const cause = () => {};
+  cause.code = "ECONNRESET";
+  const failure = new Error("connection reset", { cause });
+  t.mock.method(globalThis, "fetch", async () => ({
+    ok: true,
+    status: 200,
+    json: async () => {
+      throw failure;
+    },
+  }));
+  await assert.rejects(queryPrometheus("http://localhost", "prometheus-up", "up"), (error) => {
+    assert.equal(error, failure);
+    assert.equal(error.httpStatus, 200);
+    return true;
+  });
+});
+
 test("monitoring ports are distinct and picked within a bound", async () => {
   const picks = [9100, 9100, 9200];
   assert.deepEqual(await distinctPorts(2, async () => picks.shift()), [9100, 9200]);
