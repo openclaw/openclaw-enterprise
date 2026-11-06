@@ -59,6 +59,87 @@ const postTestAsyncActivityPrefix =
 const measurementPrefix = "openclaw-ci-measurement ";
 const openShellStageMeasurementKind = "openshell-stage";
 const openShellSandboxMeasurementKind = "openshell-sandbox-phase";
+const openShellPolicyCheckKind = "openshell-network-policy-check";
+const openShellFixtureTeardownKind = "openshell-fixture-teardown";
+const openShellNativePolicyCheckKind = "openshell-native-policy-check";
+const nativePolicyPrimaryChecks = new Set([
+  "agent.get",
+  "agent.status-200",
+  "agent.active-revision",
+  "sandbox.wait-active",
+  "sandbox.native-address",
+  "baseline.policy-status",
+  "baseline.sandbox",
+  "baseline.resource-version",
+  "fixture.make-directory",
+  "fixture.pause-worker",
+  "fixture.read-helm-values",
+  "fixture.save-helm-values",
+  "fixture.parse-helm-values",
+  "fixture.prepare-auth-values",
+  "fixture.write-auth-values",
+  "client.reader",
+  "client.recommender",
+  "client.writer",
+  "client.no-scopes",
+  "read.unauthenticated-code-16",
+  "read.reader-equals-baseline",
+  "read.no-scopes-code-7",
+  "drafts.reader-code-7",
+  "drafts.no-scopes-code-7",
+  "drafts.recommender-rpc",
+  "drafts.recommender-chunks-array",
+  "read.recommender-code-7",
+  "update.reader-code-7",
+  "update.no-scopes-code-7",
+  "read.writer-code-7",
+  "read.reader-unchanged-after-denials",
+  "update.writer-rpc",
+  "read.reader-wait-loaded",
+  "read.loaded-policy-equals-baseline",
+  "fixture.write-success-marker",
+  "auth.helm-upgrade",
+  "auth.gateway-ready",
+  "auth.restart-forward",
+]);
+const nativePolicyCleanupChecks = new Set([
+  "cleanup.close-client",
+  "cleanup.restore-auth.helm-upgrade",
+  "cleanup.restore-auth.gateway-ready",
+  "cleanup.restore-auth.restart-forward",
+  "cleanup.remove-directory",
+  "cleanup.resume-worker",
+]);
+const openShellMeasurementKinds = new Set([
+  openShellStageMeasurementKind,
+  openShellSandboxMeasurementKind,
+  openShellPolicyCheckKind,
+  openShellFixtureTeardownKind,
+  openShellNativePolicyCheckKind,
+]);
+const openShellPolicyChecks = new Set([
+  "installation-discovery",
+  "cluster-target-reachability",
+  "agent-default-control-request",
+  "agent-default-control-exit",
+  "agent-default-control-response",
+  "agent-initial-denial-request",
+  "agent-initial-denial-exit",
+  "agent-initial-denial-reason",
+  "provider-denial-read",
+  "provider-denial-observed",
+  "provider-denied-dns-binding",
+  "editing-admission",
+  "apply-authorization",
+  "grant-application",
+  "granted-agent-request",
+  "provider-allow-observed",
+  "revision-unchanged",
+  "second-agent-isolation",
+  "second-agent-cleanup",
+  "editing-state-enforcement",
+  "grant-revocation",
+]);
 const openShellSandboxStages = new Set([
   "installation",
   "exposure-auth",
@@ -144,6 +225,28 @@ function safeMeasurement(value) {
       outcome: value.outcome,
       elapsedMs: value.elapsedMs,
     };
+  }
+  if (isRecord(value) && value.kind === openShellPolicyCheckKind) {
+    return openShellPolicyChecks.has(value.check)
+      ? { kind: value.kind, check: value.check }
+      : undefined;
+  }
+  if (isRecord(value) && value.kind === openShellNativePolicyCheckKind) {
+    const { kind, stage, primaryCheck, cleanupCheck } = value;
+    if (
+      stage !== "native-policy-scopes" ||
+      (primaryCheck === null && cleanupCheck === null) ||
+      (primaryCheck !== null && !nativePolicyPrimaryChecks.has(primaryCheck)) ||
+      (cleanupCheck !== null && !nativePolicyCleanupChecks.has(cleanupCheck))
+    ) {
+      return undefined;
+    }
+    return { kind, stage, primaryCheck, cleanupCheck };
+  }
+  if (isRecord(value) && value.kind === openShellFixtureTeardownKind) {
+    return ["passed", "failed", "incomplete"].includes(value.outcome)
+      ? { kind: value.kind, outcome: value.outcome }
+      : undefined;
   }
   if (isRecord(value) && value.kind === "local-first-agent-setup-point") {
     if (
@@ -826,6 +929,21 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "historyRunMessageCount",
     "historyExecCount",
     "historyExplicitSuccessCount",
+    "historyStringContentCount",
+    "historyArrayContentCount",
+    "historyOtherContentCount",
+    "historyTextPartCount",
+    "historyToolCallPartCount",
+    "historyOtherPartCount",
+    "historyExecCallCount",
+    "historyExecCommandStringCount",
+    "historyExecExactCommandCount",
+    "historyExecNonemptyTextCount",
+    "historyExecAggregatedCount",
+    "historyExecOtherJsonCount",
+    "historyToolPrefixContainsCount",
+    "historyAssistantNonemptyTextCount",
+    "historyFinalMarkerContainsCount",
     "historyToolPrefixCount",
     "historyFinalMarkerCount",
     "historyTerminalAssistantCount",
@@ -1374,8 +1492,7 @@ export default async function* jsonLinesReporter(source) {
       // records and extra fields must not reappear in a failed file's raw tail.
       if (
         typeof event.data.file === "string" &&
-        value?.kind !== openShellStageMeasurementKind &&
-        value?.kind !== openShellSandboxMeasurementKind &&
+        !openShellMeasurementKinds.has(value?.kind) &&
         !retentionReceipt
       ) {
         output.diagnostic(message);
