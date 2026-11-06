@@ -116,6 +116,29 @@ jobs:
           buildkitd-config-inline: |
             [worker.oci]
               max-parallelism = 2
+      - name: Verify runtime source before image assembly
+        if: ${{ matrix.image == 'runtime' }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          target: openclaw-bridge-tests
+          platforms: linux/${{ matrix.arch }}
+          build-args: |
+            ${{ steps.openclaw-source.outputs.build-args }}
+            NODE_BASE_IMAGE=${{ env.NODE_BASE_IMAGE }}
+            OCC_BUILD_REVISION=${{ env.SOURCE_SHA }}
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/openclaw/openclaw-enterprise
+            org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
+          outputs: type=cacheonly
+          cache-from: ${{ !startsWith(matrix.runner, 'blacksmith-') && format('type=gha,scope=enterprise-{0}-{1}-verification', matrix.image, matrix.arch) || '' }}
+          cache-to: ${{ !startsWith(matrix.runner, 'blacksmith-') && format('type=gha,mode=max,scope=enterprise-{0}-{1}-verification', matrix.image, matrix.arch) || '' }}
+          provenance: false
+          push: false
       - name: Build native OCI image without publication
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0

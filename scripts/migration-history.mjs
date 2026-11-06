@@ -164,6 +164,9 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preSavedConnections";
   }
   if (count === 70 && completedCount > 70) {
+    return "preDefaultUsers";
+  }
+  if (count === 71 && completedCount > 71) {
     return "preProxyHarnessSnapshot";
   }
   if (count === completedCount) {

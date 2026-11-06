@@ -139,7 +139,6 @@ test(
       new RepositoryCredentialLifecycle({
         state: fixture.state,
         queueOptions,
-        driver: undefined,
         nativeSender: {
           ...repository.driver,
           implementation,

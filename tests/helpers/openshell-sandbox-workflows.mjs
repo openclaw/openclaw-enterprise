@@ -2272,7 +2272,6 @@ async function prepareProductionInstallation(
   };
   const initialWorkerDrivers = await loadWorkerDrivers();
   const { workerDrivers } = initialWorkerDrivers;
-  let { diagnosticWorkerDrivers } = initialWorkerDrivers;
   assert.equal(drivers.sandboxDriver?.capability, "sandbox");
   assert.equal(drivers.sandboxDriver?.id, configuration.drivers.sandbox.id);
   assert.equal(drivers.credentialGatewayDriver?.capability, "credential_gateway");
@@ -2366,7 +2365,7 @@ async function prepareProductionInstallation(
     controllerAuthBaseURL,
   );
   const events = [];
-  const startWorker = async () => {
+  const startWorker = async (diagnosticWorkerDrivers) => {
     workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
     worker = createControllerWorker({
       mode: "production",
@@ -2387,7 +2386,12 @@ async function prepareProductionInstallation(
     worker = undefined;
     workerPool = undefined;
   };
-  await startWorker();
+  const resumeWorker = async () => {
+    // A new worker owns a new composition, including its process-local token registrations.
+    const { diagnosticWorkerDrivers } = await loadWorkerDrivers();
+    await startWorker(diagnosticWorkerDrivers);
+  };
+  await startWorker(initialWorkerDrivers.diagnosticWorkerDrivers);
 
   const createdNamespace = await request("POST", "/namespaces", {
     name: `openshell-${randomUUID()}`,
@@ -2440,8 +2444,7 @@ async function prepareProductionInstallation(
     };
     await writeFile(workerStartupPath, JSON.stringify(configuration), { mode: 0o600 });
     await pauseWorker();
-    ({ diagnosticWorkerDrivers } = await loadWorkerDrivers());
-    await startWorker();
+    await resumeWorker();
   }
   if (keycloak !== undefined) {
     // The gateway, not the Harness, calls the token endpoint: only its Pods may reach the issuer.
@@ -2914,7 +2917,7 @@ async function prepareProductionInstallation(
     observerPool,
     policyFixturePool,
     pauseWorker,
-    resumeWorker: startWorker,
+    resumeWorker,
     workerEvents: events,
     provisioningFailure: (revisionId) => createSandboxDriver.provisioningFailures.get(revisionId),
     diagnoseAgentRevision: (agentId, revisionId) =>
@@ -3342,11 +3345,12 @@ async function registerRefreshSources(request, namespaceId, tokenEcho, keycloak,
         },
       }),
     );
+    const probeTimer = new AbortController();
     const probed =
       gatewayPod.length === 0
         ? "no gateway Pod"
         : await Promise.race([
-            delay(90_000).then(() => "probe timed out"),
+            delay(90_000, undefined, { signal: probeTimer.signal }).then(() => "probe timed out"),
             kubectl(
               "debug",
               "--namespace",
@@ -3366,7 +3370,7 @@ async function registerRefreshSources(request, namespaceId, tokenEcho, keycloak,
               "-e",
               probe,
             ).catch((error) => `probe unavailable: ${String(error.stderr ?? "").slice(-600)}`),
-          ]);
+          ]).finally(() => probeTimer.abort());
     process.stderr.write(
       `OpenShell gateway refresh diagnostics:\n${relevant.join("\n")}\nmounts: ${String(mounts).slice(0, 2000)}\nissuer probe from the gateway Pod: ${String(probed).slice(0, 1000)}\n`,
     );
@@ -3774,7 +3778,10 @@ async function deployAdditionalCredentialAgent(topology, modelSourceId, toolSour
       300_000,
     );
   } catch (error) {
-    await diagnoseAdditionalAgent(topology, agent.data.id, deployed.data.id, deploymentPath);
+    // Preserve the activation error if its best-effort diagnostic fails.
+    await diagnoseAdditionalAgent(topology, agent.data.id, deployed.data.id, deploymentPath).catch(
+      () => undefined,
+    );
     throw error;
   }
   await waitForProviderHarnessPod(topology.placement, deployed.data);
@@ -3788,7 +3795,7 @@ async function deployAdditionalCredentialAgent(topology, modelSourceId, toolSour
  * - a withdrawal is executed only on its own requester's authority, even on a shared claim;
  * - withdrawing a source from one Agent leaves another Agent's attachment of it in place;
  * - an Agent that loses a source grant after admission never has the revision provisioned;
- * - admission refuses a redeploy without the grant.
+ * - a caller who can operate the source restores the missing grant by redeploying.
  * The model source keeps working throughout.
  */
 async function assertNonModelCredentialSource(topology) {
@@ -4093,15 +4100,61 @@ async function assertNonModelCredentialSource(topology) {
   const kept = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
   assert.equal(kept.data.activeRevisionId, revision.id);
 
-  // Without the grant, admission refuses a further redeploy and admits no revision.
+  // This caller can operate toolB, so a new deploy restores the Agent's exact source grant.
   const revisionsBefore = await revisionCount();
-  const refused = await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/deploy`);
-  assert.equal(refused.status, 403, JSON.stringify(refused.error ?? refused.data));
-  assert.equal(
-    await revisionCount(),
-    revisionsBefore,
-    "a refused deployment must not admit a revision",
+  const restored = await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/deploy`);
+  assert.equal(restored.status, 202, JSON.stringify(restored.error ?? restored.data));
+  assert.equal(await revisionCount(), revisionsBefore + 1);
+  const bindingId = `binding_${agentId}_${toolB.id}_operate`;
+  const grant = await observerPool.query(
+    `SELECT binding.namespace_id, binding.identity_subject_id, binding.role_id,
+            binding.resource_kind, binding.resource_id, role.permissions
+       FROM occ.iam_access_bindings binding JOIN occ.iam_roles role ON role.id = binding.role_id
+      WHERE binding.id = $1`,
+    [bindingId],
   );
+  assert.deepEqual(grant.rows, [
+    {
+      namespace_id: namespaceId,
+      identity_subject_id: topology.agent.servicePrincipalId,
+      role_id: `role_${namespaceId}_agent_credential_source_operate`,
+      resource_kind: "credential_source",
+      resource_id: toolB.id,
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    },
+  ]);
+  const audit = await observerPool.query(
+    `SELECT actor_id, resource_kind, resource_id, outcome, details->>'agentId' AS agent_id
+       FROM occ.audit_events
+      WHERE namespace_id = $1 AND action = 'openclaw.iam.access_bindings.create'
+        AND details->>'bindingId' = $2 AND details->>'reason' = 'agent_deploy'`,
+    [namespaceId, bindingId],
+  );
+  assert.deepEqual(audit.rows, [
+    {
+      actor_id: actorId,
+      resource_kind: "credential_source",
+      resource_id: toolB.id,
+      outcome: "success",
+      agent_id: agentId,
+    },
+  ]);
+
+  // Finish replacement before the next phase scans the active Harness and its workspace.
+  await waitFor(`restored OpenShell revision ${restored.data.id} activation`, async () => {
+    const observed = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
+    assert.equal(observed.status, 200, JSON.stringify(observed.error));
+    if (observed.data.activeRevisionId === restored.data.id) {
+      return observed.data;
+    }
+    const deployment = await request(
+      "GET",
+      `/namespaces/${namespaceId}/agents/${agentId}/deployments/${restored.data.id}`,
+    );
+    assert.equal(deployment.status, 200, JSON.stringify(deployment.error));
+    assert.notEqual(deployment.data.status, "failed", JSON.stringify(deployment.data.error));
+    return undefined;
+  });
 }
 
 // Bounds the Harness file stream; the workspace holds session files, not bulk data.
@@ -4867,38 +4920,48 @@ async function holdNativeOpenClawDemo(context, topology) {
   }
 }
 
-async function assertAuthenticatedNativePolicyScopes(topology) {
+async function assertAuthenticatedNativePolicyScopes(topology, receipt) {
+  receipt.primaryCheck = "agent.get";
   const current = await topology.request(
     "GET",
     `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`,
   );
+  receipt.primaryCheck = "agent.status-200";
   assert.equal(current.status, 200, JSON.stringify(current.error));
+  receipt.primaryCheck = "agent.active-revision";
   assert.ok(current.data.activeRevisionId);
+  receipt.primaryCheck = "sandbox.wait-active";
   const activeSandbox = await waitForSandbox(topology.placement, {
     id: current.data.activeRevisionId,
     agentId: topology.agent.id,
   });
+  receipt.primaryCheck = "sandbox.native-address";
   const nativeRequest = {
     workspace: topology.placement,
     sandbox: activeSandbox.metadata.name,
   };
+  receipt.primaryCheck = "baseline.policy-status";
   const before = await topology
     .gatewayClient()
     .getPolicyStatus(nativeRequest, AbortSignal.timeout(10_000));
+  receipt.primaryCheck = "baseline.sandbox";
   const sandbox = await topology
     .gatewayClient()
     .getSandbox(
       { workspace: nativeRequest.workspace, name: nativeRequest.sandbox },
       AbortSignal.timeout(10_000),
     );
+  receipt.primaryCheck = "baseline.resource-version";
   assert.ok(sandbox?.resourceVersion);
+  receipt.primaryCheck = "fixture.make-directory";
   const directory = await mkdtemp(join(tmpdir(), "oce-policy-scopes-"));
   const clients = [];
   const release = `openshell-${hash(topology.placement, 10)}`;
   const originalPath = join(directory, "original-values.json");
   const authenticatedPath = join(directory, "authenticated-values.json");
   let savedValues = false;
-  const configureAuthentication = async (enabled) => {
+  const configureAuthentication = async (enabled, enterCheck) => {
+    enterCheck("helm-upgrade");
     await executeFile(
       openShellHelmPath,
       [
@@ -4920,11 +4983,43 @@ async function assertAuthenticatedNativePolicyScopes(topology) {
       ],
       { timeout: 300_000, maxBuffer: 8 * 1024 * 1024 },
     );
+    enterCheck("gateway-ready");
     await waitForOpenShellGateway(topology.placement);
+    enterCheck("restart-forward");
     await topology.restartGatewayForward();
   };
+  const cleanup = async () => {
+    let cleanupCheck = "cleanup.close-client";
+    try {
+      for (const client of clients) {
+        client.close();
+      }
+      try {
+        if (savedValues) {
+          await configureAuthentication(false, (check) => {
+            cleanupCheck = "cleanup.restore-auth." + check;
+          });
+        }
+      } catch (error) {
+        // A later cleanup can replace this error; keep the first cleanup checkpoint.
+        receipt.cleanupCheck = cleanupCheck;
+        throw error;
+      } finally {
+        cleanupCheck = "cleanup.remove-directory";
+        await rm(directory, { recursive: true, force: true });
+        cleanupCheck = "cleanup.resume-worker";
+        await topology.resumeWorker();
+      }
+    } catch (error) {
+      receipt.cleanupCheck ??= cleanupCheck;
+      throw error;
+    }
+  };
+  receipt.primaryCheck = "fixture.pause-worker";
   await topology.pauseWorker();
+  let cleanupFailure;
   try {
+    receipt.primaryCheck = "fixture.read-helm-values";
     const original = await executeFile(
       openShellHelmPath,
       [
@@ -4941,9 +5036,12 @@ async function assertAuthenticatedNativePolicyScopes(topology) {
       ],
       { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
     );
+    receipt.primaryCheck = "fixture.save-helm-values";
     await writeFile(originalPath, original.stdout, { mode: 0o600 });
     savedValues = true;
+    receipt.primaryCheck = "fixture.parse-helm-values";
     const values = JSON.parse(original.stdout);
+    receipt.primaryCheck = "fixture.prepare-auth-values";
     values.gatewayConfig = {
       ...values.gatewayConfig,
       "openshell.gateway.auth": { allow_unauthenticated_users: false },
@@ -4957,10 +5055,13 @@ async function assertAuthenticatedNativePolicyScopes(topology) {
       },
     };
     values.server.oidc = { ...values.server.oidc, caConfigMapName: "oce-gateway-extra-trust" };
+    receipt.primaryCheck = "fixture.write-auth-values";
     await writeFile(authenticatedPath, JSON.stringify(values), { mode: 0o600 });
     // Replace the unauthenticated management configuration with the real HTTPS issuer.
     // Role-free OIDC mode still enforces each RPC's independently declared scopes.
-    await configureAuthentication(true);
+    await configureAuthentication(true, (check) => {
+      receipt.primaryCheck = "auth." + check;
+    });
     const scopedClient = async (name) => {
       const path = join(directory, name);
       await writeFile(path, await topology.keycloak.scopedClientToken(name), { mode: 0o600 });
@@ -4968,9 +5069,13 @@ async function assertAuthenticatedNativePolicyScopes(topology) {
       clients.push(client);
       return client;
     };
+    receipt.primaryCheck = "client.reader";
     const reader = await scopedClient("policy-reader");
+    receipt.primaryCheck = "client.recommender";
     const recommender = await scopedClient("policy-recommender");
+    receipt.primaryCheck = "client.writer";
     const writer = await scopedClient("policy-writer");
+    receipt.primaryCheck = "client.no-scopes";
     const noScopes = await scopedClient("policy-no-scopes");
     const read = (client) => client.getPolicyStatus(nativeRequest, AbortSignal.timeout(10_000));
     const recommendations = (client) =>
@@ -4985,21 +5090,35 @@ async function assertAuthenticatedNativePolicyScopes(topology) {
         },
         AbortSignal.timeout(10_000),
       );
+    receipt.primaryCheck = "read.unauthenticated-code-16";
     await assert.rejects(read(topology.gatewayClient()), { code: 16 });
+    receipt.primaryCheck = "read.reader-equals-baseline";
     assert.deepEqual(await read(reader), before);
+    receipt.primaryCheck = "read.no-scopes-code-7";
     await assert.rejects(read(noScopes), { code: 7 });
+    receipt.primaryCheck = "drafts.reader-code-7";
     await assert.rejects(recommendations(reader), { code: 7 });
+    receipt.primaryCheck = "drafts.no-scopes-code-7";
     await assert.rejects(recommendations(noScopes), { code: 7 });
+    receipt.primaryCheck = "drafts.recommender-rpc";
     const suggested = await recommendations(recommender);
+    receipt.primaryCheck = "drafts.recommender-chunks-array";
     assert.ok(Array.isArray(suggested.chunks));
+    receipt.primaryCheck = "read.recommender-code-7";
     await assert.rejects(read(recommender), { code: 7 });
+    receipt.primaryCheck = "update.reader-code-7";
     await assert.rejects(update(reader), { code: 7 });
+    receipt.primaryCheck = "update.no-scopes-code-7";
     await assert.rejects(update(noScopes), { code: 7 });
+    receipt.primaryCheck = "read.writer-code-7";
     await assert.rejects(read(writer), { code: 7 });
+    receipt.primaryCheck = "read.reader-unchanged-after-denials";
     assert.deepEqual(await read(reader), before, "rejected writes must preserve native state");
     // OpenShell deduplicates an unchanged loaded policy. A writer may resubmit it,
     // while the reader independently confirms that enforcement remains loaded.
+    receipt.primaryCheck = "update.writer-rpc";
     await update(writer);
+    receipt.primaryCheck = "read.reader-wait-loaded";
     const loaded = await waitFor(
       "authenticated native policy update to load",
       async () => {
@@ -5012,26 +5131,28 @@ async function assertAuthenticatedNativePolicyScopes(topology) {
       },
       30_000,
     );
+    receipt.primaryCheck = "read.loaded-policy-equals-baseline";
     assert.deepEqual(loaded.policy, before.policy);
+    receipt.primaryCheck = "fixture.write-success-marker";
     process.stderr.write(
       "OpenShell integration: authenticated sandbox:read, config:read and config:write policy boundaries passed.\n",
     );
+    receipt.primaryCheck = null;
   } finally {
-    for (const client of clients) {
-      client.close();
-    }
     try {
-      if (savedValues) {
-        await configureAuthentication(false);
-      }
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-      await topology.resumeWorker();
+      await cleanup();
+    } catch (error) {
+      // The receipt retains the cleanup checkpoint when both operations fail.
+      cleanupFailure = { error };
     }
+  }
+  if (cleanupFailure !== undefined) {
+    throw cleanupFailure.error;
   }
 }
 
-async function assertAgentNetworkPolicyLifecycle(topology) {
+async function assertAgentNetworkPolicyLifecycle(topology, enterCheck) {
+  enterCheck("installation-discovery");
   const base = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
   const policyPath = `${base}/sandbox-policy/networking`;
   const installationDiscovery = await topology.request(
@@ -5093,6 +5214,7 @@ PYTHON`;
     return executed;
   };
   // Prove both listeners and cluster DNS independently before interpreting a policy denial.
+  enterCheck("cluster-target-reachability");
   const reachable = await kubectl(
     "exec",
     "pod/token-echo",
@@ -5104,22 +5226,30 @@ PYTHON`;
     `fetch("http://${grant.host}:${topology.tokenEcho.policyPort}/policy-probe").then(async r => { if (r.status !== 200 || (await r.json()).path !== "/policy-probe") process.exit(1); console.log("reachable"); })`,
   );
   assert.match(reachable, /reachable/);
+  enterCheck("agent-default-control-request");
   const control = await python(topology.agent.id, 8082);
+  enterCheck("agent-default-control-exit");
   assert.equal(
     control.exitCode,
     0,
     "the Installation default permits the real Agent's control request",
   );
+  enterCheck("agent-default-control-response");
   assert.match(control.aggregatedOutput ?? "", /POLICY_PROBE \/policy-probe/);
   // Before any additions, enforcement denies the actual interpreter request.
+  enterCheck("agent-initial-denial-request");
   const denied = await python();
+  enterCheck("agent-initial-denial-exit");
   assert.notEqual(denied.exitCode, 0);
+  enterCheck("agent-initial-denial-reason");
   assert.match(denied.aggregatedOutput ?? "", /Permission denied|Errno 13/);
+  enterCheck("provider-denial-read");
   const logs = await topology.request(
     "GET",
     `${base}/deployments/${topology.revision.id}/runtime/logs?source=sandbox&tailLines=1000`,
   );
   assert.equal(logs.status, 200, JSON.stringify(logs.error));
+  enterCheck("provider-denial-observed");
   const blocked = logs.data.records.find(
     ({ decision }) =>
       decision?.decision === "denied" &&
@@ -5128,6 +5258,7 @@ PYTHON`;
       decision.port === topology.tokenEcho.policyPort,
   );
   assert.ok(blocked, "the provider must record the exact executable and denied target port");
+  enterCheck("provider-denied-dns-binding");
   // An unmapped port is logged against the synthetic policy IP. Bind it to the real DNS
   // mapping rather than treating an unrelated denial or a failed DNS lookup as enforcement.
   assert.ok(
@@ -5139,6 +5270,7 @@ PYTHON`;
       ),
     "the denied address must map to the requested destination",
   );
+  enterCheck("editing-admission");
   const suggestions = await topology.request(
     "GET",
     `${base}/revisions/${topology.revision.id}/sandbox-policy/networking/recommendations`,
@@ -5169,6 +5301,7 @@ PYTHON`;
         { workspace: topology.placement, sandbox: topology.sandbox.metadata.name },
         AbortSignal.timeout(10_000),
       );
+  enterCheck("apply-authorization");
   for (const [action, kind, id] of [
     ["manage_policy", "agent", topology.agent.id],
     ["update", "sandbox_policy", initial.data.policy.id],
@@ -5348,10 +5481,13 @@ PYTHON`;
       );
     }
   };
+  enterCheck("grant-application");
   await change([grant], true);
+  enterCheck("granted-agent-request");
   const allowed = await python();
   assert.equal(allowed.exitCode, 0, "a confirmed grant must permit the same real Python request");
   assert.match(allowed.aggregatedOutput ?? "", /HTTP [1-5][0-9]{2}/);
+  enterCheck("provider-allow-observed");
   const allowedLogs = await topology.request(
     "GET",
     `${base}/deployments/${topology.revision.id}/runtime/logs?source=sandbox&tailLines=1000`,
@@ -5367,6 +5503,7 @@ PYTHON`;
     ),
     "the provider confirms the real connection was allowed",
   );
+  enterCheck("revision-unchanged");
   const unchanged = await topology.request("GET", base);
   assert.equal(
     unchanged.data.activeRevisionId,
@@ -5382,6 +5519,7 @@ PYTHON`;
     [],
     "live changes must preserve immutable revision evidence",
   );
+  enterCheck("second-agent-isolation");
   // A second ordinary Agent shares the Installation defaults but receives no addition.
   const second = await deployAdditionalCredentialAgent(
     topology,
@@ -5396,6 +5534,7 @@ PYTHON`;
   const isolated = await python(second.agent.id);
   assert.notEqual(isolated.exitCode, 0, "another Agent must remain denied");
   assert.match(isolated.aggregatedOutput ?? "", /Permission denied|Errno 13/);
+  enterCheck("second-agent-cleanup");
   // Release the shared credential reference before the later credential-revocation scenarios.
   const deleted = await topology.request("DELETE", second.path);
   assert.equal(deleted.status, 202, JSON.stringify(deleted.error));
@@ -5410,6 +5549,7 @@ PYTHON`;
     },
     120_000,
   );
+  enterCheck("editing-state-enforcement");
   assert.equal(
     (await topology.request("PATCH", `${policyPath}/editing`, { enabled: false })).status,
     200,
@@ -5423,6 +5563,7 @@ PYTHON`;
     (await topology.request("PATCH", `${policyPath}/editing`, { enabled: true })).status,
     200,
   );
+  enterCheck("grant-revocation");
   await change([]);
   const revoked = await python();
   assert.notEqual(revoked.exitCode, 0, "explicit removal must restore enforcement");
@@ -8305,7 +8446,19 @@ export function registerProviderLifecycleTest(workflow) {
     },
     async (testContext) => {
       // Finding 1711: every cleanup this test registers runs, last-registered first, each bounded.
-      const teardown = boundedTeardown(testContext, { label: "OpenShell integration teardown" });
+      const policyCase = workflow === "policy" || networkPolicyOnly;
+      const reportFixtureOutcome = policyCase || workflow === "credentials";
+      const teardown = boundedTeardown(testContext, {
+        label: "OpenShell integration teardown",
+        onOutcome: reportFixtureOutcome
+          ? (outcome) => {
+              testContext.diagnostic(
+                "openclaw-ci-measurement " +
+                  JSON.stringify({ kind: "openshell-fixture-teardown", outcome }),
+              );
+            }
+          : undefined,
+      });
       teardownStarted = () => teardown.started;
       const { context } = teardown;
       if (demoStatePath !== undefined) {
@@ -8434,18 +8587,25 @@ export function registerProviderLifecycleTest(workflow) {
           requestGatewayTurns(context, topology, "codex"),
         );
         process.stderr.write("OpenShell integration: regular Gateway shell turns passed.\n");
-        if (workflow === "policy" || networkPolicyOnly) {
+        if (policyCase) {
           if (!networkPolicyOnly) {
             await measureOpenShellStage(testContext, "filesystem-network", () =>
               assertOpenShellToolFilesystemAndNetworkEnforcement(topology),
             );
           }
           process.stderr.write("OpenShell integration: testing Agent network policy lifecycle.\n");
+          let policyCheck;
           try {
             await measureOpenShellStage(testContext, "network-policy", () =>
-              assertAgentNetworkPolicyLifecycle(topology),
+              assertAgentNetworkPolicyLifecycle(topology, (check) => {
+                policyCheck = check;
+              }),
             );
           } catch (error) {
+            testContext.diagnostic(
+              "openclaw-ci-measurement " +
+                JSON.stringify({ kind: "openshell-network-policy-check", check: policyCheck }),
+            );
             // Teardown may take minutes; preserve the failure before removing its resources.
             const message = redactLogLine(
               String(error?.stack ?? error?.message).replaceAll("\n", " "),
@@ -8549,9 +8709,22 @@ export function registerProviderLifecycleTest(workflow) {
           process.stderr.write(
             "OpenShell integration: testing authenticated native policy scopes.\n",
           );
-          await measureOpenShellStage(testContext, "native-policy", () =>
-            assertAuthenticatedNativePolicyScopes(topology),
-          );
+          const receipt = { primaryCheck: null, cleanupCheck: null };
+          try {
+            await measureOpenShellStage(testContext, "native-policy", () =>
+              assertAuthenticatedNativePolicyScopes(topology, receipt),
+            );
+          } catch (error) {
+            testContext.diagnostic(
+              "openclaw-ci-measurement " +
+                JSON.stringify({
+                  kind: "openshell-native-policy-check",
+                  stage: "native-policy-scopes",
+                  ...receipt,
+                }),
+            );
+            throw error;
+          }
         }
         return;
       }

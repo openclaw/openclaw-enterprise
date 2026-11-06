@@ -496,7 +496,14 @@
       "idx": 71,
       "version": "7",
       "when": 1787000000071,
-      "tag": "0071_proxy_harness_snapshot",
+      "tag": "0071_default_users",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1787000000072,
+      "tag": "0072_proxy_harness_snapshot",
       "breakpoints": true
     }
   ]

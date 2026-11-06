@@ -550,6 +550,22 @@ export const responseExamples = {
     sandboxPolicyRead: true,
     update: true,
   },
+  getNamespaceAgentCapabilities: {
+    capabilities: {
+      credentialSources: {
+        types: [
+          {
+            type: "openai",
+            config: [{ name: "authorized_base_url", required: false }],
+            secrets: [{ name: "api_key", required: true }],
+            rotation: "external",
+            harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+          },
+        ],
+      },
+      openclaw: { executionModes: ["dedicated"] },
+    },
+  },
   getNamespaceCallerPermissions: {
     delete: true,
     agents: { create: true },

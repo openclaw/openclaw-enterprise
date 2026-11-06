@@ -415,7 +415,9 @@ Stores human Principals and service identities, including those owned by an Agen
 
 ### `iam_groups`
 
-Defines native IAM groups at Installation or Namespace scope.
+Defines native IAM groups at Installation or Namespace scope, including the
+[configured Groups](../authorization/default-users.md#how-occ-applies-the-configuration)
+(`group_config_` IDs), which OCC can delete.
 
 - `id`
 - `namespace_id`
@@ -423,7 +425,8 @@ Defines native IAM groups at Installation or Namespace scope.
 
 ### `iam_group_memberships`
 
-Links human Principals to their native IAM groups.
+Links human Principals to their native IAM groups. Rows cannot be updated;
+memberships of a configured Group can be deleted.
 
 - `namespace_id`
 - `group_id`
@@ -431,7 +434,10 @@ Links human Principals to their native IAM groups.
 
 ### `iam_roles`
 
-Defines native IAM roles as sets of actions and resource kinds.
+Defines native IAM roles as sets of actions and resource kinds. Only
+[configured Roles](../authorization/default-users.md#how-occ-applies-the-configuration)
+(`role_config_` IDs) can change; a check constraint keeps them at Installation
+scope without `installation` permissions.
 
 - `id`
 - `namespace_id`
@@ -441,6 +447,9 @@ Defines native IAM roles as sets of actions and resource kinds.
 ### `iam_access_bindings`
 
 Grants a native IAM role to an identity or group, optionally for a specific resource.
+OCC also writes configured Group bindings and the
+[Owner bindings](../authorization/default-users.md#creators-own-what-they-create)
+of creators here.
 
 - `id`
 - `namespace_id`

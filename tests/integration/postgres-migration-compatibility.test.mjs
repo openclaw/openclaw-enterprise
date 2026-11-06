@@ -24,6 +24,7 @@ import {
 import { migrateWithHistory } from "../../scripts/migration-history.mjs";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { assertReleasedControllerCompatibility } from "../helpers/released-controller-compatibility.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const migrationsDirectory = join(repositoryRoot, "migrations");
@@ -39,6 +40,16 @@ const providerMigrationTags = new Set([
   "0030_codex_pat_harness_auth",
 ]);
 const execFileAsync = promisify(execFile);
+const controllerImages = {
+  released: {
+    reference: process.env.OCC_TEST_RELEASED_CONTROLLER_IMAGE,
+    revision: process.env.OCC_TEST_RELEASED_CONTROLLER_REVISION,
+  },
+  candidate: {
+    reference: process.env.OCC_TEST_CANDIDATE_CONTROLLER_IMAGE,
+    revision: process.env.OCC_TEST_CANDIDATE_CONTROLLER_REVISION,
+  },
+};
 const dependency = createRequire(new URL("../../packages/occ/package.json", import.meta.url));
 const { drizzle } = dependency("drizzle-orm/node-postgres");
 const { migrate } = dependency("drizzle-orm/node-postgres/migrator");
@@ -2003,7 +2014,8 @@ test(
       [67, "preAgentPluginDriver"],
       [68, "preConnectionTemplates"],
       [69, "preSavedConnections"],
-      [70, "preProxyHarnessSnapshot"],
+      [70, "preDefaultUsers"],
+      [71, "preProxyHarnessSnapshot"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -3022,6 +3034,37 @@ test(
         await assertHistoryRefused(db);
       });
     }
+    void context.test("draft snapshot at the published default-users slot", async (child) => {
+      const db = await historyDatabase(child, fixture, "snapshotpreview");
+      const journal = JSON.parse(
+        await readFile(join(migrationsDirectory, "meta/_journal.json"), "utf8"),
+      );
+      // Recreate the draft's SQL and original receipt, not a forged canonical receipt.
+      // The published 0071 default-users prefix is accepted by the upgrade case above.
+      const snapshot = journal.entries.find((entry) => entry.tag === "0072_proxy_harness_snapshot");
+      const entries = [
+        ...journal.entries.slice(0, 70),
+        { ...snapshot, idx: 71, when: 1787000000071 },
+      ];
+      await installCanonicalPrefix(db, entries.length, { entries });
+      await seedCanonicalData(db, {
+        preset: true,
+        computeAdmission: true,
+        executionAdmission: true,
+      });
+      const before = await canonicalData(db);
+      const receipts = await historyReceipts(db.migrator);
+      assert.equal(receipts.length, 71);
+      assert.deepEqual(
+        [receipts.at(-1).hash, Number(receipts.at(-1).created_at)],
+        ["a80a81c7c5980eeeff4d5129960ad09d9799aea3e08f7a3a4342264944206404", 1787000000071],
+      );
+      await assertHistoryRefused(
+        db,
+        /applied receipts differ from canonical history; pre-merge preview histories are unsupported/,
+      );
+      assert.deepEqual(await canonicalData(db), before);
+    });
     void context.test("published premerge credential history", async (child) => {
       const db = await historyDatabase(child, fixture, "premerge");
       const journal = JSON.parse(
@@ -3662,3 +3705,27 @@ test(
     assert.equal(await authorize(principals[2], "read"), true);
   },
 );
+
+// An unselected opt-in case must not become an unexpected skip in native PostgreSQL CI.
+if (
+  Object.values(controllerImages).some((image) =>
+    Object.values(image).some((value) => value !== undefined),
+  )
+) {
+  test(
+    "Released controller remains usable across candidate database writes",
+    { timeout: 360_000 },
+    async (t) => {
+      assert.ok(
+        Object.values(controllerImages).every(
+          (image) => typeof image.reference === "string" && typeof image.revision === "string",
+        ),
+        "Both released and candidate controller image references and revisions are required.",
+      );
+      await assertReleasedControllerCompatibility(t, controllerImages, async () => {
+        const fixture = await migrationHistoryFixture();
+        return historyDatabase(t, fixture, "released_controller");
+      });
+    },
+  );
+}

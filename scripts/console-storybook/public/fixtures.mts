@@ -792,6 +792,16 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       if (resource === "permissions/secrets" && method === "GET") {
         return response({ operateDenied: scenario.secretOperateDenied ?? [] });
       }
+      // A member reads the Installation's capabilities from the Namespace, minus guided
+      // provisioning and its native admin option (RFC-0026).
+      if (resource === "agent-capabilities" && method === "GET") {
+        const {
+          nativeAdmin: _provisioningOnly,
+          agentProvisioning: _administratorOnly,
+          ...capabilities
+        } = installationFixture(installationScenario(scenario), createdAt).capabilities ?? {};
+        return response({ capabilities });
+      }
       if (
         resource === "agents" ||
         resource === "agents/validate" ||

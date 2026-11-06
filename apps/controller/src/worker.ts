@@ -1401,11 +1401,19 @@ export class ControllerWorker {
         throw new Error("The selected native repository sender is unavailable.");
       }
     }
+    const bound = this.repositoryAdmission?.policy;
+    if (
+      this.repositoryAdmission !== undefined &&
+      (bound !== this.repositoryPolicy || typeof bound?.resolveBindings !== "function")
+    ) {
+      throw new Error("The bound repository admission owner is not selected or unavailable.");
+    }
     this.repositoryCredentials = new RepositoryCredentialLifecycle({
       state: this.state,
       queueOptions: this.queueOptions,
-      driver: this.repositoryPolicy,
-      repositoryAdmission: this.repositoryAdmission,
+      repository: bound
+        ? { kind: "bound", policy: bound }
+        : this.repositoryPolicy && { kind: "registered", policy: this.repositoryPolicy },
       nativeSender: this.nativeRepositorySender,
       verifyExecution: (claim, revision) =>
         this.withClaimHeartbeat(
