@@ -12,6 +12,22 @@ import (
 	"time"
 )
 
+func TestDevelopmentRepositoryAcceptsCRLFGoMod(t *testing.T) {
+	repository := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repository, "go.mod"), []byte("module github.com/openclaw/openclaw-enterprise\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "compose.yaml"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repository)
+
+	got, err := developmentRepository()
+	if err != nil || got != repository {
+		t.Fatalf("developmentRepository() = %q, %v; want %q", got, err, repository)
+	}
+}
+
 func TestDevUpRejectsSandboxPolicyFlagsBeforeDockerStartup(t *testing.T) {
 	repository, err := developmentRepository()
 	if err != nil {

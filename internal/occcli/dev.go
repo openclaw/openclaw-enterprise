@@ -142,7 +142,8 @@ func developmentRepository() (string, error) {
 	}
 	for {
 		module, err := os.ReadFile(filepath.Join(directory, "go.mod"))
-		if err == nil && strings.HasPrefix(string(module), "module github.com/openclaw/openclaw-enterprise\n") {
+		moduleLine, _, hasLineEnding := strings.Cut(string(module), "\n")
+		if err == nil && hasLineEnding && strings.TrimSuffix(moduleLine, "\r") == "module github.com/openclaw/openclaw-enterprise" {
 			if _, err := os.Stat(filepath.Join(directory, "compose.yaml")); err == nil {
 				return directory, nil
 			}
