@@ -33,7 +33,9 @@ administrators create human accounts through the
 [HTTP API](../../reference/authentication.md#account-provisioning) only, and
 manage Namespace Roles and AccessBindings through the
 [HTTP API or CLI](../../reference/authorization.md#manage-namespace-policy).
-Groups and Restrictions remain managed by the selected IAM authority. See
+Apart from the Groups that the
+[Installation configuration](#let-people-create-agents) declares, Groups and
+Restrictions remain managed by the selected IAM authority. See
 [Authorization](../../reference/authorization.md) for available actions, scope,
 and how denials work.
 
@@ -151,10 +153,44 @@ appointed account holds only `installation:administer` and `installation:read`:
   there to a Role with `namespace:read`, as in step 4 of
   [Add a person](#add-a-person). Namespace IAM writes then work in that
   Namespace; Namespace creation stays refused.
+- Like every account created through the API, it joins the configured
+  [default Groups](#let-people-create-agents). With them, it can create Agents
+  in `default`.
 
 Appoint one only for account and service-key administration. The draft
 [RFC in PR #889](https://github.com/openclaw/openclaw-enterprise/pull/889)
 proposes a change to this behavior.
+
+## Let people create Agents
+
+Declare the Default users Roles, Group, and bindings in the Installation
+configuration to let people create Agents in the shared `default` Namespace
+without other grants. Each account that an administrator creates afterwards
+joins the Group. The person owns each Agent, Configuration, Secret, and
+credential source they create, and deploys their Agents themselves. Other
+members cannot see or change those resources.
+[Default users and configured Roles](../../reference/authorization/default-users.md)
+defines each field and its limits.
+
+1. Add the `iam` block from the
+   [reference example](../../reference/authorization/default-users.md#installation-iam-configuration)
+   to the
+   [Installation startup configuration](../../reference/configuration.md#installation-startup-configuration)
+   of both the API and the worker. Omit the `namespace_creator` binding unless
+   members can also create and own Namespaces. OCC sets no limit on how many
+   Namespaces or Agents a member creates.
+2. Restart the API and the worker. At startup, OCC writes the Roles, the Group,
+   and the bindings. A configuration error stops startup and names the field.
+3. Create each person's account (steps 1–3 of [Add a person](#add-a-person)).
+   The account joins `default-user` as it is created. Accounts that already
+   exist do not join; there is no API, CLI, or console support to add them.
+
+The person can now create Agents in `default`. To stop all members from
+creating more, remove the binding from the configuration and restart. To stop
+one person, [disable their account](#remove-a-person). What they created stays,
+and their Agents keep running. To end their access to one resource, delete it,
+or delete its Owner binding `binding_owner_<resource-id>` with
+`occ iam access-binding delete` in that Namespace.
 
 ## Remove a person
 
@@ -243,8 +279,8 @@ of the Agent, not this set, so use the CLI or HTTP API as in
 
 The person still cannot create Agents, Secrets or Configurations. Codex device
 login on the Agent needs Agent `update` and `read`, plus Secret and
-credential-source `create` in the Namespace, so only an Installation
-administrator can start it; see
+credential-source `create` in the Namespace, which exact-resource grants
+cannot give; see
 [Use a personal Codex login](../deploy/credential-lifecycle.md#use-a-personal-codex-login).
 To message
 the Agent, the person needs a channel its Configuration sets up or
@@ -256,9 +292,12 @@ enabled.
 
 Besides the person who deploys it, the Agent's own ServicePrincipal needs
 `operate` on each Secret and credential source the Agent binds; without it, OCC
-refuses the deployment. Only an Installation administrator can give the Agent
-this grant: bind a Role that holds only Secret `operate` to the Agent's
-ServicePrincipal, once for each exact Secret.
+refuses the deployment. When a person who can operate those Secrets deploys,
+OCC
+[writes these grants](../../reference/authorization/default-users.md#grant-an-agent-its-credentials-at-deployment).
+Otherwise, only an Installation administrator can give the Agent this grant:
+bind a Role that holds only Secret `operate` to the Agent's ServicePrincipal,
+once for each exact Secret.
 
 When the console creates an Agent, it binds the Role
 `role_<namespace-id>_agent_secret_operate`, named `Agent Secret operate`, and

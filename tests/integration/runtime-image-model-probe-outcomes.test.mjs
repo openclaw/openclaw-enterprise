@@ -10,7 +10,7 @@ import {
   runtimeFailure,
 } from "../helpers/runtime-image-model-probe.mjs";
 import { jsonLines } from "../helpers/json-lines.mjs";
-import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.mjs";
+import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.ts";
 
 // The embedded Gateway's startup model probe on the real runtime image at a 500m
 // CPU limit (setup: tests/helpers/runtime-image-model-probe.mjs). The CPU

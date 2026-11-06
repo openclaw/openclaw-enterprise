@@ -90,6 +90,23 @@ export function openShellProxyConfiguration(
   };
 }
 
+function isHttpsEndpoint(endpoint: string | undefined): boolean {
+  return endpoint?.startsWith("https://") === true;
+}
+
+function isGatewayAuthMode(mode: string | undefined, preview = false): boolean {
+  return mode === "mtls" || (!preview && mode === "bearerTokenFile");
+}
+
+export function isOpenShellGatewayEligible(
+  backend: OpenShellBackendDefinition | undefined,
+): boolean {
+  return (
+    isHttpsEndpoint(backend?.configuration.endpoint) &&
+    isGatewayAuthMode(backend?.configuration.auth?.mode)
+  );
+}
+
 /**
  * `repository.openShell` needs prepared custody, the bundled Kubernetes/OpenShell pair and an
  * authenticated HTTPS gateway. Each unmet requirement names its own field and never echoes a
@@ -138,7 +155,7 @@ export function validateOpenShellRepositoryTransport(
   } else {
     const field = `/backend/${input.backendIndex}/configuration`;
     const { endpoint, auth } = backend.configuration;
-    if (endpoint?.startsWith("https://") !== true) {
+    if (!isHttpsEndpoint(endpoint)) {
       refuse(
         `${field}/endpoint`,
         endpoint === undefined ? "REQUIRED" : "INVALID_VALUE",
@@ -147,10 +164,7 @@ export function validateOpenShellRepositoryTransport(
           : "the openshell backend configuration.endpoint to be an https:// URL",
       );
     }
-    const modes = configuration.observedHookPreviewWorkspace
-      ? ["mtls"]
-      : ["bearerTokenFile", "mtls"];
-    if (!modes.includes(auth?.mode ?? "")) {
+    if (!isGatewayAuthMode(auth?.mode, !!configuration.observedHookPreviewWorkspace)) {
       refuse(
         `${field}/auth${auth === undefined ? "" : "/mode"}`,
         auth === undefined ? "REQUIRED" : "INVALID_VALUE",

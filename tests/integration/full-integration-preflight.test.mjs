@@ -680,6 +680,7 @@ test("workflow permits main push retries and refuses approval reuse on manual re
           outputs: { selected_lane: name === "logging-collector" ? name : "all", run_all: "true" },
         },
         slack: { result: "success" },
+        "runtime-artifact": { result: "success" },
       };
       assert.equal(workflowCondition(job.if, { github, needs }), true, `${name}: first attempt`);
       assert.equal(

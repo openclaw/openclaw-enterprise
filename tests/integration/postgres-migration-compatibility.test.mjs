@@ -2002,8 +2002,9 @@ test(
       [67, "preAgentPluginDriver"],
       [68, "preConnectionTemplates"],
       [69, "preSavedConnections"],
-      [70, "preConnectionAttachmentIntent"],
-      [71, "preRequestCredentialApprovals"],
+      [70, "preDefaultUsers"],
+      [71, "preConnectionAttachmentIntent"],
+      [72, "preRequestCredentialApprovals"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });

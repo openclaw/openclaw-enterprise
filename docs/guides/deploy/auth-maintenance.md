@@ -87,26 +87,114 @@ for reads that need no session, such as `GET /api/auth/providers`.
 
 ## Run the command
 
-Run it from the installed controller image as a one-off Pod. The labels and
-service account reuse the initialization Job's database egress policy, which
-selects on the Helm release name (`RELEASE`); the Secret is the chart's
-`occ-database` with its `migration-url` key. The example mounts the
-`database.caSecretName` CA (key `ca.pem`) at the chart's `database.caMountPath`;
-without a database CA, drop `volumes` and `volumeMounts`.
+Run it from the installed controller image in a temporary Job. The Job controller
+owns its Pod; this matters on EKS, where NetworkPolicy enforcement can be unreliable
+for standalone Pods. The Pod labels below select the installed initialization
+NetworkPolicy for the Helm release (`RELEASE`), allowing DNS and database egress.
+Keep that policy and the `openclaw-enterprise-initialization` service account in place.
+
+The operator needs permission to create, read, watch, and delete Jobs, read Pods
+and their logs, and scale the API and worker Deployments. The maintenance Pod has
+no mounted service-account token. Use the installed database Secret name and
+migration key; the example uses the chart defaults `occ-database` and
+`migration-url`. Match `database.caKey`, `database.caMountPath`, and any
+`controlPlane.nodeSelector` to your installed values. Without a database CA,
+remove `volumes` and `volumeMounts`.
+
+Create one Job for the selected operation. `create` refuses an existing Job;
+finish inspecting and removing the previous maintenance Job before another run.
 
 ```bash
 export RELEASE=oce DATABASE_CA_SECRET='<database.caSecretName>'
 export CONTROLLER_IMAGE='<registry>/controller@sha256:<64-hex-digest>'
 kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
-  --namespace openclaw-system run occ-auth-maintain --rm -i --restart=Never \
-  --image "$CONTROLLER_IMAGE" \
-  --labels "app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=initialization" \
-  --overrides '{"spec":{"serviceAccountName":"openclaw-enterprise-initialization","automountServiceAccountToken":false,"securityContext":{"runAsNonRoot":true,"runAsUser":1000,"runAsGroup":1000,"seccompProfile":{"type":"RuntimeDefault"}},"volumes":[{"name":"database-ca","secret":{"secretName":"'"$DATABASE_CA_SECRET"'","items":[{"key":"ca.pem","path":"ca.pem"}]}}],"containers":[{"name":"occ-auth-maintain","image":"'"$CONTROLLER_IMAGE"'","args":["scripts/auth-maintain.mjs","status"],"env":[{"name":"NODE_ENV","value":"production"},{"name":"OCC_MIGRATION_DATABASE_URL","valueFrom":{"secretKeyRef":{"name":"occ-database","key":"migration-url"}}}],"volumeMounts":[{"name":"database-ca","mountPath":"/etc/openclaw/database-ca","readOnly":true}],"securityContext":{"allowPrivilegeEscalation":false,"readOnlyRootFilesystem":true,"capabilities":{"drop":["ALL"]}}}]}}'
+  --namespace openclaw-system create -f - <<EOF
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: occ-auth-maintain
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openclaw-enterprise
+        app.kubernetes.io/instance: "$RELEASE"
+        app.kubernetes.io/component: initialization
+    spec:
+      serviceAccountName: openclaw-enterprise-initialization
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: database-ca
+          secret:
+            secretName: "$DATABASE_CA_SECRET"
+            items:
+              - key: ca.pem
+                path: ca.pem
+      containers:
+        - name: occ-auth-maintain
+          image: "$CONTROLLER_IMAGE"
+          args: ["scripts/auth-maintain.mjs", "status"]
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: OCC_MIGRATION_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: occ-database
+                  key: migration-url
+          volumeMounts:
+            - name: database-ca
+              mountPath: /etc/openclaw/database-ca
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+EOF
 ```
 
 Replace `"status"` with the operation's arguments, for example
-`"deactivate","--writers-stopped"`. The Pod's own connection is excluded from
-the check; `kubectl run --rm` removes it afterwards.
+`"deactivate", "--writers-stopped"`. The Pod's own database connection is excluded
+from the writer check. The Job does not retry a failed Pod.
+
+Wait for completion, inspect the JSON output, then delete the Job and wait for
+its Pods to stop. This block attempts cleanup even after a failure and returns
+nonzero if completion, diagnostics, or cleanup fails. A timeout does not establish
+whether a change committed.
+
+```bash
+(
+  result=0
+  kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
+    --namespace openclaw-system wait --for=condition=Complete \
+    job/occ-auth-maintain --timeout=5m || result=$?
+  if [ "$result" -ne 0 ]; then
+    kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
+      --namespace openclaw-system get job/occ-auth-maintain -o yaml || result=$?
+  fi
+  kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
+    --namespace openclaw-system logs job/occ-auth-maintain -c occ-auth-maintain || result=$?
+  kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
+    --namespace openclaw-system delete job/occ-auth-maintain \
+    --cascade=foreground --wait=true --timeout=5m || result=$?
+  exit "$result"
+)
+```
+
+If cleanup fails, complete it before another operation or resuming writers. If
+the result was uncertain, run `status` in a new Job before deciding whether to
+retry a change. Confirm the intended database state before resuming writers.
 
 For `reset-recovery-password`, put the new password in a Secret, mount it
 read-only in the Pod, and pass the mounted path with `--password-file`. Delete

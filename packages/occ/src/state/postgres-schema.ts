@@ -1093,6 +1093,12 @@ export const iamRoles = occSchema.table(
   (table) => [
     unique("iam_roles_namespace_id_id_unique").on(table.namespaceId, table.id).nullsNotDistinct(),
     check("iam_roles_permissions_array", sql`jsonb_typeof(${table.permissions}) = 'array'`),
+    check(
+      "iam_roles_configured_scope",
+      sql`${table.id} NOT LIKE 'role\\_config\\_%'
+        OR (${table.namespaceId} IS NULL
+          AND NOT ${table.permissions} @> '[{"resourceKind":"installation"}]'::jsonb)`,
+    ),
   ],
 );
 
