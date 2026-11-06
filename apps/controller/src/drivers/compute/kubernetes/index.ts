@@ -14369,8 +14369,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         (auth.method === "credential_source" && auth.loginMode === "api_key")) &&
       (harness.id === "codex" ||
         (harness.id === "openclaw" &&
-          harnessModelAuthentication(configuration, harness.mode === "embedded").providerId ===
-            "openai"))
+          nativeOpenAiModelSelections(configuration)?.[0]?.provider === "openai"))
     );
   }
 

@@ -255,7 +255,7 @@ export function createAgentDetailScenarios({
         description:
           "Preview a destination, retain requested overrides, and inspect the saved settings after deployment.",
         steps: [
-          "Read the retained evaluation destination. Choose Override model provider and enter the authorized evaluation HTTPS /v1 endpoint. Preview it, then deploy and inspect requested and resolved settings.",
+          "Read the retained evaluation destination beside the deployment checklist. Open Harness destination, then choose Override model provider and enter the authorized evaluation HTTPS /v1 endpoint. Preview it, then deploy and inspect requested and resolved settings.",
         ],
         gap: "Simulated UI proof only; source consent, persistence and inference routing require integration checks.",
       },

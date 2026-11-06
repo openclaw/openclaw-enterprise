@@ -824,7 +824,7 @@ test("Configuration save names the field that holds an inline model credential w
   assert.deepEqual(asObject(saved.data).values, values);
 });
 
-test("Agent deployment shows the API's reason when it rejects the saved model", async (t) => {
+test("Agent destination preview shows the API's reason when it rejects the saved model", async (t) => {
   const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Unqualified model", {
     configurationDriver,
@@ -844,13 +844,13 @@ test("Agent deployment shows the API's reason when it rejects the saved model", 
   await storeRefusedConfiguration(fixture, configurationDriver, agent, bare, reason);
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
-  await login(page, fixture, url);
   const rejected = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
-      response.url().endsWith(`/agents/${agent.id}/deploy`),
+      response.url().endsWith(`/agents/${agent.id}/deploy-preview`),
   );
-  await page.getByRole("button", { name: "Deploy new version" }).click();
+  await login(page, fixture, url);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isEnabled(), false);
   assert.equal((await rejected).status(), 400);
   // The generic "check the entered values" text cannot tell the user which setting to fix.
   await page.getByText(reason, { exact: true }).waitFor();

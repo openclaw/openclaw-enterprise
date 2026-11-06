@@ -1,3 +1,4 @@
+import { match } from "ts-pattern";
 import { exchangeAuthorizationCode, startBrowserAuthorization } from "./browser-authorization.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import { isReducedCredentialPlan } from "./credential-policy-reduction.ts";
@@ -12009,7 +12010,12 @@ export class OpenClawController {
     if (overrides === undefined) {
       throw new ConfigurationHarnessError("Harness overrides must be an object.");
     }
-    const compute = this.selectedDriver("compute");
+    let compute: ComputeDriver;
+    try {
+      compute = this.selectedDriver("compute");
+    } catch {
+      throw new DependencyUnavailableError("The selected compute Driver is unavailable.");
+    }
     if (compute.normalizeHarnessOverrides === undefined) {
       if (Object.keys(overrides).length !== 0) {
         throw new ConfigurationHarnessError(
@@ -12261,7 +12267,32 @@ export class OpenClawController {
         throw new DependencyUnavailableError("The selected Harness runtime is not approved.");
       }
       const compute = this.selectedDriver("compute");
-      const [auth] = await this.admitHarnessAuth(state, principalId, agent);
+      const binding = this.harnessAuthBinding(agent.harnessAuth);
+      if (binding === null) {
+        throw new ResourceStateConflictError(
+          "Deployment requires an explicit Harness authentication binding.",
+        );
+      }
+      await this.authorizeHarnessAuthSource(state, principalId, agent.namespaceId, binding);
+      // Preview reads routing metadata only. Agent grants and Secret backend resolution
+      // stay in admission, after the Console has completed its grant workflow.
+      const auth = await match(binding)
+        .with({ method: "runtime" }, async (value) => value)
+        .with(
+          { method: "credential_source" },
+          async (value) =>
+            (await this.credentialSourceHarnessAuthSnapshot(state, agent.namespaceId, value))[0],
+        )
+        .otherwise(async (value) =>
+          isSecretHarnessAuth(value)
+            ? this.secretHarnessAuthSnapshot(value)
+            : this.serviceAccountHarnessAuthSnapshot(
+                state,
+                agent.namespaceId,
+                agent.backendId,
+                value,
+              ),
+        );
       const requested = {
         ...approved,
         mode: agent.executionMode,

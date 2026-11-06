@@ -542,7 +542,14 @@ async function loginForm(
 // The console's CSP limits fetches to its own origin, so apiRequests sees every API write.
 
 export function writeRequests(requests: RequestRecord[]) {
-  return requests.filter((request) => request.method !== "GET");
+  return requests.filter(
+    (request) =>
+      request.method !== "GET" &&
+      !(
+        request.method === "POST" &&
+        /^\/namespaces\/[^/]+\/agents\/[^/]+\/deploy-preview$/.test(request.path)
+      ),
+  );
 }
 
 // writeRequests without the sign-in and sign-out requests (/api/auth/sign-*).
@@ -718,11 +725,24 @@ export async function waitForShownInputValue(
 export async function waitForEnabled(locator: Locator, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   await locator.waitFor({ state: "attached", timeout: timeoutMs });
-  await waitForCondition(
-    () => locator.isEnabled(),
-    `${locator} stayed disabled for ${timeoutMs} ms`,
-    Math.max(1, deadline - Date.now()),
-  );
+  try {
+    await waitForCondition(
+      () => locator.isEnabled(),
+      `${locator} stayed disabled for ${timeoutMs} ms`,
+      Math.max(1, deadline - Date.now()),
+    );
+  } catch (error) {
+    const reason = await locator.evaluate((element) =>
+      (element.getAttribute("aria-describedby") ?? "")
+        .split(/\s+/)
+        .map((id) => document.getElementById(id)?.textContent ?? "")
+        .join(" "),
+    );
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}; UI reason: ${reason}`,
+      { cause: error },
+    );
+  }
 }
 
 // Ordering sentinel for "this action sends no request" checks. After one macrotask turn, the

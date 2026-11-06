@@ -68,6 +68,9 @@ binds Sandbox and Proxy to one registered Driver.
 The plan records its digest, execution, source generation, grant, and routes;
 empty routes deny all. `admitProxyPlan` derives routes from saved Harness settings
 and source consent. `checkEgressUseIn` rechecks before delivery and send authorization.
+Preview reads source metadata after caller authorization; deployment checks Agent
+grants. Console `apps/controller/src/console/agents/detail.mts:previewHarness` treats
+preview as a read and refreshes after saved inputs or permission changes.
 
 For credential-free metadata, `packages/occ/src/index.ts:admitProxyPlan` rejects
 a Driver grant that differs from the source. Equivalent grants have the same

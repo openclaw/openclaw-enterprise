@@ -402,7 +402,7 @@ export function revision(driver, owner, agentId, number) {
     configurationIds.set(identity, configurationId);
   }
   const loggingLevel = number === 1 ? "info" : "debug";
-  return {
+  const candidate = {
     id: `rev_${randomUUID()}`,
     namespaceId: owner.id,
     agentId,
@@ -425,6 +425,14 @@ export function revision(driver, owner, agentId, number) {
     servicePrincipalId: `service-agent-${agentId}`,
     createdAt: new Date().toISOString(),
   };
+  candidate.harness.overrides = {};
+  candidate.harness.configuration = driver.resolveHarnessConfiguration(
+    candidate.harness,
+    candidate.harnessAuth,
+    candidate.configuration,
+  );
+  candidate.compute.admission = driver.admitRevision(candidate);
+  return candidate;
 }
 
 export function agentName(agentId) {
@@ -537,6 +545,21 @@ export async function assertReadyGateway(namespaceName, agentId, namespaceId, sn
           },
         };
   if (snapshot !== undefined) {
+    const provider = snapshot.harness.configuration.modelProvider;
+    if (snapshot.harness.id === "openclaw" && provider !== undefined) {
+      expectedNativeDocument.models = {
+        ...expectedNativeDocument.models,
+        providers: {
+          ...expectedNativeDocument.models?.providers,
+          openai: {
+            ...expectedNativeDocument.models?.providers?.openai,
+            api:
+              provider.protocol === "openai-responses" ? "openai-responses" : "openai-completions",
+            baseUrl: provider.baseUrl,
+          },
+        },
+      };
+    }
     const document = JSON.stringify(snapshot.configuration);
     for (const metadata of [deployment.metadata, deployment.spec.template.metadata]) {
       assert.equal(metadata.annotations["openclaw.dev/configuration-id"], snapshot.configurationId);

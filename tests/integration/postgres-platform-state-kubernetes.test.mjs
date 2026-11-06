@@ -317,7 +317,19 @@ stateCase(
       source: first.data.harnessAuth.source,
     });
     assert.deepEqual(revision.configuration, admitted(servedAs(firstValues, first.data.name)));
-    assert.deepEqual(revision.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
+    assert.deepEqual(revision.harness, {
+      id: "openclaw",
+      version: "1.0.0",
+      mode: "embedded",
+      overrides: {},
+      configuration: {
+        modelProvider: {
+          protocol: "openai-responses",
+          baseUrl: "https://api.openai.com/v1",
+          supportsStandaloneWebSearch: false,
+        },
+      },
+    });
     assert.deepEqual(revision.compute, {
       id: "compute-kubernetes",
       implementation: "occ/kubernetes",
@@ -484,7 +496,19 @@ stateCase(
     );
     assert.equal(deployment.status, 202);
     const revision = deployment.data;
-    assert.deepEqual(revision.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
+    assert.deepEqual(revision.harness, {
+      id: "openclaw",
+      version: "1.0.0",
+      mode: "embedded",
+      overrides: {},
+      configuration: {
+        modelProvider: {
+          protocol: "openai-responses",
+          baseUrl: "https://api.openai.com/v1",
+          supportsStandaloneWebSearch: false,
+        },
+      },
+    });
     assert.deepEqual(revision.compute, {
       id: "compute-kubernetes",
       implementation: "occ/kubernetes",
@@ -754,7 +778,19 @@ stateCase(
       firstRevision.configuration,
       admitted(servedAs(persistedConfigValues, primary.name)),
     );
-    assert.deepEqual(firstRevision.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
+    assert.deepEqual(firstRevision.harness, {
+      id: "openclaw",
+      version: "1.0.0",
+      mode: "embedded",
+      overrides: {},
+      configuration: {
+        modelProvider: {
+          protocol: "openai-responses",
+          baseUrl: "https://api.openai.com/v1",
+          supportsStandaloneWebSearch: false,
+        },
+      },
+    });
     assert.deepEqual(firstRevision.compute, {
       id: "compute-kubernetes",
       implementation: "occ/kubernetes",

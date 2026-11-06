@@ -2101,7 +2101,7 @@ export const occApiRoutes = [
           }),
           meta: Meta,
         }),
-        ...mutationErrors,
+        ...createErrors,
       },
     },
   },
@@ -2119,7 +2119,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       body: AgentDeploymentBody,
-      response: { 202: AgentRevisionResponse, ...mutationErrors },
+      response: { 202: AgentRevisionResponse, ...createErrors },
     },
   },
   {

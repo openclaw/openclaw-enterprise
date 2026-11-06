@@ -681,6 +681,7 @@ export async function renderAgentDetail(
   // A missing summary leaves each control on its usual path, except failed-version
   // recovery, which waits for a positive answer before offering a draft link.
   let callerPermissions: Permissions | null = null;
+  let harnessPreviewPending: Promise<void> | null = null;
   let callerPermissionsSettled = false;
   const callerPermissionsRead = readPermissions()
     .then(
@@ -1781,6 +1782,19 @@ export async function renderAgentDetail(
       deployButton.focus({ preventScroll: true });
     } else {
       tabControls.get(selectedTab)?.focus({ preventScroll: true });
+      if (deployButton && harnessPreviewPending) {
+        const tab = selectedTab;
+        void harnessPreviewPending.then(() => {
+          if (
+            context.isCurrent() &&
+            !deleting &&
+            selectedTab === tab &&
+            document.activeElement === tabControls.get(tab)
+          ) {
+            openVersionDetail({ ...options, deploy: true });
+          }
+        });
+      }
     }
     scrollToVersionDetail(options, actions ?? detailPane);
   }
@@ -3611,12 +3625,14 @@ export async function renderAgentDetail(
       updateDeployControls();
     }
     function updateDeployControls() {
-      if (harnessReady && harnessPreviewInputs !== currentHarnessInputs()) {
+      if (harnessPreviewInputs !== undefined && harnessPreviewInputs !== currentHarnessInputs()) {
         harnessReady = false;
         harnessPreviewAttempt++;
-        providerPreview.textContent =
-          "Saved Agent settings changed. Preview the destination again.";
+        harnessPreviewInputs = currentHarnessInputs();
+        queueMicrotask(startHarnessPreview);
       }
+      harnessControls.hidden = callerPermissions?.deploy !== true;
+      harnessControls.toggleAttribute("inert", deployPending);
       authenticationForm?.toggleAttribute("inert", Boolean(credentials?.mutationPending()));
       credentials?.section?.toggleAttribute("inert", authenticationSaveState !== "idle");
       const retainedConfiguration = retainedConfigurationState();
@@ -3855,10 +3871,11 @@ export async function renderAgentDetail(
                     ? CHECKING_CREDENTIAL_ACCESS_STEP
                     : "Finish in Credentials",
       );
-      setStep(checklistSteps[2], false, "Creates an immutable version from the saved draft");
+      setStep(checklistSteps[2], false, harnessSummary);
     }
     refreshDeployControls = updateDeployControls;
     let harnessReady = false;
+    let harnessSummary = "Preview the destination before deploying.";
     let harnessPreviewInputs: string | undefined;
     function currentHarnessInputs() {
       return JSON.stringify([
@@ -3866,6 +3883,8 @@ export async function renderAgentDetail(
         snapshot.generation,
         "harnessAuth" in currentAgent ? currentAgent.harnessAuth : null,
         currentAgent.executionMode,
+        deploySecretsDenied.names,
+        deploySecretsDenied.unreadable,
       ]);
     }
     let harnessOverrides: Record<string, unknown> = {};
@@ -3919,16 +3938,36 @@ export async function renderAgentDetail(
     async function previewHarness() {
       const attempt = ++harnessPreviewAttempt;
       const inputs = currentHarnessInputs();
+      harnessPreviewInputs = inputs;
       harnessReady = false;
-      providerPreview.textContent = "Resolving destination…";
+      harnessSummary = "Resolving destination…";
+      providerPreview.textContent = harnessSummary;
       updateDeployControls();
       try {
+        let permissionRead = latestPermissionsRead;
+        let permissions = await permissionRead;
+        while (context.isCurrent() && permissionRead !== latestPermissionsRead) {
+          permissionRead = latestPermissionsRead;
+          permissions = await permissionRead;
+        }
+        if (
+          attempt !== harnessPreviewAttempt ||
+          !context.isCurrent() ||
+          permissions?.deploy !== true
+        ) {
+          return;
+        }
+        if (deploySecretsDenied.names.length > 0 || deploySecretsDenied.unreadable > 0) {
+          harnessSummary = "Credential permission required.";
+          providerPreview.textContent =
+            "Review the credential permissions in the deployment checklist.";
+          updateDeployControls();
+          return;
+        }
         let overrides: Record<string, unknown> = {};
         if (harnessChoice.value === "retain") {
-          const previous = revisionForPage(
-            await request(`${path}/revisions/${retainedHarnessRevision!.id}`),
-          );
-          if (!("harness" in previous) || previous.harness.overrides === undefined) {
+          const previous = retainedHarnessRevision;
+          if (!previous || previous.harness.overrides === undefined) {
             throw new Error(
               "The previous version's requested overrides are unavailable. Choose the Installation default or enter an override.",
             );
@@ -3945,6 +3984,7 @@ export async function renderAgentDetail(
         }
         const preview = (await request(`${path}/deploy-preview`, {
           method: "POST",
+          readOnly: true,
           body: { harnessOverrides: overrides },
         })) as {
           harness: {
@@ -3962,6 +4002,9 @@ export async function renderAgentDetail(
           return;
         }
         const provider = preview.harness.configuration.modelProvider;
+        harnessSummary = provider
+          ? `Destination: ${provider.baseUrl}`
+          : "Native provider destination";
         providerPreview.textContent = provider
           ? `Destination: ${provider.baseUrl} · ${provider.protocol} · Standalone web search: ${provider.supportsStandaloneWebSearch ? "supported" : "not supported"}. Defaults are resolved again at deployment.`
           : "The selected authentication uses its native provider destination.";
@@ -3972,6 +4015,11 @@ export async function renderAgentDetail(
         if (attempt !== harnessPreviewAttempt || !context.isCurrent()) {
           return;
         }
+        harnessSummary = "Destination preview unavailable.";
+        if (requestFailure(error).status === 403) {
+          void readDeploySecretsDenied({ fresh: true });
+        }
+        harnessControls.open = true;
         providerPreview.textContent =
           requestFailure(error).serverMessage ??
           (error instanceof Error
@@ -3980,19 +4028,30 @@ export async function renderAgentDetail(
       }
       updateDeployControls();
     }
-    const previewProvider = button("Preview destination", () => void previewHarness());
+    function startHarnessPreview() {
+      const pending = previewHarness();
+      harnessPreviewPending = pending;
+      void pending.then(() => {
+        if (harnessPreviewPending === pending) {
+          harnessPreviewPending = null;
+        }
+      });
+    }
+    const previewProvider = button("Preview destination", startHarnessPreview);
     for (const control of [harnessChoice, providerUrl, providerProtocol, providerSearch]) {
       control.addEventListener("input", () => {
         harnessPreviewAttempt++;
         harnessReady = false;
         providerFields.hidden = harnessChoice.value !== "custom";
+        harnessSummary = "Preview the changed destination.";
         providerPreview.textContent = "Preview the changed destination before deploying.";
         updateDeployControls();
       });
     }
     const harnessControls = element(
-      "div",
-      {},
+      "details",
+      { className: "card agent-harness-settings" },
+      element("summary", {}, "Harness destination"),
       field({ label: "Harness settings", control: harnessChoice }),
       providerFields,
       previewProvider,
@@ -4256,7 +4315,6 @@ export async function renderAgentDetail(
       { className: "card agent-draft-actions" },
       draftActionsHeading,
       checklist,
-      harnessControls,
       // The status follows Deploy in reading order; on a wide screen it shows to its left.
       element("div", { className: "card-actions" }, setupCredentials, deploy, deployStatus),
       deployFeedback,
@@ -4268,7 +4326,13 @@ export async function renderAgentDetail(
     } else {
       versionSummary.append(draftActions);
     }
-    void previewHarness();
+    const shownHarness = versionSummary.querySelector(":scope > .agent-harness-settings");
+    if (shownHarness) {
+      shownHarness.replaceWith(harnessControls);
+    } else {
+      draftActions.insertAdjacentElement("afterend", harnessControls);
+    }
+    startHarnessPreview();
     renderDetailHeading();
     return {
       get snapshot() {
@@ -4526,6 +4590,7 @@ export async function renderAgentDetail(
     settledDetails = next;
     if ("error" in data) {
       versionSummary.querySelector(":scope > .agent-draft-actions")?.remove();
+      versionSummary.querySelector(":scope > .agent-harness-settings")?.remove();
       renderDetailHeading();
     }
     details = next;

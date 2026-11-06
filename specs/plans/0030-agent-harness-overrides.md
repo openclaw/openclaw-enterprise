@@ -130,6 +130,33 @@ the merged contracts without changing the immutable Harness snapshots.
 The independent-review authentication gap and live model prerequisites remain
 open. The earlier RFC-only review does not qualify this implementation.
 
+## CI repair verification
+
+The implementation preserves the current revision contract in worker, PostgreSQL,
+Kubernetes, and upgrade fixtures; none use a production compatibility fallback.
+The HTTP schema declares body-size and media-type refusals. Preview checks caller
+source permission without resolving credentials or requiring the Agent's delivery
+grant. Actual deployment still checks that grant. Console preview is a read-only
+request, waits for deploy permission, and refreshes after saved settings or
+credential permissions change. Override controls use a separate disclosure so the
+proposed destination and Deploy remain visible in the checklist.
+
+- The eight affected browser files passed 466 tests without skips, including
+  OAuth refusal state, saved edits, grants, focus, and desktop/phone layout.
+- The final HTTP/preview/egress batch passed 29 tests without skips. The earlier
+  admission repair passed 43 tests; metadata catalog ownership passed four.
+- Fourteen PostgreSQL application files passed in the supported lane. The
+  remaining metrics fixture was corrected and its 11 cases passed separately.
+  PostgreSQL standing Git transfer and external-authority repair checks passed
+  with real dependencies and a secure fixture umask.
+- Upgrade recovery passed 164 cases. Its 20 Helm-dependent cases initially
+  skipped; after installing the pinned Helm, those cases and their subcases
+  passed 25 assertions without skips. These process fixtures do not prove a
+  production upgrade or model execution.
+- Storybook was rebuilt for the compact controls. Final desktop, phone, retained
+  settings, preview refusal/recovery, and deployment captures are being refreshed
+  for native GitHub attachment delivery. Current-head GitHub CI remains pending.
+
 ## Manual Notes
 
 ## Changelog

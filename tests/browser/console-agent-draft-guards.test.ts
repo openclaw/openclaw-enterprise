@@ -1953,9 +1953,8 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
     assert.deepEqual(pathRequests(requests, "POST", `${path}/deploy`), []);
   }
 
-  // Unknown answer: the first Secret answer fails, so Deploy stays enabled and the API decides.
-  // Its 403 names the grant and the Secret, which the operator may read (finding 2594); the
-  // answer, read again, names the Secret by name.
+  // The permission summary is unavailable, but the read-only preview still checks source
+  // permission. Its 403 stops deployment and refreshes the summary to name the missing grant.
   {
     const { page } = await newPage(t, fixture);
     let failed = false;
@@ -1967,26 +1966,27 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
       failed = true;
       await route.abort();
     });
+    const requests = apiRequests(page, fixture.origin);
+    const refused = page.waitForResponse(
+      (response) =>
+        response.url() === `${fixture.origin}${path}/deploy-preview` &&
+        response.request().method() === "POST",
+    );
     await login(page, fixture, url, operator.credentials);
     await page.getByRole("heading", { name: "Operator Secret Agent" }).waitFor();
     const deploy = page.getByRole("button", { name: "Deploy new version" });
-    await waitForEnabled(deploy);
-    const refused = page.waitForResponse(
-      (response) =>
-        response.url() === `${fixture.origin}${path}/deploy` &&
-        response.request().method() === "POST",
-    );
-    await deploy.click();
     const response = await refused;
     assert.equal(response.status(), 403);
+    assert.equal(await deploy.isDisabled(), true);
+    assert.deepEqual(pathRequests(requests, "POST", `${path}/deploy`), []);
     assert.equal(
       record(record(await response.json()).error).message,
       callerDenied("Secret operate", `Secret ${modelSecret.id}`),
     );
-    const alert = page.getByRole("alert").filter({ hasText: reason });
+    const alert = page.getByText(reason, { exact: true });
     await alert.waitFor();
     assert.equal(await alert.textContent(), reason);
-    // The alert says it once, and Deploy stays disabled until a grant is read.
+    // The deployment note says it once and stays refused until a grant is read.
     assert.equal(await page.getByText(reason).count(), 1);
     assert.equal(await deploy.isDisabled(), true);
   }

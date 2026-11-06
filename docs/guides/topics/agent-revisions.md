@@ -72,9 +72,10 @@ The commands below also use `jq`.
 
 ## Choose a Harness destination
 
-The Console's **Harness settings** control previews the destination before
-**Deploy new version**. Choose the Installation default, retain the previous
-requested overrides, or enter a provider override. A failed preview keeps
+Read the proposed destination in the Console's deployment checklist. Open
+**Harness destination** to choose the Installation default, retain the previous
+requested overrides, or enter a provider override. Select **Preview destination**
+before **Deploy new version**. A failed preview keeps
 deployment unavailable; correct the source or settings, then retry the preview.
 Saved version details show requested and resolved settings.
 

@@ -112,6 +112,12 @@ export async function exerciseHarnessOverrides(
     harnessAuth: { method: "credential_source", sourceId: source.id },
     credentialSources: [{ sourceId: source.id }],
   });
+  // A destination preview neither needs nor grants the Agent's delivery permission.
+  const preview = await f.request("POST", `${root}/agents/${ungranted.id}/deploy-preview`, {
+    body: { harnessOverrides: overrides },
+  });
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  assert.equal(preview.data.harness.configuration.modelProvider.baseUrl, destination);
   const denied = await f.request("POST", `${root}/agents/${ungranted.id}/deploy`, {
     body: { harnessOverrides: overrides },
   });

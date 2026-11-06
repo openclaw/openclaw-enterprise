@@ -1808,7 +1808,10 @@ test("first-deployment CLI recovers a lost committed response with the original 
         assert.ok(committed, "the uncertain response must follow a real committed admission");
         assert.deepEqual(
           forwarded,
-          [{ method: "POST", path: `${path}/deploy-first` }],
+          [
+            { method: "POST", path: `${path}/deploy-preview` },
+            { method: "POST", path: `${path}/deploy-first` },
+          ],
           "the CLI must not automatically replay an uncertain mutation",
         );
         const revisions = await fixture.platformState.read((unit) =>
@@ -1865,6 +1868,7 @@ test("first-deployment CLI recovers a lost committed response with the original 
         assert.deepEqual(recovered, committed);
         assert.ok(recovery.stdout.includes(committed.revisionId));
         assert.deepEqual(forwarded, [
+          { method: "POST", path: `${path}/deploy-preview` },
           { method: "POST", path: `${path}/deploy-first` },
           {
             method: "GET",
@@ -7782,7 +7786,7 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
     assert.equal(invalidReplacement.status, 400);
   }
 
-  for (const body of [{ configuration: {} }, { draft_spec: {} }, {}]) {
+  for (const body of [{ configuration: {} }, { draft_spec: {} }]) {
     const invalidDeployment = await controller.request(
       "POST",
       `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
@@ -9286,6 +9290,8 @@ test("two Namespaces become independently ready and deletion tombstones only its
     id: "openclaw",
     version: "1.0.0",
     mode: "embedded",
+    overrides: {},
+    configuration: {},
   });
   assert.deepEqual(readyDeployment.data.compute, {
     id: "compute-integration",
