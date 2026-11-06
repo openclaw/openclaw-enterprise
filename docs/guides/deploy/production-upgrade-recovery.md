@@ -74,17 +74,21 @@ cannot prevent replacement.
 
 ## Resume an unfinished prepared upgrade
 
-For a failed writer scale, Helm upgrade, or rollout wait, read
-`native-command-failures.tsv` in the evidence directory. Each tab-separated row
-records the operation, component (`api`, `worker`, or `release`), and native exit
-code. Rows remain after resume; they record client failures, not whether a
-request took effect. Reconcile live state as described below before resuming.
-Other failures and killed processes might not produce a row.
+After failed writer scaling, Helm upgrades or rollout waits, inspect
+`native-command-failures.tsv`. Rows retain the operation, component (`api`,
+`worker`, `release`) and native exit code across resume. They show client
+failures, not acceptance; some failures leave no row. Reconcile live state before
+resuming.
+
+A changed UID, resource version or replica count refuses the writer stop before
+migration; the API may already be stopped. Reconcile live state against
+`current-<component>-deployment.json` and `quiescence-<component>-patch.json`
+before resuming with fresh observations.
 
 A Helm failure or disconnected response does not prove that the migration
 rolled back. Read the current Helm status and history, inspect the initialization
 Job and its Pods and logs, and inspect the retained database. The saved
-`current-helm-status.json` is the last read and can predate the failed request.
+`current-helm-status.json` can predate the failure.
 A `pending-*` Helm release must be resolved separately before the helper can
 continue. Do not start the old API or worker against a migrated database. If the
 candidate Helm revision is deployed, the helper reads it back and continues

@@ -1401,10 +1401,21 @@ if ((helm_complete == 0)); then
     jq -e --arg release "$release" --arg component "$component" '
       .metadata.labels["app.kubernetes.io/instance"] == $release and
       .metadata.labels["app.kubernetes.io/component"] == $component and
+      (.metadata.uid | type == "string" and length > 0) and
+      (.metadata.resourceVersion | type == "string" and length > 0) and
+      .metadata.deletionTimestamp == null and
       (.spec.replicas == 0 or .spec.replicas == 1)
     ' "$evidence_dir/current-$component-deployment.json" >/dev/null || die "$deployment has unexpected ownership or replicas."
+    # Test and scale atomically: a replacement or concurrent edit must not be stopped.
+    jq '[
+      {op: "test", path: "/metadata/uid", value: .metadata.uid},
+      {op: "test", path: "/metadata/resourceVersion", value: .metadata.resourceVersion},
+      {op: "test", path: "/spec/replicas", value: .spec.replicas},
+      {op: "replace", path: "/spec/replicas", value: 0}
+    ]' "$evidence_dir/current-$component-deployment.json" >"$evidence_dir/quiescence-$component-patch.json"
     quiescence_remaining
-    "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" scale "deployment/$deployment" --replicas=0 ||
+    "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" patch "deployment/$deployment" \
+      --type json --patch-file "$evidence_dir/quiescence-$component-patch.json" ||
       native_command_failed "$?" quiescence-scale "$component"
   done
   while true; do
@@ -1423,8 +1434,11 @@ if ((helm_complete == 0)); then
     quiescence_remaining
     "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" get "deployment/openclaw-enterprise-$component" --output json \
       >"$evidence_dir/quiescence-$component-deployment.json"
-    jq -e '.spec.replicas == 0' "$evidence_dir/quiescence-$component-deployment.json" >/dev/null ||
-      die "OCC replicas changed during quiescence; migration was not started."
+    jq -e --slurpfile observed "$evidence_dir/current-$component-deployment.json" '
+      .metadata.uid == $observed[0].metadata.uid and
+      .metadata.deletionTimestamp == null and .spec.replicas == 0
+    ' "$evidence_dir/quiescence-$component-deployment.json" >/dev/null ||
+      die "OCC identity or replicas changed during quiescence; migration was not started."
   done
 
   install_atomically "$candidate_values" "$values"

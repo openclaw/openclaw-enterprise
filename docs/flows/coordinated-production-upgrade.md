@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-05"
-last_updated_session: "authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2"
+updated: "2026-11-06"
+last_updated_session: "authoring-run/4f41f7ed-7c0b-484d-b6b3-85c39a31a8c6"
 ---
 
 # Production image upgrade flow
@@ -178,13 +178,14 @@ committed; operator-owned checks do not roll them back.
 
 ### 3. Quiesce writers and run the candidate release
 
-`scripts/upgrade-production-images:624`
+`scripts/upgrade-production-images:1387`
 
-Before changing the Secret or invoking Helm, the script scales the selected API
-and worker Deployments to zero, waits until their Pods disappear, and confirms
-both stay at zero, within the shutdown deadline. It cannot detect independent
-database writers, autoscalers, or partitioned nodes; the operator stops those
-writers and keeps nodes reachable.
+Before changing the Secret or invoking Helm, a JSON Patch tests each writer's
+observed UID, resource version and replicas, then sets replicas to zero. A
+conflict refuses without retry; an earlier API stop remains. The helper waits
+for Pod removal and verifies both original Deployments remain at zero within
+the shutdown deadline. Operators must stop other writers and autoscalers and
+keep nodes reachable.
 
 The protected files are atomically replaced with the saved candidate. When the
 Installation changes, including a controller-only settings release, the script
@@ -327,6 +328,8 @@ saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 18:44: Bind writer quiescence to observed Deployment identity and version. (authoring-run/4f41f7ed-7c0b-484d-b6b3-85c39a31a8c6 - 5b8901213714a5b0d99f82af8eae1d425ee7cd18)
 
 - 2026-11-05 13:53: Require settled Doctor maintenance before runtime startup. (authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2 - 644b3f9328e9125030e958c7b4233ac37c54b139)
 
