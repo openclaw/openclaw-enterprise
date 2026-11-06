@@ -200,9 +200,9 @@ test("runtime fixture removes its images under Docker's containerd image store",
         "second",
         baseId,
       );
-      assert.deepEqual((await fixture.inspectImage(tag)).RepoDigests, [
-        `localhost:5000/fixture@${ids[0]}`,
-      ]);
+      const inspected = await fixture.inspectImage(tag);
+      assert.ok(inspected && typeof inspected === "object" && "RepoDigests" in inspected);
+      assert.deepEqual(inspected.RepoDigests, [`localhost:5000/fixture@${ids[0]}`]);
       await fixture.create("owned-container", [tag]);
       await fixture.retag(second, tag);
     });

@@ -18,6 +18,22 @@ type Docker = ((...args: (string | undefined)[]) => Promise<CommandResult>) & {
 };
 type ReceiptEntry = { operation: string; status: string; reference?: string | undefined };
 
+function property(value: unknown, key: string): unknown {
+  const boxed: unknown = Object.prototype.valueOf.call(value);
+  if ((typeof boxed === "object" && boxed !== null) || typeof boxed === "function") {
+    return Reflect.get(boxed, key, value);
+  }
+  throw new TypeError("Cannot access property");
+}
+
+function optionalProperty(value: unknown, key: string): unknown {
+  return value == null ? undefined : property(value, key);
+}
+
+function isUnknownArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
 const imageIdPattern = /^sha256:[a-f0-9]{64}$/;
 const containerIdPattern = /^[a-f0-9]{64}$/;
 
@@ -130,7 +146,7 @@ type RuntimeImageFixture = {
     dockerfile: string,
     context: string,
   ): Promise<string>;
-  inspectImage(ref: string): Promise<{ Id: string; RepoTags?: unknown; RepoDigests?: unknown }>;
+  inspectImage(ref: string): Promise<unknown>;
   create(name: string, args: string[]): Promise<string>;
   startAttached(id: string): Promise<void>;
   removeContainer(id: string): Promise<void>;
@@ -172,28 +188,28 @@ export async function withRuntimeImageFixture<T>(
     await rename(temp, receiptPath);
   }
 
-  async function inspect(ref: string) {
+  async function inspect(ref: string): Promise<unknown> {
     const parsed: unknown = JSON.parse((await docker("image", "inspect", ref)).stdout);
     if (
-      !Array.isArray(parsed) ||
+      !isUnknownArray(parsed) ||
       parsed.length !== 1 ||
-      typeof parsed[0]?.Id !== "string" ||
-      !imageIdPattern.test(parsed[0].Id)
+      typeof optionalProperty(parsed[0], "Id") !== "string" ||
+      !Reflect.apply(RegExp.prototype.test, imageIdPattern, [property(parsed[0], "Id")])
     ) {
       throw new Error(`Docker returned invalid image identity for ${ref}`);
     }
     return parsed[0];
   }
 
-  function references(
-    image: { Id: string; RepoTags?: unknown; RepoDigests?: unknown },
-    id: string,
-  ) {
-    if (!Object.hasOwn(image, "RepoTags") || !Object.hasOwn(image, "RepoDigests")) {
+  function references(image: unknown, id: string) {
+    if (
+      !Object.hasOwn(Object.prototype.valueOf.call(image), "RepoTags") ||
+      !Object.hasOwn(Object.prototype.valueOf.call(image), "RepoDigests")
+    ) {
       throw new Error(`Docker omitted reference information for ${id}`);
     }
-    const repoTags = image.RepoTags ?? [];
-    const repoDigests = image.RepoDigests ?? [];
+    const repoTags = property(image, "RepoTags") ?? [];
+    const repoDigests = property(image, "RepoDigests") ?? [];
     if (
       !Array.isArray(repoTags) ||
       !repoTags.every((tag) => typeof tag === "string") ||
@@ -353,7 +369,7 @@ export async function withRuntimeImageFixture<T>(
       if (!images.has(id) || !tags.has(tag)) {
         throw new Error("Refusing to retag an unowned fixture image or tag");
       }
-      if ((await inspect(tag)).Id !== tags.get(tag)) {
+      if (property(await inspect(tag), "Id") !== tags.get(tag)) {
         throw new Error(`Refusing to retarget changed tag: ${tag}`);
       }
       try {
@@ -394,7 +410,7 @@ export async function withRuntimeImageFixture<T>(
   if (uncertain.length === 0 && cleanupErrors.length === 0) {
     try {
       for (const [tag, expected] of tags) {
-        if ((await inspect(tag)).Id !== expected) {
+        if (property(await inspect(tag), "Id") !== expected) {
           throw new Error(`Tag changed: ${tag}`);
         }
       }
@@ -402,7 +418,7 @@ export async function withRuntimeImageFixture<T>(
         const image = await inspect(id);
         const { repoTags, foreignDigests } = references(image, id);
         if (
-          image.Id !== id ||
+          property(image, "Id") !== id ||
           foreignDigests.length ||
           repoTags.some((tag) => tags.get(tag) !== id) ||
           [...tags].some(([tag, target]) => target === id && !repoTags.includes(tag))
@@ -437,7 +453,7 @@ export async function withRuntimeImageFixture<T>(
         }
         const image = await inspect(id);
         const { repoTags, foreignDigests } = references(image, id);
-        if (image.Id !== id || repoTags.length || foreignDigests.length) {
+        if (property(image, "Id") !== id || repoTags.length || foreignDigests.length) {
           throw new Error(`Image ${id} still has references`);
         }
         await receipt("image-remove", "pending", id);
