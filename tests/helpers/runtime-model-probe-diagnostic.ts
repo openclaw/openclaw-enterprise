@@ -17,8 +17,8 @@ export interface ProbeEvent {
 
 export interface ProbePhase {
   phase?: unknown;
-  outcome?: string | undefined;
-  sinceStartMs?: number | undefined;
+  outcome?: unknown;
+  sinceStartMs?: unknown;
 }
 
 export interface DiagnosticSnapshot {

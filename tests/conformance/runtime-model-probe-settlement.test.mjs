@@ -84,6 +84,34 @@ test("measurement records rounded finite values and leaves absent values null", 
   });
 });
 
+test("raw probe fields preserve diagnostics and reject nonfinite measurements", () => {
+  for (const value of ["5", { private: "sentinel" }, null, NaN, Infinity, -Infinity, -0, 2.6]) {
+    const snapshot = {
+      output: '{"event":"openclaw.model_probe","code":"READY","input":"secret"}',
+      phases: [{ phase: "model-probe", outcome: value, sinceStartMs: value }],
+      events: [],
+      running: true,
+      probe: { code: "READY", capMs: value, elapsedMs: value, cpuWaitMs: value },
+      probeStage: value,
+    };
+    const diagnostic = modelProbeDiagnostic(snapshot, undefined, "outer-timeout");
+    assert.equal(diagnostic.probe, "READY");
+    assert.equal(diagnostic.modelPhase, "other");
+    assert.equal(diagnostic.probeStage, value ?? "not-observed");
+    assert.equal(diagnostic.capMs, value);
+    assert.doesNotMatch(JSON.stringify(diagnostic), /secret/);
+    const lines = [];
+    recordModelProbeMeasurement({ diagnostic: (line) => lines.push(line) }, "case", { snapshot });
+    const measurement = JSON.parse(lines[0].slice("openclaw-ci-measurement ".length));
+    const expected = Number.isFinite(value) ? Math.round(value) : null;
+    // JSON serialization normalizes negative zero to zero.
+    for (const key of ["capMs", "elapsedMs", "cpuWaitMs", "probeDoneMs"]) {
+      assert.equal(measurement[key], Object.is(expected, -0) ? 0 : expected);
+    }
+    assert.doesNotMatch(lines[0], /sentinel|secret/);
+  }
+});
+
 test("actual starved-case callback accepts READY; guard-removal control does not", async () => {
   const source = await readFile(
     new URL("../integration/runtime-image-model-probe.test.mjs", import.meta.url),
