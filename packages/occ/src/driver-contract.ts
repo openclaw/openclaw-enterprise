@@ -37,6 +37,8 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
         "getNamespaceAccessBinding",
         "createNamespaceAccessBinding",
         "deleteNamespaceAccessBinding",
+        "createOwnerBinding",
+        "applyConfiguredPolicy",
       ].every(
         (operation) =>
           candidate[operation] === undefined || typeof candidate[operation] === "function",

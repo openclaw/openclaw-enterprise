@@ -2272,7 +2272,6 @@ async function prepareProductionInstallation(
   };
   const initialWorkerDrivers = await loadWorkerDrivers();
   const { workerDrivers } = initialWorkerDrivers;
-  let { diagnosticWorkerDrivers } = initialWorkerDrivers;
   assert.equal(drivers.sandboxDriver?.capability, "sandbox");
   assert.equal(drivers.sandboxDriver?.id, configuration.drivers.sandbox.id);
   assert.equal(drivers.credentialGatewayDriver?.capability, "credential_gateway");
@@ -2366,7 +2365,7 @@ async function prepareProductionInstallation(
     controllerAuthBaseURL,
   );
   const events = [];
-  const startWorker = async () => {
+  const startWorker = async (diagnosticWorkerDrivers) => {
     workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
     worker = createControllerWorker({
       mode: "production",
@@ -2387,7 +2386,12 @@ async function prepareProductionInstallation(
     worker = undefined;
     workerPool = undefined;
   };
-  await startWorker();
+  const resumeWorker = async () => {
+    // A new worker owns a new composition, including its process-local token registrations.
+    const { diagnosticWorkerDrivers } = await loadWorkerDrivers();
+    await startWorker(diagnosticWorkerDrivers);
+  };
+  await startWorker(initialWorkerDrivers.diagnosticWorkerDrivers);
 
   const createdNamespace = await request("POST", "/namespaces", {
     name: `openshell-${randomUUID()}`,
@@ -2440,8 +2444,7 @@ async function prepareProductionInstallation(
     };
     await writeFile(workerStartupPath, JSON.stringify(configuration), { mode: 0o600 });
     await pauseWorker();
-    ({ diagnosticWorkerDrivers } = await loadWorkerDrivers());
-    await startWorker();
+    await resumeWorker();
   }
   if (keycloak !== undefined) {
     // The gateway, not the Harness, calls the token endpoint: only its Pods may reach the issuer.
@@ -2914,7 +2917,7 @@ async function prepareProductionInstallation(
     observerPool,
     policyFixturePool,
     pauseWorker,
-    resumeWorker: startWorker,
+    resumeWorker,
     workerEvents: events,
     provisioningFailure: (revisionId) => createSandboxDriver.provisioningFailures.get(revisionId),
     diagnoseAgentRevision: (agentId, revisionId) =>
@@ -4968,6 +4971,7 @@ async function assertAuthenticatedNativePolicyScopes(topology, receipt) {
   };
   receipt.primaryCheck = "fixture.pause-worker";
   await topology.pauseWorker();
+  let cleanupFailure;
   try {
     receipt.primaryCheck = "fixture.read-helm-values";
     const original = await executeFile(
@@ -5089,7 +5093,15 @@ async function assertAuthenticatedNativePolicyScopes(topology, receipt) {
     );
     receipt.primaryCheck = null;
   } finally {
-    await cleanup();
+    try {
+      await cleanup();
+    } catch (error) {
+      // The receipt retains the cleanup checkpoint when both operations fail.
+      cleanupFailure = { error };
+    }
+  }
+  if (cleanupFailure !== undefined) {
+    throw cleanupFailure.error;
   }
 }
 

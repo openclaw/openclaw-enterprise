@@ -1,29 +1,44 @@
 import { V1NetworkPolicyIngressRule, type V1NetworkPolicySpec } from "@kubernetes/client-node";
 import { asRecord } from "@openclaw-enterprise/utils";
 
-/** Restore the SDK ingress alias without dropping fields from the equality check. */
+/** Restore SDK aliases and Kubernetes empty-rule serialization for spec comparison. */
 export function networkPolicySpecToJson(spec: V1NetworkPolicySpec | undefined): unknown {
-  return JSON.parse(
-    JSON.stringify({
-      ...spec,
-      ...(spec?.ingress === undefined
-        ? {}
-        : {
-            ingress: spec.ingress.map((rule) => {
-              // Preserve ambiguous input so a wire field cannot hide a changed SDK field.
-              if (
-                !(rule instanceof V1NetworkPolicyIngressRule) ||
-                rule._from === undefined ||
-                Object.hasOwn(rule, "from")
-              ) {
-                return rule;
-              }
-              const { _from, ...rest } = rule;
-              return { ...rest, from: _from };
-            }),
+  const projected = {
+    ...spec,
+    ...(spec?.ingress === undefined
+      ? {}
+      : {
+          ingress: spec.ingress.map((rule) => {
+            // Preserve ambiguous input so a wire field cannot hide a changed SDK field.
+            if (
+              !(rule instanceof V1NetworkPolicyIngressRule) ||
+              rule._from === undefined ||
+              Object.hasOwn(rule, "from")
+            ) {
+              return rule;
+            }
+            const { _from, ...rest } = rule;
+            return { ...rest, from: _from };
           }),
-    }),
-  );
+        }),
+  };
+  // Kubernetes omits empty lists. Only equate them when the direction is
+  // explicit; never infer policyTypes or erase a nonempty (possibly allow-all) rule.
+  if (
+    spec?.policyTypes?.includes("Ingress") &&
+    Array.isArray(spec.ingress) &&
+    spec.ingress.length === 0
+  ) {
+    delete projected.ingress;
+  }
+  if (
+    spec?.policyTypes?.includes("Egress") &&
+    Array.isArray(spec.egress) &&
+    spec.egress.length === 0
+  ) {
+    delete projected.egress;
+  }
+  return JSON.parse(JSON.stringify(projected));
 }
 
 /** True for the only NetworkPolicy type the SDK serializer models; custom resources pass through. */

@@ -93,6 +93,7 @@ export function createPlatformReadView(
       "listRestrictionsTargeting",
       "listServicePrincipals",
       "getServicePrincipal",
+      "listConfiguredPolicy",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
       "findStandingExecution",
