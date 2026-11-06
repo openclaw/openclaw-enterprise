@@ -23,6 +23,7 @@
     "tests/integration/postgres-password-default.test.mjs",
     "tests/integration/postgres-github-admin-scope.test.mjs",
     "tests/integration/postgres-github-org-allowlist.test.mjs",
+    "tests/integration/postgres-github-pinned-team.test.ts",
     "tests/integration/postgres-github-cookie-commit.test.mjs",
     "tests/integration/postgres-sign-in-unmatched-callbacks.test.mjs",
     "tests/integration/postgres-github-session-cookie.test.mjs",
@@ -72,6 +73,10 @@
       "expectedTests": [
         "a GitHub org and team allowlist refuses non-members before the account lookup and fails closed when GitHub cannot answer"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-github-pinned-team.test.ts",
+      "expectedTests": ["GitHub sign-in checks pinned team IDs for the authenticated attached user"]
     },
     {
       "path": "tests/integration/postgres-sign-in-unmatched-callbacks.test.mjs",

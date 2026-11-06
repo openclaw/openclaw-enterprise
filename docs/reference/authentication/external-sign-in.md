@@ -139,53 +139,56 @@ audit store) returns with `authReason=unavailable`.
 ### Organization and team allowlist
 
 `OCC_AUTH_GITHUB_ALLOWED_ORGS` (Helm `auth.github.allowedOrgs`) lists GitHub organization
-logins, and `OCC_AUTH_GITHUB_ALLOWED_TEAMS` (`auth.github.allowedTeams`) lists `org/team-slug`
-entries, whose active members may use GitHub sign-in. Both are empty by default,
-which admits any attached identity as above. Entries are lowercased, at most 10 in total;
-other values, or either list without the GitHub client, fail startup. Helm refuses invalid
-entries, and either list without `auth.github.enabled`, at render time; the installation
-profile wants them lowercase.
+logins. `OCC_AUTH_GITHUB_ALLOWED_TEAMS` (`auth.github.allowedTeams`) accepts
+`org/team-slug` and `id:org-id/team-id` entries. For example, `id:123/456` pins
+the numeric organization and team IDs across renames. A replacement team has
+a different ID. To require that one team, configure only its ID entry.
+The lists restrict GitHub sign-in for existing attached identities.
 
-With a list, the callback reads membership with the user token after `GET /user` and before
-the account lookup, so a refusal reveals nothing about OCE accounts. It reads
-[`GET /user/memberships/orgs/{org}`](https://docs.github.com/en/rest/orgs/members#get-an-organization-membership-for-the-authenticated-user)
-for each organization, then, for each team whose organization membership is active,
-[`GET /orgs/{org}/teams/{team}/memberships/{login}`](https://docs.github.com/en/rest/teams/members#get-team-membership-for-a-user)
-(child-team members count). Only `state: active` matches; a pending invitation does not. The
-first match admits, even after another lookup failed. The lookups share the 10-second
-deadline and refuse redirects.
+Both lists default to empty. Use up to 10 entries total, lowercase in
+installation profiles. Invalid entries or a list without the GitHub provider
+fail startup and Helm rendering. Older controllers refuse ID entries.
 
-The GitHub App needs the organization permission **Members: read**, accepted by the owner of
-each listed organization, and an installation on each one. Members: read is read-only, and
-also lets the App's installation token list those organizations' members and teams. No OAuth
-scope is requested.
+The callback uses the same user token for `GET /user` and the membership checks
+before looking up the attached OCE account. It checks organization logins
+first. For a slug entry, it checks active organization membership before
+[checking the team by slug](https://docs.github.com/en/rest/teams/members#get-team-membership-for-a-user).
+GitHub's team membership endpoint includes members of child teams.
+
+For an ID entry, the callback reads the
+[member roster for the configured organization and team IDs](https://docs.github.com/en/rest/teams/members#list-team-members).
+The numeric user ID from `GET /user` must appear in that roster. GitHub includes
+members of child teams and lists pending invitations separately. A GitHub login
+rename does not affect this comparison. The roster must be visible to the user
+token. The callback checks up to 10 pages of 30 members per team. A next page
+beyond that limit gives an unavailable result. The first active match admits,
+even after an earlier failure. All lookups share a 10-second deadline and
+refuse redirects.
+
+Install the GitHub App on each listed organization and have its owner accept
+the **Members: read** organization permission. This also lets the App's
+installation token list the organization's members and teams. The sign-in
+flow uses a GitHub App user access token and requests no OAuth `read:org` scope.
 
 | Outcome                                     | Audit `reasonCode`       | Console (`authReason`)   |
 | ------------------------------------------- | ------------------------ | ------------------------ |
 | Not an active member of any entry           | `MEMBERSHIP_REQUIRED`    | `membership`             |
 | No match, and a lookup GitHub didn't answer | `MEMBERSHIP_UNAVAILABLE` | `membership-unavailable` |
 
-Both are `authentication.login` denials whose `details` carry `provider: github`, the
-numeric GitHub `subject`, a valid login returned by GitHub when available, and the attempt ID.
-Successful GitHub sign-ins and refusals after profile verification record the same identity
-fields. The login is diagnostic only; authorization uses the immutable subject. See
-[sign-in audit troubleshooting](../../guides/topics/audit-log.md#investigate-a-github-sign-in). The callback returns to
-`/console/?authError=github&authReason=<reason>`, and the Console explains the refusal.
-`MEMBERSHIP_UNAVAILABLE` covers a transport failure, the deadline, a redirect, an oversized or
-malformed answer, and any status other than `200` or `404`. It fails closed and logs
-`authentication.provider-unavailable-warning` with `step: membership`. A `403` there usually
-means configuration: the organization blocked the App, its owner has not accepted Members:
-read, or SAML SSO wants a session the user lacks.
+Both denial audits carry the verified GitHub subject, the login when available,
+and the attempt ID. See
+[sign-in audit troubleshooting](../../guides/topics/audit-log.md#investigate-a-github-sign-in).
+For provider failures, look for `authentication.provider-unavailable-warning`
+with `step: membership`. A `404` from an organization or slug membership check
+counts as no match. An unreadable roster for a team ID counts as unavailable.
+If known members are refused, check the IDs or slugs, App installation, Members
+permission and SAML SSO access.
+[Issue #3300](https://github.com/openclaw/openclaw-enterprise/issues/3300) tracks GitHub's App and SAML access responses.
 
-GitHub may answer `404`, not `403`, for an organization where the App is not installed, a
-misspelled organization or team slug, or (unverified) an unauthorized SAML session. That
-refuses every member as `MEMBERSHIP_REQUIRED` with no warning log. If known members are
-refused, check the slugs, that the App is installed on each listed organization, and that its
-owner accepted Members: read. [Issue #3300](https://github.com/openclaw/openclaw-enterprise/issues/3300) tracks verification of GitHub’s responses when App or SAML access is missing.
-
-Membership is checked only at sign-in. Turning the list on applies from the next sign-in
-after the API restarts; existing sessions run until they expire (at most 8 hours), so revoke
-them to apply it at once.
+The list applies to new sign-ins after the API restarts. The roster check and
+session creation are separate operations, so membership can change between them.
+Existing sessions expire within eight hours. Revoke them to apply the change
+immediately.
 
 ## Recovery-only password sign-in
 

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-11-04 11:22"
-last_updated_session: "authoring-run/d3b76aba-07fb-422b-b0fd-f5957926b7b8"
+updated: "2026-11-05 11:55"
+last_updated_session: "authoring-run/22fe0b4a-d1d8-4098-b9d4-5fc05d950f73"
 ---
 
 # Bootstrap and human authentication flow
@@ -174,20 +174,17 @@ version, and Principal; sessions expire after eight hours without refresh. HTTPS
 a `__Host-` cookie that sibling hosts cannot plant; session reads and logout reject
 duplicate active-session cookies.
 
-For GitHub, the Console reads `GET /api/auth/providers` and sends a same-origin
-`POST /api/auth/providers/github/start`. The server stores a five-minute attempt with state and browser
+The Console discovers GitHub through `GET /api/auth/providers`, then posts same-origin
+to `/api/auth/providers/github/start`. The five-minute attempt stores state and browser
 secret digests, provider instance, callback, and PKCE verifier. A host-only
-HttpOnly cookie binds the browser; this profile rejects shared-domain sessions.
-Callback consumption commits before exchange; a losing, expired, or invalid
-attempt does not exchange a code.
+HttpOnly cookie binds the browser. Only a valid, unexpired attempt whose consumption
+commits can exchange a code; shared-domain sessions are rejected.
 `apps/controller/src/auth/github.ts:exchangeGithubSubject` exchanges the code
-with the GitHub App client ID and secret, uses the user access token only for
-`/user`, and returns the numeric subject, which selects an exact existing
-enrollment. A valid provider-returned login accompanies the subject into the audit;
-it never selects an account or grants authority. Email and tokens are discarded. The
+with the GitHub App, then uses the user access token for `/user` and configured
+membership checks. Its numeric subject selects the existing enrollment; email
+and tokens are discarded. See the
 [GitHub reference](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
-owns OAuth scopes, token disposal, App private-key custody, and fixed
-redirects.
+for scopes, token disposal, private-key custody, and redirects.
 
 `attemptId` authenticates the attempt-state digest with HMAC. Success sets a signed, two-minute
 `SameSite=Strict` v2 receipt binding provider instance, session and attempt. The
@@ -199,18 +196,20 @@ clear the receipt; return the session key without issuing or extending sessions.
 it. A malformed, unbound, replayed, or expired callback is refused by
 `refuseUnmatched`, which writes no audit event and increments
 [`occ_sign_in_unmatched_callbacks_total`](../reference/metrics.md#application-families).
-The callback audit records the HMAC-derived attempt ID. A verified
-GitHub profile also adds its subject and valid login to refusal or successful session
-audits; provider failures before profile verification have no identity.
-Denials after `consumeAttempt` matches are audited as
+The callback audit records the HMAC-derived attempt ID. Verified
+GitHub profiles add subject and valid login to success and denial audits; earlier
+provider failures lack identity. Matched `consumeAttempt` denials use
 [`PROVIDER_UNAVAILABLE`](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts),
 `EXTERNAL_IDENTITY_REJECTED` or `ACCOUNT_DISABLED`; with GitHub's
 [allowlist](../reference/authentication/external-sign-in.md#organization-and-team-allowlist),
-`apps/controller/src/auth/github.ts:githubMembership` runs between `GET /user` and the account
-lookup and adds `MEMBERSHIP_REQUIRED` and `MEMBERSHIP_UNAVAILABLE`. The callback route turns
-the response code of those, `ACCOUNT_DISABLED` and `PROVIDER_UNAVAILABLE` into the Console's
-`authReason`, and a callback that fails inside OCE (5xx) into `authReason=unavailable`;
-State dependency failure or uncertain session completion is not a denial. Neither path retries.
+`apps/controller/src/auth/github.ts:githubMembership` follows `GET /user`, precedes account
+lookup, and adds `MEMBERSHIP_REQUIRED` and `MEMBERSHIP_UNAVAILABLE`. For a pinned team,
+`apps/controller/src/auth/github.ts:pinnedTeamMembership` matches the numeric
+subject from `GET /user` against the active roster for the configured IDs.
+Membership can change before the session transaction checks the account proof.
+The callback maps membership, account-disabled and provider-unavailable denials to
+Console `authReason`; OCE failures (5xx) map to `authReason=unavailable`.
+State failure or uncertain session completion is not a denial. Neither path retries.
 
 Google (and generic OIDC) reuses `apps/controller/src/auth/github.ts:externalProviderEndpoints` for
 start, callback, and result, with provider instance `google:<sha256(client ID)>`.
@@ -352,7 +351,11 @@ Account creation issues no session and infers no grants.
 
 ## Changelog
 
+- 2026-11-05 11:55: Condense the merged GitHub sign-in trace. (authoring-run/22fe0b4a-d1d8-4098-b9d4-5fc05d950f73 - 53dc7725e4e8c07d7514b77fb05ef1e04b4bdbbf)
+
 - 2026-11-04 11:22: Record durable password-only session revocation and storage failure handling. (authoring-run/d3b76aba-07fb-422b-b0fd-f5957926b7b8 - 0c7126dc16df1a01e2242e9bd35f9e742d6cee56)
+
+- 2026-11-03 22:30: Trace GitHub sign-in admission by team ID and user ID. (authoring-run/34b14770-5418-4b77-9f71-c574bb48e0fd - 380fb5bbf0578fd8ab345acd3f041623272a703c)
 
 - 2026-10-15 18:55: Record verified GitHub identity and correlate matched sign-in attempts in audit. (authoring-run/b841a0a4-490b-486f-ab3c-2074d75f0ee6 - aad21c63837ef24f9f9bae152877812abe9b1abd)
 

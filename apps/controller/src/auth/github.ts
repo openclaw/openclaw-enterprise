@@ -36,6 +36,7 @@ import {
 import {
   ProviderUnavailableError,
   providerExchangeFailure,
+  providerGitHubTeamMembersPage,
   providerJSON,
   providerMembership,
   rejected,
@@ -52,7 +53,7 @@ import {
 } from "./known-device.ts";
 
 /**
- * RFC-0061: the GitHub organizations and `org/team` slugs whose active members may sign in
+ * The GitHub organizations and teams whose active members may sign in
  * with GitHub. Lowercased, without duplicates, present only when non-empty; absent means any
  * attached GitHub identity may sign in.
  */
@@ -67,11 +68,12 @@ export interface GitHubLoginConfiguration extends GitHubMembershipAllowlist {
   readonly recoveryUserId: string;
 }
 
-// GitHub organization logins (letters, digits, hyphens; up to 39) and team slugs. Every
-// entry costs one or two GitHub requests per sign-in within the shared deadline.
+// GitHub organization logins (letters, digits, hyphens; up to 39), team slugs and IDs.
 const organizationPattern = /^[a-z0-9][a-z0-9-]{0,38}$/;
 const teamSlugPattern = /^[a-z0-9][a-z0-9_-]{0,99}$/;
+const teamIdEntryPattern = /^id:[1-9][0-9]{0,19}\/[1-9][0-9]{0,19}$/;
 const allowlistLimit = 10;
+const teamMembersPageLimit = 10;
 
 function allowlistEntries(
   value: string | undefined,
@@ -107,10 +109,13 @@ export function githubLoginConfiguration(
     (entry) => {
       const parts = entry.split("/");
       return (
-        parts.length === 2 && organizationPattern.test(parts[0]!) && teamSlugPattern.test(parts[1]!)
+        teamIdEntryPattern.test(entry) ||
+        (parts.length === 2 &&
+          organizationPattern.test(parts[0]!) &&
+          teamSlugPattern.test(parts[1]!))
       );
     },
-    "org/team-slug entries",
+    "org/team-slug entries or id:org-id/team-id entries",
   );
   // The recovery user ID alone may belong to another provider; see humanLoginConfiguration.
   // An allowlist without the client is a configuration error, never a silent no-op.
@@ -202,6 +207,8 @@ export const CALLBACK_DENIALS = [
 
 // GitHub logins are letters, digits and hyphens; older accounts may break today's hyphen rules.
 const loginPattern = /^[A-Za-z0-9-]{1,39}$/;
+// GitHub.com Enterprise Managed User logins also have a short underscore suffix.
+const auditLoginPattern = /^(?=.{1,39}$)[A-Za-z0-9-]+(?:_[A-Za-z0-9]{3,8})?$/;
 
 function organizationMembershipEndpoint(organization: string): MembershipEndpoint {
   return `https://api.github.com/user/memberships/orgs/${encodeURIComponent(organization)}` as MembershipEndpoint;
@@ -215,6 +222,42 @@ function teamMembershipEndpoint(
   return `https://api.github.com/orgs/${encodeURIComponent(organization)}/teams/${encodeURIComponent(team)}/memberships/${encodeURIComponent(login)}` as MembershipEndpoint;
 }
 
+async function pinnedTeamMembership(
+  entry: string,
+  subject: string,
+  headers: Readonly<Record<string, string>>,
+  signal: AbortSignal,
+): Promise<boolean> {
+  const [organization, team] = entry.slice("id:".length).split("/") as [string, string];
+  const endpoint =
+    `https://api.github.com/organizations/${organization}/team/${team}/members` as MembershipEndpoint;
+  // The roster is keyed by immutable team and organization IDs. Only the token owner's
+  // immutable user ID can admit them, even if their former login now names another member.
+  for (let page = 1; page <= teamMembersPageLimit; page += 1) {
+    const { members, hasNext } = await providerGitHubTeamMembersPage(
+      endpoint,
+      page,
+      { headers },
+      signal,
+    );
+    let admitted = false;
+    for (const member of members) {
+      const id =
+        typeof member === "object" && member !== null && "id" in member
+          ? githubNumericId(member.id)
+          : undefined;
+      if (id === undefined) {
+        throw new ProviderUnavailableError({ step: "membership", cause: "malformed_response" });
+      }
+      admitted ||= id === subject;
+    }
+    if (admitted || !hasNext) {
+      return admitted;
+    }
+  }
+  throw new ProviderUnavailableError({ step: "membership", cause: "oversized_response" });
+}
+
 function membershipFailure(error: unknown, signal: AbortSignal): ProviderFailure {
   if (error instanceof ProviderUnavailableError) {
     return error.failure;
@@ -224,8 +267,8 @@ function membershipFailure(error: unknown, signal: AbortSignal): ProviderFailure
 
 /**
  * RFC-0061: whether the person holding `headers`' user token is an active member of a listed
- * organization or team. Organizations are read first, in order; a team is read only for an
- * active member of its organization, so a non-member's team answer never needs interpreting.
+ * organization or team. Check organization logins first, then slug entries for active
+ * organization members, then the member rosters of teams configured by ID.
  * The first match admits, even after another lookup failed. No match with a failed lookup is
  * unavailability, never "not a member".
  */
@@ -233,6 +276,7 @@ async function githubMembership(
   allowlist: GitHubMembershipAllowlist,
   headers: Readonly<Record<string, string>>,
   login: unknown,
+  subject: string,
   signal: AbortSignal,
 ): Promise<{ readonly admitted: boolean; readonly failure?: ProviderFailure }> {
   const organizations = new Map<string, boolean | ProviderUnavailableError>();
@@ -275,7 +319,12 @@ async function githubMembership(
       failure ??= membershipFailure(error, signal);
     }
   }
+  const pinnedTeams: string[] = [];
   for (const entry of allowlist.allowedTeams ?? []) {
+    if (teamIdEntryPattern.test(entry)) {
+      pinnedTeams.push(entry);
+      continue;
+    }
     if (expired()) {
       break;
     }
@@ -294,6 +343,18 @@ async function githubMembership(
           signal,
         )
       ) {
+        return { admitted: true };
+      }
+    } catch (error) {
+      failure ??= membershipFailure(error, signal);
+    }
+  }
+  for (const entry of pinnedTeams) {
+    if (expired()) {
+      break;
+    }
+    try {
+      if (await pinnedTeamMembership(entry, subject, headers, signal)) {
         return { admitted: true };
       }
     } catch (error) {
@@ -345,17 +406,23 @@ async function exchangeGithubSubject(
     };
     const profile = await providerJSON(profileEndpoint, { headers }, controller.signal, "profile");
     controller.signal.throwIfAborted();
-    const subject = githubSubject(profile.id);
+    const subject = githubNumericId(profile.id);
     if (!subject) {
       throw rejected();
     }
     const login =
-      typeof profile.login === "string" && loginPattern.test(profile.login)
+      typeof profile.login === "string" && auditLoginPattern.test(profile.login)
         ? profile.login
         : undefined;
     if (hasAllowlist(config)) {
       // Before the account lookup: a refusal says nothing about which OCE accounts exist.
-      const membership = await githubMembership(config, headers, profile.login, controller.signal);
+      const membership = await githubMembership(
+        config,
+        headers,
+        profile.login,
+        subject,
+        controller.signal,
+      );
       if (!membership.admitted) {
         return membership.failure === undefined
           ? { denial: "MEMBERSHIP_REQUIRED", subject, login }
@@ -384,7 +451,7 @@ function cookieLifetime(createdAt: Date, expiresAt: Date, startedAt: number): nu
   return remaining;
 }
 
-function githubSubject(value: unknown): string | undefined {
+function githubNumericId(value: unknown): string | undefined {
   if (typeof value === "number") {
     return Number.isSafeInteger(value) && value > 0 ? String(value) : undefined;
   }

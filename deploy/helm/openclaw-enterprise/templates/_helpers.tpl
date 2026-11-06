@@ -185,9 +185,9 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- range $org := $githubLists.allowedOrgs -}}
 {{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,38}$" (lower (regexReplaceAll "\\x{0130}" (regexReplaceAll $jsTrim (toString $org) "") "i\u0307"))) -}}{{- fail "auth.github.allowedOrgs requires GitHub organization logins such as acme" -}}{{- end -}}
 {{- end -}}
-{{- if not (or (kindIs "invalid" $githubLists.allowedTeams) (kindIs "slice" $githubLists.allowedTeams)) -}}{{- fail "auth.github.allowedTeams must be a list of org/team-slug entries" -}}{{- end -}}
+{{- if not (or (kindIs "invalid" $githubLists.allowedTeams) (kindIs "slice" $githubLists.allowedTeams)) -}}{{- fail "auth.github.allowedTeams must be a list of org/team-slug entries or id:org-id/team-id entries" -}}{{- end -}}
 {{- range $team := $githubLists.allowedTeams -}}
-{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,38}/[a-z0-9][a-z0-9_-]{0,99}$" (lower (regexReplaceAll "\\x{0130}" (regexReplaceAll $jsTrim (toString $team) "") "i\u0307"))) -}}{{- fail "auth.github.allowedTeams requires org/team-slug entries such as acme/platform" -}}{{- end -}}
+{{- if not (regexMatch "^([a-z0-9][a-z0-9-]{0,38}/[a-z0-9][a-z0-9_-]{0,99}|id:[1-9][0-9]{0,19}/[1-9][0-9]{0,19})$" (lower (regexReplaceAll "\\x{0130}" (regexReplaceAll $jsTrim (toString $team) "") "i\u0307"))) -}}{{- fail "auth.github.allowedTeams requires org/team-slug entries such as acme/platform or id:org-id/team-id entries such as id:123/456" -}}{{- end -}}
 {{- end -}}
 {{- if gt (add (len (default list $githubLists.allowedOrgs)) (len (default list $githubLists.allowedTeams))) 10 -}}{{- fail "auth.github.allowedOrgs and auth.github.allowedTeams list at most 10 entries together" -}}{{- end -}}
 {{- if and (not (and $github $github.enabled)) (or (default list $githubLists.allowedOrgs) (default list $githubLists.allowedTeams)) -}}{{- fail "auth.github.allowedOrgs and auth.github.allowedTeams require auth.github.enabled: true; they limit GitHub sign-in only" -}}{{- end -}}

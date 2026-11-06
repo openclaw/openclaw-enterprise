@@ -197,6 +197,7 @@ export function knownDeviceAccountState(
 
 // Pending external sign-in attempts per Installation. A full table evicts its oldest attempts.
 const pendingAttemptCapacity = 1000;
+const githubAuditLoginPattern = /^(?=.{1,39}$)[A-Za-z0-9-]+(?:_[A-Za-z0-9]{3,8})?$/;
 
 const userColumns = `u.id AS user_id, u.email, u.name, u.email_verified, u.image,
   u.created_at AS user_created_at, u.updated_at AS user_updated_at`;
@@ -716,7 +717,10 @@ export class PostgresHumanAuthentication {
         audit.subject !== proof.subject ||
         audit.subject.length === 0 ||
         audit.subject.length > 255 ||
-        (audit.login !== undefined && !/^[A-Za-z0-9-]{1,39}$/.test(audit.login)) ||
+        (audit.login !== undefined &&
+          !(audit.provider === "github" ? githubAuditLoginPattern : /^[A-Za-z0-9-]{1,39}$/).test(
+            audit.login,
+          )) ||
         !/^[A-Za-z0-9_-]{43}$/.test(audit.attemptId))
     ) {
       throw new ScopeViolationError("The authentication audit identity is invalid.");
@@ -1352,7 +1356,7 @@ export class PostgresHumanAuthentication {
       (audit !== undefined &&
         (provider === undefined || !/^[A-Za-z0-9_-]{43}$/.test(audit.attemptId))) ||
       (subject !== undefined && (provider !== "github" || !/^[1-9][0-9]{0,19}$/.test(subject))) ||
-      (login !== undefined && (subject === undefined || !/^[A-Za-z0-9-]{1,39}$/.test(login))) ||
+      (login !== undefined && (subject === undefined || !githubAuditLoginPattern.test(login))) ||
       (membership && subject === undefined) ||
       (userId !== undefined && (reason !== "ACCOUNT_DISABLED" || !userId)) ||
       (reason === "ACCOUNT_DISABLED" && (provider === undefined || userId === undefined)) ||
