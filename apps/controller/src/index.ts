@@ -2338,6 +2338,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    if (operation.operationId === "getNamespaceAgentCapabilities") {
+      reply.send({
+        data: {
+          capabilities: await controller.getNamespaceAgentCapabilities(
+            context.actorId,
+            namespaceId,
+          ),
+        },
+        meta: { requestId: request.id },
+      });
+      return;
+    }
+
     if (operation.operationId === "getNamespaceCallerPermissions") {
       await controller.getNamespace(context.actorId, namespaceId);
       // Targets match Namespace deletion, operationTarget() for creation, and

@@ -176,6 +176,7 @@ import type {
   IAMConfiguredPolicyChanges,
   IAMDriver,
   Installation,
+  InstallationCapabilities,
   InstallationDeploymentInventory,
   Namespace,
   NamespaceDeleteResult,
@@ -2327,6 +2328,29 @@ export class OpenClawController {
       kind: "installation",
       id: this.installation.id,
     });
+    return immutableCopy({ ...this.installation, capabilities: await this.capabilities() });
+  }
+
+  /**
+   * The capabilities Agent creation in a Namespace needs, for a caller who may create Agents
+   * there but cannot read the Installation, such as a Default user (RFC-0026). Guided provisioning
+   * and its native admin option need Installation administration, so neither is reported.
+   */
+  async getNamespaceAgentCapabilities(
+    principalId: string,
+    namespaceId: string,
+  ): Promise<Readonly<Omit<InstallationCapabilities, "nativeAdmin" | "agentProvisioning">>> {
+    this.namespaceIdentity(namespaceId);
+    await this.authorize(principalId, "create", { kind: "agent", namespaceId, id: namespaceId });
+    const {
+      nativeAdmin: _provisioningOnly,
+      agentProvisioning: _administratorOnly,
+      ...capabilities
+    } = await this.capabilities();
+    return immutableCopy(capabilities);
+  }
+
+  private async capabilities(): Promise<InstallationCapabilities> {
     // openclaw lists the execution modes admission accepts for OpenClaw; an empty list means
     // none (#2670), and sandboxDriverUnavailable says that is an outage, not the Installation's
     // shape (finding 1624). nativeWorkers promises that dedicated native OpenClaw can be
@@ -2359,22 +2383,19 @@ export class OpenClawController {
       ...(gatewayTypes || types.length ? { credentialSources: { types } } : {}),
     };
     if (!this.selections.has("plugin")) {
-      return immutableCopy({ ...this.installation, capabilities });
+      return capabilities;
     }
     const driver = this.pluginDriver();
-    return immutableCopy({
-      ...this.installation,
-      capabilities: {
-        ...capabilities,
-        ...(driver.discoverCatalog && driver.getCatalogPlugin
-          ? { pluginDiscovery: { credential: driver.discoveryCredential ?? "required" } }
-          : {}),
-        pluginPolicies: {
-          driver: { id: driver.id, implementation: driver.implementation },
-          ...driver.policyCapabilities,
-        },
+    return {
+      ...capabilities,
+      ...(driver.discoverCatalog && driver.getCatalogPlugin
+        ? { pluginDiscovery: { credential: driver.discoveryCredential ?? "required" } }
+        : {}),
+      pluginPolicies: {
+        driver: { id: driver.id, implementation: driver.implementation },
+        ...driver.policyCapabilities,
       },
-    });
+    };
   }
 
   /**

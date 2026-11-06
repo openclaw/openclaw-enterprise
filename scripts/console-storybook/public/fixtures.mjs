@@ -1022,38 +1022,41 @@ export function installFixture(scenario, evidence) {
         ],
       });
     }
+    // The capabilities GET /installation reports; a member reads them, minus guided provisioning
+    // and its native admin option, from GET /namespaces/:id/agent-capabilities (RFC-0026).
+    const installationCapabilities = () => ({
+      ...(scenario.nativeAdminSetup ? { nativeAdmin: true } : {}),
+      ...(scenario.unsupportedProvisioning === true
+        ? {}
+        : { agentProvisioning: { executionModes: ["dedicated"] } }),
+      ...(scenario.nativeWorkerSupport === false
+        ? {}
+        : { nativeWorkers: { support: scenario.nativeWorkerSupport ?? "pinned-runtime" } }),
+      ...(scenario.openclawExecutionModes === undefined
+        ? {}
+        : {
+            openclaw: {
+              executionModes: scenario.openclawExecutionModes,
+              ...(scenario.openclawSettingRefusal
+                ? { settingRefusals: { dedicated: scenario.openclawSettingRefusal } }
+                : {}),
+              ...(scenario.sandboxDriverUnavailable ? { sandboxDriverUnavailable: true } : {}),
+            },
+          }),
+      ...(scenario.credentialSourceTypes !== undefined
+        ? { credentialSources: { types: scenario.credentialSourceTypes } }
+        : {}),
+      ...(scenario.pluginCapabilities ? { pluginPolicies: scenario.pluginCapabilities } : {}),
+      ...(scenario.pluginDiscoveryCredential
+        ? { pluginDiscovery: { credential: scenario.pluginDiscoveryCredential } }
+        : {}),
+    });
     if (path === "/installation" && method === "GET") {
       return response({
         id: "ins_00000000-0000-4000-8000-000000000001",
         name: "Demo installation",
         createdAt,
-        capabilities: {
-          ...(scenario.nativeAdminSetup ? { nativeAdmin: true } : {}),
-          ...(scenario.unsupportedProvisioning === true
-            ? {}
-            : { agentProvisioning: { executionModes: ["dedicated"] } }),
-          ...(scenario.nativeWorkerSupport === false
-            ? {}
-            : { nativeWorkers: { support: scenario.nativeWorkerSupport ?? "pinned-runtime" } }),
-          ...(scenario.openclawExecutionModes === undefined
-            ? {}
-            : {
-                openclaw: {
-                  executionModes: scenario.openclawExecutionModes,
-                  ...(scenario.openclawSettingRefusal
-                    ? { settingRefusals: { dedicated: scenario.openclawSettingRefusal } }
-                    : {}),
-                  ...(scenario.sandboxDriverUnavailable ? { sandboxDriverUnavailable: true } : {}),
-                },
-              }),
-          ...(scenario.credentialSourceTypes !== undefined
-            ? { credentialSources: { types: scenario.credentialSourceTypes } }
-            : {}),
-          ...(scenario.pluginCapabilities ? { pluginPolicies: scenario.pluginCapabilities } : {}),
-          ...(scenario.pluginDiscoveryCredential
-            ? { pluginDiscovery: { credential: scenario.pluginDiscoveryCredential } }
-            : {}),
-        },
+        capabilities: installationCapabilities(),
       });
     }
     if (path === "/namespaces" && method === "POST") {
@@ -1388,6 +1391,14 @@ export function installFixture(scenario, evidence) {
       }
       if (resource === "permissions/secrets" && method === "GET") {
         return response({ operateDenied: scenario.secretOperateDenied ?? [] });
+      }
+      if (resource === "agent-capabilities" && method === "GET") {
+        const {
+          nativeAdmin: _provisioningOnly,
+          agentProvisioning: _administratorOnly,
+          ...capabilities
+        } = installationCapabilities();
+        return response({ capabilities });
       }
       if (resource === "agents") {
         if (method === "GET") {

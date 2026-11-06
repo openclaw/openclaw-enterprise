@@ -230,6 +230,22 @@ OCC does not remove these grants when the Agent stops using a source. Deleting
 the Agent or the source removes them, as
 [Manage Namespace policy](../authorization.md#manage-namespace-policy) describes.
 
+## Create Agents in the console
+
+A Default user cannot read the Installation, so the console's Create Agent
+reads `GET /namespaces/:namespaceId/agent-capabilities` instead. The caller
+needs `agent:create` in that Namespace. The answer holds the Installation
+capabilities that Agent creation uses, such as a Credential Gateway's
+credential source types. With those types, the console registers the member's
+model Secret as a credential source before it saves the Agent, as it does for
+an administrator. Without that source, a deploy on a Credential Gateway
+Installation is refused.
+
+The answer omits guided provisioning and native admin UI setup, which need
+Installation `administer`. A member's console saves a draft, opens it, and
+offers no **Enable Native admin UI**. The member deploys the draft, and the
+deploy writes the grants above.
+
 ## Current limits
 
 These parts of the Default users design are not implemented:
@@ -239,7 +255,8 @@ These parts of the Default users design are not implemented:
 - Namespace-wide and Group bindings through the Namespace policy API.
 - Shared team Namespaces.
 - Removal of deploy-time grants when an Agent stops using a source.
-- CLI and console support for Default users.
+- CLI support for Default users, and native admin UI setup or guided
+  provisioning from a member's console.
 
 ## Related
 

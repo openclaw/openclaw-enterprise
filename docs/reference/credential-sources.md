@@ -157,7 +157,8 @@ the Agent's `credentialSources`, and grants its service principal exact source
 permission on the underlying model Secret. Queued and running provisioning jobs
 keep their source referenced before the Agent exists.
 
-The Console uses the selected gateway catalog from Installation capabilities.
+The Console uses the selected gateway catalog from Installation capabilities, or a
+member's [Namespace Agent capabilities](authorization/default-users.md#create-agents-in-the-console).
 For supported Dedicated API-key creation, it registers the selected model Secret
 before submitting the provisioning request; the provider and Secret controls are
 shared by both Harnesses. See [Console creation](console/create-and-deploy.md).
