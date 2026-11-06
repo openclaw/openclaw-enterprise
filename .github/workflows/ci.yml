@@ -307,7 +307,7 @@ jobs:
       - name: Run OpenAPI check
         run: pnpm openapi:check
       - name: Check and build documentation
-        run: pnpm docs:install && pnpm openapi:lint && pnpm docs:check && pnpm docs:build
+        run: pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check && pnpm docs:build
   affected-packages:
     name: Affected Packages (advisory)
     needs: impact
@@ -331,7 +331,7 @@ jobs:
         if: ${{ always() }}
         run: |
           # Print to the log too: step summaries are not readable through the API.
-          report=$(node scripts/ci/pnpm-impact.mjs --summary) || report='Affected workspace packages: unavailable.'
+          report=$(node scripts/ci/pnpm-impact.ts --summary) || report='Affected workspace packages: unavailable.'
           printf '%s\n' "$report"
           if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
             printf '%s\n' "$report" >> "$GITHUB_STEP_SUMMARY" || true

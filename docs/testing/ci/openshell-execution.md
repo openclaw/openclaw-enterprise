@@ -12,6 +12,9 @@ parallel across separate VMs, with at most ten OpenShell jobs active.
 Gateway policy, network policy, credential replacement, live withdrawal, upstream outages, and
 Gateway/OAuth recovery use separate installations and databases. Each workflow
 keeps its dependent operations serial, including recovery before later assertions.
+The upstream workflow replaces the Harness used by its positive model turns before
+redirecting DNS to the untrusted TLS receiver. It requires a rejected handshake
+at that receiver, with no completed handshake or HTTP request.
 OAuth expiry and model failure bounds are unchanged. The shared
 [scenario implementation](../../../tests/helpers/openshell-sandbox-workflows.mjs)
 registers only the workflow selected by each test entry point. The two first-Agent files provision and clean up
@@ -98,7 +101,15 @@ worker proof.
 Native first-Agent proof retains the exact run ID, explicit successful exec flag,
 standalone tool-proof line, and exact final nonce. After a turn is terminal, history
 has 30 seconds to settle; a missing proof remains a failure. Failure diagnostics
-report only predicate counts and flags, not marker values, commands or transcripts.
+report only counts and flags, not marker values, commands or transcripts. Content
+shape counts distinguish strings, arrays, recognized text and tool-call parts,
+and unsupported parts. Exec observations distinguish an exact requested command,
+nonempty output, and the recognized `value.aggregated` result envelope from other
+JSON. Read the nonempty-text, marker-containment, and strict-match counts together:
+they show whether the helper recognized text, found the marker anywhere in it,
+or found it in the required form. These counts aggregate the run; they do not
+identify the cause of an individual mismatch or relax the proof requirements.
+An unrecognized shape remains a failed proof.
 This settling bound does not reduce the model-execution budget or count a failed
 proof as a performance improvement. Before a turn, placement polling retries only
 a correlated `UNAVAILABLE` response with the pinned Gateway's explicit
