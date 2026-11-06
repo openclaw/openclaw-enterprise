@@ -4968,6 +4968,7 @@ async function assertAuthenticatedNativePolicyScopes(topology, receipt) {
   };
   receipt.primaryCheck = "fixture.pause-worker";
   await topology.pauseWorker();
+  let cleanupFailure;
   try {
     receipt.primaryCheck = "fixture.read-helm-values";
     const original = await executeFile(
@@ -5089,7 +5090,15 @@ async function assertAuthenticatedNativePolicyScopes(topology, receipt) {
     );
     receipt.primaryCheck = null;
   } finally {
-    await cleanup();
+    try {
+      await cleanup();
+    } catch (error) {
+      // The receipt retains the cleanup checkpoint when both operations fail.
+      cleanupFailure = { error };
+    }
+  }
+  if (cleanupFailure !== undefined) {
+    throw cleanupFailure.error;
   }
 }
 
