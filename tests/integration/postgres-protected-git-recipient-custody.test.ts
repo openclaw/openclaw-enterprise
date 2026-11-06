@@ -46,7 +46,10 @@ test(
     const other = await protectedOwner({
       repositoryGitCustody: selectRegisteredRepositoryGitCustody(otherDriver),
     });
-    const legacy = await f.startOwner({ controlSocket: undefined });
+    const legacy = await f.startOwner({
+      controlSocket: undefined,
+      repositoryGitCustody: { kind: "unavailable" },
+    });
     const mine = owner.protectedGit!;
     const notMine = other.protectedGit!;
     await disposeNativeSession(f);
@@ -1231,6 +1234,7 @@ for (const lostAck of [false, true]) {
         Buffer.alloc(32),
         "unused",
         () => undefined,
+        { kind: "unavailable" },
       );
       const guard = { message: "Prepared GitHub custody transaction did not complete (guard)." };
       await assert.rejects(store.finishPull(randomUUID(), "not-submitted"), guard);
