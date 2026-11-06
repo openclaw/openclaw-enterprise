@@ -5201,7 +5201,9 @@ function managedMcpServers(installs) {
     for (const { id, env } of accounts) {
       const marker = process.env[env];
       if (isManagedPluginPlaceholder(env, marker, "mcp")) {
-        connections[id] = { headers: { Authorization: "Bearer " + marker } };
+        connections[id] = { headers: marker.startsWith("oce:saved-account:")
+          ? { "X-OCE-Account-Binding": marker.split(":")[3] }
+          : { Authorization: "Bearer " + marker } };
       } else {
         delete process.env[env];
       }
@@ -5289,7 +5291,7 @@ for (const install of installs) {
   if (kind === "cli" && release) {
     const pluginBin = join(release.runtimeDirectory, "bin");
     const architecture = { x64: "linux-amd64", arm64: "linux-arm64" }[process.arch];
-    verifiedPluginFile(join(pluginBin, release.executable), release.artifacts[architecture]?.binarySha256);
+    verifiedPluginFile(join(pluginBin, release.executable), release.artifacts[architecture]?.managedBinarySha256);
     if (!install.accounts.length) {
       pluginBins.push(pluginBin);
     } else {

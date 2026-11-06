@@ -153,8 +153,13 @@ const reviewedImports = {
   // refresh adapter can POST that grant. The Token Service receives no general HTTP capability.
   "backends/token-service/oauth-connection.ts": {
     "node:crypto": ["randomUUID"],
-    "@openclaw-enterprise/contracts": ["PENDING_OAUTH_CONNECTION", "isOAuthScopeToken"],
-    "@openclaw-enterprise/occ": ["BrowserAuthorizationError"],
+    "node:timers/promises": ["setTimeout"],
+    "@openclaw-enterprise/contracts": ["isOAuthScopeToken"],
+    "@openclaw-enterprise/occ": [
+      "BrowserAuthorizationError",
+      "ResourceStateConflictError",
+      "refreshPinnedOAuthGrant",
+    ],
     "@openclaw-enterprise/utils": ["asRecord", "isNonEmptyString"],
   },
   // Token Service compares complete admissions. Provider I/O remains in the existing adapter.
@@ -166,6 +171,8 @@ const reviewedImports = {
   // The prepared owner reads only the Installation custody mount. The App issuer comes
   // through the admitted Secret Driver; grant hashing, comparison, claims and signing-key import stay here.
   "drivers/repo/github/credentials/prepared-lifecycle.ts": {
+    // Wait for an existing issuance claim within this request’s deadline.
+    "node:timers/promises": ["setTimeout"],
     "node:crypto": ["createHash", "createPrivateKey", "randomUUID"],
     "node:fs/promises": ["readFile"],
     "node:util": ["isDeepStrictEqual"],

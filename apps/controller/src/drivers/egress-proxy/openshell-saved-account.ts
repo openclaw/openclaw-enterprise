@@ -1,0 +1,152 @@
+import { status, type ServerUnaryCall, type sendUnaryData } from "@grpc/grpc-js";
+import type { CredentialProxyExchange, SavedAccountRequest } from "@openclaw-enterprise/contracts";
+import { asRecord } from "@openclaw-enterprise/utils";
+import type { OpenShellEgressIdentity } from "./openshell-identity.ts";
+import { readOpenShellHttpRequest } from "./openshell-http-request.ts";
+
+type Wire = Record<string, unknown>;
+
+export const savedAccountCapability = "openshell.supervisor-middleware.http-request-credential.v1";
+
+/** These binding IDs come from the operator-installed terminal middleware for the slot. */
+export function savedAccountBinding(
+  config: unknown,
+): { binding: SavedAccountRequest["binding"]; bindingIds: string[] } | undefined {
+  const fields = asRecord(asRecord(config)?.fields);
+  if (!fields || Object.keys(fields).length !== 6) {
+    return undefined;
+  }
+  const field = (name: string): string | undefined => {
+    const item = asRecord(fields[name]);
+    const value = item?.stringValue;
+    return item?.kind === "stringValue" &&
+      typeof value === "string" &&
+      value.length > 0 &&
+      value.length <= 512 &&
+      !/[^\x21-\x7e]/.test(value)
+      ? value
+      : undefined;
+  };
+  const pinned = field("binding_id");
+  const listed = asRecord(asRecord(fields.binding_ids)?.listValue)?.values;
+  const bindingIds = pinned
+    ? [pinned]
+    : Array.isArray(listed)
+      ? listed.map((row) => asRecord(row)?.stringValue)
+      : [];
+  if (
+    !bindingIds.length ||
+    !bindingIds.every((id): id is string => typeof id === "string" && /^[0-9a-f]{64}$/.test(id)) ||
+    new Set(bindingIds).size !== bindingIds.length
+  ) {
+    return undefined;
+  }
+  const namespaceId = field("namespace_id");
+  const agentId = field("agent_id");
+  const revisionId = field("revision_id");
+  const pluginId = field("plugin_id");
+  const slotId = field("slot_id");
+  if (!namespaceId || !agentId || !revisionId || !pluginId || !slotId) {
+    return undefined;
+  }
+  return { bindingIds, binding: { namespaceId, agentId, revisionId, pluginId, slotId } };
+}
+
+/** OpenShell freezes this request before calling and consumes the bearer once before expires_at. */
+export function savedAccountHandler(
+  identity: OpenShellEgressIdentity,
+  registrationName: string,
+  resolve: NonNullable<CredentialProxyExchange["resolveSavedAccount"]>,
+) {
+  return async (call: ServerUnaryCall<Wire, Wire>, callback: sendUnaryData<Wire>) => {
+    const values = call.metadata.get("authorization");
+    const peer =
+      values.length === 1 && typeof values[0] === "string" && identity.credentialSandbox(values[0]);
+    const binding = savedAccountBinding(call.request.config);
+    const view = peer && readOpenShellHttpRequest(call.request, peer.sandboxId);
+    const denied = { code: status.PERMISSION_DENIED, message: "Saved account request denied." };
+    if (
+      !peer ||
+      !binding ||
+      !view ||
+      call.request.phase !== 3 ||
+      call.request.middleware_name !== registrationName
+    ) {
+      callback(denied, null);
+      return;
+    }
+    // OpenShell removes origin Authorization. The worker selects only among the binding
+    // IDs pinned to this slot; OCC rechecks that specific account and grant on every call.
+    const selectors = view.headers.filter(([key]) => key === "x-oce-account-binding");
+    const bindingId =
+      selectors.length === 1
+        ? selectors[0]![1]
+        : selectors.length === 0 && binding.bindingIds.length === 1
+          ? binding.bindingIds[0]
+          : undefined;
+    if (!bindingId || !binding.bindingIds.includes(bindingId)) {
+      callback(denied, null);
+      return;
+    }
+    const deadline = Math.min(Number(call.getDeadline()), peer.expiresAt, Date.now() + 30_000);
+    if (!Number.isFinite(deadline) || deadline <= Date.now() || call.cancelled) {
+      callback(denied, null);
+      return;
+    }
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    call.once("cancelled", cancel);
+    const timer = setTimeout(cancel, Math.max(0, deadline - Date.now()));
+    try {
+      const result = await resolve(
+        {
+          binding: binding.binding,
+          bindingId,
+          sandboxId: peer.sandboxId,
+          requestId: view.requestId,
+          workspace: view.workspace,
+          deadlineAt: new Date(deadline).toISOString(),
+          http: {
+            target: view.target,
+            headers: view.headers.filter(([key]) => key !== "x-oce-account-binding"),
+            body: view.body,
+          },
+        },
+        controller.signal,
+      );
+      if (!result || controller.signal.aborted || call.cancelled) {
+        callback(denied, null);
+        return;
+      }
+      // Use the same one-second send window as the protected exchange.
+      const token = "accessToken" in result ? result : undefined;
+      if (!token && (!("kind" in result) || result.kind !== "without_credential")) {
+        callback(denied, null);
+        return;
+      }
+      const until = Math.min(
+        deadline,
+        token ? Date.parse(token.expiresAt) : Infinity,
+        Date.now() + 1_000,
+      );
+      if (
+        !Number.isFinite(until) ||
+        until <= Date.now() ||
+        (token && !/^[A-Za-z0-9._~+/-]+=*$/.test(token.accessToken))
+      ) {
+        callback(denied, null);
+        return;
+      }
+      callback(null, {
+        request_id: view.requestId,
+        ...(token ? { bearer_token: token.accessToken } : { send_without_credential: true }),
+        expires_at: { seconds: Math.floor(until / 1000), nanos: (until % 1000) * 1_000_000 },
+      });
+    } catch {
+      callback({ code: status.UNAVAILABLE, message: "Credential authority unavailable." }, null);
+    } finally {
+      clearTimeout(timer);
+      call.off("cancelled", cancel);
+    }
+  };
+}

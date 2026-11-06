@@ -12,11 +12,10 @@ for the Agent's Harness. OCC checks policy before saving and performs
 Dedicated OpenClaw on Kubernetes supports multiple accounts per plugin slot.
 [Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) installs a Gateway skill and [worker CLI](connection-templates.md#use-a-saved-account-in-an-agent-plugin).
 [Slack](../guides/topics/plugins-configure.md#configure-slack-search) discovers tools through `tools/list`.
-Enable each upstream tool name once. Accounts share a tool only when their complete `tools/list` definitions match. This includes the title, description, input and output schemas, annotations, icons, execution settings and provider metadata. The worker ignores JSON object key order and preserves array order. Each distinct definition of the same name gets an account-qualified name.
+Enable each upstream name once. Accounts share a tool only when the entire `tools/list` definition matches, including schemas and provider metadata. JSON object key order is ignored. Array order matters. Conflicting definitions get account-qualified names.
 
 With several accounts, choose an ID from `properties.account.enum` and nest the native arguments, e.g. `{"account":"cs_a_west","arguments":{"account":"native-account"}}`. The account skill lists the saved names. Single-account tools take native arguments. A worker advertises up to 128 MCP tools.
-OpenShell v0.1.6 permits 32 providers per Sandbox. Each attached account uses
-one provider, and runtime providers count toward the same [OpenShell limit](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/crates/openshell-server/src/grpc/mod.rs#L152).
+Browser-connected accounts use the [terminal Credential Proxy integration](drivers/credential-proxy.md#saved-oauth-accounts). Manual and runtime providers count toward the [32-provider Sandbox limit](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/crates/openshell-server/src/grpc/mod.rs#L152).
 
 Embedded OpenClaw supports the bundled Diffs plugin and its `diffs` tool, with
 plugin/tool enablement and `provider_default` or `none` approval. Both use the
@@ -48,7 +47,7 @@ does not remove plugin-editing access.
 
 Adding a plugin requests installation at deployment. Setting `enabled: false` blocks the saved selection where supported. Deleting the entry clears it. Both take effect on deployment.
 
-The Agent revision freezes selections and Driver identity. Startup resolves curated metadata, so a retry can install a later release for the same ID. Kubernetes serializes Gateway replacement and keeps the native OpenClaw registry in the Agent-owned database across workload retirement.
+The Agent revision freezes selections and Driver identity. For curated Codex plugins, startup resolves current metadata and a retry can install a later release for the same ID. For a managed credential slot, startup verifies the selected release digest. Kubernetes serializes Gateway replacement and keeps the native OpenClaw registry in the Agent-owned database across workload retirement.
 
 Failed catalog resolution, policy translation, integrity verification, or core
 authentication keeps the candidate unready. A confirmed selected-plugin install

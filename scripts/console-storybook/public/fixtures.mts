@@ -48,6 +48,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     slackGrantMissing?: string;
     auth?: null | string;
     namespaceDeleteOutcome?: string;
+    namespaceDeleteRetryStatusFailure?: "unavailable" | "invalid";
     observabilityUrl?: string;
     repositoryOptions?: readonly RepositoryOption[];
     credentialRegistrationOutcome?: string;
@@ -261,6 +262,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           },
         ];
   const namespaceDeletionReads = new Map<string, number>();
+  let namespaceDeleteRetryStatusFailed = false;
   const backends = scenario.emptyBackends
     ? []
     : [{ id: "chatgpt-demo", name: "ChatGPT", type: "chatgpt" }];
@@ -547,6 +549,23 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         return response(item, 202);
       }
       if (method === "GET") {
+        // The invalid-value preview fails the first read after the unconfirmed write;
+        // the unavailable preview waits for the ordinary retry prompt to open.
+        if (
+          scenario.namespaceDeleteRetryStatusFailure &&
+          item.id === namespaceId &&
+          !namespaceDeleteRetryStatusFailed &&
+          (scenario.namespaceDeleteRetryStatusFailure === "invalid"
+            ? item.status === "deleting"
+            : document.querySelector(".namespace-delete-dialog[open] #namespace-delete-title")
+                ?.textContent === `Retry deletion of ${item.name}?`)
+        ) {
+          namespaceDeleteRetryStatusFailed = true;
+          if (scenario.namespaceDeleteRetryStatusFailure === "invalid") {
+            return response({ ...item, status: [item.status] });
+          }
+          return new Response("Service unavailable", { status: 503 });
+        }
         if (item.status === "deleting" && scenario.namespaceDeleteOutcome === "complete") {
           const reads = (namespaceDeletionReads.get(item.id) ?? 0) + 1;
           namespaceDeletionReads.set(item.id, reads);

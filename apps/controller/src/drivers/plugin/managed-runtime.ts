@@ -10,12 +10,16 @@ export function requireManagedCredentialRuntime(
   selections: PluginDesiredState | undefined,
   sandbox?: string,
   gateway?: string,
+  savedAccountMiddleware = false,
 ): void {
   const cli = managedCliCredentialBindings(selections);
   const mcp = managedMcpCredentialBindings(selections);
-  if ((cli.length > 0 || mcp.length > 0) && !supportsManagedPluginRuntime(sandbox, gateway)) {
+  if (
+    (cli.length > 0 || mcp.length > 0) &&
+    !supportsManagedPluginRuntime(sandbox, gateway, savedAccountMiddleware)
+  ) {
     throw new ConfigurationHarnessError(
-      "Bound plugin credentials require a runtime that implements credential injection and managed request policies. The currently supported pair is the OpenShell Sandbox and Credential Gateway.",
+      "Bound plugin credentials require a runtime that implements credential injection and managed request policies. Use the OpenShell Sandbox and Credential Gateway for attached sources, or the saved-account Credential Proxy for OAuth accounts.",
     );
   }
 }

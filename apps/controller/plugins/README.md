@@ -14,7 +14,7 @@ The Plugin Driver registers each package by version. Publish changed release byt
 The package’s OCE extension declares `policyScope: "enablement_only"`. The Plugin Driver advertises this scope for the versioned plugin ID so the Console can render the same enable switch as a Codex plugin before catalog discovery completes. OCC refuses tool approvals, reviewers, and per-tool overrides for these packages.
 
 Every declared slot accepts multiple accounts. Google Workspace’s optional `account` slot uses one OpenShell placeholder per selected credential. The request guard checks the
-[pinned operation map](./oce-google-workspace/ai.openclaw.oce/operations.json) and the shared destination and operation policy before OpenShell substitutes the selected bearer. Google enforces that account’s OAuth scopes. The Agent can also attach credentials for use
+[pinned operation map](./oce-google-workspace/ai.openclaw.oce/operations.json) and destination policy. For browser-connected accounts, Credential Proxy authorizes the selected account for each operation and OpenShell presents the bearer returned for that request. Google enforces the bearer’s OAuth scopes. The Agent can also attach credentials for use
 outside the plugin. The [operator guide](../../../docs/guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
 describes registration and verification. See the [operation map generator](../../../scripts/google-operation-map/README.md) for coverage and regeneration.
 

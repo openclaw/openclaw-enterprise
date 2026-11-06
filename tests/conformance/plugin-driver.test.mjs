@@ -194,7 +194,7 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
     ...dedicated,
     harness: { ...dedicated.harness, id: "openclaw" },
   });
-  assert.equal(google.id, "occ-plugin:google@1.0.0");
+  assert.equal(google.id, "occ-plugin:google@1.1.0");
   assert.equal(slack.id, "occ-plugin:slack@1.0.0");
   assert.equal(driver.policyCapabilities.policyScopeByPlugin[slack.id], "enablement_only");
   assert.deepEqual((await driver.discoverCatalog({ q: "SLACK" })).plugins, [slack]);
@@ -257,6 +257,33 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
     { id: source.id, name: source.name },
   ]);
   driver.credentials.validate(selections, [source]);
+  // A slot has one terminal sender. Mixing its saved-account authority with a native
+  // provider on the same host would discard the native provider's Authorization header.
+  const saved = {
+    ...source,
+    id: "cs_browser",
+    ownerCapability: "token_service",
+    type: "oauth2-refresh-token",
+    config: {},
+    secrets: {},
+  };
+  assert.throws(
+    () =>
+      driver.credentials.validate(
+        {
+          [slack.id]: {
+            enabled: true,
+            driverPolicy: {
+              ...slackPolicy,
+              credentials: { [managedMcpInstalls[0].slotId]: [source.id, saved.id] },
+            },
+          },
+        },
+        [source, saved],
+      ),
+    /same credential delivery/,
+  );
+
   assert.throws(
     () => driver.credentials.validate(selections, [{ ...broaderRestSource, id: source.id }]),
     /Select a ready Slack account/,
@@ -349,104 +376,160 @@ test("managed MCP bindings preserve both servers' credentials and require unambi
   );
 });
 
-test("a Google account slot binds multiple accounts by issuer and approved recipient", () => {
-  const driver = new OCCPluginDriver();
-  const pluginId = "occ-plugin:google@1.0.0";
-  const selections = { [pluginId]: { enabled: true } };
-  const slot = driver.credentials.connectionSlot(selections, pluginId, "account");
+test("managed plugin slots match saved accounts by issuer and reviewed API or MCP recipient", () => {
+  const { credentials } = new OCCPluginDriver();
+  const googleId = "occ-plugin:google@1.1.0";
+  const slot = credentials.connectionSlot({}, googleId, "account");
+  const gmail = { host: "gmail.googleapis.com", port: 443, path: "/**" };
   const target = {
     issuer: "https://accounts.google.com",
     tokenUrl: "https://oauth2.googleapis.com/token",
-    destinations: [{ host: "gmail.googleapis.com", port: 443, path: "/**" }],
+    destinations: [gmail, { host: "www.googleapis.com", port: 443, path: "/calendar/**" }],
   };
   assert.deepEqual(slot.issuers, [target.issuer]);
   assert.equal(slot.acceptsRecipient(target), true);
-  assert.equal(
-    slot.acceptsRecipient({
-      ...target,
-      tokenUrl: "https://other.example/token",
-    }),
-    false,
+  const gmailRecipient = (path) =>
+    slot.acceptsRecipient({ ...target, destinations: [{ ...gmail, path }] });
+  assert.equal(gmailRecipient("/gmail/v1/users/me/messages"), true);
+  assert.equal(gmailRecipient("/gmail/v1/users/me/messages/**"), true);
+  assert.equal(gmailRecipient("/gmail/v1/users/me/unreviewed/**"), false);
+  assert.equal(gmailRecipient("/gmail/v1/users/me/../messages/**"), false);
+  for (const changes of [
+    { issuer: "https://other.example" },
+    { tokenUrl: "https://other.example/token" },
+    { destinations: [{ ...gmail, host: "other.example" }] },
+  ]) {
+    assert.equal(slot.acceptsRecipient({ ...target, ...changes }), false);
+  }
+  const saved = { [googleId]: slot.bind("cs_personal") };
+  const first = credentials.connectionSlot(saved, googleId, "account");
+  const both = credentials.connectionSlot(
+    { [googleId]: first.bind("cs_work") },
+    googleId,
+    "account",
   );
-  assert.equal(
-    slot.acceptsRecipient({
-      ...target,
-      destinations: [{ ...target.destinations[0], host: "other.example" }],
-    }),
-    false,
-  );
-  assert.equal(slot.delivery(target, [], "cs_work"), undefined);
-  const allGoogle = {
-    ...target,
-    destinations: [
-      ...target.destinations,
-      { host: "www.googleapis.com", port: 443, path: "/calendar/**" },
-    ],
-  };
-  assert.equal(slot.acceptsRecipient(allGoogle), true);
-  assert.equal(slot.acceptsRecipient({ ...allGoogle, issuer: "https://other.example" }), false);
-  assert.equal(
-    slot.acceptsRecipient({
-      ...allGoogle,
-      tokenUrl: "https://other.example/token",
-    }),
-    false,
-  );
-  const googleScopes = ["gmail.readonly", "calendar.readonly"].map(
-    (name) => "https://www.googleapis.com/auth/" + name,
-  );
-  const wide = slot.delivery(allGoogle, [...googleScopes, "unrelated"], "cs_work").config;
-  assert.deepEqual(JSON.parse(wide.destinations), allGoogle.destinations);
-  assert.deepEqual([wide.host, wide.port, wide.path], [undefined, undefined, undefined]);
-  assert.deepEqual(wide.scope.split(" ").sort(), googleScopes.sort());
-  const mcp = managedMcpInstalls[0];
-  const server = driver.credentials.connectionSlot(
-    { [mcp.id]: { enabled: true } },
-    mcp.id,
-    mcp.slotId,
-  );
-  const recipient = {
-    host: mcp.endpoint.host,
-    port: mcp.endpoint.port,
-    path: mcp.endpoint.path,
-  };
-  const mcpTarget = {
-    issuer: mcp.credentials[mcp.slotId].issuer,
-    mcp: {
-      serverUrl: mcp.url,
-      resource: mcp.credentials[mcp.slotId].mcp.resource,
+  assert.deepEqual(both.credentialSourceIds, ["cs_personal", "cs_work"]);
+  assert.equal(credentials.connectionSlot(saved, googleId, "unknown-slot"), undefined);
+
+  const [install] = managedMcpInstalls;
+  const mcpSlot = credentials.connectionSlot({}, install.id, install.slotId);
+  const manifest = install.credentials[install.slotId];
+  const mcp = { serverUrl: install.url, resource: manifest.mcp.resource };
+  const mcpTarget = { issuer: manifest.issuer, destinations: [install.endpoint], mcp };
+  assert.equal(mcpSlot.acceptsRecipient(mcpTarget), true);
+  assert.equal(slot.acceptsRecipient({ ...target, mcp }), false);
+  for (const changes of [
+    { mcp: undefined },
+    { mcp: { ...mcp, resource: "https://other.example/resource" } },
+    { destinations: [{ ...install.endpoint, path: "/other" }] },
+    { destinations: [install.endpoint, gmail] },
+  ]) {
+    assert.equal(mcpSlot.acceptsRecipient({ ...mcpTarget, ...changes }), false);
+  }
+  const sourceId = "cs_00000000-0000-4000-8000-000000000091";
+  const activeMcp = credentials.connectionSlot(
+    {
+      [install.id]: {
+        ...mcpSlot.bind(sourceId),
+        driverPolicy: {
+          ...mcpSlot.bind(sourceId).driverPolicy,
+          toolNames: ["slack_search_messages"],
+        },
+      },
     },
-    destinations: [recipient],
+    install.id,
+    install.slotId,
+  );
+  const request = {
+    target: { ...install.endpoint, reportedScheme: "https", query: "", method: "POST" },
+    headers: [["content-type", "application/json"]],
+    body: Buffer.alloc(0),
   };
-  assert.equal(server.acceptsRecipient(mcpTarget), true);
-  const wideMcp = { ...mcpTarget, destinations: [recipient, ...target.destinations] };
-  assert.equal(server.acceptsRecipient({ ...mcpTarget, mcp: undefined }), false);
-  assert.equal(server.acceptsRecipient(wideMcp), false);
-  assert.equal(slot.acceptsRecipient({ ...allGoogle, mcp: mcpTarget.mcp }), false);
-  assert.throws(() => server.delivery(wideMcp, [], "cs_work"), /approved destination/);
-  assert.equal(server.delivery(mcpTarget, [], "cs_work").config.access, "full");
+  const call = (name) =>
+    JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name } });
+  const permits = (body, target = mcpTarget) =>
+    activeMcp.authorizeRequest(target, [], { ...request, body: Buffer.from(body) });
+  assert.equal(permits(call("slack_search_messages")), "credential");
+  assert.equal(permits(call("slack_send_message")), "deny");
   assert.equal(
-    server.acceptsRecipient({
+    permits(call("slack_search_messages"), {
       ...mcpTarget,
-      destinations: [{ ...recipient, path: "/other" }],
+      mcp: { ...mcp, resource: "https://other.example" },
     }),
-    false,
+    "deny",
   );
   assert.equal(
-    server.acceptsRecipient({
-      ...mcpTarget,
-      mcp: { ...mcpTarget.mcp, resource: "https://other.example/resource" },
+    permits(
+      '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"slack_send_message","name":"slack_search_messages"}}',
+    ),
+    "deny",
+  );
+
+  // The same request body and destination become eligible only under the token's actual scopes.
+  const activeGoogle = credentials.connectionSlot(
+    { [googleId]: slot.bind(sourceId) },
+    googleId,
+    "account",
+  );
+  const google = {
+    target: {
+      reportedScheme: "https",
+      host: gmail.host,
+      port: 443,
+      method: "GET",
+      path: "/gmail/v1/users/me/messages/123",
+      query: "format=full",
+    },
+    headers: [],
+    body: Buffer.alloc(0),
+  };
+  const permitsMail = (scope, input = google) =>
+    activeGoogle.authorizeRequest(target, ["https://www.googleapis.com/auth/" + scope], input);
+  assert.equal(permitsMail("gmail.metadata"), "deny");
+  assert.equal(permitsMail("gmail.readonly"), "credential");
+  assert.equal(
+    permitsMail("gmail.metadata", {
+      ...google,
+      target: { ...google.target, query: "format=metadata" },
     }),
-    false,
+    "credential",
   );
-  const saved = { [pluginId]: slot.bind("cs_personal") };
-  const personal = driver.credentials.connectionSlot(saved, pluginId, "account");
-  const both = { [pluginId]: personal.bind("cs_work") };
-  assert.deepEqual(
-    driver.credentials.connectionSlot(both, pluginId, "account").credentialSourceIds,
-    ["cs_personal", "cs_work"],
+  const publicRead = {
+    ...google,
+    target: {
+      ...google.target,
+      host: "www.googleapis.com",
+      path: "/discovery/v1/apis/gmail/v1/rest",
+      query: "",
+    },
+  };
+  assert.equal(permitsMail("gmail.metadata", publicRead), "public");
+  assert.equal(
+    permitsMail("gmail.metadata", {
+      ...publicRead,
+      target: { ...publicRead.target, query: "key=attacker" },
+    }),
+    "deny",
   );
-  assert.equal(driver.credentials.connectionSlot(saved, pluginId, "unknown-slot"), undefined);
+
+  // An updated release cannot grant its operations to an older deployed selection.
+  const configured = slot.bind(sourceId);
+  const stale = credentials.connectionSlot(
+    {
+      [googleId]: {
+        ...configured,
+        driverPolicy: { ...configured.driverPolicy, releaseSha256: "b".repeat(64) },
+      },
+    },
+    googleId,
+    "account",
+  );
+  for (const request of [google, publicRead]) {
+    assert.equal(
+      stale.authorizeRequest(target, ["https://www.googleapis.com/auth/gmail.readonly"], request),
+      "deny",
+    );
+  }
 });
 
 test("OpenClaw plugin startup translation renders native install and enablement", () => {

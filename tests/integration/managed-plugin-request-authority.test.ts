@@ -13,8 +13,6 @@ import {
   managedPluginMiddlewareAudience,
   managedPluginMiddlewareImplementation,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
-import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { googleRequestPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { bindReservedPortInProcess, reservePort } from "../helpers/available-port.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
@@ -65,46 +63,15 @@ test("the signed OpenShell request guard intersects the source envelope with the
   const gateway = token(keys, "gateway", undefined, managedPluginMiddlewareAudience);
   const context = { sandbox_id: sandbox, workspace: "default", request_id: "gmail-request-1" };
   const gmail = "https://www.googleapis.com/auth/gmail.readonly";
-  const accountScope = (host: string, path: string, scope: string, port = 443) => ({
-    destinations: [{ host, port, path }],
-    scopes: [scope],
-  });
-  const accountsConfig = (accounts: Record<string, ReturnType<typeof accountScope>>) => ({
+  const scopeConfig = (host: string, path: string, scope: string, port = 443) => ({
     fields: {
       binding_id: { stringValue: managedGoogleInstall.releaseSha256 },
-      request_scope: { stringValue: googleAccountScopeConfig(accounts) },
+      request_scope: {
+        stringValue: googleAccountScopeConfig({ account: { host, port, path, scopes: [scope] } }),
+      },
     },
   });
-  const scopeConfig = (host: string, path: string, scope: string, port = 443) =>
-    accountsConfig({ account: accountScope(host, path, scope, port) });
-  // A provider can report unrelated scopes. The sender forwards only the scopes governing
-  // reviewed operations at this destination; the signed request guard still decides each call.
-  const recipient = {
-    host: "gmail.googleapis.com",
-    port: 443,
-    path: "/gmail/v1/users/me/messages",
-  };
-  const google = managedGoogleInstall;
-  const slot = new OCCPluginDriver().credentials.connectionSlot(
-    { [google.id]: { enabled: true } },
-    google.id,
-    "account",
-  )!;
-  const targetAccount = {
-    issuer: google.credentials.account!.issuer,
-    tokenUrl: google.credentials.account!.tokenEndpoint,
-    destinations: [recipient],
-  };
-  const largeGrant = Array.from({ length: 1200 }, (_, i) => "unrelated.scope." + i);
-  const delivery = slot.delivery(
-    targetAccount,
-    [...largeGrant, gmail, gmail],
-    "cs_00000000-0000-4000-8000-000000000001",
-  );
-  assert.ok(delivery);
-  const { config: projected } = delivery;
-  assert.equal(projected.scope, gmail);
-  const config = scopeConfig(recipient.host, recipient.path, projected.scope!);
+  const config = scopeConfig("gmail.googleapis.com", "/gmail/v1/users/me/messages", gmail);
   const target = {
     scheme: "https",
     host: "gmail.googleapis.com",
@@ -145,45 +112,6 @@ test("the signed OpenShell request guard intersects the source envelope with the
     ],
   );
   assert.equal((await invoke(client, "ValidateConfig", request, gateway)).valid, true);
-  // All 64 admitted sources can share a released grant and retain their full, distinct
-  // 256-character Google paths. The guard must match each source beyond the former 16 KiB limit.
-  const sourcePaths = Array.from(
-    { length: 64 },
-    (_, index) => target.path + "/" + String(index).padStart(255 - target.path.length, "a"),
-  );
-  const many = accountsConfig(
-    Object.fromEntries(
-      sourcePaths.map((path, index) => [
-        "cs_00000000-0000-4000-8000-" + String(index).padStart(12, "0"),
-        accountScope(target.host, path, gmail),
-      ]),
-    ),
-  );
-  assert.ok(Buffer.byteLength(many.fields.request_scope.stringValue) > 16384);
-  assert.equal(
-    (await invoke(client, "ValidateConfig", { ...request, config: many }, gateway)).valid,
-    true,
-  );
-  for (const path of sourcePaths) {
-    assert.equal(
-      await evaluate({
-        ...request,
-        config: many,
-        target: { ...target, path, query: "format=metadata" },
-      }),
-      1,
-    );
-  }
-  const oversized = {
-    fields: {
-      ...many.fields,
-      request_scope: { stringValue: many.fields.request_scope.stringValue.padEnd(65500, " ") },
-    },
-  };
-  assert.equal(
-    (await invoke(client, "ValidateConfig", { ...request, config: oversized }, gateway)).valid,
-    false,
-  );
   const stale = {
     ...request,
     config: { fields: { ...config.fields, binding_id: { stringValue: "0".repeat(64) } } },
@@ -274,40 +202,36 @@ test("the signed OpenShell request guard intersects the source envelope with the
     }),
     2,
   );
-  // Both accounts share the released operations. Google's API authorizes the supplied token.
-  // The metadata-only account cannot remove search from the other account's shared route.
-  const work = accountScope(target.host, "/gmail/v1/users/me/**", gmail);
-  const metadataGrant = "https://www.googleapis.com/auth/gmail.metadata";
-  const shared = accountsConfig({
-    work,
-    personal: accountScope(target.host, work.destinations[0]!.path, metadataGrant),
-  });
-  assert.equal(
-    await evaluate({ ...request, config: shared, target: { ...get, query: "format=metadata" } }),
-    1,
-  );
-  assert.equal(
-    await evaluate({ ...request, config: shared, target: { ...target, query: "q=is%3Aunread" } }),
-    1,
-  );
-  assert.equal(
-    await evaluate({ ...request, config: shared, target: { ...target, query: "unreviewed=true" } }),
-    2,
-  );
-  const protectedDiscovery = accountsConfig({
-    work: accountScope(target.host, "/**", gmail),
-    personal: work,
-  });
-  assert.equal(await evaluate({ ...request, config: protectedDiscovery, target: fallback }), 2);
-  const separate = accountsConfig({
-    work,
-    personal: accountScope(target.host, target.path, metadataGrant),
-  });
-  assert.equal(await evaluate({ ...request, config: separate, target: get }), 1);
   const json = (value: unknown) => ({
     body: Buffer.from(JSON.stringify(value)),
     headers: [{ name: "content-type", value: "application/json" }],
   });
+  // Native OpenShell resolves the chosen bearer after this guard. An attached
+  // metadata-only grant must not disable Gmail search for the read-only account.
+  const twoGoogleAccounts = {
+    fields: {
+      ...subtree.fields,
+      request_scope: {
+        stringValue: googleAccountScopeConfig({
+          work: {
+            host: target.host,
+            port: target.port,
+            path: "/gmail/v1/users/me/**",
+            scopes: [gmail],
+          },
+          personal: {
+            host: target.host,
+            port: target.port,
+            path: "/gmail/v1/users/me/**",
+            scopes: ["https://www.googleapis.com/auth/gmail.metadata"],
+          },
+        }),
+      },
+    },
+  };
+  const search = { ...target, query: "q=subject%3Ameeting" };
+  assert.equal(await evaluate({ ...request, config: twoGoogleAccounts, target: search }), 1);
+  assert.equal(await evaluate({ ...request, config: metadataScope, target: search }), 2);
   const calendarRead = "https://www.googleapis.com/auth/calendar.readonly";
   const calendar = {
     ...request,
@@ -319,50 +243,6 @@ test("the signed OpenShell request guard intersects the source envelope with the
       query: "",
     },
   };
-  // Send the Sandbox Driver's actual protobuf config through the signed RPC, including the
-  // executable policy recorded for saved accounts. One receipt can serve two exact API origins.
-  const googleApisBinding = (scopes: readonly string[]) =>
-    googleRequestPolicy(
-      {
-        account: {
-          destinations: [
-            recipient,
-            { host: calendar.target.host, port: 443, path: "/calendar/v3/**" },
-          ],
-          scopes,
-        },
-      },
-      [google.binaryPath, "/usr/bin/curl"],
-    ).middlewares[managedPluginMiddleware].config;
-  const driveRead = "https://www.googleapis.com/auth/drive.readonly";
-  const binding = googleApisBinding([gmail, calendarRead, driveRead]);
-  assert.equal(
-    (await invoke(client, "ValidateConfig", { ...request, config: binding }, gateway)).valid,
-    true,
-  );
-  const wide = (target: typeof request.target, config = binding) =>
-    evaluate({ ...request, config, target });
-  assert.equal(await wide(target), 1);
-  assert.equal(await wide({ ...target, path: target.path + "/another-message" }), 2);
-  assert.equal(await wide({ ...calendar.target, port: 8443 }), 2);
-  assert.equal(await wide(calendar.target), 1);
-  assert.equal(await wide({ ...calendar.target, host: "gmail.googleapis.com" }), 2);
-  assert.equal(await wide({ ...calendar.target, host: "www.googleapis.com.example.test" }), 2);
-  assert.equal(await wide({ ...calendar.target, path: "/drive/v3/files" }), 2);
-  assert.equal(await wide({ ...calendar.target, path: "/calendar/v3/unreviewed" }), 2);
-  assert.equal(await wide({ ...calendar.target, method: "DELETE" }), 2);
-  const narrowed = googleApisBinding([gmail]);
-  assert.equal(await wide(target, narrowed), 1);
-  assert.equal(await wide(calendar.target, narrowed), 2);
-  assert.equal(
-    await evaluate({
-      ...request,
-      config: {
-        fields: { ...binding.fields, extra: { stringValue: "unrecognized" } },
-      },
-    }),
-    2,
-  );
   for (const calendarId of ["primary", "reader%40example.test"]) {
     assert.equal(
       await evaluate({
@@ -590,6 +470,7 @@ test("the signed OpenShell request guard intersects the source envelope with the
   );
   // The request host must be the source host, even when the source path and grant also fit
   // another Google service: drive.readonly authorizes both Docs and Slides reads under /v1/**.
+  const driveRead = "https://www.googleapis.com/auth/drive.readonly";
   const slides = {
     ...request,
     config: scopeConfig("slides.googleapis.com", "/v1/**", driveRead),

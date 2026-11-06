@@ -2,38 +2,39 @@
 rfc: index.md
 ---
 
-# Driver contracts, failure, and verification for OAuth connections
+# Contracts, failure, and verification for OAuth connections
 
-This companion defines the Driver contract changes, failure behavior, and required
+This companion defines the platform contracts, failure behavior, and required
 outcomes for [RFC-0027](index.md). The RFC owns the decision, connection
 templates, consent rules, and Agent attachment boundary.
 
-## Credential Refresh Driver
+<a id="credential-refresh-driver"></a>
 
-`CredentialRefreshDriver` gains these optional methods beside the existing device
-methods. A Driver that omits them offers no browser connections.
+## Token Service and OAuth enrollment
 
 ### Browser authorization
 
-OCC owns the connection session and calls the Driver's browser authorization
-methods for setup and code exchange. After exchange, the OCE Token Service
-keeps the grant in encrypted custody and refreshes access tokens in the
-background. It serializes refresh per source and atomically commits the access token
-with any replacement refresh token. OpenShell presents an eligible, prepared
-token for the deployed binding or refuses the request. [Credential access and lifecycle](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle)
+OCC owns browser consent for connection templates. An Installation can connect
+an account and renew it with the Credential Refresh Driver and OpenShell
+unconfigured.
 
-- `startBrowserAuthorization(context, { connectionTemplateVersion, redirectUri, selectedScopes? })`
-  returns `{ authorizationUrl, privateState }`. OCC validates the requested
-  scopes before the Driver starts consent. The Driver
-  creates the PKCE verifier, a random `state`, and a nonce for `accountIdentity: oidc`.
-  `privateState` is opaque to OCC.
-- `completeBrowserAuthorization(context, privateState, { code, state, iss? })` verifies
-  `state` and exchanges the code using the verifier and pinned client registration.
-  The Driver hands the validated refresh grant and first usable access token to
-  the Token Service, bound to the source and its approved OAuth context. It returns
-  `ready` only after the Token Service durably accepts them. An uncertain handoff
-  leaves the source `registering` and never replays the code. OCC receives status
-  and an optional verified `accountEmail`.
+1. OCC validates the requested scopes against the template. It generates a
+   random `state` and a PKCE verifier and stores the attempt in private
+   control-plane storage, bound to the initiating browser session and the
+   template version. For `accountIdentity: oidc`, OCC also generates a nonce.
+   The browser receives the authorization URL with the PKCE challenge.
+2. On callback, OCC checks the browser session, state, expiry and issuer,
+   then claims the attempt once. It reads the pinned registration's current
+   secret if required and posts the code and verifier to the approved token
+   endpoint. OCC never replays the code after an uncertain exchange.
+3. OCC hands the first access token and refresh grant to the Token Service for
+   this source. OCC marks the connection ready only after the Token Service
+   commits them. An uncertain handoff leaves the source `registering`.
+
+The Token Service serializes renewals per source and commits the new access
+token and any replacement refresh token together. The Credential Proxy
+presents an eligible prepared token for an authorized Agent request.
+[Credential access and lifecycle](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle)
 
 ### MCP authorization
 
@@ -73,8 +74,7 @@ A public client uses `none` and needs only its client ID. For `client_secret_bas
 
 At the initial code exchange, OCC resolves the current secret for the pinned registration if its authentication method requires one. A successful exchange hands the user's refresh grant and first access token to the Token Service. On subsequent renewal the Token Service obtains the same registration's current client authentication for the pinned issuer and token endpoint. Rotation at the same registration applies to existing accounts. If the provider rejects the client secret, the administrator can fix the registration and retry. Revoking the user's grant requires new consent.
 
-Connecting an account commits the grant in Token Service custody. The Token
-Service records the requested scopes and the scopes the provider granted.
+OCC registers the exchanged grant with the Token Service and keeps the stable account reference. Resolution checks the token’s remaining lifetime. Authorized delivery can start or join renewal as [RFC-0023 specifies](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle). The Token Service records the requested scopes and the scopes the provider granted.
 When the provider omits `scope`, the Token Service records the requested
 scopes. If both omitted it, it records no known scopes. Explicit requests and
 renewals cannot acquire permissions beyond those requested or previously
@@ -102,27 +102,27 @@ authority still bound all listing and use.
 
 ### OIDC account identity
 
-For `accountIdentity: oidc`, the Refresh Driver establishes the trusted provider
-before OCC accepts the connection template version:
+For `accountIdentity: oidc`, OCC establishes the trusted provider before it accepts
+the connection template version:
 
 1. Without `jwksUri`, it reads `<issuer>/.well-known/openid-configuration`
    ([provider metadata](https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderMetadata)).
    The metadata `issuer` must equal the configured `issuer` exactly, and its
    `authorization_endpoint` and `token_endpoint` must equal the connection
-   template's URLs. The Driver records the metadata's `jwks_uri`.
+   template's URLs. OCC records the metadata's `jwks_uri`.
 2. With `jwksUri`, it uses that `https` URL and skips discovery.
 3. A mismatch, an unreachable provider, or a non-`https` value rejects the version
    with `400`, and the version is not created.
 
 The recorded `issuer` and JWKS URL become part of the version and of each source's
-approved values. At completion, the Driver validates the ID token
+approved values. At completion, OCC validates the ID token
 ([OIDC Core](https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation))
 against keys from that JWKS URL only: signature, `iss` equal to the recorded
 `issuer`, `aud` containing the client ID, expiry, and nonce. It refetches the key
 set once for an unknown key ID, then rejects the connection if it cannot validate
 the token.
 
-The Driver returns `accountEmail` only when that validated ID token contains a
+OCC records `accountEmail` only when that validated ID token contains a
 nonempty `email` string and the boolean claim `email_verified` is `true`.
 When either condition is unmet, the connection can complete without `accountEmail`.
 
@@ -164,21 +164,20 @@ The [Plugin Driver account contract](plugin-accounts.md) covers repeatable slots
 
 ## Update a running sender
 
-When an Agent’s credential recipients change, the Gateway withholds its token.
-Compute and the Sandbox Driver update the sender and verify its effective policy.
-OCC rechecks the grant, template and Agent binding before releasing a token
-for that revision and policy. Failed or superseded updates leave the sender
-empty until reconciliation succeeds.
-
-The Plugin Driver matches recipients independently of scopes. If no granted
-operation matches the current destinations, the slot's delivery returns no
-configuration. After confirming withdrawal, the worker keeps serving other
-slots and Agents. A compatible template edit can resume delivery.
+At the next credentialed request, OCC checks the Agent’s grant and the current
+template destinations. Removing a destination denies further dispatches to it.
+Adding a destination can authorize a send once the deployed Sandbox policy also
+allows it. A request that has already passed its final send check can finish.
+Detaching removes the Agent’s grant. Other Agents keep their grants.
 
 ## Protected egress
 
-The sender authenticates the deployed execution and checks its authority to
-use the source for the actual request within the Installation’s egress ceiling.
+OpenShell sends the deployed execution, plugin slot and final request to
+Credential Proxy. OCC checks the Agent grant, saved account and operation.
+Credential Proxy resolves the access token through Token Service, rechecks
+authorization, then returns the bearer and send deadline. OpenShell strips
+caller credentials, injects the bearer once and discards it. A reviewed public
+discovery request needs explicit permission to send without credentials.
 [RFC-0023 admission and sender contracts](../0023-egress-proxy-credential-lifecycle/contracts.md)
 
 For manual OAuth, OCC reads the current rows from the same manual template and
@@ -207,12 +206,11 @@ sender cannot enforce the policy.
 | Exchange refused or no refresh token returned               | Source deleted; `fix_configuration`            | Administrator corrects the connection template |
 | Timeout after the exchange started                          | Source stays `registering`                     | Delete and reconnect; OCC never replays a code |
 | Issuer revokes the grant                                    | `status.refresh.recoveryAction: reauthorize`   | **Reconnect** and redeploy                     |
-| Driver unavailable before source creation                   | `503`; no source created                       | Retry                                          |
+| Token custody unavailable before source creation            | Connection cannot start                        | Restore the Token Service and Secret Driver    |
 | OIDC metadata mismatch or unreachable provider              | Version rejected with `400`                    | Administrator corrects `issuer` or URLs        |
 | ID token from a wrong issuer, untrusted key, or wrong nonce | Source deleted; `fix_configuration`            | Administrator checks the provider; reconnect   |
-| Manual destination rows edited                              | Existing senders reconcile the current rows    | Retry a failed reconciliation                  |
+| Manual destination rows edited                              | Next request uses the current rows    | Check the deployed Sandbox policy                  |
 | OAuth identity or MCP target changed                        | Original grant cannot authorize the new target | Owner reconnects for the new identity          |
-| Withdrawal pending or failed after detach or disconnect     | Affected attachments deny further use          | Retry withdrawal, or stop the affected Agent   |
 | Provider rejects the current client secret                  | Client authentication fails                    | Admin corrects secret, then refresh retries    |
 
 The operator guide documents provider rules. Google requires verification for
@@ -222,20 +220,23 @@ issue seven-day refresh tokens.
 ## Required outcomes
 
 - **HTTP and PostgreSQL integration.** With Keycloak, PKCE and refresh tokens,
-  verify success, denied consent, state reuse, cross-session callbacks, expired
-  sessions and missing grants. Attach one account to Agents A and B. Deny an
+  connect and renew with OpenShell and the Credential Refresh Driver unconfigured.
+  Verify denied consent, state reuse, cross-session callbacks, expired sessions
+  and missing grants. Attach one account to Agents A and B. Deny an
   ungranted Agent, a pending source before or during callback, a caller without
   source-use or Agent-update permission, and cross-Namespace attachment.
   Detach A with queued and serving revisions: A loses access and B retains it
   without reauthorization. Disconnect the account and verify B loses access.
   Keep codes and tokens out of responses, logs and audit.
-- **Manual destination changes.** Replace a host for a running Agent. After
-  reconciliation, verify delivery to the new host and no bearer at the old
-  one. Change the default client: refresh still uses the original registration.
-  Change the issuer and verify delivery stops.
-- **Refresh ownership.** For manual OAuth and MCP, observe background issuer
-  refresh. With the same worker placeholder, OpenShell presents the new token.
-  Without an eligible token it refuses the request without contacting the issuer.
+- **Manual destination changes.** Replace a host for a running Agent. Verify the
+  old host receives no bearer on the next request and that a permitted request
+  to the new host succeeds. Changing the default client keeps the original
+  registration for refresh. Changing the issuer stops delivery.
+- **Refresh and detach.** Use the same account from two Agents. Observe OpenShell
+  present a renewed token on an authorized request. Detach A during token
+  resolution. Verify its final send check denies dispatch, the destination
+  sees no request from A, and B can still send. Inspect the OpenShell provider
+  inventory and the workload for retained tokens.
 - **MCP.** Verify supplied clients, successful DCR, and the prompt for a supplied
   client when DCR is unavailable or refused. On a dedicated worker, verify a
   Console tool call uses the selected scopes and an unselected scope stays

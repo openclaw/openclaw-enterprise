@@ -11,6 +11,7 @@ import {
 export async function bindOpenShellExchange(
   configuration: EgressAuthorityConfiguration,
   sender: EgressRef,
+  registrationName: string,
   createCredentialProxy: Parameters<NonNullable<CredentialProxyDriver["bindExchange"]>>[0],
 ) {
   return bindOpenShellMiddleware(configuration, (publicKey) => {
@@ -21,7 +22,7 @@ export async function bindOpenShellExchange(
       publicKey,
       sender,
     });
-    return createOpenShellEgressAuthority(identity, { createCredentialProxy });
+    return createOpenShellEgressAuthority(identity, { createCredentialProxy }, registrationName);
   });
 }
 

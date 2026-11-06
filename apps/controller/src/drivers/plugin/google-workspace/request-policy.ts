@@ -1,6 +1,9 @@
+import type { PluginAccountRequest, ConnectionEndpoint } from "@openclaw-enterprise/contracts";
 import { hasControlCharacter } from "@openclaw-enterprise/utils";
 import {
   googleCatalog,
+  eligibleGoogleOperations,
+  isGoogleWorkspaceRecipient,
   googleDiscoveryRequests,
   googleRouteCandidates,
   googleReleaseSha256,
@@ -140,7 +143,7 @@ function matchesJson(value: unknown, schema: GoogleSchema | undefined, depth = 0
 }
 
 const utf8 = new TextDecoder("utf-8", { fatal: true });
-function matchesBody(op: GoogleOperation, request: OpenShellOnlineHttpRequest) {
+function matchesBody(op: GoogleOperation, request: PluginAccountRequest) {
   if (!op.requestSchema) {
     return request.body.length === 0;
   }
@@ -176,7 +179,8 @@ function matchesBody(op: GoogleOperation, request: OpenShellOnlineHttpRequest) {
 
 function validGoogleRequest(
   scope: GoogleRequestScope,
-  request: OpenShellOnlineHttpRequest,
+  request: PluginAccountRequest,
+  discovery: "provider" | "proxy",
 ): boolean {
   const { host, path, query, port, reportedScheme, method } = request.target;
   const names = request.headers.map(([name]) => name);
@@ -210,16 +214,12 @@ function validGoogleRequest(
     return (
       method === "GET" &&
       !request.body.length &&
-      googleDiscoveryRequests(scope).some(
+      googleDiscoveryRequests(scope, undefined, discovery === "provider").some(
         (r) => r.host === host && r.path === path && r.query === query,
       )
     );
   }
-  if (
-    !scope.destinations.some(
-      (row) => row.host === host && row.port === port && googleSourcePathMatches(row.path, path),
-    )
-  ) {
+  if (host !== scope.host || !googleSourcePathMatches(scope.path, path)) {
     return false;
   }
   if (
@@ -274,7 +274,7 @@ function validGoogleRequest(
         return false;
       }
       // Gmail restricts q and message content on a metadata-only grant even though the method
-      // accepts that scope. These forms require a content-capable scope in the shared operation policy.
+      // accepts that scope. Apply this before sending a possibly more powerful bearer.
       if (
         grants.every((s) => s === "https://www.googleapis.com/auth/gmail.metadata") &&
         (params.has("q") ||
@@ -288,6 +288,30 @@ function validGoogleRequest(
   );
 }
 
+/** Public discovery uses no credential, including when an approved API shares its host. */
+export function classifyGoogleAccountRequest(
+  destinations: readonly ConnectionEndpoint[],
+  scopes: readonly string[],
+  request: PluginAccountRequest,
+): "credential" | "public" | "deny" {
+  const publicPath =
+    request.target.path.startsWith("/discovery/v1/apis") ||
+    request.target.path === "/$discovery/rest";
+  for (const endpoint of destinations) {
+    if (!isGoogleWorkspaceRecipient(endpoint)) {
+      continue;
+    }
+    const scope = { ...endpoint, scopes };
+    if (publicPath && !eligibleGoogleOperations(scope).length) {
+      continue;
+    }
+    if (validGoogleRequest(scope, request, "proxy")) {
+      return publicPath ? "public" : "credential";
+    }
+  }
+  return "deny";
+}
+
 export const googleWorkspaceRequestPolicy = {
   releaseSha256: googleReleaseSha256,
   acceptsScope(raw: string): boolean {
@@ -299,16 +323,14 @@ export const googleWorkspaceRequestPolicy = {
       return false;
     }
     const scopes = Object.values(accounts);
-    const { host, port, path } = request.target;
-    const protectedScopes = scopes.filter((scope) =>
-      scope.destinations.some(
-        (row) => row.host === host && row.port === port && googleSourcePathMatches(row.path, path),
-      ),
+    const credentialed = scopes.filter(
+      ({ host, port, path }) =>
+        request.target.host === host &&
+        request.target.port === port &&
+        googleSourcePathMatches(path, request.target.path),
     );
-    // Authorization is stripped from the supervisor's request view. The shared guard admits
-    // released operations for this destination; Google authorizes the actual account token.
-    // A discovery path covered by any provider must never be treated as public.
-    const applicable = protectedScopes.length ? protectedScopes : scopes;
-    return applicable.some((scope) => validGoogleRequest(scope, request));
+    return (credentialed.length ? credentialed : scopes).some((scope) =>
+      validGoogleRequest(scope, request, "provider"),
+    );
   },
 };

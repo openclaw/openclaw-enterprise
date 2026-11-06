@@ -611,7 +611,7 @@ export function createWorkerRevisionFixtures(
             owner.plugins && Object.keys(owner.plugins).length
               ? controller.pluginDriver(approvedHarness.id, true)
               : undefined;
-          const { credentialSources: sources } = await controller.admitCredentialSources(
+          const { snapshots: sources } = await controller.admitCredentialSources(
             unit,
             actorId,
             owner,
@@ -624,6 +624,7 @@ export function createWorkerRevisionFixtures(
             controller.admitProxyPlan(
               unit,
               owner,
+              sources,
               candidate.id,
               configuration,
               sandbox.id,

@@ -1,5 +1,5 @@
-import type { Secret } from "./index.ts";
 import type { CredentialRefreshStatus } from "./drivers/credential-refresh/index.ts";
+import type { Secret } from "./index.ts";
 import type {
   CredentialReadLifetime,
   CredentialSourceControl,
@@ -29,19 +29,24 @@ export interface PreparedTokenSource<
   readonly grant: G;
 }
 
-export interface PreparedTokenSelection {
-  readonly value: string;
+/** A trusted consumer receives the usable access token and its issuer-reported expiry. */
+export interface ResolvedToken {
+  readonly accessToken: string;
+  readonly expiresAt: string;
+}
+
+export interface PreparedTokenSelection extends ResolvedToken {
   readonly family: EgressRef;
   readonly ownerEpoch: number;
   readonly inputVersion: string;
   readonly preparationAttemptId: string;
   readonly materialId: string;
   readonly materialVersion: string;
-  readonly providerExpiresAt: string;
   readonly usableUntil: string;
 }
 
-export interface PreparedTokenEvidence extends Omit<PreparedTokenSelection, "value"> {
+export interface PreparedTokenEvidence extends Omit<PreparedTokenSelection, keyof ResolvedToken> {
+  readonly providerExpiresAt: string;
   /** Existing GitHub receipts keep their exact meaning. */
   readonly kind: "prepared_token" | "prepared_github";
   readonly source: EgressSourceKey;
@@ -62,6 +67,9 @@ export interface PreparedTokenCurrentProof {
 
 /** Installed issuer policy and its custody. No management or material method is given to a sender. */
 export interface PreparedTokenIssuer {
+  /** Releases outstanding callers when this installed owner shuts down. */
+  readonly shutdownSignal?: AbortSignal;
+  readonly tokenKind: PreparedTokenKind;
   readonly provider: EgressRef;
   readonly issuerInput: string;
   readonly issuerAuthority: string;
@@ -79,22 +87,87 @@ export interface PreparedTokenIssuer {
   ): Promise<void>;
   withdraw(source: PreparedTokenSource, signal: AbortSignal): Promise<void>;
   ready(source: PreparedTokenSource, signal: AbortSignal): Promise<boolean>;
-  readWarm(
-    source: PreparedTokenSource,
-    lifetime: CredentialReadLifetime,
+  resolve(
+    reference: EgressSourceKey,
+    options: TokenResolveOptions,
   ): Promise<PreparedTokenSelection | undefined>;
 }
 
-/** The installation chooses the lifecycle owner independently of the Sandbox and sender. */
-export interface PreparedTokenService {
-  readonly oauthConnections?: OAuthConnectionTokenService | undefined;
-  issuer(provider: EgressRef): PreparedTokenIssuer | undefined;
+/** The proxy supplies its original request deadline and the token lifetime that use requires. */
+export interface TokenResolveOptions extends CredentialReadLifetime {
+  readonly minimumValidityMs: number;
 }
 
-/** The source owner keeps this private Secret reference outside the user-managed Secret inventory. */
-export interface OAuthConnectionCustody {
-  readonly sourceId: string;
+export type PreparedTokenKind = "github_app_installation" | "prepared_source";
+
+export interface PreparedTokenRegistration {
+  readonly kind: PreparedTokenKind;
+  readonly source: PreparedTokenSource;
   readonly secret: Readonly<Secret>;
+}
+
+/** The installed provider generation and admitted grant remain bound to this handle across renewal. */
+export interface PreparedTokenRef {
+  readonly kind: PreparedTokenKind;
+  readonly key: EgressSourceKey;
+}
+
+/** Registration binds an immutable grant to its issuer secret. Its reference survives renewal. */
+export interface TokenService {
+  register(
+    registration: OAuthRefreshTokenRegistration,
+    signal: AbortSignal,
+  ): Promise<OAuthAccountRef>;
+  register(registration: PreparedTokenRegistration, signal: AbortSignal): Promise<PreparedTokenRef>;
+  resolve(
+    reference: OAuthAccountRef,
+    options: TokenResolveOptions,
+  ): Promise<OAuthConnectionAccessToken | undefined>;
+  resolve(
+    reference: PreparedTokenRef,
+    options: TokenResolveOptions,
+  ): Promise<PreparedTokenSelection | undefined>;
+  resolve(
+    reference: PreparedTokenRef | OAuthAccountRef,
+    options: TokenResolveOptions,
+  ): Promise<ResolvedToken | undefined>;
+  issuer(
+    kind: OAuthAccountRef["kind"],
+  ): Pick<OAuthRefreshTokenIssuer, "status" | "maintain" | "retire"> | undefined;
+  issuer(provider: EgressRef): Omit<PreparedTokenIssuer, "configure" | "resolve"> | undefined;
+}
+
+/** Stable reference to a saved account. Its private grant can rotate between resolutions. */
+export interface OAuthAccountRef {
+  readonly kind: "oauth_refresh_token";
+  readonly namespaceId: string;
+  readonly sourceId: string;
+}
+
+/** OCC supplies the template version and the client registration the person approved at consent. */
+export interface OAuthRefreshTokenRegistration extends OAuthAccountRef {
+  readonly approval: {
+    readonly connectionTemplateId: string;
+    readonly connectionTemplateVersion: number;
+    readonly oauthClientId: string;
+  };
+  readonly grant: OAuthConnectionGrant;
+}
+
+/** The installed owner of saved OAuth grants. OCC and the worker use its lifecycle operations. */
+export interface OAuthRefreshTokenIssuer {
+  readonly tokenKind: OAuthAccountRef["kind"];
+  register(
+    registration: OAuthRefreshTokenRegistration,
+    signal: AbortSignal,
+  ): Promise<OAuthAccountRef>;
+  resolve(
+    ref: OAuthAccountRef,
+    options: TokenResolveOptions,
+  ): Promise<OAuthConnectionAccessToken | undefined>;
+  status(ref: OAuthAccountRef, signal: AbortSignal): Promise<OAuthConnectionStatus>;
+  maintain(ref: OAuthAccountRef, signal: AbortSignal): Promise<OAuthConnectionStatus | undefined>;
+  retire(ref: OAuthAccountRef, signal: AbortSignal): Promise<void>;
 }
 
 /** The client and provider destination pinned when the account was connected. */
@@ -114,25 +187,19 @@ export interface OAuthConnectionClient {
 }
 
 /** Trusted handoff from code exchange. The Token Service retains the reusable grant. */
-export interface OAuthConnectionGrant extends OAuthConnectionRegistration {
+export interface OAuthConnectionGrant extends ResolvedToken {
   readonly requestedScopes: readonly string[];
   /** Scopes the provider granted. An empty list means no scopes were reported or requested. */
   readonly grantedScopes: readonly string[];
-  readonly accessToken: string;
   readonly refreshToken: string;
-  readonly expiresAt: string;
 }
 
 /** The only credential the trusted delivery path may install, with a deadline for its use. */
-export interface OAuthConnectionAccessToken {
+export interface OAuthConnectionAccessToken extends ResolvedToken {
   readonly grantedScopes: readonly string[];
   readonly nextRefreshAt: string;
-  readonly accessToken: string;
   readonly version: string;
-  readonly expiresAt: string;
 }
-
-export const PENDING_OAUTH_CONNECTION = "pending";
 
 export type OAuthConnectionStatus = CredentialRefreshStatus & {
   readonly schedule?: {
@@ -141,24 +208,3 @@ export type OAuthConnectionStatus = CredentialRefreshStatus & {
     readonly grantedScopes: readonly string[];
   };
 };
-
-export interface OAuthConnectionTokenService {
-  accept(
-    custody: OAuthConnectionCustody,
-    grant: OAuthConnectionGrant,
-    signal: AbortSignal,
-  ): Promise<void>;
-  warm(
-    custody: OAuthConnectionCustody,
-    signal: AbortSignal,
-  ): Promise<OAuthConnectionAccessToken | undefined>;
-  status(custody: OAuthConnectionCustody, signal: AbortSignal): Promise<OAuthConnectionStatus>;
-  /** Renew when due, or early when custody still holds the previously scheduled version. */
-  renew(
-    custody: OAuthConnectionCustody,
-    signal: AbortSignal,
-    resolveClient: () => Promise<OAuthConnectionClient>,
-    scheduledVersion?: string,
-  ): Promise<OAuthConnectionStatus>;
-  retire(custody: OAuthConnectionCustody, signal: AbortSignal): Promise<void>;
-}

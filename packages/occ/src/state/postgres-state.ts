@@ -617,7 +617,7 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
   const ownerCapability = text(row, "owner_capability");
   if (
     (ownerCapability !== "credential_gateway" &&
-      ownerCapability !== "credential_refresh" &&
+      ownerCapability !== "token_service" &&
       (ownerCapability !== "credential_proxy" || row.egress == null)) ||
     Object.values(config).some((value) => typeof value !== "string") ||
     Object.values(secretIds).some((value) => typeof value !== "string")
@@ -639,8 +639,9 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
         { kind: "secret" as const, namespaceId, id },
       ]),
     ),
-    driverId: text(row, "driver_id"),
-    ownerCapability,
+    ...(ownerCapability === "token_service"
+      ? { ownerCapability }
+      : { ownerCapability, driverId: text(row, "driver_id") }),
     state,
     createdAt: timestamp(row, "created_at"),
   });
@@ -737,7 +738,7 @@ function revisionFromRow(
       "Persisted AgentRevision harness authentication is invalid or legacy.",
     );
   }
-  if (!validCredentialSourceSnapshots(admitted.credential_sources, metadata.agentId)) {
+  if (!validCredentialSourceSnapshots(admitted.credential_sources)) {
     throw new SavedConfigurationReadError(
       "credentialSources",
       "Persisted AgentRevision credential sources are invalid.",
@@ -2971,7 +2972,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             source.name,
             source.type,
             JSON.stringify(source.config),
-            source.driverId,
+            source.driverId ?? null,
             source.state,
             source.createdAt,
             source.egress === undefined ? null : JSON.stringify(source.egress),
@@ -3892,7 +3893,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         if (
           Object.hasOwn(revision, "serviceAccount") ||
           !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
-          !validCredentialSourceSnapshots(revision.credentialSources, revision.agentId)
+          !validCredentialSourceSnapshots(revision.credentialSources)
         ) {
           throw new ScopeViolationError(
             "The AgentRevision harness authentication is invalid or legacy.",
@@ -3914,7 +3915,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
         }
         await assertRevisionAuthAvailable(
-          { secrets, serviceAccounts, credentialSources, savedConnections },
+          { secrets, serviceAccounts, credentialSources },
           revision,
           async (ids) =>
             rows(
@@ -3934,7 +3935,7 @@ export class PostgresPlatformState implements PlatformStateStore {
               type: text(row, "type"),
               state: text(row, "state") as CredentialSource["state"],
               ownerCapability: text(row, "owner_capability") as CredentialSource["ownerCapability"],
-              driverId: text(row, "driver_id"),
+              ...(row.owner_capability !== "token_service" && { driverId: text(row, "driver_id") }),
             })),
         );
         const owner = await agents.findAgent(revision.namespaceId, revision.agentId);

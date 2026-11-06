@@ -104,8 +104,6 @@ import {
 import { OCCPluginDriver, CodexPluginDriver } from "../drivers/plugin/index.ts";
 import { createGatewayNodeEnrollment } from "../gateway/node-enrollment-client.ts";
 import { readWorkspaceFilesApiKey } from "./workspace-files.ts";
-import { refreshPinnedOAuthGrant } from "../drivers/credential-refresh/oauth-token-endpoint.ts";
-import { OAuthConnectionTokens } from "../backends/token-service/oauth-connection.ts";
 import { TokenService } from "../backends/token-service/service.ts";
 import { githubMetadataProvider } from "../drivers/egress-proxy/github-metadata.ts";
 import type { PostgresPreparedGitHubLifecycle } from "../drivers/repo/github/credentials/prepared-lifecycle.ts";
@@ -1297,9 +1295,7 @@ export async function loadInstallationConfiguration(options: {
       installationSecretNamespace: environment.OCC_INSTALLATION_SECRET_NAMESPACE,
     },
   );
-  const tokenService = new TokenService(
-    new OAuthConnectionTokens(secretDriver, refreshPinnedOAuthGrant),
-  );
+  const tokenService = new TokenService();
   let preparedGitHub: PostgresPreparedGitHubLifecycle | undefined;
   if (preparedGitHubKeyPath !== undefined) {
     const { PostgresPreparedGitHubLifecycle } =
@@ -1414,6 +1410,20 @@ export async function loadInstallationConfiguration(options: {
         lifecycleDrivers: [configurationDriver],
         ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
         ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
+        // Both built-ins above received this exact Backend; injected and package Sandboxes opt out.
+        ...(openShell !== undefined &&
+        sandboxDriver !== undefined &&
+        sandboxPackage === undefined &&
+        options.createSandboxDriver === undefined &&
+        credentialGatewayDriver !== undefined
+          ? {
+              openShellAttachments: {
+                sandboxDriver,
+                credentialGatewayDriver,
+                attachments: credentialGatewayDriver.attachments,
+              },
+            }
+          : {}),
         ...(protectedDriver === undefined ? {} : { protectedDriver }),
         preparedTokens: tokenService,
         ...(preparedRepositoryGit === undefined || repositoryTransport || repositoryGitDriver

@@ -3,22 +3,18 @@ import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
   Backend,
-  CredentialBrowserAuthorizationCallback,
-  CredentialBrowserAuthorizationRequest,
   CredentialRefreshDriver,
   CredentialRefreshInput,
   CredentialRefreshStatus,
-  OAuthConnectionGrant,
   CredentialSourceContext,
   CredentialSourceDeviceAuthorization,
-  CredentialSourceBrowserAuthorization,
   CredentialSourceDeviceAuthorizationResult,
 } from "@openclaw-enterprise/contracts";
 import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import {
-  openShellCredentialSourceLabel,
+  openShellOwnedBy,
   openShellProviderName,
   openShellWorkspaceName,
   type OpenShellGateway,
@@ -32,12 +28,6 @@ import type {
   OpenShellProviderResponse,
   OpenShellRefreshStatus,
 } from "../sandbox/openshell-gateway-client.ts";
-
-import {
-  browserAuthorizationState,
-  exchangeAuthorizationCode,
-  startBrowserAuthorization,
-} from "./browser-authorization.ts";
 
 import {
   CODEX_OAUTH_CLIENT_ID,
@@ -172,34 +162,6 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     return this.completeCodexConnection(context, configured, state.rotateRequestId);
   }
 
-  async startBrowserAuthorization(
-    context: CredentialSourceContext,
-    request: CredentialBrowserAuthorizationRequest,
-  ): Promise<CredentialSourceBrowserAuthorization> {
-    this.requireBrowserSource(context);
-    return startBrowserAuthorization(context.source.id, request);
-  }
-
-  async completeBrowserAuthorization(
-    context: CredentialSourceContext,
-    privateState: string,
-    callback: CredentialBrowserAuthorizationCallback,
-    request: CredentialBrowserAuthorizationRequest,
-    clientSecret: string | undefined,
-    acceptGrant: (grant: OAuthConnectionGrant) => Promise<void>,
-  ): Promise<void> {
-    this.requireBrowserSource(context);
-    const state = browserAuthorizationState(context.source.id, privateState, callback);
-    const grant = await exchangeAuthorizationCode(
-      request,
-      state.verifier,
-      callback.code,
-      clientSecret,
-      context.signal,
-    );
-    await acceptGrant(grant);
-  }
-
   async configureRefresh(
     context: CredentialSourceContext,
     input: CredentialRefreshInput,
@@ -222,7 +184,9 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       {
         workspace: openShellWorkspaceName(context.namespace),
         provider: openShellProviderName(context.source.id),
-        credentialKey: type.credentialKey,
+        credentialKey: type.credentialKey(
+          managedProviderConfig(context.source.type, context.source.id, context.source.config),
+        ),
         strategy: type.strategy,
         material,
         requestId: input.requestId,
@@ -248,7 +212,9 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     const client = this.client(context);
     const workspace = openShellWorkspaceName(context.namespace);
     const provider = openShellProviderName(context.source.id);
-    const credentialKey = type.credentialKey;
+    const credentialKey = type.credentialKey(
+      managedProviderConfig(context.source.type, context.source.id, context.source.config),
+    );
     try {
       return credentialRefreshStatus(
         await client.rotateProviderCredential(
@@ -275,7 +241,9 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     const status = await this.client(context).getProviderRefreshStatus(
       openShellWorkspaceName(context.namespace),
       openShellProviderName(context.source.id),
-      type.credentialKey,
+      type.credentialKey(
+        managedProviderConfig(context.source.type, context.source.id, context.source.config),
+      ),
       context.signal,
     );
     // Device login has no grant until approval. Once account metadata records a
@@ -300,20 +268,11 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     await this.client(context).deleteProviderRefresh(
       openShellWorkspaceName(context.namespace),
       openShellProviderName(context.source.id),
-      type.credentialKey,
+      type.credentialKey(
+        managedProviderConfig(context.source.type, context.source.id, context.source.config),
+      ),
       context.signal,
     );
-  }
-
-  private requireBrowserSource(context: CredentialSourceContext): void {
-    if (
-      context.source.type !== "oauth2-refresh-token" ||
-      context.source.namespaceId !== context.namespace.id ||
-      context.source.ownerCapability !== "credential_refresh" ||
-      context.source.driverId !== this.id
-    ) {
-      throw new ScopeViolationError("Browser connections create oauth2-refresh-token sources.");
-    }
   }
 
   private async completeCodexConnection(
@@ -384,13 +343,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       openShellProviderName(context.source.id),
       context.signal,
     );
-    if (
-      provider !== undefined &&
-      (provider.type !== openShellProviderName(context.source.id) ||
-        provider.labels["app.kubernetes.io/managed-by"] !== "openclaw-enterprise" ||
-        provider.labels["openclaw.dev/credential-source-id"] !==
-          openShellCredentialSourceLabel(context.source.id))
-    ) {
+    if (provider !== undefined && !openShellOwnedBy(provider, context.source.id)) {
       throw new ScopeViolationError(
         "The OpenShell provider is not owned by this credential source.",
       );
@@ -403,11 +356,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     if (type === undefined) {
       throw new ScopeViolationError("The credential source type has no OpenShell refresh.");
     }
-    const { id, config } = context.source;
-    return {
-      ...type,
-      credentialKey: type.credentialKey(managedProviderConfig(context.source.type, id, config)),
-    };
+    return type;
   }
 
   private client(context: CredentialSourceContext) {

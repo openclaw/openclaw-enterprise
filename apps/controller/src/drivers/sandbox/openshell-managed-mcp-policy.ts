@@ -1,7 +1,7 @@
 import type { AgentRevision, HarnessWorkloadRequirements } from "@openclaw-enterprise/contracts";
 import { SandboxRevisionUnsupportedError } from "@openclaw-enterprise/occ";
 import { asRecord, numericLastLabel } from "@openclaw-enterprise/utils";
-import { openShellProviderName, revisionProviderSourceId } from "../../backends/openshell.ts";
+import { openShellProviderName } from "../../backends/openshell.ts";
 import {
   type ManagedMcpInstall,
   managedSlotBinding,
@@ -60,12 +60,14 @@ function openShellManagedMcpPolicy(
   installationProviders: readonly string[],
 ) {
   const binding = managedSlotBinding(revision.plugins?.plugins, install);
+  if (binding?.sourceIds.every((id) => revision.plugins?.savedAccounts?.sourceIds.includes(id))) {
+    return undefined;
+  }
   const { host, port, path } = install.endpoint;
   const selected = new Set(binding?.sourceIds);
   const attached = requirements.credentialAttachments.filter(
     ({ sourceId, requestScope }) =>
-      selected.has(sourceId) ||
-      requestScope?.destinations.some((ep) => ep.host === host && ep.port === port),
+      selected.has(sourceId) || (requestScope?.host === host && requestScope.port === port),
   );
   // Compute omits withdrawn providers while the immutable revision retains their IDs.
   for (const id of selected) {
@@ -82,11 +84,10 @@ function openShellManagedMcpPolicy(
   if (
     attached.some(
       ({ sourceId, ref, requestScope }) =>
-        ref !== openShellProviderName(revisionProviderSourceId(revision, sourceId)) ||
-        requestScope?.destinations.length !== 1 ||
-        !requestScope.destinations.some(
-          (row) => row.host === host && row.port === port && row.path === path,
-        ) ||
+        ref !== openShellProviderName(sourceId) ||
+        requestScope?.host !== host ||
+        requestScope.port !== port ||
+        requestScope.path !== path ||
         (binding && !selected.has(sourceId)),
     ) ||
     requirements.proxyWiring ||

@@ -1,9 +1,11 @@
--- A saved OAuth account belongs to the admitting Refresh Driver and has no sender.
-ALTER TABLE occ.credential_sources DROP CONSTRAINT credential_sources_owner_capability_valid,
+-- The Token Service owns saved OAuth accounts. Each Driver-owned source keeps its Driver ID.
+ALTER TABLE occ.credential_sources
+  ALTER COLUMN driver_id DROP NOT NULL,
+  DROP CONSTRAINT credential_sources_owner_capability_valid,
   ADD CONSTRAINT credential_sources_owner_capability_valid CHECK (
-    owner_capability = 'credential_gateway' OR
-    (owner_capability = 'credential_proxy' AND egress IS NOT NULL) OR
-    (owner_capability = 'credential_refresh' AND type = 'oauth2-refresh-token' AND egress IS NULL)
+    (driver_id IS NOT NULL AND (owner_capability = 'credential_gateway' OR
+      (owner_capability = 'credential_proxy' AND egress IS NOT NULL))) OR
+    (owner_capability = 'token_service' AND driver_id IS NULL AND type = 'oauth2-refresh-token' AND egress IS NULL)
   );
 --> statement-breakpoint
 -- The saved account records who consented and which template version they approved.
@@ -50,7 +52,7 @@ CREATE TABLE occ.connection_sessions (
   state_hash text PRIMARY KEY,
   namespace_id text NOT NULL,
   credential_source_id text NOT NULL,
-  private_state text NOT NULL,
+  pkce_verifier text NOT NULL,
   selected_scopes text[] NOT NULL,
   CONSTRAINT connection_sessions_selected_scopes_valid CHECK (array_position(selected_scopes,NULL) IS NULL),
   issuer_required boolean NOT NULL,

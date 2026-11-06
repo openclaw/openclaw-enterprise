@@ -110,13 +110,9 @@ to use an ambient token.
 
 ## Enable Google Workspace requests from a dedicated worker
 
-At deployment, OCE binds each selected Google source to its host, path and
-plugin release. OpenShell sends request details to the guard before substituting
-the selected account's bearer. The guard accepts a reviewed operation on its
-approved destination when any applicable source allows the request. Google
-enforces the OAuth grant on the bearer it receives. For example, adding a
-metadata-only Gmail account preserves search for another account with a search
-grant. Redeploy to change the shared policy. Public discovery uses no credential.
+For browser-connected Google accounts, select a [Credential Proxy and terminal sender](../reference/drivers/credential-proxy.md#saved-oauth-accounts). Each call identifies one account bound to the deployed plugin slot. Credential Proxy checks that account's grant, the exact destination and the reviewed Google operation before resolving a bearer. A metadata-only Gmail account can coexist with a second account that grants search. Select the second account when searching. Reviewed public discovery requests use no credential.
+
+For a manually registered OpenShell provider, the request guard below checks the reviewed operation and approved destination before OpenShell substitutes its bearer. Google enforces the selected account’s OAuth grant.
 
 Set the source’s `config.binary` to `/usr/local/lib/oce/plugins/google/bin/gog`
 when the installation allows other executables. The checks also cover `gog` helpers.
@@ -338,14 +334,14 @@ existing Gateway refresh sources use their own
 
 ## Diagnose before retrying
 
-| Observation                                       | Action and recovery evidence                                                                                                                                                 |
-| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Source `failed`, `absent`, or missing credentials | Read `credential-source get` and its `reason`; correct the owning Secret or enrollment. Require a new successful real request, not just `ready`.                             |
-| Unavailable authority or lost installation        | Check peer TLS trust, selected Driver identity, network access, and current runtime. Keep access closed until the current installation is verified.                          |
-| Prepared material is pending or expired           | Check worker custody and issuer access. Requests and readiness cannot trigger issuance. Wait for worker recovery and verify a new allowed request within existing authority. |
-| Refresh reports `reauthorize`                     | Obtain new provider authorization through the source's supported enrollment; do not replay an old refresh token.                                                             |
-| Installation or send outcome is unknown           | Preserve the original operation and custody. Fence the old worker/recipient and reconcile through its owner; do not resend or fabricate success.                             |
-| Withdrawal remains `pending`                      | Inspect its reason and `withdrawalInProgress`; follow the withdrawal recovery procedure. Do not report revocation as complete.                                               |
+| Observation                                       | Action and recovery evidence                                                                                                                                                                                         |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Source `failed`, `absent`, or missing credentials | Read `credential-source get` and its `reason`; correct the owning Secret or enrollment. Require a new successful real request, not just `ready`.                                                                     |
+| Unavailable authority or lost installation        | Check peer TLS trust, selected Driver identity, network access, and current runtime. Keep access closed until the current installation is verified.                                                                  |
+| Prepared material is pending or expired           | Check the Token Service’s issuer access. An authorized GitHub metadata request can start or join renewal until its deadline. Readiness checks and native Git broker requests still depend on background preparation. |
+| Refresh reports `reauthorize`                     | Obtain new provider authorization through the source's supported enrollment; do not replay an old refresh token.                                                                                                     |
+| Installation or send outcome is unknown           | Preserve the original operation and custody. Fence the old worker/recipient and reconcile through its owner; do not resend or fabricate success.                                                                     |
+| Withdrawal remains `pending`                      | Inspect its reason and `withdrawalInProgress`; follow the withdrawal recovery procedure. Do not report revocation as complete.                                                                                       |
 
 Public deployment status is not a token-custody ledger. If the selected owner
 cannot establish whether issuance, installation, or retirement completed, stop

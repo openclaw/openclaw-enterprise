@@ -24,7 +24,9 @@ Under **Accounts**, each slot lists compatible saved accounts. Select the accoun
 
 For an account marked **authorization required for this server**, use the same dialog to authorize it with the provider. Required scopes are already selected. If the slot or your permission to update the Agent changes during consent, the account stays saved in the Namespace. Select it later and deploy to apply the change.
 
-With one Google account, run `gog` as usual. With several, use the account ID in the `oce-plugin-accounts` skill and run `gog --oce-account <source-id> ...`. The worker supplies that account’s placeholder. OCE checks the shared operation and destination policy. Google enforces the selected account’s OAuth grant. [Enable the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+With one Google account, run `gog` as usual. With several, use the account ID in the `oce-plugin-accounts` skill and run `gog --oce-account <source-id> ...`. The worker identifies the selected account on each request. OCE checks its grant, destination and Google operation before the sender presents its bearer. [Enable the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+
+For browser-connected accounts, deploy a [Credential Proxy and OpenShell sender that support saved accounts](../../reference/drivers/credential-proxy.md#saved-oauth-accounts). Use browser-connected accounts together or manually registered OpenShell credentials together in a slot. OpenShell uses different senders for these credentials and cannot combine them at one destination. Clearing a slot keeps the separate [Agent grant](../../reference/connection-templates.md#use-a-saved-account-in-an-agent-plugin).
 
 If a manually registered provider lacks its account-specific placeholder, register a replacement source with the same Secret. Clearing a slot takes effect on the next deployment. To stop a running revision from using an account, [withdraw the source](../../reference/credential-sources/withdrawal.md).
 

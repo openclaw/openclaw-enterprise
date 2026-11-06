@@ -693,9 +693,9 @@
                 "anyOf": [
                   { "const": "credential_gateway", "type": "string" },
                   { "const": "credential_proxy", "type": "string" },
-                  { "const": "credential_refresh", "type": "string" }
+                  { "const": "token_service", "type": "string" }
                 ],
-                "description": "The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership."
+                "description": "The Token Service owns saved accounts. Other sources belong to the Driver that admitted them."
               },
               "ref": {
                 "additionalProperties": false,
@@ -22282,46 +22282,7 @@
           }
         ],
         "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "Example response",
-                    "value": {
-                      "data": { "withdrawalRequested": false },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "data": {
-                      "additionalProperties": false,
-                      "properties": { "withdrawalRequested": { "type": "boolean" } },
-                      "required": ["withdrawalRequested"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "requestId": {
-                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        }
-                      },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["data", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
+          "204": { "description": "No Content" },
           "400": {
             "content": {
               "application/json": {
@@ -36528,9 +36489,9 @@
                             "anyOf": [
                               { "const": "credential_gateway", "type": "string" },
                               { "const": "credential_proxy", "type": "string" },
-                              { "const": "credential_refresh", "type": "string" }
+                              { "const": "token_service", "type": "string" }
                             ],
-                            "description": "The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership."
+                            "description": "The Token Service owns saved accounts. Other sources belong to the Driver that admitted them."
                           },
                           "ref": {
                             "additionalProperties": false,

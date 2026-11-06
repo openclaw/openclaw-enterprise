@@ -13,7 +13,7 @@ Agent setup. A single source ID string also selects one account.
 
 OCC checks each source against the slot and the caller's authority. The worker
 gets a distinct placeholder per source, stable across account reordering.
-Browser consent adds the saved account to the slot. Each bound account receives its own delivery profile for the Agent.
+Browser consent adds the saved account to the slot. OpenShell submits the final request and its installed slot binding to Credential Proxy. OCC checks that the selected account belongs to that revision and still has a grant for the requested operation. Token Service resolves its bearer for that send.
 
 With several accounts on an enabled slot, one skill lists source IDs, saved
 names and any provider-confirmed email or workspace by plugin and slot. The
@@ -36,7 +36,7 @@ For a CLI slot, the worker supplies the selected placeholder to that command
 invocation. One account can be used directly. With several accounts, the
 shared skill explains how to name the source. An unknown or withdrawn
 source cannot trigger a call through another account. For Google, OCE applies a
-shared operation and destination policy. Where account destinations overlap, an applicable binding can authorize the operation. Google enforces the selected account’s OAuth scopes.
+shared operation and destination policy. For a browser-connected account, Credential Proxy checks the selected grant and request on each send. Google enforces the scopes of the bearer it receives.
 
 Qualify the change by calling the same tool on two accounts, checking which
 account answered each call, then removing one binding and using the other.

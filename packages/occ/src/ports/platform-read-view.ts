@@ -44,10 +44,8 @@ export function createPlatformReadView(
       "findTokenCustody",
       "listDueConnectionTokens",
       "findSavedConnection",
-      "hasPendingConnectionWithdrawals",
       "listAgentConnections",
       "listNamespaceConnections",
-      "listDeliveryProfiles",
       "listRevokingConnections",
     ]),
     secrets: bindRepository(repositories.secrets, lifetime, [

@@ -44,7 +44,7 @@ import {
   signInWithEmailPassword,
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -11705,8 +11705,18 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     "INVALID_REQUEST",
   );
   const approved = pluginsFor(["slack_send_message"], [source.data.id, second.data.id]);
+  // Binding this known, attached Gateway source requires operate even when its metadata is private.
+  state.restrictions.push({
+    id: "private-slack-source",
+    namespaceId: namespace.id,
+    resourceKind: "credential_source",
+    resourceId: source.data.id,
+    action: "read",
+    effect: "deny",
+  });
   const saved = await save(approved);
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  state.restrictions.pop();
   assert.deepEqual(saved.data.plugins[pluginId].driverPolicy.toolNames, ["slack_send_message"]);
   const deployed = await controller.request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));

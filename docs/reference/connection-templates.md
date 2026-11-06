@@ -39,9 +39,12 @@ See the [API reference](api.md#connections) for request and response fields.
 
 ## Connect an account
 
+OCC handles browser consent and the callback. After exchange, OCC registers the grant with the Token Service. It returns a stable account reference and renews the access token using the original client registration. Users can connect an account before an administrator configures a Credential Gateway for Agent delivery.
+
 1. Use a signed-in browser session. List available templates at
    `GET /namespaces/{namespaceId}/connection-templates`. OCC requires
-   `credential_source:create` for that Namespace.
+   `credential_source:create` for that Namespace. A template appears here once
+   its current version has an OAuth client.
 2. Send the chosen `connectionTemplateId` to
    `POST /namespaces/{namespaceId}/connections`. For a template with no configured scope list, supply optional `selectedScopes` or omit them to use provider defaults. A manual template with configured scopes uses the full list. For MCP, include every scope required by the resource and stay within any configured list. Open the returned
    `authorizationUrl` in the same browser and approve the request.
@@ -74,14 +77,6 @@ The **Accounts** section in the Agent's plugin settings lists saved accounts fro
 
 Saving the selection requires permission to update the Agent and operate the saved credential. A completed connection from a plugin adds the new account when the release and previously selected account IDs still match. The account remains available to its owner when the slot changes during consent. See [configure plugins](../guides/topics/plugins-configure.md#use-the-console).
 
-To withdraw a saved account, clear the bindings that use it and call `DELETE /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`. OCC queues access removal from deployed revisions. Other Agents keep their own grants.
+To detach a saved account, uncheck that account in each plugin slot that uses it on the Agent and save your selections. Then call `DELETE /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`. OCC removes that Agent’s grant. Other Agents can still use their own grants.
 
-OpenShell gives a worker a reference for each credential when the process starts.
-Changing the sender’s host, port or path invalidates that reference. After the
-updated policy loads, a newly started worker can use the same account at its
-current destinations. A process that kept the old reference needs to restart.
-The account owner can keep the original OAuth grant.
-
-For example, if an admin changes a Gmail template to allow only Calendar, a Gmail-only account stays attached but receives no token for Calendar. Other accounts on the Agent remain usable. Restoring a permitted Gmail destination lets OCE deliver the credential again.
-
-For Google Workspace, include the packaged Google CLI in the Installation’s OpenShell `toolBinaries`. One saved account can serve multiple Google APIs. For example, to read Gmail and Calendar, the current template must allow both destinations, the account must have the necessary provider scopes, and the Agent policy must allow each operation. Public API discovery stays separate from credentialed requests. Every approved executable uses the same guarded Google routes. A metadata-only Gmail grant can read message metadata from the CLI or an approved script. Reading a full message requires the corresponding grant.
+Use **Load tools** to discover an MCP server’s tools before deployment. To use a saved account from a dedicated OpenClaw worker, select an OpenShell Credential Proxy and a supervisor that supports the [saved-account request contract](drivers/credential-proxy.md#saved-oauth-accounts). OCC checks the deployed slot and the Agent’s current grant on each request. The Token Service supplies the current access token, and the supervisor injects it for that send. OpenShell releases 0.1.6 and 0.1.7 lack this capability.

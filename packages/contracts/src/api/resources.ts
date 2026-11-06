@@ -159,10 +159,7 @@ export const AgentPluginCatalogResponse = Type.Object(
         nextCursor: Type.Union([Type.String(), Type.Null()]),
         setup: Type.Optional(
           Type.Object(
-            {
-              message: Type.String(),
-              links: Type.Array(PluginCatalogLinkSchema),
-            },
+            { message: Type.String(), links: Type.Array(PluginCatalogLinkSchema) },
             { additionalProperties: false },
           ),
         ),
@@ -218,11 +215,7 @@ const PluginPolicyCapabilitiesSchema = Type.Object(
     policyScopeByPlugin: Type.Optional(Type.Record(Type.String(), Type.Literal("enablement_only"))),
     approvers: Type.Optional(
       Type.Object(
-        {
-          agent: Type.Boolean(),
-          plugin: Type.Boolean(),
-          tools: Type.Boolean(),
-        },
+        { agent: Type.Boolean(), plugin: Type.Boolean(), tools: Type.Boolean() },
         { additionalProperties: false },
       ),
     ),
@@ -343,12 +336,7 @@ const InstallationCapabilitiesSchema = Type.Object(
     ),
     agentProvisioning: Type.Optional(
       Type.Object(
-        {
-          executionModes: Type.Array(HarnessExecutionModeSchema, {
-            minItems: 1,
-            maxItems: 2,
-          }),
-        },
+        { executionModes: Type.Array(HarnessExecutionModeSchema, { minItems: 1, maxItems: 2 }) },
         { additionalProperties: false },
       ),
     ),
@@ -366,9 +354,7 @@ const InstallationCapabilitiesSchema = Type.Object(
     ),
     nativeWorkers: Type.Optional(
       Type.Object(
-        {
-          support: Type.Union([Type.Literal("pinned-runtime"), Type.Literal("custom-image")]),
-        },
+        { support: Type.Union([Type.Literal("pinned-runtime"), Type.Literal("custom-image")]) },
         {
           additionalProperties: false,
           description:
@@ -507,10 +493,7 @@ export const AgentReadSchema = Type.Union(
 );
 
 export const PluginDriverIdentitySchema = Type.Object(
-  {
-    id: Type.String({ minLength: 1 }),
-    implementation: Type.String({ minLength: 1 }),
-  },
+  { id: Type.String({ minLength: 1 }), implementation: Type.String({ minLength: 1 }) },
   { additionalProperties: false, $id: "PluginDriverIdentity" },
 );
 
@@ -710,11 +693,11 @@ export const CredentialSourceSchema = Type.Object(
       [
         Type.Literal("credential_gateway"),
         Type.Literal("credential_proxy"),
-        Type.Literal("credential_refresh"),
+        Type.Literal("token_service"),
       ],
       {
         description:
-          "The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership.",
+          "The Token Service owns saved accounts. Other sources belong to the Driver that admitted them.",
       },
     ),
     config: CredentialSourceConfig,
@@ -1312,10 +1295,7 @@ export const IAMAccessBindingListResponse = Type.Object(
 );
 
 export const AgentListResponse = Type.Object(
-  {
-    data: Type.Array(AgentReadSchema, { description: agentReadDescription }),
-    meta: Meta,
-  },
+  { data: Type.Array(AgentReadSchema, { description: agentReadDescription }), meta: Meta },
   { additionalProperties: false },
 );
 
@@ -1364,10 +1344,7 @@ export const RepositoryRevisionStateSchema = Type.Object(
       },
       { additionalProperties: false },
     ),
-    deadlineWallMs: Type.Integer({
-      minimum: 1,
-      maximum: Number.MAX_SAFE_INTEGER,
-    }),
+    deadlineWallMs: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
     bindings: RepositoryBindingSelectionsSchema,
   },
   { additionalProperties: false },
@@ -1397,10 +1374,7 @@ export const AgentRevisionSchema = Type.Object(
       { additionalProperties: false },
     ),
     compute: Type.Object(
-      {
-        id: Type.String({ minLength: 1 }),
-        implementation: Type.String({ minLength: 1 }),
-      },
+      { id: Type.String({ minLength: 1 }), implementation: Type.String({ minLength: 1 }) },
       { additionalProperties: false },
     ),
     sandboxDriverId: Type.Optional(
@@ -1744,11 +1718,7 @@ const KubernetesObjectName = Type.String({
   maxLength: 253,
   pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
 });
-const KubernetesUid = Type.String({
-  minLength: 1,
-  maxLength: 64,
-  pattern: "^[A-Za-z0-9-]+$",
-});
+const KubernetesUid = Type.String({ minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9-]+$" });
 const RuntimeReason = Type.String({ maxLength: 128 });
 const RuntimeMessage = Type.String({ maxLength: 8192 });
 // Kubelet timestamps carry up to nanosecond precision.
@@ -2024,10 +1994,7 @@ export const WorkspaceFileResponse = Type.Object(
     data: Type.Object(
       {
         name: WorkspaceFileName,
-        content: Type.String({
-          maxLength: 16 * 1024,
-          pattern: "^[^\\u0000]*$",
-        }),
+        content: Type.String({ maxLength: 16 * 1024, pattern: "^[^\\u0000]*$" }),
       },
       { additionalProperties: false },
     ),
@@ -2138,9 +2105,7 @@ export const PresetResponse = Type.Object(
 export const PresetSummarySchema = Type.Pick(
   PresetSchema,
   ["id", "namespaceId", "name", "createdAt"],
-  {
-    description: "Preset summary without its template. Read the exact Preset for the template.",
-  },
+  { description: "Preset summary without its template. Read the exact Preset for the template." },
 );
 export const PresetListResponse = Type.Object(
   { data: Type.Array(PresetSummarySchema), meta: Meta },

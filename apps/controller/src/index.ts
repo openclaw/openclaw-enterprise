@@ -612,11 +612,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
   if (operation.operationId === "listNamespaceConnections") {
     return [
       { ...permission, scope: "requested" },
-      {
-        action: "read",
-        resourceKind: "credential_source",
-        scope: "each_returned",
-      },
+      { action: "read", resourceKind: "credential_source", scope: "each_returned" },
     ];
   }
 
@@ -650,11 +646,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
   if (operation.operationId === "TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing") {
     return [
       { ...permission, scope: "requested" },
-      {
-        action: "administer",
-        resourceKind: "installation",
-        scope: "installation",
-      },
+      { action: "administer", resourceKind: "installation", scope: "installation" },
     ];
   }
 
@@ -667,13 +659,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         scope: saved ? "requested" : "namespace",
       },
       ...(saved
-        ? [
-            {
-              action: "read" as const,
-              resourceKind: "agent" as const,
-              scope: "requested" as const,
-            },
-          ]
+        ? [{ action: "read" as const, resourceKind: "agent" as const, scope: "requested" as const }]
         : []),
       {
         action: operation.operationId.startsWith("start") ? "create" : "operate",
@@ -781,11 +767,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
 
   if (operation.operationId === "createIAMAccessBinding") {
     return [
-      {
-        action: "administer",
-        resourceKind: "installation",
-        scope: "requested",
-      },
+      { action: "administer", resourceKind: "installation", scope: "requested" },
       { action: "read", resourceKind: "namespace", scope: "requested" },
       {
         action: "read",
@@ -851,11 +833,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     operation.operationId === "getIAMServicePrincipal"
   ) {
     return [
-      {
-        action: "administer",
-        resourceKind: "installation",
-        scope: "requested",
-      },
+      { action: "administer", resourceKind: "installation", scope: "requested" },
       { action: "read", resourceKind: "namespace", scope: "requested" },
     ];
   }
@@ -974,11 +952,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     return [
       { action: "create", resourceKind: "agent", scope: "namespace" },
       { action: "create", resourceKind: "configuration", scope: "namespace" },
-      {
-        action: "administer",
-        resourceKind: "installation",
-        scope: "requested",
-      },
+      { action: "administer", resourceKind: "installation", scope: "requested" },
       ...(["read", "operate", "deploy"] as const).map((action) => ({
         action,
         resourceKind: "agent" as const,
@@ -1084,11 +1058,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     case "agent_collection":
       return [
         { ...permission, scope: "requested" },
-        {
-          action: "read",
-          resourceKind: "agent_revision",
-          scope: "each_returned",
-        },
+        { action: "read", resourceKind: "agent_revision", scope: "each_returned" },
       ];
     default:
       return [{ ...permission, scope: "requested" }];
@@ -1237,9 +1207,7 @@ function clientInstallation(
     ...(agentProvisioning === undefined
       ? {}
       : {
-          agentProvisioning: {
-            executionModes: [...agentProvisioning.executionModes],
-          },
+          agentProvisioning: { executionModes: [...agentProvisioning.executionModes] },
         }),
   };
   return {
@@ -1432,11 +1400,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             in: "cookie",
             name: options.auth?.sessionCookieName ?? "openclaw_occ.session_token",
           },
-          serviceApiKey: {
-            type: "apiKey",
-            in: "header",
-            name: OCC_SERVICE_KEY_HEADER,
-          },
+          serviceApiKey: { type: "apiKey", in: "header", name: OCC_SERVICE_KEY_HEADER },
         },
       },
       security: [{ sessionCookie: [] }, { serviceApiKey: [] }],
@@ -1475,9 +1439,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             type: "object",
             additionalProperties: false,
             required: ["subject"],
-            properties: {
-              subject: { type: "string", pattern: "^[1-9][0-9]{0,19}$" },
-            },
+            properties: { subject: { type: "string", pattern: "^[1-9][0-9]{0,19}$" } },
           },
         },
       },
@@ -1592,9 +1554,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               ? {}
               : {
                   ...(outcome === "denied" && authorizationEvidence.restrictionIds.length > 0
-                    ? {
-                        decisionReason: "A matching Restriction denied the operation.",
-                      }
+                    ? { decisionReason: "A matching Restriction denied the operation." }
                     : {}),
                 }),
           }),
@@ -1816,11 +1776,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const selected = selectedIAMDriver();
     let decision;
     try {
-      decision = await selected.authorize({
-        principalId: actorId,
-        action,
-        resource,
-      });
+      decision = await selected.authorize({ principalId: actorId, action, resource });
     } catch {
       throw dependencyUnavailable();
     }
@@ -1833,10 +1789,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     ) {
       throw dependencyUnavailable();
     }
-    return {
-      allowed: decision.allowed,
-      restricted: decision.evidence.restrictionIds.length > 0,
-    };
+    return { allowed: decision.allowed, restricted: decision.evidence.restrictionIds.length > 0 };
   }
 
   async function callerMay(
@@ -2422,10 +2375,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         throw dependencyUnavailable();
       }
       reply.send({
-        data: backends.map((backend) => ({
-          id: backend.id,
-          type: backend.type,
-        })),
+        data: backends.map((backend) => ({ id: backend.id, type: backend.type })),
         meta: { requestId: request.id },
       });
       return;
@@ -2487,22 +2437,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       // instead of an Installation-only read, which the API audits when it is refused.
       const [namespaceDelete, agentCreate, secretCreate, installationAdminister] =
         await Promise.all([
-          callerMay(context.actorId, "delete", {
-            kind: "namespace",
-            id: namespaceId,
-            namespaceId,
-          }),
+          callerMay(context.actorId, "delete", { kind: "namespace", id: namespaceId, namespaceId }),
           ...(["agent", "secret"] as const).map((kind) =>
-            callerMay(context.actorId, "create", {
-              kind,
-              id: namespaceId,
-              namespaceId,
-            }),
+            callerMay(context.actorId, "create", { kind, id: namespaceId, namespaceId }),
           ),
-          callerMay(context.actorId, "administer", {
-            kind: "installation",
-            id: installationId,
-          }),
+          callerMay(context.actorId, "administer", { kind: "installation", id: installationId }),
         ]);
       reply.send({
         data: {
@@ -2642,9 +2581,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           harnessId: body?.harnessId as "codex" | "openclaw",
           ...(body?.credentialSource === undefined
             ? {}
-            : {
-                credentialSource: body.credentialSource as CredentialSourceReference,
-              }),
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
           ...(body?.secretRef === undefined
             ? { accessToken: body?.accessToken as string }
             : { secretRef: body.secretRef as SecretReference }),
@@ -2666,9 +2603,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           harnessId: body?.harnessId as "codex" | "openclaw",
           ...(body?.credentialSource === undefined
             ? {}
-            : {
-                credentialSource: body.credentialSource as CredentialSourceReference,
-              }),
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
           ...(body?.secretRef === undefined
             ? { accessToken: body?.accessToken as string }
             : { secretRef: body.secretRef as SecretReference }),
@@ -2700,9 +2635,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         {
           ...(body?.credentialSource === undefined
             ? {}
-            : {
-                credentialSource: body.credentialSource as CredentialSourceReference,
-              }),
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
           ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
           ...(body?.q === undefined ? {} : { q: body.q as string }),
         },
@@ -2945,11 +2878,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           callerMay(context.actorId, "update", configuration),
           callerMay(context.actorId, "read", configuration),
           // Checked first, so listing the Secrets below is never a refused, audited read.
-          callerMay(context.actorId, "read", {
-            kind: "namespace",
-            id: namespaceId,
-            namespaceId,
-          }),
+          callerMay(context.actorId, "read", { kind: "namespace", id: namespaceId, namespaceId }),
         ]);
       // Binding a Secret to the Agent's Configuration, or as its Harness authentication source,
       // authorizes Secret operate on it (finding 2453), and so does deploying a draft that binds
@@ -3031,11 +2960,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ? workspaceWithoutRunningVersion(agentId, error.stopped)
             : error;
         });
-        const target = {
-          kind: "agent" as const,
-          id: agent.id,
-          namespaceId: agent.namespaceId,
-        };
+        const target = { kind: "agent" as const, id: agent.id, namespaceId: agent.namespaceId };
         // After authorization, so a caller without the grant gets its 403, not this 503
         // (finding 2584).
         if (options.workspaceFilesAccess === undefined || signal.aborted) {
@@ -3295,10 +3220,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             .send(runtimeLogDownloadBody(page, agentId, logQuery.previous));
           return;
         }
-        reply.send({
-          data: runtimeLogPageBody(page),
-          meta: { requestId: request.id },
-        });
+        reply.send({ data: runtimeLogPageBody(page), meta: { requestId: request.id } });
         return;
       } finally {
         reply.raw.off("close", onClose);
@@ -3341,10 +3263,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
     };
     const responses = (success: Record<string, unknown>, status = 200) => ({
-      [status]: {
-        description: status === 201 ? "Created" : "OK",
-        ...envelope(success),
-      },
+      [status]: { description: status === 201 ? "Created" : "OK", ...envelope(success) },
       401: { description: "Unauthorized", ...error },
       503: { description: "Service Unavailable", ...error },
     });
@@ -3405,11 +3324,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           tags: [...operation.tags],
           security: [{ sessionCookie: [] }, { serviceApiKey: [] }],
           "x-openclaw-permissions": [
-            {
-              action: "administer",
-              resourceKind: "installation",
-              scope: "requested",
-            },
+            { action: "administer", resourceKind: "installation", scope: "requested" },
           ],
           ...(creating
             ? {
@@ -3418,15 +3333,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   additionalProperties: false,
                   required: ["servicePrincipalId", "name"],
                   properties: {
-                    servicePrincipalId: {
-                      type: "string",
-                      minLength: 1,
-                      maxLength: 200,
-                    },
-                    namespaceId: {
-                      type: "string",
-                      pattern: RESOURCE_ID.namespaceId.source,
-                    },
+                    servicePrincipalId: { type: "string", minLength: 1, maxLength: 200 },
+                    namespaceId: { type: "string", pattern: RESOURCE_ID.namespaceId.source },
                     name: {
                       type: "string",
                       minLength: 1,
@@ -3447,9 +3355,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   type: "object",
                   additionalProperties: false,
                   required: ["keyId"],
-                  properties: {
-                    keyId: { type: "string", minLength: 1, maxLength: 200 },
-                  },
+                  properties: { keyId: { type: "string", minLength: 1, maxLength: 200 } },
                 },
               }),
           response: {
@@ -3546,9 +3452,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                       servicePrincipalId,
                       ...(creating
                         ? {}
-                        : {
-                            serviceKeyId: (request.params as { keyId: string }).keyId,
-                          }),
+                        : { serviceKeyId: (request.params as { keyId: string }).keyId }),
                     },
                   },
                 ),
@@ -3638,10 +3542,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             } catch {
               throw dependencyUnavailable();
             }
-            reply.send({
-              data: { id: key.id, revoked: true },
-              meta: { requestId: request.id },
-            });
+            reply.send({ data: { id: key.id, revoked: true }, meta: { requestId: request.id } });
           }
         },
       });
@@ -3748,9 +3649,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               "Consumes the browser-bound attempt before provider exchange. Redirects to Console after session and audit commit or with a fixed failure classification.",
             tags: ["Authentication"],
             security: [],
-            response: {
-              302: { description: "Redirect to Console", type: "null" },
-            },
+            response: { 302: { description: "Redirect to Console", type: "null" } },
           },
         },
         async (request, reply) => options.auth[`${provider.name}Callback`](request, reply),
@@ -3769,9 +3668,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               type: "object",
               additionalProperties: false,
               required: ["attemptId"],
-              properties: {
-                attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" },
-              },
+              properties: { attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" } },
             },
             response: {
               // A body without the exact attemptId fails the schema.
@@ -3899,11 +3796,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
-            {
-              action: "administer",
-              resourceKind: "installation",
-              scope: "requested",
-            },
+            { action: "administer", resourceKind: "installation", scope: "requested" },
           ],
           params: accountParams,
           response: {
@@ -4037,11 +3930,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             tags: [...operation.tags],
             security: [{ sessionCookie: [] }],
             "x-openclaw-permissions": [
-              {
-                action: "administer",
-                resourceKind: "installation",
-                scope: "requested",
-              },
+              { action: "administer", resourceKind: "installation", scope: "requested" },
             ],
             params: operationName === "detach" ? methodParams : accountParams,
             body: {
@@ -4052,25 +3941,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   ? ["subject", "expectedVersion"]
                   : ["expectedVersion"],
               properties: {
-                expectedVersion: {
-                  type: "integer",
-                  minimum: 1,
-                  maximum: 2147483647,
-                },
+                expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
                 ...(operationName === "github"
-                  ? {
-                      subject: {
-                        type: "string",
-                        pattern: "^[1-9][0-9]{0,19}$",
-                      },
-                    }
+                  ? { subject: { type: "string", pattern: "^[1-9][0-9]{0,19}$" } }
                   : operationName === "google" || operationName === "oidc"
-                    ? {
-                        subject: {
-                          type: "string",
-                          pattern: "^[\\x21-\\x7E]{1,255}$",
-                        },
-                      }
+                    ? { subject: { type: "string", pattern: "^[\\x21-\\x7E]{1,255}$" } }
                     : {}),
               },
             },
@@ -4172,11 +4047,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
-            {
-              action: "administer",
-              resourceKind: "installation",
-              scope: "requested",
-            },
+            { action: "administer", resourceKind: "installation", scope: "requested" },
           ],
           response: {
             ...responses(recoveryResponse),
@@ -4227,11 +4098,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
-            {
-              action: "administer",
-              resourceKind: "installation",
-              scope: "requested",
-            },
+            { action: "administer", resourceKind: "installation", scope: "requested" },
           ],
           body: {
             type: "object",
@@ -4239,26 +4106,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             required: ["userId", "expectedCurrentUserId", "expectedVersion"],
             properties: {
               userId: { type: "string", minLength: 1, maxLength: 200 },
-              expectedCurrentUserId: {
-                type: "string",
-                minLength: 1,
-                maxLength: 200,
-              },
-              expectedVersion: {
-                type: "integer",
-                minimum: 1,
-                maximum: 2147483647,
-              },
+              expectedCurrentUserId: { type: "string", minLength: 1, maxLength: 200 },
+              expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
             },
           },
           response: {
             ...responses({
               ...recoveryResponse,
               required: [...recoveryResponse.required, "changed"],
-              properties: {
-                ...recoveryResponse.properties,
-                changed: { type: "boolean" },
-              },
+              properties: { ...recoveryResponse.properties, changed: { type: "boolean" } },
             }),
             400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
@@ -4362,11 +4218,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
-            {
-              action: "administer",
-              resourceKind: "installation",
-              scope: "requested",
-            },
+            { action: "administer", resourceKind: "installation", scope: "requested" },
           ],
           params: accountParams,
           response: {
@@ -4404,10 +4256,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         }
         const { userId } = request.params as { userId: string };
         const enrolled = await options.auth.enrolAccount(userId, actor);
-        reply.send({
-          data: { userId, ...enrolled },
-          meta: { requestId: request.id },
-        });
+        reply.send({ data: { userId, ...enrolled }, meta: { requestId: request.id } });
       },
     );
 
@@ -4525,11 +4374,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           tags: [...createAuthAccountOperation.tags],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
-            {
-              action: "administer",
-              resourceKind: "installation",
-              scope: "requested",
-            },
+            { action: "administer", resourceKind: "installation", scope: "requested" },
           ],
           response: {
             ...responses(account, 201),
@@ -4605,10 +4450,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         const external =
           github === undefined
             ? undefined
-            : {
-                providerId: githubProviderId!,
-                subject: github.subject as string,
-              };
+            : { providerId: githubProviderId!, subject: github.subject as string };
         const prepared = await options.auth.prepareAccount({
           email,
           password,
@@ -4771,9 +4613,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
               : operation.operationId === "createConfiguration" ||
                   operation.operationId === "updateConfiguration"
-                ? {
-                    bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT,
-                  }
+                ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
                 : {}),
         schema,
         onRequest: async (request) => {
@@ -4804,9 +4644,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         },
         ...(authorizesBeforeBody(operation)
           ? {}
-          : {
-              preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation),
-            }),
+          : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
         handler: async (request, reply) => perform(request, reply, operation),
       });
     }
@@ -4959,10 +4797,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     ) {
       return false;
     }
-    return callerMay(actorId, "administer", {
-      kind: "installation",
-      id: installationId,
-    }).catch(() => false);
+    return callerMay(actorId, "administer", { kind: "installation", id: installationId }).catch(
+      () => false,
+    );
   }
 
   app.setErrorHandler(async (error, request, reply) => {

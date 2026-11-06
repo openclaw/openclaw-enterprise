@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { channel } from "node:diagnostics_channel";
+channel("undici:request:headers").subscribe(({ request, response }) => {
+  if (response.statusCode >= 400)
+    console.warn(
+      "node host MCP server downstream failed: HTTP " +
+        response.statusCode +
+        " on " +
+        request.method,
+    );
+});
+import { mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { createInterface } from "node:readline";
 import { NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND } from "openclaw/src/infra/node-commands.js";
 import { startNodeHostMcpManager } from "openclaw/src/node-host/mcp.js";
 import {
@@ -13,7 +24,8 @@ import {
   testWorkerLaunchInput,
 } from "openclaw/src/node-host/node-worker-supervisor.test-support.js";
 
-const { bindings, plugins, releaseFiles } = JSON.parse(await readFile(process.argv[2], "utf8"));
+const control = createInterface({ input: process.stdin })[Symbol.asyncIterator]();
+const { bindings, plugins, releaseFiles } = JSON.parse((await control.next()).value);
 assert.equal(bindings.length, 2);
 assert(
   bindings.every(
@@ -65,9 +77,8 @@ try {
   );
   assert(turn, "The supervisor must admit the worker's local MCP tool.");
   try {
-    const verifiedAccounts = [];
-    for (const { handle, label, expectedSubject } of bindings) {
-      let reply;
+    async function call(handle) {
+      let response;
       await turn.invoke(
         {
           type: "mcp-call",
@@ -77,18 +88,40 @@ try {
           arguments: { account: handle, arguments: {} },
         },
         async (frame) => {
-          reply = frame;
+          response = frame;
         },
       );
-      const subject = reply?.result?.content.find(({ type }) => type === "text")?.text;
-      assert(
-        !reply?.error && !reply?.result?.isError && subject === expectedSubject,
-        "The recipient must return the subject of the selected browser account.",
-      );
-      verifiedAccounts.push({ handle, label, subject });
+      return response;
     }
+    const subject = (reply) => reply?.result?.content?.find(({ type }) => type === "text")?.text;
+    const verifiedAccounts = [];
+    for (const { handle, label, expectedSubject } of bindings) {
+      const reply = await call(handle);
+      assert(
+        !reply?.error && !reply?.result?.isError && subject(reply) === expectedSubject,
+        "The recipient must see the selected browser account.",
+      );
+      verifiedAccounts.push({ handle, label, subject: subject(reply) });
+    }
+    console.log("OCE_BROWSER_ACCOUNTS_VERIFIED");
+    assert.equal((await control.next()).value, "withdrawn");
+    const refused = await call(bindings[0].handle);
+    assert(
+      refused?.error || refused?.result?.isError,
+      "An already-discovered session must refuse its withdrawn grant.",
+    );
+    assert.equal(
+      subject(await call(bindings[1].handle)),
+      bindings[1].expectedSubject,
+      "The remaining account keeps its grant.",
+    );
     console.log(
-      JSON.stringify({ workerTool: tool.name, upstreamTool: "whoami", verifiedAccounts }),
+      JSON.stringify({
+        workerTool: tool.name,
+        upstreamTool: "whoami",
+        verifiedAccounts,
+        withdrawnDenied: true,
+      }),
     );
   } finally {
     turn.close();

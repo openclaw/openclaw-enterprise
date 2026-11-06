@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import { createServer as createSecureServer } from "node:https";
@@ -369,6 +370,8 @@ test("the OpenShell client reaches a bearer-passthrough service through the gate
     const accept = createHash("sha1")
       .update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
       .digest("base64");
+    // Consume the client's close frame so this raw upgrade fixture observes EOF.
+    socket.resume();
     socket.end(
       `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );
@@ -500,6 +503,107 @@ test("the OpenShell client reaches a bearer-passthrough service through the gate
   );
 });
 
+test("an accepted OpenShell probe closes its WebSocket normally without sending a Harness request", async (t) => {
+  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
+  const peers = new WebSocketServer({ noServer: true });
+  const gateway = createServer();
+  let requests = 0;
+  gateway.on("upgrade", (request, socket, head) => {
+    assert.equal(request.headers.authorization, `Bearer ${TOKEN}`);
+    peers.handleUpgrade(request, socket, head, (peer) => {
+      peer.on("message", () => requests++);
+      peers.emit("connection", peer);
+    });
+  });
+  const port = await listen(gateway);
+  t.after(async () => {
+    for (const peer of peers.clients) {
+      peer.terminate();
+    }
+    await new Promise((resolve) => peers.close(resolve));
+    await close(gateway);
+  });
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
+  t.after(() => client.close());
+  const deadline = AbortSignal.timeout(5_000);
+  const closed = once(peers, "connection", { signal: deadline }).then(([peer]) =>
+    once(peer, "close", { signal: deadline }),
+  );
+  const handshake = client
+    .serviceWebSocketHandshake(serviceUrl, TOKEN, deadline)
+    .then((accepted) => assert.equal(accepted, true));
+  // The real WebSocket peer reports 1006 when a probe drops TCP without a close frame.
+  const [, [code, reason]] = await Promise.all([handshake, closed]);
+  assert.equal(code, 1000);
+  assert.equal(reason.length, 0);
+  assert.equal(requests, 0, "readiness must not invoke the Harness");
+});
+
+test("an OpenShell probe gives a peer that delays TCP closure its full cleanup deadline", async (t) => {
+  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const { Receiver, Sender } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
+  const gateway = createServer();
+  const sockets = new Set();
+  let closeCode;
+  let closeReceivedAt;
+  gateway.on("upgrade", (request, socket, head) => {
+    sockets.add(socket);
+    const accept = createHash("sha1")
+      .update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+      .digest("base64");
+    socket.write(
+      `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
+    );
+    // Use the real protocol codec, but withhold TCP EOF after acknowledging Close.
+    const receiver = new Receiver({ isServer: true });
+    const sender = new Sender(socket);
+    receiver.once("conclude", (code, reason) => {
+      closeCode = code;
+      closeReceivedAt = performance.now();
+      sender.close(code, reason, false, () => {});
+    });
+    if (head.length > 0) {
+      receiver.write(head);
+    }
+    socket.pipe(receiver);
+  });
+  const port = await listen(gateway);
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    await close(gateway);
+  });
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: `http://127.0.0.1:${port}`,
+    requestTimeoutMs: 1_000,
+  });
+  t.after(() => client.close());
+  const deadline = AbortSignal.timeout(5_000);
+  let endedAt;
+  const ended = once(gateway, "upgrade", { signal: deadline }).then(([, socket]) =>
+    once(socket, "end", { signal: deadline }).then(() => {
+      endedAt = performance.now();
+    }),
+  );
+  const started = performance.now();
+  const handshake = client
+    .serviceWebSocketHandshake(serviceUrl, TOKEN, deadline)
+    .then((accepted) => {
+      assert.equal(accepted, true);
+      // Readiness must be visible while the peer still holds TCP open, not after cleanup.
+      assert.equal(endedAt, undefined);
+      assert.ok(performance.now() - started < 750, "readiness waited for connection cleanup");
+    });
+  await Promise.all([handshake, ended]);
+  assert.equal(closeCode, 1000);
+  const cleanupElapsed = endedAt - closeReceivedAt;
+  // Allow scheduling tolerance, but detect both early FIN and a doubled cleanup deadline.
+  assert.ok(endedAt - started >= 950, "client ended TCP before the cleanup deadline");
+  assert.ok(cleanupElapsed < 1_500, "client exceeded the configured cleanup deadline");
+});
+
 test("a refused OpenShell WebSocket handshake releases an unfinished HTTP response", async () => {
   let socket;
   let closed = false;
@@ -616,6 +720,8 @@ function tlsGateway(keyPath, certPath, seen) {
     const accept = createHash("sha1")
       .update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
       .digest("base64");
+    // Consume the client's close frame so this raw upgrade fixture observes EOF.
+    socket.resume();
     socket.end(
       `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );

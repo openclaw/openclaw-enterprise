@@ -1,6 +1,10 @@
+import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
+import type { PluginAccountRequest } from "@openclaw-enterprise/contracts";
+import { classifyGoogleAccountRequest } from "./google-workspace/request-policy.ts";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
+  isAllowedSecretBindingDestination,
   type CredentialSource,
   type PluginAccountTarget,
   type PluginCatalogEntry,
@@ -8,18 +12,20 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import {
-  accountCredentialEnvironment,
-  validPluginCredentialNames,
-} from "./credential-environment.ts";
 import { exactDnsName } from "../credential-source-endpoint.ts";
-import {
-  googleWorkspaceDeliveryScopes,
-  isGoogleWorkspaceRecipient,
-} from "./google-workspace/operations.ts";
+import { isGoogleWorkspaceRecipient } from "./google-workspace/operations.ts";
 import { googleWorkspaceCredentialPolicy } from "./google-workspace/credential-policy.ts";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
+
+function validPluginCredentialName(name: string): boolean {
+  return (
+    /^[A-Z][A-Z0-9_]{0,63}$/.test(name) &&
+    isAllowedSecretBindingDestination(name) &&
+    name !== "LANG" &&
+    !/^(?:OCE|OPENSHELL)_/.test(name)
+  );
+}
 
 const httpsEndpoint = Type.String({ pattern: "^https://[a-z0-9.-]+/[a-zA-Z0-9/._~-]+$" });
 const credentialName = Type.String({ pattern: "^[A-Z][A-Z0-9_]{0,63}$" });
@@ -32,7 +38,6 @@ const credentialSlot = Type.Object(
       {
         role: Type.Literal("harness"),
         env: credentialName,
-        envAliases: Type.Optional(Type.Array(credentialName, { minItems: 1, uniqueItems: true })),
         presentation: Type.Literal("bearer"),
       },
       { additionalProperties: false },
@@ -131,9 +136,7 @@ function loadManagedCliInstall(install: ReturnType<typeof loadManagedInstall>) {
       }),
       credentials,
     ) ||
-    !Object.values(credentials).every(({ delivery }) =>
-      validPluginCredentialNames([delivery.env, ...(delivery.envAliases ?? [])]),
-    ) ||
+    !Object.values(credentials).every(({ delivery }) => validPluginCredentialName(delivery.env)) ||
     !isNonEmptyString(release?.executable) ||
     !/^[a-z][a-z0-9-]*$/.test(release.executable) ||
     typeof release.runtimeDirectory !== "string" ||
@@ -210,7 +213,7 @@ function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
     declaration?.type !== "streamable-http" ||
     !url ||
     url.href !== declaration.url ||
-    !validPluginCredentialNames([slot.delivery.env, ...(slot.delivery.envAliases ?? [])]) ||
+    !validPluginCredentialName(slot.delivery.env) ||
     !exactDnsName(url.hostname) ||
     !url.hostname.includes(".") ||
     (resource !== url.origin && resource !== url.href)
@@ -236,7 +239,8 @@ export type ManagedMcpInstall = ReturnType<typeof loadManagedMcpInstall>;
 type ManagedInstall = ManagedCliInstall | ManagedMcpInstall;
 
 export function managedCredentialEnvironment(install: ManagedInstall, sourceId: string): string {
-  return accountCredentialEnvironment(install.credentialEnvironment, sourceId);
+  const suffix = createHash("sha256").update(sourceId).digest("hex").slice(0, 24).toUpperCase();
+  return install.credentialEnvironment.slice(0, 39) + "_" + suffix;
 }
 
 export const managedInstalls = Object.freeze(
@@ -372,12 +376,11 @@ export function managedMcpInstallForSourceConfig(
     return undefined;
   }
   return managedMcpInstalls.find(
-    ({ credentials, slotId, credentialEnvironment, endpoint }) =>
+    ({ credentialEnvironment, endpoint }) =>
       config.host === endpoint.host &&
       Number(config.port ?? 443) === endpoint.port &&
       config.path === endpoint.path &&
-      config.env_var === credentialEnvironment &&
-      config.env_var_aliases === credentials[slotId]!.delivery.envAliases?.join(","),
+      config.env_var === credentialEnvironment,
   );
 }
 
@@ -394,22 +397,24 @@ export function managedProviderConfig(
   if (!install) {
     return config;
   }
-  const id = config.oauth_owner === "token_service" ? config.account_source_id : sourceId;
-  if (!id) {
-    throw new ConfigurationHarnessError(
-      "The connected account has no source ID for its placeholder.",
-    );
+  return { ...config, env_var: managedCredentialEnvironment(install, sourceId) };
+}
+
+/** A provider created with the shared slot key cannot identify this account at runtime. */
+export function managedProviderKeyProblem(
+  source: Pick<CredentialSource, "type" | "id" | "config">,
+  credentialKeys: readonly string[] | undefined,
+): string | undefined {
+  const projected = managedProviderConfig(source.type, source.id, source.config).env_var;
+  if (
+    projected === source.config.env_var ||
+    (!credentialKeys?.length && source.type === "oauth2-refresh-token")
+  ) {
+    return undefined;
   }
-  return {
-    ...config,
-    env_var: managedCredentialEnvironment(install, id),
-    ...(config.env_var_aliases && {
-      env_var_aliases: config.env_var_aliases
-        .split(",")
-        .map((name) => accountCredentialEnvironment(name, id))
-        .join(","),
-    }),
-  };
+  if (credentialKeys?.length !== 1 || credentialKeys[0] !== projected) {
+    return "This plugin provider lacks its source-specific placeholder. Register a replacement credential source with the same Secret and select it for the plugin.";
+  }
 }
 
 export function managedMcpSlotAcceptsSource(
@@ -421,9 +426,7 @@ export function managedMcpSlotAcceptsSource(
     source.ownerCapability === "credential_gateway" &&
     source.egress === undefined &&
     source.type === "bearer-token" &&
-    (source.secrets.token?.namespaceId === source.namespaceId ||
-      (source.config.oauth_owner === "token_service" &&
-        source.config.issuer === install.credentials[install.slotId]!.issuer)) &&
+    source.secrets.token?.namespaceId === source.namespaceId &&
     managedMcpInstallForSourceConfig(source.config) === install
   );
 }
@@ -435,6 +438,75 @@ export function managedSlotAcceptsSource(
   return install.kind === "mcp"
     ? managedMcpSlotAcceptsSource(install, source)
     : cliCredentialPolicy(install)?.accepts(install, source) === true;
+}
+
+const mcpClientHeaders = new Set([
+  "accept",
+  "accept-encoding",
+  "accept-language",
+  "cache-control",
+  "content-type",
+  "last-event-id",
+  "mcp-method",
+  "mcp-name",
+  "mcp-protocol-version",
+  "mcp-session-id",
+  "pragma",
+  "sec-fetch-mode",
+  "user-agent",
+]);
+
+/** The receiver can act on only the MCP methods and literal tools admitted for this release. */
+function allowsMcpAccountRequest(
+  install: ManagedMcpInstall,
+  toolNames: readonly string[],
+  request: PluginAccountRequest,
+) {
+  const { host, port, path, query, method } = request.target;
+  if (
+    host !== install.endpoint.host ||
+    port !== install.endpoint.port ||
+    path !== install.endpoint.path ||
+    new Set(request.headers.map(([header]) => header)).size !== request.headers.length ||
+    request.headers.some(([header]) => !mcpClientHeaders.has(header)) ||
+    query
+  ) {
+    return false;
+  }
+  if (method === "GET" || method === "DELETE") {
+    return toolNames.length > 0 && request.body.length === 0;
+  }
+  if (
+    method !== "POST" ||
+    !/^application\/json(?:;\s*charset=utf-8)?$/i.test(
+      request.headers.find(([name]) => name === "content-type")?.[1] ?? "",
+    )
+  ) {
+    return false;
+  }
+  const rpc = asRecord(
+    parseUnambiguousJson(new TextDecoder("utf-8", { fatal: true }).decode(request.body)),
+  );
+  if (!rpc || rpc.jsonrpc !== "2.0" || typeof rpc.method !== "string") {
+    return false;
+  }
+  const name = asRecord(rpc.params)?.name;
+  for (const [header, value] of request.headers) {
+    if (
+      (header === "mcp-method" && value !== rpc.method) ||
+      (header === "mcp-name" && value !== name)
+    ) {
+      return false;
+    }
+  }
+  if (rpc.method === "ping") {
+    return true;
+  }
+  return (
+    toolNames.length > 0 &&
+    (["initialize", "notifications/initialized", "tools/list"].includes(rpc.method) ||
+      (rpc.method === "tools/call" && typeof name === "string" && toolNames.includes(name)))
+  );
 }
 
 /** Resolve the release's named account independently of any account currently bound to it. */
@@ -484,44 +556,34 @@ export function managedPluginAccountSlot(
     releaseSha256: install.releaseSha256,
     credentialSourceIds,
     issuers: [slot.issuer],
+    ...(install.kind === "mcp" && { mcpServerUrl: install.url }),
     acceptsRecipient,
-    delivery(target: PluginAccountTarget, grantedScopes: readonly string[], sourceId: string) {
-      if (!acceptsRecipient(target)) {
-        throw new ConfigurationHarnessError(
-          "The saved account does not match this plugin slot's approved destination.",
-        );
+    authorizeRequest(
+      target: PluginAccountTarget,
+      grantedScopes: readonly string[],
+      request: PluginAccountRequest,
+    ): "credential" | "public" | "deny" {
+      if (
+        !selection?.enabled ||
+        selection.driverPolicy?.releaseSha256 !== install.releaseSha256 ||
+        !credentialSourceIds.length ||
+        request.target.reportedScheme !== "https" ||
+        !acceptsRecipient(target)
+      ) {
+        return "deny";
       }
-      const config: Record<string, string> = {
-        // Both reviewed senders use POST for protected requests. Each operation or tool
-        // remains subject to its plugin's request policy.
-        access: "full",
-        env_var: slot.delivery.env,
-        ...(slot.delivery.envAliases && {
-          env_var_aliases: slot.delivery.envAliases.join(","),
-        }),
-        token_url: target.tokenUrl,
-        oauth_owner: "token_service",
-        account_source_id: sourceId,
-      };
-      if (install.kind === "mcp") {
-        const [endpoint] = target.destinations;
-        config.host = endpoint!.host;
-        config.port = String(endpoint!.port);
-        config.path = endpoint!.path;
-        config.protocol = "mcp";
-      } else {
-        const destinations = target.destinations.filter(isGoogleWorkspaceRecipient);
-        config.destinations = JSON.stringify(destinations);
-        const scopes = googleWorkspaceDeliveryScopes(destinations, grantedScopes);
-        if (scopes.length === 0) {
-          return undefined;
+      try {
+        if (install.kind === "mcp") {
+          const binding = managedSlotBinding(selections, install);
+          return binding && allowsMcpAccountRequest(install, binding.toolNames, request)
+            ? "credential"
+            : "deny";
         }
-        config.scope = scopes.join(" ");
+        return classifyGoogleAccountRequest(target.destinations, grantedScopes, request);
+      } catch {
+        // Malformed encodings and ambiguous JSON cannot identify an authorized operation.
+        return "deny";
       }
-      return {
-        type: install.kind === "mcp" ? "bearer-token" : "oauth2-refresh-token",
-        config,
-      };
     },
     bind(sourceId: string) {
       return {
@@ -581,9 +643,23 @@ export const managedPluginCredentials = {
         install.kind === "cli"
           ? sources.filter((source) => !managedSlotAcceptsSource(install, source))
           : [];
+      const saved = sourceIds.filter((id) =>
+        sources.some((source) => source.id === id && source.ownerCapability === "token_service"),
+      );
+      if (saved.length && saved.length !== sourceIds.length) {
+        throw new ConfigurationHarnessError(
+          "Select accounts that use the same credential delivery for this slot.",
+        );
+      }
       for (const sourceId of sourceIds) {
         const source = sources.find(({ id }) => id === sourceId);
-        if (!source || source.id === modelSourceId || !managedSlotAcceptsSource(install, source)) {
+        if (
+          !source ||
+          source.id === modelSourceId ||
+          !(source.ownerCapability === "token_service"
+            ? source.type === "oauth2-refresh-token" && source.state === "ready"
+            : managedSlotAcceptsSource(install, source))
+        ) {
           throw new ConfigurationHarnessError(
             `Select a ready ${install.entry.name} account attached to this Agent that matches the reviewed credential slot.`,
           );
@@ -592,7 +668,7 @@ export const managedPluginCredentials = {
           accountNames[source.id] = source.name;
         }
         const conflict =
-          install.kind === "cli"
+          install.kind === "cli" && source.ownerCapability === "credential_gateway"
             ? cliCredentialPolicy(install)?.conflict(source, otherSources)
             : undefined;
         if (conflict) {

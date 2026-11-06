@@ -11,8 +11,13 @@ import { isDeepStrictEqual } from "node:util";
 import type {
   CapturedEgressUse,
   CredentialProxyExchange,
+  OAuthAccountRef,
+  OAuthConnectionAccessToken,
+  SavedAccountRequest,
+  TokenResolveOptions,
   EgressExchangeOwner,
   EgressPeer,
+  EgressRef,
   EgressResolution,
   EgressSendDecision,
   EgressStreamLease,
@@ -78,7 +83,17 @@ export interface EgressAuthorityPorts {
     lifetime: CredentialReadLifetime,
     isProviderCurrent: () => boolean,
   ): Promise<VersionedSecretValue & { readonly materialId: string }>;
-  readonly readPrepared?: PreparedTokenIssuer["readWarm"];
+  readonly resolvePrepared?: PreparedTokenIssuer["resolve"];
+  readonly savedAccountSender?: EgressRef;
+  checkSavedAccount?(
+    request: SavedAccountRequest,
+    signal: AbortSignal,
+    selected?: Pick<OAuthConnectionAccessToken, "version" | "grantedScopes">,
+  ): Promise<OAuthAccountRef | { readonly kind: "without_credential" } | undefined>;
+  resolveOAuth?(
+    ref: OAuthAccountRef,
+    options: TokenResolveOptions,
+  ): Promise<OAuthConnectionAccessToken | undefined>;
   /** Check the exact selection, then mint once immediately before the possible-send receipt. */
   authorizeSend(
     use: CapturedEgressUse,
@@ -406,11 +421,81 @@ export class CredentialProxy implements CredentialProxyExchange {
     this.capacity = resolved.capacity;
   }
 
+  async resolveSavedAccount(request: SavedAccountRequest, signal: AbortSignal) {
+    const { checkSavedAccount, resolveOAuth } = this.ports;
+    const deadline = Date.parse(request.deadlineAt);
+    const budget = Math.ceil(deadline - this.ports.now());
+    if (
+      !checkSavedAccount ||
+      !resolveOAuth ||
+      signal.aborted ||
+      !(budget > 0 && budget <= 30_000)
+    ) {
+      return undefined;
+    }
+    if (!this.ports.savedAccountSender) {
+      return undefined;
+    }
+    const share = JSON.stringify([this.ports.savedAccountSender, request.sandboxId]);
+    const charge = this.reserveOperation(share);
+    if (!charge) {
+      return undefined;
+    }
+    try {
+      const lifetime = AbortSignal.any([signal, AbortSignal.timeout(budget)]);
+      const ref = await checkSavedAccount(request, lifetime);
+      const remaining = deadline - this.ports.now();
+      if (!ref || lifetime.aborted || remaining <= 0) {
+        return undefined;
+      }
+      if (ref.kind === "without_credential") {
+        return ref;
+      }
+      // A cold resolve can refresh. Do not hold the Agent's policy transaction during issuer I/O.
+      const token = await resolveOAuth(ref, {
+        signal: lifetime,
+        deadlineAt: request.deadlineAt,
+        minimumValidityMs: remaining,
+      });
+      if (!token || lifetime.aborted || !(Date.parse(token.expiresAt) > deadline)) {
+        return undefined;
+      }
+      const current = await checkSavedAccount(request, lifetime, {
+        version: token.version,
+        grantedScopes: token.grantedScopes,
+      });
+      if (!isDeepStrictEqual(current, ref) || lifetime.aborted || this.ports.now() >= deadline) {
+        return undefined;
+      }
+      return { accessToken: token.accessToken, expiresAt: token.expiresAt };
+    } finally {
+      this.releaseCharge(charge);
+    }
+  }
+
   private async verifyPeer(authorization: string): Promise<EgressPeer | undefined> {
     const peer = await this.ports.exchangeOwner.verify(authorization);
     // Driver-owned descriptors may be reused. Detach identity, including sender,
     // before any subsequent Driver, policy or receipt await can change it.
     return peer === undefined ? undefined : immutableCopy(peer);
+  }
+
+  private reserveOperation(authenticatedShare?: string): OperationCharge | undefined {
+    if (
+      this.activeOperations >= this.capacity.operations ||
+      (authenticatedShare === undefined &&
+        this.authenticating >= this.capacity.authenticatingOperations)
+    ) {
+      return undefined;
+    }
+    this.activeOperations += 1;
+    this.authenticating += 1;
+    const charge: OperationCharge = { holds: 1 };
+    if (authenticatedShare !== undefined && !this.chargeShare(charge, authenticatedShare)) {
+      this.releaseCharge(charge);
+      return undefined;
+    }
+    return charge;
   }
 
   private releaseCharge(charge: OperationCharge): void {
@@ -512,15 +597,10 @@ export class CredentialProxy implements CredentialProxyExchange {
     this.pruneReplay(now);
     // Reserve before authentication or any other await. Pending Secret/policy I/O
     // consumes the same capacity as an outstanding material handle.
-    if (
-      this.activeOperations >= this.capacity.operations ||
-      this.authenticating >= this.capacity.authenticatingOperations
-    ) {
+    const charge = this.reserveOperation();
+    if (!charge) {
       return { kind: "refused", error: { kind: "unavailable", code: "resolver" } };
     }
-    this.activeOperations += 1;
-    this.authenticating += 1;
-    const charge: OperationCharge = { holds: 1 };
     try {
       // Copy body bytes separately without moving the field: the sender's request digest
       // covers their original serialization order. Uint8Array also detaches a Node Buffer.
@@ -693,6 +773,21 @@ export class CredentialProxy implements CredentialProxyExchange {
       if (evidence.kind !== "no_material_required" && material.value === undefined) {
         return { kind: "refused", error: { kind: "not_ready", code: "material_missing" } };
       }
+      if (source.adoption === "prepared") {
+        // Resolution can wait for the issuer. Recheck the grant and selected token before
+        // disclosing headers to the trusted proxy, even if it never asks for a send permit.
+        const current = await this.ports.check(captured, evidence, undefined, provider);
+        const ended = accessEnded();
+        if (ended) {
+          return { kind: "refused", error: ended };
+        }
+        if (!("key" in current)) {
+          return { kind: "refused", error: current };
+        }
+        if (!isDeepStrictEqual(current, source)) {
+          return refuse("scope_mismatch");
+        }
+      }
       const headers =
         evidence.kind === "no_material_required"
           ? []
@@ -774,10 +869,6 @@ export class CredentialProxy implements CredentialProxyExchange {
     if (!Number.isFinite(remaining) || remaining <= 0) {
       return { kind: "deadline_exceeded" };
     }
-    const lifetime: CredentialReadLifetime = {
-      signal: AbortSignal.any([signal, AbortSignal.timeout(Math.ceil(remaining))]),
-      deadlineAt: request.deadlineAt,
-    };
     if (source.adoption === "prepared") {
       if (
         use.operation.kind !== source.grant.kind ||
@@ -788,21 +879,21 @@ export class CredentialProxy implements CredentialProxyExchange {
         return { kind: "denied", code: "scope_mismatch" };
       }
 
-      const selected = await this.ports.readPrepared?.(source, lifetime);
+      const selected = await this.ports.resolvePrepared?.(source.key, {
+        signal,
+        deadlineAt: request.deadlineAt,
+        minimumValidityMs: remaining,
+      });
       if (!selected) {
         return { kind: "not_ready", code: "material_missing" };
       }
-      const { value, usableUntil, ...selection } = selected;
-      const until = Math.min(
-        deadline,
-        Date.parse(usableUntil),
-        Date.parse(selection.providerExpiresAt),
-      );
-      if (!Number.isFinite(until) || until <= this.ports.now() || lifetime.signal.aborted) {
+      const { accessToken, expiresAt, usableUntil, ...selection } = selected;
+      const until = Math.min(deadline, Date.parse(usableUntil), Date.parse(expiresAt));
+      if (!Number.isFinite(until) || until <= this.ports.now() || signal.aborted) {
         return { kind: "not_ready", code: "expired" };
       }
       return {
-        value,
+        value: accessToken,
         evidence: immutableCopy({
           family: selection.family,
           ownerEpoch: selection.ownerEpoch,
@@ -810,7 +901,7 @@ export class CredentialProxy implements CredentialProxyExchange {
           preparationAttemptId: selection.preparationAttemptId,
           materialId: selection.materialId,
           materialVersion: selection.materialVersion,
-          providerExpiresAt: selection.providerExpiresAt,
+          providerExpiresAt: expiresAt,
           kind: source.schemaVersion === 2 ? "prepared_github" : "prepared_token",
           source: source.key,
           binding: route.binding.binding,
@@ -823,6 +914,10 @@ export class CredentialProxy implements CredentialProxyExchange {
     if (use.operation.kind !== "inference") {
       return { kind: "denied", code: "scope_mismatch" };
     }
+    const lifetime: CredentialReadLifetime = {
+      signal: AbortSignal.any([signal, AbortSignal.timeout(Math.ceil(remaining))]),
+      deadlineAt: request.deadlineAt,
+    };
     const material = await this.ports.read(source, lifetime, provider.isCurrent);
     const observed = Date.parse(material.authoritativeObservedAt);
     const usableUntil = Math.min(

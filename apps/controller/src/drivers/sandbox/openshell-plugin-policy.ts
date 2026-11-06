@@ -3,7 +3,7 @@ import type { AgentRevision, HarnessWorkloadRequirements } from "@openclaw-enter
 import { SandboxRevisionUnsupportedError } from "@openclaw-enterprise/occ";
 import { asRecord, numericLastLabel } from "@openclaw-enterprise/utils";
 import { isDeepStrictEqual } from "node:util";
-import { openShellProviderName, revisionProviderSourceId } from "../../backends/openshell.ts";
+import { openShellProviderName } from "../../backends/openshell.ts";
 import {
   openShellProfileEndpoint,
   type OpenShellGatewayClient,
@@ -78,6 +78,9 @@ export function openShellPluginPolicy(
   const model =
     revision.harnessAuth?.method === "credential_source" && revision.harnessAuth.sourceId;
   const attachments = requirements.credentialAttachments;
+  if (binding.sourceIds.every((id) => revision.plugins?.savedAccounts?.sourceIds.includes(id))) {
+    return undefined;
+  }
   const selected = attachments.filter(({ sourceId }) => binding.sourceIds.includes(sourceId));
   // Compute omits withdrawn sources while the immutable revision retains their references.
   if (
@@ -102,9 +105,7 @@ export function openShellPluginPolicy(
     installationProviders.length ||
     !endpoint ||
     selected.some(
-      (item) =>
-        item.sourceId === model ||
-        item.ref !== openShellProviderName(revisionProviderSourceId(revision, item.sourceId)),
+      (item) => item.sourceId === model || item.ref !== openShellProviderName(item.sourceId),
     ) ||
     (model &&
       !attachments.some((a) => a.sourceId === model && a.ref === openShellProviderName(model)))
@@ -114,42 +115,31 @@ export function openShellPluginPolicy(
     );
   }
   const accounts: Record<string, GoogleRequestScope> = {};
-  const senderBinaries = new Set<string>();
   const providerRules = selected.map(({ sourceId, ref, requestScope }) => {
     if (!requestScope) {
       unsupported("The managed Google account requires its admitted endpoint and OAuth scopes.");
     }
-    const { binaries, ...scope } = requestScope;
-    const saved = revision.credentialSources?.some(
-      (source) => source.sourceId === sourceId && source.accountDelivery,
-    );
-    if (saved ? !binaries?.includes(managedGoogleInstall.binaryPath) : binaries !== undefined) {
-      unsupported("The Google account is missing its admitted sender executable policy.");
-    }
-    const allowed = binaries ?? googleCli;
-    for (const path of allowed) {
-      senderBinaries.add(path);
-    }
-    accounts[sourceId] = scope;
+    accounts[sourceId] = requestScope;
     return {
       name: "_provider_" + ref.replaceAll("-", "_"),
-      binaries: allowed.map((path) => ({ path })),
-      endpoints: scope.destinations.map((target) => ({
-        ...openShellProfileEndpoint({ ...target, protocol: "rest" }),
-        provider_credentialed: true,
-      })),
+      binaries: googleCli.map((path) => ({ path })),
+      endpoints: [
+        {
+          ...openShellProfileEndpoint({
+            host: requestScope.host,
+            port: requestScope.port,
+            path: requestScope.path,
+            protocol: "rest",
+          }),
+          provider_credentialed: true,
+        },
+      ],
     };
   });
-  const binaries = selected.some(({ requestScope }) => requestScope?.binaries)
-    ? [...senderBinaries]
-    : undefined;
-  return { ...googleRequestPolicy(accounts, binaries), endpoint, providerRules };
+  return { ...googleRequestPolicy(accounts), endpoint, providerRules };
 }
 
-export function googleRequestPolicy(
-  accounts: Record<string, GoogleRequestScope>,
-  binaries?: readonly string[],
-) {
+export function googleRequestPolicy(accounts: Record<string, GoogleRequestScope>) {
   const allows = new Map<string, Map<string, { method: string; path: string }>>();
   function permit(host: string, method: string, path: string) {
     const rules = allows.get(host) ?? new Map();
@@ -161,8 +151,13 @@ export function googleRequestPolicy(
     if (!entries.length) {
       unsupported("The Google account has no admitted plugin operations.");
     }
-    for (const { op, endpoint, rulePath } of entries) {
-      permit(endpoint.host, op.method, rulePath);
+    for (const [, op] of entries) {
+      const literal = op.path.split("{")[0]!;
+      const inside =
+        scope.path === "/**" ||
+        (scope.path.endsWith("/**") && literal.startsWith(scope.path.slice(0, -2)));
+      const path = inside ? op.path.replace(/\{\+?\w+\}/g, "*") : scope.path;
+      permit(scope.host, op.method, path);
     }
     for (const { host, path } of googleDiscoveryRequests(scope, entries)) {
       permit(host, "GET", path);
@@ -177,11 +172,6 @@ export function googleRequestPolicy(
         fields: {
           binding_id: { stringValue: managedGoogleInstall.releaseSha256 },
           request_scope: { stringValue: googleAccountScopeConfig(accounts) },
-          ...(binaries && {
-            sender_binaries: {
-              listValue: { values: binaries.map((path) => ({ stringValue: path })) },
-            },
-          }),
         },
       },
       on_error: "fail_closed",
@@ -198,7 +188,7 @@ export function googleRequestPolicy(
   const networks = {
     [googleRequestRuleName]: {
       name: googleRequestRuleName,
-      binaries: (binaries ?? googleCli).map((path) => ({ path })),
+      binaries: googleCli.map((path) => ({ path })),
       endpoints: [...allows].map(([host, rules]) => ({
         host,
         ports: [443],
@@ -215,13 +205,16 @@ export function googleRequestPolicy(
   return {
     hosts,
     accounts: reviewedAccounts,
-    binaries: binaries ?? googleCli,
+    binaries: googleCli,
     middlewares,
     networks,
   };
 }
 
-export function googleRequestPolicyFromSandbox(policy: unknown) {
+export function googleRequestPolicyFromSandbox(
+  policy: unknown,
+  savedMiddlewares?: Readonly<Record<string, unknown>>,
+) {
   const middlewares = asRecord(asRecord(policy)?.network_middlewares);
   if (!middlewares || !Object.hasOwn(middlewares, managedPluginMiddleware)) {
     return undefined;
@@ -233,24 +226,8 @@ export function googleRequestPolicyFromSandbox(policy: unknown) {
     unsupported("OpenShell has a stale or malformed Google account request guard.");
   }
   // Reconstruct the last admitted policy while withdrawing the provider from an existing Sandbox.
-  const declared = fields?.sender_binaries;
-  let binaries: string[] | undefined;
-  if (declared !== undefined) {
-    const values = asRecord(asRecord(declared)?.listValue)?.values;
-    if (!Array.isArray(values)) {
-      unsupported("OpenShell has a malformed Google sender executable policy.");
-    }
-    const paths = values.map((value) => asRecord(value)?.stringValue);
-    if (
-      !paths.every((path): path is string => typeof path === "string" && path.startsWith("/")) ||
-      !paths.includes(managedGoogleInstall.binaryPath)
-    ) {
-      unsupported("OpenShell has a malformed Google sender executable policy.");
-    }
-    binaries = paths;
-  }
-  const expected = googleRequestPolicy(scope, binaries);
-  assertPluginRequestPolicy(policy, expected);
+  const expected = googleRequestPolicy(scope);
+  assertPluginRequestPolicy(policy, expected, savedMiddlewares);
   return expected;
 }
 
@@ -259,7 +236,7 @@ export function googleRequestPolicyFromSandbox(policy: unknown) {
 export function assertPluginNetworkInspection(
   rules: unknown,
   hosts: readonly string[],
-  binaries: readonly string[],
+  binaries: readonly string[] = googleCli,
   providerRules: readonly GoogleProviderRoute[] = [],
 ): void {
   const record = asRecord(rules);
@@ -313,6 +290,7 @@ export function verifyPluginRequestGuard(
   config: Readonly<Record<string, unknown>> | undefined,
   expected: NonNullable<ReturnType<typeof openShellPluginPolicy>>,
   workspace: string,
+  savedMiddlewares?: Readonly<Record<string, unknown>>,
 ): void {
   const services = config?.supervisor_middleware_services;
   const service =
@@ -351,10 +329,14 @@ export function verifyPluginRequestGuard(
       ? { ...endpoint, provider_credentialed: true }
       : endpoint,
   );
-  assertPluginRequestPolicy(config.policy, {
-    ...expected,
-    networks: { [googleRequestRuleName]: { ...rule, endpoints } },
-  });
+  assertPluginRequestPolicy(
+    config.policy,
+    {
+      ...expected,
+      networks: { [googleRequestRuleName]: { ...rule, endpoints } },
+    },
+    savedMiddlewares,
+  );
   const routes = asRecord(asRecord(config.policy)?.network_policies);
   for (const [name, value] of Object.entries(routes ?? {})) {
     if (
@@ -390,13 +372,14 @@ export function assertPluginRequestPolicy(
   expected: ReturnType<typeof googleRequestPolicy> & {
     providerRules?: readonly GoogleProviderRoute[];
   },
+  savedMiddlewares?: Readonly<Record<string, unknown>>,
 ): void {
   const policy = asRecord(value);
   if (
     !policy ||
     !isDeepStrictEqual(
       wirePolicy({ network_middlewares: policy.network_middlewares }),
-      wirePolicy({ network_middlewares: expected.middlewares }),
+      wirePolicy({ network_middlewares: { ...expected.middlewares, ...savedMiddlewares } }),
     )
   ) {
     unsupported(

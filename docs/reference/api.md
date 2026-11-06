@@ -2485,7 +2485,7 @@ Detach an account from this Agent and withdraw its access
 
 | Status | Meaning |
 | --- | --- |
-| `200` | OK |
+| `204` | No Content |
 | `400` | The request does not match the operation contract. |
 | `401` | The caller did not provide valid credentials. |
 | `403` | The caller is not allowed to perform this operation. |
@@ -2493,27 +2493,6 @@ Detach an account from this Agent and withdraw its access
 | `409` | The requested operation conflicts with the current resource state. |
 | `500` | The platform request could not be completed. |
 | `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.withdrawalRequested` | `boolean` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "withdrawalRequested": false
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
 
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`
 
@@ -9997,7 +9976,7 @@ List readable credential sources without revealing credential values
 | `data[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].ownerCapability` | `"credential_gateway" or "credential_proxy" or "credential_refresh"` | Yes | The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership. |
+| `data[].ownerCapability` | `"credential_gateway" or "credential_proxy" or "token_service"` | Yes | The Token Service owns saved accounts. Other sources belong to the Driver that admitted them. |
 | `data[].ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
 | `data[].ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].ref.kind` | `"credential_source"` | Yes | — |
@@ -10137,7 +10116,7 @@ Example request
 | `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ownerCapability` | `"credential_gateway" or "credential_proxy" or "credential_refresh"` | Yes | The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership. |
+| `data.ownerCapability` | `"credential_gateway" or "credential_proxy" or "token_service"` | Yes | The Token Service owns saved accounts. Other sources belong to the Driver that admitted them. |
 | `data.ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
 | `data.ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.ref.kind` | `"credential_source"` | Yes | — |
@@ -10267,7 +10246,7 @@ Get one credential source and its live Credential Gateway status
 | `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ownerCapability` | `"credential_gateway" or "credential_proxy" or "credential_refresh"` | Yes | The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership. |
+| `data.ownerCapability` | `"credential_gateway" or "credential_proxy" or "token_service"` | Yes | The Token Service owns saved accounts. Other sources belong to the Driver that admitted them. |
 | `data.ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
 | `data.ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.ref.kind` | `"credential_source"` | Yes | — |
@@ -10393,7 +10372,7 @@ Example request
 | `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ownerCapability` | `"credential_gateway" or "credential_proxy" or "credential_refresh"` | Yes | The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership. |
+| `data.ownerCapability` | `"credential_gateway" or "credential_proxy" or "token_service"` | Yes | The Token Service owns saved accounts. Other sources belong to the Driver that admitted them. |
 | `data.ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
 | `data.ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.ref.kind` | `"credential_source"` | Yes | — |
@@ -10490,7 +10469,7 @@ Force the Credential Refresh Driver to mint a new token for a refresh-type sourc
 | `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ownerCapability` | `"credential_gateway" or "credential_proxy" or "credential_refresh"` | Yes | The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership. |
+| `data.ownerCapability` | `"credential_gateway" or "credential_proxy" or "token_service"` | Yes | The Token Service owns saved accounts. Other sources belong to the Driver that admitted them. |
 | `data.ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
 | `data.ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.ref.kind` | `"credential_source"` | Yes | — |

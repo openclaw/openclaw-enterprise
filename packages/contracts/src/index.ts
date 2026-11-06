@@ -46,6 +46,8 @@ export type {
 export type {
   CredentialProxyBinding,
   CredentialProxyExchange,
+  SavedAccountRequest,
+  SavedAccountResolution,
   EgressPeer,
   CapturedEgressUse,
   EgressExchangeOwner,
@@ -61,19 +63,24 @@ export type {
   PreparedTokenGrant,
   PreparedTokenSource,
   PreparedTokenSelection,
+  ResolvedToken,
   PreparedTokenEvidence,
   PreparedTokenCurrentProof,
   PreparedTokenIssuer,
   OAuthConnectionAccessToken,
-  OAuthConnectionCustody,
   OAuthConnectionGrant,
+  OAuthRefreshTokenRegistration,
+  OAuthRefreshTokenIssuer,
   OAuthConnectionClient,
   OAuthConnectionRegistration,
   OAuthConnectionStatus,
-  OAuthConnectionTokenService,
-  PreparedTokenService,
+  OAuthAccountRef,
+  PreparedTokenKind,
+  PreparedTokenRegistration,
+  PreparedTokenRef,
+  TokenResolveOptions,
+  TokenService,
 } from "./prepared-token.ts";
-export { PENDING_OAUTH_CONNECTION } from "./prepared-token.ts";
 export {
   preparedGitHubType,
   preparedGitHubProviderRef,
@@ -172,7 +179,7 @@ export {
 export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";
 export { isComputePreparationFailureEvidence } from "./compute-preparation.ts";
 
-import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { asRecord, immutableCopy, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
 import {
   PluginDesiredSelectionSchema,
   PluginDesiredStateSchema,
@@ -542,12 +549,18 @@ export interface CredentialSourceType {
 /** `registering` is recorded before the gateway write, so an uncertain outcome stays visible. */
 export type CredentialSourceState = "registering" | "ready" | "deleting";
 
-/** Driver IDs are scoped to a capability. Both parts of a source owner are immutable. */
-export type CredentialSourceOwnerCapability =
-  "credential_gateway" | "credential_proxy" | "credential_refresh";
+/** Driver-owned sources pin the selected Driver. The Token Service owns saved accounts directly. */
+type CredentialSourceOwner =
+  | {
+      readonly ownerCapability: "credential_gateway" | "credential_proxy";
+      readonly driverId: string;
+    }
+  | { readonly ownerCapability: "token_service"; readonly driverId?: never };
+
+export type CredentialSourceOwnerCapability = CredentialSourceOwner["ownerCapability"];
 
 /** OCC source admission, including its owner and Secret references, never credential values. */
-export interface CredentialSource {
+export type CredentialSource = CredentialSourceOwner & {
   readonly egress?: ProtectedEgressSource;
   readonly id: string;
   readonly namespaceId: string;
@@ -555,11 +568,9 @@ export interface CredentialSource {
   readonly type: string;
   readonly config: Readonly<Record<string, string>>;
   readonly secrets: Readonly<Record<string, SecretReference>>;
-  readonly ownerCapability: CredentialSourceOwnerCapability;
-  readonly driverId: string;
   readonly state: CredentialSourceState;
   readonly createdAt: string;
-}
+};
 
 export interface CredentialSourceMetadata {
   readonly ownerCapability: CredentialSourceOwnerCapability;
@@ -616,47 +627,9 @@ export type CredentialSourceSnapshot = {
   readonly sourceId: string;
   readonly sourceType: string;
 } & (
-  | {
-      readonly credentialGatewayId: string;
-      readonly credentialProxyId?: never;
-      readonly accountDelivery?: {
-        readonly refreshDriverId: string;
-        readonly profileId: string;
-        readonly config: Readonly<Record<string, string>>;
-      };
-    }
-  | {
-      readonly credentialProxyId: string;
-      readonly credentialGatewayId?: never;
-      readonly accountDelivery?: never;
-    }
+  | { readonly credentialGatewayId: string; readonly credentialProxyId?: never }
+  | { readonly credentialProxyId: string; readonly credentialGatewayId?: never }
 );
-
-/** Resolve the admitted owner and initial presentation; running account policy is prepared separately. */
-export function revisionCredentialSource(
-  source: CredentialSource,
-  snapshot: CredentialSourceSnapshot | undefined,
-): CredentialSource | undefined {
-  if (source.ownerCapability !== "credential_refresh") {
-    return credentialSourceMatchesSnapshot(source, snapshot) ? source : undefined;
-  }
-  const delivery = snapshot?.accountDelivery;
-  if (
-    !delivery ||
-    source.id !== snapshot.sourceId ||
-    source.driverId !== delivery.refreshDriverId ||
-    source.type !== "oauth2-refresh-token"
-  ) {
-    return undefined;
-  }
-  return {
-    ...source,
-    type: snapshot.sourceType,
-    config: delivery.config,
-    driverId: snapshot.credentialGatewayId!,
-    ownerCapability: "credential_gateway",
-  };
-}
 
 /** Match the source owner recorded at admission, including for pre-Proxy Gateway snapshots. */
 export function credentialSourceMatchesSnapshot(
@@ -667,7 +640,7 @@ export function credentialSourceMatchesSnapshot(
     return false;
   }
   switch (source.ownerCapability) {
-    case "credential_refresh":
+    case "token_service":
       // A saved account has no runnable sender until a consumer receives its own binding.
       return false;
     case "credential_gateway":
@@ -860,8 +833,25 @@ export interface PluginCatalogPage {
   readonly setup?: { readonly message: string; readonly links: readonly PluginCatalogLink[] };
 }
 
+/** Identifies an operator-installed middleware binding without exposing its account to the workload. */
+export function savedAccountBindingId(
+  revisionId: string,
+  pluginId: string,
+  slotId: string,
+  sourceId: string,
+): string {
+  return sha256Hex(JSON.stringify([revisionId, pluginId, slotId, sourceId]));
+}
+
 export interface PluginRevisionState {
   readonly accountNames?: Readonly<Record<string, string>>;
+  /** Saved OAuth selections are authorized at send time by this admitted Credential Proxy. */
+  readonly savedAccounts?: {
+    readonly credentialProxyId: string;
+    readonly registrationName: string;
+    readonly audience: string;
+    readonly sourceIds: readonly string[];
+  };
   readonly driver: PluginDriverIdentity;
   readonly plugins: PluginDesiredState;
 }
@@ -923,7 +913,9 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
   const accountNames = asRecord(record?.accountNames);
   if (
     record === undefined ||
-    Object.keys(record).some((key) => !["driver", "plugins", "accountNames"].includes(key)) ||
+    Object.keys(record).some(
+      (key) => !["driver", "plugins", "accountNames", "savedAccounts"].includes(key),
+    ) ||
     (record.accountNames !== undefined &&
       (!accountNames || !Object.values(accountNames).every(isNonEmptyString)))
   ) {
@@ -931,6 +923,24 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
   }
   if (!validPluginDriverIdentity(record.driver) || record.plugins === undefined) {
     return false;
+  }
+  if (record.savedAccounts !== undefined) {
+    const saved = asRecord(record.savedAccounts);
+    if (
+      !saved ||
+      Object.keys(saved).some(
+        (key) => !["credentialProxyId", "registrationName", "audience", "sourceIds"].includes(key),
+      ) ||
+      !isNonEmptyString(saved.credentialProxyId) ||
+      !isNonEmptyString(saved.registrationName) ||
+      !isNonEmptyString(saved.audience) ||
+      !Array.isArray(saved.sourceIds) ||
+      saved.sourceIds.length === 0 ||
+      !saved.sourceIds.every(isNonEmptyString) ||
+      new Set(saved.sourceIds).size !== saved.sourceIds.length
+    ) {
+      return false;
+    }
   }
   try {
     normalizePluginDesiredState(record.plugins, (message) => {
@@ -1475,9 +1485,6 @@ export type {
   CredentialSourceToken,
 } from "./drivers/credential-gateway/index.ts";
 export type {
-  CredentialBrowserAuthorizationRequest,
-  CredentialSourceBrowserAuthorization,
-  CredentialBrowserAuthorizationCallback,
   CredentialRefreshDriver,
   CredentialRefreshInput,
   CredentialRefreshStatus,
@@ -1507,6 +1514,7 @@ export type {
 } from "./drivers/sandbox/index.ts";
 export type {
   PluginDriver,
+  PluginAccountRequest,
   PluginAccountTarget,
   PluginDriverContext,
   PluginDiscoveryAuthentication,

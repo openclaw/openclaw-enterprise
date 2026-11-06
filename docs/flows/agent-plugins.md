@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-05
-last_updated_session: authoring-run/761a86ac-3c67-497c-8e4f-556f1ee836b5
+updated: 2026-11-06
+last_updated_session: authoring-run/ddef5861-b6ac-4baa-84d3-55f92094ed9d
 ---
 
 # Agent Plugin Deployment Flow
@@ -77,7 +77,7 @@ The OpenShell Backend exports through operator mTLS. External Gateways support o
 
 `packages/occ/src/index.ts:OpenClawController.discoverManagedMcpTools`
 
-For each authorized account, OCC calls the reviewed receiver’s `tools/list` with a prepared Token Service token or manually registered bearer Secret. Console combines inventories, identifies failures and saves upstream names in `driverPolicy.toolNames`. Changing accounts clears discovery. Changing Harness clears selections and approvers.
+For Console discovery, OCC obtains a token for each authorized account and calls the reviewed endpoint’s `tools/list`. Console combines results, reports failures and saves upstream names in `driverPolicy.toolNames`. Changing accounts clears discovery. Changing Harness clears selections and approvers.
 
 Closing the picker cancels reads. Hosted reads limit time and size, reject redirects and credential echoes, and return `Cache-Control: no-store`. Optional `NativeCodexPluginCatalogReader` validates stdio `plugin/list` and stops the child on teardown. HTTP uses the hosted reader. [Catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
 
@@ -91,17 +91,18 @@ Closing the picker cancels reads. Hosted reads limit time and size, reject redir
 
 `GET /installation` and `GET .../plugins/capabilities` report policy capabilities. The Agent route requires `read` and `update`.
 
+The Console keeps out-of-range **Plugin selections JSON** in the editor without issuing an Agent read or write. Catalog browsing stays available while picker edits are blocked.
+
 ### 2. Admit an immutable plugin deployment
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC snapshots the Configuration, Driver, selections and account names. The worker verifies the Driver owns the Harness catalog. Once Compute verifies sender policy, OCC publishes each saved account’s prepared token and expiry to its Agent-specific OpenShell profile. The skill lists account names and IDs. [Token delivery](connection-templates.md#bind-a-saved-account-to-a-plugin)
+OCC freezes the Configuration, Driver, selections and account names. The worker checks catalog ownership. One skill lists the selected IDs and names.
 
-- **CLI** — The worker selects the named account’s placeholder. OpenShell checks approved Google operations and destinations. Google enforces the account’s grant.
-- **MCP** — The [dispatcher](../../deploy/runtime/openclaw-node-mcp-accounts.patch) compares each complete tool definition from discovery, including provider metadata, and publishes the eligible account IDs for each definition. Given `{"account":"cs_b_east","arguments":{"account":"native-account"}}`, it checks eligibility before sending the upstream name and inner arguments through that account’s session. OpenShell enforces selected upstream names.
+- **CLI** — `gog --oce-account` selects a bound account for the Google operation.
+- **MCP** — The [dispatcher](../../deploy/runtime/openclaw-node-mcp-accounts.patch) groups complete tool definitions, advertises their eligible IDs and sends the original name and arguments through the selected session.
+- **Saved OAuth** — Both paths send a nonsecret selector. OpenShell calls [Credential Proxy](connection-templates.md#6-bind-a-saved-account-to-a-plugin) to authorize each request and obtain its bearer.
 - **Native plugins** — Startup installs packages and verifies tool policy.
-
-Withdrawal stops credential injection for that source.
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -329,6 +330,10 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 05:20: Trace per-request selection for saved plugin accounts. (authoring-run/ddef5861-b6ac-4baa-84d3-55f92094ed9d - e36f00c4e37a28999b17c48e47d3db2d2e4b8c3f)
+
+- 2026-11-05 21:02: Trace plugin JSON refusal. (authoring-run/ead82952-8ee4-4f4a-82fe-148da7fa2edc - 3768cfd0d640f450f485cb334b6753ac1e5ea1c3)
 
 - 2026-11-05 19:27: Trace saved OAuth account delivery and MCP dispatch by discovered definition. (authoring-run/761a86ac-3c67-497c-8e4f-556f1ee836b5 - ef73687d955e54ce48fa0e154d861a5a8cb839c2)
 
