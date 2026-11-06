@@ -69,9 +69,9 @@ graph TD
 
 ### 1. Creation validates and privately stages the inputs
 
-`apps/controller/src/console/agents/create.mts` fills four textareas from
-`/console/workspace-defaults.mjs` (served directly from
-`packages/contracts/src/workspace-defaults.ts`) and submits their values with `WORKSPACE_DEFAULTS_ID`.
+`apps/controller/src/console/agents/create.mts` prefills four textareas from
+`/console/workspace-defaults.mjs` (`packages/contracts/src/workspace-defaults.ts`).
+It submits their values with `WORKSPACE_DEFAULTS_ID`.
 `apps/controller/src/index.ts:createFastifyApp` rejects a stale defaults identity;
 `packages/contracts/src/workspace-setup.ts:normalizeInitialWorkspaceFiles`
 rejects unknown names, invalid Unicode, NUL, and values above 16 KiB UTF-8.
