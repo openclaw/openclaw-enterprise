@@ -449,6 +449,7 @@ test(
         const open = t.mock.method(repo, "open");
         let deadline;
         let arm;
+        let holdWallBeforeDeadline;
         const pastDeadline = () => delay(Math.max(0, deadline - Date.now() + 100));
         let projected;
         let queryInTime;
@@ -478,7 +479,22 @@ test(
                     await pastDeadline();
                   }
                 } else if (arm === "after metadata" && sql.startsWith("SELECT f.admission,id,")) {
-                  await pastDeadline();
+                  const elapsed = pastDeadline();
+                  if (holdWallBeforeDeadline) {
+                    // Let the relative timer wake while the signed wall-clock deadline is still
+                    // one tick away. That wake must not classify a blocked read as missing material.
+                    const beforeWake = performance.now();
+                    const elapsedClock = t.mock.method(performance, "now", () => beforeWake);
+                    t.mock.timers.enable({ apis: ["Date"], now: deadline - 1 });
+                    try {
+                      await elapsed;
+                    } finally {
+                      elapsedClock.mock.restore();
+                      t.mock.timers.reset();
+                    }
+                  } else {
+                    await elapsed;
+                  }
                 }
                 if (delayed) {
                   completedQuery.resolve();
@@ -497,6 +513,7 @@ test(
           ]) {
             await t.test(`${bound}: ${boundary}`, async () => {
               arm = boundary;
+              holdWallBeforeDeadline = bound === "signed deadline";
               const request = captureMetadata(f);
               deadline = Date.now() + 1300;
               request.deadline = wireTime(

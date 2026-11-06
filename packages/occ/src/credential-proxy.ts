@@ -789,10 +789,6 @@ export class CredentialProxy implements CredentialProxyExchange {
     if (!Number.isFinite(remaining) || remaining <= 0) {
       return { kind: "deadline_exceeded" };
     }
-    const lifetime: CredentialReadLifetime = {
-      signal: AbortSignal.any([signal, AbortSignal.timeout(Math.ceil(remaining))]),
-      deadlineAt: request.deadlineAt,
-    };
     if (source.adoption === "prepared") {
       if (
         use.operation.kind !== source.grant.kind ||
@@ -804,7 +800,8 @@ export class CredentialProxy implements CredentialProxyExchange {
       }
 
       const selected = await this.ports.resolvePrepared?.(source.key, {
-        ...lifetime,
+        signal,
+        deadlineAt: request.deadlineAt,
         minimumValidityMs: remaining,
       });
       if (!selected) {
@@ -812,7 +809,7 @@ export class CredentialProxy implements CredentialProxyExchange {
       }
       const { accessToken, expiresAt, usableUntil, ...selection } = selected;
       const until = Math.min(deadline, Date.parse(usableUntil), Date.parse(expiresAt));
-      if (!Number.isFinite(until) || until <= this.ports.now() || lifetime.signal.aborted) {
+      if (!Number.isFinite(until) || until <= this.ports.now() || signal.aborted) {
         return { kind: "not_ready", code: "expired" };
       }
       return {
@@ -837,6 +834,10 @@ export class CredentialProxy implements CredentialProxyExchange {
     if (use.operation.kind !== "inference") {
       return { kind: "denied", code: "scope_mismatch" };
     }
+    const lifetime: CredentialReadLifetime = {
+      signal: AbortSignal.any([signal, AbortSignal.timeout(Math.ceil(remaining))]),
+      deadlineAt: request.deadlineAt,
+    };
     const material = await this.ports.read(source, lifetime, provider.isCurrent);
     const observed = Date.parse(material.authoritativeObservedAt);
     const usableUntil = Math.min(

@@ -66,6 +66,8 @@ export interface PreparedTokenCurrentProof {
 
 /** Installed issuer policy and its custody. No management or material method is given to a sender. */
 export interface PreparedTokenIssuer {
+  /** Releases outstanding callers when this installed owner shuts down. */
+  readonly shutdownSignal?: AbortSignal;
   readonly tokenKind: PreparedTokenKind;
   readonly provider: EgressRef;
   readonly issuerInput: string;
