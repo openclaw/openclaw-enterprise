@@ -48,8 +48,14 @@ def write_json(path, value):
     write(path, (json.dumps(value, sort_keys=True) + "\n").encode())
 
 
-def command(args, **kwargs):
-    return subprocess.check_output(args, stderr=subprocess.PIPE, **kwargs)
+def command(args, failure_path=None, **kwargs):
+    try:
+        return subprocess.check_output(args, stderr=subprocess.PIPE, **kwargs)
+    except subprocess.CalledProcessError as error:
+        if failure_path is not None:
+            write(failure_path, (error.stdout or b"") + (error.stderr or b""))
+            raise ValueError(f"Helm preparation failed; inspect {failure_path}") from error
+        raise
 
 
 def documents(data):
@@ -76,11 +82,20 @@ def without_attempt(value):
 def attempt(directory, nonce=None):
     if nonce is None:
         if (directory / "helm-started").exists():
-            nonce = load(directory / "helm-started").get("attempt", {}).get("nonce")
+            try:
+                submission = load(directory / "helm-started")
+            except json.JSONDecodeError as error:
+                raise ValueError("Helm submission intent is missing or invalid") from error
+            require(isinstance(submission, dict) and isinstance(submission.get("attempt"), dict),
+                    "Helm submission intent has no upgrade-attempt binding")
+            nonce = submission["attempt"].get("nonce")
         else:
             nonce = load(directory / "prepared-helm-attempt.json")["nonce"]
-    require(isinstance(nonce, str) and str(uuid.UUID(nonce)) == nonce,
-            "Helm submission intent has no valid upgrade-attempt binding")
+    try:
+        valid_nonce = isinstance(nonce, str) and str(uuid.UUID(nonce)) == nonce
+    except ValueError:
+        valid_nonce = False
+    require(valid_nonce, "Helm submission intent has no valid upgrade-attempt binding")
     root = directory / "helm-attempts" / nonce
     record = load(root / "attempt.json")
     require(record == {"nonce": nonce, "valuesSha256": sha(read(root / "values.yaml")),
@@ -110,10 +125,12 @@ def new_attempt(directory, release, helm_args):
     write(root / "values.yaml", values)
     chart = "deploy/helm/openclaw-enterprise"
     write(root / "rendered.yaml", command(["helm", "template", release, chart, *helm_args,
-                                           "--is-upgrade", "--values", str(root / "values.yaml")]))
+                                           "--is-upgrade", "--values", str(root / "values.yaml")],
+                                          failure_path=root / "render-error.log"))
     write(root / "server-dry-run.txt", command(["helm", "upgrade", "--install", release, chart,
                                                *helm_args, "--values", str(root / "values.yaml"),
-                                               "--dry-run=server", "--hide-secret"]))
+                                               "--dry-run=server", "--hide-secret"],
+                                              failure_path=root / "server-dry-run-error.log"))
     record = {"nonce": nonce, "valuesSha256": sha(values),
               "renderedSha256": sha(read(root / "rendered.yaml"))}
     write_json(root / "attempt.json", record)
@@ -167,6 +184,21 @@ def contains(actual, expected):
     return actual == expected
 
 
+def pod_matches(actual, expected):
+    if not contains(actual, expected):
+        return False
+    # The API defaults omitted fields, but admission must not add executable
+    # containers or override the image's entrypoint/arguments during recovery.
+    for field in ("containers", "initContainers"):
+        left, right = actual.get(field, []), expected.get(field, [])
+        if len(left) != len(right):
+            return False
+        for live, candidate in zip(left, right):
+            if any(live.get(key, []) != candidate.get(key, []) for key in ("command", "args")):
+                return False
+    return True
+
+
 def release_matches(state, rendered, values, release, namespace):
     require(state["name"] == release and state["namespace"] == namespace,
             "Helm recovery identifies another release")
@@ -181,6 +213,9 @@ def release_matches(state, rendered, values, release, namespace):
     actual_hooks = [documents(item["manifest"].encode())[0] for item in hooks]
     require(resource_map(actual_hooks) == resource_map(expected_hooks),
             "Helm recovery hook set differs from the selected attempt")
+    require(sum(item["kind"] == "Job" for item in actual_hooks) == 1
+            and all(item["kind"] in ("Job", "ServiceAccount", "NetworkPolicy") for item in actual_hooks),
+            "recovery requires one initializer Job and only ServiceAccount or NetworkPolicy companion hooks")
     require(hooks and all(set(item.get("events", [])) <= {"pre-install", "pre-upgrade"}
                           and "pre-upgrade" in item.get("events", []) for item in hooks),
             "recovery requires only completed pre-upgrade hooks; other hook events are unsupported")
@@ -190,7 +225,11 @@ def release_matches(state, rendered, values, release, namespace):
 def recover(directory, release, kubeconfig, context, namespace):
     root, record = attempt(directory)
     submission = load(directory / "helm-started")
-    require(load(root / "intent.json") == submission, "original Helm submission changed")
+    require(load(root / "intent.json") == submission
+            and type(submission.get("previousRevision")) is int and submission["previousRevision"] > 0
+            and type(submission.get("expectedRevision")) is int
+            and submission["expectedRevision"] == submission["previousRevision"] + 1,
+            "original Helm submission intent changed")
     helm_args = ["--kubeconfig", kubeconfig, "--kube-context", context, "--namespace", namespace]
     kube = ["kubectl", "--kubeconfig", kubeconfig, "--context", context, "--namespace", namespace]
 
@@ -198,8 +237,11 @@ def recover(directory, release, kubeconfig, context, namespace):
         return json.loads(command(["helm", "status", release, *helm_args, "--output", "json"]))
 
     def get(manifest):
-        return json.loads(command([*kube, "get", "--filename", "-", "--output", "json"],
-                                  input=json.dumps(manifest).encode()))
+        result = json.loads(command([*kube, "get", "--filename", "-", "--output", "json"],
+                                    input=json.dumps(manifest).encode()))
+        require(result.get("kind") == "List" and len(result.get("items", [])) == 1,
+                "expected exactly one live recovery resource")
+        return result["items"][0]
 
     before = status()
     require(before["version"] == submission["expectedRevision"]
@@ -217,6 +259,8 @@ def recover(directory, release, kubeconfig, context, namespace):
                     "hook does not identify the original upgrade attempt")
             require(contains(actual, desired), "live hook specification differs from its candidate")
             if desired["kind"] == "Job":
+                require(pod_matches(actual["spec"]["template"]["spec"], desired["spec"]["template"]["spec"]),
+                        "initializer Job execution differs from its candidate")
                 require(any(item.get("type") == "Complete" and item.get("status") == "True"
                             for item in actual.get("status", {}).get("conditions", []))
                         and not actual.get("status", {}).get("active", 0)
@@ -232,7 +276,7 @@ def recover(directory, release, kubeconfig, context, namespace):
                         and any(owner.get("uid") == metadata["uid"] and owner.get("controller") is True
                                 and owner.get("kind") == "Job" for owner in pod["metadata"].get("ownerReferences", []))
                         and pod.get("status", {}).get("phase") == "Succeeded"
-                        and contains(pod["spec"], desired["spec"]["template"]["spec"]),
+                        and pod_matches(pod["spec"], desired["spec"]["template"]["spec"]),
                         "initializer Pod identity, specification or completion differs")
                 for field, spec_field in (("initContainerStatuses", "initContainers"),
                                           ("containerStatuses", "containers")):
@@ -283,6 +327,7 @@ def recover(directory, release, kubeconfig, context, namespace):
         result = subprocess.run(["helm", "rollback", release, str(submission["expectedRevision"]),
                                  *helm_args, "--wait", "--timeout", "5m", "--history-max", "0"],
                                 stdout=output, stderr=subprocess.STDOUT)
+    write_json(target / "command-result.json", {"exitCode": result.returncode})
     require(result.returncode == 0,
             "Helm recovery outcome is unresolved; preserve evidence and reconcile manually, never replay")
     after = status()

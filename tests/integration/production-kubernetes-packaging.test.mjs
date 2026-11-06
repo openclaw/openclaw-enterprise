@@ -1685,6 +1685,8 @@ test(
 test("production settings coexist in fresh and upgrade chart renders", tooling, async () => {
   const settings = {
     ...agentNativeAdminValues,
+    "installation.attemptId": "eac2f079-cff2-4488-8e2e-3322df9b0bd6",
+    "installation.upgradeAttemptId": "df44c039-3515-4d0e-b2eb-759e177f1ff5",
     ...repositoryCredentialValues,
     "repositoryCredentials.serviceName": "git",
     "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128",
@@ -1697,6 +1699,23 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
       : values["images.controller"];
     const objects = await resources(
       (await render({ ...settings, "images.controller": controllerImage }, { isUpgrade })).stdout,
+    );
+    // Recovery joins the submitted attempt to all live hooks and its owned Pod;
+    // install-only attribution remains separate when both values are retained.
+    for (const hook of objects.filter((object) => object.metadata.annotations?.["helm.sh/hook"])) {
+      assert.equal(
+        hook.metadata.annotations["openclaw.dev/upgrade-attempt"],
+        isUpgrade ? settings["installation.upgradeAttemptId"] : undefined,
+      );
+    }
+    const initializer = objects.find(({ kind }) => kind === "Job");
+    assert.equal(
+      initializer.metadata.annotations["openclaw.dev/installation-attempt"],
+      isUpgrade ? undefined : settings["installation.attemptId"],
+    );
+    assert.equal(
+      initializer.spec.template.metadata.annotations?.["openclaw.dev/upgrade-attempt"],
+      isUpgrade ? settings["installation.upgradeAttemptId"] : undefined,
     );
     const deployment = (component) =>
       objects.find(

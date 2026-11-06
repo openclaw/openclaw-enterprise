@@ -89,10 +89,10 @@ Helm status/history, initialization Job/Pod outcomes and the retained database;
 reconcile the original Helm client before retry or recovery. Resolve `pending-*`
 releases with the release owner. Revision checks cannot fence concurrent clients.
 
-Resume skips Helm only for `helm-started`'s expected deployed revision with
-matching candidate values and Installation. Invalid intents or revisions outside
-the recorded prior/expected pair refuse resume. `--migration-history-checked`
-bypasses neither refusal nor pending releases.
+Ordinary resume requires `helm-started`'s expected deployed revision and candidate
+values/Installation. Invalid intents or other revisions refuse it, regardless of
+`--migration-history-checked`. For interrupted candidates with completed
+initialization, see [same-candidate Helm recovery](production-helm-recovery.md).
 
 If external recovery moves outside this pair, preserve intent and evidence
 unchanged. The release owner must verify the
