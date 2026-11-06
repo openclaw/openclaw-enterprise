@@ -117,7 +117,7 @@ revisionTest(
 
 for (const retried of [false, true]) {
   revisionTest(
-    `pending replacement validation preserves the serving predecessor on ${retried ? "retried" : "first"} Stop and exempts active maintenance`,
+    `pending replacement validation preserves the serving predecessor on ${retried ? "retried" : "first"} Stop`,
     async (fixture) => {
       const owner = await fixture.agent("replacement-binding", { executionMode: "dedicated" });
       const stopped = [];
@@ -147,10 +147,6 @@ for (const retried of [false, true]) {
       await fixture.start(compute);
       serving = await fixture.revision(owner, 1);
       await fixture.work(serving, "succeeded");
-      // Active maintenance must still adopt old revisions without a binding.
-      const maintenance = await enqueueMaintenance(fixture, owner, serving);
-      await fixture.work(maintenance, "succeeded");
-      assert.deepEqual(validations, []);
       const replacement = await fixture.revision(owner, 2);
       await fixture.work(replacement, "failed_permanent");
       assert.deepEqual(validations, Array(retried ? 2 : 1).fill(replacement.id));
@@ -159,6 +155,41 @@ for (const retried of [false, true]) {
     },
   );
 }
+
+revisionTest(
+  "active maintenance exempts replacement validation after worker restart",
+  async (fixture) => {
+    const owner = await fixture.agent("maintenance-binding", { executionMode: "dedicated" });
+    const compute = { ...fixture.compute, requiresStoppedPredecessors: () => true };
+    await fixture.start(compute);
+    const predecessor = await fixture.revision(owner, 1);
+    await fixture.work(predecessor, "succeeded");
+    const serving = await fixture.revision(owner, 2);
+    await fixture.work(serving, "succeeded");
+
+    // A fresh worker has no recent-Stop cache. Maintenance must adopt the active
+    // revision without requiring a binding, even when an earlier revision exists.
+    await fixture.stop();
+    const stopped = [];
+    await fixture.start({
+      ...compute,
+      async validateRevisionReplacement() {
+        throw new SandboxRevisionUnsupportedError(
+          "SANDBOX_HARNESS_UNSUPPORTED",
+          "The active revision has no private workspace binding.",
+        );
+      },
+      async stopRevision(revision, signal) {
+        stopped.push(revision.id);
+        return compute.stopRevision(revision, signal);
+      },
+    });
+    const maintenance = await enqueueMaintenance(fixture, owner, serving);
+    await fixture.work(maintenance, "succeeded");
+    assert.deepEqual(stopped, [predecessor.id]);
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, serving.id);
+  },
+);
 
 async function enqueueMaintenance(fixture, owner, revision) {
   const maintenance = {
