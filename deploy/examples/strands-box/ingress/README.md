@@ -21,6 +21,8 @@ This example uses the existing [Sandbox Harness endpoint](../../../../docs/refer
 
    Read the receipt digest with `sha256sum /srv/box/runs/current-run/ready.json` under the original owner UID. Start the host executable with `node host-ingress.ts /absolute/private/ingress.json`. The host listener accepts one private IPv4 bind and port, the configured DNS origin, and HTTP Upgrade at `/`. Restrict network access to the approved relay path. If the original launcher, receipt or socket changes, ingress closes its sessions and listener. Start a new explicitly admitted ingress for a new generation.
 
+   The ingress adds `X-OpenClaw-Box-Owner` to the successful authenticated upgrade using its pinned receipt digest. It drops any such header supplied by the native server. The opt-in [Gateway runtime](../../../runtime/README.md#bind-a-standalone-gateway-to-one-box-execution) checks that digest before sending native requests.
+
 4. At provision, create the one relay Pod with the stable Service labels and the exact trusted Harness requirements, including Agent, revision, and provider network profile. Build [relay.Dockerfile](relay.Dockerfile) from this directory with `--build-arg NODE_IMAGE=<approved-node-image-by-digest>`. Give the provider the resulting relay image by digest. The relay uses UID:GID `1000:1000`, read-only root, no added capabilities, `RuntimeDefault` seccomp, and no ServiceAccount token or host mounts. Expose TCP port 8443. Supply:
 
    | Environment variable         | Value                                                           |

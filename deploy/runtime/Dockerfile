@@ -137,6 +137,10 @@ RUN echo 'f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc  /tmp
 COPY deploy/runtime/openclaw-codex-full-access-profile.patch /tmp/openclaw-codex-full-access-profile.patch
 RUN echo 'e942e1804475a8e828859c5ba81c20de944105a7dbe00bbba6c2275b32c0944b  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-full-access-profile.patch
+# Bind external Codex turn policy to the Compute-owned Box generation and its WSS peer.
+COPY deploy/runtime/openclaw-codex-box-owner.patch /tmp/openclaw-codex-box-owner.patch
+RUN echo '980d5ff7e0b79fa4890e4a32b42166fdd1c8c0159beebf9580675177baff7943  /tmp/openclaw-codex-box-owner.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-codex-box-owner.patch
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
 
@@ -266,6 +270,8 @@ RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
     src/node-host/codex-node-plugin.integration.test.ts \
     test/node-host-launcher.test.ts \
     src/plugins/computer-use-contract.test.ts \
+    extensions/codex/src/app-server/provider-box-owner.test.ts \
+    extensions/codex/src/app-server/turn-params.test.ts \
     src/daemon/program-args.test.ts
 # These CUA lifecycle cases use the supported SDK adapter boundary. The two
 # native SDK import cases need desktop libraries absent from this build image.
@@ -283,6 +289,9 @@ RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
     node -e 'const fs=require("node:fs");fs.writeFileSync(".artifacts/tsconfig.cua-production.json",JSON.stringify({"extends": "../tsconfig.extensions.json", "include": ["../src/**/*.d.ts", "../ui/src/**/*.d.ts", "../extensions/cua-computer/**/*"], "compilerOptions": {"rootDir": ".."}}));fs.writeFileSync(".artifacts/tsconfig.cua-test.json",JSON.stringify({"extends": "../test/tsconfig/tsconfig.extensions.test.json", "include": ["../test/types/vitest-codex-attempt-runtime.d.ts", "../src/**/*.d.ts", "../ui/**/*.d.ts", "../extensions/**/*.d.ts", "../extensions/cua-computer/**/*.test.ts", "../extensions/cua-computer/**/*.test.tsx", "../packages/**/*.d.ts"]}));' && \
     node scripts/run-tsgo.mjs -p .artifacts/tsconfig.cua-production.json --incremental --tsBuildInfoFile .artifacts/cua-production.tsbuildinfo && \
     node scripts/run-tsgo.mjs -p .artifacts/tsconfig.cua-test.json --incremental --tsBuildInfoFile .artifacts/cua-test.tsbuildinfo
+RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
+    node -e 'require("node:fs").writeFileSync(".artifacts/tsconfig.codex-box-owner.json", JSON.stringify({extends:"../test/tsconfig/tsconfig.extensions.test.json",include:["../test/types/vitest-codex-attempt-runtime.d.ts","../src/**/*.d.ts","../ui/**/*.d.ts","../extensions/**/*.d.ts","../packages/**/*.d.ts","../extensions/codex/src/app-server/provider-box-owner.test.ts","../extensions/codex/src/app-server/turn-params.test.ts"]}));' && \
+    node scripts/run-tsgo.mjs -p .artifacts/tsconfig.codex-box-owner.json --incremental --tsBuildInfoFile .artifacts/codex-box-owner.tsbuildinfo
 # Select only the Node projects that own these files: the browser project starts a
 # Vite server on localhost, which Buildah's network-less RUN cannot resolve.
 RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \

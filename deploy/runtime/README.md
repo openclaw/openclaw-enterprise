@@ -64,6 +64,40 @@ Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it
 against the Dockerfile.
 
+### Bind a standalone Gateway to one Box execution
+
+For the Strands Box pilot, build this runtime and use the
+[pinned host ingress](../examples/strands-box/ingress/README.md). Before enabling
+the option, verify that the original live Box confines the admitted workspace
+and denies all egress outside its admitted policy. A receipt hash identifies
+that execution. The confinement check belongs to the operator and supervisor.
+
+Run the Gateway as a nonroot user. Mount a root-owned read-only directory at
+`/etc/openclaw-box-owner` in the Gateway. Its ancestors must be root-owned and
+neither group- nor world-writable. Use regular root-owned files with no write
+bits, one link each, and no symlinks. Its `ca.pem` contains the ingress CA.
+Its compact JSON `binding.json` contains
+only the canonical `wss://HOST[:port]/` URL, the workspace root
+`/home/node/workspace`, and the SHA-256 of the original owner's exact
+`ready.json` bytes, under the keys `url`, `workspaceRoot`, and
+`generationSha256`. Set the trusted runtime inputs `APP_SERVER_URL` and
+`APP_SERVER_TOKEN` to that same URL and the native transport bearer. Configure
+the dedicated Harness app-server as a WebSocket with the same endpoint,
+workspace, and bearer, with no additional headers. Keep the bearer in the
+Gateway's normal secret inputs.
+
+An absent directory leaves ordinary Gateway behavior in place. A selected
+directory with either missing or invalid file refuses the binding. The
+runtime rechecks the mounted file identities and requires the exact generation
+on the CA-verified upgrade before sending native frames. For an ordinary
+workspace-write turn at the bound root, it selects external sandboxing with
+restricted network access and no alternate execution environment. Explicit
+read-only and workspace-restricted policies remain available inside that root.
+The bound connection accepts the chat RPCs and refuses direct shell and exec RPCs.
+Replacing the Box closes its original ingress. Set up a fresh binding before
+connecting a new Gateway, and reconcile any uncertain earlier turn before
+submitting another one.
+
 Dedicated Gateways require the supporting source recorded in this recipe and
 validate their effective native configuration before starting. The required
 Gateway tool policy covers core dispatch, automation authority and Codex

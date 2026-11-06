@@ -28,6 +28,7 @@
     "tests/conformance/strands-box-git.test.ts",
     "tests/conformance/strands-box-host.test.ts",
     "tests/conformance/strands-box-ingress.test.ts",
+    "tests/conformance/strands-box-ordinary-chat.test.ts",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
     "tests/conformance/workspace-node-supervisor.test.mjs",
     "tests/integration/presets-controller.test.mjs",
@@ -229,6 +230,9 @@
     },
     {
       "path": "tests/conformance/strands-box-ingress.test.ts"
+    },
+    {
+      "path": "tests/conformance/strands-box-ordinary-chat.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-harness-workspace-volume.test.mjs"

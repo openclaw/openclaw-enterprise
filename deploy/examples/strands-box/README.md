@@ -102,7 +102,8 @@ does not exercise an OCE Agent turn, workspace-node enrollment or GitHub.
 
 The [optional Shell Calls workspace verifier](workspace-verifier/README.md)
 exercises one narrowly permitted read through the Box broker. It is a separate
-check from the native startup verifier above.
+check from the native startup verifier above. The [ordinary chat reproduction](ordinary-chat/README.md)
+joins that declared tool to one authenticated Gateway turn using a local synthetic model.
 
 ## Connect the installation
 

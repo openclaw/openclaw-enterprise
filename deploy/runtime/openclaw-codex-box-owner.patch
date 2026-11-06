@@ -1,0 +1,1095 @@
+diff --git a/extensions/codex/src/app-server/client.ts b/extensions/codex/src/app-server/client.ts
+index 18794d5d772081b4bdd236f30ec46daac1849e55..754e62983c5adf41f604b711f42208e29d5ba189 100644
+--- a/extensions/codex/src/app-server/client.ts
++++ b/extensions/codex/src/app-server/client.ts
+@@ -55,6 +55,7 @@ import {
+   type RpcMessage,
+   type RpcRequest,
+ } from "./protocol.js";
++import { allowsProviderBoxRequest, type ProviderBoxOwner } from "./provider-box-owner.js";
+ import { dispatchCodexRequestAttempt } from "./request-admission.js";
+ import { createCodexRequestAttempt, remainingCodexRequestTime } from "./request-attempt.js";
+ import type { CodexRequestWaiterFinished } from "./request-observation.js";
+@@ -177,7 +178,10 @@ export class CodexAppServerClient {
+   private readonly privateTransportSecrets = new Set<string>();
+   private privateStderrPending = "";
+
+-  private constructor(child: CodexAppServerTransport) {
++  private constructor(
++    child: CodexAppServerTransport,
++    private readonly providerBoxOwner?: ProviderBoxOwner,
++  ) {
+     this.child = child;
+     this.closeMessageReader = listenCodexAppServerLines(
+       child.stdout,
+@@ -228,7 +232,10 @@ export class CodexAppServerClient {
+     }
+     if (startOptions.transport === "websocket" || startOptions.transport === "unix") {
+       await assertCurrent?.();
+-      return new CodexAppServerClient(createWebSocketTransport(startOptions));
++      return new CodexAppServerClient(
++        createWebSocketTransport(startOptions),
++        startOptions.providerBoxOwner,
++      );
+     }
+     // The spawn callback runs synchronously before registration; initialization
+     // stays blocked until registration finishes, without losing startup errors.
+@@ -342,6 +349,11 @@ export class CodexAppServerClient {
+     optionsInput?: RequestOptions,
+   ): Promise<T> {
+     const options = optionsInput ?? {};
++    if (this.providerBoxOwner && !allowsProviderBoxRequest(this.providerBoxOwner, method, params)) {
++      return Promise.reject(
++        new Error("The provider Box requires an explicit restricted Codex turn policy."),
++      );
++    }
+     if (this.closed) {
+       return Promise.reject(this.closeError ?? new Error("codex app-server client is closed"));
+     }
+diff --git a/extensions/codex/src/app-server/config-contracts.ts b/extensions/codex/src/app-server/config-contracts.ts
+index 320b5e8a6def833ee50ec06b126baf14679499e3..0092d47bb31592309cc457bf8f4782b0048fe23f 100644
+--- a/extensions/codex/src/app-server/config-contracts.ts
++++ b/extensions/codex/src/app-server/config-contracts.ts
+@@ -77,6 +77,7 @@ export type CodexAppServerStartOptions = {
+   cwd?: string;
+   url?: string;
+   authToken?: string;
++  providerBoxOwner?: import("./provider-box-owner.js").ProviderBoxOwner;
+   headers: Record<string, string>;
+   env?: Record<string, string>;
+   clearEnv?: string[];
+diff --git a/extensions/codex/src/app-server/config-options.ts b/extensions/codex/src/app-server/config-options.ts
+index a8e7a8776c6f276e798489700d0b077a2335dd3b..6c62a0765af6707c7796e652019722391f497cd9 100644
+--- a/extensions/codex/src/app-server/config-options.ts
++++ b/extensions/codex/src/app-server/config-options.ts
+@@ -58,6 +58,7 @@ import {
+ } from "./config-utils.js";
+ import { readCodexAppServerConfigOptions } from "./launch-args.js";
+ import type { CodexSandboxMode, CodexSandboxPolicy } from "./protocol.js";
++import { readProviderBoxOwner } from "./provider-box-owner.js";
+
+ /**
+  * Sole owner of the app-server home-scope decision. Ordinary harness connections
+@@ -270,6 +271,18 @@ export function createCodexAppServerConfig({
+       authToken,
+       headers,
+     });
++    const providerBoxOwner =
++      connectionScope === "harness" && params.pluginConfig?.appServer !== undefined
++        ? readProviderBoxOwner({
++            transport,
++            url,
++            workspaceRoot: remoteWorkspaceRoot,
++            authToken,
++            computeUrl: env.APP_SERVER_URL,
++            computeToken: env.APP_SERVER_TOKEN,
++            headers,
++          })
++        : undefined;
+
+     const configApprovalPolicy = config.approvalPolicy;
+     const envApprovalPolicy = resolveApprovalPolicy(env.OPENCLAW_CODEX_APP_SERVER_APPROVAL_POLICY);
+@@ -303,6 +316,7 @@ export function createCodexAppServerConfig({
+         args: args.length > 0 ? args : ["app-server", "--listen", "stdio://"],
+         ...(url ? { url } : {}),
+         ...(authToken ? { authToken } : {}),
++        ...(providerBoxOwner ? { providerBoxOwner } : {}),
+         headers,
+         ...(transport === "stdio" && clearEnv.length > 0 ? { clearEnv } : {}),
+       },
+@@ -490,6 +504,8 @@ export function codexAppServerStartOptionsKey(
+     args: options.args,
+     cwd: options.cwd ?? null,
+     url: options.url ?? null,
++    boxOwnerGeneration: options.providerBoxOwner?.generationSha256 ?? null,
++    boxOwnerCa: hashSecretForKey(options.providerBoxOwner?.ca, "boxOwnerCa"),
+     authToken: hashSecretForKey(options.authToken, "authToken"),
+     headers: Object.entries(options.headers)
+       .toSorted(([left], [right]) => left.localeCompare(right))
+diff --git a/extensions/codex/src/app-server/provider-box-owner.test.ts b/extensions/codex/src/app-server/provider-box-owner.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..c22f5d1d242527f351351726cb1e32d93845ec60
+--- /dev/null
++++ b/extensions/codex/src/app-server/provider-box-owner.test.ts
+@@ -0,0 +1,327 @@
++import { execFileSync } from "node:child_process";
++import { once } from "node:events";
++import {
++  chmod,
++  mkdir,
++  mkdtemp,
++  readFile,
++  rename,
++  rm,
++  symlink,
++  writeFile,
++} from "node:fs/promises";
++import { createServer } from "node:https";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { expect, it } from "vitest";
++import { WebSocketServer } from "ws";
++import { TEST_TLS_CERT_PEM } from "../../../../test/helpers/tls-fixture.js";
++import {
++  allowsProviderBoxRequest,
++  matchesProviderBoxOwner,
++  readProviderBoxOwner,
++} from "./provider-box-owner.js";
++import { createWebSocketTransport } from "./transport-websocket.js";
++
++const workspaceRoot = "/home/node/workspace";
++const generationSha256 = "a".repeat(64);
++const authToken = "fixture-native-transport-capability";
++const header = "X-OpenClaw-Box-Owner";
++const owner = { workspaceRoot };
++
++it("does not inherit an earlier external policy on an implicit or global-danger turn", () => {
++  expect(allowsProviderBoxRequest(owner, "turn/start", {})).toBe(false);
++  expect(
++    allowsProviderBoxRequest(owner, "turn/start", {
++      cwd: workspaceRoot,
++      permissions: ":danger-full-access",
++    }),
++  ).toBe(false);
++  expect(
++    allowsProviderBoxRequest(owner, "turn/start", {
++      cwd: workspaceRoot,
++      sandboxPolicy: { type: "dangerFullAccess" },
++    }),
++  ).toBe(false);
++  expect(
++    allowsProviderBoxRequest(owner, "turn/start", {
++      cwd: workspaceRoot,
++      sandboxPolicy: { type: "externalSandbox", networkAccess: "enabled" },
++    }),
++  ).toBe(false);
++  expect(
++    allowsProviderBoxRequest(owner, "turn/start", {
++      cwd: workspaceRoot,
++      sandboxPolicy: { type: "externalSandbox", networkAccess: "restricted" },
++    }),
++  ).toBe(true);
++  expect(
++    allowsProviderBoxRequest(owner, "turn/start", {
++      cwd: workspaceRoot + "/nested",
++      sandboxPolicy: { type: "readOnly", networkAccess: false },
++    }),
++  ).toBe(true);
++  const policy = { type: "externalSandbox", networkAccess: "restricted" };
++  expect(
++    allowsProviderBoxRequest(owner, "turn/start", {
++      cwd: "/tmp",
++      sandboxPolicy: policy,
++    }),
++  ).toBe(false);
++  expect(
++    allowsProviderBoxRequest(owner, "turn/start", {
++      cwd: workspaceRoot,
++      sandboxPolicy: policy,
++      environments: [{ environmentId: "foreign" }],
++    }),
++  ).toBe(false);
++  expect(
++    allowsProviderBoxRequest(owner, "command/exec", {
++      cwd: workspaceRoot,
++      sandboxPolicy: policy,
++    }),
++  ).toBe(false);
++  expect(allowsProviderBoxRequest(owner, "thread/shellCommand", {})).toBe(
++    false,
++  );
++  expect(allowsProviderBoxRequest(owner, "thread/read", {})).toBe(true);
++  expect(
++    allowsProviderBoxRequest(owner, "thread/start", {
++      cwd: workspaceRoot,
++      sandbox: "workspace-write",
++      environments: [],
++    }),
++  ).toBe(true);
++});
++
++it("uses only the closed provider mount for the exact Compute route and capability", async () => {
++  const root = await mkdtemp(join(tmpdir(), "openclaw-box-owner-"));
++  const parent = join(root, "etc");
++  const directory = join(parent, "owner");
++  const bindingPath = join(directory, "binding.json");
++  const caPath = join(directory, "ca.pem");
++  const scope = { root, ancestry: ["etc", "owner"], uid: process.getuid!() };
++  try {
++    const url = "wss://box-harness.pilot.svc.cluster.local:8443/";
++    const input = {
++      transport: "websocket",
++      url,
++      workspaceRoot,
++      authToken,
++      computeUrl: url,
++      computeToken: authToken,
++      headers: {},
++    };
++    await mkdir(parent, { mode: 0o755 });
++    expect(readProviderBoxOwner(input, scope)).toBeUndefined();
++    const unmapped = { ...scope, uid: scope.uid + 1 };
++    expect(readProviderBoxOwner(input, unmapped)).toBeUndefined();
++    await mkdir(directory, { mode: 0o755 });
++    expect(() => readProviderBoxOwner(input, scope)).toThrow(
++      "owner binding is invalid",
++    );
++    await writeFile(
++      bindingPath,
++      JSON.stringify({ url, workspaceRoot, generationSha256 }),
++      { mode: 0o444 },
++    );
++    expect(() => readProviderBoxOwner(input, scope)).toThrow(
++      "owner binding is invalid",
++    );
++    await writeFile(caPath, TEST_TLS_CERT_PEM, { mode: 0o444 });
++    const owner = readProviderBoxOwner(input, scope);
++    expect(() => readProviderBoxOwner(input, unmapped)).toThrow(
++      "owner binding is invalid",
++    );
++    expect(owner).toMatchObject({
++      url,
++      workspaceRoot,
++      generationSha256,
++      ca: TEST_TLS_CERT_PEM,
++    });
++    expect(() => owner!.assertCurrent()).not.toThrow();
++    for (const invalid of [
++      { url: "wss://elsewhere/" },
++      { transport: "stdio" },
++      { computeToken: "other" },
++      { workspaceRoot: "/home/node/other" },
++    ]) {
++      expect(() =>
++        readProviderBoxOwner({ ...input, ...invalid }, scope),
++      ).toThrow("owner binding is invalid");
++    }
++    expect(
++      matchesProviderBoxOwner(owner!, {
++        rawHeaders: [header, generationSha256, header, generationSha256],
++      }),
++    ).toBe(false);
++    await chmod(parent, 0o777);
++    expect(() => owner!.assertCurrent()).toThrow("owner binding is invalid");
++    expect(() => readProviderBoxOwner(input, scope)).toThrow(
++      "owner binding is invalid",
++    );
++    await chmod(parent, 0o755);
++    await rename(caPath, caPath + ".old");
++    await symlink("ca.pem.old", caPath);
++    expect(() => owner!.assertCurrent()).toThrow("owner binding is invalid");
++    expect(() => readProviderBoxOwner(input, scope)).toThrow(
++      "owner binding is invalid",
++    );
++  } finally {
++    await rm(root, { recursive: true, force: true });
++  }
++});
++
++it("delivers native frames only on the CA-pinned original generation, including after withdrawal", async () => {
++  const directory = await mkdtemp(join(tmpdir(), "openclaw-box-owner-tls-"));
++  const certPath = join(directory, "cert.pem");
++  const keyPath = join(directory, "key.pem");
++  const [cert, key] = await (async () => {
++    try {
++      execFileSync(
++        "openssl",
++        [
++          "req",
++          "-new",
++          "-x509",
++          "-newkey",
++          "rsa:2048",
++          "-nodes",
++          "-days",
++          "1",
++          "-subj",
++          "/CN=Box owner test CA",
++          "-addext",
++          "basicConstraints=critical,CA:TRUE",
++          "-addext",
++          "subjectAltName=IP:127.0.0.1",
++          "-out",
++          certPath,
++          "-keyout",
++          keyPath,
++        ],
++        { stdio: "ignore" },
++      );
++      return await Promise.all([
++        readFile(certPath, "utf8"),
++        readFile(keyPath, "utf8"),
++      ]);
++    } finally {
++      await rm(directory, { recursive: true, force: true });
++    }
++  })();
++  const server = createServer({ cert, key });
++  const peer = new WebSocketServer({ server });
++  let generation = generationSha256;
++  const frames: string[] = [];
++  peer.on("headers", (headers) => headers.push(`${header}: ${generation}`));
++  peer.on("connection", (socket) =>
++    socket.on("message", (frame) => frames.push(frame.toString())),
++  );
++  try {
++    server.listen(0, "127.0.0.1");
++    await once(server, "listening");
++    const address = server.address();
++    if (!address || typeof address === "string") {
++      throw new Error("Expected the test's TLS listener.");
++    }
++    const url = `wss://127.0.0.1:${address.port}/`;
++    let current = true;
++    const start = {
++      transport: "websocket" as const,
++      url,
++      authToken,
++      headers: {},
++      command: "codex",
++      args: [],
++      providerBoxOwner: {
++        url,
++        workspaceRoot,
++        generationSha256,
++        ca: cert,
++        assertCurrent() {
++          if (!current) throw new Error("owner binding is invalid");
++        },
++      },
++    };
++    const original = createWebSocketTransport(start);
++    const received = new Promise<void>((resolve, reject) => {
++      original.once("error", reject);
++      peer.once("connection", (socket, request) => {
++        expect(request.headers.authorization).toBe(`Bearer ${authToken}`);
++        socket.once("message", () => resolve());
++      });
++    });
++    original.stdin.write('{"id":1,"method":"initialize"}\n');
++    await received;
++    expect(frames).toHaveLength(1);
++    for (const frame of [
++      {
++        method: "command/exec",
++        params: {
++          cwd: workspaceRoot,
++          sandboxPolicy: { type: "dangerFullAccess" },
++        },
++      },
++      {
++        method: "turn/start",
++        params: {
++          cwd: "/tmp",
++          sandboxPolicy: {
++            type: "externalSandbox",
++            networkAccess: "restricted",
++          },
++        },
++      },
++    ]) {
++      const blocked = createWebSocketTransport(start);
++      const refused = new Promise<unknown>((resolve) =>
++        blocked.once("error", resolve),
++      );
++      blocked.stdin.write(JSON.stringify({ id: 3, ...frame }) + "\n");
++      await expect(refused).resolves.toEqual(
++        expect.objectContaining({
++          message: expect.stringContaining("request was refused"),
++        }),
++      );
++      expect(frames).toHaveLength(1);
++    }
++    const closed = new Promise<void>((resolve) =>
++      original.once("exit", () => resolve()),
++    );
++    current = false;
++    const revoked = new Promise<unknown>((resolve) =>
++      original.once("error", resolve),
++    );
++    original.stdin.write('{"id":4,"method":"thread/read","params":{}}\n');
++    await expect(revoked).resolves.toEqual(
++      expect.objectContaining({
++        message: expect.stringContaining("request was refused"),
++      }),
++    );
++    expect(frames).toHaveLength(1);
++    current = true;
++    for (const socket of peer.clients) {
++      socket.terminate();
++    }
++    await closed;
++    generation = "b".repeat(64);
++    const replacement = createWebSocketTransport(start);
++    const rejected = new Promise<unknown>((resolve) =>
++      replacement.once("error", resolve),
++    );
++    replacement.stdin.write('{"id":2,"method":"initialize"}\n');
++    await expect(rejected).resolves.toEqual(
++      expect.objectContaining({
++        message: expect.stringContaining("no longer serving"),
++      }),
++    );
++    expect(frames).toHaveLength(1);
++  } finally {
++    for (const socket of peer.clients) {
++      socket.terminate();
++    }
++    peer.close();
++    await new Promise<void>((resolve) => server.close(() => resolve()));
++  }
++});
+diff --git a/extensions/codex/src/app-server/provider-box-owner.ts b/extensions/codex/src/app-server/provider-box-owner.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..70b3ef289d647dc149771c11e5ae7b0de928fa6f
+--- /dev/null
++++ b/extensions/codex/src/app-server/provider-box-owner.ts
+@@ -0,0 +1,379 @@
++import { X509Certificate } from "node:crypto";
++import {
++  closeSync,
++  constants,
++  fstatSync,
++  lstatSync,
++  openSync,
++  readSync,
++  type BigIntStats,
++} from "node:fs";
++import type { IncomingMessage } from "node:http";
++import { posix } from "node:path";
++import { isDeepStrictEqual, TextDecoder } from "node:util";
++
++const OWNER_HEADER = "x-openclaw-box-owner";
++const SHA256 = /^[a-f0-9]{64}$/;
++const DIRECTORY_FLAGS =
++  constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
++const FILE_FLAGS =
++  constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
++const BINDING_PATH = {
++  root: "/",
++  ancestry: ["etc", "openclaw-box-owner"],
++  uid: 0,
++};
++const isAbsent = (error: unknown) =>
++  error instanceof Error && "code" in error && error.code === "ENOENT";
++
++export type ProviderBoxOwner = {
++  url: string;
++  workspaceRoot: string;
++  generationSha256: string;
++  ca: string;
++  assertCurrent: () => void;
++};
++
++function refusal(): never {
++  throw new Error("The dedicated Codex provider Box owner binding is invalid.");
++}
++
++function fileIdentity(stat: BigIntStats) {
++  return [
++    stat.dev,
++    stat.ino,
++    stat.uid,
++    stat.gid,
++    stat.mode,
++    stat.nlink,
++    stat.size,
++    stat.mtimeNs,
++    stat.ctimeNs,
++  ];
++}
++
++function directoryIdentity(stat: BigIntStats, uid: number): bigint[] {
++  if (
++    !stat.isDirectory() ||
++    stat.uid !== BigInt(uid) ||
++    (stat.mode & 0o022n) !== 0n
++  ) {
++    return refusal();
++  }
++  return [stat.dev, stat.ino, stat.uid, stat.gid, stat.mode];
++}
++
++function snapshot(
++  path: typeof BINDING_PATH,
++  expected: bigint[],
++  contents: boolean,
++) {
++  const descriptors: number[] = [];
++  const open = (file: string, flags: number) => {
++    const fd = openSync(file, flags);
++    descriptors.push(fd);
++    return fd;
++  };
++  try {
++    let directory = open(path.root, DIRECTORY_FLAGS);
++    const identify = (fd: number) =>
++      directoryIdentity(fstatSync(fd, { bigint: true }), path.uid);
++    const identities = [identify(directory)];
++    for (const component of path.ancestry) {
++      directory = open(
++        `/proc/self/fd/${directory}/${component}`,
++        DIRECTORY_FLAGS,
++      );
++      identities.push(identify(directory));
++    }
++    if (!isDeepStrictEqual(identities.at(-1), expected)) {
++      return refusal();
++    }
++    if (path === BINDING_PATH && process.geteuid?.() === 0) {
++      return refusal();
++    }
++    function read(name: string, limit: number) {
++      const fd = open(`/proc/self/fd/${directory}/${name}`, FILE_FLAGS);
++      const stat = fstatSync(fd, { bigint: true });
++      if (
++        !stat.isFile() ||
++        stat.uid !== BigInt(path.uid) ||
++        stat.nlink !== 1n ||
++        (stat.mode & 0o222n) !== 0n ||
++        stat.size <= 0n ||
++        stat.size > BigInt(limit)
++      ) {
++        return refusal();
++      }
++      const identity = fileIdentity(stat);
++      if (!contents) return { identity };
++      const bytes = Buffer.alloc(Number(stat.size) + 1);
++      let total = 0;
++      while (total < bytes.length) {
++        const count = readSync(fd, bytes, total, bytes.length - total, null);
++        if (count === 0) break;
++        total += count;
++      }
++      if (
++        total !== Number(stat.size) ||
++        !isDeepStrictEqual(
++          fileIdentity(fstatSync(fd, { bigint: true })),
++          identity,
++        )
++      ) {
++        return refusal();
++      }
++      return {
++        identity,
++        text: new TextDecoder("utf-8", { fatal: true }).decode(
++          bytes.subarray(0, total),
++        ),
++      };
++    }
++    const binding = read("binding.json", 4096);
++    const ca = read("ca.pem", 32_768);
++    return {
++      identities: [...identities, binding.identity, ca.identity],
++      binding: binding.text,
++      ca: ca.text,
++    };
++  } finally {
++    for (const fd of descriptors.reverse()) closeSync(fd);
++  }
++}
++
++/** Read only the operator's fixed immutable Gateway mount. Tests supply an isolated anchor. */
++export function readProviderBoxOwner(
++  input: {
++    transport: string;
++    url?: string;
++    workspaceRoot?: string;
++    authToken?: string;
++    computeUrl?: string;
++    computeToken?: string;
++    headers: Record<string, string>;
++  },
++  path = BINDING_PATH,
++): ProviderBoxOwner | undefined {
++  try {
++    let directory: BigIntStats;
++    try {
++      // A genuine absence is the only opt-out. Do this before checking owner
++      // UIDs, which may be unmapped in an ordinary rootless Gateway.
++      directory = lstatSync(posix.join(path.root, ...path.ancestry), {
++        bigint: true,
++      });
++    } catch (error) {
++      if (isAbsent(error)) return undefined;
++      return refusal();
++    }
++    if (process.platform !== "linux") return refusal();
++    const expected = directoryIdentity(directory, path.uid);
++    const selected = snapshot(path, expected, true);
++    const raw = selected.binding?.trim();
++    const ca = selected.ca;
++    if (!raw || !ca) return refusal();
++    const binding: unknown = JSON.parse(raw);
++    if (
++      !binding ||
++      typeof binding !== "object" ||
++      Array.isArray(binding) ||
++      JSON.stringify(binding) !== raw
++    ) {
++      return refusal();
++    }
++    const { url, workspaceRoot, generationSha256 } = binding as Record<
++      string,
++      unknown
++    >;
++    if (
++      Object.keys(binding).length !== 3 ||
++      typeof url !== "string" ||
++      workspaceRoot !== "/home/node/workspace" ||
++      typeof generationSha256 !== "string" ||
++      !SHA256.test(generationSha256) ||
++      input.transport !== "websocket" ||
++      input.url !== url ||
++      input.computeUrl !== url ||
++      input.workspaceRoot !== workspaceRoot ||
++      !input.authToken ||
++      input.computeToken !== input.authToken ||
++      Object.keys(input.headers).length !== 0
++    ) {
++      return refusal();
++    }
++    const origin = new URL(url);
++    if (
++      origin.protocol !== "wss:" ||
++      origin.pathname !== "/" ||
++      origin.username ||
++      origin.password ||
++      origin.search ||
++      origin.hash ||
++      origin.href !== url
++    ) {
++      return refusal();
++    }
++    const certificates = ca
++      .trim()
++      .match(
++        /-----BEGIN CERTIFICATE-----\r?\n(?:[a-zA-Z0-9+/=]+\r?\n)+-----END CERTIFICATE-----/g,
++      );
++    if (
++      !certificates ||
++      ca.trim() !== certificates.join(ca.includes("\r\n") ? "\r\n" : "\n")
++    ) {
++      return refusal();
++    }
++    for (const certificate of certificates) new X509Certificate(certificate);
++    return {
++      url,
++      workspaceRoot,
++      generationSha256,
++      ca,
++      assertCurrent() {
++        try {
++          if (
++            !isDeepStrictEqual(
++              snapshot(path, expected, false).identities,
++              selected.identities,
++            )
++          )
++            return refusal();
++        } catch {
++          return refusal();
++        }
++      },
++    };
++  } catch {
++    return refusal();
++  }
++}
++
++export function matchesProviderBoxOwner(
++  owner: ProviderBoxOwner,
++  response: Pick<IncomingMessage, "rawHeaders">,
++): boolean {
++  const values: string[] = [];
++  for (let i = 0; i < response.rawHeaders.length; i += 2) {
++    if (response.rawHeaders[i]?.toLowerCase() === OWNER_HEADER) {
++      values.push(response.rawHeaders[i + 1] ?? "");
++    }
++  }
++  return values.length === 1 && values[0] === owner.generationSha256;
++}
++
++const CHAT_CONTROL = new Set([
++  "initialize",
++  "initialized",
++  "thread/read",
++  "thread/list",
++  "thread/loaded/list",
++  "thread/unsubscribe",
++  "turn/steer",
++  "turn/interrupt",
++  "model/list",
++  "config/read",
++  "configRequirements/read",
++  "hooks/list",
++  "mcpServerStatus/list",
++  "plugin/list",
++  "plugin/installed",
++  "plugin/read",
++  "app/installed",
++  "account/read",
++  "account/rateLimits/read",
++  "modelProvider/capabilities/read",
++  "skills/list",
++  "thread/turns/list",
++  "thread/items/list",
++]);
++const THREAD_BINDING = new Set([
++  "thread/start",
++  "thread/resume",
++  "thread/fork",
++]);
++
++/** Authorize the fixed chat RPC set before sending it over the selected owner's WSS. */
++export function allowsProviderBoxRequest(
++  owner: Pick<ProviderBoxOwner, "workspaceRoot">,
++  method: string,
++  params: unknown,
++): boolean {
++  if (CHAT_CONTROL.has(method)) return true;
++  if (method !== "turn/start" && !THREAD_BINDING.has(method)) return false;
++  if (!params || typeof params !== "object" || Array.isArray(params)) {
++    return false;
++  }
++  const {
++    cwd,
++    environments,
++    runtimeWorkspaceRoots,
++    sandbox,
++    sandboxPolicy,
++    permissions,
++    path,
++    config,
++  } = params as Record<string, unknown>;
++  const inside = (path: unknown): path is string =>
++    typeof path === "string" &&
++    !path.includes("\0") &&
++    posix.normalize(path) === path &&
++    (path === owner.workspaceRoot ||
++      path.startsWith(owner.workspaceRoot + "/"));
++  if (
++    !inside(cwd) ||
++    permissions !== undefined ||
++    (environments !== undefined &&
++      (!Array.isArray(environments) || environments.length !== 0)) ||
++    (runtimeWorkspaceRoots !== undefined &&
++      (!Array.isArray(runtimeWorkspaceRoots) ||
++        !runtimeWorkspaceRoots.every(inside)))
++  ) {
++    return false;
++  }
++  if (THREAD_BINDING.has(method)) {
++    return (
++      path === undefined &&
++      sandboxPolicy === undefined &&
++      (sandbox === "read-only" || sandbox === "workspace-write") &&
++      (config === undefined ||
++        (config !== null &&
++          typeof config === "object" &&
++          !Array.isArray(config) &&
++          !Object.keys(config).some((key) =>
++            /^(?:default_permissions|permissions|sandbox_mode|sandbox_workspace_write)(?:\.|$)/.test(
++              key,
++            ),
++          )))
++    );
++  }
++  if (
++    sandbox !== undefined ||
++    !sandboxPolicy ||
++    typeof sandboxPolicy !== "object" ||
++    Array.isArray(sandboxPolicy)
++  ) {
++    return false;
++  }
++  const { type, networkAccess, writableRoots } = sandboxPolicy as Record<
++    string,
++    unknown
++  >;
++  if (type === "externalSandbox") {
++    return (
++      cwd === owner.workspaceRoot &&
++      networkAccess === "restricted" &&
++      runtimeWorkspaceRoots === undefined &&
++      Object.keys(sandboxPolicy).length === 2
++    );
++  }
++  if (type === "readOnly")
++    return typeof networkAccess === "boolean" && writableRoots === undefined;
++  return (
++    type === "workspaceWrite" &&
++    typeof networkAccess === "boolean" &&
++    Array.isArray(writableRoots) &&
++    writableRoots.every(inside)
++  );
++}
+diff --git a/extensions/codex/src/app-server/transport-websocket.ts b/extensions/codex/src/app-server/transport-websocket.ts
+index 48945c0fc7d8dc607fcefc24735e0c877bbabc3a..62de0fc8a015b78efc8a13fea8fc8e4ac90fd8f9 100644
+--- a/extensions/codex/src/app-server/transport-websocket.ts
++++ b/extensions/codex/src/app-server/transport-websocket.ts
+@@ -3,8 +3,18 @@ import net from "node:net";
+ import path from "node:path";
+ import { PassThrough, Writable } from "node:stream";
+ import { StringDecoder } from "node:string_decoder";
+-import { type ClientOptions, WebSocket } from "openclaw/plugin-sdk/websocket-runtime";
+-import { resolveCodexAppServerUserHomeDir, type CodexAppServerStartOptions } from "./config.js";
++import {
++  type ClientOptions,
++  WebSocket,
++} from "openclaw/plugin-sdk/websocket-runtime";
++import {
++  resolveCodexAppServerUserHomeDir,
++  type CodexAppServerStartOptions,
++} from "./config.js";
++import {
++  allowsProviderBoxRequest,
++  matchesProviderBoxOwner,
++} from "./provider-box-owner.js";
+ import type { CodexAppServerTransport } from "./transport.js";
+ import { codexWebSocketDataToBuffer } from "./websocket-data.js";
+
+@@ -19,7 +29,10 @@ export function isCodexWebSocketOpenFailure(error: unknown): boolean {
+   let current = error;
+   while (current instanceof Error && !seen.has(current)) {
+     seen.add(current);
+-    if ("code" in current && current.code === "CODEX_APP_SERVER_WEBSOCKET_OPEN_FAILED") {
++    if (
++      "code" in current &&
++      current.code === "CODEX_APP_SERVER_WEBSOCKET_OPEN_FAILED"
++    ) {
+       return true;
+     }
+     current = current.cause;
+@@ -36,15 +49,31 @@ export function createWebSocketTransport(
+       "codex app-server websocket transport requires plugins.entries.codex.config.appServer.url",
+     );
+   }
++  const boxOwner = options.providerBoxOwner;
++  if (
++    boxOwner &&
++    (options.transport !== "websocket" ||
++      options.url !== boxOwner.url ||
++      !options.authToken ||
++      Object.keys(options.headers).length !== 0)
++  ) {
++    throw new Error(
++      "The dedicated Codex transport does not match its provider Box owner binding.",
++    );
++  }
++  boxOwner?.assertCurrent();
+   const events = new EventEmitter();
+   const stdout = new PassThrough();
+   const stderr = new PassThrough();
+   const headers = {
+     ...options.headers,
+-    ...(options.authToken ? { Authorization: `Bearer ${options.authToken}` } : {}),
++    ...(options.authToken
++      ? { Authorization: `Bearer ${options.authToken}` }
++      : {}),
+   };
+   const websocketOptions: ClientOptions = {
+     headers,
++    ...(boxOwner ? { ca: boxOwner.ca, rejectUnauthorized: true } : {}),
+     // Codex app-server closes Unix upgrade handshakes that offer compression.
+     perMessageDeflate: false,
+     ...(options.transport === "websocket"
+@@ -69,6 +98,12 @@ export function createWebSocketTransport(
+   let expectedPong: Buffer | undefined;
+   let consecutiveMissedPongs = 0;
+   let heartbeatSequence = 0;
++  let boxOwnerVerified = boxOwner === undefined;
++  if (boxOwner) {
++    socket.once("upgrade", (response) => {
++      boxOwnerVerified = matchesProviderBoxOwner(boxOwner, response);
++    });
++  }
+
+   const clearConnectionHealthTimers = () => {
+     clearTimeout(pingTimeout);
+@@ -127,12 +162,48 @@ export function createWebSocketTransport(
+     scheduleHeartbeatPing();
+   };
+
++  const ownerFrameAllowed = (frame: string): boolean => {
++    if (!boxOwner) return true;
++    try {
++      boxOwner.assertCurrent();
++      const request: unknown = JSON.parse(frame);
++      if (!request || typeof request !== "object" || Array.isArray(request))
++        return false;
++      const { method, params, id, result, error } = request as Record<
++        string,
++        unknown
++      >;
++      if (typeof method === "string")
++        return allowsProviderBoxRequest(boxOwner, method, params);
++      return (
++        method === undefined &&
++        params === undefined &&
++        id !== undefined &&
++        (result !== undefined) !== (error !== undefined) &&
++        Object.keys(request).every((key) =>
++          ["id", "result", "error", "jsonrpc"].includes(key),
++        )
++      );
++    } catch {
++      return false;
++    }
++  };
+   const sendFrame = (frame: string) => {
+     const trimmed = frame.trim();
+     if (!trimmed) {
+       return;
+     }
+-    if (socket.readyState === WebSocket.OPEN) {
++    if (socket.readyState === WebSocket.OPEN && opened) {
++      if (!ownerFrameAllowed(trimmed)) {
++        pendingFrames.length = 0;
++        opened = false;
++        socket.terminate();
++        events.emit(
++          "error",
++          new Error("The original Codex provider Box request was refused."),
++        );
++        return;
++      }
+       socket.send(trimmed);
+       return;
+     }
+@@ -142,9 +213,21 @@ export function createWebSocketTransport(
+   // `initialize` can be written before the WebSocket open event fires. Buffer
+   // whole JSON-RPC frames so stdio and websocket transports share call timing.
+   socket.once("open", () => {
++    if (!boxOwnerVerified) {
++      pendingFrames.length = 0;
++      socket.terminate();
++      events.emit(
++        "error",
++        new Error(
++          "The original Codex provider Box owner is no longer serving.",
++        ),
++      );
++      return;
++    }
+     opened = true;
+     for (const frame of pendingFrames.splice(0)) {
+-      socket.send(frame);
++      if (!opened) break;
++      sendFrame(frame);
+     }
+     scheduleHeartbeatPing();
+   });
+@@ -181,6 +264,9 @@ export function createWebSocketTransport(
+     events.emit("exit", code, reason.toString("utf8"));
+   });
+   socket.on("message", (data) => {
++    if (!opened) {
++      return;
++    }
+     if (options.transport === "websocket") {
+       recordConnectionActivity();
+     }
+@@ -215,7 +301,10 @@ export function createWebSocketTransport(
+     },
+   });
+   const closeSocket = () => {
+-    if (socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
++    if (
++      socket.readyState === WebSocket.CLOSED ||
++      socket.readyState === WebSocket.CLOSING
++    ) {
+       return;
+     }
+     socket.close();
+diff --git a/extensions/codex/src/app-server/turn-params.test.ts b/extensions/codex/src/app-server/turn-params.test.ts
+index eac14a60b157538d8a3d1e934b0c88640904ed7a..d7105d27633d57d2f96fdab529cab3094fd8102b 100644
+--- a/extensions/codex/src/app-server/turn-params.test.ts
++++ b/extensions/codex/src/app-server/turn-params.test.ts
+@@ -55,6 +55,49 @@ it("keeps required-root native environments disabled on warm native turns", asyn
+   });
+   expect(turn.environments).toEqual([]);
+ });
++
++it("selects external/restricted only for the exact ordinary Box workspace turn", async () => {
++  const cwd = "/home/node/workspace";
++  const url = "wss://box-harness.pilot.svc.cluster.local:8443/";
++  const baseline = createAppServerOptions();
++  const appServer: TurnOptions["appServer"] = {
++    ...baseline,
++    sandbox: "workspace-write",
++    start: {
++      ...baseline.start,
++      transport: "websocket",
++      url,
++      providerBoxOwner: {
++        url,
++        workspaceRoot: cwd,
++        generationSha256: "a".repeat(64),
++        ca: "fixture",
++        assertCurrent() {},
++      },
++    },
++  };
++  const options = turnOptions({ cwd, appServer, preserveNativeTurnSettings: true });
++  const params = paramsForTurn();
++  const selected = await buildTurnStartParams(params, options);
++  expect(selected.sandboxPolicy).toEqual({ type: "externalSandbox", networkAccess: "restricted" });
++  expect(selected).not.toHaveProperty("permissions");
++  const readOnly = { type: "readOnly", networkAccess: false } as const;
++  expect(
++    (await buildTurnStartParams(params, { ...options, sandboxPolicy: readOnly })).sandboxPolicy,
++  ).toEqual(readOnly);
++  const other = await buildTurnStartParams(params, { ...options, cwd: "/home/node/other" });
++  expect(other.sandboxPolicy?.type).toBe("workspaceWrite");
++  const unscoped = await buildTurnStartParams(params, {
++    ...options,
++    appServer: { ...appServer, start: { ...appServer.start, providerBoxOwner: undefined } },
++  });
++  expect(unscoped.sandboxPolicy?.type).toBe("workspaceWrite");
++  const restricted = await buildTurnStartParams(params, {
++    ...options,
++    appServer: { ...appServer, sandbox: "read-only" },
++  });
++  expect(restricted.sandboxPolicy).toEqual(readOnly);
++});
+ it("refreshes and clears presence without rewriting native turn input", async () => {
+   const params = paramsForTurn();
+   let currentPresence = "active_node=unknown";
+diff --git a/extensions/codex/src/app-server/turn-params.ts b/extensions/codex/src/app-server/turn-params.ts
+index 309c0a63b1b623879f190ef4cde9147c9f469489..516be0b2c860fde70fa82b68b043e2e2792ee977 100644
+--- a/extensions/codex/src/app-server/turn-params.ts
++++ b/extensions/codex/src/app-server/turn-params.ts
+@@ -114,11 +114,21 @@ export async function buildTurnStartParams(
+     // Catalog collaboration stays native; parent-local context exists only at inference egress.
+     collaborationMode.settings.developer_instructions = null;
+   }
+-  const threadPermissionProfile = !options.sandboxPolicy
++  const externalBoxPolicy: CodexSandboxPolicy | undefined =
++    !options.appServer.networkProxy &&
++    !options.appServer.providerPermissionProfile &&
++    options.appServer.sandbox === "workspace-write" &&
++    params.requireWorkspaceOnly !== true &&
++    options.appServer.sessionRoot === undefined &&
++    options.appServer.start.providerBoxOwner?.workspaceRoot === options.cwd
++      ? { type: "externalSandbox", networkAccess: "restricted" }
++      : undefined;
++  const effectiveSandboxPolicy = options.sandboxPolicy ?? externalBoxPolicy;
++  const threadPermissionProfile = !effectiveSandboxPolicy
+     ? options.appServer.networkProxy?.profileName
+     : undefined;
+   const providerPermissions =
+-    !options.sandboxPolicy &&
++    !effectiveSandboxPolicy &&
+     !options.appServer.networkProxy &&
+     options.appServer.sandbox === "danger-full-access"
+       ? options.appServer.providerPermissionProfile
+@@ -202,7 +212,7 @@ export async function buildTurnStartParams(
+         ? { permissions: threadPermissionProfile }
+         : {
+             sandboxPolicy:
+-              options.sandboxPolicy ??
++              effectiveSandboxPolicy ??
+               codexSandboxPolicyForTurn(
+                 options.appServer.sandbox,
+                 options.appServer.sessionRoot ?? options.cwd,

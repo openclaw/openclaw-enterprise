@@ -21,6 +21,7 @@ import {
 const MAX_HEADER_BYTES = 8_192;
 const LEASE_INTERVAL_MS = 500;
 const WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const BOX_OWNER_HEADER = "x-openclaw-box-owner";
 const CONFIG_FIELDS = [
   "authority",
   "bindAddress",
@@ -190,7 +191,7 @@ function reject(socket: Socket, status: 400 | 401 | 403 | 404 | 502 | 503): void
   }
 }
 
-function nativeUpgrade(response: IncomingMessage, key: string): string {
+function nativeUpgrade(response: IncomingMessage, key: string, generationSha256: string): string {
   const accept = createHash("sha1")
     .update(key + WS_MAGIC)
     .digest("base64");
@@ -213,10 +214,15 @@ function nativeUpgrade(response: IncomingMessage, key: string): string {
       text += `${name}: ${value}\r\n`;
     }
   }
-  return text + "\r\n";
+  return `${text}${BOX_OWNER_HEADER}: ${generationSha256}\r\n\r\n`;
 }
 
-function forward(client: Socket, headers: OutgoingHttpHeaders, original: OriginalSocket): void {
+function forward(
+  client: Socket,
+  headers: OutgoingHttpHeaders,
+  original: OriginalSocket,
+  generationSha256: string,
+): void {
   const secKey = headers["Sec-WebSocket-Key"];
   if (typeof secKey !== "string") {
     reject(client, 400);
@@ -284,7 +290,7 @@ function forward(client: Socket, headers: OutgoingHttpHeaders, original: Origina
             finish(503);
             return;
           }
-          const reply = nativeUpgrade(response, secKey);
+          const reply = nativeUpgrade(response, secKey, generationSha256);
           clearTimeout(timer);
           upgraded = true;
           client.write(reply);
@@ -386,7 +392,7 @@ export async function createFixedIngress(
         reject(socket, 400);
         return;
       }
-      forward(socket, upgradeHeaders(message, config.authority), original);
+      forward(socket, upgradeHeaders(message, config.authority), original, config.readySha256);
     } catch {
       reject(socket, 400);
     }
