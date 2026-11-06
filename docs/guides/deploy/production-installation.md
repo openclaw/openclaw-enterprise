@@ -632,6 +632,10 @@ Keep `auth.github` configured. Never [roll back](production-upgrade-recovery.md#
 Restart the API after secret rotation. Keeping the client ID preserves attachments. Changing it ends old-instance sessions:
 reattach under the new ID before detaching old methods.
 
+For automatic first-login accounts, configure [GitHub team enrollment](../../reference/authentication/team-enrollment.md)
+with an existing IAM Group and the App's email-read permission. Otherwise, follow
+the manual attachment procedure below.
+
 [Enroll skipped accounts](../../reference/authentication/external-sign-in.md#session-and-recovery-controls) first.
 Through the site’s identity process, an Installation administrator verifies the intended GitHub user owns the enrolled local OCE account.
 Never match by email or username. That user runs `gh api user --jq .id` as themselves. [Attach their numeric ID to that account](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
