@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, unlink, writeFile } from "node:fs/promises";
-import { createServer, request } from "node:https";
+import { Agent, createServer, request } from "node:https";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { createSecureContext } from "node:tls";
@@ -28,7 +28,8 @@ export async function createSavedAccountOrigin(t: TestContext, issuer: string) {
     subjectAltName: `DNS:${host}`,
   });
   const root = await readFile(ca.caPath, "utf8");
-  const recipientTrust = createSecureContext({ ca: root });
+  const recipientAgent = new Agent({ secureContext: createSecureContext({ ca: root }) });
+  t.after(() => recipientAgent.destroy());
   const requests: { tokenHash: string; subject: string; tool: string }[] = [];
   const server = createServer({ key: leaf.key, cert: leaf.cert }, async (req, res) => {
     const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
@@ -149,8 +150,7 @@ export async function createSavedAccountOrigin(t: TestContext, issuer: string) {
             port: address.port,
             method: "POST",
             path: url.pathname,
-            secureContext: recipientTrust,
-            agent: false,
+            agent: recipientAgent,
             headers: {
               host: url.host,
               "content-type": "application/json",
