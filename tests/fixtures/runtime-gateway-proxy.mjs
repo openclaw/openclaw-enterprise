@@ -43,13 +43,17 @@ async function provePackagedProxy() {
   // Use the image's genuine bundled OC lifecycle and Codex transport. Hashed
   // filenames are build outputs, not a new production API added for this test.
   const files = readdirSync("/app/dist");
-  const lifecycleFile = files.find(
-    (file) =>
-      file.startsWith("proxy-lifecycle-") &&
-      readFileSync(`/app/dist/${file}`, "utf8").includes("export { startProxy, stopProxy }"),
-  );
-  assert.ok(lifecycleFile, "packaged native proxy lifecycle must be available");
-  const { startProxy, stopProxy } = await import(`/app/dist/${lifecycleFile}`);
+  let lifecycle;
+  for (const file of files.filter((file) => file.startsWith("proxy-lifecycle-"))) {
+    const candidate = await import(`/app/dist/${file}`);
+    // Bundlers can re-export the public names from an aliased implementation.
+    if (typeof candidate.startProxy === "function" && typeof candidate.stopProxy === "function") {
+      lifecycle = candidate;
+      break;
+    }
+  }
+  assert.ok(lifecycle, "packaged native proxy lifecycle must be available");
+  const { startProxy, stopProxy } = lifecycle;
   const transportFile = files.find((file) => file.startsWith("transport-websocket-"));
   assert.ok(transportFile, "packaged Codex WebSocket transport must be available");
   const transportExports = await import(`/app/dist/${transportFile}`);
