@@ -566,7 +566,15 @@
       "idx": 71,
       "version": "7",
       "when": 1787000000071,
-      "tag": "0071_harness_revision_settings",
+      "tag": "0071_default_users",
+      "breakpoints": true,
+      "sha256": "a4f7c22caf4f9dcb548cad3f3a069a0f66ea941a0b43f9fe2087b5f72803cce9"
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1787000000072,
+      "tag": "0072_harness_revision_settings",
       "breakpoints": true,
       "sha256": "bb7a1b4480f0566ecf56f47f5789ba681994ffa2a5cba5eda14d38be8973eb7c"
     }
@@ -582,8 +590,18 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        ["occ_migrator", "occ_migrator", "CREATE", false],
-        ["occ_migrator", "occ_migrator", "USAGE", false]
+        [
+          "occ_migrator",
+          "occ_migrator",
+          "CREATE",
+          false
+        ],
+        [
+          "occ_migrator",
+          "occ_migrator",
+          "USAGE",
+          false
+        ]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -625,9 +643,13 @@
       "b4b910d5ee9a960c7e04e15f67de57099824a4520fc78d70e05a03784f2578cd",
       "7bdc8785ed987aa51c70d912e72db9f8542f9bfe0203f8a1d1a3b5c4622eebbe"
     ],
-    "9fd7c1bf162572218ecc5bbeecd1ea2e97542848d7bf368a278a5754e5733415": [
-      "93fac4577bea87782a3518c1045c2d4683d8fc1dbb26467d25dc3d845436a64d",
-      "1858fb68fc2dc11fce529ba8794564a104c77b7b4784eec0d4c6c574862941fc"
+    "451fc5103dcacb194c7decfd419da6444995d78ddbd4f44ee4f69217b4cb6c5b": [
+      "165f0af55446f21086a75defc11d8451bc06500493d3241db50dc19d3d93f486",
+      "3fcb47801057d81e978101111e1cc921b39e075c97b12e891aea3fc26de49a57"
+    ],
+    "c1e2e44e89e14f9408c939d4e2caf72d49dabc200df617f52b11a7050c36828c": [
+      "9f1eb723dcad8f8641d7944efd0ddc2b498f763d1e0b3dc0bc69d4e73ce37b48",
+      "87764896563ff43de259eacd2a28427738f5554f664a98dd5b130b4b1f47a21f"
     ]
   },
   "catalogs": {
@@ -636,7 +658,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "9fd7c1bf162572218ecc5bbeecd1ea2e97542848d7bf368a278a5754e5733415",
+    "completed": "c1e2e44e89e14f9408c939d4e2caf72d49dabc200df617f52b11a7050c36828c",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -677,7 +699,8 @@
     "preAgentPluginDriver": "c74762d7f4d45b4215f42fcc8cf9e43d01fae03dbb80522d84c4e17370a2f7c3",
     "preConnectionTemplates": "8fc3e20bcb36ad9b2afe8ab96077139b12b50c825dd18ff323603d0e0540b250",
     "preSavedConnections": "1989ad2291a59e5d15e7f35fd008677449cac6cd11e653605b3d48675655dba9",
-    "preHarnessOverrides": "b3d9b0b499a4ea4a0cab68cd2836ab6ceba96be82c3f2bb6faac5e7fcb2a06c4"
+    "preDefaultUsers": "b3d9b0b499a4ea4a0cab68cd2836ab6ceba96be82c3f2bb6faac5e7fcb2a06c4",
+    "preHarnessOverrides": "451fc5103dcacb194c7decfd419da6444995d78ddbd4f44ee4f69217b4cb6c5b"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

@@ -153,6 +153,8 @@ for console and Agent hosts, and prints the browser CA path.
 `OCC_DEVELOPMENT_BROWSER_PORT` must differ from Compose and k3d API ports.
 Skip manual hybrid routing.
 
+Runtime changes need [explicit source verification](../../../deploy/runtime/README.md#verify-runtime-source).
+
 First startup requires [node registry access](../operate/troubleshooting.md#local-agent-sandbox-controller-image-pull-fails).
 For reviewed local charts and manifests, set
 `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART`,

@@ -1,12 +1,23 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   protectedText,
   protectedModelApiKey,
@@ -195,6 +206,48 @@ test(
     assert.deepEqual(await readdir(directory), ["matrix.json"]);
   },
 );
+
+test("QA matrix summary refuses malformed evidence without printing its contents", async (t) => {
+  const directory = await temporaryDirectory(t, "qa-summary-");
+  const evidenceDirectory = join(directory, "qa-matrix-evidence");
+  const summary = join(directory, "summary.md");
+  const existingSummary = "Previous summary content.\n";
+  const marker = "invented report text";
+  const script = fileURLToPath(new URL("../../scripts/ci/qa-matrix-summary.mjs", import.meta.url));
+  await mkdir(evidenceDirectory);
+  await writeFile(summary, existingSummary);
+
+  for (const [name, evidence] of [
+    ["invalid JSON", `not JSON: ${marker}`],
+    ["missing selection", JSON.stringify({ scope: marker, outcomes: [] })],
+    [
+      "invalid scenario list",
+      JSON.stringify({
+        scope: marker,
+        selection: [{ cell: "compose/Codex", scenarios: "model-ui", unselected: [] }],
+        outcomes: [],
+      }),
+    ],
+    ["null report", "null"],
+  ]) {
+    await t.test(name, async () => {
+      await writeFile(join(evidenceDirectory, "matrix.json"), evidence);
+      const child = spawnSync(process.execPath, [script], {
+        encoding: "utf8",
+        env: { RUNNER_TEMP: directory, GITHUB_STEP_SUMMARY: summary },
+        timeout: 5_000,
+      });
+      assert.ifError(child.error);
+      assert.equal(child.status, 1);
+      assert.equal(child.stdout, "");
+      assert.equal(
+        child.stderr,
+        "Malformed QA matrix evidence: expected a JSON report with scope, selection, and outcomes.\n",
+      );
+      assert.equal(await readFile(summary, "utf8"), existingSummary);
+    });
+  }
+});
 
 test("QA selection keeps prerequisite credentials and reports omitted coverage", async () => {
   const { selectQaMatrix, validateQaInputs } = await import("../helpers/qa-selection.mjs");

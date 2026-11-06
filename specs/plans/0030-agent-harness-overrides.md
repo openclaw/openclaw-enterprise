@@ -57,6 +57,12 @@ inside admission and typed provider settings inside Compute. Keep persisted-stat
 validation fail-closed. Earlier preview and media evidence below is historical;
 current verification and direct-deployment media are recorded in the PR.
 
+The required merge of main `511272157` preserves its Default Users migration at
+0071 and moves Harness settings to 0072. Real PostgreSQL qualification passed
+48 canonical-prefix and logical-restore cases without skips. The merged direct
+API and owning Console browser run passed 258 cases without skips. Earlier
+verification records below retain the migration numbering used at their source.
+
 ## Initial implementation verification
 
 | Outcome                                                                                | Evidence                                                                                                                                            | Result                                                             |

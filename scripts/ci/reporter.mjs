@@ -57,11 +57,61 @@ const openShellStageMeasurementKind = "openshell-stage";
 const openShellSandboxMeasurementKind = "openshell-sandbox-phase";
 const openShellPolicyCheckKind = "openshell-network-policy-check";
 const openShellFixtureTeardownKind = "openshell-fixture-teardown";
+const openShellNativePolicyCheckKind = "openshell-native-policy-check";
+const nativePolicyPrimaryChecks = new Set([
+  "agent.get",
+  "agent.status-200",
+  "agent.active-revision",
+  "sandbox.wait-active",
+  "sandbox.native-address",
+  "baseline.policy-status",
+  "baseline.sandbox",
+  "baseline.resource-version",
+  "fixture.make-directory",
+  "fixture.pause-worker",
+  "fixture.read-helm-values",
+  "fixture.save-helm-values",
+  "fixture.parse-helm-values",
+  "fixture.prepare-auth-values",
+  "fixture.write-auth-values",
+  "client.reader",
+  "client.recommender",
+  "client.writer",
+  "client.no-scopes",
+  "read.unauthenticated-code-16",
+  "read.reader-equals-baseline",
+  "read.no-scopes-code-7",
+  "drafts.reader-code-7",
+  "drafts.no-scopes-code-7",
+  "drafts.recommender-rpc",
+  "drafts.recommender-chunks-array",
+  "read.recommender-code-7",
+  "update.reader-code-7",
+  "update.no-scopes-code-7",
+  "read.writer-code-7",
+  "read.reader-unchanged-after-denials",
+  "update.writer-rpc",
+  "read.reader-wait-loaded",
+  "read.loaded-policy-equals-baseline",
+  "fixture.write-success-marker",
+  "auth.helm-upgrade",
+  "auth.gateway-ready",
+  "auth.restart-forward",
+]);
+const nativePolicyCleanupChecks = new Set([
+  "cleanup.close-client",
+  "cleanup.restore-auth.helm-upgrade",
+  "cleanup.restore-auth.gateway-ready",
+  "cleanup.restore-auth.restart-forward",
+  "cleanup.remove-directory",
+  "cleanup.resume-worker",
+]);
 const openShellMeasurementKinds = new Set([
   openShellStageMeasurementKind,
   openShellSandboxMeasurementKind,
   openShellPolicyCheckKind,
   openShellFixtureTeardownKind,
+  openShellNativePolicyCheckKind,
 ]);
 const openShellPolicyChecks = new Set([
   "installation-discovery",
@@ -173,6 +223,18 @@ function safeMeasurement(value) {
     return openShellPolicyChecks.has(value.check)
       ? { kind: value.kind, check: value.check }
       : undefined;
+  }
+  if (isRecord(value) && value.kind === openShellNativePolicyCheckKind) {
+    const { kind, stage, primaryCheck, cleanupCheck } = value;
+    if (
+      stage !== "native-policy-scopes" ||
+      (primaryCheck === null && cleanupCheck === null) ||
+      (primaryCheck !== null && !nativePolicyPrimaryChecks.has(primaryCheck)) ||
+      (cleanupCheck !== null && !nativePolicyCleanupChecks.has(cleanupCheck))
+    ) {
+      return undefined;
+    }
+    return { kind, stage, primaryCheck, cleanupCheck };
   }
   if (isRecord(value) && value.kind === openShellFixtureTeardownKind) {
     return ["passed", "failed", "incomplete"].includes(value.outcome)
@@ -867,6 +929,10 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "historyToolCallPartCount",
     "historyOtherPartCount",
     "historyExecCallCount",
+    "historyExecCodeStringCount",
+    "historyExecCodeToolPrefixContainsCount",
+    "historyExecNestedExitZeroCount",
+    "historyExecNestedExitNonzeroCount",
     "historyExecCommandStringCount",
     "historyExecExactCommandCount",
     "historyExecNonemptyTextCount",
