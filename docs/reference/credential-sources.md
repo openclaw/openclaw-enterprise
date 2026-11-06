@@ -35,7 +35,7 @@ OpenShell is a development integration. See the
 2. For a Secret-backed source, [create a Secret](drivers/kubernetes-secret.md#create-a-namespace-owned-secret) and keep its `ref`.
 3. Send `POST /namespaces/:namespaceId/credential-sources`. The caller needs
    `credential_source:create` on the Namespace and `secret:operate` on each
-   referenced Secret. A protected metadata source also requires `agent:operate`
+   referenced Secret. A protected metadata source requires `agent:operate`
    on the active, dedicated Agent named by `config.agent_id` in that Namespace.
 
 For example, this source names the GitHub App, installation, repository and
