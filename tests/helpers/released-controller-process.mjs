@@ -127,9 +127,10 @@ try {
   const headers = { host: "127.0.0.1", origin: "http://127.0.0.1", cookie };
   const session = await app.inject({ method: "GET", url: "/api/auth/session", headers });
   assert.equal(session.statusCode, 200, session.body);
-  console.log(
-    JSON.stringify({ ready: true, pid: process.pid, accountId: session.json().data.user.id }),
-  );
+  const accountId = session.json().data.user.id;
+  assert.equal(typeof accountId, "string");
+  assert.ok(accountId.length > 0, "The authenticated session must identify an account.");
+  console.log(JSON.stringify({ ready: true, pid: process.pid, accountId }));
   for await (const line of inputLines) {
     const input = JSON.parse(line);
     if (input.op === "stop") {
