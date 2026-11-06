@@ -3,6 +3,7 @@ import {
   openShellProxyConfiguration,
   openShellRepositoryConfiguration,
   openShellGitChartListener,
+  isOpenShellGatewayEligible,
   validateOpenShellRepositoryTransport,
 } from "../drivers/egress-proxy/openshell-configuration.ts";
 import { githubRepositoryConfiguration } from "../drivers/repo/github/installation.ts";
@@ -1277,10 +1278,7 @@ export async function loadInstallationConfiguration(options: {
       !sandbox ||
       options.createSandboxDriver !== undefined ||
       !kubernetesCompute ||
-      openShellBackend?.configuration.endpoint === undefined ||
-      !openShellBackend.configuration.endpoint.startsWith("https://") ||
-      (openShellBackend.configuration.auth?.mode !== "bearerTokenFile" &&
-        openShellBackend.configuration.auth?.mode !== "mtls"))
+      !isOpenShellGatewayEligible(openShellBackend))
   ) {
     throw new Error(
       "Protected egress requires paired Kubernetes/OpenShell Drivers and an authenticated TLS gateway endpoint.",
