@@ -1,9 +1,34 @@
-import { modelProbeTimeoutDiagnostic } from "./runtime-model-probe-diagnostic.mjs";
+import { modelProbeTimeoutDiagnostic } from "./runtime-model-probe-diagnostic.ts";
+import type {
+  DiagnosticSnapshot,
+  ProbeEvent,
+  ProbePhase,
+} from "./runtime-model-probe-diagnostic.ts";
 
-const observed = (events, key, value) =>
+interface Stress {
+  requested: number;
+  started: number;
+  settled: number;
+  rejected: number;
+}
+
+interface Probe {
+  code?: unknown;
+  capMs?: number | undefined;
+  elapsedMs?: number | undefined;
+  cpuWaitMs?: number | null | undefined;
+}
+
+interface Snapshot extends DiagnosticSnapshot {
+  running: boolean;
+  probe?: Probe | null | undefined;
+  probeStage?: string | null | undefined;
+}
+
+const observed = (events: ProbeEvent[], key: string, value: unknown) =>
   events.some((event) => event.event === "observe" && event.key === key && event.value === value);
 
-export function modelProbeSettled({ events }) {
+export function modelProbeSettled({ events }: { events: ProbeEvent[] }) {
   return (
     events.some(
       (event) =>
@@ -16,7 +41,11 @@ export function modelProbeSettled({ events }) {
   );
 }
 
-export function modelProbeDiagnostic(snapshot, stress, reason) {
+export function modelProbeDiagnostic(
+  snapshot: Snapshot,
+  stress: Stress | undefined,
+  reason: string,
+) {
   const probe = snapshot.probe ?? {};
   return {
     ...modelProbeTimeoutDiagnostic(snapshot, {
@@ -39,9 +68,21 @@ export function modelProbeDiagnostic(snapshot, stress, reason) {
 // (files[].measurements) on passing runs too, so flake sweeps can read the
 // probe's headroom against its cap. `setupMs` runs from scenario start to
 // container start; `probeDoneMs` from wrapper start; `readyMs` from container start.
-export function recordModelProbeMeasurement(t, probeCase, run) {
+export function recordModelProbeMeasurement(
+  t: { diagnostic: (message: string) => void },
+  probeCase: string,
+  run: {
+    snapshot: {
+      probe?: Probe | undefined;
+      phases?: ProbePhase[] | undefined;
+      events?: ProbeEvent[] | undefined;
+    };
+    setupMs?: number | undefined;
+  },
+) {
   const { probe = {}, phases = [], events = [] } = run.snapshot;
-  const at = (value) => (Number.isFinite(value) ? Math.round(value) : null);
+  const at = (value: number | null | undefined) =>
+    Number.isFinite(value) ? Math.round(Number(value)) : null;
   t.diagnostic(
     `openclaw-ci-measurement ${JSON.stringify({
       kind: "runtime-model-probe",
@@ -63,7 +104,12 @@ export function recordModelProbeMeasurement(t, probeCase, run) {
 
 // The marker proves the owned Node process reached its busy loop, not merely
 // that a Docker exec request was submitted. Keep no child output or error text.
-export function trackProbeCpuHog(operation, stress) {
+export function trackProbeCpuHog(
+  operation: PromiseLike<unknown> & {
+    child: { stdout: { on: (event: "data", listener: (chunk: unknown) => void) => unknown } };
+  },
+  stress: Stress,
+) {
   stress.requested++;
   let pending = "";
   let started = false;

@@ -1,5 +1,5 @@
 // CI may retain only these fixed outcomes, never the probe's logs or input.
-const probeCodes = new Set([
+const probeCodes = new Set<unknown>([
   "READY",
   "AUTHENTICATION_FAILED",
   "MODEL_PROBE_CPU_STARVED",
@@ -8,15 +8,39 @@ const probeCodes = new Set([
   "UNAVAILABLE",
 ]);
 
+export interface ProbeEvent {
+  event?: unknown;
+  key?: unknown;
+  value?: unknown;
+  ms?: number | undefined;
+}
+
+export interface ProbePhase {
+  phase?: unknown;
+  outcome?: string | undefined;
+  sinceStartMs?: number | undefined;
+}
+
+export interface DiagnosticSnapshot {
+  output: string;
+  phases: ProbePhase[];
+  events: ProbeEvent[];
+}
+
 export function modelProbeTimeoutDiagnostic(
-  snapshot,
+  snapshot: DiagnosticSnapshot,
   load = { submitted: 0, settled: 0, failed: 0 },
 ) {
   let probe;
   for (const line of snapshot.output.split(/\r?\n/)) {
     try {
-      const entry = JSON.parse(line);
-      if (entry?.event === "openclaw.model_probe") {
+      const entry: unknown = JSON.parse(line);
+      if (
+        entry !== null &&
+        typeof entry === "object" &&
+        "event" in entry &&
+        entry.event === "openclaw.model_probe"
+      ) {
         probe = entry;
         break;
       }
@@ -28,11 +52,12 @@ export function modelProbeTimeoutDiagnostic(
   const events = snapshot.events;
   let outcome = "not-observed";
   if (probe !== undefined) {
-    outcome = probeCodes.has(probe.code) ? probe.code : "other";
+    const code = "code" in probe ? probe.code : undefined;
+    outcome = typeof code === "string" && probeCodes.has(code) ? code : "other";
   }
   let modelPhase = "not-observed";
   if (phase !== undefined) {
-    modelPhase = ["ok", "failed"].includes(phase.outcome) ? phase.outcome : "other";
+    modelPhase = phase.outcome === "ok" || phase.outcome === "failed" ? phase.outcome : "other";
   }
   return {
     kind: "runtime-model-probe",

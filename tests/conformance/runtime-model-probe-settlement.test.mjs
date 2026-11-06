@@ -7,9 +7,11 @@ import { promisify } from "node:util";
 import test from "node:test";
 import vm from "node:vm";
 import {
+  modelProbeDiagnostic,
   modelProbeSettled,
+  recordModelProbeMeasurement,
   trackProbeCpuHog,
-} from "../helpers/runtime-model-probe-observation.mjs";
+} from "../helpers/runtime-model-probe-observation.ts";
 import reporter from "../../scripts/ci/reporter.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
@@ -42,6 +44,44 @@ test("probe settlement accepts ready and failed outcomes without accepting parti
     false,
   );
   assert.equal(modelProbeSettled({ events: [{ event: "observe", key: "runtimeFailure" }] }), false);
+});
+
+test("diagnostics ignore malformed mixed logs and do not retain input", () => {
+  const snapshot = {
+    output:
+      'secret ordinary line\n{broken\nnull\n{"event":"openclaw.model_probe","code":"private-code","input":"secret-value"}\n',
+    phases: [{ phase: "model-probe", outcome: "private-outcome" }],
+    events: [{ event: "observe", key: "runtimeFailure", value: 0 }],
+    running: false,
+  };
+  const diagnostic = modelProbeDiagnostic(snapshot, undefined, "outer-timeout");
+  assert.equal(diagnostic.probe, "other");
+  assert.equal(diagnostic.modelPhase, "other");
+  assert.equal(diagnostic.failureObserved, true);
+  assert.doesNotMatch(JSON.stringify(diagnostic), /secret|private/);
+});
+
+test("measurement records rounded finite values and leaves absent values null", () => {
+  const lines = [];
+  recordModelProbeMeasurement({ diagnostic: (line) => lines.push(line) }, "case", {
+    setupMs: 1.6,
+    snapshot: {
+      probe: { code: "READY", elapsedMs: 2.5, capMs: Infinity, cpuWaitMs: null },
+      phases: [{ phase: "model-probe", sinceStartMs: 5.2 }],
+      events: [{ event: "observe", key: "ready", value: true, ms: 8.7 }],
+    },
+  });
+  assert.deepEqual(JSON.parse(lines[0].slice("openclaw-ci-measurement ".length)), {
+    kind: "runtime-model-probe",
+    case: "case",
+    code: "READY",
+    elapsedMs: 3,
+    capMs: null,
+    cpuWaitMs: null,
+    setupMs: 2,
+    probeDoneMs: 5,
+    readyMs: 9,
+  });
 });
 
 test("actual starved-case callback accepts READY; guard-removal control does not", async () => {

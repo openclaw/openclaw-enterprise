@@ -42,6 +42,7 @@
     "helpers/fake-commands.ts",
     "helpers/node-test-summary.ts",
     "helpers/image-smoke-timeout.ts",
+    "helpers/runtime-model-probe-observation.ts",
     "helpers/credential-source-owner-upgrade.ts",
     "helpers/populated-upgrade-return.ts",
     "helpers/deployed-repository-capability.ts",
