@@ -107,59 +107,16 @@ joins that declared tool to one authenticated Gateway turn using a local synthet
 
 ## Connect the installation
 
-Use the [installed ordinary chat and workspace procedure](ordinary-chat/installed.md)
-for the file-only workspace node. Box v0.2.1's HTTP egress proxy
+For the file-only workspace node, follow the [installed ordinary chat and workspace procedure](ordinary-chat/installed.md)
+in order: verify an empty control export with the Worker stopped; mount it
+read-only in one Worker and deploy the stopped Agent once; then use the
+Worker's original workspace claim to start the held host and verify the
+live socket before approval. The host cannot start before that claim exists.
+
+Box v0.2.1's HTTP egress proxy
 [refuses protocol upgrades](https://github.com/strands-agents/box/blob/e39544d49188b82933264b83159c7ccc278ced5a/crates/egress-gateway/src/intercept/mitm/http1.rs#L271-L289),
 so the file node has a separate route to the Agent Gateway. The Box Harness
 still connects to the Gateway over the installed relay.
-
-Start with the [production installation guide](../../../docs/guides/deploy/production-installation.md)
-for the control plane. Review the [example Driver](driver/README.md#build-and-select),
-then follow its build, package and Installation steps. The Driver runs with the
-controller's authority. Use the same package and configuration on API and Worker.
-
-1. Follow [Connect one Agent Gateway to the Box host](ingress/README.md) to
-   allocate the Service, configure `network.providerHarness`, and prepare the
-   relay and ingress. Keep the TLS private key with the ingress owner. The
-   workspace node needs a separate route back to the original Gateway.
-2. Create one dedicated Codex Agent using the normal
-   [Agent workflow](../../../docs/guides/deploy/production-agents.md#configure-the-agent-runtime).
-   Use the [controlled inference configuration](driver/README.md#build-and-select)
-   for this example. Keep real model credentials out of Box.
-   Copy the [installed configuration](host/installed.example.json) and replace
-   the example values with the actual Driver, Namespace and Agent identities,
-   image digest, staged workspace claim and endpoint. Prepare the
-   [same bound volume and node state](ordinary-chat/installed.md#prepare-the-original-volume).
-   Set the workspace node's Gateway WSS URL and private IPv4 address. Configure
-   a controlled inference route for the installation's test fixture. Use a new mode `0700`
-   `approvalDir` outside both the Worker's socket mount and Box's file grants.
-3. Give only the Worker access to the owner-only Unix control socket. Set
-   `BOX_INSTALLED_CONFIG` to the absolute path to the mode `0600` installed
-   configuration. Run the
-   [host control entry point](host/control.ts) as the same nonroot owner.
-
-   ```bash
-   node deploy/examples/strands-box/host/control.ts "$BOX_INSTALLED_CONFIG"
-   ```
-
-   `strands-box-control: ready` means the control socket is listening. Deploy
-   the Agent once. The host writes `runtimeDir/pending.json` before the Worker
-   reads the workspace setup Secret. Compare the pending owner, revision and
-   requirements with the original deployment through OCE. Set `BOX_REVISION_ID`
-   and `BOX_REQUIREMENTS_DIGEST` to the reviewed values. Confirm the receipt's
-   file-only mode, volume UID and name, and launch plan digest. Approve that request
-   from the Box host.
-
-   ```bash
-   node deploy/examples/strands-box/host/control.ts approve "$BOX_INSTALLED_CONFIG" \
-     "$BOX_REVISION_ID" "$BOX_REQUIREMENTS_DIGEST"
-   ```
-
-   The Worker continues the same deployment on its next reconciliation. Use
-   that execution's `ready.json` for ingress. A relay probe verifies that the
-   original listener rejects an anonymous upgrade. The Driver separately
-   requires an authenticated Codex `initialize` result for the same execution.
-   Verify workspace node enrollment before chat.
 
 ## Verify chat and repository access
 

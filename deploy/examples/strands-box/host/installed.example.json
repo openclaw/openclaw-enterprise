@@ -5,6 +5,7 @@
   "codexBin": "/opt/oce/runtime/codex/codex",
   "agentBuildDir": "/opt/oce-box/compiled-agent",
   "runtimeDir": "/run/oce-box/revision",
+  "controlSocketMode": "worker-directory",
   "workspace": "/home/node/workspace",
   "workspaceVerifierSha256": "0000000000000000000000000000000000000000000000000000000000000000",
   "read": ["/app", "/opt/oce/runtime"],

@@ -1,28 +1,75 @@
 # Verify ordinary chat and workspace files on an installed Box Agent
 
 Start with the [production installation](../../../../docs/guides/deploy/production-installation.md)
-and the [Box Driver and host example](../README.md#connect-the-installation).
+and [build and select the example Driver](../driver/README.md#build-and-select).
 Use the same checkout to build the Controller, Worker, Gateway, and Box helper.
 Use a dedicated Codex Agent with the normal Gateway authentication and a scoped
 operator. Leave connectors, Git, repository access, and protected credentials
 disabled. The installed chat and file checks below are pending.
 
-## Prepare the original volume
+Start with a ready OCE Agent Namespace. If the control plane is new, use
+[normal Namespace provisioning](../../../../docs/guides/deploy/production-agents.md#prepare-each-namespace)
+without the Box control mount or an Agent deployment. Return the Worker to
+zero before the first Box rollout below.
+
+## Verify the empty control export
+
+Keep the Worker at zero replicas with its control claim disabled. Use
+`controlSocketMode: worker-directory` for the host. Follow the
+[control claim checks](../driver/README.md#before-enabling-the-worker-control-claim)
+to verify the original Namespace, Node, bound control PVC and local PV, and
+the empty owner-only export directory on that Node. This control claim
+carries the Unix socket. The Worker will create a separate workspace claim
+after deployment starts.
+
+Prepare the pinned Controller, Gateway and relay images, host helpers, and
+[fixed workspace verifier](../workspace-verifier/README.md) before rollout.
+Stage the unpacked root filesystem of the exact selected public runtime image
+in a fresh mode-`0700` directory outside the Box grants. Use the image's
+canonical digest and check its source labels before unpacking. The nonroot
+runtime owner needs read and execute access to the shipped Node and OpenClaw
+files. The host mounts that image read-only for the file node. The host needs
+stock Bubblewrap with `--bind-fd`, unprivileged user namespaces, and network
+namespaces enabled. Compile the helpers with the
+[host build command](../README.md#prepare-the-host-and-verify-box).
+
+In that Agent Namespace, use steps 1–2 in
+[Connect one Agent Gateway to the Box host](../ingress/README.md) to allocate
+the private relay Service, set `network.providerHarness`, and prepare TLS.
+Keep the private key with the ingress owner. Start ingress later, after the
+original Box writes `ready.json`. Configure the Gateway listener above
+port 1023 and set the Installation's `gatewayRouting.endpointPort` to that
+port before the first deployment.
 
 Opt in to `workspaceNodeMode: file-only-v1` in the Box Driver configuration on
 the API and Worker. Keep the [controlled inference settings](../driver/README.md#build-and-select).
-Before the first pairing, leave custom `file-transfer` configuration and node
-grants unset. Compute installs the file policy for the enrolled node.
-Choose the `gpt-5` model through the controlled provider. Create the Agent
-without initial workspace file staging, and deploy its first
-revision once. The Worker creates the Harness claim before it calls the Box
-host. Use an installation with a bound volume that the Box host can mount
-directly, such as a statically bound local volume on that host. A copy of the
-workspace cannot serve the Agent's live file operations.
+Leave custom `file-transfer` configuration and node grants unset before the
+first pairing. Compute installs the file policy for the enrolled node.
+Select `gpt-5` through the controlled provider. Use the normal
+[Agent workflow](../../../../docs/guides/deploy/production-agents.md#configure-the-agent-runtime)
+to save the dedicated Codex Agent in a stopped state, without initial
+workspace file staging.
 
-Read the original claim in the Agent's execution namespace. Save its UID,
-`spec.volumeName`, and Bound status. On the Box host, mount the four subpaths
-of that exact volume as the nonroot runtime owner:
+## Prepare the original volume
+
+After the empty export checks pass, [mount it read-only in one Worker](../driver/README.md#mount-the-empty-control-directory).
+Verify the actual Worker mount, then submit the stopped Agent's first
+deployment once through [the guarded OCE workflow](../../../../docs/guides/deploy/production-agents.md#prepare-transport-credentials-and-deploy). The Worker creates the
+Harness claim before it calls the Box host. Use a workspace volume that the
+original Box host can mount directly, such as a statically bound local
+volume on that host. A copy cannot serve the Agent's live file operations.
+
+Track that deployment and revision through OCE. Continue only while the
+original deployment is still in progress, within its normal deadline. If
+it fails or its outcome is unknown, stop and reconcile that exact revision.
+Do not submit another deployment, create a replacement revision, or assume
+the Worker will retry a terminal operation.
+
+Read the original Harness claim in the Agent's execution namespace.
+Match the Namespace and Agent to the original revision, then verify the
+Bound claim's UID and `spec.volumeName`. Check the original PV's UID,
+`claimRef`, and placement on the Box host. Record the claim and PV before
+binding the four subpaths of that volume as the nonroot runtime owner:
 
 | Volume subpath                     | Host mount                           |
 | ---------------------------------- | ------------------------------------ |
@@ -35,26 +82,19 @@ For the state subpath, `<agent>` and `<harness>` are the first 12 hex digits
 of the SHA-256 of the Agent ID and of the literal `harness:codex`, respectively.
 Bind mount each subdirectory directly, with no child mounts. The host checks
 that each mount has the expected subpath name and that all four come from one
-device and parent. Use fresh mode-`0700` directories. Keep the state private to the file node.
+device and parent. Use fresh mode-`0700` directories. Keep the state private
+to the file node.
 Enter the original claim name and its UID and volume name in the
 [host configuration](../host/installed.example.json). Record each mount's
 device and inode with `stat -c '%d %i'`. The separate node and Box both use the
 same `workspace` subpath. Box has no device-state mount.
 
-Stage the unpacked root filesystem of the exact selected public runtime image
-in a fresh mode-`0700` directory outside the Box grants. Use the image's
-canonical digest and check its source labels before unpacking. The normal
-runtime owner needs read and execute access to the shipped Node and OpenClaw
-files. Enter this directory and its device and inode as
-`separateWorkspaceNode.rootfs` and `rootfsIdentity`. The host mounts that
-image read-only for the file node. The host needs stock Bubblewrap with
-`--bind-fd`, unprivileged user namespaces, and network namespaces enabled.
-Compile the helpers using the [host build command](../README.md#prepare-the-host-and-verify-box),
-and set `runtimeSha256` to the SHA-256 of the installed `workspace-node-runtime.mjs`.
+Enter the staged image directory and its device and inode as
+`separateWorkspaceNode.rootfs` and `rootfsIdentity`. Set `runtimeSha256` to
+the SHA-256 of the installed `workspace-node-runtime.mjs`.
 
-Configure the actual external Gateway listener on a port above 1023 and set
-the Installation's `gatewayRouting.endpointPort` to that port. Use the same
-port, the Gateway DNS name, and the `/node` suffix in `workspaceNode.url`.
+Use the Gateway listener configured above. Set `workspaceNode.url` to its
+DNS name and port with the `/node` suffix.
 Set the listener's exact private IPv4 address in `workspaceNode.address`.
 When Compute projects a Gateway CA, set `caSha256` to the SHA-256 of those
 PEM bytes. The host connector forwards TLS bytes to the configured address
@@ -63,8 +103,10 @@ trusted chain, pairs once, and reconnects with its saved device credential.
 
 ## Start the controlled model
 
-Follow the [one-tool setup](README.md#build-and-prepare) to stage the verifier
-and seed a fresh synthetic marker. Set `workspaceVerifierSha256` in the host
+Use the verifier prepared above. After binding the original workspace,
+follow the seed step in the [one-tool setup](README.md#build-and-prepare)
+to write a fresh synthetic marker. Use the installed host below rather
+than starting the standalone launcher. Set `workspaceVerifierSha256` in the host
 configuration. Start the HTTPS fixture with a mode-`0600` JSON file containing
 `address`, `port`, `boxAddress`, `certificate`, `key`, `runDirectory`, and
 `nonce`. Use the selected private IPv4 listener address, the Box egress
@@ -80,11 +122,46 @@ Box must trust the fixture's HTTPS certificate through its normal upstream
 trust. The fixture accepts only the public controlled inference marker from
 the selected Box address. Use no model-provider credential.
 
+## Start the held host and approve
+
+While the original deployment is still in progress, complete the
+[installed configuration](../host/installed.example.json) with the original
+Driver, Namespace, Agent and revision identities, actual image, endpoint,
+and verified workspace. Use `controlSocketMode: worker-directory` and the
+same `runtimeDir` and export checked above. Select held mode: use a fresh
+mode-`0700` `approvalDir` outside the Worker mount and all Box grants, and
+omit `profileSha256`. As the original nonroot owner, set
+`BOX_INSTALLED_CONFIG` to the absolute path of the mode-`0600` file.
+
+```bash
+node deploy/examples/strands-box/host/control.ts "$BOX_INSTALLED_CONFIG"
+```
+
+`strands-box-control: ready` means only that the socket is listening. Within
+the original deployment deadline, wait for the Worker to write
+`runtimeDir/pending.json`. It can do so while you check the socket; pending
+does not approve or start Box. If the deadline passes, the revision fails,
+or any identity or outcome is uncertain, stop and reconcile the original
+revision without another deploy.
+
+Before approval, [verify the live Worker control mount](../driver/README.md#verify-the-live-worker-control-mount).
+Privately match the pending owner, revision and requirements to the original
+OCE deployment. Confirm the file-only mode, volume UID and name, and launch
+plan digest. Do not dump host config, state files, credentials, or socket
+response bodies. Set `BOX_REVISION_ID` and `BOX_REQUIREMENTS_DIGEST` from
+the verified receipt, then approve that exact request once.
+
+```bash
+node deploy/examples/strands-box/host/control.ts approve "$BOX_INSTALLED_CONFIG" \
+  "$BOX_REVISION_ID" "$BOX_REQUIREMENTS_DIGEST"
+```
+
+The Worker can continue the same deployment on its next reconciliation.
+Do not reuse this approval if the host, Worker, mount or revision changes.
+
 ## Verify one chat and the file node
 
-Start the [host and approve the pending revision](../README.md#connect-the-installation).
-Compare the pending volume and launch plan with the original revision before
-approval. Use the original `ready.json` digest to start the
+Use the original `ready.json` digest to start the
 [host ingress](../ingress/README.md) on its approved TLS route. Wait until
 the Worker observes the native Harness and its actual enrolled node and
 activates that revision. Record the final Gateway and relay Pod UIDs and
@@ -97,8 +174,10 @@ program. Only the separate file node receives its state subpath and the
 one-shot setup code. Kubernetes Compute observes that node through normal
 enrollment. `KubernetesComputeDriver.reconcileHarnessTrust` installs the
 original Box digest and ingress CA. The Driver and Gateway each require the
-digest on the TLS upgrade. Replacing the claim, listener, or receipt closes
-the affected path.
+digest on the TLS upgrade. That check identifies the native endpoint; it does
+not identify the host directory mounted in the Worker. If the control volume, directory, Worker or socket changes, hold admission
+and reconcile the original revision. Recheck the live identities before
+admitting work. Do not treat a restart as the first empty-export rollout.
 
 If you have operator access to the selected Gateway Pod, run the existing
 owner check in the Gateway container. It reads the original binding and uses

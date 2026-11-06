@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants, lstatSync, readFileSync } from "node:fs";
+import { constants, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, resolve, sep } from "node:path";
@@ -48,6 +48,7 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const CONTROL = "/v1/execution";
 const ADMISSION = "/v1/admission";
 const MAX_REQUEST = 512_000;
+const WORKER_CONTROL = "worker-control";
 const WORKSPACE = "/home/node/workspace";
 const MOUNTS = {
   [WORKSPACE]: "workspace",
@@ -59,6 +60,7 @@ const MOUNTS = {
 interface InstalledConfig extends HostConfig {
   owner: OwnerPin;
   image: string;
+  controlSocketMode?: "worker-directory";
   profileSha256?: string;
   approvalDir?: string;
   endpoint: { url: string; workspaceRoot: string };
@@ -270,6 +272,7 @@ function installedConfig(value: unknown): InstalledConfig {
   const config = hostConfig(value, [
     "owner",
     "image",
+    "controlSocketMode",
     "profileSha256",
     "approvalDir",
     "endpoint",
@@ -297,6 +300,10 @@ function installedConfig(value: unknown): InstalledConfig {
     throw new Error("invalid_fixed_endpoint");
   const image = string(data.image);
   if (!/@sha256:[a-f0-9]{64}$/.test(image)) throw new Error("unverified_agent_image");
+  const controlSocketMode = data.controlSocketMode;
+  if (controlSocketMode !== undefined && controlSocketMode !== "worker-directory") {
+    throw new Error("invalid_control_socket_mode");
+  }
   const profileSha256 = data.profileSha256 === undefined ? undefined : string(data.profileSha256);
   const approvalDir =
     data.approvalDir === undefined ? undefined : privateDirectory(data.approvalDir);
@@ -378,6 +385,7 @@ function installedConfig(value: unknown): InstalledConfig {
     ...config,
     owner: ownerPin,
     image,
+    ...(controlSocketMode === undefined ? {} : { controlSocketMode }),
     ...(profileSha256 === undefined ? {} : { profileSha256 }),
     ...(approvalDir === undefined ? {} : { approvalDir }),
     endpoint: { url: url.toString(), workspaceRoot: config.workspace },
@@ -762,8 +770,52 @@ function reply(
   response.end(body === undefined ? undefined : JSON.stringify(body));
 }
 
-async function serve(config: InstalledConfig): Promise<void> {
-  ensureEmpty(config.runtimeDir);
+function controlSocketPath(config: InstalledConfig): string {
+  if (config.controlSocketMode === undefined) {
+    ensureEmpty(config.runtimeDir);
+    return join(config.runtimeDir, "control.sock");
+  }
+
+  const directory = privateDirectory(join(config.runtimeDir, WORKER_CONTROL));
+  const otherPaths = [
+    config.workspace,
+    ...Object.keys(MOUNTS),
+    ...config.read,
+    ...config.exec,
+    ...config.writableState,
+    config.agentBuildDir,
+    config.approvalDir,
+    config.separateWorkspaceNode?.rootfs,
+  ];
+  if (
+    otherPaths.some(
+      (path) => path !== undefined && (contains(path, directory) || contains(directory, path)),
+    )
+  ) {
+    throw new Error("worker_control_directory_overlap");
+  }
+
+  // A bind mount can alias another directory even when its real path is canonical.
+  const mountPath = directory.replace(
+    /[ \\]/g,
+    (character) => `\\${character.charCodeAt(0).toString(8).padStart(3, "0")}`,
+  );
+  if (
+    readFileSync("/proc/self/mountinfo", "utf8")
+      .split("\n")
+      .some((line) => line.split(" ", 5)[4] === mountPath)
+  ) {
+    throw new Error("worker_control_directory_mounted");
+  }
+  if (readdirSync(config.runtimeDir).some((name) => name !== WORKER_CONTROL)) {
+    throw new Error("runtime_already_used");
+  }
+  ensureEmpty(directory);
+  return join(directory, "control.sock");
+}
+
+export async function serveInstalledControl(config: InstalledConfig): Promise<void> {
+  const socketPath = controlSocketPath(config);
   if (config.approvalDir !== undefined) ensureEmpty(config.approvalDir);
   const controller = currentController();
   let pending: { view: Pending; requirements: string } | undefined;
@@ -782,7 +834,7 @@ async function serve(config: InstalledConfig): Promise<void> {
   );
   server.maxConnections = 16;
   server.setTimeout(5_000, (socket) => socket.destroy());
-  await listen(server, join(config.runtimeDir, "control.sock"));
+  await listen(server, socketPath);
   process.stdout.write("strands-box-control: ready\n");
   await new Promise<void>((resolve) => {
     const stop = () => {
@@ -1042,7 +1094,7 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
     } else {
       if (path === undefined || process.argv.length !== 3 || process.arch !== "arm64")
         throw new Error("linux_arm64_required");
-      await serve(installedConfig(readConfig(path)));
+      await serveInstalledControl(installedConfig(readConfig(path)));
     }
   } catch {
     process.stderr.write("strands-box-control: configuration, listener or retirement refused\n");

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import {
@@ -8,6 +8,7 @@ import {
   linkSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -17,10 +18,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer as httpServer, request } from "node:http";
+import type { IncomingMessage } from "node:http";
 import { createConnection, createServer } from "node:net";
 import type { Server } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
+import { createInterface } from "node:readline";
+import { text } from "node:stream/consumers";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
@@ -44,6 +48,7 @@ import {
   stockHarnessCommand,
   validateInstalledGrants,
 } from "../../deploy/examples/strands-box/host/control.ts";
+import type { serveInstalledControl } from "../../deploy/examples/strands-box/host/control.ts";
 import {
   approve,
   currentController,
@@ -74,6 +79,214 @@ const unsupported = process.platform !== "linux" || process.getuid?.() === 0;
 function temporary(): string {
   return mkdtempSync(join(realpathSync(tmpdir()), "oce-box-test-"));
 }
+
+type InstalledControlFixture = Omit<
+  Parameters<typeof serveInstalledControl>[0],
+  "mountIdentities" | "approvalDir"
+> & { approvalDir: string };
+
+function installedControlFixture(root: string): InstalledControlFixture {
+  const runtimeDir = join(root, "run");
+  const approvalDir = join(root, "approval");
+  const workspace = join(root, "workspace");
+  for (const directory of [runtimeDir, approvalDir, workspace]) {
+    mkdirSync(directory, { mode: 0o700 });
+  }
+  const binary = realpathSync(process.execPath);
+  return {
+    agentBuildDir: join(root, "compiled"),
+    approvalDir,
+    boxBin: binary,
+    codexBin: binary,
+    endpoint: { url: "wss://box.example.invalid/", workspaceRoot: workspace },
+    exec: [],
+    image: `fixture.example/agent@sha256:${"0".repeat(64)}`,
+    linuxPreview: true,
+    nodeBin: binary,
+    owner: parseOwner({
+      driverId: "box-pilot",
+      implementation: "@openclaw-enterprise/example-strands-box-driver@0.1.0",
+      namespaceId: "ns_one",
+      namespaceName: "agent-one",
+      agentId: "agt_one",
+      revisionId: "rev_one",
+    }),
+    read: [],
+    runtimeDir,
+    workspace,
+    workspaceClaim: "fixture-claim",
+    writableState: [],
+  };
+}
+
+function installedControlCommand(config: InstalledControlFixture) {
+  const module = new URL("../../deploy/examples/strands-box/host/control.ts", import.meta.url);
+  return [
+    "--input-type=module",
+    "--eval",
+    `
+    import { serveInstalledControl } from ${JSON.stringify(module.href)};
+    await serveInstalledControl({ ...${JSON.stringify(config)}, mountIdentities: new Map() });
+  `,
+  ];
+}
+
+async function controlRequest(socketPath: string, path: string, body?: unknown) {
+  const outgoing = request({
+    socketPath,
+    path,
+    method: body === undefined ? "GET" : "POST",
+    ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" } }),
+    signal: AbortSignal.timeout(2_000),
+  });
+  const incoming = once(outgoing, "response") as Promise<[IncomingMessage]>;
+  outgoing.end(body === undefined ? undefined : JSON.stringify(body));
+  const [response] = await incoming;
+  return { status: response.statusCode, body: JSON.parse(await text(response)) as unknown };
+}
+
+test(
+  "installed control serves only the chosen socket and keeps its records on the host",
+  { skip: unsupported },
+  async () => {
+    for (const controlSocketMode of [undefined, "worker-directory"] as const) {
+      const root = temporary();
+      const config = {
+        ...installedControlFixture(root),
+        ...(controlSocketMode === undefined ? {} : { controlSocketMode }),
+      };
+      const exported = join(config.runtimeDir, "worker-control");
+      if (controlSocketMode !== undefined) {
+        mkdirSync(exported, { mode: 0o700 });
+      }
+      const socket = join(
+        controlSocketMode === undefined ? config.runtimeDir : exported,
+        "control.sock",
+      );
+      const child = spawn(process.execPath, installedControlCommand(config), {
+        stdio: ["ignore", "pipe", "inherit"],
+      });
+      const exited = once(child, "exit");
+      try {
+        const output = createInterface({ input: child.stdout });
+        assert.deepEqual(await once(output, "line", { signal: AbortSignal.timeout(5_000) }), [
+          "strands-box-control: ready",
+        ]);
+        assert.equal(lstatSync(socket).isSocket(), true);
+        assert.equal(lstatSync(socket).mode & 0o777, 0o600);
+        assert.deepEqual(await controlRequest(socket, "/v1/execution"), {
+          status: 404,
+          body: { error: "execution_absent" },
+        });
+        const requirements = {
+          image: config.image,
+          labels: {
+            "openclaw.dev/workload-role": "agent",
+            "openclaw.dev/namespace": config.owner.namespaceId,
+            "openclaw.dev/agent": config.owner.agentId,
+            "openclaw.dev/revision": config.owner.revisionId,
+          },
+          command: [...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT)],
+          credentialAttachments: [],
+          // No fixed host workspace mounts are available in this isolated wire test.
+          workspaceMounts: [],
+        };
+        assert.deepEqual(stockHarnessCommand(requirements.command), requirements.command);
+        assert.deepEqual(
+          await controlRequest(socket, "/v1/admission", {
+            owner: { ...config.owner, agentId: "agt_other" },
+            requirements,
+            requirementsDigest: digest(requirements),
+          }),
+          { status: 409, body: { error: "owner_mismatch" } },
+        );
+        assert.deepEqual(
+          await controlRequest(socket, "/v1/admission", {
+            owner: config.owner,
+            requirements,
+            requirementsDigest: digest(requirements),
+          }),
+          { status: 422, body: { error: "host_request_refused" } },
+        );
+        assert.deepEqual(readdirSync(config.approvalDir), []);
+        if (controlSocketMode === undefined) {
+          assert.deepEqual(readdirSync(config.runtimeDir), ["control.sock"]);
+        } else {
+          assert.deepEqual(readdirSync(config.runtimeDir), ["worker-control"]);
+          writeFileSync(join(config.runtimeDir, "intent.json"), "fixture private record", {
+            mode: 0o600,
+          });
+          assert.deepEqual(readdirSync(exported), ["control.sock"]);
+          unlinkSync(join(config.runtimeDir, "intent.json"));
+          child.kill("SIGKILL");
+          assert.deepEqual(await exited, [null, "SIGKILL"]);
+          const prior = lstatSync(socket);
+          const refused = spawnSync(process.execPath, installedControlCommand(config), {
+            encoding: "utf8",
+            timeout: 2_000,
+          });
+          assert.equal(refused.status, 1, refused.stderr);
+          assert.match(refused.stderr, /runtime_already_used/);
+          assert.equal(lstatSync(socket).ino, prior.ino);
+        }
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGTERM");
+        }
+        await exited;
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  },
+);
+
+test(
+  "worker socket export refuses a hostile directory, dirty runtime, or overlapping authority",
+  { skip: unsupported },
+  () => {
+    const root = temporary();
+    const config = {
+      ...installedControlFixture(root),
+      controlSocketMode: "worker-directory" as const,
+    };
+    const exported = join(config.runtimeDir, "worker-control");
+    function refused(message: RegExp, overrides: Partial<typeof config> = {}) {
+      const result = spawnSync(
+        process.execPath,
+        installedControlCommand({ ...config, ...overrides }),
+        { encoding: "utf8", timeout: 2_000 },
+      );
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, message);
+      assert.throws(() => lstatSync(join(exported, "control.sock")), { code: "ENOENT" });
+      assert.throws(() => lstatSync(join(config.runtimeDir, "control.sock")), { code: "ENOENT" });
+    }
+    try {
+      symlinkSync(config.workspace, exported);
+      refused(/noncanonical_path/);
+      unlinkSync(exported);
+      mkdirSync(exported, { mode: 0o755 });
+      chmodSync(exported, 0o755);
+      refused(/private_directory/);
+      chmodSync(exported, 0o700);
+      refused(/worker_control_directory_overlap/, { approvalDir: exported });
+      refused(/worker_control_directory_overlap/, { read: [exported] });
+      refused(/worker_control_directory_overlap/, { writableState: [exported] });
+      writeFileSync(join(config.runtimeDir, "pending.json"), "existing host state");
+      refused(/runtime_already_used/);
+      assert.equal(
+        readFileSync(join(config.runtimeDir, "pending.json"), "utf8"),
+        "existing host state",
+      );
+      unlinkSync(join(config.runtimeDir, "pending.json"));
+      writeFileSync(join(exported, "unexpected"), "existing export file");
+      refused(/runtime_already_used/);
+      assert.deepEqual(readdirSync(exported), ["unexpected"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 
 test("the file-only mode refuses modified stock commands and replacement mounts", () => {
   const stockArgs = nodeProgramArguments(AGENT_WITH_NODE_ENTRYPOINT);
@@ -262,9 +475,10 @@ test(
   async (t) => {
     const directory = temporary();
     const runtimeDir = join(directory, "run");
+    const workerExport = join(runtimeDir, "worker-control");
     const workspace = join(directory, "workspace");
     const agentBuildDir = join(directory, "build");
-    for (const path of [runtimeDir, workspace, agentBuildDir]) {
+    for (const path of [runtimeDir, workerExport, workspace, agentBuildDir]) {
       mkdirSync(path, { mode: 0o700 });
     }
     for (const file of ["box-agent.js", "transport.js", "diagnostics.js"]) {
@@ -273,7 +487,8 @@ test(
     const boxBin = join(directory, "fixture-box");
     writeFileSync(
       boxBin,
-      "#!/bin/sh\nprintf '%s' 'strands-box: error: policy load failed: ' >&2\n" +
+      '#!/bin/sh\ncp -- "$3" ../generated-box.toml || exit 3\n' +
+        "printf '%s' 'strands-box: error: policy load failed: ' >&2\n" +
         "printf '%s\\n' 'fixture-private-diagnostic-credential' >&2\n" +
         "printf '%s\\n' \"strands-box: error: trusted Box executable /private/fixture-private-box cannot inventory mounted executable aliases: invalid mount table for trusted executable aliases\" >&2\n" +
         "printf '%s\\n' \"strands-box: error: containment setup failed during target exec: fixture-private-exec (os error 13)\" >&2\n" +
@@ -308,6 +523,19 @@ test(
     try {
       await assert.rejects(execution.ready, { message: "startup_refused:wait-original-native" });
       assert.equal(await execution.done, 2);
+      const generated = readFileSync(join(directory, "generated-box.toml"), "utf8");
+      const rows = generated.split("\n").filter((line) => /^(read|write|exec) = \[/.test(line));
+      assert.equal(rows.length, 3);
+      const grants = rows.flatMap((row) => JSON.parse(row.slice(row.indexOf("["))) as string[]);
+      assert(grants.includes(join(runtimeDir, "bridge")));
+      for (const path of grants) {
+        assert(!path.startsWith(workerExport + sep));
+        assert(
+          ![runtimeDir, workerExport].some(
+            (privatePath) => privatePath === path || privatePath.startsWith(path + sep),
+          ),
+        );
+      }
     } finally {
       await execution.done;
       writes.mock.restore();
