@@ -8,6 +8,7 @@ rfc: ../rfcs/0030-agent-harness-overrides.md
 - **Delivery status:** In progress
 - **Owner:** kevinlin-openai
 - **Authority:** [RFC-0030](../rfcs/0030-agent-harness-overrides.md)
+- **Implementation source:** [99f5f7c](https://github.com/openclaw/openclaw-enterprise/commit/99f5f7ce8e4f236479d7a9f1b36199f7fc83fc88)
 - **Source baseline:** `37144f62101a9e99b066f1abbbf75ede787d26dd`
 
 ## Outcome and scope
