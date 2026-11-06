@@ -69,8 +69,9 @@ graph TD
 
 ### 1. Creation validates and privately stages the inputs
 
-`apps/controller/src/console/agents/create.mts` fills four textareas from
-`workspace-defaults.mjs` and submits their values with `WORKSPACE_DEFAULTS_ID`.
+`apps/controller/src/console/agents/create.mts` prefills four textareas from
+`/console/workspace-defaults.mjs` (`packages/contracts/src/workspace-defaults.ts`).
+It submits their values with `WORKSPACE_DEFAULTS_ID`.
 `apps/controller/src/index.ts:createFastifyApp` rejects a stale defaults identity;
 `packages/contracts/src/workspace-setup.ts:normalizeInitialWorkspaceFiles`
 rejects unknown names, invalid Unicode, NUL, and values above 16 KiB UTF-8.
@@ -121,7 +122,7 @@ acknowledgments. The verifier uses `OPENCLAW_WORKSPACE_DIR` after relocation.
 The runner validates setup identity and workspace paths, rejecting symlinks and
 conflicting contents. First setup requires the installed OpenClaw version and
 template digest to match `WORKSPACE_DEFAULTS_VERSION` and `WORKSPACE_DEFAULTS_ID`
-in `packages/contracts/src/workspace-defaults.mjs`.
+in `packages/contracts/src/workspace-defaults.ts`.
 Native `setup` initializes workspace/Git without starting Gateway. Kubernetes init
 containers use Gateway resource budgets. Supplied files, including empty strings,
 atomically replace only absent, stock, or already-submitted content. The runner
