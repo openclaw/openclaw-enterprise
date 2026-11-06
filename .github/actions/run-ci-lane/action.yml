@@ -195,11 +195,11 @@ runs:
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
       id: setup-go
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell' || inputs.lane == 'k3d-fixture-configuration'
+      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell' || inputs.lane == 'k3d-fixture-configuration' || (inputs.lane == 'checks-browser' && (inputs.test-file == '' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.mjs' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.ts'))
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
-        cache: true
+        cache: ${{ inputs.lane != 'checks-browser' }}
     - name: Run workspace boundary check
       id: workspace-check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
@@ -230,7 +230,7 @@ runs:
       id: docs-check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
-      run: pnpm docs:install && pnpm openapi:lint && pnpm docs:check && pnpm docs:build
+      run: pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check && pnpm docs:build
     - name: Install documentation browser dependencies
       id: install-docs-browser
       # Only browser part 1 runs docs-compute-matrix. Baseline part 1's docs-site
@@ -326,7 +326,7 @@ runs:
       run: node scripts/ci/logging-setup-timing.ts finish image-pulls
     - name: Install trusted browser certificate tooling
       id: install-browser-certificates
-      if: inputs.lane == 'qa-matrix' || inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell'
+      if: inputs.lane == 'qa-matrix' || inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell' || (inputs.lane == 'checks-browser' && (inputs.test-file == '' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.mjs' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.ts'))
       shell: bash
       run: |
         if ! command -v certutil >/dev/null 2>&1; then

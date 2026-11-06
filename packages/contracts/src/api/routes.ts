@@ -112,6 +112,7 @@ import {
   AgentHarnessStatusResponse,
   AgentCallerPermissionsResponse,
   AgentSecretPermissionsResponse,
+  NamespaceAgentCapabilitiesResponse,
   NamespaceCallerPermissionsResponse,
   NamespaceSecretPermissionsResponse,
   AgentResponse,
@@ -691,6 +692,23 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       response: { 200: NamespaceCallerPermissionsResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "getNamespaceAgentCapabilities",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agent-capabilities",
+    action: "openclaw.namespaces.agent_capabilities.read",
+    iamAction: "create",
+    resourceKind: "agent",
+    authorizationTarget: "namespace_collection",
+    summary:
+      "Report the Installation capabilities that Agent creation in this Namespace needs, for a caller who may create Agents there",
+    tags: ["Namespaces"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: NamespaceAgentCapabilitiesResponse, ...readErrors },
     },
   },
   {

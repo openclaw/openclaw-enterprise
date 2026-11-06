@@ -24,6 +24,7 @@ import {
 import { migrateWithHistory } from "../../scripts/migration-history.mjs";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { assertReleasedControllerCompatibility } from "../helpers/released-controller-compatibility.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const migrationsDirectory = join(repositoryRoot, "migrations");
@@ -39,6 +40,16 @@ const providerMigrationTags = new Set([
   "0030_codex_pat_harness_auth",
 ]);
 const execFileAsync = promisify(execFile);
+const controllerImages = {
+  released: {
+    reference: process.env.OCC_TEST_RELEASED_CONTROLLER_IMAGE,
+    revision: process.env.OCC_TEST_RELEASED_CONTROLLER_REVISION,
+  },
+  candidate: {
+    reference: process.env.OCC_TEST_CANDIDATE_CONTROLLER_IMAGE,
+    revision: process.env.OCC_TEST_CANDIDATE_CONTROLLER_REVISION,
+  },
+};
 const dependency = createRequire(new URL("../../packages/occ/package.json", import.meta.url));
 const { drizzle } = dependency("drizzle-orm/node-postgres");
 const { migrate } = dependency("drizzle-orm/node-postgres/migrator");
@@ -2002,7 +2013,8 @@ test(
       [67, "preAgentPluginDriver"],
       [68, "preConnectionTemplates"],
       [69, "preSavedConnections"],
-      [70, "preNativeBrowserAccess"],
+      [70, "preDefaultUsers"],
+      [71, "preNativeBrowserAccess"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2480,7 +2492,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
-      [70, "preNativeBrowserAccess"],
+      [71, "preNativeBrowserAccess"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2736,7 +2748,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
-      [70, "preNativeBrowserAccess"],
+      [71, "preNativeBrowserAccess"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2757,9 +2769,9 @@ test(
         // 0058 creates the policy table; 0059 has no DDL, so later prefixes reach custody.
         // Fail the common reduction grant after admission backfill and repository authority.
         // All three pending receipts, schema changes and main-row annotations roll back.
-        // Reject native browser trigger creation after its tables and grants; all of 0071 must roll back.
+        // Reject native browser trigger creation after its tables and grants; all of 0072 must roll back.
         const rollbackTag = [
-          [70, "CREATE TRIGGER"],
+          [71, "CREATE TRIGGER"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],
           [56, "CREATE FUNCTION"],
@@ -3665,3 +3677,27 @@ test(
     assert.equal(await authorize(principals[2], "read"), true);
   },
 );
+
+// An unselected opt-in case must not become an unexpected skip in native PostgreSQL CI.
+if (
+  Object.values(controllerImages).some((image) =>
+    Object.values(image).some((value) => value !== undefined),
+  )
+) {
+  test(
+    "Released controller remains usable across candidate database writes",
+    { timeout: 360_000 },
+    async (t) => {
+      assert.ok(
+        Object.values(controllerImages).every(
+          (image) => typeof image.reference === "string" && typeof image.revision === "string",
+        ),
+        "Both released and candidate controller image references and revisions are required.",
+      );
+      await assertReleasedControllerCompatibility(t, controllerImages, async () => {
+        const fixture = await migrationHistoryFixture();
+        return historyDatabase(t, fixture, "released_controller");
+      });
+    },
+  );
+}

@@ -217,15 +217,16 @@ COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-r
 RUN echo 'b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
-# Run the bridge tests alongside the build using the same patched source.
-# Packaging mounts this stage so a failed test still blocks the runtime image.
+# Broad source verification is an explicit target, separate from image assembly.
+# Native container CI requires this target before exporting and smoking the image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
 # One main runner invocation for the Node test files: the runner compiles the whole
 # source tree for its workers first (about a minute), and a second invocation on
-# a fresh .artifacts mount would compile it again. The test runner restores its
-# cache by renaming directories; a fresh mount keeps those renames off the
-# previous layer.
-RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
+# a fresh .artifacts directory would compile it again. Keep generated files on
+# disk: tmpfs charges the compiled tree to RAM alongside the compiler and tests.
+# Create and remove the directory in each RUN so cache renames stay in the writable
+# layer and no generated files enter the image.
+RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
@@ -266,23 +267,27 @@ RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
     src/node-host/codex-node-plugin.integration.test.ts \
     test/node-host-launcher.test.ts \
     src/plugins/computer-use-contract.test.ts \
-    src/daemon/program-args.test.ts
+    src/daemon/program-args.test.ts \
+    && rm -rf .artifacts
 # These CUA lifecycle cases use the supported SDK adapter boundary. The two
 # native SDK import cases need desktop libraries absent from this build image.
-RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
+RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts extensions/cua-computer/src/driver-client.test.ts \
-    -t '^(?!.*(?:matches the installed CUA Driver desktop input enum contract|preserves typed SDK click refusals in the shared driver result))'
+    -t '^(?!.*(?:matches the installed CUA Driver desktop input enum contract|preserves typed SDK click refusals in the shared driver result))' \
+    && rm -rf .artifacts
 # Type-check production and the native/UI test graphs touched by the bridges.
 # The upstream runner generates database types and compiler cache under .artifacts.
-RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
-    node scripts/run-tsgo-core-test-shards.mjs --ci-graphs-json '["core","core-test-packages","core-test-config-cli","core-test-gateway-other","core-test-gateway-root","core-test-gateway-server","core-test-infra","core-test-services","core-test-commands-doctor","test-root-other","core-test-plugins-platform","core-test-ui-chat","core-test-ui-app"]'
+RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
+    node scripts/run-tsgo-core-test-shards.mjs --ci-graphs-json '["core","core-test-packages","core-test-config-cli","core-test-gateway-other","core-test-gateway-root","core-test-gateway-server","core-test-infra","core-test-services","core-test-commands-doctor","test-root-other","core-test-plugins-platform","core-test-ui-chat","core-test-ui-app"]' \
+    && rm -rf .artifacts
 # Check the changed CUA extension with the upstream strict compiler settings.
 # Limit extension roots to CUA while checking all of its transitive imports.
-RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
+RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     node -e 'const fs=require("node:fs");fs.writeFileSync(".artifacts/tsconfig.cua-production.json",JSON.stringify({"extends": "../tsconfig.extensions.json", "include": ["../src/**/*.d.ts", "../ui/src/**/*.d.ts", "../extensions/cua-computer/**/*"], "compilerOptions": {"rootDir": ".."}}));fs.writeFileSync(".artifacts/tsconfig.cua-test.json",JSON.stringify({"extends": "../test/tsconfig/tsconfig.extensions.test.json", "include": ["../test/types/vitest-codex-attempt-runtime.d.ts", "../src/**/*.d.ts", "../ui/**/*.d.ts", "../extensions/**/*.d.ts", "../extensions/cua-computer/**/*.test.ts", "../extensions/cua-computer/**/*.test.tsx", "../packages/**/*.d.ts"]}));' && \
     node scripts/run-tsgo.mjs -p .artifacts/tsconfig.cua-production.json --incremental --tsBuildInfoFile .artifacts/cua-production.tsbuildinfo && \
-    node scripts/run-tsgo.mjs -p .artifacts/tsconfig.cua-test.json --incremental --tsBuildInfoFile .artifacts/cua-test.tsbuildinfo
+    node scripts/run-tsgo.mjs -p .artifacts/tsconfig.cua-test.json --incremental --tsBuildInfoFile .artifacts/cua-test.tsbuildinfo \
+    && rm -rf .artifacts
 # Select only the Node projects that own these files: the browser project starts a
 # Vite server on localhost, which Buildah's network-less RUN cannot resolve.
 RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
@@ -365,7 +370,6 @@ COPY scripts/lib/openclaw-source.ts /tmp/lib/openclaw-source.ts
 COPY --from=openclaw-source /tmp/openclaw-source.json /tmp/openclaw-source.json
 RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verification/scripts \
     --mount=type=bind,from=openclaw-build,source=/source/node_modules,target=/verification/node_modules \
-    --mount=type=bind,from=openclaw-bridge-tests,target=/verification/bridge-tests \
     node scripts/docker/copy-bootstrap-scripts.mjs /tmp/openclaw-runtime-bootstrap \
     && rm -rf scripts \
     && mv /tmp/openclaw-runtime-bootstrap/scripts scripts \

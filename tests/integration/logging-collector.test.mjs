@@ -542,6 +542,20 @@ test(
           status: 403,
           ...payload,
         }),
+        // Verified-email lookup failures must keep their stage after the body is
+        // replaced. An unreviewed stage must still be discarded by the Collector.
+        ...["email", canaries[4]].map((step) =>
+          JSON.stringify({
+            event: "authentication.provider-unavailable-warning",
+            severity: "WARN",
+            provider: "github",
+            providerId: `github:providerkey${fixture.suffix}`,
+            step,
+            cause: "http_status",
+            status: 503,
+            ...payload,
+          }),
+        ),
         JSON.stringify({
           event: "presets.default-refresh-skipped",
           severity: "WARN",
@@ -611,12 +625,12 @@ test(
       JSON.stringify({ level: "info", subsystem: "gateway", message: "x".repeat(33_000) }),
     ]);
     await waitFor(
-      "at least 13 exported records",
-      async () => (await records()).length >= 13,
+      "at least 15 exported records",
+      async () => (await records()).length >= 15,
       fixture,
     );
     const initial = await records();
-    assert.equal(initial.length, 13, "only reviewed JSON classes and Codex stderr pass");
+    assert.equal(initial.length, 15, "only reviewed JSON classes and Codex stderr pass");
     const warningEvents = [
       "compute.preflight-warning",
       "authentication.sign-in-limited",
@@ -643,6 +657,8 @@ test(
     }
     assert.deepEqual(initial.map(({ resource }) => resource["service.name"]).sort(), [
       "codex-app-server",
+      "occ-api",
+      "occ-api",
       "occ-api",
       "occ-api",
       "occ-api",
@@ -732,6 +748,21 @@ test(
         "occ.sign_in.step": "membership",
         "occ.sign_in.cause": "http_status",
         "occ.sign_in.status": "403",
+      },
+      {
+        "event.name": "authentication.provider-unavailable-warning",
+        "log.iostream": "stdout",
+        "occ.sign_in.provider": "github",
+        "occ.sign_in.step": "email",
+        "occ.sign_in.cause": "http_status",
+        "occ.sign_in.status": "503",
+      },
+      {
+        "event.name": "authentication.provider-unavailable-warning",
+        "log.iostream": "stdout",
+        "occ.sign_in.provider": "github",
+        "occ.sign_in.cause": "http_status",
+        "occ.sign_in.status": "503",
       },
       {
         "event.name": "authentication.provider-unavailable-warning",

@@ -738,6 +738,53 @@ describe("sign-in chart parity", { concurrency: true }, () => {
     });
   });
 
+  test("automatic enrollment renders only with an explicit team allowlist", tooling, async () => {
+    const values = {
+      ...githubUpgradeValues(recoveryUserId),
+      "auth.github.allowedTeams[0]": "acme/platform",
+      "auth.github.autoEnrollGroupId": "team.platform",
+    };
+    const environment = await renders(
+      "GitHub automatic enrollment",
+      values,
+      {
+        ...githubUpgradeSettings(recoveryUserId),
+        OCC_AUTH_GITHUB_ALLOWED_TEAMS: "acme/platform",
+        OCC_AUTH_GITHUB_AUTO_ENROLL_GROUP_ID: "team.platform",
+      },
+      ["github"],
+    );
+    assert.equal(githubLoginConfiguration(environment).autoEnrollGroupId, "team.platform");
+    const blankGroup = "\uFEFF ";
+    assert.match(
+      await refusal({ ...values, "auth.github.autoEnrollGroupId": blankGroup }),
+      /valid Group ID/,
+    );
+    assert.throws(
+      () =>
+        githubLoginConfiguration({
+          ...environment,
+          OCC_AUTH_GITHUB_AUTO_ENROLL_GROUP_ID: blankGroup,
+        }),
+      /valid Group ID/,
+    );
+    for (const overrides of [
+      { "auth.github.allowedTeams[0]": "" },
+      { "auth.github.allowedOrgs[0]": "acme" },
+    ]) {
+      const result = await refusal({ ...values, ...overrides });
+      assert.match(result, /allowedTeams|allowedOrgs/);
+    }
+    assert.throws(
+      () => githubLoginConfiguration({ ...environment, OCC_AUTH_GITHUB_ALLOWED_TEAMS: "" }),
+      /allowed teams/,
+    );
+    assert.throws(
+      () => githubLoginConfiguration({ ...environment, OCC_AUTH_GITHUB_ALLOWED_ORGS: "acme" }),
+      /allowed teams/,
+    );
+  });
+
   test(
     "the API accepts sign-in values padded by U+FEFF, which Go trim keeps",
     tooling,

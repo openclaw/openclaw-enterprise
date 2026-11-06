@@ -40,23 +40,20 @@ this does not establish drift.
 
 ## Clean up preflight resources
 
-The release owner coordinates one cleanup operator; cleanup alone needs no freeze.
+The release owner assigns one cleanup operator; cleanup needs no freeze.
+Unconfirmed cleanup stops preparation. After interruption (`SIGHUP`, `SIGINT`,
+`SIGTERM`), preserve evidence and `.upgrade-lock`. Confirm helper/children stopped
+and reconcile accepted operations and temporary resources before cleanup,
+retrying, restoring the original directory path or removing `.upgrade-lock`.
 
-Preflight cleanup is best effort; leftovers can outlast success.
-Preserve evidence and `.upgrade-lock` after interruption (`SIGHUP`, `SIGINT`,
-`SIGTERM`). Before cleanup, unlocking or retrying, confirm the helper and children
-stopped and reconcile accepted operations and temporary resources. Only then
-restore a moved original directory to its original path and remove its empty
-`.upgrade-lock`.
-
-Each successfully acknowledged and recorded create retains
-`preflight-<slot>-identity.json`, with slots `networkpolicy`, `secret`, `api`,
-`worker` and fields `kind`, `name`, `uid`. Optional NetworkPolicy and failed or
-interrupted creates mean fewer than four files may exist. Match kubeconfig contents'
-digest to original `parameters.json`'s `kubeconfigSha256`, and kubeconfig path,
-context, namespace and release to its first four `arguments`, respectively.
-Confirm the owner. Preserve the original intact confirmed record: it identifies
-that create's UID, not current identity, name ownership or deletion authority.
+Acknowledged creates retain `preflight-<slot>-identity.json` with fields
+`kind`, `name`, `uid`: `networkpolicy` and `secret` identify dependencies;
+`api`/`worker` identify Jobs; `api-pod`/`worker-pod` identify observed children.
+Optional policy, missing children and interrupted creates leave fewer records.
+Match kubeconfig digest to `parameters.json`'s `kubeconfigSha256`, and path,
+context, namespace and release to its first four `arguments`. Confirm ownership;
+preserve original records. They establish create identity, not current identity
+or deletion authority.
 
 Labels `app.kubernetes.io/instance=<release>` and
 `app.kubernetes.io/component=upgrade-preflight` only discover candidates.
@@ -70,21 +67,28 @@ If the original is gone, no deletion remains.
 Authorized manual deletion requires Kubernetes API enforcement of
 `DeleteOptions.preconditions.uid`: delete the original kind, namespace and name
 only if its UID matches the original record. Reading then deleting by name
-cannot prevent replacement.
+cannot prevent replacement. Foreground-delete owned Jobs first and confirm their
+children are gone before deleting the candidate Secret or NetworkPolicy. Missing
+Job acknowledgements require reconciling possible children; labels alone do not
+establish ownership.
 
 ## Resume an unfinished prepared upgrade
 
-For a failed writer scale, Helm upgrade, or rollout wait, read
-`native-command-failures.tsv` in the evidence directory. Each tab-separated row
-records the operation, component (`api`, `worker`, or `release`), and native exit
-code. Rows remain after resume; they record client failures, not whether a
-request took effect. Reconcile live state as described below before resuming.
-Other failures and killed processes might not produce a row.
+After failed writer scaling, Helm upgrades or rollout waits, inspect
+`native-command-failures.tsv`. Rows retain the operation, component (`api`,
+`worker`, `release`) and native exit code across resume. They show client
+failures, not acceptance; some failures leave no row. Reconcile live state before
+resuming.
+
+A changed UID, resource version or replica count refuses the writer stop before
+migration; the API may already be stopped. Reconcile live state against
+`current-<component>-deployment.json` and `quiescence-<component>-patch.json`
+before resuming with fresh observations.
 
 A Helm failure or disconnected response does not prove that the migration
 rolled back. Read the current Helm status and history, inspect the initialization
 Job and its Pods and logs, and inspect the retained database. The saved
-`current-helm-status.json` is the last read and can predate the failed request.
+`current-helm-status.json` can predate the failure.
 A `pending-*` Helm release must be resolved separately before the helper can
 continue. Do not start the old API or worker against a migrated database. If the
 candidate Helm revision is deployed, the helper reads it back and continues
@@ -93,7 +97,7 @@ until the initialization Job and its Pods are terminal, then run the **candidate
 image** with `node scripts/migrate-production.mjs --check` against the same
 retained database, using its dedicated migrator credential and required database
 CA in an authorized environment. On Kubernetes, the
-[maintenance Pod](auth-maintenance.md#run-the-command) provides all three: set
+[maintenance procedure](auth-maintenance.md#run-the-command) provides all three: set
 `CONTROLLER_IMAGE` to the candidate image and replace its `args` with
 `["scripts/migrate-production.mjs","--check"]`. Keep its exit-zero
 `migration.checked` output in private evidence. Follow [migration history](../../reference/settings/operations.md#migration-history)

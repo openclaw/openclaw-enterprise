@@ -1320,7 +1320,7 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
       "pnpm lint",
       "pnpm format:check",
       "pnpm openapi:check",
-      "pnpm docs:install && pnpm openapi:lint && pnpm docs:check && pnpm docs:build",
+      "pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check && pnpm docs:build",
     ],
   );
   // A check moved out of the lanes must still gate CI Required in every mode.
@@ -2547,7 +2547,7 @@ test("the lane matrix runs every lane in full mode and only selected lanes in te
     // NetworkPolicy proofs need a runner kernel shown to enforce them.
     const netfilter = row.lane.startsWith("k3d-fixture-") || row.lane === "k3d-observability";
     if (netfilter) {
-      assert.equal(row.runner, "blacksmith-32vcpu-ubuntu-2404", row.lane);
+      assert.equal(row.runner, "blacksmith-8vcpu-ubuntu-2404", row.lane);
     }
   }
   const valid = [

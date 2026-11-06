@@ -1985,6 +1985,13 @@ export async function createPostgresControllerAuth(
         options.baseURL,
         {
           trustedClientAddress: controllerOptions.clientAddress !== undefined,
+          enrollmentPrincipal: (account) =>
+            createAuthPrincipalSeed(
+              options.installationId,
+              betterAuthIssuer(options.installationId),
+              account,
+              { grant: "none" },
+            ),
           ...(controllerOptions.onOperationalEvent === undefined
             ? {}
             : { onOperationalEvent: controllerOptions.onOperationalEvent }),

@@ -80,9 +80,12 @@ export class PostgresNativeBrowserAccess {
     unit: PlatformUnitOfWork,
     value: Omit<NativeBrowserIntent, "id" | "expiresAt">,
   ) {
-    // Resource ancestors precede authentication and child locks. The canonical
-    // Agent deletion owner locks Namespace and Agent before removing revisions;
-    // immutable revisions themselves deliberately have no application UPDATE grant.
+    // Match authority-fenced API writes: lock the user and session before resources.
+    // Resource ancestors still precede child locks, matching Agent deletion.
+    const parent = await this.parentSession(unit, value.parentSessionId);
+    if (parent?.principalId !== value.principalId) {
+      return undefined;
+    }
     const resources = [
       ["SELECT id FROM occ.namespaces WHERE id = $1 FOR SHARE", [value.namespaceId]],
       [
@@ -95,8 +98,9 @@ export class PostgresNativeBrowserAccess {
         return undefined;
       }
     }
-    const parent = await this.parentSession(unit, value.parentSessionId);
-    return parent?.principalId === value.principalId ? parent : undefined;
+    // Resource locks may wait past expiry even while the authentication rows stay locked.
+    const current = await this.parentSession(unit, value.parentSessionId);
+    return current?.principalId === value.principalId ? current : undefined;
   }
 
   private async audit(unit: PlatformUnitOfWork, value: NativeBrowserIntent, action: string) {
