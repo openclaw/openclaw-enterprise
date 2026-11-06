@@ -157,10 +157,10 @@ provider acceptance or runtime readiness. See
 
 Successful draft saves retain IDs and freeze inputs, including authentication.
 Correct names or permissions, then retry failed resources.
-If model/Slack Secret grants fail after Agent creation,
-select **Retry credential access** or ask an administrator to check its grants.
-The same action is safe if the Console saved the Agent but could not confirm its service
-principal. It checks the saved Agent before granting access, without creating another Agent.
+Creation grants `operate` on the model credential and each Configuration Secret.
+If grants fail, select **Retry credential access** or ask an administrator.
+Retry checks the saved Agent's service principal, including after an unconfirmed
+response, without creating another Agent.
 A member without Installation administration gets no retry: open the saved Agent and
 ask an Installation administrator to grant it. If your permissions could not be checked,
 select **Retry permission check**.

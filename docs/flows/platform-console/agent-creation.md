@@ -161,8 +161,10 @@ Agent/Configuration for [workspace setup](../workspace-files.md).
 
 ### 5. Grant Secret access and edit authentication
 
-`create.mts:grantConfigurationSecretAccess` grants exact Secret `operate` for final
-same-Namespace `env` bindings. Failure retains the Agent; **Retry credential access**
+`create.mts:grantConfigurationSecretAccess` deduplicates same-Namespace `env` Secret
+sources in the saved Configuration and grants exact `operate` through
+`agents/credential-access.mts:ensureCredentialOperateBinding`.
+Failure retains the Agent; **Retry credential access**
 rereads grants without duplication. Grants are Installation administration: a session
 known not to administer the Installation sends no IAM request and names the administrator
 step, and a member's refused grant offers no retry. After a refused Installation read, the
@@ -199,6 +201,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 ## Changelog
 
 - 2026-11-05 18:37: Explain the Configuration number range refusal on Create. (authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9 - 5fd3fde4911e1640c354d69bb09f6f3d72445a05)
+- 2026-11-05 01:26: Preserve accepted Configuration Secret grants and upstream creation checks during refresh. (agent:main:dashboard:34871ae5-240f-4f44-b364-50bd21ecedec - b698b30abc802185905bf4ff28792a7b9cc1c04e)
 - 2026-11-04 22:06: Explain which Create Agent settings stay in place when an invalid plugin list blocks a Codex change. (authoring-run/386aa943-15cf-49cd-b53e-05831b4a7da0 - e109eba64ea0e81c02513f81f9c892a832dc1b69)
 - 2026-10-25: The per-Secret `operate` remedy names an exact-Secret grant; the Agents list gives Create Agent's next step when Agent create is denied. (findings 2507, 2508)
 - 2026-10-25: Refuse a typed model key, and disable the Preset's **Create new Secret**, where `operate` is denied on a readable Secret. (fix-2492, finding 2492)
@@ -212,4 +215,5 @@ Switching methods hides that feedback without changing the lookup or saved choic
 - 2026-10-25 00:30: Treat repository options with `meta.notConfigured` like the fixed-composition 503. (finding 2387)
 - 2026-10-24 19:00: Check the Agent name and initial workspace files with the API's rules before any write. (fix-2339-2341)
 - 2026-10-22 10:56: Confirm creation responses before granting access or continuing provisioning. (console-create-delivery-20261022 - eef3442ff)
+- 2026-10-20 12:09: Trace saved Configuration Secret grants through the shared credential helper. (authoring-run/763e9c69-84db-4150-9937-6713ed931906 - 81ce5d06aebbf935b150cab6afb2227a320fb20f)
 - 2026-10-20 05:00: Split from the platform console flow's step 3. (docs-split-1020)
