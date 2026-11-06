@@ -72,6 +72,7 @@ type CreateAgentScenario = {
   modelRosterSelection?: true;
   nativeAdminSetup?: true;
   noDefaultPreset?: true;
+  presetNameTie?: true;
   oauthExpired?: true;
   oauthPending?: true;
   observabilityDenied?: true;
@@ -1845,6 +1846,33 @@ export const createAgentProvisioningScenarios = {
       "Clear the Model ID, then enter another-model. Existing fallback metadata remains while the new primary is added.",
     ],
   },
+  createCustomPresetStarter: {
+    group: "Pages/Create Agent",
+    name: "Custom Preset quick-start",
+    path: create,
+    noDefaultPreset: true,
+    description:
+      "Without a readable default-codex, quick-start uses the first readable Preset by name and retains its variable chooser.",
+    steps: [
+      "Select Start with Research assistant and confirm Research assistant is selected.",
+      "Enter an Agent name, keep the prefilled model, and select Use Preset.",
+      "Inspect the editable Agent draft. Leave and return to confirm its edits are retained; use Cancel to discard them.",
+    ],
+    gap: "Simulated UI proof; exact Preset authorization and draft creation have separate browser integration coverage.",
+  },
+  createPresetNameTie: {
+    group: "Pages/Create Agent",
+    name: "Preset name tie-break",
+    path: create,
+    noDefaultPreset: true,
+    presetNameTie: true,
+    description: "Case-insensitive name ties use exact names, independently of API response order.",
+    steps: [
+      "Select Start with Research assistant and confirm Research assistant is chosen ahead of research assistant.",
+      "Enter an Agent name, select Use Preset and inspect the editable draft.",
+    ],
+    gap: "Simulated UI proof; actor-readable filtering and actual Agent creation are covered by the Console browser suite.",
+  },
   createPreset: {
     group: "Pages/Create Agent",
     name: "Preset variables",
@@ -2308,7 +2336,7 @@ export const createAgentProvisioningScenarios = {
     description:
       "The default starter is unavailable until an administrator installs a readable Preset. Start without Preset opens an independent form.",
     steps: [
-      "Tab to Start with default Preset. It takes focus and looks unavailable, described by the hint under it, “default-codex is not available to you in this Namespace.” Enter, Space or a click does nothing (finding 2937).",
+      "Tab to Start with default Preset. It takes focus and looks unavailable, described by the hint under it, “No readable starter Preset is available in this Namespace.” Enter, Space or a click does nothing.",
     ],
   },
   createNoDefaultPreset: {
@@ -2317,9 +2345,9 @@ export const createAgentProvisioningScenarios = {
     path: create,
     noDefaultPreset: true,
     description:
-      "Another Preset is readable, but default-codex is not. The chooser's status says “Choose a Preset.” and the hint under Start with default Preset says why the shortcut is unavailable, once (finding 2946).",
+      "Without default-codex, quick-start names the first readable custom Preset and opens its variable chooser.",
     steps: [
-      "Tab to Use Preset. It is described by “Choose a Preset.” Then Tab to Start with default Preset. It is described by the hint, “default-codex is not available to you in this Namespace.”",
+      "Select Start with Research assistant. Confirm the named Preset is selected and its variables are shown.",
     ],
   },
   createWithoutPreset: {

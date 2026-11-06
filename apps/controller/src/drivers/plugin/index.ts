@@ -1,3 +1,4 @@
+import { isCodexCatalogSource } from "./catalog-source.ts";
 import { requireManagedCredentialRuntime } from "./managed-runtime.ts";
 import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import {
@@ -276,7 +277,7 @@ function validateCodexConfiguration(configuration: unknown): {
     }
   }
   const catalogSource = value.catalogSource === undefined ? "hosted" : value.catalogSource;
-  if (catalogSource !== "hosted" && catalogSource !== "openai-curated") {
+  if (!isCodexCatalogSource(catalogSource)) {
     throw new PluginValidationError("catalogSource must be hosted or openai-curated.");
   }
   if (
