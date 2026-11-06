@@ -2270,19 +2270,12 @@ async function prepareProductionInstallation(
       },
     };
   };
-  const initialWorkerDrivers = await loadWorkerDrivers();
-  const { workerDrivers } = initialWorkerDrivers;
-  let { diagnosticWorkerDrivers } = initialWorkerDrivers;
   assert.equal(drivers.sandboxDriver?.capability, "sandbox");
   assert.equal(drivers.sandboxDriver?.id, configuration.drivers.sandbox.id);
   assert.equal(drivers.credentialGatewayDriver?.capability, "credential_gateway");
   if (keycloak !== undefined) {
     assert.equal(drivers.credentialRefreshDriver?.capability, "credential_refresh");
   }
-  assert.equal(
-    workerDrivers.credentialGatewayDriver?.id,
-    configuration.drivers.credential_gateway.id,
-  );
 
   const observerPool = new pg.Pool({
     connectionString: databaseUrl,
@@ -2367,6 +2360,12 @@ async function prepareProductionInstallation(
   );
   const events = [];
   const startWorker = async () => {
+    // Each worker registers its own token issuers, so a restart needs fresh drivers too.
+    const { workerDrivers, diagnosticWorkerDrivers } = await loadWorkerDrivers();
+    assert.equal(
+      workerDrivers.credentialGatewayDriver?.id,
+      configuration.drivers.credential_gateway.id,
+    );
     workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
     worker = createControllerWorker({
       mode: "production",
@@ -2440,7 +2439,6 @@ async function prepareProductionInstallation(
     };
     await writeFile(workerStartupPath, JSON.stringify(configuration), { mode: 0o600 });
     await pauseWorker();
-    ({ diagnosticWorkerDrivers } = await loadWorkerDrivers());
     await startWorker();
   }
   if (keycloak !== undefined) {
