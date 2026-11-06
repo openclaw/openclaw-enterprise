@@ -2866,6 +2866,54 @@ if (args[0] === "pull") {
     }
   });
 
+  test("runtime artifact selection rejects unsupported lanes before preparation", async (t) => {
+    const root = await fixture(t);
+    const commandLog = join(root, "commands.log");
+    const commandGuard = join(root, "must-not-run");
+    await writeFile(
+      commandGuard,
+      `#!${process.execPath}\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(commandLog)}, "called\\n");\nprocess.exit(97);\n`,
+      { mode: 0o700 },
+    );
+    // These lanes share build caches, but cannot consume a runtime artifact.
+    // A complete selection must be refused before state or source builds exist.
+    for (const [lane, file] of [
+      ["dev-up-k3d", "tests/integration/dev-up-k3d-real.test.mjs"],
+      ["qa-matrix", "tests/integration/qa-matrix-real.test.mjs"],
+    ]) {
+      const statePath = join(root, `${lane}.json`);
+      const result = await spawnResult(
+        process.execPath,
+        [preparePath, "--lane", lane, "--state", statePath, "--selected-file", file],
+        {
+          env: {
+            HOME: root,
+            PATH: root,
+            RUNNER_TEMP: root,
+            OCC_CI_IMAGE_CACHE: "1",
+            BUILDX_BUILDER: "artifact-selection-test",
+            OCC_DOCKER_BIN: commandGuard,
+            OPENCLAW_CI_K3D_BIN: commandGuard,
+            OCC_KUBECTL_BIN: commandGuard,
+            OCC_CI_RUNTIME_ARTIFACT_DIRECTORY: join(root, "missing-artifact"),
+            OCC_CI_RUNTIME_ARTIFACT_SHA256: "a".repeat(64),
+            OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA: "a".repeat(40),
+            OCC_CI_RUNTIME_ARTIFACT_RUN_ID: "123456",
+            OCC_CI_RUNTIME_ARTIFACT_ATTEMPT: "1",
+          },
+        },
+      );
+      assert.equal(result.status, 1, lane);
+      assertStderrMatch(
+        result.stderr,
+        /Runtime artifacts are supported only by the ordinary image lanes/,
+        lane,
+      );
+      await assert.rejects(() => stat(statePath), { code: "ENOENT" });
+      await assert.rejects(() => stat(commandLog), { code: "ENOENT" });
+    }
+  });
+
   test("prepareLane rejects mutable Kubernetes image inputs before creating state", async (t) => {
     const root = await fixture(t);
     const optionalKubernetesImages = {

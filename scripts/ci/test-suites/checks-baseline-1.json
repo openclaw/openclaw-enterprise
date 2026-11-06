@@ -122,6 +122,7 @@
     "tests/integration/egress-stock-online-authority.test.mjs",
     "tests/integration/managed-plugin-request-authority.test.ts",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
+    "tests/integration/harness-egress-probe-diagnostics.test.ts",
     "tests/conformance/openshell-prepared-git-provider.test.mjs",
     "tests/conformance/openshell-git-runtime.test.mjs",
     "tests/integration/openshell-observed-request-hook.test.ts",
@@ -614,6 +615,12 @@
         "protected Git replies to this online decision before its authority deadline",
         "shipped gh metadata stays within selected-repository authority",
         "bounded selected REST bodies retain transport and authority limits"
+      ]
+    },
+    {
+      "path": "tests/integration/harness-egress-probe-diagnostics.test.ts",
+      "expectedTests": [
+        "held enrollment distinguishes probe failures without exposing proxy output or retrying"
       ]
     },
     {
