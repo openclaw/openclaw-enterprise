@@ -24,7 +24,7 @@ import {
   installSavedAccountProxy,
   savedAccountSandboxRegistration,
 } from "../helpers/saved-account-proxy.ts";
-import { observationGateway } from "../helpers/postgres-standing-worker-fixture.ts";
+import { CREDENTIAL_GATEWAY_FIXTURE_ID } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
@@ -41,6 +41,9 @@ import {
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { openShellProviderStore } from "../helpers/openshell-provider-store.mjs";
+import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { createBackendFixture } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createProviderSandboxDriver } from "../helpers/runtime-logs.mjs";
@@ -1262,9 +1265,10 @@ test(
     assert.equal(codexCapabilities.json().data.driver.id, codexCatalog.id);
     assert.equal(codexCapabilities.json().data.credentialSlots, undefined);
 
+    const modelKey = randomUUID();
     const harnessSecret = await owner("POST", base + "/secrets", {
       name: "Harness key",
-      value: randomUUID(),
+      value: modelKey,
     });
     assert.equal(harnessSecret.statusCode, 201, harnessSecret.body);
     const harnessRef = harnessSecret.json().data.ref;
@@ -1926,47 +1930,28 @@ test(
 
     // Install the selected terminal authority and admit two actual revisions for the same
     // saved grant. The fixture stands in for Compute activation and Gateway inventory.
-    // These sources predate Credential Proxy selection. Only the Agent's selected Harness
-    // model key belongs in the new deployment. The Gateway reports readiness for this admission test.
+    // Register the model keys only after both delivery drivers are selected, as the
+    // Create Agent form does. Only the external OpenShell provider RPC store is controlled.
     installSavedAccountPlacement(controller);
-    const gateway = observationGateway();
-    controller.registerDriver({
-      ...gateway,
-      listSourceTypes: async () => [
-        {
-          type: "openai",
-          config: [],
-          secrets: [{ name: "api_key", required: true }],
-          rotation: "none",
-          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
-        },
-      ],
-      registerSource: async () => ({ state: "ready" }),
-    });
-    controller.selectDriver("credential_gateway", gateway.id);
-    const legacySources: string[] = [];
-    for (const name of ["Harness model", "Unrelated gateway source"]) {
-      const source = await owner("POST", base + "/credential-sources", {
-        name,
-        type: "openai",
-        config: {},
-        secrets: { api_key: harnessRef },
-      });
-      assert.equal(source.statusCode, 201, source.body);
-      legacySources.push(source.json().data.id);
-    }
-    const [modelSource, unrelatedSource] = legacySources;
-    assert.ok(modelSource && unrelatedSource);
-    const modelRole = await owner("POST", base + "/iam/roles", {
-      name: "Use legacy credential",
-      permissions: [{ action: "operate", resourceKind: "credential_source" }],
-    });
-    assert.equal(modelRole.statusCode, 201, modelRole.body);
     const proxyFixture = await savedAccountProxyFixture(t);
     const runtime = await installSavedAccountProxy(proxyFixture, controller);
-    const ns = await state.read((view) => view.namespaces.findNamespace(namespaceId));
-    assert.ok(ns);
-    const admittedPeers = [];
+    const gatewayId = CREDENTIAL_GATEWAY_FIXTURE_ID;
+    const store = openShellProviderStore({
+      id: "gateway-model-provider",
+      type: "openshell",
+      configuration: { endpoint: "http://127.0.0.1:9" },
+      drivers: {
+        sandbox: savedAccountSandboxRegistration.driverId,
+        credential_gateway: gatewayId,
+      },
+    });
+    t.after(() => store.backend.client.close());
+    const gateway = new OpenShellCredentialGatewayDriver(
+      { binaries: ["/usr/local/bin/openclaw"] },
+      { id: gatewayId, backend: store.backend },
+    );
+    controller.registerDriver(gateway);
+    controller.selectDriver("credential_gateway", gateway.id);
     const selectedPlugin = {
       [pluginId]: {
         enabled: true,
@@ -1977,43 +1962,107 @@ test(
         },
       },
     };
+    // The Console validates the login method first, then registers the saved Secret
+    // and supplies the returned source ID to Create.
+    const preflight = await owner("POST", agents + "/validate", {
+      name: "Agent keeping access",
+      executionMode: "dedicated",
+      configuration: { kind: "agent", values: createHarnessConfiguration("openclaw", "gpt-5.1") },
+      harnessAuth: { method: "api_key" },
+      plugins: selectedPlugin,
+    });
+    assert.equal(preflight.statusCode, 204, preflight.body);
+    const modelSources: string[] = [];
+    for (const name of ["Harness model", "Unrelated gateway source"]) {
+      const source = await owner("POST", base + "/credential-sources", {
+        name,
+        type: "openai",
+        config: {},
+        secrets: { api_key: harnessRef },
+      });
+      assert.equal(source.statusCode, 201, source.body);
+      const sourceId = source.json().data.id;
+      const registered = await state.read((unit) =>
+        unit.credentialSources.findCredentialSource(namespaceId, sourceId),
+      );
+      assert.equal(registered?.ownerCapability, "credential_gateway");
+      assert.equal(registered?.egress, undefined);
+      const provider = [...store.providers.values()].find(
+        (entry) => entry.name === openShellProviderName(sourceId),
+      );
+      assert.ok(
+        provider?.credentials.OPENAI_API_KEY === modelKey,
+        "the Gateway received the selected model key",
+      );
+      modelSources.push(sourceId);
+    }
+    assert.equal(store.mutations.filter((operation) => operation === "createProvider").length, 2);
+    const [modelSource, unrelatedSource] = modelSources;
+    assert.ok(modelSource && unrelatedSource);
+    const modelRole = await owner("POST", base + "/iam/roles", {
+      name: "Use model credential",
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    });
+    assert.equal(modelRole.statusCode, 201, modelRole.body);
+    const ns = await state.read((view) => view.namespaces.findNamespace(namespaceId));
+    assert.ok(ns);
+    const admittedPeers = [];
     // Stable test Sandbox IDs let an external SPIRE authority attest distinct supervisor processes.
     for (const [name, sandboxId] of [
       ["Agent with renewed access", "00000000-0000-4000-8000-000000000001"],
       ["Agent keeping access", "00000000-0000-4000-8000-000000000002"],
     ] as const) {
-      const id = await agent(name);
       const checkUnrelated = name === "Agent with renewed access";
-      const initialSources: string[] = checkUnrelated ? legacySources : [modelSource];
-      const save = await owner("PATCH", path(id), {
+      const modelSelection = {
         configurationId: config.json().data.id,
-        plugins: selectedPlugin,
         harnessAuth: { method: "credential_source", sourceId: modelSource },
-        credentialSources: initialSources.map((sourceId) => ({ sourceId })),
+        credentialSources: [{ sourceId: modelSource }],
+      };
+      const created = await owner("POST", agents, {
+        name,
+        executionMode: "dedicated",
+        ...modelSelection,
+        ...(checkUnrelated ? {} : { plugins: selectedPlugin }),
       });
-      assert.equal(save.statusCode, 200, save.body);
-      const principal = await state.read((view) => view.agents.findAgent(namespaceId, id));
-      assert.ok(principal);
-      for (const sourceId of initialSources) {
-        if (sourceId === unrelatedSource) {
-          // This deployer may delegate both references. Reject the unrelated source and roll
-          // back the temporary Agent grant added by deployment in the same transaction.
-          assert.equal(await canUse(id, sourceId), false);
-          const refused = await owner("POST", path(id) + "/deploy");
-          assert.equal(refused.statusCode, 409, refused.body);
-          assert.match(refused.json().error.message, /unrelated credential binding/i);
-          assert.equal(await canUse(id, sourceId), false);
-        }
+      assert.equal(created.statusCode, 201, created.body);
+      const { id, servicePrincipalId } = created.json().data;
+      async function grantGatewaySource(sourceId: string) {
         const permission = await owner("POST", base + "/iam/access-bindings", {
           roleId: modelRole.json().data.id,
           subjectKind: "identity",
-          subjectId: principal.servicePrincipalId,
+          subjectId: servicePrincipalId,
           resourceKind: "credential_source",
           resourceId: sourceId,
         });
         assert.equal(permission.statusCode, 201, permission.body);
       }
+      await grantGatewaySource(modelSource);
       if (checkUnrelated) {
+        // A plugin-only Proxy also permits a normal model-only Create and deploy.
+        const modelOnly = await owner("POST", path(id) + "/deploy");
+        assert.equal(modelOnly.statusCode, 202, modelOnly.body);
+        const revision = await state.read((unit) =>
+          unit.revisions.findRevision(namespaceId, id, modelOnly.json().data.id),
+        );
+        assert.ok(revision);
+        assert.deepEqual(revision.credentialSources, [
+          { sourceId: modelSource, credentialGatewayId: gateway.id, sourceType: "openai" },
+        ]);
+        assert.equal(revision.plugins?.savedAccounts, undefined);
+        const save = await owner("PATCH", path(id), {
+          ...modelSelection,
+          plugins: selectedPlugin,
+          credentialSources: modelSources.map((sourceId) => ({ sourceId })),
+        });
+        assert.equal(save.statusCode, 200, save.body);
+        // This deployer may delegate both references. Reject the unrelated source and roll
+        // back the temporary Agent grant added by deployment in the same transaction.
+        assert.equal(await canUse(id, unrelatedSource), false);
+        const refused = await owner("POST", path(id) + "/deploy");
+        assert.equal(refused.statusCode, 409, refused.body);
+        assert.match(refused.json().error.message, /unrelated credential binding/i);
+        assert.equal(await canUse(id, unrelatedSource), false);
+        await grantGatewaySource(unrelatedSource);
         const mixed = await owner("POST", path(id) + "/deploy");
         assert.equal(mixed.statusCode, 409, mixed.body);
         assert.match(mixed.json().error.message, /unrelated credential binding/);
@@ -2029,6 +2078,9 @@ test(
         view.revisions.findRevision(namespaceId, id, deployment.json().data.id),
       );
       assert.ok(revision);
+      assert.deepEqual(revision.credentialSources, [
+        { sourceId: modelSource, credentialGatewayId: gateway.id, sourceType: "openai" },
+      ]);
       assert.deepEqual(revision.plugins?.savedAccounts, {
         driver: runtime.driver,
         sourceIds: [report.id],

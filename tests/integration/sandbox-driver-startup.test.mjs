@@ -1443,6 +1443,7 @@ test("OpenShell provisions zero-cache token grants and authorizes each saved OAu
     configuration: {
       middlewareName: registrationName,
       authorityScope: "execution",
+      modelApiKeyDelivery: "credential_gateway",
       tokenGrant: {
         endpoint: tokenEndpoint,
         port: 8454,
@@ -1462,9 +1463,23 @@ test("OpenShell provisions zero-cache token grants and authorizes each saved OAu
     },
   };
   // Production composition must give the Sandbox its paired proxy's registration.
-  const runtime = await loadInstallationFile(t, installation, {
+  const backendOptions = {
     createOpenShellBackend: () => backendFor(client),
+  };
+  const withStaticProvider = structuredClone(installation);
+  withStaticProvider.drivers.sandbox.configuration.providers = ["operator-credential"];
+  // The static provider would reach every Sandbox beside the Agent's admitted model provider.
+  await assert.rejects(loadInstallationFile(t, withStaticProvider, backendOptions), (error) => {
+    assert.ok(error instanceof SharedConfigurationValidationError);
+    assert.equal(error.error.details[0]?.path, "/providers");
+    assert.match(error.error.details[0].message, /modelApiKeyDelivery/);
+    return true;
   });
+  const runtime = await loadInstallationFile(t, installation, backendOptions);
+  assert.equal(
+    runtime.protectedDriver.require("credential_proxy").sourceControl.modelApiKeyDelivery,
+    "credential_gateway",
+  );
   const driver = runtime.sandboxDriver;
   const { context, revision, requirements } = runtimeSandboxFixture(driver, {
     harnessId: "openclaw",

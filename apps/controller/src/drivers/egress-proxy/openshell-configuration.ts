@@ -52,7 +52,11 @@ export function openShellProxyConfiguration(
 ) {
   const egress = object(input, "drivers.credential_proxy.configuration");
   if (repository) {
-    closed(egress, ["observedHookPreviewWorkspace"], "drivers.credential_proxy.configuration");
+    closed(
+      egress,
+      ["observedHookPreviewWorkspace", "modelApiKeyDelivery"],
+      "drivers.credential_proxy.configuration",
+    );
     const preview =
       egress.observedHookPreviewWorkspace === undefined
         ? {}
@@ -68,13 +72,23 @@ export function openShellProxyConfiguration(
         middlewareName: repository.registrationName,
         repositoryMiddlewareName: repository.registrationName,
         authorityScope: "execution",
+        ...(egress.modelApiKeyDelivery !== undefined && {
+          modelApiKeyDelivery: egress.modelApiKeyDelivery,
+        }),
         ...preview,
       },
     };
   }
   closed(
     egress,
-    ["middlewareName", "authorityScope", "authority", "preparedGitHub", "tokenGrant"],
+    [
+      "middlewareName",
+      "authorityScope",
+      "authority",
+      "preparedGitHub",
+      "tokenGrant",
+      "modelApiKeyDelivery",
+    ],
     "drivers.credential_proxy.configuration",
   );
   const { authority, preparedGitHub, ...policy } = egress;

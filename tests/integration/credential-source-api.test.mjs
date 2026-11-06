@@ -11,7 +11,7 @@ import {
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { OpenShellProviderAlreadyExistsError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { openShellProviderStore } from "../helpers/openshell-provider-store.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -86,60 +86,16 @@ async function fixture(
     placement,
   } = {},
 ) {
-  const providers = new Map();
-  const profiles = new Map();
-  const mutations = [];
-  const key = (workspace, name) => workspace + "/" + name;
-  const client = {
-    async getProviderProfile(workspace, id) {
-      return profiles.get(key(workspace, id));
+  const { backend, client, providers, profiles, mutations } = openShellProviderStore({
+    id: "openshell-test",
+    type: "openshell",
+    configuration: gateway,
+    drivers: {
+      credential_gateway: "openshell-credentials",
+      sandbox: "openshell-sandbox",
+      ...(toolSources ? { credential_refresh: "openshell-refresh" } : {}),
     },
-    async importProviderProfile(workspace, profile) {
-      mutations.push("importProfile");
-      profiles.set(key(workspace, profile.id), structuredClone(profile));
-    },
-    async deleteProviderProfile(workspace, id) {
-      mutations.push("deleteProfile");
-      profiles.delete(key(workspace, id));
-    },
-    async createProvider(input) {
-      const id = key(input.workspace, input.name);
-      if (providers.has(id)) {
-        throw new OpenShellProviderAlreadyExistsError();
-      }
-      mutations.push("createProvider");
-      providers.set(id, structuredClone(input));
-      return providers.get(id);
-    },
-    async getProvider(workspace, name) {
-      return providers.get(key(workspace, name));
-    },
-    async listProviders(workspace) {
-      return [...providers.values()].filter((provider) => provider.workspace === workspace);
-    },
-    async deleteProvider(workspace, name) {
-      mutations.push("deleteProvider");
-      providers.delete(key(workspace, name));
-    },
-    async updateProviderCredentials(workspace, name, credentials) {
-      mutations.push("updateProvider");
-      providers.get(key(workspace, name)).credentials = structuredClone(credentials);
-    },
-    close() {},
-  };
-  const backend = createOpenShellBackend(
-    {
-      id: "openshell-test",
-      type: "openshell",
-      configuration: gateway,
-      drivers: {
-        credential_gateway: "openshell-credentials",
-        sandbox: "openshell-sandbox",
-        ...(toolSources ? { credential_refresh: "openshell-refresh" } : {}),
-      },
-    },
-    { gatewayClient: client },
-  );
+  });
   if (placement !== undefined) {
     t.mock.method(backend.client, "placement", placement);
   }

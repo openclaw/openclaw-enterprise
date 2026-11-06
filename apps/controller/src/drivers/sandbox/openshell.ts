@@ -2461,6 +2461,16 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
       "OpenShell static providers must be nonempty names outside the OCC credential-source namespace.",
     );
   }
+  if (options.egress?.modelApiKeyDelivery === "credential_gateway" && options.providers?.length) {
+    throw new ConfigurationValidationError([
+      {
+        path: "/providers",
+        code: "INVALID_VALUE",
+        message:
+          "Remove static Sandbox providers when modelApiKeyDelivery is credential_gateway. They would attach to every Agent alongside its admitted model credential.",
+      },
+    ]);
+  }
   const prefix = nonempty(
     options.sandboxNamePrefix ?? DEFAULT_SANDBOX_NAME_PREFIX,
     "Sandbox name prefix",

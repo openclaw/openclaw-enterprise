@@ -160,7 +160,12 @@ export async function installSavedAccountProxy(
     },
     { id, implementation: "openshell", backend: backend as never },
   );
-  const opts = { middlewareName, authorityScope: "execution" as const, tokenGrant };
+  const opts = {
+    middlewareName,
+    authorityScope: "execution" as const,
+    tokenGrant,
+    modelApiKeyDelivery: "credential_gateway" as const,
+  };
   const proxy = new OpenShellCredentialProxyDriver(opts, {
     id,
     sandbox,

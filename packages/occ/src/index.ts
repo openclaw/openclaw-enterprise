@@ -8892,6 +8892,7 @@ export class OpenClawController {
     sandboxDriverId?: string,
     repositoryGit?: RepositoryRevisionState,
     harnessAuth?: HarnessAuthSnapshot,
+    harnessSourceType?: CredentialSourceType,
     savedPluginDriver?: PluginDriver,
   ): Promise<ProxyPlan | undefined> {
     const sources: CredentialSource[] = [];
@@ -8905,15 +8906,21 @@ export class OpenClawController {
       if (source?.egress !== undefined) {
         sources.push(source);
       } else if (
-        (repositoryGit || savedPluginDriver) &&
         source?.state === "ready" &&
         harnessAuth?.method === "credential_source" &&
         source.id === harnessAuth.sourceId &&
         credentialSourceMatchesSnapshot(source, harnessAuth)
       ) {
-        // admitHarnessAuth and admitCredentialSources already authorized this ordinary
-        // Harness source. Bind its identity to release, without giving Git any model authority.
-        harnessCredentialSource = harnessAuth;
+        if (repositoryGit || savedPluginDriver) {
+          harnessCredentialSource = harnessAuth;
+        } else if (
+          agent.executionMode === "dedicated" &&
+          admittedSources.length === 1 &&
+          this.modelApiKeyUsesGateway(harnessSourceType)
+        ) {
+          // The admitted Gateway model binding is the only credential released to this execution.
+          return undefined;
+        }
       } else if (
         savedPluginDriver &&
         source?.ownerCapability === "credential_gateway" &&
@@ -9170,11 +9177,12 @@ export class OpenClawController {
             secretRefs[protectedType.issuer.issuerInput]!,
           )
         : undefined;
+      const gatewayModelKey = selected !== undefined && this.modelApiKeyUsesGateway(type);
       const egress =
         prepared?.source ??
         (type.type === credentialFreeMetadataType
           ? await this.admitCredentialFreeMetadata(state, principalId, locked.id, sourceId, config)
-          : this.selections.has("credential_proxy")
+          : this.selections.has("credential_proxy") && !gatewayModelKey
             ? await this.admitStaticEgressSource(
                 state,
                 principalId,
@@ -14370,6 +14378,7 @@ export class OpenClawController {
         sandbox?.id,
         repositoryCredentials,
         harnessAuth,
+        credentialSourceType,
         savedAccounts ? driver : undefined,
       );
       let executionAdmission: ExecutionAdmission;
@@ -18028,6 +18037,17 @@ export class OpenClawController {
       );
     }
     return { compute, resolve };
+  }
+
+  private modelApiKeyUsesGateway(type: CredentialSourceType | undefined): boolean {
+    return (
+      type?.harnessAuth?.loginMode === "api_key" &&
+      type.rotation !== "refresh" &&
+      type.deviceAuthorization === undefined &&
+      this.selections.has("credential_proxy") &&
+      this.selectedDriver("credential_proxy").sourceControl.modelApiKeyDelivery ===
+        "credential_gateway"
+    );
   }
 
   /** A protected source is offered only by the selected pair and its installed lifecycle owner. */
