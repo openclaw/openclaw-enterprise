@@ -113,7 +113,7 @@ const CONSOLE_ASSETS = new Map([
   [
     "/console/workspace-defaults.mjs",
     {
-      path: new URL("../../../packages/contracts/src/workspace-defaults.mjs", import.meta.url),
+      path: new URL("../../../packages/contracts/src/workspace-defaults.ts", import.meta.url),
       contentType: "text/javascript; charset=utf-8",
     },
   ],
