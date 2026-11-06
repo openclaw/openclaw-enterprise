@@ -278,6 +278,41 @@ test(
       await f.owner.maintain();
       await f.owner.maintain();
       await exchange(second, withdrawn, true);
+      // Warm native protocol-3 state is a positive control: custody omission must
+      // refuse even when this exact admission, material and origin route can work.
+      const [nativeRequest] = use.mock.calls.at(-1)!.arguments;
+      const custodyEvidence = async () => ({
+        provider: [...gh.trace],
+        origin: origin.traffic().requests,
+        authenticated: origin.trace.length,
+        uses: (
+          await f.pool.query(
+            "SELECT exchange_id FROM occ.prepared_repository_git_uses WHERE admission_id=$1 ORDER BY exchange_id",
+            [second],
+          )
+        ).rows,
+      });
+      const beforeCustodyRefusal = await custodyEvidence();
+      await t.test("omitted store custody refuses before serving warm native state", () => {
+        assert.throws(
+          // JavaScript callers can omit a required TypeScript argument.
+          // @ts-expect-error Intentionally omit the internal custody selection.
+          () => new PreparedRepositoryGitStore(f.pool, Buffer.alloc(32), "unused", () => undefined),
+          { message: "REPOSITORY_GIT_CUSTODY_REQUIRED" },
+        );
+      });
+      await t.test("omitted owner custody refuses with a valid native socket", async () => {
+        await assert.rejects(f.startOwner({ repositoryGitCustody: undefined }), {
+          message: "REPOSITORY_GIT_CUSTODY_REQUIRED",
+        });
+      });
+      const unavailable = await f.startOwner({ repositoryGitCustody: { kind: "unavailable" } });
+      assert.equal(unavailable.revisionMaterial, undefined);
+      assert.equal(unavailable.protectedGit, undefined);
+      await assert.rejects(unavailable.use({ ...nativeRequest, exchangeId: randomUUID() }), {
+        message: "Prepared GitHub custody transaction did not complete (guard).",
+      });
+      assert.deepEqual(await custodyEvidence(), beforeCustodyRefusal);
       await setBinding(false);
       await exchange(second, withdrawn, false);
       assert.equal((await receipt(second))?.sessionId, withdrawn.sessionId);

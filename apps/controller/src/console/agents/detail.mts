@@ -35,7 +35,7 @@ import {
   fieldError,
   focusSaveOutcome,
   isUnavailable,
-  jsonObjectProblem,
+  jsonObjectDiagnostic,
   revealStatus,
   setHidden,
   setStatusTone,
@@ -6193,13 +6193,13 @@ export async function renderAgentDetail(
     }
 
     function parseEditor(reportInvalid = false) {
-      const problem = jsonObjectProblem(editor.value);
-      if (problem === undefined) {
-        return JSON.parse(editor.value) as OpenClawConfigurationDocument;
+      const diagnostic = jsonObjectDiagnostic(editor.value);
+      if (diagnostic.kind === "valid") {
+        return diagnostic.value;
       }
       if (reportInvalid) {
         // One message, under the editor, which keeps focus so the JSON can be fixed in place.
-        editorError.show(problem);
+        editorError.show(diagnostic.message);
         feedback.textContent = "";
         feedbackLocked = true;
         editor.focus();
