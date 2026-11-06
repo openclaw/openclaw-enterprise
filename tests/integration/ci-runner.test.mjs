@@ -225,6 +225,8 @@ test("run resolves lane documents relative to the manifest and preserves ordered
       "OCC_PROBE_BROKER_IMAGE",
       "OCC_PROBE_OLD_CONTROLLER_IMAGE",
       "OCC_PROBE_OLD_BROKER_IMAGE",
+      "OCC_TEST_RELEASED_CONTROLLER_IMAGE",
+      "OCC_TEST_CANDIDATE_CONTROLLER_IMAGE",
     ],
     files: [
       {
@@ -264,6 +266,8 @@ test("run resolves lane documents relative to the manifest and preserves ordered
       OCC_PROBE_BROKER_IMAGE: `private.example/current-broker@sha256:${"c".repeat(64)}`,
       OCC_PROBE_OLD_CONTROLLER_IMAGE: `private.example/old-controller@sha256:${"d".repeat(64)}`,
       OCC_PROBE_OLD_BROKER_IMAGE: `private.example/old-broker@sha256:${"e".repeat(64)}`,
+      OCC_TEST_RELEASED_CONTROLLER_IMAGE: `private.example/released-controller@sha256:${"f".repeat(64)}`,
+      OCC_TEST_CANDIDATE_CONTROLLER_IMAGE: `private.example/candidate-controller@sha256:${"1".repeat(64)}`,
     },
   );
 
@@ -290,6 +294,8 @@ test("run resolves lane documents relative to the manifest and preserves ordered
     pairBroker: `sha256:${"c".repeat(64)}`,
     pairOldController: `sha256:${"d".repeat(64)}`,
     pairOldBroker: `sha256:${"e".repeat(64)}`,
+    releasedController: `sha256:${"f".repeat(64)}`,
+    candidateController: `sha256:${"1".repeat(64)}`,
   };
   assert.deepEqual(summary.files[0].imageDigests, {
     controller: `sha256:${"a".repeat(64)}`,

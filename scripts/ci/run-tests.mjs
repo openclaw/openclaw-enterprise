@@ -1082,6 +1082,8 @@ function imageDigests(env) {
     pairBroker: "OCC_PROBE_BROKER_IMAGE",
     pairOldController: "OCC_PROBE_OLD_CONTROLLER_IMAGE",
     pairOldBroker: "OCC_PROBE_OLD_BROKER_IMAGE",
+    releasedController: "OCC_TEST_RELEASED_CONTROLLER_IMAGE",
+    candidateController: "OCC_TEST_CANDIDATE_CONTROLLER_IMAGE",
   };
   return Object.fromEntries(
     Object.entries(names).flatMap(([role, name]) => {
