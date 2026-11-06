@@ -15411,6 +15411,8 @@ export class OpenClawController {
           namespaceId,
           id: sourceId,
         });
+        // Check the sender before lookup so a missing Gateway cannot reveal whether this ID exists.
+        this.assertCredentialSourceOwnerSelected();
       }
       const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
       if (source === undefined || source.state !== "ready") {
@@ -15433,7 +15435,6 @@ export class OpenClawController {
         sources.push(source);
         continue;
       }
-      this.assertCredentialSourceOwnerSelected();
       if (
         source.ownerCapability === "credential_proxy" &&
         !this.selections.has("credential_proxy")
