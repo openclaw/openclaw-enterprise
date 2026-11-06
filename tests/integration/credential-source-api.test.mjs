@@ -12,6 +12,7 @@ import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/driv
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { OpenShellProviderAlreadyExistsError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { createProviderSandboxDriver } from "../helpers/runtime-logs.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -80,6 +81,7 @@ async function fixture(
   t,
   {
     toolSources = false,
+    toolBinaries = ["/usr/bin/curl"],
     persistedIam = false,
     gateway = { endpoint: "http://127.0.0.1:1" },
     modelProvider,
@@ -146,7 +148,7 @@ async function fixture(
   const driver = new OpenShellCredentialGatewayDriver(
     {
       binaries: ["/app/bin/codex"],
-      ...(toolSources ? { toolBinaries: ["/usr/bin/curl"] } : {}),
+      ...(toolSources ? { toolBinaries } : {}),
     },
     {
       id: "openshell-credentials",
@@ -343,6 +345,107 @@ test("old source routing records cannot deliver credentials and remain readable 
   assert.equal((await f.request("GET", f.path + "/" + stored.id)).status, 200);
   f.passRegistrationFence();
   assert.equal((await f.request("DELETE", f.path + "/" + stored.id)).status, 204);
+});
+
+test("GitHub and Work IQ tokens can be registered and bound only to their own MCP slots", async (t) => {
+  const f = await fixture(t, {
+    toolSources: true,
+    toolBinaries: ["/usr/local/bin/node"],
+    persistedIam: true,
+  });
+  const compute = createTestKubernetesComputeDriver("plugin-compute");
+  compute.resolveSandboxNamespace = async (namespace) => namespace;
+  for (const driver of [new OCCPluginDriver(), compute, createProviderSandboxDriver().driver]) {
+    f.controller.registerDriver(driver);
+    f.controller.selectDriver(driver.capability, driver.id);
+  }
+  const agent = await f.createAgent(
+    f.namespace.id,
+    "MCP Agent",
+    createHarnessConfiguration("openclaw", "gpt-5"),
+    {
+      harnessAuth: null,
+      executionMode: "dedicated",
+    },
+  );
+  const path = `/namespaces/${f.namespace.id}/agents/${agent.id}`;
+  const save = (plugins) =>
+    f.request("PATCH", path, { body: { configurationId: agent.configurationId, plugins } });
+  const github = "occ-plugin:github@1.0.0";
+  const workiq = "occ-plugin:workiq@1.0.0";
+  const notion = "occ-plugin:notion@1.0.0";
+  const enabled = {
+    [github]: { enabled: true },
+    [workiq]: { enabled: true },
+    [notion]: { enabled: true },
+  };
+  const initial = await save(enabled);
+  assert.equal(initial.status, 200, JSON.stringify(initial.body));
+  const capabilities = await f.request("GET", path + "/plugins/capabilities");
+  assert.equal(capabilities.status, 200, JSON.stringify(capabilities.body));
+  const slot = (id) =>
+    capabilities.data.credentialSlots.find((s) => s.pluginId === id && s.id === "account");
+  // The same Agent can connect a Notion OAuth account, while the two token-only providers
+  // must direct operators to register credentials for the exact reviewed HTTPS endpoint.
+  assert.equal(slot(notion).connectAccount, true);
+  async function register(id, host, route, envVar) {
+    const account = slot(id);
+    assert.equal(account.connectAccount, undefined);
+    assert.deepEqual(account.tokenSourceConfig, {
+      protocol: "mcp",
+      host,
+      port: "443",
+      path: route,
+      env_var: envVar,
+    });
+    const created = await f.saveTool("bearer-token", account.tokenSourceConfig, envVar);
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    return created.data.id;
+  }
+  const githubToken = await register(github, "api.githubcopilot.com", "/mcp/", "GITHUB_MCP_TOKEN");
+  const workiqToken = await register(
+    workiq,
+    "workiq.svc.cloud.microsoft",
+    "/mcp",
+    "WORKIQ_MCP_TOKEN",
+  );
+  const selected = (id, sourceId) => ({
+    enabled: true,
+    driverPolicy: {
+      releaseSha256: slot(id).releaseSha256,
+      credentials: { account: sourceId },
+      toolNames: [],
+    },
+  });
+  // A valid first selection cannot grant either token to this Agent if the other slot
+  // reuses the wrong provider. The subsequent valid selection can grant both together.
+  const denied = await save({
+    [github]: selected(github, githubToken),
+    [workiq]: selected(workiq, githubToken),
+  });
+  assert.equal(denied.status, 409, JSON.stringify(denied.body));
+  const canUse = async (sourceId) =>
+    (
+      await f.iamDriver.authorize({
+        principalId: agent.servicePrincipalId,
+        action: "operate",
+        resource: { kind: "credential_source", namespaceId: f.namespace.id, id: sourceId },
+      })
+    ).allowed;
+  assert.equal(await canUse(githubToken), false);
+  const valid = {
+    [github]: selected(github, githubToken),
+    [workiq]: selected(workiq, workiqToken),
+  };
+  const bound = await save(valid);
+  assert.equal(bound.status, 200, JSON.stringify(bound.body));
+  assert.equal(await canUse(githubToken), true);
+  assert.equal(await canUse(workiqToken), true);
+  assert.deepEqual(bound.data.plugins, valid);
+  assert.deepEqual(
+    new Set(bound.data.credentialSources.map(({ sourceId }) => sourceId)),
+    new Set([githubToken, workiqToken]),
+  );
 });
 
 test("the saved Agent picker and binding use the granted source and the same reviewed release", async (t) => {

@@ -304,6 +304,10 @@
                       {
                         "page": "guides/topics/plugins-configure",
                         "label": "Configure"
+                      },
+                      {
+                        "page": "guides/topics/plugins-hosted-mcp",
+                        "label": "Hosted MCP Accounts"
                       }
                     ]
                   }

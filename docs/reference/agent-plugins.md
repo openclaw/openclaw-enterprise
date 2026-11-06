@@ -9,9 +9,9 @@ for the Agent's Harness. OCC checks policy before saving and performs
 
 ## Current support
 
-A dedicated OpenClaw Agent on Kubernetes can enable multiple managed packages together (`plugins[id].enabled`).
+A dedicated OpenClaw Agent on Kubernetes can enable multiple packages together (`plugins[id].enabled`).
 [Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) installs a Gateway skill and [worker CLI](connection-templates.md#use-a-saved-account-in-an-agent-plugin).
-[Slack and Notion](../guides/topics/plugins-configure.md#configure-a-hosted-mcp-plugin) use hosted MCP servers. OCE discovers each account's tools through `tools/list`.
+[Slack](../guides/topics/plugins-configure.md#configure-slack-search), [GitHub, Microsoft 365 Work IQ, and Notion](../guides/topics/plugins-hosted-mcp.md) use hosted MCP servers. OCE discovers the selected account's tools through `tools/list`.
 Agent selections govern worker, Gateway and OpenShell access. Workers advertise 128 MCP tools at most.
 
 Embedded OpenClaw supports the bundled Diffs plugin and its `diffs` tool, with

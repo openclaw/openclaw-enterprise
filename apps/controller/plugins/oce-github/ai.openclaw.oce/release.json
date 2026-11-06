@@ -1,0 +1,23 @@
+{
+  "release": "github-mcp-v1",
+  "placement": {
+    "harnessId": "openclaw",
+    "mode": "dedicated",
+    "computeImplementations": ["occ/kubernetes", "kubernetes-local"]
+  },
+  "capabilities": { "gateway": [], "harness": ["mcp"] },
+  "mcpServersSha256": "f8e3126a9e705a62ef1cb018b7d73e68eb552c0812f4e4573ce439c832718ac1",
+  "credentials": {
+    "account": {
+      "label": "GitHub account",
+      "sourceTypes": ["bearer-token"],
+      "issuer": "https://github.com/login/oauth",
+      "delivery": { "role": "harness", "env": "GITHUB_MCP_TOKEN", "presentation": "bearer" },
+      "mcp": {
+        "server": "github",
+        "resource": "https://api.githubcopilot.com/mcp/",
+        "versions": ["2025-03-26", "2025-06-18", "2025-11-25"]
+      }
+    }
+  }
+}

@@ -4,6 +4,8 @@
   "plugins": [
     { "name": "oce-google-workspace", "source": "./oce-google-workspace" },
     { "name": "oce-slack", "source": "./oce-slack" },
-    { "name": "oce-notion", "source": "./oce-notion" }
+    { "name": "oce-notion", "source": "./oce-notion" },
+    { "name": "oce-workiq", "source": "./oce-workiq" },
+    { "name": "oce-github", "source": "./oce-github" }
   ]
 }

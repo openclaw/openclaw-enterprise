@@ -152,11 +152,11 @@ const mcpSlot = Type.Object(
         uniqueItems: true,
       }),
     ),
-    issuer: Type.String({ minLength: 1 }),
+    issuer: Type.Optional(Type.String({ minLength: 1 })),
     delivery: credentialSlot.properties.delivery,
     mcp: Type.Object({
       server: Type.String({ pattern: "^[a-zA-Z](?:[a-zA-Z0-9_-]{0,21}[a-zA-Z0-9])?$" }),
-      resource: Type.String(),
+      resource: Type.Optional(Type.String()),
       versions: Type.Array(Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" }), {
         minItems: 1,
         uniqueItems: true,
@@ -188,6 +188,10 @@ function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
   }
   const [slotId, slot] = Object.entries(slots)[0]!;
   const { server, resource, versions } = slot.mcp;
+  const sourceTypes = slot.sourceTypes ?? (["bearer-token", "oauth2-refresh-token"] as const);
+  if (sourceTypes.includes("oauth2-refresh-token") && (!slot.issuer || !resource)) {
+    throw invalid();
+  }
   const bytes = readFileSync(new URL("mcp.json", install.directory));
   if (createHash("sha256").update(bytes).digest("hex") !== release?.mcpServersSha256) {
     throw invalid();
@@ -208,7 +212,7 @@ function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
     !isAllowedSecretBindingDestination(slot.delivery.env) ||
     !exactDnsName(url.hostname) ||
     !url.hostname.includes(".") ||
-    (resource !== url.origin && resource !== url.href)
+    (resource !== undefined && resource !== url.origin && resource !== url.href)
   ) {
     throw invalid();
   }
@@ -222,7 +226,7 @@ function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
     endpoint: { host: url.hostname, port: Number(url.port || 443), path: url.pathname },
     credentialEnvironment: slot.delivery.env,
     credentialLabel: slot.label,
-    sourceTypes: slot.sourceTypes ?? (["bearer-token", "oauth2-refresh-token"] as const),
+    sourceTypes,
     binaryPath: "/usr/local/bin/node",
     mcpVersions: Object.freeze(versions),
   } as const;
@@ -497,9 +501,9 @@ export function managedPluginAccountSlot(
   const current = bindings?.[slotId];
   const slot = install.credentials[slotId]!;
   const issuers =
-    install.kind === "mcp" && !install.sourceTypes.includes("oauth2-refresh-token")
-      ? []
-      : [slot.issuer];
+    slot.issuer && (install.kind === "cli" || install.sourceTypes.includes("oauth2-refresh-token"))
+      ? [slot.issuer]
+      : [];
   function acceptsRecipient(target: PluginAccountTarget) {
     const { destinations, mcp } = target;
     if (!issuers.includes(target.issuer)) {

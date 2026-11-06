@@ -1,0 +1,21 @@
+{
+  "release": "workiq-mcp-v1",
+  "placement": {
+    "harnessId": "openclaw",
+    "mode": "dedicated",
+    "computeImplementations": ["occ/kubernetes", "kubernetes-local"]
+  },
+  "capabilities": { "gateway": [], "harness": ["mcp"] },
+  "mcpServersSha256": "9448f355cb87d67568ecbe2ef25318b6324d8b7bac4ac469ccbcbb4656af6d21",
+  "credentials": {
+    "account": {
+      "label": "Work IQ delegated access token",
+      "sourceTypes": ["bearer-token"],
+      "delivery": { "role": "harness", "env": "WORKIQ_MCP_TOKEN", "presentation": "bearer" },
+      "mcp": {
+        "server": "workiq",
+        "versions": ["2025-03-26", "2025-06-18", "2025-11-25"]
+      }
+    }
+  }
+}

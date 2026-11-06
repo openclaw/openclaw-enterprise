@@ -11,7 +11,8 @@ compatible Plugin Driver before an Agent can save nonempty plugin selections.
   lets an Agent show the difference between two pieces of text. Start with
   [Configure Agent plugins](plugins-configure.md).
 - **Dedicated OpenClaw** on Kubernetes can run the Google Workspace CLI and use
-  hosted MCP tools from Slack and Notion. [Configure Agent plugins](plugins-configure.md#configure-a-hosted-mcp-plugin).
+  hosted MCP tools from [Slack](plugins-configure.md#configure-slack-search),
+  [GitHub, Microsoft 365 Work IQ, and Notion](plugins-hosted-mcp.md).
 - **Dedicated Codex** can use selected apps from its curated catalog when the
   Agent uses a ChatGPT login and the runtime supports their approval
   policy. An API-key Agent deploys with each selected app disabled and a

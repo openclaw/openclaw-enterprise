@@ -12054,9 +12054,11 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
   const offered = await discoverAndSave();
   assert.equal(offered.catalog.status, 200);
   assert.deepEqual(offered.catalog.data.plugins.map((entry) => entry.id).sort(), [
+    "occ-plugin:github@1.0.0",
     "occ-plugin:google@1.0.0",
     "occ-plugin:notion@1.0.0",
     packageId,
+    "occ-plugin:workiq@1.0.0",
   ]);
   assert.equal(offered.details.status, 200, JSON.stringify(offered.details.body));
   assert.equal(offered.details.data.id, packageId);

@@ -101,15 +101,9 @@ it. Inspect its worker server and tool filter:
 OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.oce_mcp_slack --json
 ```
 
-### Connect Notion
+<a id="connect-notion"></a>
 
-- **Workspace MCP token.** A Business or Enterprise workspace owner creates an MCP token in Notion. In **Plugins → Notion**, an Installation admin chooses **Add MCP token**, names it, selects or creates its Secret, then chooses **Register token**. Save the plugin selections to grant this Agent access. Registration requires a Credential Gateway installation without a selected Credential Proxy. You can also select an existing compatible source.
-- **User OAuth account.** An Installation admin creates a [connection template](../../reference/connection-templates.md#register-a-client) using **Discover from an MCP server URL** and `https://mcp.notion.com/mcp`. Register the OCE callback with Notion and enter the issued client ID if the template has no client. In **Plugins**, add **Notion**. Under **Notion account**, select a saved account and choose **Save plugin selections**. For a new account, save the enabled plugin. Choose **Connect with OAuth** or **Choose a connection template**, select the Notion template and `default` scope, then **Connect and attach**. Approve access in Notion. Deployment with OAuth requires a [sender that supports saved accounts](../../reference/drivers/credential-proxy.md#saved-oauth-accounts).
-
-Choose **Load tools** and enable `notion-search` if the account offers it.
-Save and deploy, then ask the Agent to search for a page visible to the account.
-Check that the result includes the expected page.
-[Notion MCP setup and token requirements](https://developers.notion.com/guides/mcp/get-started-with-mcp#faqs)
+For [GitHub](plugins-hosted-mcp.md#github), [Microsoft 365 Work IQ](plugins-hosted-mcp.md#microsoft-365-work-iq), or [Notion](plugins-hosted-mcp.md#notion), follow the provider's setup steps.
 
 ## Before you start
 
