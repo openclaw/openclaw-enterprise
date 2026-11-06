@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { run } from "../fixtures/repository-credentials/process.mjs";
+import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.mjs";
 import { extractOpenShellImageFile } from "../helpers/openshell-git-installation.mjs";
 
 type CommandOptions = { signal?: AbortSignal; timeout?: number };
@@ -16,10 +16,12 @@ for (const phase of ["create", "copy", "unsettled create"]) {
       const image = process.env.OCC_DOCKER_RUNTIME_IMAGE;
       assert.ok(image, "Select an existing OCC_DOCKER_RUNTIME_IMAGE for the Docker cleanup proof");
       const directory = await mkdtemp(join(tmpdir(), "openshell-extraction-"));
-      const env = Object.fromEntries(
-        ["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG"]
-          .filter((name) => process.env[name] !== undefined)
-          .map((name) => [name, process.env[name]]),
+      const env = cleanEnvironment(
+        Object.fromEntries(
+          ["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG"]
+            .filter((name) => process.env[name] !== undefined)
+            .map((name) => [name, process.env[name]]),
+        ),
       );
       const controller = new AbortController();
       const cleanup: (() => Promise<void>)[] = [];
