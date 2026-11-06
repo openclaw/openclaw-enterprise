@@ -29,7 +29,7 @@ import { checkArguments, classify, respond } from "../../scripts/ci/impact.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const selector = join(repositoryRoot, "scripts/ci/impact.mjs");
-const pnpmImpact = join(repositoryRoot, "scripts/ci/pnpm-impact.mjs");
+const pnpmImpact = join(repositoryRoot, "scripts/ci/pnpm-impact.ts");
 const gate = join(repositoryRoot, "scripts/ci/impact-gate.mjs");
 const runner = join(repositoryRoot, "scripts/ci/run-tests.mjs");
 const read = (path) => readFileSync(join(repositoryRoot, path), "utf8");
