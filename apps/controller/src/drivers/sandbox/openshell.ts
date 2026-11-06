@@ -41,6 +41,8 @@ import {
   managedMcpInstalls,
   managedInstalls,
 } from "../plugin/managed-catalog.ts";
+import { googleSourceRequestScope } from "../plugin/google-workspace/credential-policy.ts";
+import { googleCredentialEndpoints } from "../plugin/google-workspace/operations.ts";
 import { managedGoogleInstall } from "../plugin/google-workspace/install.ts";
 import { openShellLogDecisions } from "./openshell-log-decisions.ts";
 import { qualifyOpenShellCodexArtifactRules } from "./openshell-codex-artifacts.ts";
@@ -120,6 +122,7 @@ import type {
 import {
   isOpenShellProviderName,
   openShellProviderName,
+  revisionProviderSourceId,
   openShellWorkspaceName,
   type OpenShellGateway,
 } from "../../backends/openshell.ts";
@@ -2188,8 +2191,8 @@ function sandboxSpec(
   const defaults = revision.sandboxPolicy?.defaults ?? networkPolicies(options);
   const additions = openShellAgentNetworkRules(revision.sandboxPolicy?.additions ?? []);
   if (plugin) {
-    assertPluginNetworkInspection(defaults, plugin.hosts);
-    assertPluginNetworkInspection(additions, plugin.hosts);
+    assertPluginNetworkInspection(defaults, plugin.hosts, plugin.binaries);
+    assertPluginNetworkInspection(additions, plugin.hosts, plugin.binaries);
     if (Object.hasOwn(defaults, "oce-google-requests")) {
       throw new OpenShellSandboxConfigurationFailure(
         "The Google plugin network rule name is reserved.",
@@ -3310,6 +3313,44 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       this.options.gateway.managedPluginMiddleware,
       this.options.providers ?? [],
     );
+    const accountBinding = managedCredentialBinding(
+      context.revision.plugins?.plugins,
+      managedGoogleInstall,
+    );
+    const accountDelivery = context.revision.credentialSources?.find(
+      (source) => source.sourceId === accountBinding?.sourceId,
+    )?.accountDelivery;
+    // The launch request remains reproducible. Current template routes belong to the
+    // live policy revision, which is observed before Compute releases any bearer.
+    let launchPlugin = plugin;
+    if (plugin && accountDelivery) {
+      const scope = googleSourceRequestScope(accountDelivery.config);
+      if (!scope) {
+        throw new OpenShellSandboxConfigurationFailure(
+          "The saved account launch policy is invalid.",
+        );
+      }
+      launchPlugin = openShellPluginPolicy(
+        context.revision,
+        {
+          ...context.requirements,
+          credentialAttachments: context.requirements.credentialAttachments.map((attachment) =>
+            attachment.sourceId === accountBinding?.sourceId
+              ? {
+                  ...attachment,
+                  requestScope: {
+                    destinations: googleCredentialEndpoints(scope),
+                    scopes: scope.scopes,
+                    binaries: plugin!.binaries,
+                  },
+                }
+              : attachment,
+          ),
+        },
+        this.options.gateway.managedPluginMiddleware,
+        this.options.providers ?? [],
+      );
+    }
     if (plugin) {
       await verifyManagedPluginRegistration(client, context.signal);
     }
@@ -3422,7 +3463,16 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           ? await client.getSandboxConfig?.(workspace, sandbox.resourceName, context.signal)
           : undefined;
       if (plugin) {
-        verifyPluginRequestGuard(config, plugin, workspace);
+        try {
+          verifyPluginRequestGuard(config, plugin, workspace);
+        } catch (error) {
+          if (accountDelivery) {
+            throw new DependencyUnavailableError(
+              "The saved account sender and effective request guard have not converged.",
+            );
+          }
+          throw error;
+        }
       }
       for (const policy of mcpPolicies) {
         verifyManagedMcpPolicy(config, policy, workspace);
@@ -3490,7 +3540,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         ]),
         runtimeCredentialMaterial.binding,
         egressPolicy,
-        plugin,
+        launchPlugin,
         mcpPolicies,
       ),
       serviceExposures,
@@ -4646,7 +4696,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       if (
         binding &&
         Array.isArray(sandbox.spec?.providers) &&
-        sandbox.spec.providers.includes(openShellProviderName(binding.sourceId))
+        sandbox.spec.providers.includes(
+          openShellProviderName(revisionProviderSourceId(context.revision, binding.sourceId)),
+        )
       ) {
         throw new SandboxNetworkPolicyConflictError(
           "The attached Google account requires its admitted request guard.",
@@ -4662,7 +4714,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       } else if (
         binding &&
         Array.isArray(sandbox.spec?.providers) &&
-        sandbox.spec.providers.includes(openShellProviderName(binding.sourceId))
+        sandbox.spec.providers.includes(
+          openShellProviderName(revisionProviderSourceId(context.revision, binding.sourceId)),
+        )
       ) {
         throw new SandboxNetworkPolicyConflictError(
           "The managed MCP route differs from the admitted revision.",

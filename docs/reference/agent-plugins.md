@@ -10,7 +10,7 @@ for the Agent's Harness. OCC checks policy before saving and performs
 ## Current support
 
 Dedicated OpenClaw on Kubernetes supports both packages together (`plugins[id].enabled`).
-[Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) installs a Gateway skill and worker CLI.
+[Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) installs a Gateway skill and [worker CLI](connection-templates.md#use-a-saved-account-in-an-agent-plugin).
 [Slack](../guides/topics/plugins-configure.md#configure-slack-search) discovers tools through `tools/list`.
 Agent selections govern worker, Gateway and OpenShell access. Workers advertise 128 MCP tools at most.
 

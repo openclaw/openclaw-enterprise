@@ -22,9 +22,15 @@ import {
 import { setTimeout as delay } from "node:timers/promises";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
+type OAuthConnectionCustody = Pick<ConnectionTokenCustody, "sourceId" | "secret">;
+
+const PENDING_OAUTH_CONNECTION = "pending";
+
 type ClientRetry = "client_refused" | "client_unavailable" | "client_registration_mismatch";
 
-type OAuthMaterial = OAuthConnectionGrant & {
+type ApprovedGrant = OAuthConnectionGrant & OAuthConnectionRegistration;
+
+type OAuthMaterial = ApprovedGrant & {
   readonly sourceId: string;
   readonly namespaceId: string;
   readonly version: string;
@@ -155,7 +161,7 @@ function status(current: StoredConnection): OAuthConnectionStatus {
     schedule: {
       version: current.version,
       nextRefreshAt: current.renewAt,
-      grantedScopes: current.scope.split(" "),
+      grantedScopes: current.grantedScopes,
     },
     expiresAt: current.expiresAt,
   };
@@ -252,14 +258,7 @@ export class OAuthGrantStore {
   observe(custody: OAuthConnectionCustody, signal: AbortSignal, minimumValidityMs?: number) {
     return this.driver(custody, signal).withValue!(custody.secret, async (value) => {
       signal.throwIfAborted();
-      if (
-        !stored ||
-        (stored.phase !== "ready" && stored.phase !== "renewing") ||
-        Date.parse(stored.expiresAt) <= Date.now() ||
-        (stored.phase === "renewing" && Date.parse(stored.renewalDeadline) <= Date.now())
-      ) {
-        return undefined;
-      }
+      const stored = material(value, custody);
       return {
         status: status(stored),
         token:
@@ -338,7 +337,7 @@ export class OAuthGrantStore {
       const next = retryClient(current, phase);
       return (await driver.compareAndSwap!(custody.secret, previous, JSON.stringify(next)))
         ? status(next)
-        : this.status(custody, signal);
+        : (await this.observe(custody, signal)).status;
     }
     signal.throwIfAborted();
     const deadline = Date.now() + RENEWAL_BUDGET_MS;

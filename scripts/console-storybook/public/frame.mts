@@ -136,19 +136,81 @@ if (scenario.component === "plugins") {
           if (scenario.connectionPreview === "loading") {
             return await new Promise<never>(() => {});
           }
+          if (scenario.connectionPreview === "named") {
+            return [
+              {
+                id: "support",
+                displayName: "Support server access",
+                version: 1,
+                mode: "mcp_discovery",
+                scopes: ["messages.read", "messages.write"],
+                requiredScopes: ["messages.read"],
+                offeredScopes: ["messages.read", "messages.write"],
+              },
+            ];
+          }
+          if (scenario.connectionPreview === "unrestricted") {
+            return [
+              {
+                id: "discovered-open",
+                displayName: "Support MCP",
+                version: 1,
+                mode: "mcp_discovery",
+                scopes: [],
+                requiredScopes: ["messages.read"],
+                offeredScopes: ["messages.read", "messages.write"],
+              },
+              {
+                id: "manual-open",
+                displayName: "Support OAuth",
+                version: 1,
+                mode: "manual",
+                scopes: [],
+                requiredScopes: [],
+                offeredScopes: [],
+              },
+            ];
+          }
           if (scenario.connectionPreview === "empty") {
             return [];
           }
           return [
-            { id: "first", displayName: "Engineering Gmail", version: 2 },
-            { id: "second", displayName: "Shared Gmail", version: 1 },
+            {
+              id: "first",
+              displayName: "Engineering Gmail",
+              version: 2,
+              mode: "manual",
+              scopes: ["gmail.readonly"],
+              requiredScopes: [],
+              offeredScopes: [],
+            },
+            {
+              id: "second",
+              displayName: "Shared Gmail",
+              version: 1,
+              mode: "manual",
+              scopes: ["gmail.readonly"],
+              requiredScopes: [],
+              offeredScopes: [],
+            },
           ];
         },
-        async start(_slot, template) {
+        async start(_slot, template, selectedScopes) {
+          document.querySelector<HTMLDialogElement>("dialog[open]")?.close();
+          const receipt = document.createElement("section");
+          receipt.className = "agent-card agent-form";
           const output = document.createElement("p");
           output.setAttribute("role", "status");
           output.textContent = `Simulated provider handoff for ${template.displayName}. No account has been connected.`;
-          document.getElementById("app")?.append(output);
+          receipt.append(output);
+          if (selectedScopes) {
+            const permissions = document.createElement("p");
+            permissions.textContent = selectedScopes.length
+              ? `Requested scopes: ${selectedScopes.join(", ")}`
+              : "Provider defaults requested.";
+            receipt.append(permissions);
+          }
+          document.getElementById("app")?.replaceChildren(receipt);
         },
       },
     }),

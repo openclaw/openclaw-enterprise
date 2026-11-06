@@ -80,6 +80,24 @@ export function postgresSavedConnections(
   requireInitialized: () => Promise<unknown>,
 ): SavedConnectionRepository {
   return {
+    listDeliveryProfiles: async (namespaceId, sourceId) => {
+      const { rows } = await client.query(
+        "SELECT profile_id, gateway_id, source_type FROM occ.saved_connection_profiles WHERE namespace_id = $1 AND credential_source_id = $2",
+        [namespaceId, sourceId],
+      );
+      return rows.map((row) => ({
+        profileId: text(row as Row, "profile_id"),
+        gatewayId: text(row as Row, "gateway_id"),
+        sourceType: text(row as Row, "source_type"),
+      }));
+    },
+    registerDeliveryProfile: async (namespaceId, sourceId, profile) => {
+      await client.query(
+        `INSERT INTO occ.saved_connection_profiles (namespace_id,credential_source_id,profile_id,gateway_id,source_type)
+         VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
+        [namespaceId, sourceId, profile.profileId, profile.gatewayId, profile.sourceType],
+      );
+    },
     findTokenCustody: async (namespaceId, sourceId) => {
       const [row] = (
         await client.query(
@@ -258,9 +276,9 @@ export function postgresSavedConnections(
       await requireInitialized();
       await client.query(
         `INSERT INTO occ.connection_sessions
-         (state_hash, namespace_id, credential_source_id, private_state, actor_id,
-          session_id, redirect_uri, connection_template_id, connection_template_version, created_at, expires_at, issuer_required, attachment_intent)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)`,
+         (state_hash, namespace_id, credential_source_id, pkce_verifier, actor_id,
+          session_id, redirect_uri, connection_template_id, connection_template_version, created_at, expires_at, issuer_required, selected_scopes, attachment_intent)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)`,
         [
           session.stateHash,
           session.namespaceId,
@@ -274,6 +292,7 @@ export function postgresSavedConnections(
           session.createdAt,
           session.expiresAt,
           session.issuerRequired,
+          session.selectedScopes,
           session.attachmentIntent === undefined ? null : JSON.stringify(session.attachmentIntent),
         ],
       );

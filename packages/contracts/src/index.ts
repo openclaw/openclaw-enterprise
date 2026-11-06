@@ -160,7 +160,7 @@ export type {
   ConnectionEndpoint,
   ConnectionTemplate,
   ConnectionTemplateValues,
-  ConnectionTemplateVersion,
+  OAuthConnectionTemplateVersion,
   ConnectionAttachmentIntent,
   ConnectionSession,
   SavedConnection,
@@ -625,9 +625,41 @@ export type CredentialSourceSnapshot = {
   readonly sourceId: string;
   readonly sourceType: string;
 } & (
-  | { readonly credentialGatewayId: string; readonly credentialProxyId?: never }
-  | { readonly credentialProxyId: string; readonly credentialGatewayId?: never }
+  | {
+      readonly credentialGatewayId: string;
+      readonly credentialProxyId?: never;
+      readonly accountDelivery?: {
+        readonly profileId: string;
+        readonly config: Readonly<Record<string, string>>;
+      };
+    }
+  | {
+      readonly credentialProxyId: string;
+      readonly credentialGatewayId?: never;
+      readonly accountDelivery?: never;
+    }
 );
+
+/** Resolve the admitted owner and initial presentation; running account policy is prepared separately. */
+export function revisionCredentialSource(
+  source: CredentialSource,
+  snapshot: CredentialSourceSnapshot | undefined,
+): CredentialSource | undefined {
+  if (source.ownerCapability !== "token_service") {
+    return credentialSourceMatchesSnapshot(source, snapshot) ? source : undefined;
+  }
+  const delivery = snapshot?.accountDelivery;
+  if (!delivery || source.id !== snapshot.sourceId || source.type !== "oauth2-refresh-token") {
+    return undefined;
+  }
+  return {
+    ...source,
+    type: snapshot.sourceType,
+    config: delivery.config,
+    driverId: snapshot.credentialGatewayId!,
+    ownerCapability: "credential_gateway",
+  };
+}
 
 /** Match the source owner recorded at admission, including for pre-Proxy Gateway snapshots. */
 export function credentialSourceMatchesSnapshot(
@@ -795,7 +827,12 @@ export interface AgentPluginCredentialSlot {
   readonly toolDiscovery?: true;
   /** OCC permits this caller to connect an account to the saved slot. */
   readonly connectAccount?: true;
-  readonly sources: readonly { readonly id: string; readonly name: string }[];
+  readonly sources: readonly {
+    readonly id: string;
+    readonly name: string;
+    /** Same issuer, but a new grant is needed for this receiver. */
+    readonly authorization?: "required";
+  }[];
 }
 
 export interface PluginCatalogLink {
@@ -1466,6 +1503,7 @@ export type {
 } from "./drivers/sandbox/index.ts";
 export type {
   PluginDriver,
+  PluginAccountTarget,
   PluginDriverContext,
   PluginDiscoveryAuthentication,
 } from "./drivers/plugin/index.ts";

@@ -17,6 +17,9 @@ import {
   ensureOpenShellProviderProfile,
   openShellOwnedBy,
   openShellProviderName,
+  openShellProfileDigest,
+  PROFILE_DIGEST_ANNOTATION,
+  revisionProviderSourceId,
   openShellWorkspaceName,
   type OpenShellGateway,
   type OpenShellGatewayPlacement,
@@ -34,7 +37,12 @@ import {
 } from "../compute/model-provider.ts";
 import { nativeOpenAiModelSelections } from "../native-openai-catalog.ts";
 import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
-import { googleWorkspaceCredentialPolicy } from "../plugin/google-workspace/credential-policy.ts";
+import { credentialEnvironmentsOverlap } from "../plugin/credential-environment.ts";
+import {
+  googleSourceRequestScope,
+  googleWorkspaceCredentialPolicy,
+} from "../plugin/google-workspace/credential-policy.ts";
+import { googleCredentialEndpoints } from "../plugin/google-workspace/operations.ts";
 import { managedGoogleInstall } from "../plugin/google-workspace/install.ts";
 import {
   managedCredentialBinding,
@@ -54,7 +62,10 @@ export class OpenShellCredentialGatewayFailure extends Error {}
 
 /** The Gateway selects the offered type and constructs its resource profile. */
 interface OpenShellAttachmentSources {
-  sourceType(type: string): {
+  sourceType(
+    type: string,
+    savedAccount: boolean,
+  ): {
     readonly catalog: Pick<CredentialSourceType, "type">;
     credentials(config: Readonly<Record<string, string>>): Readonly<Record<string, string>>;
     profile(
@@ -119,7 +130,7 @@ export class OpenShellCredentialAttachments {
         return (
           other.id !== source.id &&
           (host.toLowerCase().replace(/\.$/, "") === install.endpoint.host ||
-            other.config.env_var === install.credentialEnvironment)
+            credentialEnvironmentsOverlap(source.config, other.config))
         );
       });
       if (conflict) {
@@ -129,6 +140,23 @@ export class OpenShellCredentialAttachments {
       }
     }
     const selected = context.sources.find(({ id }) => id === binding?.sourceId);
+    const savedGoogleAccount =
+      binding &&
+      context.revision.credentialSources?.some(
+        (snapshot) =>
+          snapshot.sourceId === binding.sourceId && snapshot.accountDelivery !== undefined,
+      );
+    if (
+      context.sources.some(
+        (source) =>
+          source.config.destinations !== undefined &&
+          (!savedGoogleAccount || source.id !== binding?.sourceId),
+      )
+    ) {
+      throw new ScopeViolationError(
+        "A saved Google account requires its managed Google request guard.",
+      );
+    }
     if (binding && selected) {
       if (
         !googleWorkspaceCredentialPolicy.accepts(managedGoogleInstall, binding.credential, selected)
@@ -142,9 +170,12 @@ export class OpenShellCredentialAttachments {
         throw new ScopeViolationError(conflict);
       }
       const binaries = this.sources.requiredToolBinaries(selected.config.binary);
-      if (binaries.length !== 1 || binaries[0] !== managedGoogleInstall.binaryPath) {
+      if (
+        !binaries.includes(managedGoogleInstall.binaryPath) ||
+        (!savedGoogleAccount && binaries.length !== 1)
+      ) {
         throw new ScopeViolationError(
-          "The bound Google account must grant only the pinned Google executable. Set binary on this OAuth2 source when its installation allows other tools.",
+          "The sender must allow the pinned Google executable. A directly configured OAuth2 source must select that executable as its only binary.",
         );
       }
       await verifyManagedPluginRegistration(client, context.signal);
@@ -155,7 +186,10 @@ export class OpenShellCredentialAttachments {
       if (source.driverId !== this.id || source.namespaceId !== context.namespace.id) {
         throw new ScopeViolationError("The credential source is not owned by this gateway.");
       }
-      const type = this.sources.sourceType(source.type);
+      const account = context.revision.credentialSources?.find(
+        (snapshot) => snapshot.sourceId === source.id,
+      )?.accountDelivery;
+      const type = this.sources.sourceType(source.type, account !== undefined);
       if (type.catalog.type === "openai") {
         requireModelSourceDestination(source.config, this.modelProvider);
         if (
@@ -187,27 +221,43 @@ export class OpenShellCredentialAttachments {
         }
         environment.add(name);
       }
-      const name = openShellProviderName(source.id);
+      const profileId = account?.profileId ?? source.id;
+      const name = openShellProviderName(profileId);
       const provider = await client.getProvider(workspace, name, context.signal);
-      if (provider === undefined || !openShellOwnedBy(provider, source.id)) {
+      if (provider === undefined || !openShellOwnedBy(provider, profileId)) {
         throw new OpenShellCredentialGatewayFailure(
           "The OpenShell provider for a bound credential source is unavailable.",
         );
       }
-      // Each deployment applies the current binary lists to the profiles it attaches. OpenShell
-      // composes Sandbox policy from the stored profile, so attached Sandboxes narrow too.
-      const profile = type.profile(source.id, source.config, () =>
+      const profile = type.profile(profileId, source.config, () =>
         this.backend.client.placement(context.namespace.name),
       );
-      await ensureOpenShellProviderProfile(client, workspace, profile, context.signal);
+      if (account) {
+        // Account delivery prepares the profile and token together. Attachment can only use that policy.
+        const prepared = await client.getProviderProfile(workspace, name, context.signal);
+        if (prepared?.annotations[PROFILE_DIGEST_ANNOTATION] !== openShellProfileDigest(profile)) {
+          throw new OpenShellCredentialGatewayFailure(
+            "The account sender policy is no longer prepared.",
+          );
+        }
+      } else {
+        await ensureOpenShellProviderProfile(client, workspace, profile, context.signal);
+      }
       attachments.push(
         Object.freeze({
           sourceId: source.id,
           ref: name,
           ...((source.id === binding?.sourceId || source.config.protocol === "mcp") && {
             requestScope: {
-              ...bearerTokenEndpoint(source.config),
+              destinations:
+                source.config.destinations === undefined
+                  ? [bearerTokenEndpoint(source.config)]
+                  : googleCredentialEndpoints(googleSourceRequestScope(source.config)!),
               scopes: (source.config.scope ?? "").split(/\s+/).filter(Boolean),
+              ...(savedGoogleAccount &&
+                source.id === binding?.sourceId && {
+                  binaries: this.sources.requiredToolBinaries(source.config.binary),
+                }),
             },
           }),
           ...(source.type === CODEX_OAUTH_TYPE
@@ -239,7 +289,7 @@ export class OpenShellCredentialAttachments {
       const status = await client.getSandboxProviderStatus(
         workspace,
         context.sandbox.resourceName,
-        openShellProviderName(source.id),
+        openShellProviderName(revisionProviderSourceId(context.revision, source.id)),
         context.signal,
       );
       statuses.push(
@@ -269,7 +319,9 @@ export class OpenShellCredentialAttachments {
   async withdraw(context: CredentialWithdrawalContext): Promise<CredentialAttachmentStatus> {
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
-    const provider = openShellProviderName(context.sourceId);
+    const provider = openShellProviderName(
+      revisionProviderSourceId(context.revision, context.sourceId),
+    );
     const sandbox = context.sandbox.resourceName;
     const unconfirmed = `the credential of Sandbox ${sandbox} cannot be confirmed withdrawn`;
     const refused = gatewayIdentityRefusal(workspace, unconfirmed);

@@ -91,7 +91,7 @@ type WritePolicy = <Key extends keyof PluginToolPolicy>(
 type Choice<Value extends string = string> = readonly [
   value: Value,
   label: string,
-  disabled?: boolean,
+  disabled?: boolean | "explained",
 ];
 
 interface PluginTabState {
@@ -572,7 +572,11 @@ export function createPluginFields({
       "select",
       { "aria-label": label },
       ...choices.map(([key, text, disabled = false]) =>
-        element("option", { value: key, disabled }, disabled ? `${text} (unsupported)` : text),
+        element(
+          "option",
+          { value: key, disabled: Boolean(disabled) },
+          disabled === true ? `${text} (unsupported)` : text,
+        ),
       ),
     );
     if (!choices.some(([key]) => key === value)) {
@@ -981,7 +985,11 @@ export function createPluginFields({
             selected.driverPolicy?.releaseSha256 !== slot.releaseSha256;
           const options: Choice[] = [
             ["", "Install without an account"],
-            ...slot.sources.map(({ id, name }) => [id, name] as const),
+            ...slot.sources.map(({ id, name, authorization }) =>
+              authorization === "required"
+                ? ([id, `${name} — authorization required for this server`, "explained"] as const)
+                : ([id, name] as const),
+            ),
           ];
           if (stale) {
             options.push(["stale", "Release changed — select an account again", true]);
@@ -1045,18 +1053,22 @@ export function createPluginFields({
               element(
                 "p",
                 { className: "hint" },
-                "No compatible, ready credential is available to both you and this Agent.",
+                "No compatible saved account or attached credential is available for this slot.",
               ),
             );
           }
-          if (slot.toolDiscovery && !current && slot.sources.length > 0) {
+          if (
+            slot.toolDiscovery &&
+            !current &&
+            slot.sources.some((source) => !source.authorization)
+          ) {
             details.append(element("p", { className: "hint" }, "Select an account to load tools."));
           }
           if (
             slot.toolDiscovery &&
             !stale &&
             typeof current === "string" &&
-            slot.sources.some(({ id }) => id === current)
+            slot.sources.some(({ id, authorization }) => id === current && !authorization)
           ) {
             details.append(managedToolPicker(entry, slot, current, selected));
           }

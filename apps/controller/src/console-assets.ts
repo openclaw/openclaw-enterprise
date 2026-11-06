@@ -323,7 +323,12 @@ async function encodedAsset(
   acceptEncoding: string | undefined,
   cache = encodedAssets,
 ): Promise<ConsoleAsset> {
-  const identity = { body, contentType, statusCode: 200, variesByEncoding: true } as const;
+  const identity = {
+    body,
+    contentType,
+    statusCode: 200,
+    variesByEncoding: true,
+  } as const;
   const encoding = preferredEncoding(acceptEncoding);
   if (encoding === undefined) {
     return identity;

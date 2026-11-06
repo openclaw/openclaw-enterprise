@@ -163,7 +163,7 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 69 && completedCount > 69) {
     return "preSavedConnections";
   }
-  if (count === 68 && completedCount > 68) {
+  if (count === 70 && completedCount > 70) {
     return "preConnectionAttachmentIntent";
   }
   if (count === completedCount) {

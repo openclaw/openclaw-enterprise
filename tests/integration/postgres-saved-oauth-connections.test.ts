@@ -2,20 +2,37 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
-import type { PluginDriver } from "@openclaw-enterprise/contracts";
-import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import type { AgentPluginCredentialSlot, PluginDriver } from "@openclaw-enterprise/contracts";
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { assertWorkerAccountRelease } from "../helpers/worker-account-release.mjs";
+import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
+import {
+  CodexPluginDriver,
+  OCCPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
+import {
+  managedCliInstalls,
+  managedMcpInstalls,
+  managedPluginAccountSlot,
+} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
 import { NativeIAMDriver, validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
-import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
+import {
+  DependencyUnavailableError,
+  PostgresHumanAuthentication,
+} from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
+import { selectAccountGateway } from "../helpers/recording-account-gateway.mjs";
+import { connectFixtureGoogleAccount } from "../helpers/google-api-saved-account.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { createBackendFixture } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { createProviderSandboxDriver } from "../helpers/runtime-logs.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -26,7 +43,7 @@ const secretsFile = process.env.OCC_TEST_KEYCLOAK_SECRETS_FILE;
 const publicOrigin = "https://occ-connections.test";
 const redirectUri = `${publicOrigin}/oauth/callback`;
 
-async function consentRedirect(authorizationUrl: string, password: string) {
+async function consentRedirect(authorizationUrl: string, username: string, password: string) {
   const login = await fetch(authorizationUrl, { redirect: "manual" });
   assert.equal(login.status, 200);
   const form = (await login.text()).match(/<form[^>]*id="kc-form-login"[^>]*action="([^"]+)"/);
@@ -39,7 +56,7 @@ async function consentRedirect(authorizationUrl: string, password: string) {
     method: "POST",
     redirect: "manual",
     headers: { cookie },
-    body: new URLSearchParams({ username: "alice", password, credentialId: "" }),
+    body: new URLSearchParams({ username, password, credentialId: "" }),
   });
   assert.equal(accepted.status, 302);
   const callback = new URL(accepted.headers.get("location")!);
@@ -61,8 +78,9 @@ async function accountSession(
     method: "GET" | "POST" | "DELETE" | "PATCH",
     url: string,
     body?: Record<string, unknown>,
+    selectedApp = app,
   ) =>
-    app.inject({
+    selectedApp.inject({
       method,
       url,
       headers: { host: "127.0.0.1", ...authenticatedHeaders(session) },
@@ -167,7 +185,7 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
   assert.ok(issuer && tokenOrigin && secretsFile);
   const secrets = JSON.parse(await readFile(secretsFile, "utf8"));
   const clientId = `oce-saved-${randomUUID()}`;
-  const clientSecret = randomUUID();
+  let clientSecret = randomUUID();
   await keycloakRealmAdmin(issuer, secrets.admin, "POST", "/clients", {
     clientId,
     secret: clientSecret,
@@ -177,7 +195,13 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     defaultClientScopes: [],
     directAccessGrantsEnabled: false,
     redirectUris: [redirectUri],
-    attributes: { "pkce.code.challenge.method": "S256" },
+    attributes: {
+      "pkce.code.challenge.method": "S256",
+      ...(!pluginWorkflow && {
+        "exclude.issuer.from.auth.response": "true",
+        "access.token.lifespan": "90",
+      }),
+    },
   });
   const scopes = ["openid"];
   let optionalScopeId: string | undefined;
@@ -227,18 +251,24 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
   });
 
   // The real Token Service and OpenShell Drivers run against recording Secret/OpenShell stores.
-  // Only Keycloak issues and validates access tokens.
+  // Keycloak issues real tokens for this issuer. A separate Google case controls only the token endpoint.
   const secretDriver = { ...createTestSecretDriver(), capability: "secret" as const };
-  const preparedTokens = new TokenService(
-    new OAuthConnectionTokens(secretDriver, refreshPinnedOAuthGrant),
-  );
-  let skew = 0;
+  const preparedTokens = new TokenService();
+  const tokenUrl = `${tokenOrigin}/realms/oce/protocol/openid-connect/token`;
+  let discoveredResource = "https://api.connections.test/mcp";
   const { app, controller, state, principal, computeDriver, inject, pool, adminAccount } =
     await createPostgresAgentApp(t, {
       label: "saved-account",
+      ...(!pluginWorkflow && { poolOptions: { max: 1, connectionTimeoutMillis: 5000 } }),
       authSecret: "saved-account-test-auth-secret-minimum-32-bytes",
       secretDriver,
-      controllerOptions: { preparedTokens, now: () => new Date(Date.now() + skew) },
+      ...(pluginWorkflow && {
+        sandboxDriver: createProviderSandboxDriver({ id: "openshell-sandbox" }).driver,
+      }),
+      controllerOptions: {
+        preparedTokens,
+        ...(pluginWorkflow && { nativeWorkerSupport: "custom-image" }),
+      },
       appOptions: {
         publicOrigin,
         // Only the fixture MCP metadata is supplied locally. OCC creates the template and
@@ -278,6 +308,16 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
         provisionAuthAccount: (...args: Parameters<typeof provision>) => provision(...args),
       },
     });
+  const resolveClient = controller.resolveConnectionClient.bind(controller);
+  preparedTokens.registerIssuer(new OAuthAccountTokens(state, secretDriver, resolveClient));
+  // A second issuer must not take custody of grants assigned to the installed one.
+  assert.throws(
+    () =>
+      preparedTokens.registerIssuer(
+        new OAuthAccountTokens(state, createTestSecretDriver(), resolveClient),
+      ),
+    /already owns this registration/,
+  );
   const auth = new PostgresHumanAuthentication(
     state,
     controller.installation.id,
@@ -299,10 +339,10 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
   Object.assign(computeDriver, {
     resolveSandboxNamespace: async (namespace: { id: string }) => ({
       ...namespace,
-      name: `oce-${namespace.id.slice(3, 11)}`,
+      name: kubernetesNamespaceName(namespace.id),
     }),
   });
-  const { providers } = selectTemplateDrivers(controller);
+  const accountGateway = pluginWorkflow ? selectAccountGateway(controller) : undefined;
   const makeNamespace = async () => {
     const result = await inject("POST", "/namespaces", { name: `Accounts ${randomUUID()}` });
     assert.equal(result.statusCode, 201, result.body);
@@ -313,56 +353,76 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
   const namespaceId = await makeNamespace();
   const base = `/namespaces/${namespaceId}`;
   const connections = `${base}/connections`;
-  const recipient = {
-    host: pluginWorkflow ? "gmail.googleapis.com" : "api.connections.test",
-    port: 443,
-    path: "/**",
-  };
-  const registered = await inject("POST", "/oauth-clients", {
-    displayName: "Saved accounts",
-    namespaceId,
+  const recipient = { host: "api.connections.test", port: 443, path: "/mcp" };
+  const manualDestinations = [
+    recipient,
+    { host: "files.connections.test", port: 443, path: "/exports/**" },
+  ];
+  const manualConfig = {
+    mode: "manual",
     issuer,
+    authorizationUrl: `${issuer}/protocol/openid-connect/auth`,
     tokenUrl,
-    revocationUrl: tokenUrl.replace(/token$/, "revoke"),
+    destinations: pluginWorkflow
+      ? [{ host: "gmail.googleapis.com", port: 443, path: "/**" }]
+      : manualDestinations,
+    scopes,
+  };
+  const template = await inject("POST", "/connection-templates", {
+    ...manualConfig,
+    displayName: "Keycloak",
+    namespaceId,
+    revocationUrl: `${issuer}/protocol/openid-connect/revoke`,
+  });
+  assert.equal(template.statusCode, 201, template.body);
+  const manual = { connectionTemplateId: template.json().data.id };
+  const listsManualTemplate = async (path: string) => {
+    const result = await inject("GET", path);
+    assert.equal(result.statusCode, 200, result.body);
+    return result
+      .json()
+      .data.some((entry: { id: string }) => entry.id === manual.connectionTemplateId);
+  };
+  // Admins can configure a saved template before a person can use it to start consent.
+  assert.equal(await listsManualTemplate("/connection-templates"), true);
+  assert.equal(await listsManualTemplate(`${base}/connection-templates`), false);
+  assert.equal((await inject("POST", connections, manual)).statusCode, 409);
+  const registered = await inject("POST", "/oauth-clients", {
+    connectionTemplateId: template.json().data.id,
+    connectionTemplateVersion: template.json().data.current.version,
+    displayName: "Saved accounts",
     clientId,
     clientSecret,
     tokenEndpointAuthMethod: "client_secret_basic",
   });
   assert.equal(registered.statusCode, 201, registered.body);
   const oauthClientId = registered.json().data.id;
-  const manualConfig = {
-    mode: "manual",
-    displayName: "Keycloak",
-    namespaceId,
-    clientId,
-    clientSecret,
-    issuer,
-    authorizationUrl: `${issuer}/protocol/openid-connect/auth`,
-    tokenUrl,
-    oauthClientId,
-    scopes,
-    recipient,
-  };
-  const template = await inject("POST", "/connection-templates", manualConfig);
-  assert.equal(template.statusCode, 201, template.body);
-  const manual = { connectionTemplateId: template.json().data.id };
   const input: { connectionTemplateId: string; selectedScopes?: string[] } = { ...manual };
   const ownerId = principal.id;
   const owner = await accountSession(app, adminAccount.email, adminAccount.password);
+  const mcpConfig = {
+    displayName: "Scope selection",
+    mode: "mcp_discovery",
+    issuer,
+    serverUrl: "https://api.connections.test/mcp",
+    scopes: ["openid", "profile"],
+    oauthClientId,
+  };
   if (!pluginWorkflow) {
-    // The selected client may support revocation even though this manual version omits the endpoint.
+    // Registering the first client makes the current template ready for consent.
+    assert.equal(await listsManualTemplate(`${base}/connection-templates`), true);
     const manualStart = await inject("POST", connections, manual);
     assert.equal(manualStart.statusCode, 201, manualStart.body);
-    const mcpConfig = {
-      displayName: "Scope selection",
-      namespaceId,
-      mode: "mcp_discovery",
-      issuer,
-      serverUrl: "https://api.connections.test/mcp",
-      scopes: ["openid", "profile"],
-      oauthClientId,
-    };
-    const mcp = await inject("POST", "/connection-templates", mcpConfig);
+    // A cancelled browser attempt has no outstanding gateway write. An admin can retire it immediately.
+    const pendingId = manualStart.json().data.credentialSourceId;
+    const removed = await inject("DELETE", `${base}/credential-sources/${pendingId}`);
+    assert.equal(removed.statusCode, 204, removed.body);
+    const pendingSession = await pool.query(
+      "SELECT 1 FROM occ.connection_sessions WHERE credential_source_id=$1",
+      [pendingId],
+    );
+    assert.equal(pendingSession.rowCount, 0);
+    const mcp = await inject("POST", "/connection-templates", { ...mcpConfig, namespaceId });
     assert.equal(mcp.statusCode, 201, mcp.body);
     input.connectionTemplateId = mcp.json().data.id;
     input.selectedScopes = ["openid"];
@@ -376,6 +436,7 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     // With no configured scope list, discovery suggests scopes and its challenge still requires openid.
     const unrestrictedMcp = await inject("POST", "/connection-templates", {
       ...mcpConfig,
+      namespaceId,
       scopes: [],
       displayName: "Open MCP scope selection",
     });
@@ -399,8 +460,10 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     // as a provider grant while preserving that the person did not request an explicit scope.
     const unrestrictedManual = await inject("POST", "/connection-templates", {
       ...manualConfig,
+      oauthClientId,
       scopes: [],
       displayName: "Provider defaults",
+      namespaceId,
     });
     assert.equal(unrestrictedManual.statusCode, 201, unrestrictedManual.body);
     const [keycloakClient] = await keycloakRealmAdmin(
@@ -435,6 +498,91 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
       );
     assert.deepEqual(defaultAccount.requestedScopes, []);
     assert.deepEqual(defaultAccount.grantedScopes, ["profile"]);
+    assert.deepEqual(defaultAccount.destinations, manualDestinations);
+    // Administrators change delivery for existing accounts without rewriting the consent receipt.
+    const widened = [
+      ...manualDestinations,
+      { host: "other.connections.test", port: 443, path: "/**" },
+    ];
+    const updated = await inject(
+      "PATCH",
+      "/connection-templates/" + defaultAccount.connectionTemplateId,
+      {
+        ...manualConfig,
+        oauthClientId,
+        scopes: [],
+        destinations: widened,
+      },
+    );
+    assert.equal(updated.statusCode, 200, updated.body);
+    assert.deepEqual(updated.json().data.current.destinations, widened);
+    const savedAgain = await owner("GET", connections);
+    assert.equal(savedAgain.statusCode, 200, savedAgain.body);
+    const approved = savedAgain
+      .json()
+      .data.find((row: { credentialSourceId: string }) => row.credentialSourceId === defaultsId);
+    assert.deepEqual(approved.destinations, widened);
+    assert.ok(approved.connectionTemplateVersion < updated.json().data.current.version);
+    await assert.rejects(
+      pool.query(
+        `INSERT INTO occ.saved_connections
+         SELECT (jsonb_populate_record(NULL::occ.saved_connections,
+           to_jsonb(s) || jsonb_build_object('destinations', $2::jsonb))).*
+         FROM occ.saved_connections s WHERE credential_source_id = $1`,
+        [defaultsId, JSON.stringify(widened)],
+      ),
+      { code: "23514", message: /approved template version/ },
+    );
+    // Replacing and removing rows take effect through the same public account response.
+    const changedDestinations = [{ host: recipient.host, port: 8443, path: "/reports/**" }];
+    const templatePath = "/connection-templates/" + defaultAccount.connectionTemplateId;
+    const changed = await inject("PATCH", templatePath, {
+      ...manualConfig,
+      scopes: [],
+      oauthClientId,
+      destinations: changedDestinations,
+    });
+    assert.equal(changed.statusCode, 200, changed.body);
+    const effectiveDefault = async () => {
+      const result = await owner("GET", connections);
+      assert.equal(result.statusCode, 200, result.body);
+      return result
+        .json()
+        .data.find((row: { credentialSourceId: string }) => row.credentialSourceId === defaultsId);
+    };
+    assert.deepEqual((await effectiveDefault()).destinations, changedDestinations);
+    // Delivery stops on an issuer or mode change, while the provider grant remains usable.
+    const incompatible = await inject("PATCH", templatePath, {
+      ...manualConfig,
+      issuer: issuer + "/different",
+      scopes: [],
+    });
+    assert.equal(incompatible.statusCode, 200, incompatible.body);
+    assert.deepEqual((await effectiveDefault()).destinations, []);
+    const modeChanged = await inject("PATCH", templatePath, mcpConfig);
+    assert.equal(modeChanged.statusCode, 200, modeChanged.body);
+    assert.deepEqual((await effectiveDefault()).destinations, []);
+    const originalReceipt = await pool.query(
+      `SELECT destinations, oauth_client_id, client_id, issuer, token_url,
+              connection_template_version, requested_scopes, granted_scopes
+       FROM occ.saved_connections WHERE credential_source_id=$1`,
+      [defaultsId],
+    );
+    assert.deepEqual(originalReceipt.rows[0], {
+      destinations: manualDestinations,
+      oauth_client_id: oauthClientId,
+      client_id: clientId,
+      issuer,
+      token_url: tokenUrl,
+      connection_template_version: defaultAccount.connectionTemplateVersion,
+      requested_scopes: [],
+      granted_scopes: ["profile"],
+    });
+    const refreshIncompatible = await owner(
+      "POST",
+      `${base}/credential-sources/${defaultsId}/rotate`,
+    );
+    assert.equal(refreshIncompatible.statusCode, 200, refreshIncompatible.body);
     await keycloakRealmAdmin(issuer, secrets.admin, "DELETE", defaultPath);
     const disconnected = await owner("DELETE", connections + "/" + defaultsId);
     assert.equal(disconnected.statusCode, 204, disconnected.body);
@@ -446,11 +594,18 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
   ) {
     const response = await owner("POST", path, body);
     assert.equal(response.statusCode, 201, response.body);
+    if (body.selectedScopes) {
+      assert.equal(
+        new URL(response.json().data.authorizationUrl).searchParams.get("scope"),
+        (body.selectedScopes as string[]).join(" "),
+      );
+    }
     return {
       id: response.json().data.credentialSourceId as string,
       callback: await consentRedirect(
         response.json().data.authorizationUrl,
-        secrets.users.alice.password,
+        username,
+        secrets.users[username].password,
       ),
     };
   }
@@ -462,10 +617,11 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     pool,
     adminAccount,
     inject,
-    providers,
-    refresh,
-    transport,
-    rotateClientSecret: async (source: string) => {
+    accountGateway,
+    manual,
+    recipient,
+    issuerAdmin: secrets.admin,
+    rotateClientSecret: async (source?: string) => {
       const replacement = await rotateKeycloakClientSecret(
         issuer!,
         secrets.admin,
@@ -473,21 +629,25 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
         clientSecret,
         tokenUrl,
       );
-      // A failed refresh during the rotation window requires an administrator, and the user retains the grant.
-      const clientRefused = await owner("POST", source + "/rotate");
-      assert.equal(clientRefused.statusCode, 503);
-      const repair = await owner("GET", source);
-      assert.equal(repair.statusCode, 200, repair.body);
-      const clientFailure = repair.json().data.status.refresh;
-      assert.deepEqual(
-        [clientFailure.state, clientFailure.failureCode, clientFailure.recoveryAction],
-        ["failed", "client_refused", "fix_configuration"],
-      );
+      clientSecret = replacement;
+      if (source) {
+        // A failed refresh during the rotation window requires an administrator, and the user retains the grant.
+        const clientRefused = await owner("POST", source + "/rotate");
+        assert.equal(clientRefused.statusCode, 503);
+        const repair = await owner("GET", source);
+        assert.equal(repair.statusCode, 200, repair.body);
+        const clientFailure = repair.json().data.status.refresh;
+        assert.deepEqual(
+          [clientFailure.state, clientFailure.failureCode, clientFailure.recoveryAction],
+          ["failed", "client_refused", "fix_configuration"],
+        );
+      }
       const updatedClient = await inject("POST", `/oauth-clients/${oauthClientId}/rotate-secret`, {
         clientSecret: replacement,
       });
       assert.equal(updatedClient.statusCode, 200);
       assert.equal(updatedClient.json().data.id, oauthClientId);
+      return replacement;
     },
     setOptionalScopeVisible: async (visible: boolean) => {
       assert.ok(optionalScopeId);
@@ -499,6 +659,11 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
       });
     },
     preparedTokens,
+    manualConfig,
+    mcpConfig,
+    setDiscoveredResource(resource: string) {
+      discoveredResource = resource;
+    },
     oauthClientId,
     tokenUrl,
     clientId,
@@ -512,9 +677,6 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     owner,
     ownerId,
     begin,
-    advanceRegistrationFence() {
-      skew = 120_000;
-    },
   };
 }
 
@@ -529,7 +691,14 @@ test(
       pool,
       adminAccount,
       inject,
-      providers,
+      manual,
+      recipient,
+      issuerAdmin,
+      preparedTokens,
+      rotateClientSecret,
+      oauthClientId,
+      tokenUrl,
+      clientId,
       makeNamespace,
       secretDriver,
       namespaceId,
@@ -539,8 +708,11 @@ test(
       owner,
       ownerId,
       begin,
-      advanceRegistrationFence,
+      manualConfig,
+      mcpConfig,
+      setDiscoveredResource,
     } = await oauthAccounts(t);
+    assert.ok(issuer);
     const otherId = await makeNamespace();
     // Even an Installation administrator cannot use a Namespace-scoped template elsewhere.
     const wrongScope = await inject("POST", `/namespaces/${otherId}/connections`, input);
@@ -614,17 +786,7 @@ test(
     assert.match(String(stolen.headers.location), /reason=unknown_session/);
     // The code was issued while A was current. Keycloak now rejects A, so redeeming it proves
     // the callback resolves this registration's current secret after the owner's consent.
-    const callbackSecret = await rotateKeycloakClientSecret(
-      issuer,
-      secrets.admin,
-      clientId,
-      clientSecret,
-      tokenUrl,
-    );
-    const beforeCallback = await inject("POST", `/oauth-clients/${oauthClientId}/rotate-secret`, {
-      clientSecret: callbackSecret,
-    });
-    assert.equal(beforeCallback.statusCode, 200, beforeCallback.body);
+    await rotateClientSecret();
     const grantHandoff = t.mock.method(preparedTokens, "register");
     const completed = await owner("GET", callback);
     assert.equal(completed.statusCode, 303, completed.body);
@@ -721,15 +883,7 @@ test(
         account.requestedScopes,
         account.grantedScopes,
       ],
-      [
-        oauthClientId,
-        clientId,
-        issuer,
-        tokenUrl,
-        { host: "api.connections.test", port: 443, path: "/mcp" },
-        ["openid"],
-        ["openid"],
-      ],
+      [oauthClientId, clientId, issuer, tokenUrl, [recipient], ["openid"], ["openid"]],
     );
     // The trusted Token Service consumer can use the grant. Saving/rotating alone creates no sender.
     async function prepared(minimumValidityMs = 0) {
@@ -758,9 +912,28 @@ test(
     const original = await prepared();
     const alice = await subject(original);
     assert.ok(alice);
+    async function setIssuedLifetime(seconds: number) {
+      const [client] = await keycloakRealmAdmin(
+        issuer!,
+        issuerAdmin,
+        "GET",
+        `/clients?clientId=${clientId}`,
+      );
+      await keycloakRealmAdmin(issuer!, issuerAdmin, "PUT", `/clients/${client.id}`, {
+        ...client,
+        attributes: { ...client.attributes, "access.token.lifespan": String(seconds) },
+      });
+    }
+    // Only a newly issued token can satisfy this request's minimum remaining lifetime.
+    await setIssuedLifetime(300);
+    const [resolved, joined] = await Promise.all([prepared(120_000), prepared(120_000)]);
+    assert.equal(joined, resolved);
+    assert.notEqual(resolved, original);
+    assert.equal(await subject(resolved), alice);
+
     // Lose access to the operator's registration before dispatch. The scheduler must back off
     // without losing the user's grant, and the owner can retry as soon as access returns.
-    const unavailable = t.mock.method(refresh, "readClientSecret", async () => {
+    const unavailable = t.mock.method(secretDriver.installationSecrets, "withValue", async () => {
       throw new Error("registration store unavailable");
     });
     assert.equal((await owner("POST", source + "/rotate")).statusCode, 503);
@@ -777,38 +950,169 @@ test(
     assert.equal(deferred.rows[0].deferred, true);
     assert.equal((await owner("POST", source + "/rotate")).statusCode, 200);
     assert.equal(await subject(await prepared()), alice);
-    // The original grant must refresh after the provider and the OCE administrator rotate the client.
-    const replacement = await rotateKeycloakClientSecret(
-      issuer,
-      secrets.admin,
-      clientId,
-      callbackSecret,
-      tokenUrl,
-    );
-    // A failed refresh during the rotation window requires an administrator, and the user retains the grant.
-    const clientRefused = await owner("POST", source + "/rotate");
-    assert.equal(clientRefused.statusCode, 503);
-    const repair = await owner("GET", source);
-    assert.equal(repair.statusCode, 200, repair.body);
-    const clientFailure = repair.json().data.status.refresh;
-    assert.deepEqual(
-      [clientFailure.state, clientFailure.failureCode, clientFailure.recoveryAction],
-      ["failed", "client_refused", "fix_configuration"],
-    );
-    const updatedClient = await inject("POST", `/oauth-clients/${oauthClientId}/rotate-secret`, {
-      clientSecret: replacement,
+    // A new default registration is for future consent, even when its credentials are unusable.
+    const mcp = await inject("GET", "/connection-templates/" + input.connectionTemplateId);
+    assert.equal(mcp.statusCode, 200, mcp.body);
+    const futureRegistration = await inject("POST", "/oauth-clients", {
+      connectionTemplateId: mcp.json().data.id,
+      connectionTemplateVersion: mcp.json().data.current.version,
+      displayName: "Future consent",
+      clientId: clientId + "-future",
+      clientSecret: randomUUID(),
+      tokenEndpointAuthMethod: "client_secret_basic",
     });
-    assert.equal(updatedClient.statusCode, 200);
-    assert.equal(updatedClient.json().data.id, oauthClientId);
+    assert.equal(futureRegistration.statusCode, 201, futureRegistration.body);
+    const switchRegistration = await inject(
+      "PATCH",
+      "/connection-templates/" + mcp.json().data.id,
+      { ...mcpConfig, oauthClientId: futureRegistration.json().data.id },
+    );
+    assert.equal(switchRegistration.statusCode, 200, switchRegistration.body);
+    const currentMcp = async () => {
+      const result = await owner("GET", connections);
+      assert.equal(result.statusCode, 200, result.body);
+      return result
+        .json()
+        .data.find((row: { credentialSourceId: string }) => row.credentialSourceId === id);
+    };
+    assert.deepEqual((await currentMcp()).destinations, [recipient]);
+    assert.equal((await currentMcp()).oauthClientId, oauthClientId);
+    const futureConsent = await owner("POST", connections, input);
+    assert.equal(futureConsent.statusCode, 201, futureConsent.body);
+    assert.equal(
+      new URL(futureConsent.json().data.authorizationUrl).searchParams.get("client_id"),
+      clientId + "-future",
+    );
+    // An MCP transport/resource change stops delivery rather than retargeting the saved grant.
+    setDiscoveredResource("https://resource.connections.test");
+    const otherResource = await inject(
+      "PATCH",
+      "/connection-templates/" + mcp.json().data.id,
+      mcpConfig,
+    );
+    assert.equal(otherResource.statusCode, 200, otherResource.body);
+    assert.deepEqual((await currentMcp()).destinations, []);
+    setDiscoveredResource(mcpConfig.serverUrl);
+    const otherMcp = await inject("PATCH", "/connection-templates/" + mcp.json().data.id, {
+      ...mcpConfig,
+      serverUrl: "https://other.connections.test/mcp",
+    });
+    assert.equal(otherMcp.statusCode, 200, otherMcp.body);
+    assert.deepEqual((await currentMcp()).destinations, []);
+    // The original grant must refresh after the provider and the OCE administrator rotate the client.
+    const replacement = await rotateClientSecret(source);
     await setIssuedLifetime(10);
     const rotated = await inject("POST", `${source}/rotate`, undefined);
     assert.equal(rotated.statusCode, 200, rotated.body);
     const renewed = await prepared();
     assert.equal(renewed !== original, true);
     assert.equal(await subject(renewed), alice);
-    // Advancing OCC's clock clears the credential registration fence without delaying the test.
-    advanceRegistrationFence();
-    assert.equal((await owner("DELETE", `${connections}/${id}`)).statusCode, 204);
+    // Let this short-lived token actually expire before any worker starts. A normal resolve
+    // must obtain its replacement with the current client secret and the original user's grant.
+    await setIssuedLifetime(300);
+    const oauth = preparedTokens.issuer("oauth_refresh_token");
+    assert.ok(oauth);
+    const expiring = await oauth.status(
+      { kind: "oauth_refresh_token", namespaceId, sourceId: id },
+      t.signal,
+    );
+    await waitFor(
+      "Keycloak's access token to expire",
+      async () => (Date.now() >= Date.parse(expiring.expiresAt!) ? true : undefined),
+      { timeoutMs: 20_000, intervalMs: 100 },
+    );
+    const afterExpiry = await prepared();
+    assert.notEqual(afterExpiry, renewed);
+    assert.equal(await subject(afterExpiry), alice);
+    const afterRotation = await owner("GET", connections);
+    assert.equal(afterRotation.statusCode, 200, afterRotation.body);
+    assert.deepEqual(
+      afterRotation
+        .json()
+        .data.map((saved: { credentialSourceId: string }) => saved.credentialSourceId),
+      [id],
+    );
+    const restoreMcp = await inject(
+      "PATCH",
+      "/connection-templates/" + mcp.json().data.id,
+      mcpConfig,
+    );
+    assert.equal(restoreMcp.statusCode, 200, restoreMcp.body);
+    // Publish the due schedule used for rotation but make no resolve request. A separate worker
+    // must use the saved account's refresh grant and publish a new version before it is read.
+    const prior = await state.read((view) =>
+      view.savedConnections.findTokenCustody(namespaceId, id),
+    );
+    await state.transact((unit) =>
+      unit.savedConnections.recordTokenSchedule(namespaceId, id, "due"),
+    );
+    async function startAccountWorker() {
+      const fixture = await createBackendFixture(t);
+      const { worker } = fixture.startWorker({
+        backends: [],
+        secretDriver,
+        tokenService: new TokenService(),
+      });
+      await worker.start();
+      return worker;
+    }
+    const worker = await startAccountWorker();
+    await waitFor("background renewal to publish a new scheduled version", async () => {
+      const current = await state.read((view) =>
+        view.savedConnections.findTokenCustody(namespaceId, id),
+      );
+      return current?.scheduledVersion && current.scheduledVersion !== prior?.scheduledVersion
+        ? true
+        : undefined;
+    });
+    const background = await prepared();
+    assert.notEqual(background, afterExpiry);
+    assert.equal(await subject(background), alice);
+    await worker.stop();
+    const observed = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const read = secretDriver.withValue.bind(secretDriver);
+    const slowRead = t.mock.method(
+      secretDriver,
+      "withValue",
+      async (...args: Parameters<typeof read>) => {
+        const selected = await read(...args);
+        observed.resolve();
+        await release.promise;
+        return selected;
+      },
+      { times: 1 },
+    );
+    const resolving = preparedTokens.resolve(
+      { kind: "oauth_refresh_token", namespaceId, sourceId: id },
+      {
+        signal: t.signal,
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+        minimumValidityMs: 0,
+      },
+    );
+    await observed.promise;
+    // The SQL revocation survives a transient custody failure. A worker with the same
+    // Secret store and Token Service finishes it after the API request has returned.
+    const unavailableDelete = t.mock.method(secretDriver, "delete", async () => {
+      throw new DependencyUnavailableError("Secret store unavailable");
+    });
+    const interrupted = await owner("DELETE", `${connections}/${id}`);
+    assert.equal(interrupted.statusCode, 503, interrupted.body);
+    assert.ok(secretDriver.has(privateRef));
+    // Releasing a read after OCC committed revocation must withhold the already-read bearer.
+    release.resolve();
+    assert.equal(await resolving, undefined);
+    slowRead.mock.restore();
+    unavailableDelete.mock.restore();
+    await startAccountWorker();
+
+    await waitFor("the worker to retire the disconnected account", async () => {
+      const remaining = await state.read((view) =>
+        view.savedConnections.findSavedConnection(namespaceId, id),
+      );
+      return remaining === undefined ? true : undefined;
+    });
     assert.equal(
       (
         await pool.query(
@@ -909,15 +1213,78 @@ test(
   "Plugin consent attaches its saved account only while the Agent still permits the requested binding",
   lane,
   async (t) => {
-    const { controller, state, namespaceId, base, connections, input, pool, owner, begin } =
-      await oauthAccounts(t);
+    const {
+      controller,
+      state,
+      accountGateway,
+      secretDriver,
+      principal,
+      rotateClientSecret,
+      setOptionalScopeVisible,
+      pool,
+      inject,
+      namespaceId,
+      base,
+      connections,
+      input,
+      owner,
+      begin,
+      oauthClientId,
+      tokenUrl,
+      scopes,
+    } = await oauthAccounts(t, true);
+    assert.ok(issuer && accountGateway);
+    const { gateway, transport, providers } = accountGateway;
     const pluginId = "test-keycloak";
     const slotId = "account";
     const releaseSha256 = "a".repeat(64);
-    // The selected test plugin describes the fixture issuer. OCC handles the real intent,
-    // callback, grant and draft. The managed Google release has separate Driver conformance.
+    const cli = managedCliInstalls[0]!;
+    const cliAccount = cli.credentials.account!;
+    const mcp = managedMcpInstalls[0]!;
+    const reportAccount = mcp.credentials[mcp.slotId]!;
+    const primary = {
+      ...cli,
+      id: pluginId,
+      releaseSha256,
+      credentials: {
+        account: {
+          ...cliAccount,
+          issuer,
+          tokenEndpoint: tokenUrl,
+          delivery: { ...cliAccount.delivery, envAliases: ["SECONDARY_COMPAT_TOKEN"] },
+        },
+        secondary: {
+          ...cliAccount,
+          issuer,
+          tokenEndpoint: tokenUrl,
+          delivery: { ...cliAccount.delivery, env: "SECONDARY_MAIL_TOKEN" },
+        },
+      },
+    };
+    const reports = {
+      ...mcp,
+      id: pluginId,
+      releaseSha256,
+      url: reportsUrl,
+      endpoint: { host: new URL(reportsUrl).hostname, port: 443, path: "/mcp" },
+      credentials: {
+        reports: {
+          ...reportAccount,
+          issuer,
+          mcp: { ...reportAccount.mcp, resource: new URL(reportsUrl).origin },
+        },
+        unrelated: {
+          ...reportAccount,
+          issuer: "https://unrelated.example.test",
+          mcp: reportAccount.mcp,
+        },
+      },
+    };
+    // A pluggable release declares a receiver per named slot. The production dispatcher supplies
+    // issuer, recipient, binding and delivery logic. No bundled multi-MCP package is assumed.
     const plugin: PluginDriver = {
       id: "keycloak-plugin-driver",
+      harnessId: "openclaw",
       capability: "plugin",
       implementation: "keycloak-fixture",
       policyCapabilities: new OCCPluginDriver().policyCapabilities,
@@ -927,15 +1294,27 @@ test(
       },
       credentials: {
         choices() {
-          return [];
+          return [
+            { id: slotId, label: "Mail" },
+            { id: "secondary", label: "Secondary mail" },
+            { id: "reports", label: "Reports" },
+            { id: "unrelated", label: "Unrelated service" },
+          ].map((slot) => ({ ...slot, pluginId, releaseSha256, sources: [] }));
         },
         validate() {},
         connectionSlot(selections, requestedPlugin, requestedSlot) {
-          const selected = selections[requestedPlugin];
-          if (requestedPlugin !== pluginId || requestedSlot !== slotId || !selected?.enabled) {
+          if (requestedPlugin !== pluginId) {
             return undefined;
           }
-          const bound = selected.driverPolicy?.credentials as { account?: string } | undefined;
+          const directory = Object.hasOwn(primary.credentials, requestedSlot);
+          const admitted = managedPluginAccountSlot(
+            directory ? primary : reports,
+            selections,
+            requestedSlot,
+          );
+          if (!directory || !admitted) {
+            return admitted;
+          }
           return {
             ...admitted,
             delivery(target, grantedScopes) {
@@ -946,25 +1325,51 @@ test(
               // sender. The bundled Google sender below requires Google's own issuer and client.
               const { destinations: _, ...config } = delivery.config;
               return {
-                ...selected,
-                driverPolicy: { releaseSha256, credentials: { account: source.id } },
+                ...delivery,
+                config: {
+                  ...config,
+                  host: receiver!.host,
+                  port: String(receiver!.port),
+                  path: receiver!.path,
+                },
               };
             },
           };
         },
       },
     };
-    controller.registerDriver(plugin);
-    controller.selectDriver("plugin", plugin.id);
+    const codexCatalog = new CodexPluginDriver({ catalogSource: "openai-curated" });
+    // Register Codex first: saved OpenClaw slots must never depend on catalog order.
+    controller.installPluginDrivers([codexCatalog, plugin]);
     const config = await owner("POST", `${base}/configurations`, {
       kind: "agent",
       values: createHarnessConfiguration("openclaw", "gpt-5.1"),
     });
     assert.equal(config.statusCode, 201, config.body);
     const agents = `${base}/agents`;
+    const codexConfig = await owner("POST", `${base}/configurations`, {
+      kind: "agent",
+      values: createHarnessConfiguration("codex", "gpt-5.1"),
+    });
+    assert.equal(codexConfig.statusCode, 201, codexConfig.body);
+    const codexDraft = await owner("POST", agents, {
+      name: "Codex catalog isolation",
+      executionMode: "dedicated",
+      configurationId: codexConfig.json().data.id,
+    });
+    assert.equal(codexDraft.statusCode, 201, codexDraft.body);
+    const codexCapabilities = await owner(
+      "GET",
+      `${agents}/${codexDraft.json().data.id}/plugins/capabilities`,
+    );
+    assert.equal(codexCapabilities.statusCode, 200, codexCapabilities.body);
+    assert.equal(codexCapabilities.json().data.driver.id, codexCatalog.id);
+    assert.equal(codexCapabilities.json().data.credentialSlots, undefined);
+
     const agent = async (name: string) => {
       const created = await owner("POST", agents, {
         name,
+        executionMode: "dedicated",
         configurationId: config.json().data.id,
         plugins: { [pluginId]: { enabled: true } },
       });
@@ -1009,7 +1414,7 @@ test(
     const pluginConsent = (expected: string | null) =>
       begin(`${path(a)}/connections`, {
         ...input,
-        connectionTemplateVersion: 1,
+        connectionTemplateVersion: 2,
         pluginId,
         slotId,
         releaseSha256,
@@ -1053,6 +1458,50 @@ test(
         .data.map((row: { credentialSourceId: string }) => row.credentialSourceId)
         .sort(),
       [grant.id, first.id, competing.id, denied.id].sort(),
+    );
+    // Consent belongs to the reviewed OpenClaw slot. A changed draft must not attach
+    // that account through a different Harness catalog when the browser returns.
+    const changingConfig = await owner("POST", `${base}/configurations`, {
+      kind: "agent",
+      values: createHarnessConfiguration("openclaw", "gpt-5.1"),
+    });
+    assert.equal(changingConfig.statusCode, 201, changingConfig.body);
+    const changingAgent = await owner("POST", agents, {
+      name: "Consent catalog change",
+      executionMode: "dedicated",
+      configurationId: changingConfig.json().data.id,
+      plugins: { [pluginId]: { enabled: true } },
+    });
+    assert.equal(changingAgent.statusCode, 201, changingAgent.body);
+    const changingId = changingAgent.json().data.id;
+    const changingConsent = await begin(`${path(changingId)}/connections`, {
+      ...input,
+      connectionTemplateVersion: 2,
+      pluginId,
+      slotId,
+      releaseSha256,
+      expectedCredentialSourceId: null,
+    });
+    const changedConfig = await owner(
+      "PATCH",
+      `${base}/configurations/${changingConfig.json().data.id}`,
+      { values: createHarnessConfiguration("codex", "gpt-5.1") },
+    );
+    assert.equal(changedConfig.statusCode, 200, changedConfig.body);
+    const returned = await owner("GET", changingConsent.callback);
+    assert.equal(returned.statusCode, 303, returned.body);
+    const returnedLocation = new URL(String(returned.headers.location), publicOrigin);
+    assert.equal(returnedLocation.pathname, `/console/agents/${changingId}`);
+    assert.equal(returnedLocation.searchParams.get("connection"), "saved");
+    assert.deepEqual(await attached(changingId), []);
+    assert.equal(await canUse(changingId, changingConsent.id), false);
+    assert.ok(
+      (await owner("GET", connections))
+        .json()
+        .data.some(
+          (row: { credentialSourceId: string }) => row.credentialSourceId === changingConsent.id,
+        ),
+      "the completed account stays available to its owner",
     );
     const reportTemplate = await inject("POST", "/connection-templates", {
       mode: "mcp_discovery",
@@ -1314,13 +1763,58 @@ test(
     } finally {
       fault.mock.restore();
     }
-    const revoked = await owner("DELETE", path(c) + "/connections/" + shared.id);
-    assert.equal(revoked.statusCode, 200, revoked.body);
+    const secondaryRevision = revisions.get(c)!;
+    const secondaryPolicy = await controller.prepareRevisionAccount(
+      namespaceId,
+      c,
+      secondaryRevision,
+      shared.id,
+    );
+    assert.ok(secondaryPolicy?.source);
+    // Detach this Agent while its release is waiting on a real token read. The account
+    // stays connected for its sibling, so only the per-Agent check can stop publication.
+    const observed = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const read = secretDriver.withValue.bind(secretDriver);
+    const hold = t.mock.method(
+      secretDriver,
+      "withValue",
+      async (...args: Parameters<typeof read>) => {
+        const selected = await read(...args);
+        observed.resolve();
+        await resume.promise;
+        return selected;
+      },
+      { times: 1 },
+    );
+    const refusal = assert.rejects(
+      controller.releaseRevisionAccount(namespaceId, c, secondaryRevision, secondaryPolicy.source),
+      { name: "ResourceStateConflictError" },
+    );
+    const prematureRelease = refusal.then(() => {
+      throw new Error("Release ended before detach could commit.");
+    });
+    try {
+      await Promise.race([observed.promise, prematureRelease]);
+      const revoked = await Promise.race([
+        owner("DELETE", path(c) + "/connections/" + shared.id),
+        prematureRelease,
+      ]);
+      assert.equal(revoked.statusCode, 200, revoked.body);
+    } finally {
+      resume.resolve();
+      hold.mock.restore();
+      await refusal;
+    }
+    assert.ok(
+      !Object.values(provider(secondarySender)?.credentials ?? {}).includes(
+        await usable(primarySender),
+      ),
+    );
     assert.equal(await prepare(c), undefined);
     assert.ok(await prepare(b));
 
-    // Keycloak now removes one formerly granted scope. The old revision's frozen presentation
-    // can no longer be used, even though the account still has an upstream access token.
+    // A renewed provider grant can narrow while the same revision retains its remaining API access.
     await setOptionalScopeVisible(false);
     assert.equal((await rotate()).statusCode, 200);
     const refreshedAccounts = (await owner("GET", connections)).json().data;
@@ -1529,8 +2023,6 @@ test(
       principal,
       secretDriver,
       gateway,
-      refresh,
-      preparedTokens,
       pluginDrivers: [codexCatalog, new OCCPluginDriver()],
       namespaceId,
       agentId: workerAgentId,

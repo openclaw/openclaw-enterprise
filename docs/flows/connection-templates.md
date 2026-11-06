@@ -19,50 +19,73 @@ An Installation administrator defines where an account can connect and which OAu
 
 ### Template and client setup
 
-When a user chooses **Connect and attach** in an Agent plugin slot, OCC checks
-Agent update permission and asks the Plugin Driver whether the template fits
-the selected release and slot. It records that target and the expected binding
-in the private browser attempt. After saving the account, OCC rechecks the
-Agent, release, slot and current permissions. It grants the Agent access and
-saves the Driver's updated selection in one transaction. If the attachment
-fails, the account remains available for the user to attach later.
+```mermaid
+graph TD
+  Admin["Administrator"] -->|Manual settings| Version["OCC saves the template version"]
+  Admin -->|MCP server URL| Discovery["OCC reads provider metadata"]
+  Discovery --> Version
+  Version -->|Register a confidential client| Secret["Secret Driver stores its secret"]
+  Version -->|Register a public client| Publish["OCC publishes the registration"]
+  Secret --> Publish
+```
 
-A detach removes that Agent's grant and queues withdrawal for its deployed
-revisions. Until the worker finishes, the running revision can retain access.
-The same account can continue serving other authorized Agents.
+### Consent and token custody
 
-The callback consumes the attempt once. OCC verifies the signed-in account and session after any database wait and before code exchange. It checks the session again before storing the grant or granting its owner access.
+```mermaid
+graph TD
+  Start["Person selects a template"] --> Attempt["OCC records the browser attempt"]
+  Attempt --> Provider["Provider asks for consent"]
+  Provider -->|Authorization code| Callback["OCC consumes the attempt and exchanges the code"]
+  Callback --> Custody["Token Service stores the grant"]
+  Custody --> Account["OCC records the owner's saved account"]
+  Account -->|Renewal due| Renew["Token Service refreshes at the pinned endpoint"]
+```
 
-OCC checks the caller's right to create a credential in the destination
-Namespace and pins the selected template version. It creates a pending source
-and saves the PKCE verifier in a private database row bound to that browser
-session and principal. The callback consumes the attempt once, rechecks
-authorization, and reads the client registration and exchange URL from the
-pinned version.
+## Execution Trace
 
-The Credential Refresh Driver exchanges the code using the pinned client and
-its registered authentication method. For an MCP connection it sends the
-approved resource at authorization, exchange, and refresh. The Token Service
-keeps the access token and refresh grant in a private Secret. OCC records the
-credential source ID, account owner, approved recipient, requested scopes, and
-granted scopes. When the person requests provider defaults, the Driver omits the scope parameter. It records the scopes the provider reports, or an empty list if the provider omits them. Renewal can narrow the recorded grant. It cannot add scopes to an unreported grant. A shared callback verifies the issuer when multiple issuers are
-configured. A provider timeout consumes the attempt.
+### 1. Save the template version
 
-OCC saves the consent receipt under its original immutable template version. When listing an account, `PlatformController.effectiveConnectionDestinations` reads the current version of that same template. For manual accounts, it returns the current destinations when the issuer and manual mode still match. For MCP accounts, it returns the original destinations only when issuer, discovery mode, exact server URL and protected resource still match. A missing or incompatible template returns an empty list. This projection does not rewrite the saved registration, grant, token endpoint or consent audit. For MCP, the Driver sends the original resource identifier to the provider.
+`packages/occ/src/index.ts:createConnectionTemplate` and `apps/controller/src/connections/mcp-discovery.ts:discoverMcpAuthorization`
 
-The worker renews the saved account through the Token Service. For each refresh, it checks the saved grant against the approved registration
-and resolves the current client secret from its Driver. A conditional write
-fences concurrent renewals and disconnects. OCC records the next renewal
-and any narrower scopes. Creating and renewing a saved account require no
-Agent or sender profile.
+OCC checks Installation administration before it accepts manual settings or starts MCP discovery. For MCP, it reads the protected resource metadata over HTTPS, pins each request to public addresses and contacts the selected advertised authorization server. The version records what OCC discovered, the OAuth resource and the MCP transport destination. An administrator can also edit the installed Google OAuth template and its prefilled Google Workspace destinations. OCC keeps the template ID and commits each new version with its audit record.
 
-## Bind a saved account to a plugin
+### 2. Register and maintain the OAuth client
 
-The Plugin Driver identifies the named accounts in the selected release. OCC lists ready accounts the caller can operate in the Namespace whose issuer the slot accepts. It marks an account for new authorization when the approved protected resource or destination differs. A grant's scopes are available to the provider and the request policy.
+`packages/occ/src/index.ts:createOAuthClient` and `packages/occ/src/index.ts:cleanupOAuthClients`
+
+A template can exist before its OAuth client. OCC takes the registration's availability and endpoints from the selected version. For a confidential client, it reserves a hidden row and asks the Installation's Secret Driver to store the secret under the registration ID. A public registration supplies a client ID and skips this private write. OCC rechecks the version, publishes the registration and records the audit. If the template lacked a client, that transaction also selects the new one.
+
+Rotation replaces the confidential client's secret at the same private reference. Code exchange and renewal read its current value. A template version that still references the client prevents deletion. On deletion or interrupted creation, the worker uses the hidden registration to retry private cleanup.
+
+### 3. Authorize the account in the browser
+
+`packages/occ/src/index.ts:startNamespaceConnection` and `packages/occ/src/browser-authorization.ts:startBrowserAuthorization`
+
+OCC verifies the person's Namespace permission and pins the selected template version. It reserves a pending credential source and records the state hash, browser session, principal, requested scopes and Proof Key for Code Exchange (PKCE) verifier in a private, expiring attempt. The provider receives the state and the challenge derived from that verifier. OCC includes the OAuth resource for MCP consent and omits the scope parameter when the person requests provider defaults.
+
+### 4. Exchange the code and save the account
+
+`packages/occ/src/index.ts:completeNamespaceConnection` and `apps/controller/src/backends/token-service/oauth-connection.ts:register`
+
+On callback, OCC consumes the matching attempt once and rechecks the person's session and authority. It checks a returned issuer against the pinned issuer. If another issuer has a registered client at consent start or callback, OCC requires the issuer in the response. OCC sends the code and verifier to the pinned token endpoint, includes the MCP resource when applicable, and reads the current client secret if the registration requires one. If the exchange times out, the person starts a new attempt.
+
+At startup, the API and worker each install an `oauth_refresh_token` issuer in their Token Service. After exchange, OCC registers the grant with that kind, naming the pending source, approved template version and selected OAuth client. The service checks that approval against the source and reads the issuer, token endpoint, authentication method and MCP resource from the stored configuration. It stores the access token and refresh grant in a private Secret. OCC records the approved recipient, reported scopes and template version, marks the account ready and grants its owner access. When the provider omits scopes after a provider-default request, the receipt records an empty list.
+
+### 5. Resolve current destinations and renew the grant
+
+`packages/occ/src/index.ts:effectiveConnectionDestinations` and `apps/controller/src/backends/token-service/oauth-connection.ts:renew`
+
+When listing a manual account, OCC returns the current destinations from the same template if its issuer and mode still match. For MCP it returns the original destinations only while the issuer, mode, server URL and protected resource match. A missing or incompatible template yields an empty list. The original consent receipt identifies the registration and token endpoint for renewal.
+
+OCC registers the returned grant under the Namespace and credential source ID. The worker renews due accounts. A trusted consumer resolves the same reference with a deadline and required remaining lifetime. If it needs a fresher token, the Token Service starts or joins renewal for that account. It rechecks that the account is active before releasing the committed token. On renewal, the Token Service checks the saved grant against its registration and reads the current client secret through OCC when required. A conditional write protects against concurrent renewal or disconnect. OCC records the next renewal and any narrower grant.
+
+### 6. Bind a saved account to a plugin
+
+OCC reads the Agent’s Configuration and selects the Plugin Driver for its Harness. That Driver identifies the named accounts in the selected release. OCC lists ready accounts the caller can operate in the Namespace whose issuer the slot accepts. It marks an account for new authorization when the approved protected resource or destination differs. A grant's scopes are available to the provider and the request policy.
 
 Saving a selection checks the exact slot, account and Agent permissions together. Starting OAuth from a saved slot also records the release and current binding. When the browser returns, OCC checks both before replacing that slot. The account stays with its owner if the binding changed during consent.
 
-Admission records the saved account and its sender for this Agent. The worker resolves the account’s template again when it prepares a revision and during maintenance. For manual OAuth it reads the latest destinations from the same issuer. For MCP it checks the original server and resource. Console tool discovery makes the same check before it sends a credential.
+Admission records the Plugin Driver, saved account and sender on the AgentRevision. During deployment and maintenance, the worker uses that revision’s driver and reads the account’s current template. For manual OAuth it reads the latest destinations from the same issuer. For MCP it checks the original server and resource. Console tool discovery makes the same check before it sends a credential.
 
 When a sender’s host, port or path changes, the Credential Gateway clears the bearer and waits for OpenShell to acknowledge withdrawal on the receiving Sandbox. The Sandbox Driver applies the updated network policy and checks its effective request guard. Compute then asks OCC to release the access token. OCC rechecks the Agent grant and the expected policy before publishing. An update that fails retries without releasing credentials to the new destination. Detaching queues withdrawal for the affected Agent. Other Agents retain their own sender.
 
@@ -71,3 +94,23 @@ If a template changes to an incompatible recipient or allows no operation the ac
 For a saved Google account, the Credential Gateway configures one OpenShell provider. It includes a host, port and path only when the current template and a reviewed Google Workspace operation both allow it, and the account has the scope for that operation. The Sandbox Driver checks those routes and the Installation’s approved executables. Each executable uses the same request guard.
 
 An Agent network grant and a template edit can both change the running Sandbox policy. The Sandbox Driver reads the current policy before applying either change. A template edit preserves the Agent’s network grants. Applying a grant preserves the account’s current request guard. If the changes overlap in a way that would bypass the guard, the Driver refuses the update.
+
+## Debugging and Verification
+
+- If the callback redirects with `unknown_session`, start consent again in the signed-in browser that opened it. An expired or consumed attempt cannot complete.
+- If it redirects with `issuer_required`, check whether another configured issuer has a registered client. Inspect the provider's callback configuration for issuer reporting.
+- If refresh reports `client_refused`, check the current OAuth client registration and its secret. If the provider refused the user's refresh grant, reconnect the account. The [connection template reference](../reference/connection-templates.md) describes the recovery actions.
+
+## Related docs
+
+- [Manage credentials in the Console](../guides/console/secrets.md)
+- [OAuth connection templates and clients](../reference/connection-templates.md)
+- [Secret storage and delivery](secret-storage-and-delivery.md)
+
+## Manual Notes
+
+[keep this for the user to add notes. do not change between edits]
+
+## Changelog
+
+- 2026-11-05 21:47: Traced administrator setup, OCC browser consent and Token Service custody with the accompanying ownership change. (codex/01a1aad6-adec-7fa0-802a-50b5e0486319 - d32f76579)

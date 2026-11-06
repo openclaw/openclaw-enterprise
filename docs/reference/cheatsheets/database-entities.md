@@ -184,6 +184,11 @@ Records the Namespace, consenting principal, approved template version and revoc
 - `revocation_requested_by`
 - `revoked_at`
 
+### `saved_connection_profiles`
+
+Records the sender profiles created for an account so that disconnect can remove them after an Agent is deleted.
+The primary key is `namespace_id`, `credential_source_id`, and `profile_id`. The `gateway_id` and `source_type` identify the sender that owns the profile.
+
 ### `connection_sessions`
 
 Stores the private, single-use OAuth attempt for the initiating principal and browser session.
@@ -191,7 +196,8 @@ Stores the private, single-use OAuth attempt for the initiating principal and br
 - `state_hash`
 - `namespace_id`
 - `credential_source_id`
-- `private_state`
+- `pkce_verifier`
+- `selected_scopes`
 - `attachment_intent`
 - `issuer_required`
 - `session_id`

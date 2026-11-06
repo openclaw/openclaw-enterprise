@@ -86,6 +86,7 @@ type UnreadableRevision = Pick<
 };
 type StoredRevision = CreatedRevision | UnreadableRevision;
 type LifecycleScenario = Parameters<typeof createAgentRoutes>[0] & {
+  savedPluginAccount?: { id: string; name: string };
   candidateSuperseded?: boolean;
   candidateSelected?: boolean;
   agentId?: string;
@@ -510,6 +511,15 @@ export function createAgentLifecycle(
     if (!saved) {
       return error(404);
     }
+    const savedAccount = scenario.savedPluginAccount;
+    if (savedAccount && suffix === `/connections/${savedAccount.id}` && method === "POST") {
+      const attached = Array.isArray(saved.credentialSources) ? saved.credentialSources : [];
+      if (!attached.some((item) => item?.sourceId === savedAccount.id)) {
+        saved.credentialSources = [...attached, { sourceId: savedAccount.id }];
+      }
+      return new Response(null, { status: 204 });
+    }
+
     if (suffix === "") {
       if (method === "GET") {
         if (scenario.deletingOnRefresh && ++agentReadCount > 1) {

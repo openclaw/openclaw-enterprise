@@ -74,7 +74,7 @@ function googleSlotStory(preview: ConnectionPreview) {
           releaseSha256,
           id: "account",
           label: "Workspace account",
-          ...(preview !== "bound" && { connectAccount: true as const }),
+          connectAccount: true as const,
           sources: preview === "bound" ? [{ id: boundId, name: "Existing Gmail account" }] : [],
         },
       ],
@@ -110,10 +110,19 @@ export function pluginConnectionReturn(
     auth: "runtime",
     agentPlugins: JSON.parse(preview.pluginSelections),
     credentialSources: bound ? [{ sourceId }] : [],
-    pluginCapabilities: preview.pluginCapabilities,
+    pluginCapabilities: {
+      ...preview.pluginCapabilities,
+      credentialSlots: preview.pluginCapabilities.credentialSlots.map((slot) => ({
+        ...slot,
+        sources: [{ id: sourceId, name: "Existing Gmail account" }],
+      })),
+    },
     pluginDiscoveryCredential: "none",
     pluginDiscovery: {
       pages: { initial: { plugins: preview.pluginCatalog.entries, nextCursor: null } },
+      details: Object.fromEntries(
+        preview.pluginCatalog.entries.map((plugin) => [plugin.id, plugin] as const),
+      ),
     },
     savedPluginAccount: { id: sourceId, name: "Existing Gmail account" },
     description:
@@ -121,6 +130,58 @@ export function pluginConnectionReturn(
     gap: "The callback result, saved account, and Agent are Storybook fixtures. These previews do not contact a provider or issue runtime credentials.",
   };
 }
+
+const namedPlugin = "occ-plugin:team-tools@1.0.0";
+const namedRelease = "b".repeat(64);
+const savedSupportAccount = {
+  id: "cs_00000000-0000-4000-8000-000000000011",
+  name: "Support account",
+};
+const savedReportingAccount = {
+  id: "cs_00000000-0000-4000-8000-000000000012",
+  name: "Reporting account",
+};
+const namedSlotScenario = {
+  group: "Components/Plugins",
+  name: "Choose accounts for named MCP slots",
+  component: "plugins",
+  connectionPreview: "named",
+  pluginCatalog: {
+    status: "ready",
+    entries: [{ id: namedPlugin, name: "Team tools", selectableWithoutTools: true, tools: [] }],
+  },
+  pluginCapabilities: {
+    ...pluginCapabilities,
+    driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+    policyScopeByPlugin: { [namedPlugin]: "enablement_only" },
+    credentialSlots: [
+      {
+        pluginId: namedPlugin,
+        releaseSha256: namedRelease,
+        id: "support",
+        label: "Support account",
+        connectAccount: true,
+        sources: [savedSupportAccount, { ...savedReportingAccount, authorization: "required" }],
+      },
+      {
+        pluginId: namedPlugin,
+        releaseSha256: namedRelease,
+        id: "reports",
+        label: "Reports account",
+        connectAccount: true,
+        sources: [savedReportingAccount],
+      },
+    ],
+  },
+  pluginSelections: JSON.stringify({ [namedPlugin]: { enabled: true } }),
+  actions: [
+    click("Configure plugins"),
+    { selector: 'button[aria-label="Team tools"]', click: true },
+  ],
+  description:
+    "Bind an approved saved account to each named slot. The reporting account requires separate provider consent before it can be used for the support server.",
+  gap: "The catalog, account grants, and provider handoff are simulated. The Console uses each slot ID once regardless of its delivery aliases.",
+} satisfies PluginScenario;
 
 export const pluginsScenarios = {
   namedSlotAccounts: {

@@ -29,6 +29,12 @@ export interface PluginDiscoveryAuthentication {
   readonly isFedramp?: boolean;
 }
 
+/** Only the issuer selects candidate accounts. The receiver controls where a token may go. */
+export type PluginAccountTarget = Pick<
+  ConnectionTemplateValues,
+  "issuer" | "tokenUrl" | "destinations" | "mcp"
+>;
+
 export interface PluginDriver extends Driver {
   readonly capability: "plugin";
   /** Harness family authorized to use this catalog. */
@@ -47,6 +53,8 @@ export interface PluginDriver extends Driver {
           readonly releaseSha256: string;
           readonly credentialSourceId: string | null;
           readonly issuers: readonly string[];
+          /** The reviewed endpoint for MCP tool discovery with a saved account. */
+          readonly mcpServerUrl?: string;
           acceptsRecipient(target: PluginAccountTarget): boolean;
           /** The release owns protected presentation. Undefined means the current targets and grant
            * permit no protected operation; it does not reject an issuer-compatible account choice. */

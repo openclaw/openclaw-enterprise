@@ -738,7 +738,7 @@ function revisionFromRow(
       "Persisted AgentRevision harness authentication is invalid or legacy.",
     );
   }
-  if (!validCredentialSourceSnapshots(admitted.credential_sources)) {
+  if (!validCredentialSourceSnapshots(admitted.credential_sources, metadata.agentId)) {
     throw new SavedConfigurationReadError(
       "credentialSources",
       "Persisted AgentRevision credential sources are invalid.",
@@ -3785,6 +3785,9 @@ export class PostgresPlatformState implements PlatformStateStore {
       return found;
     };
 
+    const savedConnections = postgresSavedConnections(client, () =>
+      this.requireInitialized(context),
+    );
     const revisions: AgentRevisionRepository = {
       findFirstDeploymentReceipt: async (namespaceId, agentId, digest) => {
         const row = rows(
@@ -3890,7 +3893,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         if (
           Object.hasOwn(revision, "serviceAccount") ||
           !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
-          !validCredentialSourceSnapshots(revision.credentialSources)
+          !validCredentialSourceSnapshots(revision.credentialSources, revision.agentId)
         ) {
           throw new ScopeViolationError(
             "The AgentRevision harness authentication is invalid or legacy.",
@@ -3912,7 +3915,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
         }
         await assertRevisionAuthAvailable(
-          { secrets, serviceAccounts, credentialSources },
+          { secrets, serviceAccounts, credentialSources, savedConnections },
           revision,
           async (ids) =>
             rows(
@@ -3932,7 +3935,7 @@ export class PostgresPlatformState implements PlatformStateStore {
               type: text(row, "type"),
               state: text(row, "state") as CredentialSource["state"],
               ownerCapability: text(row, "owner_capability") as CredentialSource["ownerCapability"],
-              driverId: text(row, "driver_id"),
+              ...(row.owner_capability !== "token_service" && { driverId: text(row, "driver_id") }),
             })),
         );
         const owner = await agents.findAgent(revision.namespaceId, revision.agentId);
@@ -3942,7 +3945,12 @@ export class PostgresPlatformState implements PlatformStateStore {
           owner.backendId !== revision.backendId ||
           revision.gatewayManagedMode !== owner.gatewayManagedMode ||
           !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth) ||
-          !credentialSourcesMatch(owner.credentialSources, revision.credentialSources)
+          !(await credentialSourcesMatch(
+            savedConnections,
+            revision.namespaceId,
+            owner.credentialSources,
+            revision.credentialSources,
+          ))
         ) {
           throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
         }
@@ -4344,7 +4352,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       installations,
       namespaces,
       configurations,
-      savedConnections: postgresSavedConnections(client, () => this.requireInitialized(context)),
+      savedConnections,
       connectionTemplates: postgresConnectionTemplates(client, () =>
         this.requireInitialized(context),
       ),

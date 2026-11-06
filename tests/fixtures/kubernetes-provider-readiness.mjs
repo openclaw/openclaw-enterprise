@@ -5,7 +5,7 @@ import {
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
-  tenant,
+  tenant as defaultTenant,
   digest,
   preparedAuth,
   routedOptions,
@@ -22,6 +22,14 @@ export function supervisorPeerLabels(revisionId) {
 }
 
 export function providerReadinessFixture({
+  tenant = defaultTenant,
+  sandboxDriver,
+  credentialGatewayDriver,
+  servicePrincipalCredentials = {
+    mode: "projectedServiceAccountToken",
+    audience: "openclaw-controller",
+    expirationSeconds: 900,
+  },
   provisionHarness,
   harnessEndpoint,
   providerNetwork = {
@@ -41,11 +49,7 @@ export function providerReadinessFixture({
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
       },
-      servicePrincipalCredentials: {
-        mode: "projectedServiceAccountToken",
-        audience: "openclaw-controller",
-        expirationSeconds: 900,
-      },
+      servicePrincipalCredentials,
       ...(harnessEndpoint === undefined
         ? {}
         : {
@@ -56,6 +60,7 @@ export function providerReadinessFixture({
     }),
     {
       lifecycleDrivers,
+      credentialGatewayDriver,
       nodeEnrollment: nodeEnrollment ?? {
         async isConnected() {
           return true;
@@ -64,6 +69,7 @@ export function providerReadinessFixture({
       sandboxDriver: {
         id: "sandbox-provider",
         implementation: "openshell",
+        ...sandboxDriver,
         async provisionHarness(context) {
           if (provisionHarness !== undefined) {
             return provisionHarness(context);
@@ -76,7 +82,7 @@ export function providerReadinessFixture({
     },
   );
   const revision = routedRevision(driver, {
-    sandboxDriverId: "sandbox-provider",
+    sandboxDriverId: sandboxDriver?.id ?? "sandbox-provider",
     configuration: admitLoggingConfiguration(
       {
         agents: { defaults: { model: "codex/gpt-5" } },
@@ -175,6 +181,10 @@ export function providerReadinessFixture({
       return body;
     },
     async listNamespacedPod(request) {
+      // Runtime credential admission lists the Agent before it has a revision or a Pod.
+      if (!request.labelSelector.includes("openclaw.dev/revision=")) {
+        return { items: [] };
+      }
       if (request.labelSelector.includes("openclaw.dev/workload-role=gateway")) {
         // The workspace node binding nudge: the Gateway Pod is not modeled here.
         assert.equal(request.namespace, kubernetesNamespaceName(tenant.id));

@@ -1,6 +1,17 @@
 import { Type } from "typebox";
 import { AgentId, CredentialSourceId, Meta, NamespaceId } from "./common.ts";
-import { ConnectionTemplateId } from "./connection-templates.ts";
+import {
+  ConnectionDestinationsSchema,
+  ConnectionTemplateId,
+  ConnectionTemplateResponse,
+  OAuthScope,
+} from "./connection-templates.ts";
+
+/** Namespace use lists connectable templates; the Installation's editor presets stay in the admin catalog. */
+export const UsableConnectionTemplatesResponse = Type.Object(
+  { data: Type.Array(ConnectionTemplateResponse.properties.data), meta: Meta },
+  { additionalProperties: false },
+);
 
 export const StartNamespaceConnectionBody = Type.Object(
   {
@@ -58,7 +69,12 @@ const PluginId = Type.String({ minLength: 1, maxLength: 256 });
 const SlotId = Type.String({ minLength: 1, maxLength: 128 });
 
 export const PluginSlotParams = Type.Object(
-  { namespaceId: NamespaceId, agentId: AgentId, pluginId: PluginId, slotId: SlotId },
+  {
+    namespaceId: NamespaceId,
+    agentId: AgentId,
+    pluginId: PluginId,
+    slotId: SlotId,
+  },
   { additionalProperties: false },
 );
 export const StartPluginConnectionBody = Type.Object(
@@ -68,6 +84,7 @@ export const StartPluginConnectionBody = Type.Object(
     pluginId: PluginId,
     slotId: SlotId,
     releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    selectedScopes: Type.Optional(Type.Array(OAuthScope, { uniqueItems: true })),
     expectedCredentialSourceId: Type.Union([CredentialSourceId, Type.Null()]),
   },
   { additionalProperties: false },
@@ -80,6 +97,10 @@ export const PluginTemplateChoicesResponse = Type.Object(
           id: ConnectionTemplateId,
           displayName: Type.String(),
           version: Type.Integer({ minimum: 1 }),
+          mode: Type.Union([Type.Literal("manual"), Type.Literal("mcp_discovery")]),
+          scopes: Type.Array(Type.String()),
+          requiredScopes: Type.Array(Type.String()),
+          offeredScopes: Type.Array(Type.String()),
         },
         { additionalProperties: false },
       ),
@@ -90,7 +111,11 @@ export const PluginTemplateChoicesResponse = Type.Object(
 );
 
 export const AgentConnectionParams = Type.Object(
-  { namespaceId: NamespaceId, agentId: AgentId, credentialSourceId: CredentialSourceId },
+  {
+    namespaceId: NamespaceId,
+    agentId: AgentId,
+    credentialSourceId: CredentialSourceId,
+  },
   { additionalProperties: false },
 );
 

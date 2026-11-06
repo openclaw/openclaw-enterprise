@@ -83,7 +83,7 @@ the paths.
 | --- | --- |
 | [Authentication](#authentication) | 27 operations |
 | [Backends](#backends) | 1 operation |
-| [Connections](#connections) | 15 operations |
+| [Connections](#connections) | 19 operations |
 | [Installation](#installation) | 5 operations |
 | [Namespaces](#namespaces) | 6 operations |
 | [Agents](#agents) | 50 operations |
@@ -1719,7 +1719,6 @@ Example response
 | [`DELETE /connection-templates/{connectionTemplateId}`](#delete-connectiontemplatesconnectiontemplateid) | Delete a connection template |
 | [`GET /connection-templates/{connectionTemplateId}`](#get-connectiontemplatesconnectiontemplateid) | Get one connection template |
 | [`PATCH /connection-templates/{connectionTemplateId}`](#patch-connectiontemplatesconnectiontemplateid) | Rename a connection template, or create a version with new approved values |
-| [`POST /connection-templates/{connectionTemplateId}/rotate-client-secret`](#post-connectiontemplatesconnectiontemplateidrotateclientsecret) | Rotate the secret for the template’s OAuth client registration |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/connections`](#post-namespacesnamespaceidagentsagentidconnections) | Connect an account and attach it to a saved Agent plugin slot |
 | [`DELETE /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`](#delete-namespacesnamespaceidagentsagentidconnectionscredentialsourceid) | Detach an account from this Agent and withdraw its access |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`](#post-namespacesnamespaceidagentsagentidconnectionscredentialsourceid) | Attach a completed account and grant this Agent access to its source |
@@ -2367,121 +2366,6 @@ Example response
 }
 ```
 
-#### `POST /connection-templates/{connectionTemplateId}/rotate-client-secret`
-
-<span id="post-connectiontemplatesconnectiontemplateidrotateclientsecret"></span>
-
-Rotate the secret for the template’s OAuth client registration
-
-**Operation ID:** `rotateConnectionClientSecret`
-
-**Permissions:** Requires administer permission on the requested Installation.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `connectionTemplateId` | path | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ctp_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Request body
-
-**Required:** Yes
-
-**Content type:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `clientSecret` | `string` | Yes | min length: 1; max length: 4096 |
-
-Example request
-```json
-{
-  "clientSecret": "replacement-example-client-secret"
-}
-```
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `413` | The request body exceeds the permitted size. |
-| `415` | The request content type is not supported. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `Connection template` | Yes | — |
-| `data.createdAt` | `string` | Yes | — |
-| `data.current` | `object` | Yes | — |
-| `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
-| `data.current.authorizationUrl` | `string` | Yes | — |
-| `data.current.clientId` | `string` | Yes | — |
-| `data.current.clientRegistrationId` | `string` | Yes | — |
-| `data.current.createdAt` | `string` | Yes | — |
-| `data.current.endpoint` | `object` | Yes | — |
-| `data.current.endpoint.access` | `"read-only" or "full"` | Yes | — |
-| `data.current.endpoint.host` | `string` | Yes | — |
-| `data.current.endpoint.path` | `string` | Yes | — |
-| `data.current.endpoint.port` | `integer` | Yes | — |
-| `data.current.envVar` | `string` | Yes | — |
-| `data.current.issuer` | `string` | Yes | — |
-| `data.current.scopes` | `array<string>` | Yes | — |
-| `data.current.tokenUrl` | `string` | Yes | — |
-| `data.current.version` | `integer` | Yes | minimum: 1 |
-| `data.displayName` | `string` | Yes | — |
-| `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "createdAt": "2026-10-01T12:00:00.000Z",
-    "current": {
-      "authorizationParameters": {},
-      "authorizationUrl": "https://accounts.example.com/authorize",
-      "clientId": "example-client",
-      "clientRegistrationId": "cr_123e4567-e89b-42d3-a456-426614174000",
-      "createdAt": "2026-10-01T12:00:00.000Z",
-      "endpoint": {
-        "access": "full",
-        "host": "api.example.com",
-        "path": "/profile",
-        "port": 443
-      },
-      "envVar": "EXAMPLE_ACCESS_TOKEN",
-      "issuer": "https://accounts.example.com",
-      "scopes": [
-        "profile.read"
-      ],
-      "tokenUrl": "https://accounts.example.com/token",
-      "version": 1
-    },
-    "displayName": "Example account",
-    "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
-    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/connections`
 
 <span id="post-namespacesnamespaceidagentsagentidconnections"></span>
@@ -2517,6 +2401,7 @@ Connect an account and attach it to a saved Agent plugin slot
 | `expectedCredentialSourceId` | `string or null` | Yes | — |
 | `pluginId` | `string` | Yes | min length: 1; max length: 256 |
 | `releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `selectedScopes` | `array<string>` | No | — |
 | `slotId` | `string` | Yes | min length: 1; max length: 128 |
 
 Example request
@@ -2707,6 +2592,10 @@ List compatible OAuth templates for a saved Agent plugin slot
 | `data` | `array<object>` | Yes | — |
 | `data[].displayName` | `string` | Yes | — |
 | `data[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].mode` | `"manual" or "mcp_discovery"` | Yes | — |
+| `data[].offeredScopes` | `array<string>` | Yes | — |
+| `data[].requiredScopes` | `array<string>` | Yes | — |
+| `data[].scopes` | `array<string>` | Yes | — |
 | `data[].version` | `integer` | Yes | minimum: 1 |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -7202,6 +7091,7 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 | `data.credentialSlots[].pluginId` | `string` | Yes | — |
 | `data.credentialSlots[].releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
 | `data.credentialSlots[].sources` | `array<object>` | Yes | — |
+| `data.credentialSlots[].sources[].authorization` | `"required"` | No | — |
 | `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.credentialSlots[].sources[].name` | `string` | Yes | — |
 | `data.credentialSlots[].toolDiscovery` | `true` | No | — |

@@ -61,6 +61,9 @@ export function namespaceConnectionHandlers(redirectUri: string | undefined): Re
           agentId: params.agentId!,
           sessionId,
           redirectUri,
+          ...(body!.selectedScopes !== undefined && {
+            selectedScopes: body!.selectedScopes as string[],
+          }),
           pluginId: body!.pluginId as string,
           slotId: body!.slotId as string,
           releaseSha256: body!.releaseSha256 as string,
@@ -77,6 +80,7 @@ export function namespaceConnectionHandlers(redirectUri: string | undefined): Re
     },
     async attachAgentConnection({
       controller,
+      transactIAM,
       context,
       reply,
       params,
@@ -84,15 +88,22 @@ export function namespaceConnectionHandlers(redirectUri: string | undefined): Re
       mutationEvent,
     }) {
       const { agentId, credentialSourceId } = params;
-      await controller.attachAgentConnection(
-        context.actorId,
-        { namespaceId, agentId: agentId!, credentialSourceId: credentialSourceId! },
-        mutationEvent({ kind: "agent", id: agentId!, namespaceId }, { credentialSourceId }),
+      await transactIAM(() =>
+        controller.attachAgentConnection(
+          context.actorId,
+          {
+            namespaceId,
+            agentId: agentId!,
+            credentialSourceId: credentialSourceId!,
+          },
+          mutationEvent({ kind: "agent", id: agentId!, namespaceId }, { credentialSourceId }),
+        ),
       );
       reply.status(204).send();
     },
     async detachAgentConnection({
       controller,
+      transactIAM,
       context,
       request,
       reply,
@@ -101,10 +112,16 @@ export function namespaceConnectionHandlers(redirectUri: string | undefined): Re
       mutationEvent,
     }) {
       const { agentId, credentialSourceId } = params;
-      const result = await controller.detachAgentConnection(
-        context.actorId,
-        { namespaceId, agentId: agentId!, credentialSourceId: credentialSourceId! },
-        mutationEvent({ kind: "agent", id: agentId!, namespaceId }, { credentialSourceId }),
+      const result = await transactIAM(() =>
+        controller.detachAgentConnection(
+          context.actorId,
+          {
+            namespaceId,
+            agentId: agentId!,
+            credentialSourceId: credentialSourceId!,
+          },
+          mutationEvent({ kind: "agent", id: agentId!, namespaceId }, { credentialSourceId }),
+        ),
       );
       reply.send({ data: result, meta: { requestId: request.id } });
     },
@@ -261,30 +278,33 @@ export function createConnectionCallback(dependencies: ConnectionCallbackDepende
       return;
     }
     try {
-      const connection = await controller.completeNamespaceConnection(
-        context.actorId,
-        {
-          state: typeof query.state === "string" ? query.state : "",
-          sessionId: context.sessionId,
-          ...(typeof query.iss === "string" ? { iss: query.iss } : {}),
-          ...(typeof query.code === "string" ? { code: query.code } : {}),
-          ...(typeof query.error === "string" ? { error: query.error } : {}),
-        },
-        (result, attachedAgentId) => {
-          if (attachedAgentId) {
-            const event = dependencies.auditEvent(request, context, {
-              kind: "agent",
+      const connection = await dependencies.withCurrentSession(request, (holdSession) =>
+        controller.completeNamespaceConnection(
+          context.actorId,
+          {
+            state: typeof query.state === "string" ? query.state : "",
+            sessionId,
+            ...(typeof query.iss === "string" ? { iss: query.iss } : {}),
+            ...(typeof query.code === "string" ? { code: query.code } : {}),
+            ...(typeof query.error === "string" ? { error: query.error } : {}),
+          },
+          (result, attachedAgentId) => {
+            if (attachedAgentId) {
+              const event = dependencies.auditEvent(request, context, {
+                kind: "agent",
+                namespaceId: result.namespaceId,
+                id: attachedAgentId,
+              });
+              return { ...event, action: "openclaw.agents.connections.attach" };
+            }
+            return dependencies.auditEvent(request, context, {
+              kind: "credential_source",
               namespaceId: result.namespaceId,
-              id: attachedAgentId,
+              id: result.credentialSourceId,
             });
-            return { ...event, action: "openclaw.agents.connections.attach" };
-          }
-          return dependencies.auditEvent(request, context, {
-            kind: "credential_source",
-            namespaceId: result.namespaceId,
-            id: result.credentialSourceId,
-          });
-        },
+          },
+          holdSession,
+        ),
       );
       if (connection.attachment) {
         const { agentId, outcome } = connection.attachment;

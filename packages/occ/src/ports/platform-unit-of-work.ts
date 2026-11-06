@@ -83,6 +83,8 @@ export function bindPlatformUnitOfWork(
       "hasPendingConnectionWithdrawals",
       "listAgentConnections",
       "listNamespaceConnections",
+      "listDeliveryProfiles",
+      "registerDeliveryProfile",
       "listRevokingConnections",
       "createSavedConnection",
       "requestConnectionRevocation",

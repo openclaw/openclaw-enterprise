@@ -1998,9 +1998,11 @@ test(
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
       [65, "preAgentDeployIntent"],
-      [66, "preConnectionTemplates"],
-      [67, "preSavedConnections"],
-      [68, "preConnectionAttachmentIntent"],
+      [66, "preAgentCredentialSourceLimit"],
+      [67, "preAgentPluginDriver"],
+      [68, "preConnectionTemplates"],
+      [69, "preSavedConnections"],
+      [70, "preConnectionAttachmentIntent"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2066,6 +2068,26 @@ test(
           } finally {
             await db.app.query("ROLLBACK");
           }
+        }
+        if (history === "preConnectionAttachmentIntent") {
+          // The application records which gateway profile an account created. The account FK
+          // rejects foreign ownership; only deleting its owner may remove or change this receipt.
+          const privileges = await db.app.query(`SELECT
+            has_table_privilege(current_user,'occ.saved_connection_profiles','SELECT') AS read,
+            has_table_privilege(current_user,'occ.saved_connection_profiles','INSERT') AS record,
+            has_any_column_privilege(current_user,'occ.saved_connection_profiles','UPDATE') AS edit,
+            has_table_privilege(current_user,'occ.saved_connection_profiles','DELETE') AS remove,
+            has_table_privilege(current_user,'occ.saved_connection_profiles','TRUNCATE') AS truncate`);
+          assert.deepEqual(privileges.rows, [
+            { read: true, record: true, edit: false, remove: false, truncate: false },
+          ]);
+          await assert.rejects(
+            db.app.query(
+              "INSERT INTO occ.saved_connection_profiles(namespace_id,credential_source_id,profile_id,gateway_id,source_type) VALUES ($1,$2,$3,'gateway','google')",
+              [`ns_${randomUUID()}`, `crs_${randomUUID()}`, "account-" + "0".repeat(64)],
+            ),
+            { code: "23503", constraint: "saved_connection_profiles_owner" },
+          );
         }
         if (history === "preGatewayManagedMode") {
           await db.app.query(

@@ -194,10 +194,27 @@ function bindingId(config: unknown, scoped = false): string | undefined {
   const fields = record(record(config).fields);
   const value = record(fields.binding_id);
   const scope = record(fields.request_scope);
+  const binaries = record(fields.sender_binaries);
+  const paths = record(binaries.listValue).values;
+  // Saved Google accounts also record the sender's executable list for Sandbox adoption.
+  // The guard enforces the same HTTP decisions for every executable on that list.
+  const validBinaryList =
+    binaries.kind === "listValue" &&
+    Array.isArray(paths) &&
+    paths.length > 0 &&
+    paths.every((entry: unknown) => {
+      const path = record(entry);
+      return (
+        path.kind === "stringValue" &&
+        typeof path.stringValue === "string" &&
+        path.stringValue.startsWith("/") &&
+        !path.stringValue.includes("*")
+      );
+    });
   const validFields =
     Object.keys(fields).length === 1 ||
     (scoped &&
-      Object.keys(fields).length === 2 &&
+      (Object.keys(fields).length === 2 || (Object.keys(fields).length === 3 && validBinaryList)) &&
       scope.kind === "stringValue" &&
       typeof scope.stringValue === "string" &&
       scope.stringValue.length <= 16384);

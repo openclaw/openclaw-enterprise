@@ -71,11 +71,9 @@ Use `DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}` to
 disconnect the account. OCC records the request before retiring the credential
 and the worker can finish an interrupted disconnect.
 
-## Give an Agent access
+## Use a saved account in an Agent plugin
 
-With permission to update the Agent and operate the saved source, use
-`POST /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`.
-The account stays in its Namespace and its owner can grant other Agents access.
+In the Agent's plugin settings, select an account for each named slot. The picker shows accounts you can use from an issuer that the slot accepts. **Authorize for this server** starts consent for the required protected resource and destination. For an MCP template you select the scopes for this consent. The provider and the plugin's request policy enforce operations.
 
 Saving the selection requires permission to update the Agent and operate the saved credential. A completed connection from a plugin can replace that slot when its release and previous selection still match. The account remains available to its owner when the slot changes during consent. See [configure plugins](../guides/topics/plugins-configure.md#use-the-console).
 

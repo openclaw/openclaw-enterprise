@@ -1,4 +1,5 @@
 import type {
+  AgentRevision,
   Backend,
   Namespace,
   OpenShellBackendDefinition,
@@ -16,7 +17,7 @@ import {
   type OpenShellProviderResponse,
 } from "../drivers/sandbox/openshell-gateway-client.ts";
 
-const PROFILE_DIGEST_ANNOTATION = "openclaw.dev/profile-digest";
+export const PROFILE_DIGEST_ANNOTATION = "openclaw.dev/profile-digest";
 const DEFAULT_GATEWAY_PORT = 8080;
 const OPENSHELL_MAX_WORKSPACE_NAME_LENGTH = 19;
 /** Provider names OCC creates; the paired Sandbox Driver accepts only this shape. */
@@ -228,7 +229,14 @@ export const MANAGED_BY_LABEL = "app.kubernetes.io/managed-by";
 export const MANAGED_BY = "openclaw-enterprise";
 export const SOURCE_ID_LABEL = "openclaw.dev/credential-source-id";
 
-/** One OpenShell provider per OCC credential source, named without exposing the source ID. */
+/** A saved account has a provider for this delivery. Other sources use their source ID. */
+export function revisionProviderSourceId(revision: AgentRevision, sourceId: string): string {
+  return (
+    revision.credentialSources?.find((item) => item.sourceId === sourceId)?.accountDelivery
+      ?.profileId ?? sourceId
+  );
+}
+
 export function openShellProviderName(sourceId: string): string {
   return `oce-cs-${sha256Hex(sourceId, 24)}`;
 }
@@ -245,6 +253,12 @@ export function isOpenShellProviderName(value: string): boolean {
   return OCC_PROVIDER_NAME.test(value);
 }
 
+export function openShellProfileDigest(
+  base: Omit<OpenShellProviderProfile, "annotations">,
+): string {
+  return sha256Hex(JSON.stringify(base));
+}
+
 /** Reconcile an already-built profile using the caller's selected client and Workspace. */
 export async function ensureOpenShellProviderProfile(
   client: OpenShellGatewayClient,
@@ -252,7 +266,7 @@ export async function ensureOpenShellProviderProfile(
   base: Omit<OpenShellProviderProfile, "annotations">,
   signal: AbortSignal,
 ): Promise<void> {
-  const digest = sha256Hex(JSON.stringify(base));
+  const digest = openShellProfileDigest(base);
   const profile: OpenShellProviderProfile = {
     ...base,
     annotations: { [PROFILE_DIGEST_ANNOTATION]: digest },

@@ -126,27 +126,6 @@ OCC records `accountEmail` only when that validated ID token contains a
 nonempty `email` string and the boolean claim `email_verified` is `true`.
 When either condition is unmet, the connection can complete without `accountEmail`.
 
-## Plugin credential slots
-
-A saved Agent plugin may offer **Connect and attach to this Agent** for a named
-credential slot. The Plugin Driver can implement
-`credentials.connectionSlot(selections, pluginId, slotId)` for this flow. It
-returns the selected release, the slot's current source ID if bound, and two
-operations. One checks whether a public template version can produce a compatible
-credential. The other binds a completed source to the slot and returns the updated
-plugin selection. The Driver owns its policy format and checks the resulting
-source with the same rules it uses for saved accounts. Without this capability,
-OCC offers only the supported saved-account workflow.
-
-At start, OCC checks template scope, Namespace credential creation authority,
-Agent update authority, selected release, slot, and expected current binding.
-It records that intent with the private attempt. After saving the account and
-granting its owner access, OCC checks current authority and compares the saved
-selection again. It attaches the source and updates that slot in one transaction
-after the ordinary Plugin Driver accepts the completed source. A changed
-selection or lost access leaves the saved account available to its owner. The
-user can retry attachment without repeating provider consent.
-
 ## IAM Driver
 
 This extension describes optional grants on an individual template. The scoped
@@ -183,16 +162,15 @@ administrators, who hold every action through the built-in administrator role.
 
 ## Update a running sender
 
-When an Agent’s credential recipients change, the Gateway withholds its token.
-Compute and the Sandbox Driver update the sender and verify its effective policy.
-OCC rechecks the grant, template and Agent binding before releasing a token
-for that revision and policy. Failed or superseded updates leave the sender
-empty until reconciliation succeeds.
+When recipients change, Credential Proxy disables the Agent’s affected binding and token.
+After confirmed withdrawal, the paired Sandbox updates policy and blocks direct egress.
+Compute verifies the revision’s installed policy. OCC rechecks the grant, template and Agent
+binding before releasing a prepared token. Failed or superseded updates keep that sender
+disabled until reconciliation succeeds.
 
-The Plugin Driver matches recipients independently of scopes. If no granted
-operation matches the current destinations, the slot's delivery returns no
-configuration. After confirming withdrawal, the worker keeps serving other
-slots and Agents. A compatible template edit can resume delivery.
+The Plugin Driver matches recipients independently of scopes. If no granted operation
+matches, the worker withdraws only that slot. Other slots and Agents keep working.
+A compatible template edit can restore delivery.
 
 ## Protected egress
 

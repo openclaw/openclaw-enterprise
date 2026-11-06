@@ -22042,6 +22042,16 @@
                   },
                   "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" },
                   "releaseSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                  "selectedScopes": {
+                    "items": {
+                      "maxLength": 512,
+                      "minLength": 1,
+                      "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
+                      "type": "string"
+                    },
+                    "type": "array",
+                    "uniqueItems": true
+                  },
                   "slotId": { "maxLength": 128, "minLength": 1, "type": "string" }
                 },
                 "required": [
@@ -28183,6 +28193,7 @@
                                 "items": {
                                   "additionalProperties": false,
                                   "properties": {
+                                    "authorization": { "const": "required", "type": "string" },
                                     "id": {
                                       "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                       "type": "string"
@@ -28791,9 +28802,26 @@
                             "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
                           },
+                          "mode": {
+                            "anyOf": [
+                              { "const": "manual", "type": "string" },
+                              { "const": "mcp_discovery", "type": "string" }
+                            ]
+                          },
+                          "offeredScopes": { "items": { "type": "string" }, "type": "array" },
+                          "requiredScopes": { "items": { "type": "string" }, "type": "array" },
+                          "scopes": { "items": { "type": "string" }, "type": "array" },
                           "version": { "minimum": 1, "type": "integer" }
                         },
-                        "required": ["id", "displayName", "version"],
+                        "required": [
+                          "id",
+                          "displayName",
+                          "version",
+                          "mode",
+                          "scopes",
+                          "requiredScopes",
+                          "offeredScopes"
+                        ],
                         "type": "object"
                       },
                       "type": "array"

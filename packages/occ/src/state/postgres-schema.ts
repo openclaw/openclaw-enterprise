@@ -2587,6 +2587,34 @@ export const savedConnections = occSchema.table(
   ],
 );
 
+export const savedConnectionProfiles = occSchema.table(
+  "saved_connection_profiles",
+  {
+    namespaceId: text("namespace_id").notNull(),
+    credentialSourceId: text("credential_source_id").notNull(),
+    profileId: text("profile_id").notNull(),
+    gatewayId: text("gateway_id").notNull(),
+    sourceType: text("source_type").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.namespaceId, table.credentialSourceId, table.profileId] }),
+    check(
+      "saved_connection_profiles_profile_id_check",
+      sql`${table.profileId} ~ '^account-[0-9a-f]{64}$'`,
+    ),
+    check("saved_connection_profiles_gateway_id_check", sql`btrim(${table.gatewayId}) <> ''`),
+    check(
+      "saved_connection_profiles_source_type_check",
+      sql`${table.sourceType} ~ '^[a-z][a-z0-9-]{0,63}$'`,
+    ),
+    foreignKey({
+      name: "saved_connection_profiles_owner",
+      columns: [table.namespaceId, table.credentialSourceId],
+      foreignColumns: [savedConnections.namespaceId, savedConnections.credentialSourceId],
+    }).onDelete("cascade"),
+  ],
+);
+
 export const connectionSessions = occSchema.table(
   "connection_sessions",
   {
@@ -2594,6 +2622,10 @@ export const connectionSessions = occSchema.table(
     namespaceId: text("namespace_id").notNull(),
     credentialSourceId: text("credential_source_id").notNull(),
     pkceVerifier: text("pkce_verifier").notNull(),
+    attachmentIntent:
+      jsonb("attachment_intent").$type<
+        import("@openclaw-enterprise/contracts").ConnectionAttachmentIntent
+      >(),
     selectedScopes: text("selected_scopes").array().notNull(),
     issuerRequired: boolean("issuer_required").notNull(),
     sessionId: text("session_id").notNull(),
@@ -2605,6 +2637,22 @@ export const connectionSessions = occSchema.table(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   },
   (table) => [
+    check(
+      "connection_sessions_attachment_target",
+      sql`${table.attachmentIntent} IS NULL OR (
+      jsonb_typeof(${table.attachmentIntent}) = 'object'
+      AND ${table.attachmentIntent} ?& ARRAY['agentId', 'pluginId', 'slotId', 'releaseSha256',
+        'expectedCredentialSourceId', 'connectionTemplateId', 'connectionTemplateVersion']
+      AND jsonb_typeof(${table.attachmentIntent}->'agentId') = 'string' AND ${table.attachmentIntent}->>'agentId' <> ''
+      AND jsonb_typeof(${table.attachmentIntent}->'pluginId') = 'string' AND ${table.attachmentIntent}->>'pluginId' <> ''
+      AND jsonb_typeof(${table.attachmentIntent}->'slotId') = 'string' AND ${table.attachmentIntent}->>'slotId' <> ''
+      AND jsonb_typeof(${table.attachmentIntent}->'releaseSha256') = 'string' AND ${table.attachmentIntent}->>'releaseSha256' ~ '^[a-f0-9]{64}$'
+      AND (${table.attachmentIntent}->'expectedCredentialSourceId' = 'null'::jsonb
+        OR (jsonb_typeof(${table.attachmentIntent}->'expectedCredentialSourceId') = 'string' AND ${table.attachmentIntent}->>'expectedCredentialSourceId' <> ''))
+      AND ${table.attachmentIntent}->'connectionTemplateId' = to_jsonb(${table.connectionTemplateId})
+      AND ${table.attachmentIntent}->'connectionTemplateVersion' = to_jsonb(${table.connectionTemplateVersion})
+    )`,
+    ),
     check("connection_sessions_state_hash_format", sql`${table.stateHash} ~ '^[0-9a-f]{64}$'`),
     check(
       "connection_sessions_expiry_after_creation",

@@ -1,6 +1,15 @@
+import {
+  openShellPluginPolicy,
+  verifyPluginRequestGuard,
+  assertPluginRequestPolicy,
+  googleRequestPolicyFromSandbox,
+} from "../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts";
+import {
+  managedMcpInstalls,
+  managedPluginAccountSlot,
+} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.mjs";
 import { runDocker, image, imageTestOptions } from "../helpers/runtime-image-startup.mjs";
-import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 import { openShellWorkspaceChartResources } from "../fixtures/openshell-workspace-chart.mjs";
@@ -283,6 +292,13 @@ function workspaceGatewayClient(seed = [], events = []) {
     },
     async updateProviderCredentials(_workspace, name, credentials) {
       calls.push(["updateProviderCredentials", name, structuredClone(credentials)]);
+    },
+    async updateProviderCredentialsConditionally(request, resourceVersion, _signal, clearKeys) {
+      const provider = providers.get(request.name);
+      assert.equal(provider.resourceVersion, resourceVersion);
+      calls.push(["updateProviderCredentialsConditionally", structuredClone(request), clearKeys]);
+      provider.resourceVersion = String(Number(provider.resourceVersion) + 1);
+      return { ...provider, mutationId: randomUUID(), targetReceipts: [] };
     },
     async updateProviderConfig(_workspace, name, config, expectedResourceVersion) {
       calls.push(["updateProviderConfig", name, structuredClone(config), expectedResourceVersion]);
@@ -1360,11 +1376,11 @@ test("a selected Google account keeps its request guard alongside an independent
 
   // For a host-wide source, stock OpenShell also marks the matching operation
   // endpoint credentialed in GetSandboxConfig. The saved CreateSandbox spec stays raw.
-  requestScope.path = "/**";
+  requestScope.destinations[0].path = "/**";
   providerRule.endpoints[0].path = "/**";
   created = undefined;
   await assert.rejects(provision, /pinned Google request routes/);
-  credentialedHosts.add(requestScope.host);
+  credentialedHosts.add(requestScope.destinations[0].host);
   await provision();
   assert.ok(
     created.spec.policy.network_policies["oce-google-requests"].endpoints.every(
@@ -1406,8 +1422,8 @@ test("one saved Google account serves its granted APIs through the same request 
   const client = workspaceGatewayClient();
   client.getGatewayInfo = async () => ({ extensions: [negotiatedGoogleGuard()] });
   const senderBinaries = [managedGoogleInstall.binaryPath, "/usr/bin/curl", "/usr/local/bin/node"];
+  // The Token Service owns this grant. The sender can deliver it with no native refresh role.
   const backend = backendFor(client);
-  backend.drivers.credential_refresh = "credential-refresh-openshell";
   const gateway = new OpenShellCredentialGatewayDriver(
     { binaries: ["/opt/openclaw/bin/openclaw"], toolBinaries: senderBinaries },
     { id: backend.drivers.credential_gateway, backend },
@@ -1470,7 +1486,7 @@ test("one saved Google account serves its granted APIs through the same request 
       sourceId,
       sourceType: source.type,
       credentialGatewayId: gateway.id,
-      accountDelivery: { refreshDriverId: backend.drivers.credential_refresh, profileId, config },
+      accountDelivery: { profileId, config },
     },
   ];
 
@@ -2033,9 +2049,7 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
       sourceId,
       ref,
       requestScope: {
-        host: "mcp.slack.com",
-        port: 443,
-        path: "/mcp",
+        destinations: [{ host: "mcp.slack.com", port: 443, path: "/mcp" }],
         scopes: ["search:read.public"],
       },
     },
@@ -2097,13 +2111,13 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
   revision.plugins = plugins;
   revision.credentialSources = [{ sourceId }];
   const requestScope = requirements.credentialAttachments[0].requestScope;
-  requestScope.port = 8443;
+  requestScope.destinations[0].port = 8443;
   await assert.rejects(
     provision,
     /requires its reviewed OpenShell provider and an isolated endpoint/,
   );
   assert.equal(created, undefined);
-  requestScope.port = 443;
+  requestScope.destinations[0].port = 443;
   await provision();
   const route = created.spec.policy.network_policies[routeName];
   assert.equal(route.endpoints[0].protocol, "mcp");
@@ -6091,9 +6105,9 @@ test("a directly configured Google OAuth source admits only the pinned executabl
           sourceId,
           ref: openShellProviderName(sourceId),
           requestScope: {
-            host: "gmail.googleapis.com",
-            port: 443,
-            path: "/gmail/v1/users/me/messages",
+            destinations: [
+              { host: "gmail.googleapis.com", port: 443, path: "/gmail/v1/users/me/messages" },
+            ],
             scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
           },
         },
@@ -6151,9 +6165,7 @@ test("a Slack MCP source stays independent and cannot acquire a broad REST crede
       sourceId,
       ref,
       requestScope: {
-        host: "mcp.slack.com",
-        port: 443,
-        path: "/mcp",
+        destinations: [{ host: "mcp.slack.com", port: 443, path: "/mcp" }],
         scopes: [],
       },
     },

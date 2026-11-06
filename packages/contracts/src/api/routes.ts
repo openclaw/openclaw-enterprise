@@ -199,7 +199,11 @@ export const occApiRoutes = [
         { harnessId: Type.String({ minLength: 1, maxLength: 100 }) },
         { additionalProperties: false },
       ),
-      response: { 200: AgentDeviceAuthorizationResponse, 501: ErrorResponseRef, ...createErrors },
+      response: {
+        200: AgentDeviceAuthorizationResponse,
+        501: ErrorResponseRef,
+        ...createErrors,
+      },
     },
   },
   {
@@ -219,7 +223,11 @@ export const occApiRoutes = [
         { additionalProperties: false },
       ),
       body: Type.Object({}, { additionalProperties: false }),
-      response: { 200: AgentDeviceAuthorizationResponse, 501: ErrorResponseRef, ...createErrors },
+      response: {
+        200: AgentDeviceAuthorizationResponse,
+        501: ErrorResponseRef,
+        ...createErrors,
+      },
     },
   },
   {
@@ -261,7 +269,11 @@ export const occApiRoutes = [
         { harnessId: Type.String({ minLength: 1, maxLength: 100 }) },
         { additionalProperties: false },
       ),
-      response: { 200: AgentDeviceAuthorizationResponse, 501: ErrorResponseRef, ...createErrors },
+      response: {
+        200: AgentDeviceAuthorizationResponse,
+        501: ErrorResponseRef,
+        ...createErrors,
+      },
     },
   },
   {
@@ -281,7 +293,11 @@ export const occApiRoutes = [
         { additionalProperties: false },
       ),
       body: Type.Object({}, { additionalProperties: false }),
-      response: { 200: AgentDeviceAuthorizationResponse, 501: ErrorResponseRef, ...createErrors },
+      response: {
+        200: AgentDeviceAuthorizationResponse,
+        501: ErrorResponseRef,
+        ...createErrors,
+      },
     },
   },
   {
@@ -1088,7 +1104,11 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: StartNamespaceConnectionBody,
-      response: { 201: ConnectionStartResponse, ...createErrors, 501: ErrorResponseRef },
+      response: {
+        201: ConnectionStartResponse,
+        ...createErrors,
+        501: ErrorResponseRef,
+      },
     },
   },
   {
@@ -1121,7 +1141,11 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       body: StartPluginConnectionBody,
-      response: { 201: ConnectionStartResponse, ...createErrors, 501: ErrorResponseRef },
+      response: {
+        201: ConnectionStartResponse,
+        ...createErrors,
+        501: ErrorResponseRef,
+      },
     },
   },
   {
@@ -1414,7 +1438,11 @@ export const occApiRoutes = [
     schema: {
       querystring: ServiceAccountDeleteQuery,
       params: ServiceAccountParams,
-      response: { 200: ServiceAccountForceDeletionResponse, 204: Type.Null(), ...mutationErrors },
+      response: {
+        200: ServiceAccountForceDeletionResponse,
+        204: Type.Null(),
+        ...mutationErrors,
+      },
     },
   },
   {
@@ -1750,12 +1778,19 @@ export const occApiRoutes = [
         {
           namespaceId: NamespaceId,
           agentId: AgentId,
-          approvalId: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }),
+          approvalId: Type.String({
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+          }),
         },
         { additionalProperties: false },
       ),
       body: Type.Object(
-        { expectedGeneration: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }) },
+        {
+          expectedGeneration: Type.Integer({
+            minimum: 1,
+            maximum: Number.MAX_SAFE_INTEGER,
+          }),
+        },
         { additionalProperties: false },
       ),
       response: { 204: Type.Null(), ...createErrors },
@@ -1855,7 +1890,11 @@ export const occApiRoutes = [
     schema: {
       params: SandboxPolicyParams,
       querystring: EmptyQuery,
-      response: { 200: SandboxPolicyViewResponse, ...mutationErrors, 503: ErrorResponseRef },
+      response: {
+        200: SandboxPolicyViewResponse,
+        ...mutationErrors,
+        503: ErrorResponseRef,
+      },
     },
   },
   {
@@ -1963,7 +2002,11 @@ export const occApiRoutes = [
       params: AgentProvisioningParams,
       // A failed plan whose Secret or ServiceAccount was deleted, or whose Harness
       // authentication no longer fits, is a conflict naming the cause.
-      response: { 200: AgentProvisioningStatusResponse, ...readErrors, 409: ErrorResponseRef },
+      response: {
+        200: AgentProvisioningStatusResponse,
+        ...readErrors,
+        409: ErrorResponseRef,
+      },
     },
   },
   {
@@ -2129,7 +2172,10 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { ...AgentParams.properties, ...FirstDeploymentRecoveryTuple.properties },
+        {
+          ...AgentParams.properties,
+          ...FirstDeploymentRecoveryTuple.properties,
+        },
         { additionalProperties: false },
       ),
       response: {

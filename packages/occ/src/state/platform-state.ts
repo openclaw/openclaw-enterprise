@@ -220,7 +220,9 @@ export interface AgentReadRepository {
 
 export interface AgentRepository extends AgentReadRepository {
   createAgent(
-    agent: Omit<Agent, "gatewayManagedMode"> & { readonly gatewayManagedMode?: boolean },
+    agent: Omit<Agent, "gatewayManagedMode"> & {
+      readonly gatewayManagedMode?: boolean;
+    },
   ): Promise<Readonly<Agent>>;
   setSandboxPolicyEditing(
     namespaceId: string,
@@ -410,7 +412,17 @@ export interface ConnectionTokenCustody {
   readonly nextRefreshAt?: string;
 }
 
+interface ConnectionDeliveryProfile {
+  readonly profileId: string;
+  readonly gatewayId: string;
+  readonly sourceType: string;
+}
+
 export interface SavedConnectionReadRepository {
+  listDeliveryProfiles(
+    namespaceId: string,
+    sourceId: string,
+  ): Promise<readonly ConnectionDeliveryProfile[]>;
   findTokenCustody(
     namespaceId: string,
     sourceId: string,
@@ -438,6 +450,11 @@ export interface SavedConnectionReadRepository {
 }
 
 export interface SavedConnectionRepository extends SavedConnectionReadRepository {
+  registerDeliveryProfile(
+    namespaceId: string,
+    sourceId: string,
+    profile: ConnectionDeliveryProfile,
+  ): Promise<void>;
   createTokenCustody(custody: ConnectionTokenCustody): Promise<void>;
   recordTokenSchedule(
     namespaceId: string,
@@ -765,7 +782,10 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
     }
     if (value.method === "credential_source") {
       return (
-        normalizeHarnessAuthBinding({ method: value.method, sourceId: value.sourceId }) !== null &&
+        normalizeHarnessAuthBinding({
+          method: value.method,
+          sourceId: value.sourceId,
+        }) !== null &&
         Object.keys(value).length === 5 &&
         isNonEmptyString(value.credentialGatewayId) &&
         isNonEmptyString(value.sourceType) &&
@@ -774,7 +794,10 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
           value.loginMode === "chatgptAuthTokens")
       );
     }
-    const binding = normalizeHarnessAuthBinding({ method: value.method, source: value.source });
+    const binding = normalizeHarnessAuthBinding({
+      method: value.method,
+      source: value.source,
+    });
     if (isSecretHarnessAuth(binding)) {
       return (
         Object.keys(value).length === 3 &&
@@ -901,7 +924,10 @@ export async function assertHarnessAuthAvailable(
 
 /** Validate new snapshots against rows held by the insertion transaction, never archive reads. */
 export async function assertRevisionAuthAvailable(
-  state: Pick<PlatformReadView, "secrets" | "serviceAccounts" | "credentialSources">,
+  state: Pick<
+    PlatformReadView,
+    "secrets" | "serviceAccounts" | "credentialSources" | "savedConnections"
+  >,
   revision: AgentRevision,
   loadSources: (
     ids: readonly string[],
@@ -942,6 +968,34 @@ export async function assertRevisionAuthAvailable(
       throw new ScopeViolationError(
         "The AgentRevision references an unavailable credential source.",
       );
+    }
+    const delivery = snapshot.accountDelivery;
+    if (delivery) {
+      const account = await state.savedConnections.findSavedConnection(
+        revision.namespaceId,
+        source.id,
+      );
+      const profiles = await state.savedConnections.listDeliveryProfiles(
+        revision.namespaceId,
+        source.id,
+      );
+      if (
+        source.ownerCapability !== "token_service" ||
+        source.type !== "oauth2-refresh-token" ||
+        !account ||
+        account.revocationRequestedBy ||
+        !profiles.some(
+          (profile) =>
+            profile.profileId === delivery.profileId &&
+            profile.gatewayId === snapshot.credentialGatewayId &&
+            profile.sourceType === snapshot.sourceType,
+        )
+      ) {
+        throw new ScopeViolationError(
+          "The AgentRevision account delivery does not match its saved connection and registered gateway profile.",
+        );
+      }
+      continue;
     }
     const ownerMatches =
       (source.ownerCapability === "credential_gateway" &&
@@ -991,17 +1045,55 @@ function agentCredentialSourceReference(
   return (bindings ?? []).some(({ sourceId }) => sourceId === credentialSourceId);
 }
 
-/** A revision freezes exactly the owner's non-model sources, in order. */
-export function credentialSourcesMatch(
+/** An attached account may have no sender. Every delivered source must retain its binding order. */
+export async function credentialSourcesMatch(
+  accounts: SavedConnectionRepository,
+  namespaceId: string,
   bindings: readonly AgentCredentialSourceBinding[] | undefined,
   snapshots: readonly CredentialSourceSnapshot[] | undefined,
-): boolean {
-  const owner = (bindings ?? []).map(({ sourceId }) => sourceId);
-  const frozen = (snapshots ?? []).map(({ sourceId }) => sourceId);
-  return owner.length === frozen.length && owner.every((sourceId, i) => sourceId === frozen[i]);
+): Promise<boolean> {
+  const frozen = snapshots ?? [];
+  let index = 0;
+  for (const { sourceId } of bindings ?? []) {
+    if (frozen[index]?.sourceId === sourceId) {
+      index++;
+    } else if (!(await accounts.findSavedConnection(namespaceId, sourceId))) {
+      return false;
+    }
+  }
+  return index === frozen.length;
 }
 
-export function validCredentialSourceSnapshots(value: unknown): boolean {
+function validAccountDelivery(snapshot: Record<string, unknown>, agentId: string): boolean {
+  const delivery = snapshot.accountDelivery;
+  if (
+    typeof delivery !== "object" ||
+    !delivery ||
+    Array.isArray(delivery) ||
+    Object.keys(delivery).sort().join(",") !== "config,profileId"
+  ) {
+    return false;
+  }
+  const { config, profileId } = delivery as Record<string, unknown>;
+  return (
+    isNonEmptyString(snapshot.sourceId) &&
+    isNonEmptyString(snapshot.credentialGatewayId) &&
+    typeof config === "object" &&
+    config !== null &&
+    !Array.isArray(config) &&
+    (config as Record<string, unknown>).oauth_owner === "token_service" &&
+    Object.values(config).every((value) => typeof value === "string") &&
+    profileId ===
+      accountDeliveryProfileId(
+        snapshot.sourceId,
+        snapshot.credentialGatewayId,
+        agentId,
+        config as Record<string, string>,
+      )
+  );
+}
+
+export function validCredentialSourceSnapshots(value: unknown, agentId: string): boolean {
   if (value === undefined) {
     return true;
   }
@@ -1016,9 +1108,12 @@ export function validCredentialSourceSnapshots(value: unknown): boolean {
     const keys = Object.keys(entry).sort();
     const snapshot = entry as Record<string, unknown>;
     const valid =
-      ["credentialGatewayId,sourceId,sourceType", "credentialProxyId,sourceId,sourceType"].includes(
-        keys.join(","),
-      ) &&
+      ([
+        "credentialGatewayId,sourceId,sourceType",
+        "credentialProxyId,sourceId,sourceType",
+      ].includes(keys.join(",")) ||
+        (keys.join(",") === "accountDelivery,credentialGatewayId,sourceId,sourceType" &&
+          validAccountDelivery(snapshot, agentId))) &&
       isNonEmptyString(snapshot.sourceId) &&
       isNonEmptyString(snapshot.credentialGatewayId ?? snapshot.credentialProxyId) &&
       isNonEmptyString(snapshot.sourceType) &&
@@ -1068,7 +1163,7 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     (revision.secretDriverId !== undefined && !isNonEmptyString(revision.secretDriverId)) ||
     Object.hasOwn(revision, "serviceAccount") ||
     !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
-    !validCredentialSourceSnapshots(revision.credentialSources) ||
+    !validCredentialSourceSnapshots(revision.credentialSources, revision.agentId) ||
     !validPluginRevisionState(revision.plugins) ||
     !validPluginApprovers(revision.pluginApprovers) ||
     (revision.repositoryCredentials !== undefined &&
@@ -1255,6 +1350,7 @@ interface PlatformSnapshot {
   readonly oauthConnectionTemplateVersions: Map<string, Readonly<OAuthConnectionTemplateVersion>>;
   readonly connectionTokenCustody: Map<string, Readonly<ConnectionTokenCustody>>;
   readonly savedConnections: Map<string, Readonly<SavedConnection>>;
+  readonly connectionProfiles: Map<string, readonly ConnectionDeliveryProfile[]>;
   readonly connectionSessions: Map<string, Readonly<ConnectionSession>>;
   readonly presets: Map<string, Readonly<Preset>>;
   readonly secrets: Map<string, Readonly<Secret>>;
@@ -1382,6 +1478,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     oauthConnectionTemplateVersions: new Map(snapshot.oauthConnectionTemplateVersions),
     connectionTokenCustody: new Map(snapshot.connectionTokenCustody),
     savedConnections: new Map(snapshot.savedConnections),
+    connectionProfiles: new Map(snapshot.connectionProfiles),
     connectionSessions: new Map(snapshot.connectionSessions),
     presets: new Map(Array.from(snapshot.presets, ([key, preset]) => [key, storedCopy(preset)])),
     secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, storedCopy(secret)])),
@@ -2205,6 +2302,15 @@ function repositories(
     }
   };
   const savedConnections: SavedConnectionRepository = {
+    listDeliveryProfiles: async (namespaceId, sourceId) =>
+      snapshot.connectionProfiles.get(agentKey(namespaceId, sourceId)) ?? [],
+    registerDeliveryProfile: async (namespaceId, sourceId, profile) => {
+      const key = agentKey(namespaceId, sourceId);
+      const profiles = snapshot.connectionProfiles.get(key) ?? [];
+      if (!profiles.some((p) => p.profileId === profile.profileId)) {
+        snapshot.connectionProfiles.set(key, immutableCopy([...profiles, profile]));
+      }
+    },
     findTokenCustody: async (namespaceId, sourceId) => {
       const custody = snapshot.connectionTokenCustody.get(agentKey(namespaceId, sourceId));
       return (
@@ -2366,8 +2472,11 @@ function repositories(
       snapshot.savedConnections.set(key, saved);
       return immutableCopy(saved);
     },
-    deleteSavedConnection: async (namespaceId, credentialSourceId) =>
-      snapshot.savedConnections.delete(agentKey(namespaceId, credentialSourceId)),
+    deleteSavedConnection: async (namespaceId, credentialSourceId) => {
+      const key = agentKey(namespaceId, credentialSourceId);
+      snapshot.connectionProfiles.delete(key);
+      return snapshot.savedConnections.delete(key);
+    },
     createConnectionSession: async (session) => {
       assertInitialized(snapshot);
       assertConnectionScope(session);
@@ -2648,7 +2757,10 @@ function repositories(
     },
     listReferences: async (namespaceId, secretId, limit) => {
       if ((await secrets.findSecret(namespaceId, secretId)) === undefined) {
-        return Object.freeze({ references: Object.freeze([]), truncated: false });
+        return Object.freeze({
+          references: Object.freeze([]),
+          truncated: false,
+        });
       }
       const found = new Map<string, Readonly<SecretReferenceEntry>>();
       const add = (kind: SecretReferenceKind, id: string): void => {
@@ -2960,7 +3072,11 @@ function repositories(
       if (current === undefined || current.state !== "pending") {
         return undefined;
       }
-      const saved = immutableCopy({ ...current, state: "revoked" as const, completedAt });
+      const saved = immutableCopy({
+        ...current,
+        state: "revoked" as const,
+        completedAt,
+      });
       snapshot.credentialWithdrawals.set(
         withdrawalKey(namespaceId, revisionId, credentialSourceId),
         saved,
@@ -3116,6 +3232,7 @@ function repositories(
       snapshot.credentialSources.delete(key);
       snapshot.connectionTokenCustody.delete(key);
       snapshot.savedConnections.delete(key);
+      snapshot.connectionProfiles.delete(key);
       for (const [hash, session] of snapshot.connectionSessions) {
         if (
           session.namespaceId === namespaceId &&
@@ -3444,7 +3561,10 @@ function repositories(
       if (current === undefined) {
         return undefined;
       }
-      const saved = immutableCopy({ ...current, sandboxPolicyEditing: enabled });
+      const saved = immutableCopy({
+        ...current,
+        sandboxPolicyEditing: enabled,
+      });
       snapshot.agents.set(key, saved);
       return saved;
     },
@@ -3728,7 +3848,10 @@ function repositories(
           });
         }
       }
-      const updated = immutableCopy({ ...current, activeRevisionId: candidateRevisionId });
+      const updated = immutableCopy({
+        ...current,
+        activeRevisionId: candidateRevisionId,
+      });
       snapshot.agents.set(agentKey(namespaceId, agentId), updated);
       return updated;
     },
@@ -3786,7 +3909,14 @@ function repositories(
                 (revision) => revision.namespaceId === namespaceId && revision.agentId === agentId,
               )
               .map(({ id, namespaceId, agentId, revision, backendId, createdAt }) =>
-                Object.freeze({ id, namespaceId, agentId, revision, backendId, createdAt }),
+                Object.freeze({
+                  id,
+                  namespaceId,
+                  agentId,
+                  revision,
+                  backendId,
+                  createdAt,
+                }),
               )
           : [],
       ),
@@ -3844,12 +3974,17 @@ function repositories(
         owner.backendId !== revision.backendId ||
         revision.gatewayManagedMode !== owner.gatewayManagedMode ||
         !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth) ||
-        !credentialSourcesMatch(owner.credentialSources, revision.credentialSources)
+        !(await credentialSourcesMatch(
+          savedConnections,
+          revision.namespaceId,
+          owner.credentialSources,
+          revision.credentialSources,
+        ))
       ) {
         throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
       }
       await assertRevisionAuthAvailable(
-        { secrets, serviceAccounts, credentialSources },
+        { secrets, serviceAccounts, credentialSources, savedConnections },
         revision,
         async (ids) => {
           const sources = await Promise.all(
@@ -4481,6 +4616,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     oauthConnectionTemplateVersions: new Map(),
     connectionTokenCustody: new Map(),
     savedConnections: new Map(),
+    connectionProfiles: new Map(),
     connectionSessions: new Map(),
     presets: new Map(),
     secrets: new Map(),
@@ -4513,7 +4649,9 @@ export class InMemoryPlatformState implements PlatformStateStore {
 
   constructor(options: InMemoryPlatformStateOptions = {}) {
     this.auditSink = options.auditSink;
-    this.preparedTokenProof = options.preparedTokenProof ?? { current: async () => false };
+    this.preparedTokenProof = options.preparedTokenProof ?? {
+      current: async () => false,
+    };
     this.iamSubjects = {
       identities: immutableCopy(options.iamIdentities ?? []),
       resolve: options.resolveIAMIdentity,
