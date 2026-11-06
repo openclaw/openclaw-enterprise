@@ -113,6 +113,7 @@ export const CreateProvisioningSources = {
   name: "Provisioning with saved Sources",
 };
 export const CreateDeploymentPending = story("createDeploymentPending");
+export const CreateProvisioningSteps = story("createProvisioningSteps");
 export const CreatePending = story("createPending");
 export const CreateDeploymentNamedWait = story("createDeploymentNamedWait");
 export const CreateDeploymentPodQuotaFull = story("createDeploymentPodQuotaFull");
