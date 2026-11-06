@@ -52,7 +52,9 @@ test(
     const readsBeforeRefusal = f.secretReads;
     const registration = { source, secret: fixture.issuer };
     for (const invalid of [registration, { ...registration, kind: "prepared_source" }]) {
-      await assert.rejects(tokens.register(invalid, t.signal));
+      await assert.rejects(tokens.register(invalid, t.signal), {
+        message: /provider does not support this token kind/,
+      });
     }
     assert.equal(
       f.secretReads,
