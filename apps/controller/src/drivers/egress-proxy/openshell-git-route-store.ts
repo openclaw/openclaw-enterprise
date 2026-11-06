@@ -84,14 +84,10 @@ export interface OpenShellGitRouteStore {
   /**
    * Takes the route over for this worker: the fence moves, so the previous holder's writes
    * fail from here. A blocked route is answered as it is and never re-fenced; no route
-   * answers undefined.
+   * answers undefined. A replacement cannot inherit an observed hook: taking the fence
+   * closes the route in the same commit.
    */
-  adopt(
-    revisionId: string,
-    workerInstance: string,
-    /** A replacement cannot inherit an observed hook. Take the fence and close it in one commit. */
-    disposition?: "close-preview",
-  ): Promise<OpenShellGitRouteRecord | undefined>;
+  adopt(revisionId: string, workerInstance: string): Promise<OpenShellGitRouteRecord | undefined>;
   /** Read a known standing installation under current authority; never take its fence or open it. */
   standing(
     revision: Readonly<AgentRevision>,
@@ -318,18 +314,13 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
   async adopt(
     revisionId: string,
     workerInstance: string,
-    disposition?: "close-preview",
   ): Promise<OpenShellGitRouteRecord | undefined> {
     return this.query(async (c) => {
       const key = await this.key(c, revisionId);
       if (!key) {
         return;
       }
-      await new CredentialDeliveries(c).adopt(
-        key,
-        workerInstance,
-        disposition === "close-preview" ? "worker_replaced" : undefined,
-      );
+      await new CredentialDeliveries(c).adopt(key, workerInstance, "worker_replaced");
       const { rows } = await c.query(
         `SELECT ${columns} FROM ${table} r WHERE revision_id=$1 AND binding_id=$2`,
         [key.revisionId, key.bindingId],

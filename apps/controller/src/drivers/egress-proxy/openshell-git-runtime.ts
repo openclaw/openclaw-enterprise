@@ -468,6 +468,16 @@ export class OpenShellGitRuntime {
     signal: AbortSignal,
     cold?: () => Promise<StandingGitExecution | undefined>,
   ) {
+    // The worker uses this identity to authorize successor credential sessions.
+    // Historical installation-wide routes can only finish their original detach.
+    if (
+      revision.executionAdmission?.version === 5 &&
+      revision.repositoryCredentials?.bindings.some(
+        ({ profile }) => profile === githubInstallationProfile,
+      )
+    ) {
+      return;
+    }
     if (this.states.get(revision.id)?.blocked !== undefined) {
       return;
     }
@@ -522,12 +532,7 @@ export class OpenShellGitRuntime {
         ? identity
         : undefined;
     }
-    if (
-      !entry?.opened ||
-      entry.blocked ||
-      entry.unverified ||
-      !isDeepStrictEqual(entry.revision, revision)
-    ) {
+    if (!entry?.opened || entry.blocked || !isDeepStrictEqual(entry.revision, revision)) {
       return;
     }
     if (!isDeepStrictEqual(this.scope(revision), entry.authorization)) {
@@ -540,7 +545,6 @@ export class OpenShellGitRuntime {
       !entry.sandboxId ||
       !entry.opened ||
       entry.blocked ||
-      entry.unverified ||
       signal.aborted ||
       this.stopped.signal.aborted
     ) {
@@ -620,10 +624,7 @@ export class OpenShellGitRuntime {
       pending = (async (): Promise<Entry> => {
         // Close a route this worker did not prepare; a failed store read can be retried.
         const credentials = revision.repositoryCredentials!;
-        const persisted = await read(
-          () => routes.adopt(revision.id, this.instance, "close-preview"),
-          signal,
-        );
+        const persisted = await read(() => routes.adopt(revision.id, this.instance), signal);
         if (persisted !== undefined) {
           // A restart cannot inherit this observation. Taking the fence also closed the route,
           // even if the old worker stopped before its terminal reason could be recorded.

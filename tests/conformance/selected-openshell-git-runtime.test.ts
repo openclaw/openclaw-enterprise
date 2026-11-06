@@ -64,6 +64,11 @@ async function selectedV5(t: TestContext) {
     audience: "preview",
   };
   const f = bootstrappingOpenShellGitRuntimeFixture(options);
+  f.owner.material = {
+    ...f.owner.material,
+    preparationAttemptId: randomUUID(),
+    materialVersion: randomUUID(),
+  };
   t.after(() => f.runtime.close());
   assert.equal(store.rows.size, 0);
   assert.equal(f.runtime["entries"].size, 0);
@@ -1112,7 +1117,7 @@ test("selected v5 timestamps distinguish re-observation from new material", asyn
   await new Promise<void>((resolve) => setTimeout(resolve, 5));
   f.owner.material = {
     ...f.owner.material,
-    materialVersion: "version-two",
+    materialVersion: randomUUID(),
     value: "controlled-version-two-token",
   };
   await reconcile();
@@ -1965,7 +1970,7 @@ for (const reason of ["withdrawn", "repository_expired", "worker_replaced"] as c
           await close();
           return writing(...args);
         };
-        f.owner.material = { ...f.owner.material, materialVersion: "version-two" };
+        f.owner.material = { ...f.owner.material, materialVersion: randomUUID() };
         await reconcile();
       } else {
         await close();
@@ -1980,7 +1985,7 @@ for (const reason of ["withdrawn", "repository_expired", "worker_replaced"] as c
       if (reason === "worker_replaced") {
         assert.equal(moved.workerInstance, "worker-two");
         assert.ok(moved.fence > before.fence);
-        assert.equal(moved.blocked, undefined);
+        assert.equal(moved.blocked, "worker_replaced");
         assert.equal(f.denials().at(-1)?.reasonCode, "route_blocked");
         assert.equal(f.runtime["entries"].has(revision.id), false);
         assert.equal(f.runtime["states"].has(revision.id), false);
@@ -2037,7 +2042,7 @@ for (const outcome of [
     const before = structuredClone(store.rows.get(revision.id));
     assert.ok(before?.generation);
     assert.equal(before.writePending, undefined);
-    assert.equal(before.material.materialVersion, "version-one");
+    assert.equal(before.material.materialVersion, f.owner.material.materialVersion);
     assert.equal(activity.updates, 1);
     assert.ok(await lookup(), "original selected route works before rotation");
     const recipient = preview.recipient;
@@ -2047,7 +2052,7 @@ for (const outcome of [
     const nextMaterial = {
       ...f.owner.material,
       value: "synthetic-late-second-token",
-      materialVersion: "version-two",
+      materialVersion: randomUUID(),
     };
     const accepted = deferred();
     const resume = deferred();
@@ -2390,7 +2395,7 @@ for (const phase of ["before first send", "before send", "after acceptance"] as 
     const before = structuredClone(row);
     const expected = first
       ? f.owner.material
-      : { ...f.owner.material, materialVersion: "version-two" };
+      : { ...f.owner.material, materialVersion: randomUUID() };
     const send = client.updateProviderCredentialsConditionally?.bind(client);
     assert.ok(send);
     const read = f.owner.readOpenShellMaterial.bind(f.owner);
@@ -2543,7 +2548,7 @@ for (const { first, outcome } of [true, false].flatMap((first) =>
       : {
           ...originalMaterial,
           value: "synthetic-unsent-second-token",
-          materialVersion: "version-unsent-two",
+          materialVersion: randomUUID(),
         };
     const readMaterial = f.owner.readOpenShellMaterial.bind(f.owner);
     type OwnerRead = Parameters<typeof f.owner.readOpenShellMaterial>;

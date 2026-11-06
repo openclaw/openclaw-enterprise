@@ -304,11 +304,11 @@ Transient observation failure closes access until the same installation verifies
 (1–10 s backoff). Replacement workers cannot adopt held-launch paths (`github-repository`,
 protected `git-write`, installation preview): deploy a new revision after
 `worker_replaced` or terminal `bootstrap_failed`.
-Live preparation and background issuance never restore historical installation-wide
+Live preparation and background issuance refuse historical v4 and online installation-wide
 routes, including open, unexpired sessions. Installation-wide issuance requires
 explicit observed-hook preview.
-Replacement workers may verify historical metadata and finish the original detach
-without requesting credentials or taking over delivery. No path replays uncertain
+Replacement workers may finish the original detach using historical metadata,
+but cannot renew its session or take over delivery. No path replays uncertain
 provider writes; writes retain their deadlines. See
 [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
 Prepared-material expiry, quarantine and retirement belong to

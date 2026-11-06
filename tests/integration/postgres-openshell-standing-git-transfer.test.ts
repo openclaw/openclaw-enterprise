@@ -9,6 +9,7 @@ import {
 import { witnessOpenShellGitLaunch } from "../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts";
 import { openShellGitExecutionIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts";
 
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -28,7 +29,7 @@ import type { EgressAuthorityConfiguration } from "../../apps/controller/src/com
 
 // Historical persisted facts only: never prepare or adopt this retired live profile.
 test(
-  "historical v5 installation cold-verifies and settles the original lost detach without replay",
+  "historical v5 installation cannot renew and settles the original lost detach without replay",
   { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
     const historicalOnly = () => {
@@ -51,7 +52,7 @@ test(
         } as never,
       },
     );
-    const { f, key, revision, registry, owner, approval } = await standingExecutionFixture(
+    const { f, key, revision, registry, owner, approval, driver } = await standingExecutionFixture(
       t,
       import.meta.url,
       async (_pool, namespaceId) => ({
@@ -109,7 +110,6 @@ test(
     const sandboxId = randomUUID();
     const model = "original-model";
     const deadline = persisted.repositoryCredentials!.deadlineWallMs;
-    const calls: string[] = [];
     const { client, world } = await gitExpiryGateway(t, {
       workspace,
       sandbox,
@@ -117,16 +117,6 @@ test(
       model,
       deadline,
       platformProfile: false,
-      configure(methods) {
-        // Observe requests, preserving every stock handler, including DETACH.
-        for (const name of Object.keys(methods)) {
-          const handle = methods[name];
-          methods[name] = (request: unknown) => {
-            calls.push(name);
-            return handle(request);
-          };
-        }
-      },
     });
     const scope = {
       workspace,
@@ -202,7 +192,7 @@ test(
       networkInstanceId: status.networkInstanceId,
     };
     assert.equal(observed.sandboxId, sandboxId);
-    let workload = "original-workload-uid";
+    const workload = "original-workload-uid";
     const continuity = { model, workload: async () => workload };
     const box = await client.getSandbox({ workspace, name: sandbox }, t.signal);
     assert.ok(box);
@@ -296,7 +286,6 @@ test(
       detaches: [...world.detaches],
     });
     const before = mutations();
-    calls.length = 0;
     let authorityCalls = 0;
     const noAuthority = async () => {
       authorityCalls++;
@@ -353,55 +342,129 @@ test(
       "record the original witness within its admission",
     );
     assert.equal(cold["entries"].size, 0);
-    assert.deepEqual(await access.verifyExecution(context), identity);
-    workload = "substituted-workload";
     assert.equal(await access.verifyExecution(context), undefined);
-    workload = "original-workload-uid";
-    world.id = randomUUID();
-    try {
-      await assert.rejects(
-        access.verifyExecution(context),
-        /OpenShell cannot retain this execution after Git expiry/,
-      );
-    } finally {
-      world.id = sandboxId;
-    }
-    assert.equal(
-      await access.verifyExecution({
-        ...context,
-        revision: {
-          ...persisted,
-          repositoryCredentials: {
-            ...persisted.repositoryCredentials!,
-            standingApprovalGeneration:
-              persisted.repositoryCredentials!.standingApprovalGeneration! + 1,
-          },
-        },
-      }),
-      undefined,
-    );
-    assert.deepEqual(await access.verifyExecution(context), identity);
     assert.equal(cold["entries"].size, 0);
     assert.equal(authorityCalls, 0);
     assert.equal(lookup.mock.callCount(), 0);
     assert.deepEqual(await routes.standing(persisted), accepted);
     assert.deepEqual(await durable(), baseline);
     assert.deepEqual(mutations(), before);
-    assert.ok(calls.every((name) => name.startsWith("Get")));
-    for (const name of [
-      "GetGatewayInfo",
-      "GetWorkspace",
-      "GetProvider",
-      "GetProviderProfile",
-      "GetSandbox",
-      "GetSandboxProviderStatus",
-    ]) {
-      assert.ok(calls.includes(name), name);
-    }
     assert.equal(
       (await client.getSandboxProviderStatus(workspace, sandbox, model, t.signal)).state,
       "PROVIDER_READINESS_STATE_READY",
     );
+
+    // A historical witness is still useful for cleanup, but the worker must not use it
+    // to renew this retired profile. Exercise the real queue and session lifecycle while
+    // the original session is inside the standing renewal window.
+    const admissionId = randomUUID();
+    await f.state.transact(async (u) => {
+      await u.repositorySessions.createAttempt({
+        ...key,
+        repositoryRef: persisted.repositoryCredentials!.bindings[0]!.repositoryRef,
+        admissionId,
+        durationSeconds: 20,
+        deadlineWallMs: deadline,
+        createdAt: new Date().toISOString(),
+        brokerProtocol: 2,
+      });
+      await u.repositorySessions.advanceAttempt({
+        admissionId,
+        expectedPhase: "opening",
+        phase: "open",
+        sessionId: randomUUID(),
+        updatedAt: new Date().toISOString(),
+      });
+    });
+    const attemptsBefore = await f.state.read((v) =>
+      v.repositorySessions.listRevisionAttempts(key),
+    );
+    const maintenanceKey = `agent_revision:${revision.id}:maintenance:0`;
+    await f.state.transactWithQueue(async (_unit, queue) => {
+      const original = await queue.claim();
+      assert.ok(original);
+      assert.equal(original.idempotencyKey, `agent_revision:${revision.id}:reconcile`);
+      await queue.complete(original, { code: "REVISION_ALREADY_ACTIVE" });
+      await queue.enqueue({
+        idempotencyKey: maintenanceKey,
+        ...key,
+        actorId: f.actor.id,
+        availableAt: new Date(),
+      });
+    });
+    let stopped: Promise<void> | undefined;
+    let maintenanceCode: string | undefined;
+    let preparations = 0;
+    let verifications = 0;
+    const computeAdmission = createTestKubernetesComputeDriver(f.compute.id, {
+      repositoryCredentials: true,
+      protectedDriver: release.owner,
+      credentialGatewayDriver: gateway,
+    });
+    await f.start(
+      {
+        ...f.compute,
+        validateExecutionAdmission:
+          computeAdmission.validateExecutionAdmission.bind(computeAdmission),
+        validateRepositoryCredentials:
+          computeAdmission.validateRepositoryCredentials.bind(computeAdmission),
+        async verifyRepositoryExecution() {
+          verifications++;
+          return access.verifyExecution(context);
+        },
+        async prepareRevision() {
+          preparations++;
+          throw new Error("historical execution cannot be prepared");
+        },
+        async observeRevision() {
+          return { state: "running" as const };
+        },
+      },
+      {
+        emit(event) {
+          if (event?.event === "worker.completed" && event.revisionId === revision.id && !stopped) {
+            maintenanceCode = typeof event.code === "string" ? event.code : undefined;
+            stopped = f.stop();
+          }
+        },
+        transformDrivers: (d: { installation: { drivers: object } }) => ({
+          ...d,
+          repositoryPolicy: driver,
+          credentialGatewayDriver: gateway,
+          protectedDriver: release.owner,
+          sandboxDriver: release.owner.require("sandbox"),
+          proxyDriver: release.owner.require("credential_proxy"),
+          installation: {
+            ...d.installation,
+            drivers: {
+              ...d.installation.drivers,
+              credential_gateway: { id: gateway.id },
+            },
+          },
+        }),
+      },
+    );
+    await waitUntil("historical maintenance to finish its first pass", () => stopped !== undefined);
+    await stopped;
+    assert.ok(
+      verifications > 0,
+      `the worker must reach the real cold execution verifier: ${maintenanceCode}`,
+    );
+    assert.deepEqual(
+      await f.state.read((v) => v.repositorySessions.listRevisionAttempts(key)),
+      attemptsBefore,
+      "historical evidence must not dispose its predecessor or create a successor session",
+    );
+    assert.equal(preparations, 0);
+    assert.equal(maintenanceCode, "REPOSITORY_EXECUTION_UNVERIFIED");
+    const deferred = await f.state.transactWithQueue((_unit, queue) =>
+      queue.findWork(maintenanceKey),
+    );
+    assert.equal(deferred?.state, "queued");
+    assert.equal(deferred?.attemptCount, 0);
+    assert.deepEqual(await durable(), baseline);
+    assert.deepEqual(mutations(), before);
+    assert.equal(authorityCalls, 0);
 
     await waitUntil("the original admission deadline on the PostgreSQL clock", admissionExpired, {
       timeoutMs: 23_000,
@@ -431,10 +494,11 @@ test(
     assert.equal(await access.verifyExecution(context), undefined);
     // Use the guarded queue handoff the Worker makes after observing this withdrawal.
     // The fixture does not dispatch another startup for the retired profile.
+    await f.advanceMaintenance(revision);
     await f.state.transactWithQueue(async (_unit, queue) => {
       const claim = await queue.claim();
       assert.ok(claim);
-      assert.equal(claim.idempotencyKey, `agent_revision:${revision.id}:reconcile`);
+      assert.equal(claim.idempotencyKey, maintenanceKey);
       assert.ok(await queue.enqueueRepositoryCleanup(claim, key, "standing-withdrawal"));
       await queue.complete(claim, { code: "REPOSITORY_STANDING_APPROVAL_REMOVED" });
     });

@@ -483,18 +483,21 @@ test(
 );
 
 test(
-  "OpenShell preparation refuses historical v5 installation access and preserves v6 observed-hook custody",
+  "OpenShell preparation refuses historical custody and preserves v6 observed-hook custody",
   requiresPostgres,
   async (t) => {
-    for (const version of [5, 6] as const) {
+    for (const version of [4, 5, 6] as const) {
       await t.test(`v${version}`, async (t) => {
         const f = await fixture(t, { installationAccess: true });
         await disposeNativeSession(f);
-        const binding = resolveGitHubRepositoryBinding(f.registry, {
-          namespaceId: f.revision.namespaceId,
-          repositoryRef: "team-install",
-          profile: "github-installation",
-        });
+        const binding =
+          version === 4
+            ? f.binding
+            : resolveGitHubRepositoryBinding(f.registry, {
+                namespaceId: f.revision.namespaceId,
+                repositoryRef: "team-install",
+                profile: "github-installation",
+              });
         const driver = {
           id: "installation-custody",
           implementation: "openshell",
@@ -515,14 +518,14 @@ test(
           undefined,
           undefined,
           undefined,
-          version,
+          version === 4 ? undefined : version,
         );
         const routes = new PostgresOpenShellGitRouteStore(f.pool);
         const { observed } = await recordBootstrapRoute(f, routes, installation, revisionId);
         const route = { revisionId, fence: 1, observed };
-        if (version === 5) {
+        if (version !== 6) {
           // Reconstruct an otherwise live historical admission. The background owner must
-          // reject this retired profile even without a runtime.prepare or sender lookup.
+          // reject this retired authorization even without a runtime.prepare or sender lookup.
           const { rows } = await f.pool.query(
             `SELECT s.phase, s.broker_protocol, s.live_revision_id,
           s.deadline_wall_ms > extract(epoch FROM clock_timestamp())*1000 AS unexpired,
@@ -549,9 +552,9 @@ test(
               unexpired: true,
               active_revision_id: revisionId,
               desired_runtime_state: "running",
-              version: "5",
-              authorization: "online-request",
-              delivery_profile: "github_installation",
+              version: String(version),
+              authorization: version === 4 ? null : "online-request",
+              delivery_profile: version === 4 ? null : "github_installation",
               delivery_revision: revisionId,
               blocked: null,
               settlement: "snapshot",
@@ -559,15 +562,10 @@ test(
           ]);
           assert.deepEqual(f.gh.trace, []);
           await owner.maintain();
-          assert.deepEqual(
-            f.gh.trace,
-            [],
-            "historical live installation access cannot contact the issuer",
-          );
-          assert.deepEqual(
-            await owner.protectedGit!.online.githubInstallation!.readMaterial(route, t.signal),
-            { absent: "unprepared" },
-          );
+          assert.deepEqual(f.gh.trace, [], "historical custody cannot contact the issuer");
+          const authority =
+            version === 4 ? owner.protectedGit! : owner.protectedGit!.online.githubInstallation!;
+          assert.deepEqual(await authority.readMaterial(route, t.signal), { absent: "unprepared" });
           return;
         }
         const selected = owner.protectedGit!.observedHook!;
@@ -603,7 +601,15 @@ test(
       implementation: "openshell",
       configurationId: "c".repeat(64),
     };
-    const { installation, revisionId } = await admitProtectedSession(f, driver, f.binding);
+    const { installation, revisionId } = await admitProtectedSession(
+      f,
+      driver,
+      f.binding,
+      undefined,
+      undefined,
+      undefined,
+      5,
+    );
     const routes = new PostgresOpenShellGitRouteStore(f.pool);
     const { observed, generation } = await recordBootstrapRoute(
       f,
@@ -636,7 +642,7 @@ test(
     assert.ok(owner.protectedGit, "the protected Git authority is selected");
     await owner.maintain();
     const selectedRoute = { revisionId, fence: 1, observed };
-    const selected = await owner.protectedGit.readMaterial(selectedRoute, t.signal);
+    const selected = await owner.protectedGit.online.readMaterial(selectedRoute, t.signal);
     assert.ok(
       selected && !("absent" in selected),
       "the real prepared owner selects committed material",
@@ -647,12 +653,12 @@ test(
     };
     assert.equal(await routes.writing(revisionId, 1, "rotate", a), 2);
     assert.deepEqual(
-      await owner.protectedGit.readMaterial(selectedRoute, t.signal),
+      await owner.protectedGit.online.readMaterial(selectedRoute, t.signal),
       { absent: "unprepared" },
       "the real custody reader refuses the pre-reservation fence",
     );
     assert.deepEqual(
-      await owner.protectedGit.readMaterial({ ...selectedRoute, fence: 2 }, t.signal),
+      await owner.protectedGit.online.readMaterial({ ...selectedRoute, fence: 2 }, t.signal),
       selected,
       "the real custody reader preserves the material and recipient at the reservation fence",
     );
@@ -1446,8 +1452,12 @@ async function admitProtectedSession(
   pendingMember?: string,
   mode?: 5 | 6 | 7,
 ) {
-  if (mode === 5 || mode === 6) {
+  if (mode === 6) {
     assert.equal(binding.profile, "github-installation");
+    assert.deepEqual(bindings, [binding]);
+  }
+  if (mode === 5) {
+    assert.ok(binding.profile === "git-write" || binding.profile === "github-installation");
     assert.deepEqual(bindings, [binding]);
   }
   if (mode === 7) {

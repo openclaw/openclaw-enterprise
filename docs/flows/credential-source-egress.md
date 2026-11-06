@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: 2026-11-05
-last_updated_session: codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676
+updated: 2026-11-06
+last_updated_session: authoring-run/96255fab-cb34-45d9-b940-d3055029e29f
 ---
 
 # Protected credential request flow
@@ -296,12 +296,13 @@ worker, including bootstrap. Neither grants request authority.
 cancels only definitely unsent writes. Uncertain writes stay pending and blocked.
 `release` drops closed routes whose Sandbox is gone; refusal stays.
 `prepare` requires held launch or explicit installation preview and closes another
-worker's persisted route before credential access. Historical `verifyExecution`
-permits only cleanup; `retireExpiredRepositoryAccess` settles the original fenced detach.
+worker's persisted route before credential access. `verifyExecution` refuses historical
+installation-wide routes before the worker can renew their sessions.
+`retireExpiredRepositoryAccess` still settles the original fenced detach.
 Before transport starts, the background owner discovers sessions.
-`openshell-repository-git-evidence.ts:openShellGitRecipientEvidence` excludes historical
-online installation-wide issuance while retaining selected delivery and explicit
-observed-hook preview.
+`openshell-repository-git-evidence.ts:openShellGitRecipientEvidence` requires online
+or observed-hook authorization for issuance. Historical v4 and online installation-wide
+routes cannot issue; selected delivery and explicit observed-hook preview remain supported.
 See [restart behavior](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery).
 
 Deletion retains custody but stops use.
@@ -328,6 +329,8 @@ caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-06 02:38: Refuse historical Git issuance and session renewal while preserving original detach recovery. (authoring-run/96255fab-cb34-45d9-b940-d3055029e29f - 37b81d16bbbb3f0c864fc652060075c06eb4dc52)
 
 - 2026-11-05 23:21: Trace request-time token resolution and the permission check before releasing a credential header. (codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676 - 614169814)
 

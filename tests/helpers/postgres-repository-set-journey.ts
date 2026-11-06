@@ -1473,6 +1473,11 @@ async function repositoryGitJourney(
     };
     const pendingReduction = await reduction();
     assert.ok(pendingReduction.request_id);
+    assert.equal(
+      pendingReduction.observed_generation,
+      null,
+      "the replacement must recover an unconfirmed detach",
+    );
     await runtime.close();
     runtime = createRuntime();
     runtime.connectRouteStore(f.observerPool, (event) => events.push(event));

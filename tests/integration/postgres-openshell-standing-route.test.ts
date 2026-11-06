@@ -546,7 +546,7 @@ for (const fault of ["before write", "after commit", "during worker replacement"
       const replaced = fault === "during worker replacement";
       if (replaced) {
         // A restarted preview closes instead of inheriting the old launcher's observation.
-        const next = await routes.adopt(id, randomUUID(), "close-preview");
+        const next = await routes.adopt(id, randomUUID());
         assert.equal(next?.blocked, "worker_replaced");
         assert.equal(next?.fence, 2);
       }
