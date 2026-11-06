@@ -251,7 +251,7 @@ GIT_TRACE_CURL=1 git ls-remote origin 2>&1 | sed -n 's/.*<= Recv data: //p' \
   | tr -d '\n' | grep -o '"reason_code":"[a-z_]*"'
 ```
 
-The draft helper prints the code and the matching advice itself, for example
+The draft helper prints the code and advice:
 `Draft not created: the repository route refused it (access_withdrawn); GitHub did not receive it.`
 
 ### Reason codes
@@ -268,8 +268,7 @@ The draft helper prints the code and the matching advice itself, for example
 
 Retry advice above applies only to a known pre-send refusal, never an uncertain send.
 
-A version that is still deploying has no credential yet, so its requests answer
-`route_not_ready` until it is active.
+A deploying version has no credential; requests answer `route_not_ready` until activation.
 
 ### Worker log
 
