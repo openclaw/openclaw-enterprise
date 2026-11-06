@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { promisify } from "node:util";
-import { commandPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // scripts/ci/go-test.mjs gates the Go CLI tests in CI. These cases run it over a

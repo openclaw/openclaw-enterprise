@@ -1288,7 +1288,12 @@ export async function loadInstallationConfiguration(options: {
   }
   const secretDriver = new KubernetesSecretDriver(
     secret.configuration as unknown as KubernetesSecretDriverOptions,
-    { id: secret.id, implementation: secret.implementation, preprovisionedNamespace },
+    {
+      id: secret.id,
+      implementation: secret.implementation,
+      preprovisionedNamespace,
+      installationSecretNamespace: environment.OCC_INSTALLATION_SECRET_NAMESPACE,
+    },
   );
   const tokenService = new TokenService();
   let preparedGitHub: PostgresPreparedGitHubLifecycle | undefined;
@@ -1405,6 +1410,20 @@ export async function loadInstallationConfiguration(options: {
         lifecycleDrivers: [configurationDriver],
         ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
         ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
+        // Both built-ins above received this exact Backend; injected and package Sandboxes opt out.
+        ...(openShell !== undefined &&
+        sandboxDriver !== undefined &&
+        sandboxPackage === undefined &&
+        options.createSandboxDriver === undefined &&
+        credentialGatewayDriver !== undefined
+          ? {
+              openShellAttachments: {
+                sandboxDriver,
+                credentialGatewayDriver,
+                attachments: credentialGatewayDriver.attachments,
+              },
+            }
+          : {}),
         ...(protectedDriver === undefined ? {} : { protectedDriver }),
         preparedTokens: tokenService,
         ...(preparedRepositoryGit === undefined || repositoryTransport || repositoryGitDriver

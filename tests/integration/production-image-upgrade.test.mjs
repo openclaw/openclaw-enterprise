@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
-import { writeCommand } from "../helpers/fake-commands.mjs";
+import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
 

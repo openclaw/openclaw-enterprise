@@ -41,12 +41,16 @@ runs:
       shell: bash
       env:
         JOB_TIMEOUT_MINUTES: ${{ inputs.job-timeout-minutes }}
+        QA_TIMING: ${{ inputs.lane == 'qa-matrix' }}
       run: |
         if [[ ! "$JOB_TIMEOUT_MINUTES" =~ ^[1-9][0-9]{0,3}$ ]] || (( JOB_TIMEOUT_MINUTES <= 5 )); then
           echo "::error::job-timeout-minutes must be the calling job's timeout-minutes, above 5." >&2
           exit 1
         fi
         printf 'ms=%s\n' "$(( $(date +%s%3N) + (JOB_TIMEOUT_MINUTES - 5) * 60000 ))" >> "$GITHUB_OUTPUT"
+        if [[ "$QA_TIMING" == true ]]; then
+          node scripts/ci/qa-phase-timing.ts entry 2>/dev/null >> "$GITHUB_OUTPUT" || true
+        fi
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
       with:
         node-version: ${{ inputs.node-version }}
@@ -57,7 +61,7 @@ runs:
         CI_SELECTED_LANE: ${{ inputs.lane }}
         CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
       run: node scripts/ci/run-tests.mjs check-selection "$CI_SELECTED_LANE" --file "$CI_SELECTED_TEST_FILE"
-    - name: Select first-Agent image preparation
+    - name: Select installer image preparation
       id: image-mode
       shell: bash
       env:
@@ -68,8 +72,12 @@ runs:
         import { appendFileSync } from 'node:fs';
         import { loadTestSuites } from './scripts/ci/test-suites.mjs';
         const lanes = loadTestSuites('scripts/ci/test-suites.json').lanes;
+        const lane = lanes[process.env.CI_SELECTED_LANE];
+        const file = process.env.CI_SELECTED_TEST_FILE;
+        const sourceBuild = lane.prepare?.sourceBuildFiles?.includes(file);
         const selected = process.env.CI_SELECTED_LANE === 'openshell' &&
-          lanes.openshell.prepare.selfProvisionedFiles.includes(process.env.CI_SELECTED_TEST_FILE);
+          lane.prepare.selfProvisionedFiles.includes(file) && !sourceBuild;
+        appendFileSync(process.env.GITHUB_OUTPUT, `source-build=${Boolean(sourceBuild)}\n`);
         appendFileSync(process.env.GITHUB_OUTPUT, `first-agent=${selected}\n`);
         NODE
     - id: pnpm-store
@@ -109,6 +117,7 @@ runs:
         # First-Agent image exports target only their job-owned loopback registry.
         driver-opts: |
           ${{ steps.image-mode.outputs.first-agent == 'true' && 'network=host' || '' }}
+          ${{ steps.image-mode.outputs.source-build == 'true' && 'default-load=true' || '' }}
     - name: Set up CI tools
       shell: bash
       run: bash scripts/ci/setup-tools.sh "${{ inputs.profile }}"
@@ -223,7 +232,7 @@ runs:
       run: node scripts/ci/repository-platform-headroom.mjs
     - name: Expose image cache credentials
       id: image-cache
-      if: steps.image-mode.outputs.first-agent == 'true' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3'
+      if: inputs.lane == 'openshell' || steps.image-mode.outputs.source-build == 'true' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3'
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       with:
         script: |
@@ -241,7 +250,8 @@ runs:
       env:
         # Image builds keep a few minutes of it for the lane's tests (prepare.mjs).
         CI_RUNNER_DEADLINE_MS: ${{ steps.deadline.outputs.ms }}
-        OCC_CI_IMAGE_CACHE: ${{ (steps.image-mode.outputs.first-agent == 'true' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3') && '1' || '' }}
+        OCC_CI_IMAGE_CACHE: ${{ (inputs.lane == 'openshell' || steps.image-mode.outputs.source-build == 'true' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3') && '1' || '' }}
+        BUILDX_BUILDER: ${{ steps.image-mode.outputs.source-build == 'true' && steps.builder.outputs.name || '' }}
         OCC_CI_FIRST_AGENT_BUILDER: ${{ steps.image-mode.outputs.first-agent == 'true' && steps.builder.outputs.name || '' }}
         ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
         ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
@@ -267,7 +277,16 @@ runs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libnss3-tools
         fi
+    # The QA caller has already set up Node. All observers use this runner's
+    # monotonic clock and leave the lane and cleanup commands in their own steps.
+    - name: Mark QA run start
+      id: qa-run-start
+      if: inputs.lane == 'qa-matrix'
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Run lane
+      id: run-lane
       shell: bash
       env:
         # Each file's timeout is CI_RUNNER_TEST_TIMEOUT_MS (60 minutes when unset), cut to what
@@ -309,10 +328,23 @@ runs:
       continue-on-error: true
       shell: bash
       run: tail -n 120 "$RUNNER_TEMP/memory/${{ inputs.lane }}.log" || true
+    - name: Mark QA cleanup start
+      id: qa-cleanup-start
+      if: always() && inputs.lane == 'qa-matrix'
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Cleanup lane
+      id: cleanup-lane
       if: always()
       shell: bash
       run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json"
+    - name: Mark QA cleanup end
+      id: qa-cleanup-end
+      if: always() && inputs.lane == 'qa-matrix'
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Export image cleanup reconciliation
       id: image_reconciliation
       if: always() && inputs.lane == 'images-packaging'
@@ -386,3 +418,16 @@ runs:
         path: ${{ runner.temp }}/results/${{ inputs.lane }}.json
         if-no-files-found: ignore
         retention-days: 7
+    - name: Summarize QA phase timing
+      if: always() && inputs.lane == 'qa-matrix'
+      continue-on-error: true
+      shell: bash
+      env:
+        QA_ENTRY_NS: ${{ steps.deadline.outputs.qa-start-ns }}
+        QA_RUN_NS: ${{ steps.qa-run-start.outputs.ns }}
+        QA_CLEANUP_NS: ${{ steps.qa-cleanup-start.outputs.ns }}
+        QA_CLEANUP_END_NS: ${{ steps.qa-cleanup-end.outputs.ns }}
+        QA_RUN_OUTCOME: ${{ steps.run-lane.outcome }}
+        QA_CLEANUP_OUTCOME: ${{ steps.cleanup-lane.outcome }}
+        QA_SELECTION: ${{ inputs.test-file == '' && 'full' || 'focused' }}
+      run: node scripts/ci/qa-phase-timing.ts summarize 2>/dev/null

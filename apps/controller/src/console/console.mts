@@ -10,6 +10,8 @@ import type {
   LeaveGuard,
   TabNavigation,
 } from "./page-context.mjs";
+import { renderOAuthClients } from "./oauth-clients.mjs";
+import { renderConnectionTemplates } from "./connection-templates.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
   element,
@@ -41,7 +43,12 @@ import {
   type RequestOptions,
 } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
-import { createNavigation, pages } from "./navigation.mjs";
+import {
+  connectionTemplatesPage,
+  oauthClientsPage,
+  createNavigation,
+  pages,
+} from "./navigation.mjs";
 import {
   brandContents,
   createShell,
@@ -452,7 +459,7 @@ function settleNotAdministrator() {
   observabilityUrl = null;
   installationAdmin = false;
   observabilityOwner = sessionOwnerKey(session);
-  shellUI.dropObservabilityLink();
+  shellUI.dropAdministrationLinks();
   if (ended) {
     for (const handler of mountedViewState?.administrationEnded ?? []) {
       handler();
@@ -1278,7 +1285,9 @@ function collectionPath(feature: string, namespacePath: string | null) {
   if (feature === "backends") {
     return "/backends";
   }
-  return namespacePath === null ? null : `${namespacePath}/${feature}`;
+  return namespacePath !== null && ["secrets", "agents"].includes(feature)
+    ? `${namespacePath}/${feature}`
+    : null;
 }
 
 const debugStorageKey = "oce.console.debug";
@@ -1305,6 +1314,7 @@ function renderShell(
     observabilityUrl,
     debug: readDebugPreference(),
     namespaceAdmissionPending,
+    installationAdmin: installationAdmin === true,
     recovery,
     page,
   });
@@ -2347,6 +2357,41 @@ async function loadPage({
     };
     if (shell.diagnostics) {
       attachDiagnostics(shell.diagnostics);
+    }
+    if (current.feature === connectionTemplatesPage || current.feature === oauthClientsPage) {
+      // Re-enter with current administrator access and a fresh editor on history navigation.
+      viewState.reusable = false;
+      const view = shell.view;
+      const showRequiredAccess = () =>
+        panel(
+          view,
+          "Installation administrator access required",
+          current.feature === oauthClientsPage
+            ? "Installation administrators manage OAuth clients."
+            : "Installation administrators manage connection templates.",
+        );
+      if (installationAdmin) {
+        viewState.administrationEnded.add(showRequiredAccess);
+        const render =
+          current.feature === oauthClientsPage ? renderOAuthClients : renderConnectionTemplates;
+        view.append(
+          render(
+            { request: viewRequest, isCurrent: viewIsCurrent },
+            namespaces,
+            namespaces.find((item) => item.id === selectedNamespace)?.id ?? null,
+          ),
+        );
+      } else if (installationAdmin === false) {
+        showRequiredAccess();
+      } else {
+        panel(
+          view,
+          "Could not confirm administrator access",
+          "Refresh to check your Installation permissions.",
+        );
+      }
+      markMountedRoute(current);
+      return;
     }
     if (current.feature === "settings") {
       shell.view.append(settingsView(session.user));

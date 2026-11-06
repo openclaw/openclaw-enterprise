@@ -214,19 +214,20 @@ status read after an uncertain delete; a denial never confirms removal.
 Replacement hands delivery to explicit Agent deployment or CredentialSource
 update under the [Secret delivery contract](../reference/drivers/kubernetes-secret.md#update-and-redeploy).
 
-`apps/controller/src/console/namespaces.mts:renderNamespaces` sends Name-rule-valid names
-through tracked `POST /namespaces`; `OpenClawController.createNamespace` authorizes
-each attempt, queues provisioning; `perform` audits. Open Agents needs the Namespace
-relisted. Closing refocuses the opener; a 403 disables it per account, across
-navigation, until Refresh (`fromRefresh`). Pending writes block dismissal; 400s
-mark names; conflicts keep input; unconfirmed responses need inspection.
+`apps/controller/src/console/namespaces.mts:renderNamespaces` tracks Name-rule-valid
+`POST /namespaces`; `OpenClawController.createNamespace` authorizes and queues
+provisioning; `perform` audits. Open Agents requires relisting. Closing refocuses
+the opener; 403 disables it per account across navigation until Refresh (`fromRefresh`).
+Pending writes prevent dismissal; 400s mark names; conflicts retain input.
+Inspect unconfirmed responses.
 
-`namespace-deletion.mts` blocks navigation and dismissal during writes; OCC rechecks
-IAM and contents. `http/errors.ts` limits blockers to 20
-IDs per kind. Poll every three seconds after `202`; `404` removes the row;
-`console.mjs` repairs selection and views. `403` reports lost access.
-Uncertain writes require **Refresh status** before retry.
-See [deletion](../guides/console/delete-namespace.md).
+`namespace-deletion.mts` blocks navigation/dismissal during writes. OCC rechecks
+IAM/contents (20 blocker IDs/kind). `202`: three-second polling; `404`: remove row,
+repair selection; `403`: lost access. `readStatus` requires exact ID and scalar
+[NamespaceSchema status](../../packages/contracts/src/api/resources.ts). Failed/invalid
+reads close confirmation. Uncertainty shows **Status unknown**;
+[**Refresh status**](../guides/console/delete-namespace.md) restores confirmed status
+and deletion actions.
 
 Agents, Secrets and Create Agent read Namespace permissions. False `agents.create` or an Agent-refusing
 [Namespace status](../reference/namespaces.md#lifecycle) explains why, rechecking on return; failed reads keep creation open.
@@ -371,6 +372,9 @@ gateway startup and file availability.
 - 2026-11-05 11:26: Move Debug mode from URL state to a saved browser preference in Settings. (authoring-run/4f118861-18d8-403b-a287-90ac81564c99 - 0351eb77180fbeea7c70114af7c8937a521b90b4)
 
 - 2026-11-05 19:21: Record automatic Git SHA detection for local controller builds. (authoring-run/b294b13a-1a99-4f9a-8377-d76d11bfe62f - 0351eb77180fbeea7c70114af7c8937a521b90b4)
+- 2026-11-05 22:43: Unconfirmed status. (authoring-run/104e0ca4-86db-492b-af14-750b4ea079f1 - 346f0db69fb93eb462822c7f5a7f600081f10847)
+
+- 2026-11-05 20:13: Close stale confirmations. (namespace-cleanup-confirmation)
 
 - 2026-11-03 15:16: Preserve page position during navigation. (authoring-run/4b6abf1f-bb48-4679-b2b0-4a62ba2834f6 - 44c2f77b611207eef71a69f82ab692c26dbea2bc)
 

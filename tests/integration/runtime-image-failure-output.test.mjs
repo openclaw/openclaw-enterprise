@@ -7,7 +7,7 @@ import { chmod, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { inspect } from "node:util";
 import test from "node:test";
-import { setEnvironment } from "../helpers/environment.mjs";
+import { setEnvironment } from "../helpers/environment.ts";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const reporterMessageLimit = 16_384;

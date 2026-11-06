@@ -35,7 +35,7 @@ import {
   fieldError,
   focusSaveOutcome,
   isUnavailable,
-  jsonObjectProblem,
+  jsonObjectDiagnostic,
   revealStatus,
   setHidden,
   setStatusTone,
@@ -6193,13 +6193,13 @@ export async function renderAgentDetail(
     }
 
     function parseEditor(reportInvalid = false) {
-      const problem = jsonObjectProblem(editor.value);
-      if (problem === undefined) {
-        return JSON.parse(editor.value) as OpenClawConfigurationDocument;
+      const diagnostic = jsonObjectDiagnostic(editor.value);
+      if (diagnostic.kind === "valid") {
+        return diagnostic.value;
       }
       if (reportInvalid) {
         // One message, under the editor, which keeps focus so the JSON can be fixed in place.
-        editorError.show(problem);
+        editorError.show(diagnostic.message);
         feedback.textContent = "";
         feedbackLocked = true;
         editor.focus();
@@ -6377,9 +6377,20 @@ export async function renderAgentDetail(
         if (context.isCurrent()) {
           pending = false;
           updateState();
-          render();
+          // A conflict keeps the same editor. Rebuilding it detaches a reader's focused
+          // textarea and deactivates its selection before recovery can check focus.
+          if (reloadRequired && body.contains(editor)) {
+            cancel.after(reload);
+          } else {
+            render();
+          }
           const refused = feedback.dataset.tone === "danger";
           feedback.setAttribute("role", refused ? "alert" : "status");
+          const focusMoved =
+            reloadRequired &&
+            document.activeElement?.isConnected &&
+            document.activeElement !== document.body &&
+            document.activeElement !== feedback;
           if (refusedInEditor && container.isConnected) {
             editor.focus({ preventScroll: true });
             editor.scrollIntoView({ block: "nearest" });
@@ -6387,7 +6398,7 @@ export async function renderAgentDetail(
             // A refusal Reload cannot fix (a 403, say) is an alert that takes focus and comes
             // into view; under the fold, nothing seemed to happen (finding 1991).
             revealStatus(feedback, container);
-          } else if (container.isConnected) {
+          } else if (container.isConnected && !focusMoved) {
             // A conflict or failure leaves Reload draft (or Save again) as the next step
             // (finding 1481).
             focusSaveOutcome(container, [reload, save], feedback);
