@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: "2026-11-05 19:30"
-last_updated_session: authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62
+updated: "2026-11-06 10:19"
+last_updated_session: authoring-run/7e80bc76-2c25-4192-8252-a715554fc6bf
 ---
 
 # Installation Profile Rendering Flow
@@ -177,7 +177,10 @@ preflight also refuses a zone ID, which the API accepts.
 The profile's `proxy.bundled` selects the chart-managed Gateway proxy. Its optional
 `proxy.allowedHosts` replaces the Slack-only default. Alternatively `proxy.url`
 selects one external endpoint. Rendering produces Helm `gatewayProxy` and Compute
-`runtime.proxy` together; Helm wires the API directory client to that same endpoint.
+`runtime.proxy` together. Profile `channels.directoryProxyUrl` optionally sets
+Helm `api.channelDirectoryProxyUrl`. Helm uses that override for directory
+requests when set; otherwise it shares the Gateway endpoint. Only API proxy
+egress changes with the override, not Compute configuration.
 See [Gateway outbound access](../guides/integrations/gateway-proxy.md).
 
 Repository values render only when the input explicitly sets
@@ -209,9 +212,10 @@ before writing `installation.yaml`. Optional `runtime.modelProvider.baseUrl` get
 Compute's endpoint rule. When optional
 managed ServiceAccount inputs are supplied, it emits the ChatGPT Backend and a
 matching ServiceAccount Driver; otherwise Codex Agents use the existing
-`codex_pat` token path configured at Agent creation. If the chart-managed Slack
+`codex_pat` token path configured at Agent creation. If the chart-managed Gateway
 proxy is enabled, Compute receives the generated Service DNS URL and selector
-for gateway-to-proxy egress; the chart grants API-to-proxy egress. Repository
+for gateway-to-proxy egress; the chart grants API-to-proxy egress unless a
+directory override selects another endpoint. Repository
 opt-in adds the GitHub Backend, Repo Driver,
 and worker peer expected by the broker sidecar.
 
@@ -309,6 +313,7 @@ activation, and repository registry creation need separate evidence.
 
 ## Changelog
 
+- 2026-11-06 10:19: Retain the directory-only proxy override with shared-default routing and exact API egress (authoring-run/7e80bc76-2c25-4192-8252-a715554fc6bf - f4d2e15fc73f6ef43016e0ce959df010bd2be98c)
 - 2026-11-05 19:30: Document one selected bundled or external Gateway proxy (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 324fbad6f248bce4606e175fbb67ac506cd824ff)
 - 2026-11-03 15:09: Document shared provider routing and separate destination authorization. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 47e0e95df)
 

@@ -15,8 +15,9 @@ rfc: ../rfcs/0030-gateway-outbound-proxy.md
 ## Outcome and scope
 
 Select one operator-managed proxy, either bundled or external, for native
-Gateway routing and OCE channel-directory clients. Generalize the existing
-bundled CONNECT server with a host policy; do not introduce a second proxy.
+Gateway routing, shared by OCE channel-directory clients by default. Retain an
+optional directory-only override for separate routing. Generalize the existing
+bundled CONNECT server with a host policy; do not deploy a second bundled proxy.
 No Console editor, per-Agent selector, decrypted traffic inspection, arbitrary
 Harness routing, or expansion of existing channel/topology support gates.
 
@@ -30,6 +31,11 @@ The bundled server remains CONNECT/TCP 443 with public-IPv4-only Kubernetes egre
 An explicit `allowedHosts: ["*"]` removes hostname filtering without changing
 those port or address restrictions. Slack-only remains the default.
 
+Profile `channels.directoryProxyUrl` and Helm `api.channelDirectoryProxyUrl`
+remain optional directory overrides. They take precedence for the API client
+without changing Gateway configuration. Empty Helm input inherits the Gateway
+selection. API proxy egress permits only its selected endpoint, not both.
+
 The temporary runtime-source bridge exposes an exact-endpoint bypass only for
 host-provisioned `OPENCLAW_INTERNAL_TRANSPORT_URL`. The regular Codex transport
 registers it before connection and revokes it on closure/construction failure.
@@ -41,7 +47,8 @@ The bridge must be removed when OC provides the owning internal-transport hook.
 - [x] Complete upstream refresh, preserve Driver configuration/validation and
       Credential Proxy boundaries, and repeat affected verification.
 - [x] Extend the existing bundled proxy and Helm packaging, not platform core.
-- [x] Render one endpoint for directory clients and embedded/dedicated Gateways.
+- [x] Render a shared default endpoint for directory clients and embedded/dedicated Gateways.
+- [x] Retain the directory-only override with explicit endpoint precedence.
 - [x] Preserve internal Codex transport through a lifecycle-owned exact bypass.
 - [x] Update [operator setup](../../docs/guides/integrations/gateway-proxy.md),
       [networking reference](../../docs/reference/drivers/kubernetes-compute/gateway-proxy.md),
@@ -53,6 +60,23 @@ The bridge must be removed when OC provides the owning internal-transport hook.
       remains a separately authorized operation.
 
 ## Verification
+
+### Directory override follow-up
+
+The shared endpoint is a default, not a restriction. Profiles retain
+`channels.directoryProxyUrl`; Helm retains `api.channelDirectoryProxyUrl`.
+An override changes API directory routing and its exact proxy egress grant,
+without also granting the default proxy or changing Gateway configuration.
+
+- Both new profile and Helm routing checks failed before the correction and
+  passed afterward. The profile check covers both shipped profiles and all
+  three Gateway proxy modes: none, external, and bundled.
+- The four-file profile, chart, and Slack directory run passed 249 of 250 checks
+  without skips. The image-upgrade helper stopped at its unchanged-chart guard
+  because this change was not committed; rerun that case after committing.
+- TypeScript, lint, workspace isolation, and CI registration audit passed.
+- This is configuration and rendered-policy proof, not live-cluster enforcement
+  or model-turn qualification. Required deployment checks below remain pending.
 
 | Required outcome                                         | Check                                                                                  | Evidence                            |
 | -------------------------------------------------------- | -------------------------------------------------------------------------------------- | ----------------------------------- |

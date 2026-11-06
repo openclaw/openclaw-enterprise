@@ -3427,6 +3427,69 @@ test("Slack directory proxy grants only API egress to its exact endpoint", tooli
 });
 
 test(
+  "directory proxy override selects only its API route with any Gateway proxy mode",
+  tooling,
+  async () => {
+    for (const gateway of [
+      {},
+      { "gatewayProxy.url": "http://198.51.100.25:3128" },
+      { ...gatewayProxyValues, ...gatewayRoutingValues },
+    ]) {
+      const objects = await resources(
+        (await render({ ...gateway, "api.channelDirectoryProxyUrl": "https://203.0.113.20:8443" }))
+          .stdout,
+      );
+      const api = objects.find(
+        ({ kind, metadata }) =>
+          kind === "Deployment" && metadata.name === "openclaw-enterprise-api",
+      ).spec.template.spec.containers[0];
+      assert.deepEqual(
+        api.env.filter(({ name }) => name.startsWith("OCC_CHANNEL_DIRECTORY_")),
+        [{ name: "OCC_CHANNEL_DIRECTORY_PROXY_URL", value: "https://203.0.113.20:8443" }],
+      );
+      const policy = objects.find(
+        ({ kind, metadata }) =>
+          kind === "NetworkPolicy" &&
+          metadata.name === "openclaw-enterprise-api-channel-directory-egress",
+      );
+      assert.deepEqual(policy.spec.egress, [
+        {
+          to: [{ ipBlock: { cidr: "203.0.113.20/32" } }],
+          ports: [{ protocol: "TCP", port: 8443 }],
+        },
+      ]);
+      // Kubernetes grants are additive: the override must not keep a second API route.
+      assert.ok(
+        !objects.some(
+          ({ metadata }) =>
+            metadata.name === "openclaw-enterprise-api-managed-gateway-proxy-egress",
+        ),
+      );
+      const worker = objects.find(
+        ({ kind, metadata }) =>
+          kind === "Deployment" && metadata.name === "openclaw-enterprise-worker",
+      ).spec.template.spec.containers[0];
+      assert.ok(!worker.env.some(({ name }) => name.startsWith("OCC_CHANNEL_DIRECTORY_")));
+      assert.equal(
+        objects.some(
+          ({ kind, metadata }) =>
+            kind === "Service" && metadata.name === "openclaw-enterprise-gateway-proxy",
+        ),
+        gateway["gatewayProxy.enabled"] === "true",
+      );
+    }
+    // A valid directory override must not hide an invalid Gateway endpoint.
+    await assert.rejects(
+      render({
+        "gatewayProxy.url": "http://198.51.100.999:3128",
+        "api.channelDirectoryProxyUrl": "https://203.0.113.20:8443",
+      }),
+      /gatewayProxy.url/,
+    );
+  },
+);
+
+test(
   "managed Slack proxy renders private Service DNS and restricted proxy policies",
   tooling,
   async () => {

@@ -41,12 +41,14 @@ session cookie before forwarding to the native gateway.
 | `NODE_EXTRA_CA_CERTS`                      | Optional PEM bundle for private Gateway or IdP CAs.                                                                | Node reads it at process startup. Normal leaf renewal under that CA does not require a restart; root-bundle changes do.      |
 | `OCC_GATEWAY_CA_PATH`                      | Optional absolute path to the Gateway-only CA bundle; empty means no private Gateway CA.                           | API only; Harness node enrollment reads it instead of `NODE_EXTRA_CA_CERTS`. Helm sets it with OIDC CA values.               |
 
-For Helm, prefer `gatewayProxy.enabled` over an external
-`gatewayProxy.url`; the
-[Slack Channel Driver](../drivers/slack-channel.md#enable-lookup-in-production)
-owns both options' API-only proxy egress and the proxy's `slack.com:443`
-requirement. With neither, the chart renders no proxy egress rule, and Slack
-lookup and credential validation require another approved network route.
+For Helm, directory requests share the selected Gateway proxy by default:
+`gatewayProxy.enabled` selects the bundled server, or `gatewayProxy.url` selects
+an external endpoint. `api.channelDirectoryProxyUrl` overrides only the directory
+route when the API needs a separate proxy. The
+[Slack Channel Driver reference](../drivers/slack-channel.md#enable-lookup-in-production)
+defines API-only proxy egress and the `slack.com:443` requirement. With no
+directory override or Gateway proxy, the chart renders no directory proxy egress
+rule; lookup and credential validation require another approved network route.
 
 `OCC_AGENT_RUNTIME_LOGS_ENABLED` (`true` or `false`, default `true`) switches the
 [Agent logs](../../guides/topics/agent-logs.md) routes; `false` makes them answer

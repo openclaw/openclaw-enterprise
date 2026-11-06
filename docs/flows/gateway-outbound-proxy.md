@@ -1,7 +1,7 @@
 ---
 created: 2026-11-05
-updated: "2026-11-05 20:33"
-last_updated_session: authoring-run/7e915b47-503f-4c59-85b5-679cc43bd09f
+updated: "2026-11-06 10:19"
+last_updated_session: authoring-run/7e80bc76-2c25-4192-8252-a715554fc6bf
 ---
 
 # Gateway outbound proxy flow
@@ -26,9 +26,14 @@ are routed and the internal Codex transport is connected or fails closed.
 
 ```mermaid
 graph TD
-  A["Operator selects one proxy"] --> B{"Bundled or external?"}
+  A["Operator selects Gateway proxy"] --> B{"Bundled or external?"}
   B -->|bundled| C["Helm runs CONNECT server and host policy"]
   B -->|external| D["Use approved external IP and port"]
+  A --> N{"Directory override?"}
+  N -->|yes| O["API uses exact override endpoint"]
+  N -->|no| P["API inherits Gateway proxy, if any"]
+  O --> Q["Helm sets API route and grants its proxy peer"]
+  P --> Q
   C --> E["Compute renders native proxy and exact peer grant"]
   D --> E
   E --> F{"Agent settings conflict?"}
@@ -49,9 +54,18 @@ graph TD
 `scripts/render-installation-profile.mjs:buildRendered` accepts `proxy.bundled`
 with an optional host list, or `proxy.url`, never both. It renders Helm
 `gatewayProxy` and Compute `runtime.proxy` from that selection. Helm configures
-`OCC_CHANNEL_DIRECTORY_PROXY_URL` for the API only and grants its exact route.
-No Console or per-Agent proxy selector is added. Without selection, native
-configuration and networking behavior stay unchanged.
+`OCC_CHANNEL_DIRECTORY_PROXY_URL` for the API only. Profile
+`channels.directoryProxyUrl` renders Helm `api.channelDirectoryProxyUrl`; a
+nonempty override takes precedence over the shared default.
+`deploy/helm/openclaw-enterprise/templates/deployments.yaml` sets the selected
+API endpoint and includes the managed Service host only when directory requests
+use the bundled default. `templates/networkpolicies.yaml` validates both external
+endpoints, grants only the selected API proxy peer and port, and omits managed
+proxy egress when the override is set. The override also works without a Gateway
+proxy; it does not change Compute configuration. An empty Helm override inherits
+the Gateway selection. Neither client switches endpoints on failure.
+No Console or per-Agent proxy selector is added. Without a Gateway selection,
+native Gateway configuration and networking behavior stay unchanged.
 
 ### 2. Prepare the Gateway
 
@@ -120,6 +134,7 @@ prevents direct Internet fallback; this is not whole-Harness containment.
 
 ## Changelog
 
+- 2026-11-06 10:19: Retain the directory-only proxy override with shared-default routing and exact API egress (authoring-run/7e80bc76-2c25-4192-8252-a715554fc6bf - f4d2e15fc73f6ef43016e0ce959df010bd2be98c)
 - 2026-11-05 20:33: Preserve proxy-policy identity across endpoint changes, removal and retirement (authoring-run/7e915b47-503f-4c59-85b5-679cc43bd09f - 393028040769a3d0064b0bf74af7378b4ba07381)
 - 2026-11-05 20:13: Trace explicit all-hosts policy with unchanged port and address restrictions (authoring-run/e9bf9370-1230-46cf-a388-d218708b8969 - dc5024a57ef9a046e31b191295a379296309d5ff)
 - 2026-11-05 19:30: Trace one selected proxy and the exact internal transport bridge (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 324fbad6f248bce4606e175fbb67ac506cd824ff)

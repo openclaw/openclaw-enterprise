@@ -53,9 +53,9 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AUTH_COOKIE_DOMAIN` — Shared parent domain for console and Agent cookies; required when the pilot is enabled.
 - `OCC_GATEWAY_API_KEY_PATH` — API/worker absolute path to the private gateway service-key file for operator RPCs and dedicated node enrollment.
 - `OCC_PREPROVISIONED_NAMESPACE` — API/worker JSON `{"namespaceId", "uid"}` binding one operator-created tenant namespace; set by Helm `preprovisionedNamespace`. See [preprovisioned namespace](../drivers/kubernetes-compute/preprovisioned-namespace.md).
-- `OCC_CHANNEL_DIRECTORY_PROXY_URL` — Optional API-only HTTP(S) proxy endpoint for production Slack directory lookup and credential validation; set by Helm `gatewayProxy.enabled` or `gatewayProxy.url`.
+- `OCC_CHANNEL_DIRECTORY_PROXY_URL` — API-only proxy for Slack directory lookup and credential validation. Helm uses `api.channelDirectoryProxyUrl` when set; otherwise it inherits the selected Gateway proxy. See [Gateway outbound access](../../guides/integrations/gateway-proxy.md#directory-proxy-override-optional).
 - `OCC_API_HTTPS_EGRESS_OPEN` — `true` when API egress allows TCP 443 to any address, so a Slack check without a proxy can succeed; default: `false`. Set by the chart from sign-in `egressCidrs`.
-- `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` — Exact Kubernetes Service host accepted as a managed Slack directory proxy; set only by Helm `gatewayProxy.enabled`.
+- `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` — Exact Kubernetes Service host accepted as a managed Slack directory proxy; set when Helm uses the bundled Gateway proxy for directory requests, without a directory override.
 - `OCC_GATEWAY_PROXY_PORT` — Bundled CONNECT server listen port; Helm sets it from `gatewayProxy.port` (default `3128`).
 - `OCC_GATEWAY_PROXY_ALLOWED_HOSTS` — JSON hostname policy for the bundled server; Helm sets it from `gatewayProxy.allowedHosts`. See [Gateway outbound access](../../guides/integrations/gateway-proxy.md).
 - `OPENCLAW_INTERNAL_TRANSPORT_URL` — Compute-provisioned exact dedicated Codex transport endpoint; runtime-only input for the internal proxy exception, not an operator bypass setting.

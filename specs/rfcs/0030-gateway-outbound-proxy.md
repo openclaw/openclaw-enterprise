@@ -29,7 +29,8 @@ Do not add a Console editor or split traffic inside a Gateway across proxies.
 
 The existing proxy configuration belongs to channels. The bundled server permits
 only Slack, and directory lookup has a separate endpoint setting. An operator
-who needs Slack plus other Gateway services cannot express one consistent route.
+who needs Slack plus other Gateway services needs a broader destination policy
+and must keep separate external endpoint inputs aligned.
 Channel-free dedicated Gateways also need proxy reachability.
 
 Enabling OC's native process routing alone is not enough. It captures the

@@ -546,7 +546,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- include "openclaw.requireString" (dict "label" "api.consoleTheme.checksum" "value" .Values.api.consoleTheme.checksum) -}}
 {{- end -}}
 {{- end -}}
-{{- if or (hasKey .Values "slackProxy") (hasKey .Values.api "channelDirectoryProxyUrl") -}}
+{{- if hasKey .Values "slackProxy" -}}
 {{- fail "Unsupported legacy proxy settings; select gatewayProxy and matching Compute runtime.proxy" -}}
 {{- end -}}
 {{- if not (kindIs "bool" .Values.gatewayProxy.enabled) -}}{{- fail "gatewayProxy.enabled must be a boolean" -}}{{- end -}}

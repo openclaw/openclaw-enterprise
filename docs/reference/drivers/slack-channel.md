@@ -62,7 +62,7 @@ startup, which remains a separate connectivity check.
 
 The production API selects the Slack Driver. With default-deny egress, Slack
 lookup and credential validation need a proxy. With the recommended Helm setting
-`gatewayProxy.enabled: true`, the chart:
+`gatewayProxy.enabled: true` and no directory override, the chart:
 
 - creates a private `openclaw-enterprise-gateway-proxy` Service;
 - points `OCC_CHANNEL_DIRECTORY_PROXY_URL` at that Service DNS name;
@@ -83,6 +83,15 @@ chart passes it to the API as `OCC_CHANNEL_DIRECTORY_PROXY_URL` and allows API
 Pod egress only to that IP and port. The proxy must permit `CONNECT slack.com:443`; restrict its other
 destinations at the proxy. The chart does not grant the worker or Agent Pods this
 egress.
+
+Directory requests inherit that Gateway proxy by default. Set Helm
+`api.channelDirectoryProxyUrl`, or profile `channels.directoryProxyUrl`, when
+the API needs a different endpoint. It has the same external endpoint format
+and takes precedence over either Gateway proxy mode. Only the API directory
+route and its proxy egress grant change; Gateways retain their selection.
+An empty Helm override inherits the Gateway endpoint, and an override can also
+be used without a Gateway proxy. See the
+[operator procedure](../../guides/integrations/gateway-proxy.md#directory-proxy-override-optional).
 
 The Driver sends Slack API requests through the selected tunnel and verifies
 Slack's TLS certificate. Keep the selected bot token in the same-Namespace

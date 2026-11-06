@@ -1161,12 +1161,22 @@ function buildInput(rawInput, diagnostics) {
   closed(
     input,
     "input",
-    ["controlPlane", "runtime", "proxy", "codex", "repository", "publicGithubRead", "presets"],
+    [
+      "controlPlane",
+      "runtime",
+      "proxy",
+      "channels",
+      "codex",
+      "repository",
+      "publicGithubRead",
+      "presets",
+    ],
     diagnostics,
   );
   const controlPlane = section(input, "controlPlane", diagnostics);
   const runtime = section(input, "runtime", diagnostics);
   const proxy = section(input, "proxy", diagnostics, false);
+  const channels = section(input, "channels", diagnostics, false);
   const codex = section(input, "codex", diagnostics, false);
   const repository = section(input, "repository", diagnostics, false);
   const publicGithubRead = section(input, "publicGithubRead", diagnostics, false);
@@ -1229,6 +1239,7 @@ function buildInput(rawInput, diagnostics) {
     diagnostics,
   );
   closed(proxy, "proxy", ["url", "bundled", "allowedHosts"], diagnostics);
+  closed(channels, "channels", ["directoryProxyUrl"], diagnostics);
   closed(codex, "codex", ["managedServiceAccounts", "modelDiscoveryCidrs"], diagnostics);
   closed(
     repository,
@@ -1314,6 +1325,7 @@ function buildInput(rawInput, diagnostics) {
     controlPlane,
     runtime,
     proxy,
+    channels,
     codex,
     repository,
     publicGithubRead,
@@ -1479,6 +1491,7 @@ function buildRendered(profile, parsed, diagnostics) {
     controlPlane,
     runtime,
     proxy,
+    channels,
     codex,
     repository,
     publicGithubRead,
@@ -1623,6 +1636,13 @@ function buildRendered(profile, parsed, diagnostics) {
           validate: gatewayProxyUrl,
           description: "an HTTP(S) literal IPv4 endpoint with an explicit port",
         });
+  const directoryProxyUrl =
+    channels.directoryProxyUrl === undefined
+      ? undefined
+      : asString(channels, ["channels", "directoryProxyUrl"], diagnostics, {
+          validate: gatewayProxyUrl,
+          description: "an HTTP(S) literal IPv4 endpoint with an explicit port",
+        });
   if (
     codex.managedServiceAccounts !== undefined &&
     Object.keys(managedServiceAccounts).length === 0
@@ -1752,6 +1772,7 @@ function buildRendered(profile, parsed, diagnostics) {
     },
     api: {
       clients: clientSelectors(controlPlane, diagnostics),
+      ...(directoryProxyUrl === undefined ? {} : { channelDirectoryProxyUrl: directoryProxyUrl }),
       modelDiscoveryCidrs:
         profile.name === "codex" && codex.modelDiscoveryCidrs !== undefined
           ? stringArray(codex, ["codex", "modelDiscoveryCidrs"], diagnostics, {

@@ -459,7 +459,10 @@ spec:
               value: {{ include "openclaw.trustedProxy.header" $ | quote }}
             {{- end }}
             {{- end }}
-            {{- if $.Values.gatewayProxy.enabled }}
+            {{- if $.Values.api.channelDirectoryProxyUrl }}
+            - name: OCC_CHANNEL_DIRECTORY_PROXY_URL
+              value: {{ $.Values.api.channelDirectoryProxyUrl | quote }}
+            {{- else if $.Values.gatewayProxy.enabled }}
             - name: OCC_CHANNEL_DIRECTORY_PROXY_URL
               value: {{ include "openclaw.gatewayProxy.url" $ | quote }}
             - name: OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST

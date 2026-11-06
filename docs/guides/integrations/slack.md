@@ -18,7 +18,8 @@ go to the Agent's gateway; model credentials are configured separately.
   the native Slack plugin.
 - Require the operator to [configure and verify the Slack route](#configure-the-slack-route)
   before enabling Slack: gateway messaging and Console directory lookup use
-  one selected proxy with separate client egress rules.
+  a shared proxy by default, with an optional directory-only override and
+  separate client egress rules.
 - Choose a dedicated Codex Agent on Kubernetes and configure its
   [model authentication](../../reference/agents.md#harness-authentication).
   Embedded OpenClaw execution cannot isolate channel credentials from the
@@ -38,13 +39,15 @@ go to the Agent's gateway; model credentials are configured separately.
 
 Ask your operator to [configure the Gateway proxy](gateway-proxy.md). The bundled
 proxy permits Slack by default; an external proxy must permit `slack.com`,
-`slack-edge.com`, `slack-msgs.com`, and their subdomains on TCP 443. One endpoint
-serves Gateway messaging and API directory requests. Tokens remain in Agent-owned
+`slack-edge.com`, `slack-msgs.com`, and their subdomains on TCP 443. By default,
+one endpoint serves Gateway messaging and API directory requests. The operator
+can [override the directory endpoint](gateway-proxy.md#directory-proxy-override-optional)
+when the API needs a different route. Tokens remain in Agent-owned
 Secrets, not operator proxy configuration.
 
 Apply the protected Installation and Helm configuration through the installation
 procedure, then roll out OCC and replace affected Agent revisions. The Compute
-Driver grants Gateway access to the same selected endpoint independently of
+Driver grants Gateway access to its selected endpoint independently of
 channel enablement. Existing channel placement restrictions still apply.
 
 Verify directory lookup and Slack messaging separately. Directory requests need

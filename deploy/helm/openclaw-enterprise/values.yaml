@@ -265,6 +265,9 @@ api:
     checksum: ""
   port: 8080
   clients: []
+  # Optional API-only directory proxy override. Empty inherits the Gateway proxy.
+  # Use a credential-free HTTP(S) literal IPv4 endpoint with an explicit port.
+  channelDirectoryProxyUrl: ""
   # API-only HTTPS egress to explicit provider IPv4 /32 hosts for discovery and login.
   # Hosted codex-plugin needs auth.openai.com and chatgpt.com. Its installation
   # profile resolves these unless CIDRs are supplied; refresh on DNS changes.

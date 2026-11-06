@@ -7,6 +7,14 @@ port. Compute validates the pair and permits only that peer and port from the
 Agent's Gateway, whether channels are enabled or not. Embedded Gateways receive
 the same setting; dedicated Harness processes do not.
 
+The API directory client shares that endpoint by default. Helm
+`api.channelDirectoryProxyUrl`, rendered from profile `channels.directoryProxyUrl`,
+can override only the API route. An empty Helm value inherits the Gateway proxy.
+The override works without a Gateway proxy and does not change Compute
+configuration or Gateway permissions. Helm grants directory proxy egress only
+to the selected API endpoint; it does not add both routes. Selection is static:
+proxy failure does not switch either client to the other endpoint.
+
 Compute reuses the Agent's existing proxy NetworkPolicy when the endpoint
 changes. Reconciliation replaces its egress grant rather than adding a second
 policy. Removing the selected proxy clears the existing grant; Agent retirement
