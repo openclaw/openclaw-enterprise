@@ -11,31 +11,29 @@ author: freeqaz-openai
 
 ## Decision for review
 
-A user connects an OAuth account before deploying an Agent. Its access token must keep renewing. Later, two Agents share that consent. The user withdraws one Agent’s access while the other keeps working.
+Give an Agent write access to repository A and read access to B. The OpenClaw Control Plane (OCC) decides what this Agent may do. The separate OpenShell credential service holds the GitHub App key and mints a token for the approved scope. A trusted sender injects it. The Agent sees a placeholder.
 
-Give the separate **OpenShell credential service** custody of OCE-managed outbound provider credentials. It stores static keys. For active credentials, `CredentialRefresh` schedules renewal, calls the provider’s `TokenMinter`, and owns rotation, recovery and retirement, including provider revocation where supported. The **OpenClaw Control Plane (OCC)** owns enrollment, consent, source selection and each Agent’s access. GitHub App tokens are the first integration.
+GitHub is the first integration. Use OpenShell as the issuer behind OCE’s existing Token Service for managed, renewable provider credentials. OCC keeps consent, source registration and per-Agent grants. The issuer mints and renews tokens, retires grants, and recovers exchanges whose outcome is unknown. A migrated static key uses the issuer’s versioned store. [OCE lifecycle contract](https://github.com/openclaw/openclaw-enterprise/blob/18130677062c69c16b68fefc97e1a75bbdfe1c4f/specs/rfcs/0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle)
 
-## What happens to each credential?
+## What moves to OpenShell?
 
-| Credential                    | What the control-plane service does                                                                                                                                                                         |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Saved OAuth account           | Renews the enrolled grant with zero Agents attached. Saves the successor refresh token before publishing the new access token. After a lost reply, recovers the original attempt or requests fresh consent. |
-| GitHub App installation token | Holds the App key. If OCC approves the request and no matching token exists, exchanges a signed App JWT with GitHub for the approved repository and permissions.                                            |
-| Static provider key           | Stores each operator replacement as a new version in `CredentialStore`. An authorized read returns the current value without a refresh grant or mint.                                                       |
+| Credential          | What the issuer must do                                                                                                                                                                                             |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GitHub App          | Exchange a signed App JWT for the approved repository IDs and permissions. Verify the returned scope before releasing the token. If GitHub may have minted one, reconcile the original attempt before another mint. |
+| Saved OAuth account | Renew with zero Agents attached. Commit the successor refresh token and access token together. Retire the grant when OCC disconnects the account.                                                                   |
+| Static provider key | Store operator replacements as new versions in `CredentialStore`. Resolve the approved value without a refresh grant or mint.                                                                                       |
 
-OCC keeps the issuer, opaque grant or secret reference, and source generation. It routes status and disconnect to that owner even with zero Agents. Disconnecting the account withdraws all attachments and asks the issuer to retire the grant. OCC keeps browser and device enrollment and the independent Agent grants from RFC-0027. The proposed local OAuth owner can deliver those flows while the remote service is built. [OAuth connection RFC](../0027-agent-oauth-connections/index.md) · [Saved-account proposal](https://github.com/openclaw/openclaw-enterprise/pull/4671)
+OCE already registers GitHub grants and saved OAuth accounts with its Token Service. OCC handles browser consent and code exchange. The local issuer can renew a saved account before it has any Agents. Detaching one Agent leaves the account available to another authorized Agent. [Token Service](https://github.com/openclaw/openclaw-enterprise/pull/4853) · [Saved accounts](https://github.com/openclaw/openclaw-enterprise/pull/4671) · [Per-Agent delivery proposal](https://github.com/openclaw/openclaw-enterprise/pull/4673)
 
 ## What happens on a protected request?
 
-The Agent sees a placeholder. On a cache miss its trusted sender calls OCC once. OCC authenticates the execution, authorizes the actual destination and operation, resolves the approved credential through the issuer, and rechecks access before returning it. The sender injects it and sends. On a redirect, it strips the credential and obtains approval for the new request. With zero authorization TTL, withdrawal denies the next send. A positive TTL permits matching sends until the cached approval and credential expire, even during a partition. At expiry, reach OCC or deny.
-
-[Proposed renewal and request flow](request-lifecycle.svg) · [Editable diagram](request-lifecycle.mmd)
+For v1, check every send online, including credential-cache hits. In one call the trusted sender asks OCC to authorize the captured request and resolve its credential. OCC checks the execution, destination and operation before resolution and rechecks access before release. Withdrawal denies the next fresh send. A redirect needs its own approval. A separately admitted positive authorization TTL could permit matching sends until a fixed deadline, even during a partition. [Request flow](request-lifecycle.svg) · [Editable diagram](request-lifecycle.mmd)
 
 ## What must both teams agree on?
 
-OpenShell has landed the embedded store and refresh engine. Its remote API proposal binds stored references to the authenticated gateway. [Embedded store](https://github.com/NVIDIA/OpenShell/pull/5266) · [Embedded refresh](https://github.com/NVIDIA/OpenShell/pull/5283) · [Proposed remote API](https://github.com/NVIDIA/OpenShell/pull/5139)
+OpenShell’s store and refresh engine run inside its gateway today. Versioned embedded grants are under review. The proposed remote gRPC service would let OCE deploy issuer and gateway together under separate identities, keeping signing keys and refresh tokens outside the gateway’s reach. [Embedded engine](https://github.com/NVIDIA/OpenShell/pull/5283) · [Versioned grants](https://github.com/NVIDIA/OpenShell/pull/5315) · [Remote API](https://github.com/NVIDIA/OpenShell/pull/5139)
 
-1. How can OCC enroll keys and grants directly, then resolve only their outputs? The gateway and OCC’s ordinary resolver must be unable to read an App key or refresh token, even with its reference.
-2. If the issuer accepts a write and OCC loses the reply, how does OCC recover the committed reference and version using the original operation ID?
+1. How does OCC enroll reusable material directly at the issuer and give its resolver access only to approved outputs, including when a Git token must be minted?
+2. How does OCC recover the committed grant or version after a lost reply? Can an imported OAuth grant stay paused until OCC switches owners?
 
-[Migration plan and OAuth acceptance](../../plans/0030-openshell-credential-service.md) · [First GitHub integration and withdrawal test](github-integration.md)
+[Migration plan and OAuth acceptance](../../plans/0030-openshell-credential-service.md) · [First GitHub integration and installed test](github-integration.md)
