@@ -79,13 +79,7 @@ export async function exchangeAuthorizationCode(
     throw new BrowserAuthorizationError("no_refresh_token", "fix_configuration");
   }
   return {
-    issuer: request.issuer,
-    tokenUrl: request.tokenUrl,
-    oauthClientId: request.oauthClientId,
     requestedScopes: request.scopes,
-    tokenEndpointAuthMethod: request.tokenEndpointAuthMethod,
-    ...(request.resource === undefined ? {} : { resource: request.resource }),
-    clientId: request.clientId,
     grantedScopes: tokens.grantedScopes,
     accessToken: tokens.accessToken,
     refreshToken: tokens.refreshToken,

@@ -337,8 +337,8 @@ export async function composeProduction(
     }
     controller.registerDriver(configurationDriver);
     controller.selectDriver("configuration", configurationDriver.id);
-    config.drivers.tokenService?.configureAccounts(state, secretDriver, (ref) =>
-      controller.resolveConnectionClient(ref),
+    config.drivers.tokenService?.configureAccounts(state, secretDriver, (ref, approval) =>
+      controller.resolveConnectionClient(ref, approval),
     );
     config.serviceAccountDriverFactory?.(controller, state);
     controller.installPluginDrivers(pluginDrivers ?? []);

@@ -1452,8 +1452,8 @@ export class ControllerWorker {
             this.repositoryAdmission,
           );
     if (this.secretDriver) {
-      this.preparedTokens?.configureAccounts(this.state, this.secretDriver, (ref) =>
-        provisioning.resolveConnectionClient(ref),
+      this.preparedTokens?.configureAccounts(this.state, this.secretDriver, (ref, approval) =>
+        provisioning.resolveConnectionClient(ref, approval),
       );
     }
     const protectedDriver = this.protectedDriver;

@@ -141,8 +141,8 @@ test(
           provisionAuthAccount: (...args: Parameters<typeof provision>) => provision(...args),
         },
       });
-    preparedTokens.configureAccounts(state, secretDriver, (ref) =>
-      controller.resolveConnectionClient(ref),
+    preparedTokens.configureAccounts(state, secretDriver, (ref, approval) =>
+      controller.resolveConnectionClient(ref, approval),
     );
     const auth = new PostgresHumanAuthentication(
       state,
@@ -438,6 +438,39 @@ test(
     }
     // The same user in a second browser cannot spend the first browser's state or code.
     const { id, callback } = await begin();
+    // Both templates select this client in the same Namespace, but the person approved the MCP
+    // resource. A substituted manual template must be rejected before a private Secret is created.
+    const manualTemplate = await inject(
+      "GET",
+      `/connection-templates/${manual.connectionTemplateId}`,
+    );
+    assert.equal(manualTemplate.statusCode, 200, manualTemplate.body);
+    const beforeSubstitution = secretDriver.calls.length;
+    await assert.rejects(
+      preparedTokens.register(
+        {
+          kind: "oauth_refresh_token",
+          namespaceId,
+          sourceId: id,
+          approval: {
+            ...manual,
+            connectionTemplateVersion: manualTemplate.json().data.current.version,
+            oauthClientId,
+          },
+          grant: {
+            accessToken: randomUUID(),
+            refreshToken: randomUUID(),
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            requestedScopes: ["openid"],
+            grantedScopes: ["openid"],
+          },
+        },
+        t.signal,
+      ),
+      { code: "client_registration_mismatch" },
+    );
+    assert.equal(secretDriver.calls.length, beforeSubstitution);
+
     // Only Keycloak can start a flow. The built-in Google template still has no OAuth client.
     assert.equal(new URL(callback, publicOrigin).searchParams.has("iss"), false);
     const stolen = await secondSession("GET", callback);
@@ -455,10 +488,41 @@ test(
       clientSecret: callbackSecret,
     });
     assert.equal(beforeCallback.statusCode, 200, beforeCallback.body);
+    const grantHandoff = t.mock.method(preparedTokens, "register");
     const completed = await owner("GET", callback);
     assert.equal(completed.statusCode, 303, completed.body);
     assert.match(String(completed.headers.location), /connection=connected/);
     assert.match(String((await owner("GET", callback)).headers.location), /reason=unknown_session/);
+    const accountRef = { kind: "oauth_refresh_token", namespaceId, sourceId: id } as const;
+    const [recorded] = grantHandoff.mock.calls;
+    assert.ok(recorded);
+    const issuedRef = await recorded.result;
+    assert.deepEqual(issuedRef, accountRef);
+    grantHandoff.mock.restore();
+    // A reference or registration from the saved account cannot become a GitHub input by changing kind.
+    const issuerLookup = t.mock.method(preparedTokens, "issuer");
+    try {
+      assert.equal(
+        await preparedTokens.resolve(
+          { ...issuedRef, kind: "github_app_installation" },
+          {
+            signal: t.signal,
+            deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+            minimumValidityMs: 0,
+          },
+        ),
+        undefined,
+      );
+      await assert.rejects(
+        preparedTokens.register(
+          { ...recorded.arguments[0], kind: "github_app_installation" },
+          t.signal,
+        ),
+      );
+      assert.equal(issuerLookup.mock.callCount(), 0);
+    } finally {
+      issuerLookup.mock.restore();
+    }
     const accounts = await owner("GET", connections);
     assert.equal(accounts.statusCode, 200, accounts.body);
     assert.deepEqual(
@@ -521,7 +585,7 @@ test(
     // The trusted Token Service consumer can use the grant. Saving/rotating alone creates no sender.
     async function prepared(minimumValidityMs = 0) {
       const token = await preparedTokens.resolve(
-        { namespaceId, sourceId: id },
+        { kind: "oauth_refresh_token", namespaceId, sourceId: id },
         {
           signal: t.signal,
           deadlineAt: new Date(Date.now() + 10_000).toISOString(),
@@ -662,7 +726,10 @@ test(
     // Let this short-lived token actually expire before any worker starts. A normal resolve
     // must obtain its replacement with the current client secret and the original user's grant.
     await setIssuedLifetime(300);
-    const expiring = await preparedTokens.accountStatus({ namespaceId, sourceId: id }, t.signal);
+    const expiring = await preparedTokens.accountStatus(
+      { kind: "oauth_refresh_token", namespaceId, sourceId: id },
+      t.signal,
+    );
     await waitFor(
       "Keycloak's access token to expire",
       async () => (Date.now() >= Date.parse(expiring.expiresAt!) ? true : undefined),
@@ -731,7 +798,7 @@ test(
       { times: 1 },
     );
     const resolving = preparedTokens.resolve(
-      { namespaceId, sourceId: id },
+      { kind: "oauth_refresh_token", namespaceId, sourceId: id },
       {
         signal: t.signal,
         deadlineAt: new Date(Date.now() + 10_000).toISOString(),

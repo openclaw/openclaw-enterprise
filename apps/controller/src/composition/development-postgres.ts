@@ -292,8 +292,8 @@ export async function composePostgresDevelopment(
       controller.selectDriver("configuration", configurationDriver.id);
     }
     if (drivers?.secretDriver !== undefined) {
-      drivers.tokenService?.configureAccounts(state, drivers.secretDriver, (ref) =>
-        controller.resolveConnectionClient(ref),
+      drivers.tokenService?.configureAccounts(state, drivers.secretDriver, (ref, approval) =>
+        controller.resolveConnectionClient(ref, approval),
       );
       controller.registerDriver(drivers.secretDriver);
       controller.selectDriver("secret", drivers.secretDriver.id);

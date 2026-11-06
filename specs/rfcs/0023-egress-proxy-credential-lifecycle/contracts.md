@@ -183,12 +183,12 @@ receives only committed material for the authorized operation.
 
 OCC and its trusted callers use two Token Service operations for OCE-managed dynamic credentials.
 
-- `register` records the approved source and grant with one lifecycle owner. The GitHub owner
+- `register` takes an explicit `kind` and returns a stable reference with the same kind. The installed owner must support that kind and the registered provider identity. The `github_app_installation` owner
   accepts an installation, the permitted repositories and permissions, and authority to read the
   App signing key. It mints an installation token within those limits. For a saved OAuth
-  account, OCC hands the Token Service the refresh grant and first access token from consent.
+  account, OCC registers `oauth_refresh_token` with the approved template version, client registration, refresh grant and first access token from consent.
   The OAuth owner keeps that grant and uses the approved client registration for renewal.
-- `resolve` uses the registered grant, the caller's authority, minimum remaining validity and
+- `resolve` selects the owner by the reference’s kind and uses the registered grant, the caller’s authority, minimum remaining validity and
   original deadline. If the current token meets those limits, it returns immediately. When
   renewal is due, the owner starts or joins background work for that grant. If the token is
   missing, expired or too close to expiry for this request, the owner starts or joins preparation

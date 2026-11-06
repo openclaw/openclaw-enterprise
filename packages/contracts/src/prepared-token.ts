@@ -1,5 +1,5 @@
-import type { Secret } from "./index.ts";
 import type { CredentialRefreshStatus } from "./drivers/credential-refresh/index.ts";
+import type { Secret } from "./index.ts";
 import type {
   CredentialReadLifetime,
   CredentialSourceControl,
@@ -69,6 +69,7 @@ export interface PreparedTokenCurrentProof {
 export interface PreparedTokenIssuer {
   /** Releases outstanding callers when this installed owner shuts down. */
   readonly shutdownSignal?: AbortSignal;
+  readonly tokenKind: PreparedTokenKind;
   readonly provider: EgressRef;
   readonly issuerInput: string;
   readonly issuerAuthority: string;
@@ -97,42 +98,64 @@ export interface TokenResolveOptions extends CredentialReadLifetime {
   readonly minimumValidityMs: number;
 }
 
+export type PreparedTokenKind = "github_app_installation" | "prepared_source";
+
+export interface PreparedTokenRegistration {
+  readonly kind: PreparedTokenKind;
+  readonly source: PreparedTokenSource;
+  readonly secret: Readonly<Secret>;
+}
+
+/** The installed provider generation and admitted grant remain bound to this handle across renewal. */
+export interface PreparedTokenRef {
+  readonly kind: PreparedTokenKind;
+  readonly key: EgressSourceKey;
+}
+
 /** Registration binds an immutable grant to its issuer secret. Its reference survives renewal. */
 export interface TokenService {
   readonly supportsAccounts: boolean;
   register(
-    registration: { readonly account: OAuthAccountRef; readonly grant: OAuthConnectionGrant },
+    registration: OAuthRefreshTokenRegistration,
     signal: AbortSignal,
   ): Promise<OAuthAccountRef>;
+  register(registration: PreparedTokenRegistration, signal: AbortSignal): Promise<PreparedTokenRef>;
   resolve(
     reference: OAuthAccountRef,
     options: TokenResolveOptions,
   ): Promise<OAuthConnectionAccessToken | undefined>;
+  resolve(
+    reference: PreparedTokenRef,
+    options: TokenResolveOptions,
+  ): Promise<PreparedTokenSelection | undefined>;
+  resolve(
+    reference: PreparedTokenRef | OAuthAccountRef,
+    options: TokenResolveOptions,
+  ): Promise<ResolvedToken | undefined>;
   accountStatus(reference: OAuthAccountRef, signal: AbortSignal): Promise<OAuthConnectionStatus>;
   maintainAccount(
     reference: OAuthAccountRef,
     signal: AbortSignal,
   ): Promise<OAuthConnectionStatus | undefined>;
   retireAccount(reference: OAuthAccountRef, signal: AbortSignal): Promise<void>;
-  register(
-    registration: { readonly source: PreparedTokenSource; readonly secret: Readonly<Secret> },
-    signal: AbortSignal,
-  ): Promise<EgressSourceKey>;
-  resolve(
-    reference: EgressSourceKey,
-    options: TokenResolveOptions,
-  ): Promise<PreparedTokenSelection | undefined>;
-  resolve(
-    reference: EgressSourceKey | OAuthAccountRef,
-    options: TokenResolveOptions,
-  ): Promise<ResolvedToken | undefined>;
   issuer(provider: EgressRef): Omit<PreparedTokenIssuer, "configure" | "resolve"> | undefined;
 }
 
 /** Stable reference to a saved account. Its private grant can rotate between resolutions. */
 export interface OAuthAccountRef {
+  readonly kind: "oauth_refresh_token";
   readonly namespaceId: string;
   readonly sourceId: string;
+}
+
+/** OCC supplies the template version and the client registration the person approved at consent. */
+export interface OAuthRefreshTokenRegistration extends OAuthAccountRef {
+  readonly approval: {
+    readonly connectionTemplateId: string;
+    readonly connectionTemplateVersion: number;
+    readonly oauthClientId: string;
+  };
+  readonly grant: OAuthConnectionGrant;
 }
 
 /** The client and provider destination pinned when the account was connected. */
@@ -152,13 +175,11 @@ export interface OAuthConnectionClient {
 }
 
 /** Trusted handoff from code exchange. The Token Service retains the reusable grant. */
-export interface OAuthConnectionGrant extends OAuthConnectionRegistration {
+export interface OAuthConnectionGrant extends ResolvedToken {
   readonly requestedScopes: readonly string[];
   /** Scopes the provider granted. An empty list means no scopes were reported or requested. */
   readonly grantedScopes: readonly string[];
-  readonly accessToken: string;
   readonly refreshToken: string;
-  readonly expiresAt: string;
 }
 
 /** The only credential the trusted delivery path may install, with a deadline for its use. */

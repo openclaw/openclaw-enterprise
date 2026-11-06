@@ -195,7 +195,7 @@ Keep the App key there and retain the existing approval scope. The development
 
 ## Token Service lifecycle
 
-The Token Service signs an App JWT, validates the issued token’s scope and expiry, and stores it encrypted in PostgreSQL. An authorized Credential Proxy metadata GET can start or join renewal for its registered grant. Git sessions use background preparation until the session expires. See [issuance, renewal and withdrawal](../flows/credential-source-refresh.md#6-issue-and-renew-a-github-installation-token).
+The Token Service signs an App JWT, validates the issued token’s scope and expiry, and stores it encrypted in PostgreSQL. An authorized Credential Proxy metadata GET resolves a `github_app_installation` reference. Its provider generation and registered grant determine which installation token can serve the request. Git sessions use background preparation until the session expires. See [issuance, renewal and withdrawal](../flows/credential-source-refresh.md#6-issue-and-renew-a-github-installation-token).
 
 `PREPARED_GITHUB_RECOVERY_REQUIRED` stops minting. [Recover the issuing owner](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key) with its original attempt and custody. Wait at least 72 minutes from intent, or through verified provider expiry plus clock skew, whichever is later. A GET cannot settle an uncertain issue.
 

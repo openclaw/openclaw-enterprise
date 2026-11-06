@@ -440,6 +440,7 @@ export async function staticEgressFixture(
   const preparedProvider = configurePreparedTokens?.(preparedTokens);
   if (preparedGitHub) {
     preparedTokens.registerIssuer({
+      tokenKind: "github_app_installation",
       provider: preparedGitHubProviderRef,
       sourceFromRoute: preparedGitHubSourceFromRoute,
       issuerInput: "private_key",

@@ -165,7 +165,7 @@ import type {
   CredentialProviderDefinition,
   OAuthConnectionTemplateVersion,
   SavedConnection,
-  OAuthConnectionGrant,
+  OAuthRefreshTokenRegistration,
   OAuthConnectionStatus,
   OAuthAccountRef,
   OAuthConnectionClient,
@@ -4691,9 +4691,8 @@ export class OpenClawController {
         name: `Connection ${crypto.randomUUID()}`,
         type: "oauth2-refresh-token",
         config: {
-          issuer: version.issuer,
-          token_url: version.tokenUrl,
-          client_id: client.clientId,
+          connection_template_id: template.id,
+          connection_template_version: String(version.version),
           oauth_client_id: client.id,
         },
         secrets: {},
@@ -4838,9 +4837,17 @@ export class OpenClawController {
       });
       handoffStarted = true;
       schedule = await this.acceptConnectionTokens(
-        namespaceId,
-        credentialSourceId,
-        grant,
+        {
+          kind: "oauth_refresh_token",
+          namespaceId,
+          sourceId: credentialSourceId,
+          approval: {
+            connectionTemplateId: session.connectionTemplateId,
+            connectionTemplateVersion: session.connectionTemplateVersion,
+            oauthClientId: client.id,
+          },
+          grant,
+        },
         signal,
         holdSession,
       );
@@ -5108,9 +5115,7 @@ export class OpenClawController {
   }
 
   private async acceptConnectionTokens(
-    namespaceId: string,
-    sourceId: string,
-    grant: OAuthConnectionGrant,
+    registration: OAuthRefreshTokenRegistration,
     signal: AbortSignal,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
@@ -5118,7 +5123,7 @@ export class OpenClawController {
     if (holdSession) {
       await this.mutate(holdSession);
     }
-    const reference = await service.register({ account: { namespaceId, sourceId }, grant }, signal);
+    const reference = await service.register(registration, signal);
     const { schedule } = await service.accountStatus(reference, signal);
     if (!schedule) {
       throw new ResourceStateConflictError(
@@ -5129,20 +5134,37 @@ export class OpenClawController {
   }
 
   /** Used by the installed Token Service to authenticate the original client on each renewal. */
-  async resolveConnectionClient({
-    namespaceId,
-    sourceId,
-  }: OAuthAccountRef): Promise<OAuthConnectionClient> {
+  async resolveConnectionClient(
+    { namespaceId, sourceId }: OAuthAccountRef,
+    approval?: OAuthRefreshTokenRegistration["approval"],
+  ): Promise<OAuthConnectionClient> {
     return this.read(async (view) => {
-      const account = await view.savedConnections.findSavedConnection(namespaceId, sourceId);
-      if (!account || account.revocationRequestedBy) {
-        throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+      let pinned = approval;
+      if (pinned) {
+        // Only the pending source that started consent can receive this grant. Another valid
+        // template can select the same OAuth client but authorize a different resource.
+        const source = await view.credentialSources.findCredentialSource(namespaceId, sourceId);
+        if (
+          source?.ownerCapability !== "token_service" ||
+          source.state !== "registering" ||
+          source.config.connection_template_id !== pinned.connectionTemplateId ||
+          source.config.connection_template_version !== String(pinned.connectionTemplateVersion) ||
+          source.config.oauth_client_id !== pinned.oauthClientId
+        ) {
+          throw new BrowserAuthorizationError("client_registration_mismatch", "fix_configuration");
+        }
+      } else {
+        const saved = await view.savedConnections.findSavedConnection(namespaceId, sourceId);
+        if (!saved || saved.revocationRequestedBy) {
+          throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+        }
+        pinned = saved;
       }
       const version = await view.connectionTemplates.findOAuthConnectionTemplateVersion(
-        account.connectionTemplateId,
-        account.connectionTemplateVersion,
+        pinned.connectionTemplateId,
+        pinned.connectionTemplateVersion,
       );
-      if (!version || version.oauthClientId !== account.oauthClientId) {
+      if (!version || version.oauthClientId !== pinned.oauthClientId) {
         throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
       }
       const client = await this.connectionClientForVersion(view, namespaceId, version);
@@ -5171,7 +5193,7 @@ export class OpenClawController {
 
   maintainConnectionToken(namespaceId: string, sourceId: string) {
     return this.connectionTokenService().maintainAccount(
-      { namespaceId, sourceId },
+      { kind: "oauth_refresh_token", namespaceId, sourceId },
       AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
     );
   }
@@ -6976,7 +6998,11 @@ export class OpenClawController {
             materialId: secret.backendRef.uid,
           };
         },
-        resolvePrepared: (reference, options) => this.tokenService().resolve(reference, options),
+        resolvePrepared: (key, options) =>
+          this.tokenService().resolve(
+            { kind: this.preparedIssuer(key.provider).tokenKind, key },
+            options,
+          ),
         authorizeSend: async (use, source, attempt, mintAuthorization, provider) => {
           if (this.transactionContext.getStore()) {
             return { kind: "unavailable", code: "authority" };
@@ -8013,7 +8039,11 @@ export class OpenClawController {
     try {
       if (source.egress?.adoption === "prepared" && issuer) {
         await this.tokenService().register(
-          { source: source.egress, secret: issuer },
+          {
+            kind: this.preparedIssuer(source.egress.key.provider).tokenKind,
+            source: source.egress,
+            secret: issuer,
+          },
           AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
         );
       }
@@ -8520,7 +8550,7 @@ export class OpenClawController {
     });
     if (source.ownerCapability === "token_service") {
       const refresh = await this.connectionTokenService().accountStatus(
-        { namespaceId, sourceId: source.id },
+        { kind: "oauth_refresh_token", namespaceId, sourceId: source.id },
         AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
       );
       return this.credentialSourceMetadata(source, {
@@ -8703,7 +8733,7 @@ export class OpenClawController {
   ): Promise<void> {
     if (source.ownerCapability === "token_service") {
       await this.connectionTokenService().retireAccount(
-        { namespaceId: namespace.id, sourceId: source.id },
+        { kind: "oauth_refresh_token", namespaceId: namespace.id, sourceId: source.id },
         AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
       );
       return;

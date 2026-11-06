@@ -3,6 +3,8 @@ import { isOAuthScopeToken } from "@openclaw-enterprise/contracts";
 import type {
   OAuthConnectionAccessToken,
   OAuthConnectionGrant,
+  OAuthConnectionRegistration,
+  OAuthRefreshTokenRegistration,
   OAuthConnectionClient,
   OAuthAccountRef,
   TokenResolveOptions,
@@ -25,7 +27,9 @@ const PENDING_OAUTH_CONNECTION = "pending";
 
 type ClientRetry = "client_refused" | "client_unavailable" | "client_registration_mismatch";
 
-type OAuthMaterial = OAuthConnectionGrant & {
+type ApprovedGrant = OAuthConnectionGrant & OAuthConnectionRegistration;
+
+type OAuthMaterial = ApprovedGrant & {
   readonly sourceId: string;
   readonly namespaceId: string;
   readonly version: string;
@@ -107,7 +111,7 @@ function material(value: string, custody: OAuthConnectionCustody): StoredConnect
 
 function ready(
   custody: OAuthConnectionCustody,
-  grant: OAuthConnectionGrant,
+  grant: ApprovedGrant,
   now = Date.now(),
 ): OAuthMaterial {
   const expires = Date.parse(grant.expiresAt);
@@ -235,7 +239,7 @@ export class OAuthGrantStore {
 
   async storeInitialGrant(
     custody: OAuthConnectionCustody,
-    grant: OAuthConnectionGrant,
+    grant: ApprovedGrant,
     signal: AbortSignal,
   ): Promise<void> {
     const driver = this.driver(custody, signal);
@@ -417,13 +421,19 @@ function eligibleToken(
 export class OAuthAccountTokens {
   private readonly grants: OAuthGrantStore;
   private readonly state: PlatformStateStore;
-  private readonly client: (ref: OAuthAccountRef) => Promise<OAuthConnectionClient>;
+  private readonly client: (
+    ref: OAuthAccountRef,
+    approval?: OAuthRefreshTokenRegistration["approval"],
+  ) => Promise<OAuthConnectionClient>;
   private readonly renewing = new Map<string, Promise<OAuthConnectionStatus>>();
 
   constructor(
     state: PlatformStateStore,
     secrets: SecretDriver,
-    resolveClient: (ref: OAuthAccountRef) => Promise<OAuthConnectionClient>,
+    resolveClient: (
+      ref: OAuthAccountRef,
+      approval?: OAuthRefreshTokenRegistration["approval"],
+    ) => Promise<OAuthConnectionClient>,
   ) {
     this.state = state;
     this.grants = new OAuthGrantStore(secrets, refreshPinnedOAuthGrant);
@@ -436,7 +446,10 @@ export class OAuthAccountTokens {
     );
   }
 
-  async register(ref: OAuthAccountRef, grant: OAuthConnectionGrant, signal: AbortSignal) {
+  async register(input: OAuthRefreshTokenRegistration, signal: AbortSignal) {
+    const { namespaceId, sourceId, approval, grant } = input;
+    const ref: OAuthAccountRef = { kind: "oauth_refresh_token", namespaceId, sourceId };
+    const { registration } = await this.client(ref, approval);
     let reserved: OAuthConnectionCustody | undefined;
     let custody: OAuthConnectionCustody;
     try {
@@ -482,7 +495,18 @@ export class OAuthAccountTokens {
     }
     // The grant can only replace the durable reservation. If disconnect deleted it during
     // handoff, the Secret Driver's conditional write cannot recreate it.
-    await this.grants.storeInitialGrant(custody, grant, signal);
+    await this.grants.storeInitialGrant(
+      custody,
+      {
+        ...registration,
+        accessToken: grant.accessToken,
+        refreshToken: grant.refreshToken,
+        expiresAt: grant.expiresAt,
+        requestedScopes: grant.requestedScopes,
+        grantedScopes: grant.grantedScopes,
+      },
+      signal,
+    );
     return ref;
   }
 

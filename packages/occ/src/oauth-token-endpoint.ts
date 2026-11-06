@@ -1,4 +1,8 @@
-import { isOAuthScopeToken, type OAuthConnectionGrant } from "@openclaw-enterprise/contracts";
+import {
+  isOAuthScopeToken,
+  type OAuthConnectionGrant,
+  type OAuthConnectionRegistration,
+} from "@openclaw-enterprise/contracts";
 import { BrowserAuthorizationError } from "./errors.ts";
 import { asRecord, isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 
@@ -39,7 +43,7 @@ export async function requestOAuthTokens(
   tokenUrl: string,
   parameters: URLSearchParams,
   scopeLimit: readonly string[] | undefined,
-  client: Pick<OAuthConnectionGrant, "clientId" | "tokenEndpointAuthMethod" | "resource">,
+  client: Pick<OAuthConnectionRegistration, "clientId" | "tokenEndpointAuthMethod" | "resource">,
   clientSecret: string | undefined,
   signal: AbortSignal,
 ) {
@@ -136,7 +140,7 @@ export async function requestOAuthTokens(
 /** Refresh one previously approved grant at the endpoint and scope pinned during consent. */
 export function refreshPinnedOAuthGrant(
   grant: Pick<
-    OAuthConnectionGrant,
+    OAuthConnectionGrant & OAuthConnectionRegistration,
     | "tokenUrl"
     | "refreshToken"
     | "clientId"

@@ -4,15 +4,14 @@ import { isDeepStrictEqual } from "node:util";
 import type {
   EgressRef,
   OAuthAccountRef,
-  OAuthConnectionGrant,
+  OAuthRefreshTokenRegistration,
+  PreparedTokenRegistration,
+  PreparedTokenRef,
   OAuthConnectionClient,
   OAuthConnectionAccessToken,
   PreparedTokenSelection,
   ResolvedToken,
   SecretDriver,
-  EgressSourceKey,
-  PreparedTokenSource,
-  Secret,
   TokenResolveOptions,
   PreparedTokenIssuer,
   TokenService as TokenServiceContract,
@@ -28,6 +27,15 @@ type Preparation = {
     bounds: TokenIssue["bounds"],
   ): Promise<"ready" | "committed" | "blocked" | "fenced" | "quarantined">;
 };
+
+function hasAccountCoordinates(ref: OAuthAccountRef) {
+  return (
+    typeof ref.namespaceId === "string" &&
+    ref.namespaceId.length > 0 &&
+    typeof ref.sourceId === "string" &&
+    ref.sourceId.length > 0
+  );
+}
 
 /** The same issuance budget applies to scheduled and request-triggered work. */
 export function runPreparation(owner: Preparation, outer: AbortSignal) {
@@ -48,7 +56,10 @@ export class TokenService implements TokenServiceContract {
   configureAccounts(
     state: PlatformStateStore,
     secrets: SecretDriver,
-    resolveClient: (ref: OAuthAccountRef) => Promise<OAuthConnectionClient>,
+    resolveClient: (
+      ref: OAuthAccountRef,
+      approval?: OAuthRefreshTokenRegistration["approval"],
+    ) => Promise<OAuthConnectionClient>,
   ) {
     this.accounts = new OAuthAccountTokens(state, secrets, resolveClient);
   }
@@ -91,6 +102,9 @@ export class TokenService implements TokenServiceContract {
   });
 
   registerIssuer(issuer: PreparedTokenIssuer, postgresProof?: PostgresProof): void {
+    if (issuer.tokenKind !== "github_app_installation" && issuer.tokenKind !== "prepared_source") {
+      throw new Error("A prepared token issuer must declare a supported token kind.");
+    }
     const { id } = issuer.provider;
     if (this.issuers.has(id)) {
       throw new Error("A prepared provider must have exactly one lifecycle owner.");
@@ -107,44 +121,59 @@ export class TokenService implements TokenServiceContract {
   }
 
   register(
-    registration: { readonly source: PreparedTokenSource; readonly secret: Readonly<Secret> },
-    signal: AbortSignal,
-  ): Promise<EgressSourceKey>;
-  register(
-    registration: { readonly account: OAuthAccountRef; readonly grant: OAuthConnectionGrant },
+    registration: OAuthRefreshTokenRegistration,
     signal: AbortSignal,
   ): Promise<OAuthAccountRef>;
+  register(registration: PreparedTokenRegistration, signal: AbortSignal): Promise<PreparedTokenRef>;
   async register(
-    registration:
-      | { readonly source: PreparedTokenSource; readonly secret: Readonly<Secret> }
-      | { readonly account: OAuthAccountRef; readonly grant: OAuthConnectionGrant },
+    registration: PreparedTokenRegistration | OAuthRefreshTokenRegistration,
     signal: AbortSignal,
   ) {
-    if ("account" in registration) {
-      return this.accountOwner().register(registration.account, registration.grant, signal);
+    switch (registration.kind) {
+      case "oauth_refresh_token":
+        if (
+          !hasAccountCoordinates(registration) ||
+          !registration.approval?.connectionTemplateId ||
+          !Number.isSafeInteger(registration.approval.connectionTemplateVersion) ||
+          !registration.approval.oauthClientId ||
+          !registration.grant
+        ) {
+          throw new Error(
+            "OAuth token registration requires an account, approved template and grant.",
+          );
+        }
+        return this.accountOwner().register(registration, signal);
+      case "github_app_installation":
+      case "prepared_source": {
+        const { kind, source, secret } = registration;
+        if (!source?.key?.provider || !secret) {
+          throw new Error("Prepared token registration requires a source and issuer Secret.");
+        }
+        const issuer = this.issuer(source.key.provider);
+        if (!issuer || issuer.tokenKind !== kind) {
+          throw new Error("The registered provider does not support this token kind.");
+        }
+        await issuer.configure(source, secret, signal);
+        return { kind, key: source.key };
+      }
+      default:
+        throw new Error("Unknown token registration kind.");
     }
-    const { source, secret } = registration;
-    const issuer = this.issuer(source.key.provider);
-    if (!issuer) {
-      throw new Error("The token issuer for this registration is unavailable.");
-    }
-    await issuer.configure(source, secret, signal);
-    return source.key;
   }
 
-  resolve(
-    reference: EgressSourceKey,
-    options: TokenResolveOptions,
-  ): Promise<PreparedTokenSelection | undefined>;
   resolve(
     reference: OAuthAccountRef,
     options: TokenResolveOptions,
   ): Promise<OAuthConnectionAccessToken | undefined>;
   resolve(
-    reference: EgressSourceKey | OAuthAccountRef,
+    reference: PreparedTokenRef,
+    options: TokenResolveOptions,
+  ): Promise<PreparedTokenSelection | undefined>;
+  resolve(
+    reference: PreparedTokenRef | OAuthAccountRef,
     options: TokenResolveOptions,
   ): Promise<ResolvedToken | undefined>;
-  async resolve(reference: EgressSourceKey | OAuthAccountRef, options: TokenResolveOptions) {
+  async resolve(reference: PreparedTokenRef | OAuthAccountRef, options: TokenResolveOptions) {
     const { signal: caller, minimumValidityMs } = options;
     const deadline = Date.parse(options.deadlineAt);
     const remaining = deadline - Date.now();
@@ -157,7 +186,26 @@ export class TokenService implements TokenServiceContract {
     ) {
       return undefined;
     }
-    const issuer = "provider" in reference ? this.issuer(reference.provider) : undefined;
+    let issuer: PreparedTokenIssuer | undefined;
+    switch (reference.kind) {
+      case "oauth_refresh_token":
+        if (!hasAccountCoordinates(reference)) {
+          return undefined;
+        }
+        break;
+      case "github_app_installation":
+      case "prepared_source":
+        if (!reference.key?.provider) {
+          return undefined;
+        }
+        issuer = this.issuer(reference.key.provider);
+        if (!issuer || issuer.tokenKind !== reference.kind) {
+          return undefined;
+        }
+        break;
+      default:
+        return undefined;
+    }
     const signals = [caller, AbortSignal.timeout(Math.min(remaining, 2_147_483_647))];
     if (issuer?.shutdownSignal) {
       signals.push(issuer.shutdownSignal);
@@ -176,9 +224,9 @@ export class TokenService implements TokenServiceContract {
       // renewal after a caller leaves, but a delayed read must never release its bytes.
       const bounded = { ...options, signal };
       const selected =
-        "sourceId" in reference
+        reference.kind === "oauth_refresh_token"
           ? this.accountOwner().resolve(reference, bounded)
-          : issuer?.resolve(reference, bounded);
+          : issuer?.resolve(reference.key, bounded);
       const token = await Promise.race([stopped, selected]);
       if (!token || signal.aborted) {
         return undefined;

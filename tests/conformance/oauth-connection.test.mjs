@@ -70,12 +70,15 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
   responseScope = undefined;
   const unreported = await exchange([]);
   assert.deepEqual(unreported.grantedScopes, []);
-  const renewed = await refreshPinnedOAuthGrant(unreported, t.signal, undefined);
+  const renewed = await refreshPinnedOAuthGrant({ ...request, ...unreported }, t.signal, undefined);
   assert.deepEqual(renewed.grantedScopes, []);
   responseScope = "later.addition";
-  await assert.rejects(refreshPinnedOAuthGrant(unreported, t.signal, undefined), {
-    code: "grant_scope_mismatch",
-  });
+  await assert.rejects(
+    refreshPinnedOAuthGrant({ ...request, ...unreported }, t.signal, undefined),
+    {
+      code: "grant_scope_mismatch",
+    },
+  );
 });
 
 async function oauthCustody() {
@@ -155,7 +158,7 @@ test("the Token Service keeps the first access token in custody and serializes r
     clientSecret,
     t.signal,
   );
-  await service.storeInitialGrant(custody, grant, t.signal);
+  await service.storeInitialGrant(custody, { ...request, ...grant }, t.signal);
   const resolveClient = async () => ({
     registration: request,
     readSecret: async () => rotatedClientSecret,
