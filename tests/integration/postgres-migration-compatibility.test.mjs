@@ -2003,7 +2003,8 @@ test(
       [66, "preAgentCredentialSourceLimit"],
       [67, "preAgentPluginDriver"],
       [68, "preConnectionTemplates"],
-      [69, "preNamespaceLifecycle"],
+      [69, "preSavedConnections"],
+      [70, "preNamespaceLifecycle"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2041,6 +2042,7 @@ test(
             "preAgentCredentialSourceLimit",
             "preAgentPluginDriver",
             "preConnectionTemplates",
+            "preSavedConnections",
             "preNamespaceLifecycle",
           ].includes(history)
         ) {

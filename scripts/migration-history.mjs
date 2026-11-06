@@ -160,6 +160,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 68 && completedCount > 68) {
     return "preConnectionTemplates";
   }
+  if (count === 69 && completedCount > 69) {
+    return "preSavedConnections";
+  }
   if (count === completedCount) {
     return "completed";
   }
@@ -271,7 +274,7 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 63) {
     return "preGatewayManagedMode";
   }
-  if (count === 69) {
+  if (count === 70) {
     return "preNamespaceLifecycle";
   }
   refuse("an incomplete or unsupported development history is installed");

@@ -280,8 +280,8 @@ test(
     const leaseDurationMs = 1_500;
     const observerPool = new Pool({ connectionString: databaseUrl, max: 8 });
     const relay = await startDatabaseRelay(databaseUrl);
-    // Use the actual worker pool, including its idle-client reset handling. The
-    // relay drops idle and active sockets when the expired lease is recovered.
+    // Use the production pool: resetting the relay drops idle clients as well as active queries.
+
     const workerPool = await createPostgresPool(relay.url, {
       max: 4,
       ...workerDatabasePoolOptions(60_000),
@@ -590,8 +590,7 @@ async function heldRenewalHandoff(context, stage) {
   const leaseDurationMs = 1_500;
   const observerPool = new Pool({ connectionString: databaseUrl, max: 8 });
   const relay = await startDatabaseRelay(databaseUrl);
-  const stalePool = new Pool({
-    connectionString: relay.url,
+  const stalePool = await createPostgresPool(relay.url, {
     max: 4,
     ...workerDatabasePoolOptions(60_000),
   });
