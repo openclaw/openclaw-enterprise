@@ -88,6 +88,8 @@ DECLARE
   source occ.credential_sources%ROWTYPE;
 BEGIN
   -- The immutable snapshot constraint owns shape errors, including malformed lists.
+  IF jsonb_typeof(NEW.admitted_spec->'harness_auth') IS DISTINCT FROM 'object'
+  THEN RETURN NEW; END IF;
   IF NOT occ.harness_auth_is_valid((NEW.admitted_spec->'harness_auth') - 'protectedExecutionVersion', NEW.namespace_id, true)
     OR (NEW.admitted_spec ? 'credential_sources' AND
       NOT occ.credential_source_snapshots_are_valid(NEW.admitted_spec->'credential_sources'))
