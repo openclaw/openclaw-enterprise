@@ -639,6 +639,10 @@
                         "label": "Production"
                       },
                       {
+                        "page": "reference/settings/named-workspace",
+                        "label": "Named Workspace"
+                      },
+                      {
                         "page": "reference/settings/operations",
                         "label": "Workers and Database"
                       }
@@ -1214,6 +1218,7 @@
               "flows/common-logging",
               "flows/audit-ledger",
               "flows/controller-worker",
+              "flows/named-workspace-runtime",
               "flows/agent-deployment-diagnostics",
               "flows/agent-runtime-logs",
               "flows/platform-console",

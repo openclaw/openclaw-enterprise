@@ -155,7 +155,7 @@ async function setup(context) {
     return owner;
   }
 
-  async function revision(owner, number) {
+  async function revision(owner, number, overrides = {}) {
     const candidate = {
       id: `rev_${randomUUID()}`,
       namespaceId: namespace.id,
@@ -173,6 +173,7 @@ async function setup(context) {
       harnessAuth: { ...owner.harnessAuth, secretDriverId: secretDriver.id },
       servicePrincipalId: owner.servicePrincipalId,
       createdAt: new Date().toISOString(),
+      ...overrides,
     };
     const idempotencyKey = `agent_revision:${candidate.id}:reconcile`;
     await state.transactWithQueue(async (unit, queue) => {

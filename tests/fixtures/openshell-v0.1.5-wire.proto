@@ -17,7 +17,9 @@ service OpenShell {
   rpc GetSandboxPolicyStatus(GetSandboxPolicyStatusRequest) returns (GetSandboxPolicyStatusResponse);
   rpc UpdateConfig(UpdateConfigRequest) returns (UpdateConfigResponse);
   rpc ExecSandbox(ExecSandboxRequest) returns (stream ExecSandboxEvent);
+  // Stock Health is unauthenticated; GetCurrentUser uses the authenticated principal.
   rpc Health(HealthRequest) returns (HealthResponse);
+  rpc GetCurrentUser(GetCurrentUserRequest) returns (GetCurrentUserResponse);
   rpc CreateSandbox(CreateSandboxRequest) returns (SandboxResponse);
   rpc GetSandbox(GetSandboxRequest) returns (SandboxResponse);
   rpc GetService(GetServiceRequest) returns (ServiceEndpointResponse);
@@ -46,6 +48,14 @@ service OpenShell {
 }
 
 message HealthRequest {}
+
+message GetCurrentUserRequest {}
+
+// openshell.proto:905-923. Unused display_name (2), roles (3), scopes (4) omitted.
+message GetCurrentUserResponse {
+  string subject = 1;
+  string identity_provider = 5;
+}
 
 message HealthResponse {
   ServiceStatus status = 1;

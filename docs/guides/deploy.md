@@ -50,6 +50,12 @@ installation sequence below after either setup guide. Installation profiles and
 the custom Helm procedure use a separate configuration and Agent deployment path.
 Cluster hosting does not select the Agent model provider.
 
+For an already bootstrapped single-namespace installation, use the
+[named runtime attachment contract](../reference/settings/named-workspace.md).
+Record the original Installation ID, logical Namespace ID and independently
+verified physical UID before selecting it. This path omits initialization and
+requires operator-managed private routing; it does not provide a bootstrap stage.
+
 ### Production prerequisites
 
 <Snippet file="../snippets/kubernetes-prerequisites.md" />

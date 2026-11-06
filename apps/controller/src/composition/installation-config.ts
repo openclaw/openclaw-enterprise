@@ -1,3 +1,5 @@
+import { readNamedWorkspace, type NamedWorkspace } from "./named-workspace.ts";
+import type { WorkerStartupDependency } from "../worker/startup-gate.ts";
 import type { ModelProviderConfiguration } from "../drivers/compute/model-provider.ts";
 import {
   openShellProxyConfiguration,
@@ -222,6 +224,8 @@ export type ServiceAccountDriverFactory = (
 ) => void;
 
 export interface InstallationRuntimeDrivers {
+  readonly namedWorkspace?: NamedWorkspace;
+  readonly startupDependency?: WorkerStartupDependency;
   readonly defaultPresets?: readonly Pick<Preset, "name" | "template">[];
   /** Bundled defaults replaced by a same-named `presets.files` entry; startup warns once each. */
   readonly shadowedDefaultPresets?: readonly ShadowedDefaultPreset[];
@@ -278,6 +282,7 @@ export async function initializeInstallationPresets(
   identities: readonly Identity[],
   defaults: readonly Pick<Preset, "name" | "template">[],
   onWarning?: (event: Readonly<Record<string, unknown>>) => void,
+  namespaceId?: string,
 ): Promise<void> {
   if (defaults.length === 0) {
     return;
@@ -301,7 +306,10 @@ export async function initializeInstallationPresets(
     for (const principalId of administrators) {
       let skipped: readonly SkippedDefaultPreset[];
       try {
-        skipped = await controller.initializeDefaultPresets(principalId, { skipRefusedRefresh });
+        skipped = await controller.initializeDefaultPresets(principalId, {
+          skipRefusedRefresh,
+          ...(namespaceId === undefined ? {} : { namespaceId }),
+        });
       } catch (error) {
         // An administrator whose grant stops at the Installation (for example the admin Role
         // bound to the installation resource only) cannot create Presets in a Namespace. Each
@@ -1035,7 +1043,25 @@ export async function loadInstallationConfiguration(options: {
     "occ/kubernetes-secret",
     KubernetesSecretDriver,
   );
-  const namespaceBinding = environment.OCC_PREPROVISIONED_NAMESPACE;
+  const namedWorkspace = readNamedWorkspace(environment.OCC_NAMED_WORKSPACE);
+  if (namedWorkspace && environment.OCC_PREPROVISIONED_NAMESPACE !== undefined) {
+    throw new Error("Named workspace and preprovisioned canary bindings are mutually exclusive.");
+  }
+  if (
+    namedWorkspace &&
+    (repositoryConfiguration ||
+      proxySelection ||
+      credentialGateway ||
+      credentialRefresh ||
+      preparedGitHubKeyPath)
+  ) {
+    throw new Error(
+      "Named workspace supports only Git-disabled authority: no repository, credential proxy, gateway or refresh Driver.",
+    );
+  }
+  const namespaceBinding = namedWorkspace
+    ? JSON.stringify({ namespaceId: namedWorkspace.namespaceId, uid: namedWorkspace.uid })
+    : environment.OCC_PREPROVISIONED_NAMESPACE;
   let preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
   if (namespaceBinding !== undefined) {
     const k = compute.configuration as unknown as KubernetesComputeDriverOptions;
@@ -1047,10 +1073,14 @@ export async function loadInstallationConfiguration(options: {
       !openShellBackend ||
       !sandboxSelection ||
       sandboxPackage !== undefined ||
-      (proxySelection === undefined && repositoryTransportConfiguration === undefined)
+      (!namedWorkspace &&
+        proxySelection === undefined &&
+        repositoryTransportConfiguration === undefined)
     ) {
       throw new Error(
-        "A preprovisioned Namespace requires single-cluster bundled Kubernetes and OpenShell Drivers with Credential Proxy and gateway routing.",
+        namedWorkspace
+          ? "A named workspace requires single-cluster bundled Kubernetes and OpenShell Sandbox with gateway routing."
+          : "A preprovisioned Namespace requires single-cluster bundled Kubernetes and OpenShell Drivers with Credential Proxy and gateway routing.",
       );
     }
     const workspace = (sandboxSelection.configuration as unknown as OpenShellSandboxDriverOptions)
@@ -1373,6 +1403,25 @@ export async function loadInstallationConfiguration(options: {
               }).sandbox
             : (createExternalDriver(sandboxPackage.module, sandbox, "sandbox") as SandboxDriver);
   }
+  let startupDependency: WorkerStartupDependency | undefined;
+  if (namedWorkspace?.startupCycle === "gateway-readiness") {
+    if (
+      !/^https:\/\//i.test(openShellBackend?.configuration.endpoint ?? "") ||
+      !["bearerTokenFile", "mtls"].includes(openShellBackend?.configuration.auth?.mode ?? "") ||
+      !sandboxDriver ||
+      !("checkStartupDependency" in sandboxDriver) ||
+      typeof sandboxDriver.checkStartupDependency !== "function"
+    ) {
+      throw new Error(
+        "The named startup cycle requires the bundled authenticated TLS gateway readiness check.",
+      );
+    }
+    const check = sandboxDriver.checkStartupDependency.bind(sandboxDriver) as (
+      namespace: string,
+      signal: AbortSignal,
+    ) => ReturnType<WorkerStartupDependency["check"]>;
+    startupDependency = { check: (signal) => check(preprovisionedNamespace!.name, signal) };
+  }
   const credentialRefreshDriver =
     credentialRefresh === undefined
       ? undefined
@@ -1455,6 +1504,8 @@ export async function loadInstallationConfiguration(options: {
     );
   }
   return Object.freeze({
+    ...(namedWorkspace ? { namedWorkspace } : {}),
+    ...(startupDependency ? { startupDependency } : {}),
     defaultPresets: Object.freeze(defaultPresets),
     shadowedDefaultPresets: Object.freeze(shadowedDefaultPresets),
     bundledPresetVersions,

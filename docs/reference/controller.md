@@ -57,6 +57,11 @@ defined in the [worker configuration reference](settings/operations.md#controlle
 The API's listener and Better Auth settings are not worker inputs. Both
 processes must use the same migrated PostgreSQL database.
 
+The opt-in [named runtime attachment](settings/named-workspace.md)
+asserts exact existing Installation, logical Namespace and physical UID values.
+Its `gateway-readiness` startup cycle holds recovery and claims until authenticated
+read-only checks succeed. `independent` preserves the ordinary worker startup path.
+
 ## Startup and readiness contract
 
 Both processes resolve the persisted singleton Installation internally. Their
