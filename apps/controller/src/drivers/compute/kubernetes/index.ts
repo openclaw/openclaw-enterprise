@@ -4660,8 +4660,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
       // The paired Sandbox injects the credential, so this path never projects a model Secret.
       if (
         this.sandboxDriver === undefined ||
-        this.credentialGatewayDriver === undefined ||
-        auth.credentialGatewayId !== this.credentialGatewayDriver.id ||
+        (auth.credentialProxyId !== undefined
+          ? auth.credentialGatewayId !== undefined ||
+            auth.credentialProxyId !== this.proxyDriver?.id ||
+            auth.sourceType !== "openai" ||
+            auth.loginMode !== "api_key"
+          : this.credentialGatewayDriver === undefined ||
+            auth.credentialGatewayId !== this.credentialGatewayDriver.id) ||
         credentialSourceType?.type !== auth.sourceType ||
         credentialSourceType.harnessAuth?.loginMode !== auth.loginMode ||
         credentialSourceType.harnessAuth.modelProvider !== "openai" ||
@@ -6442,7 +6447,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         revision.harnessAuth,
         admittedRevision.configuration,
         revision.secretBindings,
-        await this.admittedCredentialSourceType(revision),
+        await this.admittedCredentialSourceType(revision, context),
       ),
     );
     const channels = this.enabledChannels(admittedRevision);
@@ -7726,7 +7731,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       revision.harnessAuth,
       admittedRevision.configuration,
       revision.secretBindings,
-      await this.admittedCredentialSourceType(revision),
+      await this.admittedCredentialSourceType(revision, context),
     );
     const channels = this.enabledChannels(admittedRevision);
     const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
@@ -11285,12 +11290,39 @@ export class KubernetesComputeDriver implements ComputeDriver {
     };
   }
 
-  /** Dispatch revalidates against the paired gateway's current catalog, not admission's copy. */
+  /** Dispatch revalidates against the recorded owner's current catalog. */
   private async admittedCredentialSourceType(
     revision: AgentRevision,
+    context?: ComputeRevisionContext,
   ): Promise<CredentialSourceType | undefined> {
     if (revision.harnessAuth.method !== "credential_source") {
       return undefined;
+    }
+    const auth = revision.harnessAuth;
+    if (auth.credentialProxyId !== undefined) {
+      const resolved = context?.harnessAuth;
+      const control = this.proxyDriver?.sourceControl;
+      if (
+        auth.credentialGatewayId !== undefined ||
+        auth.credentialProxyId !== this.proxyDriver?.id ||
+        resolved?.method !== "credential_source" ||
+        resolved.source.namespaceId !== revision.namespaceId ||
+        resolved.source.state !== "ready" ||
+        !credentialSourceMatchesSnapshot(resolved.source, auth) ||
+        resolved.source.egress === undefined ||
+        resolved.source.egress.schemaVersion !== 1 ||
+        revision.executionAdmission.mode !== "protected" ||
+        revision.egressPlan?.egressDriverId !== auth.credentialProxyId ||
+        !revision.egressPlan.routes.some((route) =>
+          isDeepStrictEqual(route.binding.source, resolved.source.egress!.key),
+        ) ||
+        !isDeepStrictEqual(control?.backend, resolved.source.egress.key.backend)
+      ) {
+        return undefined;
+      }
+      return control?.providers.find((provider) =>
+        isDeepStrictEqual(provider.ref, resolved.source.egress!.key.provider),
+      )?.sourceType;
     }
     const gateway = this.requireCredentialGateway();
     if (gateway.id !== revision.harnessAuth.credentialGatewayId) {

@@ -513,7 +513,11 @@
       "path": "tests/integration/credential-proxy-revision-currentness.test.ts",
       "expectedTests": [
         "provisioning validates Harness authentication with the source descriptor that supplied its login mode (PostgreSQL)",
-        "credential exchange consults revision history only for inactive executions"
+        "credential exchange consults revision history only for inactive executions",
+        "Kubernetes reads a synthetic Proxy Harness through its pinned catalog before external effects",
+        "Worker reads a stored synthetic Proxy Harness and refuses revoked or withdrawn authority",
+        "claimed Worker dispatch gates a stored Proxy Harness before Kubernetes effects",
+        "archived Gateway revision retires through its original Sandbox after source deletion"
       ]
     },
     {
@@ -606,7 +610,14 @@
         "revision insertion owns its snapshot before a source lock wait",
         "reversed source lists commit in their original order",
         "direct insertion respects OCC Namespace Agent source lock order",
-        "deleting source refuses waiting insertion and preserves archived bytes"
+        "deleting source refuses waiting insertion and preserves archived bytes",
+        "synthetic Proxy Harness reader preserves exclusive owners and deleted-source archives in memory",
+        "synthetic Proxy Harness reader preserves exclusive owners and deleted-source archives in PostgreSQL",
+        "SQL enforces exclusive Proxy Harness ownership without rewriting Gateway archives",
+        "revision owner trigger Namespace locking: source-free absent",
+        "revision owner trigger Namespace locking: invalid empty list",
+        "revision owner trigger Namespace locking: Harness source",
+        "revision owner trigger Namespace locking: listed source"
       ]
     },
     {

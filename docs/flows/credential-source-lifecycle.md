@@ -196,19 +196,14 @@ The revision records `sourceId`, `sourceType` and the owner's `credentialGateway
 or `credentialProxyId`. Older sources keep their Gateway owner, even when a Proxy
 with the same Driver ID enforces the revision's egress plan.
 
-Before saving a new revision, both State adapters call
-`packages/occ/src/state/platform-state.ts:assertRevisionAuthAvailable` from
-`createRevision`. Every listed snapshot and the source-backed Harness snapshot
-must match a ready source in the same Namespace: ID, type, owner capability and
-Driver ID. An unavailable source or mismatched snapshot raises `ScopeViolationError`.
-`packages/occ/src/state/postgres-state.ts:createRevision` locks all unique source
-IDs in one ordered `SELECT FOR SHARE` and holds them through commit. Source-bearing
-insertions first take a shared Namespace lock and an Agent key-share lock, following
-OCC admission's Namespace, Agent, then source order. Both adapters copy the input
-before their first await and use that copy for validation, persistence and return.
-They compare every snapshot without reordering the saved list. Memory checks its
-transaction snapshot. These insertion checks reject stale or forged owners. Reads of historical revisions do not repeat
-this check; their saved snapshots remain readable after legitimate source deletion.
+Both State adapters copy the input before the first await in `createRevision`.
+`packages/occ/src/state/platform-state.ts:assertRevisionAuthAvailable` checks the
+Harness snapshot and each listed source against its ready record in the same
+Namespace: source ID, type, owner capability and Driver ID. Memory checks its
+transaction snapshot. For source-bearing inserts, PostgreSQL locks the Namespace,
+Agent and then distinct source IDs in sorted order (`SELECT FOR SHARE` for sources). Locks last through
+commit; neither adapter reorders the saved list. New inserts reject stale owners.
+Historical revisions remain readable after source deletion.
 
 ### 6. Resolve the source at dispatch
 
@@ -218,6 +213,10 @@ this check; their saved snapshots remain readable after legitimate source deleti
 The worker rechecks the deploying actor's and Agent's
 `credential_source:operate` (`AUTHORIZATION_DENIED`), the selected Gateway/Proxy
 snapshot (`CREDENTIAL_GATEWAY_MISMATCH`) and live source ownership/type.
+For a Proxy-owned `openai/api_key` Harness snapshot, the protected route must
+match the ready source and the current Backend and provider generations. Worker
+and Compute refuse mismatches without trying the Gateway. Deploying a
+`credential_source` Harness binding still records its Gateway.
 Unavailable sources return `HARNESS_AUTH_SOURCE_UNAVAILABLE` or
 `CREDENTIAL_SOURCE_UNAVAILABLE`. Withdrawn sources stay detached; Compute repeats
 snapshot checks before

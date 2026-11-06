@@ -1368,6 +1368,7 @@ async function assertCompletedHistory(db, previous = []) {
     ).rows,
     [
       ["occ.check_connection_registration_scope()", false, "search_path=pg_catalog, pg_temp"],
+      ["occ.check_revision_credential_source_owners()", false, "search_path=pg_catalog, pg_temp"],
       // The app records a standing execution; only the Agent lifecycle trigger can close it.
       ["occ.close_repository_standing_execution()", false],
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
@@ -2002,6 +2003,7 @@ test(
       [67, "preAgentPluginDriver"],
       [68, "preConnectionTemplates"],
       [69, "preSavedConnections"],
+      [70, "preProxyHarnessSnapshot"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
