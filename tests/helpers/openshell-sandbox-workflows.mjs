@@ -3795,7 +3795,7 @@ async function deployAdditionalCredentialAgent(topology, modelSourceId, toolSour
  * - a withdrawal is executed only on its own requester's authority, even on a shared claim;
  * - withdrawing a source from one Agent leaves another Agent's attachment of it in place;
  * - an Agent that loses a source grant after admission never has the revision provisioned;
- * - admission refuses a redeploy without the grant.
+ * - a caller who can operate the source restores the missing grant by redeploying.
  * The model source keeps working throughout.
  */
 async function assertNonModelCredentialSource(topology) {
