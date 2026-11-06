@@ -1,8 +1,8 @@
 # Verify Git access across managed Sandbox revisions
 
 Run this scenario after deploying matching OCE API, worker and runtime images
-with managed OpenShell replacement support. It exercises unchanged repository
-settings through the real Agent API and worker. It does not change installation
+with managed OpenShell replacement support. It exercises unchanged settings and
+repository additions and removals through the real Agent API and worker. It does not change installation
 configuration or write to GitHub.
 
 ## Prepare the installation
@@ -36,15 +36,16 @@ Add this object to the input file, replacing the example references and URLs:
     "repositoryRef": "application",
     "profile": "github-repository",
     "url": "https://github.com/example/approved-private.git",
-    "deniedUrl": "https://github.com/example/unselected-private.git"
+    "additionalRepositoryRef": "library",
+    "additionalUrl": "https://github.com/example/library-private.git"
   }
 }
 ```
 
-Both repositories must exist. The first must have a commit and
-be approved for the selected Namespace and profile. The second must be outside
-the Agent's grant. Use lowercase HTTPS URLs ending in `.git`. Tokens do not
-belong in these URLs or the input file.
+Both repositories must exist, have a commit, and be approved for the selected
+Namespace with `github-repository` and the same explicit permission map. The
+second starts outside the Agent's grant and is added during the test. Use lowercase
+HTTPS URLs ending in `.git`. Tokens do not belong in these URLs or the input file.
 
 Public repositories can verify allowed and denied access across revisions.
 Use a private allowed repository to also verify credential delivery; a successful
@@ -89,44 +90,34 @@ OCC_TEST_QA_SCENARIOS=openshell-git-replacement \
 node --test tests/integration/qa-matrix-real.test.mjs
 ```
 
-The scenario creates two Agents with the same repository selection. It fetches
-the approved repository, writes a workspace marker, and deploys a new revision
-without changing Git settings. It requires the same Sandbox ID, retained files,
-a new middleware binding, removal of the old Provider/profile, and successful Git
-fetch and model turns after replacement. The unselected repository must remain
-denied, and the peer Agent must retain Git and model access. Cleanup deletes the
-test-created Agents and IAM resources. It preserves the prepared model source
-and its Secret.
+The scenario creates two Agents with repository A selected. It fetches A, denies B,
+writes a workspace marker, and deploys an unchanged revision. It then adds B,
+deploys, removes A, and deploys again. Each replacement requires the same Sandbox
+ID, retained files, a new middleware binding, removal of the old Provider/profile,
+and successful Git fetches and model turns. Removed or unselected repositories
+must be denied. The peer keeps access to A and cannot access B. Cleanup deletes
+test-created Agents and IAM resources and preserves the prepared model source
+and its Secret. The scenario does not change registry permissions or test Git writes.
 
-Live verification on the operator-approved cluster with controller image
-`quay.io/gordons/oce-controller@sha256:ade513a3e845d56009f5b51271d0f98b3e6a28b1d466b874db7700b7c7a6a687`
-on 2026-11-06 passed both initial deployments, model turns on both Agents, an
-allowed fetch and denial of the unselected repository. Startup used API-based
-identity checks without granting worker Pod access to OpenShell-managed
-namespaces. The earlier TLS hostname failure was resolved by updating the
-service certificate; hostname verification remained enabled. The direct Codex
-test input used the native model ID, without OCE's provider prefix.
+On 2026-11-06, the expanded scenario passed on the operator-approved cluster
+with these deployed images:
 
-Replacement failed with `REPOSITORY_GIT_ROUTE_BLOCKED`. The worker reported
-`git-provider-generation` continuity refusal and
-`OPENSHELL_GIT_RECONCILIATION_REQUIRED`. Investigation found that enrollment
-compared OpenShell policy version 4 with the new OCE plan's generation 1 and
-rejected the installation. The startup challenge matched the admitted plan, but
-the Harness timed out waiting for enrollment. Later runtime Provider renewal
-changed the aggregate Provider environment revision and triggered the continuity
-refusal; the observed execution identity did not change.
+- Controller: `quay.io/gordons/oce-controller@sha256:4c702414978b6e01331937207b6f321bfc1a97928beec753350793793541bc91`
+- Runtime: `quay.io/gordons/oce-runtime@sha256:d8a0b5524d3874704394f390f09afcd147acf902b0d3a2521a79ab9c8ea360bf`
+- OpenShell Gateway: `quay.io/gordons/openshell-gateway@sha256:ac8e5ffe38b59b602a9e17956253b697ad03382aa15fb67e2b9e9bd936445549`
 
-The counter fix passed that enrollment check on a second live run with controller
-image `quay.io/gordons/oce-controller@sha256:985e4ddc680c8adcb53d004f93537210fab8491ec348a65511383ce1b0d450d5`.
-Both initial deployments, model turns and Git allow/deny checks passed again.
-Replacement then failed when enrollment storage refused the successor receipt
-under the retained Sandbox ID. The local fix retains receipts per revision and
-retires the previous enrollment after a confirmed stop. Repeat the scenario with
-rebuilt images to verify this transition. Retained files, Git and model access
-after replacement, and peer isolation remain unverified. Both runs removed their
-test-owned Agents and IAM resources and preserved the original API inventory.
+The run verified unchanged redeployment, repository addition and removal,
+retained files and Sandbox identity, retired Providers, model turns after each
+replacement, and peer isolation. Fetching the second, private repository verified
+credential delivery. Removing the first repository denied subsequent remote access
+while preserving local files. The scenario and parent test passed with no skips.
+Cleanup restored the original API inventory and removed test-owned Pods and PVCs.
+The worker needed no Pod access in OpenShell-managed namespaces.
+
+Both repository grants used the same read-only permission map. Live replacement
+of registry permissions and Git writes remain unverified.
 
 Local tests cover operator and managed execution without Kubernetes access,
-ownership refusals, execution changes, interrupted cleanup and denial of the
-retired middleware binding with controlled OpenShell responses. The live scenario
+ownership refusals, execution changes, repository additions/removals, changed
+permission maps, interrupted cleanup and denial of the retired middleware binding with controlled OpenShell responses. The live scenario
 does not inject failures or restart the worker.

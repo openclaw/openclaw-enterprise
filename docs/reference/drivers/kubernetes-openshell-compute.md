@@ -156,12 +156,14 @@ See the [provisioning flow](../../flows/openshell-managed-workload.md).
   workspace path; no mount using them is submitted to OpenShell.
 - Changing the Harness type, static policy, non-Git middleware bindings, resource requests
   or runtime class through workload replacement is refused. Runtime Provider configuration keys cannot be removed.
-- Git-enabled Agents can redeploy with unchanged repository selections and resolved
-  permissions. Cleanup closes the old authorization and removes its Provider and
-  middleware before preparing the successor. Git replacement requires the durable
-  route store. Changed repository scope, enabling Git and removing Git remain
-  unsupported. [Live Git replacement verification](../../testing/openshell-git-replacement.md)
-  requires configured GitHub access and is pending for this increment.
+- Git-enabled Agents can change repository selections and resolved permissions
+  between revisions. Cleanup closes the old authorization and removes its Provider
+  and middleware before preparing the successor. Replacement requires the durable
+  route store. Enabling or removing Git remains unsupported, as do profile changes
+  that alter static filesystem policy. Revoke any standing approval before changing
+  its bound repository. Removing access does not erase previously fetched files.
+  [Live Git replacement verification](../../testing/openshell-git-replacement.md)
+  requires configured GitHub access and records the tested scope.
 - Replacement relies on one OCE worker and OpenShell's serialized lifecycle
   operations. See [stop and replacement ordering](../../flows/openshell-managed-workload.md#stop-and-replacement-ordering)
   for the cancellation argument. Provider credential mutations and exposure

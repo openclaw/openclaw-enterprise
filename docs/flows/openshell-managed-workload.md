@@ -1,7 +1,7 @@
 ---
 created: "2026-10-22"
 updated: "2026-11-06"
-last_updated_session: authoring-run/39489360-1173-4089-a7cf-81713b17e4b9
+last_updated_session: authoring-run/2bf18ba3-d9f8-4c8d-81ec-6c428bc3103b
 ---
 
 # Managed OpenShell workload flow
@@ -140,10 +140,12 @@ roll back or start it. With unchanged membership, only the final policy needs
 reconciliation.
 
 For Git, `ManagedOpenShellSandbox.gitScopeAnnotations` records a fingerprint of the
-repository Driver and resolved bindings, excluding the session deadline. Replacement
-requires that same scope. `retainedGitSandbox` permits a stopped predecessor only
-after its Git middleware and owned Provider have been removed. The existing Git
-runtime then creates a fresh revision-owned bootstrap Provider and middleware binding.
+repository Driver and resolved bindings, excluding the session deadline. Each
+revision uses its own admitted scope; repository selections and permissions can change.
+`retainedGitSandbox` permits a stopped Git-enabled predecessor only after its Git
+middleware and owned Provider have been removed. The Git runtime creates a fresh
+revision-owned bootstrap Provider and middleware binding. Workload readback verifies
+the new scope annotation. Enabling or disabling Git remains refused.
 `verifyGitSandbox` checks the latest policy separately from the creation policy;
 workload and ownership checks still apply. Credential installation and supervisor
 identity checks remain in the [repository flow](agent-repository-credentials.md).
@@ -289,6 +291,8 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-06 21:31: Permit changed Git scope after predecessor retirement in the accompanying implementation. (authoring-run/2bf18ba3-d9f8-4c8d-81ec-6c428bc3103b - 1c0ef14084e7bbf5f316e6612e65c87202acfc13)
 
 - 2026-11-06 20:09: Retain revision enrollment receipts and retire current Sandbox authority after confirmed runtime stop. (authoring-run/39489360-1173-4089-a7cf-81713b17e4b9 - 86a7ef632ac8b3e8e28bfd67306bf7b49ba83302)
 
