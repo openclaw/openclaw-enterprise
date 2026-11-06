@@ -32,7 +32,7 @@ import { createCustodyTransitions } from "../helpers/egress-supplier-custody-tra
 import { agentClients } from "../helpers/egress-custody-observations.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { relaySockets } from "../helpers/socket-relay.mjs";
+import { relaySockets } from "../helpers/socket-relay.ts";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const grpc = require("@grpc/grpc-js");

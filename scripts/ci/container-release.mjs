@@ -292,6 +292,13 @@ export function skopeo(args, options = {}) {
   return execFileSync("skopeo", args, { maxBuffer: 16 * 1024 * 1024, ...options });
 }
 
+export function skopeoLogin(registry, authfile, username, token) {
+  skopeo(["login", "--authfile", authfile, "--username", username, "--password-stdin", registry], {
+    input: token,
+    stdio: ["pipe", "ignore", "pipe"],
+  });
+}
+
 export function inspectDigest(reference, authfile) {
   const bytes = skopeo([
     "inspect",
@@ -589,18 +596,7 @@ export async function publishPrepared(directory, env, producer, verify, aliasTag
   const authDirectory = await mkdtemp(join(tmpdir(), "enterprise-registry-"));
   const authfile = join(authDirectory, "auth.json");
   try {
-    skopeo(
-      [
-        "login",
-        "--authfile",
-        authfile,
-        "--username",
-        env.GITHUB_ACTOR,
-        "--password-stdin",
-        "ghcr.io",
-      ],
-      { input: env.GH_TOKEN, stdio: ["pipe", "ignore", "pipe"] },
-    );
+    skopeoLogin("ghcr.io", authfile, env.GITHUB_ACTOR, env.GH_TOKEN);
     for (const image of prepared) {
       // Source, CI and visibility may change while large images are being copied.
       await verify();

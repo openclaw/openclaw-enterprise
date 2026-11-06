@@ -224,9 +224,9 @@ export async function preparedStandingGitPeer(
         custodyKeyPath,
         ca: tls.ca,
         startWorker: false,
-        ...(options.driver && {
-          repositoryGitCustody: selectBundledRepositoryGitCustody(options.driver),
-        }),
+        repositoryGitCustody: options.driver
+          ? selectBundledRepositoryGitCustody(options.driver)
+          : { kind: "unavailable" },
       },
       options.ownerClock,
     );

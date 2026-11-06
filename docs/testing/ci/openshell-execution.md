@@ -8,7 +8,16 @@ For triggers and invocation, start with that workflow page.
 
 Full advisory OpenShell runs use one Ubuntu 24.04 runner per file from the
 [OpenShell manifest](../../../scripts/ci/test-suites/openshell.json). The files run in
-parallel across separate VMs. The two first-Agent files provision and clean up
+parallel across separate VMs, with at most ten OpenShell jobs active.
+Gateway policy, network policy, credential replacement, live withdrawal, upstream outages, and
+Gateway/OAuth recovery use separate installations and databases. Each workflow
+keeps its dependent operations serial, including recovery before later assertions.
+The upstream workflow replaces the Harness used by its positive model turns before
+redirecting DNS to the untrusted TLS receiver. It requires a rejected handshake
+at that receiver, with no completed handshake or HTTP request.
+OAuth expiry and model failure bounds are unchanged. The shared
+[scenario implementation](../../../tests/helpers/openshell-sandbox-workflows.mjs)
+registers only the workflow selected by each test entry point. The two first-Agent files provision and clean up
 through Local Setup. Hosted focused preparation restores the main-only BuildKit
 caches and builds current-checkout images, without creating a second cluster,
 database, routing setup, OpenShell installation, or Keycloak instance. The
@@ -26,7 +35,18 @@ database/bootstrap work with cluster setup after creating its owned network.
 Kubernetes prepares OpenShell assets after image imports while network probes
 finish. Both profiles join preparation before starting the control plane. Local Setup
 keeps unselected controller/runtime source builds serial. See the [development flow](../../flows/docker-compose-development.md#4-start-and-clean-up-kubernetes-development).
-Other files retain their lane preparation. The runner enforces both lane-wide and per-file `requiredEnv`
+The installer file also owns its stack, so hosted preparation does not create an
+unused cluster or database for it. Instead, it primes its job-owned BuildKit builder
+from the read-only cache. The real installer still builds from the checkout, with
+the same builder and automatic engine loading. Hosted installer children also
+use preparation's fixed `SOURCE_DATE_EPOCH=0`; otherwise [BuildKit invalidates
+WORKDIR and subsequent cache entries](https://docs.docker.com/build/cache/invalidation/#workdir-and-source_date_epoch). Local installation and QA-matrix jobs use the
+same approach. Source-build preparation materializes layers on that builder even when the
+host engine already holds an identical image. The model-provider installation
+fixture uses the same selected builder for its checkout images. Cache credentials
+are not passed to tests. Other OpenShell files
+prepare their required cluster, database server, routing, and images; their image
+builds now read the same cache. The runner enforces both lane-wide and per-file `requiredEnv`
 inputs, expected cases, and cleanup. A failed shard does not cancel the
 others. Each result has `scope: focused`; require every shard to pass before
 claiming full advisory OpenShell coverage. The manual Full Integration lane
@@ -88,3 +108,19 @@ a correlated `UNAVAILABLE` response with the pinned Gateway's explicit
 read-generation invalidation message. All other describe rejections fail with
 allowlisted error classification; they are not converted to an assertion that
 loses the cause. The same session identity and active placement remain required.
+
+## Workflow duration and cost
+
+Compare the full workflow, not one successful shard. Require every selected job,
+expected case, and cleanup to pass at the same checkout revision. Include tool
+setup, image builds/imports, tests, cleanup, and artifact upload in elapsed time.
+Report runner allocation and protected-environment waiting separately, and keep
+failed or canceled runs separate from successful runtime measurements.
+
+Parallel workflows repeat installation setup and can use more runner minutes
+even when wall time falls. The OpenShell job cap bounds concurrent VMs; each
+security workflow keeps model calls serial. Existing model request deadlines,
+retry rules, and provider rate limits still apply. A cache miss builds current
+source and can exceed a warm-run timing target. Successful test-file durations
+are in the result artifacts; preparation timings and cache outcomes are in the
+job log. Do not count a failed proof or a missing case as a speed improvement.

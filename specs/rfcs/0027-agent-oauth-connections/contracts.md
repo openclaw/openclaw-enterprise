@@ -8,31 +8,26 @@ This companion defines the Driver contract changes, failure behavior, and requir
 outcomes for [RFC-0027](index.md). The RFC owns the decision, connection
 templates, consent rules, and Agent attachment boundary.
 
-## Credential Refresh Driver
+<a id="credential-refresh-driver"></a>
 
-`CredentialRefreshDriver` gains these optional methods beside the existing device
-methods. A Driver that omits them offers no browser connections.
+## Token Service and OAuth enrollment
+
+OCC calls the built-in Token Service for browser or device authorization. Its OAuth adapter implements the flows supported by the issuer. Offer browser connections only for an issuer that supports browser authorization.
 
 ### Browser authorization
 
-OCC owns the connection session and calls the Driver's browser authorization
-methods for setup and code exchange. After exchange, the OCE Token Service
-keeps the grant in encrypted custody and refreshes access tokens in the
-background. It serializes refresh per source and atomically commits the access token
+OCC owns the connection session. Token Service uses its OAuth adapter to start consent, verify the callback and exchange the code. It keeps the grant in encrypted custody and refreshes access tokens in the background. It serializes refresh per source and atomically commits the access token
 with any replacement refresh token. OpenShell presents an eligible, prepared
 token for the deployed binding or refuses the request. [Credential access and lifecycle](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle)
 
 - `startBrowserAuthorization(context, { connectionTemplateVersion, redirectUri, selectedScopes? })`
   returns `{ authorizationUrl, privateState }`. OCC validates the requested
-  scopes before the Driver starts consent. The Driver
+  scopes before the adapter starts consent. The adapter
   creates the PKCE verifier, a random `state`, and a nonce for `accountIdentity: oidc`.
   `privateState` is opaque to OCC.
 - `completeBrowserAuthorization(context, privateState, { code, state, iss? })` verifies
   `state` and exchanges the code using the verifier and pinned client registration.
-  The Driver hands the validated refresh grant and first usable access token to
-  the Token Service, bound to the source and its approved OAuth context. It returns
-  `ready` only after the Token Service durably accepts them. An uncertain handoff
-  leaves the source `registering` and never replays the code. OCC receives status
+  Token Service commits the validated grant and first access token for the source and its approved OAuth context before returning `ready`. If the exchange or commit outcome is uncertain, the source stays `registering` and OCC never replays the code. OCC receives status
   and an optional verified `accountEmail`.
 
 ### MCP authorization
@@ -102,27 +97,27 @@ authority still bound all listing and use.
 
 ### OIDC account identity
 
-For `accountIdentity: oidc`, the Refresh Driver establishes the trusted provider
+For `accountIdentity: oidc`, the OAuth adapter verifies the provider
 before OCC accepts the connection template version:
 
 1. Without `jwksUri`, it reads `<issuer>/.well-known/openid-configuration`
    ([provider metadata](https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderMetadata)).
    The metadata `issuer` must equal the configured `issuer` exactly, and its
    `authorization_endpoint` and `token_endpoint` must equal the connection
-   template's URLs. The Driver records the metadata's `jwks_uri`.
+   template's URLs. The adapter records the metadata's `jwks_uri`.
 2. With `jwksUri`, it uses that `https` URL and skips discovery.
 3. A mismatch, an unreachable provider, or a non-`https` value rejects the version
    with `400`, and the version is not created.
 
 The recorded `issuer` and JWKS URL become part of the version and of each source's
-approved values. At completion, the Driver validates the ID token
+approved values. At completion, the adapter validates the ID token
 ([OIDC Core](https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation))
 against keys from that JWKS URL only: signature, `iss` equal to the recorded
 `issuer`, `aud` containing the client ID, expiry, and nonce. It refetches the key
 set once for an unknown key ID, then rejects the connection if it cannot validate
 the token.
 
-The Driver returns `accountEmail` only when that validated ID token contains a
+The adapter returns `accountEmail` only when that validated ID token contains a
 nonempty `email` string and the boolean claim `email_verified` is `true`.
 When either condition is unmet, the connection can complete without `accountEmail`.
 
@@ -163,10 +158,7 @@ administrators, who hold every action through the built-in administrator role.
 ## Update a running sender
 
 The worker compares the current delivery policy with the policy installed for that
-Agent. If it changes, the Credential Gateway withholds usable token material while
-Compute and the Sandbox Driver update the sender. Compute confirms the effective
-request policy before asking OCC to release a prepared token for that revision
-and policy. OCC rechecks the grant, template and Agent binding before release.
+Agent. Before changing the recipients, Credential Proxy disables use of the affected binding, including its installed token. Once withdrawal is confirmed, the paired Sandbox applies the updated policy and prevents direct egress. Compute verifies the installed policy for that revision. OCC then rechecks the grant, template and Agent binding before allowing the proxy to use a token prepared by Token Service.
 A failed or superseded update leaves that sender without a usable token until
 reconciliation succeeds. A different Agent can keep using its own sender.
 
@@ -203,7 +195,7 @@ sender cannot enforce the policy.
 | Exchange refused or no refresh token returned               | Source deleted; `fix_configuration`            | Administrator corrects the connection template |
 | Timeout after the exchange started                          | Source stays `registering`                     | Delete and reconnect; OCC never replays a code |
 | Issuer revokes the grant                                    | `status.refresh.recoveryAction: reauthorize`   | **Reconnect** and redeploy                     |
-| Driver unavailable before source creation                   | `503`; no source created                       | Retry                                          |
+| OAuth adapter unavailable before source creation                   | `503`; no source created                       | Retry                                          |
 | OIDC metadata mismatch or unreachable provider              | Version rejected with `400`                    | Administrator corrects `issuer` or URLs        |
 | ID token from a wrong issuer, untrusted key, or wrong nonce | Source deleted; `fix_configuration`            | Administrator checks the provider; reconnect   |
 | Manual destination rows edited                              | Existing senders reconcile the current rows    | Retry a failed reconciliation                  |
@@ -227,7 +219,7 @@ issue seven-day refresh tokens.
   Keep codes and tokens out of responses, logs and audit.
 - **Manual destination changes.** Replace a host for a running Agent. After
   reconciliation, verify delivery to the new host and no bearer at the old
-  one. Change the default client: refresh still uses the original registration.
+  one. Attempt a call between withholding the token and confirming the new policy. Verify that neither host receives a bearer and that another Agent using an unaffected template can still use its account. Change the default client: refresh still uses the original registration.
   Change the issuer and verify delivery stops.
 - **Refresh ownership.** For manual OAuth and MCP, observe background issuer
   refresh. With the same worker placeholder, OpenShell presents the new token.

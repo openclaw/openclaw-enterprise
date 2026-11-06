@@ -12,7 +12,7 @@ status: Proposed
 
 Let an Agent use a provider without giving it the provider credential. If `build-agent` may read GitHub repository `123`, it makes an ordinary request; a trusted sender verifies which execution sent it, checks whether the read is still allowed, and authenticates to GitHub. A child process has the same access as its parent. A different execution needs its own admitted authority.
 
-Replace `CredentialGatewayDriver` with the `credential_proxy` Installation capability and its `CredentialProxyDriver`. It configures and withdraws egress; `SandboxDriver` installs that configuration and prevents bypass. We retain `SecretDriver` and `CredentialRefreshDriver` for credential access and preparation. These are [distinct responsibilities](contracts.md), not a requirement to run four services.
+Retire `CredentialGatewayDriver` and `CredentialRefreshDriver` as Installation capabilities. The selected `CredentialProxyDriver` configures and withdraws protected egress. Its paired `SandboxDriver` installs the policy and prevents bypass. OCE’s built-in Token Service prepares and renews dynamic credentials through provider-specific issuers. `SecretDriver` supplies authorized static material. See [credential access and lifecycle](contracts.md#credential-access-and-lifecycle).
 
 ![Proposed protected egress: Sandbox prevents bypass; a trusted sender checks current authority, resolves a credential if needed, and sends the request](assets/overview.svg)
 

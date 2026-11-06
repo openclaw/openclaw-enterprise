@@ -1260,6 +1260,105 @@ async function policyRecoveryFixture(t: TestContext) {
   return { fixture, namespace, agent, id, sibling, tool, initial, path };
 }
 
+test("Plugin JSON drafts refuse out-of-range numbers before requests or picker edits", async (t) => {
+  const { fixture, namespace, agent, id, initial, path, sibling, tool } =
+    await policyRecoveryFixture(t);
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  const input = page.getByLabel("Plugin selections JSON", { exact: true });
+  const summary = page.locator("summary").filter({ hasText: "Plugin selections JSON" });
+  const save = page.getByRole("button", { name: "Save plugin selections", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  const requests = apiRequests(page, fixture.origin);
+  const agentRequests = () => requests.filter((request) => request.path === path);
+  const valid = {
+    [id]: {
+      enabled: true,
+      toolDefaults: sibling,
+      tools: tool,
+      driverPolicy: { destructiveEnabled: false },
+    },
+  };
+  const bad = JSON.stringify(valid).replace(
+    '"destructiveEnabled":false',
+    '"destructiveEnabled":1e400',
+  );
+  await summary.click();
+  // Save must open the raw editor and explain the refusal before its GET preflight or PATCH.
+  for (const raw of [bad, bad.replace("1e400", "-1e400"), "{", "[]", "null"]) {
+    await input.fill(raw);
+    await summary.click();
+    const before = agentRequests().length;
+    await save.click();
+    await page
+      .getByText(
+        raw.includes("1e400")
+          ? "A number is too large or too small to save. Use a number closer to zero."
+          : "Enter a valid Plugin selections JSON object.",
+        { exact: true },
+      )
+      .waitFor();
+    assert.equal(await input.inputValue(), raw);
+    assert.equal(await input.evaluate((node) => document.activeElement === node), true);
+    assert.equal(await input.isVisible(), true);
+    assert.equal(agentRequests().length, before);
+  }
+  await input.fill(bad);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await dialog
+    .getByText(
+      "Fix Plugin selections JSON to use the controls. Check plugin enablement and tool policies. Your JSON has been kept.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await input.inputValue(), bad);
+  assert.equal(await dialog.evaluate((node) => node.contains(document.activeElement)), true);
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  assert.deepEqual(responseData(await fixture.request("GET", path)).plugins, initial);
+
+  // Valid JSON with an ill-typed policy still belongs to the real Driver's refusal path.
+  // Picker edits preserve legitimate nulls and exponent-like strings in unknown fields.
+  const illTyped = {
+    [id]: {
+      enabled: true,
+      toolDefaults: sibling,
+      tools: tool,
+      driverPolicy: {
+        destructiveEnabled: 7,
+        extra: [null, "1e400", "-1e400"],
+      },
+    },
+  };
+  await input.fill(JSON.stringify(illTyped));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const defaults = dialog.getByLabel(`${id} tools enabled by default`, { exact: true });
+  if (!(await defaults.isVisible())) {
+    await dialog.getByRole("button", { name: id, exact: true }).click();
+  }
+  await defaults.selectOption({ label: "Enabled" });
+  const edited = { [id]: { ...illTyped[id], toolDefaults: { ...sibling, enabled: true } } };
+  assert.deepEqual(JSON.parse(await input.inputValue()), edited);
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  const finitePolicy = { [id]: { ...valid[id], driverPolicy: { destructiveEnabled: 7 } } };
+  await input.fill(JSON.stringify(finitePolicy));
+  const refused = responseTo(page, "PATCH", new URL(path, fixture.origin).href);
+  await save.click();
+  assert.equal((await refused).status(), 400);
+  await page
+    .getByRole("alert")
+    .filter({ hasText: "The supplied plugin policies are invalid." })
+    .waitFor();
+  assert.equal(await input.inputValue(), JSON.stringify(finitePolicy));
+  assert.deepEqual(responseData(await fixture.request("GET", path)).plugins, initial);
+
+  // Correcting the Boolean saves through the same real Controller and survives a reread.
+  await input.fill(JSON.stringify(valid));
+  const recovered = responseTo(page, "PATCH", new URL(path, fixture.origin).href);
+  await save.click();
+  assert.equal((await recovered).status(), 200);
+  assert.deepEqual(responseData(await fixture.request("GET", path)).plugins, valid);
+});
+
 test("driver policy controls return fixed conflict advice without changing saved state", async (t) => {
   const { fixture, agent, id, initial, path, sibling, tool } = await policyRecoveryFixture(t);
   let saved: unknown = initial;
