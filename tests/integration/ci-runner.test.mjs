@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -4232,6 +4241,7 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
       `#!${process.execPath}`,
       "const query = process.argv.at(-1);",
       `const lines = query.startsWith("/api/v1/pods?") ? ${JSON.stringify(pods)} : ${JSON.stringify(events)};`,
+      'process.stdout.write(JSON.stringify({ type: "BOOKMARK", object: { metadata: { annotations: { "k8s.io/initial-events-end": "true" } } } }) + "\\n");',
       "for (const line of lines) process.stdout.write(JSON.stringify(line) + '\\n');",
       'process.stdout.write(\'{"type":"MODIFIED","object":\');',
       // A live watch runs until stopped; a stranded one exits on its own after a minute.
@@ -4364,6 +4374,114 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
   // Raw watch streams hold full Pod specs; only the projection survives.
   assert.deepEqual(await readdir(clusterDirectory), []);
 
+  // A normal file can create and delete its namespace before kubectl has connected.
+  // The provider starts empty; a watch opened after that lifecycle cannot recover it.
+  const originalKubectl = await readFile(kubectl, "utf8");
+  const agentFile = join(root, "tests/integration/agent.test.mjs");
+  const originalAgentFile = await readFile(agentFile, "utf8");
+  const lifecycle = join(root, "short-lived-activity");
+  await writeFile(
+    kubectl,
+    [
+      `#!${process.execPath}`,
+      'import { existsSync } from "node:fs";',
+      'import { setTimeout as delay } from "node:timers/promises";',
+      "const query = process.argv.at(-1);",
+      `const lines = query.startsWith("/api/v1/pods?") ? ${JSON.stringify(pods)} : ${JSON.stringify(events)};`,
+      "await delay(800);",
+      `const alreadyGone = existsSync(${JSON.stringify(lifecycle)});`,
+      'process.stdout.write(JSON.stringify({ type: "BOOKMARK", object: { metadata: { annotations: { "k8s.io/initial-events-end": "true" } } } }) + "\\n");',
+      "if (!alreadyGone) {",
+      `  while (!existsSync(${JSON.stringify(lifecycle)})) await delay(10);`,
+      "  for (const line of lines) process.stdout.write(JSON.stringify(line) + '\\n');",
+      "}",
+      "setTimeout(() => {}, 60_000);",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    agentFile,
+    [
+      'import test from "node:test";',
+      'import { writeFile } from "node:fs/promises";',
+      'import { setTimeout as delay } from "node:timers/promises";',
+      'test("agent file passes", async () => {',
+      `  await writeFile(${JSON.stringify(lifecycle)}, "created and deleted");`,
+      "  await delay(100);",
+      "});",
+      "",
+    ].join("\n"),
+  );
+  const fastState = join(root, "state/k3d-fast.json");
+  await writeJson(fastState, JSON.parse(await readFile(statePath, "utf8")));
+  const fast = run(
+    root,
+    [
+      "run",
+      "k3d-lane",
+      "--manifest",
+      join(root, "scripts/ci/suites.json"),
+      "--root",
+      root,
+      "--state",
+      fastState,
+      "--results",
+      join(root, "results/k3d-fast.json"),
+    ],
+    { OCC_KUBECTL_BIN: kubectl },
+  );
+  assert.equal(fast.status, 0, fast.stderr);
+  const fastReport = JSON.parse(await readFile(`${fastState}.diagnostics.json`, "utf8"));
+  assert.deepEqual(fastReport.agentNamespaces[0].namespaces, ["occ-agent-a"]);
+  assert.deepEqual(
+    fastReport.agentNamespaces[0].pods.map(({ watch }) => watch),
+    ["ADDED", "MODIFIED", "DELETED"],
+  );
+  assert.deepEqual(await readdir(clusterDirectory), []);
+  await writeFile(kubectl, originalKubectl);
+  await writeFile(agentFile, originalAgentFile);
+  await rm(lifecycle);
+
+  // Optional diagnostics must not strand a file when an alive watch never synchronizes.
+  // This file must not depend on the optional watch that this case makes unavailable.
+  const stalledMarker = join(root, "stalled-file-ran");
+  const independentFile = [
+    'import test from "node:test";',
+    'import { writeFile } from "node:fs/promises";',
+    'test("agent file passes", () => writeFile(process.env.CI_RUNNER_TEST_EXECUTION_MARKER, "ran"));',
+    "",
+  ].join("\n");
+  await writeFile(agentFile, independentFile);
+  await writeFile(kubectl, `#!${process.execPath}\nsetTimeout(() => {}, 60_000);\n`);
+  const stalledState = join(root, "state/k3d-stalled.json");
+  await writeJson(stalledState, JSON.parse(await readFile(statePath, "utf8")));
+  const stalled = run(
+    root,
+    [
+      "run",
+      "k3d-lane",
+      "--manifest",
+      join(root, "scripts/ci/suites.json"),
+      "--root",
+      root,
+      "--state",
+      stalledState,
+      "--results",
+      join(root, "results/k3d-stalled.json"),
+    ],
+    { OCC_KUBECTL_BIN: kubectl, CI_RUNNER_TEST_EXECUTION_MARKER: stalledMarker },
+  );
+  assert.equal(stalled.status, 0, stalled.stderr);
+  assert.match(stalled.stderr, /Agent namespace activity unavailable/);
+  assert.equal(await readFile(stalledMarker, "utf8"), "ran");
+  assert.deepEqual(await readdir(clusterDirectory), []);
+  assert.equal(
+    JSON.parse(await readFile(join(root, "results/k3d-stalled.json"), "utf8")).counts.passed,
+    1,
+  );
+  await writeFile(kubectl, originalKubectl);
+  await writeFile(agentFile, originalAgentFile);
+
   // Two files sharing the runner under fileConcurrency watch the same cluster at once. Each
   // keeps its own watch streams, so neither truncates nor deletes the other's capture.
   await writeFile(
@@ -4436,6 +4554,8 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
   // A second cluster whose directory is gone fails the capture after the first cluster's
   // watches started. The file still runs, and those watches are stopped: left running,
   // their child processes would hold the runner until the watch timeout.
+  const brokenMarker = join(root, "broken-capture-file-ran");
+  await writeFile(agentFile, independentFile);
   const brokenStatePath = join(root, "state/k3d-broken.json");
   await writeJson(brokenStatePath, {
     lane: "k3d-lane",
@@ -4474,11 +4594,13 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
         ...fixtureGitEnv,
         GITHUB_SHA: currentSha(),
         OCC_KUBECTL_BIN: kubectl,
+        CI_RUNNER_TEST_EXECUTION_MARKER: brokenMarker,
       },
       timeout: 30_000,
     },
   );
   assert.equal(broken.status, 0, broken.stderr);
+  assert.equal(await readFile(brokenMarker, "utf8"), "ran");
   assert.match(
     broken.stderr,
     /Agent namespace activity unavailable for tests\/integration\/agent\.test\.mjs/,
@@ -5935,6 +6057,9 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
       '} else if (args.includes("get") && args.includes("events")) {',
       `  process.stdout.write(JSON.stringify({ items: ${JSON.stringify(events)} }));`,
       "} else {",
+      '  if (process.env.CI_RUNNER_STALLED_WATCH !== "1") {',
+      '  process.stdout.write(JSON.stringify({ type: "BOOKMARK", object: { metadata: { annotations: { "k8s.io/initial-events-end": "true" } } } }) + "\\n");',
+      "  }",
       "  setTimeout(() => {}, 60_000);",
       "}",
       "",
@@ -6075,6 +6200,49 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
     (await readdir(clusterDirectory)).filter((name) => name.startsWith("container-logs-")),
     [],
   );
+
+  // A live observer that never sends its bookmark must not disable the independent
+  // failed-wait log, snapshots or the file's original failure result.
+  const stalledState = join(root, "state/k3d-stalled-wait.json");
+  const stalledResults = join(root, "results/k3d-stalled-wait.json");
+  await writeJson(stalledState, JSON.parse(await readFile(statePath, "utf8")));
+  const stalled = run(
+    root,
+    [
+      "run",
+      "k3d-lane",
+      "--manifest",
+      join(root, "scripts/ci/suites.json"),
+      "--root",
+      root,
+      "--state",
+      stalledState,
+      "--results",
+      stalledResults,
+    ],
+    {
+      OCC_KUBECTL_BIN: kubectl,
+      PATH: `${bin}:${process.env.PATH}`,
+      CI_RUNNER_STALLED_WATCH: "1",
+    },
+  );
+  assert.equal(stalled.status, 1, stalled.stderr);
+  assert.match(stalled.stderr, /Agent namespace activity unavailable/);
+  const stalledSummary = JSON.parse(await readFile(stalledResults, "utf8"));
+  assert.equal(stalledSummary.counts.failed, 1);
+  assert.equal(stalledSummary.counts.passed, 1);
+  const stalledText = await readFile(`${stalledState}.diagnostics.json`, "utf8");
+  const stalledReport = JSON.parse(stalledText);
+  assert.equal(stalledReport.agentNamespaces, undefined);
+  assert.equal(stalledReport.containerLogs?.length, 1);
+  const [stalledLog] = stalledReport.containerLogs;
+  assert.equal(stalledLog.reason, log.reason);
+  assert.deepEqual(stalledLog.lines, log.lines);
+  assert.deepEqual(stalledLog.snapshots[0].pods, snapshot.pods);
+  assert.deepEqual(stalledLog.snapshots[0].events, snapshot.events);
+  assert.equal(stalledLog.snapshots[1].unavailable, true);
+  assert.doesNotMatch(stalledText, /do-not-publish|secretauthvalue|childonlysecret/);
+  assert.deepEqual(await readdir(clusterDirectory), []);
 });
 
 describe("tests that wait out real runner limits, side by side", { concurrency: true }, () => {
