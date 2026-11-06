@@ -436,6 +436,10 @@
                       {
                         "page": "reference/drivers/openshell-sandbox/harness-providers",
                         "label": "OpenShell Harness Providers"
+                      },
+                      {
+                        "page": "reference/drivers/openshell-sandbox/extra-mounts",
+                        "label": "OpenShell Extra Mounts"
                       }
                     ]
                   },
