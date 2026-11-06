@@ -100,6 +100,12 @@ export interface SandboxHarnessEndpoint {
   };
   /** Provider-local workspace root served by the Harness workspace node. */
   readonly workspaceRoot?: string;
+  /**
+   * An ordinary dedicated Codex workspace enforced by this exact provider generation.
+   * Compute must pin this generation with the endpoint's TLS trust before allowing the
+   * Gateway to select the externally enforced, network-restricted workspace policy.
+   */
+  readonly externalWorkspaceOwner?: { readonly generationSha256: string };
   /** Request this native Codex profile when the provider supplies the sandbox boundary. */
   readonly codexPermissionProfile?: ":danger-full-access";
 }

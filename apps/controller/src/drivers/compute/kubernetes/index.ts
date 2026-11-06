@@ -275,6 +275,7 @@ import {
   COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   COMPUTE_AGENT_WITH_NODE_ENTRYPOINT,
   COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+  EXTERNAL_WORKSPACE_OWNER_DIRECTORY,
   AGENT_WITH_NODE_ENTRYPOINT,
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
@@ -1166,6 +1167,8 @@ const CONFIGURATION_VOLUME = "openclaw-configuration";
 const HARNESS_TRUST_VOLUME = "harness-trust";
 const HARNESS_TRUST_DIRECTORY = "/etc/openclaw-harness-trust";
 const HARNESS_TRUST_FILE = "ca-bundle.pem";
+const EXTERNAL_WORKSPACE_OWNER_BINDING = "binding.json";
+const EXTERNAL_WORKSPACE_OWNER_CA = "ca.pem";
 const PLUGIN_RUNTIME_VOLUME = "openclaw-plugin-runtime";
 export const PLUGIN_RUNTIME_STATUS_PORT = 18_791;
 const PLUGIN_RUNTIME_STATUS_PATH = "/openclaw/plugin-runtime/status";
@@ -16106,6 +16109,26 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     endpoint: SandboxHarnessEndpoint | undefined,
     namespace: KubernetesNamespaceAddress,
   ): Promise<void> {
+    const externalOwner = endpoint?.externalWorkspaceOwner;
+    if (
+      externalOwner !== undefined &&
+      (endpoint?.tls === undefined ||
+        endpoint.workspaceRoot !== "/home/node/workspace" ||
+        asRecord(externalOwner) === undefined ||
+        Object.keys(externalOwner).length !== 1 ||
+        typeof externalOwner.generationSha256 !== "string" ||
+        !/^[a-f0-9]{64}$/.test(externalOwner.generationSha256) ||
+        revision.harness.id !== "codex" ||
+        revision.harness.mode !== "dedicated" ||
+        revision.executionAdmission.mode !== "unprotected" ||
+        revision.egressPlan !== undefined ||
+        revision.repositoryCredentials !== undefined ||
+        endpoint.codexPermissionProfile !== undefined)
+    ) {
+      throw new ConfigurationFailure(
+        "An external workspace owner requires an ordinary dedicated Codex revision with exact TLS trust and a pinned generation.",
+      );
+    }
     if (endpoint?.tls === undefined) {
       return;
     }
@@ -16115,7 +16138,15 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         "SandboxDriver Harness endpoint requires an exact provider network route.",
       );
     }
-    providerHarnessUrl(endpoint, network, this.sandboxDriver?.harnessHome ?? HARNESS_HOME);
+    const url = providerHarnessUrl(
+      endpoint,
+      network,
+      this.sandboxDriver?.harnessHome ?? HARNESS_HOME,
+    );
+    if (externalOwner !== undefined && url.href !== endpoint.url) {
+      throw new ConfigurationFailure("The external workspace owner URL must be canonical.");
+    }
+    const ca = publicCaBundle(endpoint.tls.caBundle);
     // The endpoint arrives after the configuration snapshot. Keep its public
     // trust separately revision-owned and immutable; drift requires a new revision.
     const ownership = this.pluginRuntimeOwnership(revision);
@@ -16130,12 +16161,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         ),
         immutable: true,
         data: {
-          [HARNESS_TRUST_FILE]: [
-            publicCaBundle(endpoint.tls.caBundle),
-            this.options.executionCluster?.caBundle,
-          ]
+          [HARNESS_TRUST_FILE]: [ca, this.options.executionCluster?.caBundle]
             .filter((bundle) => bundle !== undefined)
             .join("\n"),
+          ...(externalOwner === undefined
+            ? {}
+            : {
+                [EXTERNAL_WORKSPACE_OWNER_BINDING]: JSON.stringify({
+                  url: url.href,
+                  workspaceRoot: endpoint.workspaceRoot,
+                  generationSha256: externalOwner.generationSha256,
+                }),
+                [EXTERNAL_WORKSPACE_OWNER_CA]: ca,
+              }),
         },
       },
       ownership,
@@ -16251,6 +16289,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           "SandboxDriver TLS trust belongs only to its dedicated Agent Gateway.",
         );
       }
+      const workspaceOwner = providerEndpoint.externalWorkspaceOwner;
       volumes.push({
         name: HARNESS_TRUST_VOLUME,
         configMap: {
@@ -16258,7 +16297,16 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             required(ownership.agentId, "Harness trust Agent ID"),
             configuration.revisionId,
           ),
-          items: [{ key: HARNESS_TRUST_FILE, path: HARNESS_TRUST_FILE }],
+          items: [
+            { key: HARNESS_TRUST_FILE, path: HARNESS_TRUST_FILE },
+            ...(workspaceOwner === undefined
+              ? []
+              : [EXTERNAL_WORKSPACE_OWNER_BINDING, EXTERNAL_WORKSPACE_OWNER_CA].map((name) => ({
+                  key: name,
+                  path: name,
+                  mode: 0o444,
+                }))),
+          ],
           optional: false,
         },
       });
@@ -16267,6 +16315,18 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         mountPath: HARNESS_TRUST_DIRECTORY,
         readOnly: true,
       });
+      if (workspaceOwner !== undefined) {
+        // The reader pins regular file identities and refuses projected symlinks.
+        // subPath mounts the immutable ConfigMap files as root-owned regular files.
+        volumeMounts.push(
+          ...[EXTERNAL_WORKSPACE_OWNER_BINDING, EXTERNAL_WORKSPACE_OWNER_CA].map((name) => ({
+            name: HARNESS_TRUST_VOLUME,
+            mountPath: `${EXTERNAL_WORKSPACE_OWNER_DIRECTORY}/${name}`,
+            subPath: name,
+            readOnly: true,
+          })),
+        );
+      }
       variables.push({
         name: "NODE_EXTRA_CA_CERTS",
         value: `${HARNESS_TRUST_DIRECTORY}/${HARNESS_TRUST_FILE}`,

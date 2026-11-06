@@ -16153,6 +16153,48 @@ test("provider Harness public trust rejects invalid material and composes with e
     assert.deepEqual(roots, [
       { name: "NODE_EXTRA_CA_CERTS", value: "/etc/openclaw-harness-trust/ca-bundle.pem" },
     ]);
+    const workspaceRoot = "/home/node/workspace";
+    const generationSha256 = "a".repeat(64);
+    const owner = { ...endpoint, workspaceRoot, externalWorkspaceOwner: { generationSha256 } };
+    assert.equal(
+      pod.containers[0].volumeMounts.some(({ mountPath }) =>
+        mountPath.startsWith("/etc/openclaw-box-owner/"),
+      ),
+      false,
+    );
+    await driver.reconcileHarnessTrust(revision, owner, target);
+    assert.equal(writes[1].immutable, true);
+    assert.equal(writes[1].data["ca.pem"], provider.caBundle);
+    assert.deepEqual(JSON.parse(writes[1].data["binding.json"]), {
+      url: endpoint.url,
+      workspaceRoot,
+      generationSha256,
+    });
+    const ownerPod = render(owner).spec.template.spec;
+    assert.deepEqual(
+      ownerPod.containers[0].volumeMounts.filter(({ mountPath }) =>
+        mountPath.startsWith("/etc/openclaw-box-owner/"),
+      ),
+      ["binding.json", "ca.pem"].map((name) => ({
+        name: "harness-trust",
+        mountPath: `/etc/openclaw-box-owner/${name}`,
+        subPath: name,
+        readOnly: true,
+      })),
+    );
+    for (const invalid of [
+      { ...owner, tls: undefined },
+      { ...owner, workspaceRoot: "/home/node/other" },
+      { ...owner, externalWorkspaceOwner: { generationSha256: "wrong-generation" } },
+      { ...owner, codexPermissionProfile: ":danger-full-access" },
+    ]) {
+      const before = writes.length;
+      await assert.rejects(
+        driver.reconcileHarnessTrust(revision, invalid, target),
+        /requires an ordinary dedicated Codex revision/,
+      );
+      assert.equal(writes.length, before);
+    }
     const system = render({ url: endpoint.url }).spec.template.spec;
     assert.equal(
       system.volumes.some(({ name }) => name === "harness-trust"),
