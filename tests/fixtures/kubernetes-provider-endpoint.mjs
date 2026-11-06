@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import {
-  tenant as defaultTenant,
-  digest,
-  authContext,
-} from "../helpers/kubernetes-routed-scenarios.mjs";
+import { tenant, digest, authContext } from "../helpers/kubernetes-routed-scenarios.mjs";
 import {
   providerReadinessFixture,
   supervisorPeerLabels,
@@ -13,11 +9,6 @@ import {
 // In-memory Kubernetes transport plus Sandbox/lifecycle responses. No cluster I/O.
 // Tests own readiness transitions and assertions; prepare/activate remain real Driver calls.
 export function providerEndpointFixture({
-  tenant = defaultTenant,
-  sandboxDriver,
-  credentialGatewayDriver,
-  servicePrincipalCredentials,
-  provisionHarness,
   harnessEndpoint = async () => ({
     url: "ws://tenant--sandbox.openshell.localhost:8080/",
     workspaceRoot: "/sandbox/enterprise",
@@ -32,10 +23,6 @@ export function providerEndpointFixture({
   const peerLookups = [];
   const provisioningPolicies = [];
   const fixture = providerReadinessFixture({
-    tenant,
-    sandboxDriver,
-    credentialGatewayDriver,
-    servicePrincipalCredentials,
     providerNetwork,
     revisionOverrides,
     // The Sandbox, and so its relay Pod's labels, exists only once provisioned.
@@ -49,9 +36,6 @@ export function providerEndpointFixture({
       provisioningPolicies.push(
         structuredClone([...objects.values()].filter(({ kind }) => kind === "NetworkPolicy")),
       );
-      if (provisionHarness !== undefined) {
-        await provisionHarness(context);
-      }
       provisions.push(context);
       return {
         namespaceName: context.namespace.name,
@@ -158,11 +142,7 @@ export function providerEndpointFixture({
   }
   const clients = {
     core,
-    apps: {
-      async listNamespacedDeployment() {
-        return { items: [] };
-      },
-    },
+    apps: {},
     networking: {},
     objects: {
       async read(object) {

@@ -56,17 +56,6 @@ export interface PluginDriver extends Driver {
           /** The reviewed endpoint for MCP tool discovery with a saved account. */
           readonly mcpServerUrl?: string;
           acceptsRecipient(target: PluginAccountTarget): boolean;
-          /** The release owns protected presentation. Undefined means the current targets and grant
-           * permit no protected operation; it does not reject an issuer-compatible account choice. */
-          delivery(
-            target: PluginAccountTarget,
-            grantedScopes: readonly string[],
-          ):
-            | {
-                readonly type: string;
-                readonly config: Readonly<Record<string, string>>;
-              }
-            | undefined;
           bind(sourceId: string): PluginDesiredSelection;
         }
       | undefined;

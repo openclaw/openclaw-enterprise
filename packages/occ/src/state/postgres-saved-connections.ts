@@ -80,24 +80,6 @@ export function postgresSavedConnections(
   requireInitialized: () => Promise<unknown>,
 ): SavedConnectionRepository {
   return {
-    listDeliveryProfiles: async (namespaceId, sourceId) => {
-      const { rows } = await client.query(
-        "SELECT profile_id, gateway_id, source_type FROM occ.saved_connection_profiles WHERE namespace_id = $1 AND credential_source_id = $2",
-        [namespaceId, sourceId],
-      );
-      return rows.map((row) => ({
-        profileId: text(row as Row, "profile_id"),
-        gatewayId: text(row as Row, "gateway_id"),
-        sourceType: text(row as Row, "source_type"),
-      }));
-    },
-    registerDeliveryProfile: async (namespaceId, sourceId, profile) => {
-      await client.query(
-        `INSERT INTO occ.saved_connection_profiles (namespace_id,credential_source_id,profile_id,gateway_id,source_type)
-         VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
-        [namespaceId, sourceId, profile.profileId, profile.gatewayId, profile.sourceType],
-      );
-    },
     findTokenCustody: async (namespaceId, sourceId) => {
       const [row] = (
         await client.query(
@@ -208,14 +190,6 @@ export function postgresSavedConnections(
          WHERE namespace_id = $1 AND credential_source_id = $2 AND revocation_requested_by IS NOT NULL AND revoked_at IS NULL`,
         [namespaceId, sourceId, at],
       );
-    },
-    hasPendingConnectionWithdrawals: async (namespaceId, sourceId) => {
-      const pending = await client.query(
-        `SELECT 1 FROM occ.credential_withdrawals
-         WHERE namespace_id = $1 AND credential_source_id = $2 AND state = 'pending' LIMIT 1`,
-        [namespaceId, sourceId],
-      );
-      return pending.rows.length > 0;
     },
     listAgentConnections: async (namespaceId, agentId) =>
       Object.freeze(

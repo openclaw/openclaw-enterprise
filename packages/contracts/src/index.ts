@@ -625,41 +625,9 @@ export type CredentialSourceSnapshot = {
   readonly sourceId: string;
   readonly sourceType: string;
 } & (
-  | {
-      readonly credentialGatewayId: string;
-      readonly credentialProxyId?: never;
-      readonly accountDelivery?: {
-        readonly profileId: string;
-        readonly config: Readonly<Record<string, string>>;
-      };
-    }
-  | {
-      readonly credentialProxyId: string;
-      readonly credentialGatewayId?: never;
-      readonly accountDelivery?: never;
-    }
+  | { readonly credentialGatewayId: string; readonly credentialProxyId?: never }
+  | { readonly credentialProxyId: string; readonly credentialGatewayId?: never }
 );
-
-/** Resolve the admitted owner and initial presentation; running account policy is prepared separately. */
-export function revisionCredentialSource(
-  source: CredentialSource,
-  snapshot: CredentialSourceSnapshot | undefined,
-): CredentialSource | undefined {
-  if (source.ownerCapability !== "token_service") {
-    return credentialSourceMatchesSnapshot(source, snapshot) ? source : undefined;
-  }
-  const delivery = snapshot?.accountDelivery;
-  if (!delivery || source.id !== snapshot.sourceId || source.type !== "oauth2-refresh-token") {
-    return undefined;
-  }
-  return {
-    ...source,
-    type: snapshot.sourceType,
-    config: delivery.config,
-    driverId: snapshot.credentialGatewayId!,
-    ownerCapability: "credential_gateway",
-  };
-}
 
 /** Match the source owner recorded at admission, including for pre-Proxy Gateway snapshots. */
 export function credentialSourceMatchesSnapshot(

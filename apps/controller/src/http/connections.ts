@@ -105,14 +105,13 @@ export function namespaceConnectionHandlers(redirectUri: string | undefined): Re
       controller,
       transactIAM,
       context,
-      request,
       reply,
       params,
       namespaceId,
       mutationEvent,
     }) {
       const { agentId, credentialSourceId } = params;
-      const result = await transactIAM(() =>
+      await transactIAM(() =>
         controller.detachAgentConnection(
           context.actorId,
           {
@@ -123,7 +122,7 @@ export function namespaceConnectionHandlers(redirectUri: string | undefined): Re
           mutationEvent({ kind: "agent", id: agentId!, namespaceId }, { credentialSourceId }),
         ),
       );
-      reply.send({ data: result, meta: { requestId: request.id } });
+      reply.status(204).send();
     },
     async listUsableConnectionTemplates({ controller, context, request, reply, namespaceId }) {
       const data = await controller.listUsableConnectionTemplates(context.actorId, namespaceId);

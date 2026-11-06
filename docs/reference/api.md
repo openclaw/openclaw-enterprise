@@ -2483,7 +2483,7 @@ Detach an account from this Agent and withdraw its access
 
 | Status | Meaning |
 | --- | --- |
-| `200` | OK |
+| `204` | No Content |
 | `400` | The request does not match the operation contract. |
 | `401` | The caller did not provide valid credentials. |
 | `403` | The caller is not allowed to perform this operation. |
@@ -2491,27 +2491,6 @@ Detach an account from this Agent and withdraw its access
 | `409` | The requested operation conflicts with the current resource state. |
 | `500` | The platform request could not be completed. |
 | `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.withdrawalRequested` | `boolean` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "withdrawalRequested": false
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
 
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`
 

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
+  isAllowedSecretBindingDestination,
   type CredentialSource,
   type PluginAccountTarget,
   type PluginCatalogEntry,
@@ -8,21 +9,13 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import {
-  credentialEnvironmentsOverlap,
-  validPluginCredentialNames,
-} from "./credential-environment.ts";
 import { exactDnsName } from "../credential-source-endpoint.ts";
-import {
-  googleWorkspaceDeliveryScopes,
-  isGoogleWorkspaceRecipient,
-} from "./google-workspace/operations.ts";
+import { isGoogleWorkspaceRecipient } from "./google-workspace/operations.ts";
 import { googleWorkspaceCredentialPolicy } from "./google-workspace/credential-policy.ts";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 
 const httpsEndpoint = Type.String({ pattern: "^https://[a-z0-9.-]+/[a-zA-Z0-9/._~-]+$" });
-const credentialName = Type.String({ pattern: "^[A-Z][A-Z0-9_]{0,63}$" });
 const credentialSlot = Type.Object(
   {
     label: Type.String({ minLength: 1 }),
@@ -31,8 +24,7 @@ const credentialSlot = Type.Object(
     delivery: Type.Object(
       {
         role: Type.Literal("harness"),
-        env: credentialName,
-        envAliases: Type.Optional(Type.Array(credentialName, { minItems: 1, uniqueItems: true })),
+        env: Type.String({ pattern: "^[A-Z][A-Z0-9_]{0,63}$" }),
         presentation: Type.Literal("bearer"),
       },
       { additionalProperties: false },
@@ -131,9 +123,6 @@ function loadManagedCliInstall(install: ReturnType<typeof loadManagedInstall>) {
       }),
       credentials,
     ) ||
-    !Object.values(credentials).every(({ delivery }) =>
-      validPluginCredentialNames([delivery.env, ...(delivery.envAliases ?? [])]),
-    ) ||
     !isNonEmptyString(release?.executable) ||
     !/^[a-z][a-z0-9-]*$/.test(release.executable) ||
     typeof release.runtimeDirectory !== "string" ||
@@ -207,7 +196,7 @@ function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
     declaration?.type !== "streamable-http" ||
     !url ||
     url.href !== declaration.url ||
-    !validPluginCredentialNames([slot.delivery.env, ...(slot.delivery.envAliases ?? [])]) ||
+    !isAllowedSecretBindingDestination(slot.delivery.env) ||
     !exactDnsName(url.hostname) ||
     !url.hostname.includes(".") ||
     (resource !== url.origin && resource !== url.href)
@@ -391,12 +380,11 @@ export function managedMcpInstallForSourceConfig(
     return undefined;
   }
   return managedMcpInstalls.find(
-    ({ credentials, slotId, credentialEnvironment, endpoint }) =>
+    ({ credentialEnvironment, endpoint }) =>
       config.host === endpoint.host &&
       Number(config.port ?? 443) === endpoint.port &&
       config.path === endpoint.path &&
-      config.env_var === credentialEnvironment &&
-      config.env_var_aliases === credentials[slotId]!.delivery.envAliases?.join(","),
+      config.env_var === credentialEnvironment,
   );
 }
 
@@ -409,9 +397,7 @@ export function managedMcpSlotAcceptsSource(
     source.ownerCapability === "credential_gateway" &&
     source.egress === undefined &&
     source.type === "bearer-token" &&
-    (source.secrets.token?.namespaceId === source.namespaceId ||
-      (source.config.oauth_owner === "token_service" &&
-        source.config.issuer === install.credentials[install.slotId]!.issuer)) &&
+    source.secrets.token?.namespaceId === source.namespaceId &&
     managedMcpInstallForSourceConfig(source.config) === install
   );
 }
@@ -459,43 +445,6 @@ export function managedPluginAccountSlot(
     issuers: [slot.issuer],
     ...(install.kind === "mcp" && { mcpServerUrl: install.url }),
     acceptsRecipient,
-    delivery(target: PluginAccountTarget, grantedScopes: readonly string[]) {
-      if (!acceptsRecipient(target)) {
-        throw new ConfigurationHarnessError(
-          "The saved account does not match this plugin slot's approved destination.",
-        );
-      }
-      const config: Record<string, string> = {
-        // Both reviewed senders use POST for protected requests. Each operation or tool
-        // remains subject to its plugin's request policy.
-        access: "full",
-        env_var: slot.delivery.env,
-        ...(slot.delivery.envAliases && {
-          env_var_aliases: slot.delivery.envAliases.join(","),
-        }),
-        token_url: target.tokenUrl,
-        oauth_owner: "token_service",
-      };
-      if (install.kind === "mcp") {
-        const [endpoint] = target.destinations;
-        config.host = endpoint!.host;
-        config.port = String(endpoint!.port);
-        config.path = endpoint!.path;
-        config.protocol = "mcp";
-      } else {
-        const destinations = target.destinations.filter(isGoogleWorkspaceRecipient);
-        config.destinations = JSON.stringify(destinations);
-        const scopes = googleWorkspaceDeliveryScopes(destinations, grantedScopes);
-        if (scopes.length === 0) {
-          return undefined;
-        }
-        config.scope = scopes.join(" ");
-      }
-      return {
-        type: install.kind === "mcp" ? "bearer-token" : "oauth2-refresh-token",
-        config,
-      };
-    },
     bind(sourceId: string) {
       return {
         ...selection,
@@ -555,6 +504,16 @@ export const managedPluginCredentials = {
         continue;
       }
       const source = sources.find(({ id }) => id === binding.sourceId);
+      // OCC verifies the grant and current template recipient before asking the Driver to
+      // validate the selection. A saved account requires no native provider configuration.
+      if (
+        source?.ownerCapability === "token_service" &&
+        source.type === "oauth2-refresh-token" &&
+        source.state === "ready" &&
+        source.id !== modelSourceId
+      ) {
+        continue;
+      }
       const accepts =
         source &&
         (install.kind === "mcp"
@@ -567,17 +526,6 @@ export const managedPluginCredentials = {
       if (!source || source.id === modelSourceId || !accepts) {
         throw new ConfigurationHarnessError(
           `Select a ready ${install.entry.name} account attached to this Agent that matches the reviewed credential slot.`,
-        );
-      }
-      if (
-        install.kind === "mcp" &&
-        sources.some(
-          (other) =>
-            other.id !== source.id && credentialEnvironmentsOverlap(source.config, other.config),
-        )
-      ) {
-        throw new ConfigurationHarnessError(
-          "The managed MCP credential conflicts with another attached credential's placeholder.",
         );
       }
       const conflict =

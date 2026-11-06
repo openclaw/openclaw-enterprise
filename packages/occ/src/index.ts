@@ -45,7 +45,6 @@ import {
   credentialFreeMetadataType,
   credentialSourceMatchesSnapshot,
   revisionCredentialSourceSnapshot,
-  revisionCredentialSource,
   credentialFreeProviderRef,
   pluginRuntimeHarnessRequirement,
   codexProxiesRepositoryBroker,
@@ -394,7 +393,6 @@ import {
   validateSelectedBackendDrivers,
   validateServiceAccountBackendBinding,
 } from "./backends.ts";
-import { accountDeliveryProfileId } from "./account-delivery.ts";
 import type { StoredOAuthClient } from "./ports/oauth-client.ts";
 import {
   InMemoryPlatformState,
@@ -2167,11 +2165,6 @@ type InstallationRepositoryAdmission = Readonly<{
   };
   backendId: string;
 }>;
-
-type RevisionAccountPreparation = {
-  readonly state: "prepared" | "withdrawn";
-  readonly source: CredentialSource;
-};
 
 export class OpenClawController {
   private installationRepositoryAdmission?: InstallationRepositoryAdmission;
@@ -4679,215 +4672,6 @@ export class OpenClawController {
     });
   }
 
-  /** Worker-only preflight. Token custody stays in Token Service until Compute verifies the receiver. */
-  async prepareRevisionAccount(
-    namespaceId: string,
-    agentId: string,
-    revisionId: string,
-    sourceId: string,
-  ): Promise<RevisionAccountPreparation | undefined> {
-    return this.reconcileRevisionAccount(namespaceId, agentId, revisionId, sourceId);
-  }
-
-  /** Recheck the exact account and prepared policy immediately before releasing its access token. */
-  async releaseRevisionAccount(
-    namespaceId: string,
-    agentId: string,
-    revisionId: string,
-    expected: Readonly<CredentialSource>,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    const source = await this.reconcileRevisionAccount(
-      namespaceId,
-      agentId,
-      revisionId,
-      expected.id,
-      expected,
-      signal,
-    );
-    if (source?.state !== "prepared") {
-      throw new ResourceStateConflictError("The prepared account is no longer authorized.");
-    }
-  }
-
-  private async reconcileRevisionAccount(
-    namespaceId: string,
-    agentId: string,
-    revisionId: string,
-    sourceId: string,
-    expected?: Readonly<CredentialSource>,
-    releaseSignal?: AbortSignal,
-  ): Promise<RevisionAccountPreparation | undefined> {
-    const authorizedTarget = async (state: PlatformUnitOfWork) => {
-      const namespace = await this.lockNamespace(state, namespaceId);
-      const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
-      const agent = await state.agents.findAgent(namespaceId, agentId);
-      if (
-        !agent ||
-        !revision ||
-        namespace.status !== "ready" ||
-        agent.desiredRuntimeState !== "running"
-      ) {
-        return undefined;
-      }
-      const newest = (await state.revisions.listRevisionMetadata(namespaceId, agentId)).at(-1);
-      const snapshot = revisionCredentialSourceSnapshot(revision, sourceId);
-      const delivery = snapshot?.accountDelivery;
-      if (
-        !delivery ||
-        (agent.activeRevisionId !== revision.id && newest?.id !== revision.id) ||
-        !agent.credentialSources?.some((b) => b.sourceId === sourceId) ||
-        agent.status !== "active" ||
-        (await state.credentialSources.findCredentialWithdrawal(
-          namespace.id,
-          revision.id,
-          sourceId,
-        ))
-      ) {
-        return undefined;
-      }
-      const ref = { kind: "credential_source" as const, namespaceId: namespace.id, id: sourceId };
-      if (
-        !(await this.authorizationDecision(agent.servicePrincipalId, "operate", ref)).decision
-          .allowed
-      ) {
-        return undefined;
-      }
-      const source = await state.credentialSources.lockCredentialSource(namespace.id, sourceId);
-      const account = await state.savedConnections.findSavedConnection(namespace.id, sourceId);
-      if (!source || source.state !== "ready" || !account || account.revocationRequestedBy) {
-        return undefined;
-      }
-      const admitted = revisionCredentialSource(source, snapshot);
-      if (!admitted) {
-        throw new ResourceStateConflictError(
-          "The saved account no longer matches the admitted plugin receiver.",
-        );
-      }
-      return { namespace, agent, revision, source, account, admitted, delivery };
-    };
-    const timeout = AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS);
-    const signal = releaseSignal ? AbortSignal.any([releaseSignal, timeout]) : timeout;
-    if (!(await this.mutate(authorizedTarget))) {
-      return undefined;
-    }
-    // A resolve may renew the grant and update this source. Release the database locks while
-    // it does so, then recheck the Agent, revision and account before touching its sender.
-    const token = await this.resolveAccountToken(namespaceId, sourceId, signal);
-    return this.mutate(async (state) => {
-      const current = await authorizedTarget(state);
-      if (!current) {
-        return undefined;
-      }
-      signal.throwIfAborted();
-      const { namespace, agent, revision, source, account, admitted, delivery } = current;
-      const gateway = this.ownedCredentialGatewayDriver(admitted);
-      const placement = await this.credentialNamespace(namespace);
-      const context = {
-        namespace: placement,
-        source: { ...admitted, id: delivery.profileId },
-        signal,
-      };
-      const driver = this.ownedPluginDriver(revision.plugins?.driver, revision.harness.id);
-      const target = await this.accountTarget(state, account);
-      const uses = this.pluginAccountBindings(driver, revision.plugins?.plugins).filter(
-        (binding) => binding.sourceId === source.id,
-      );
-      const compatible =
-        uses.length > 0 &&
-        uses.every(
-          ({ slot }) => slot.issuers.includes(account.issuer) && slot.acceptsRecipient(target),
-        );
-      const runtime =
-        token && Date.parse(token.expiresAt) > Date.now() && compatible
-          ? await this.runtimeAccountSource(
-              state,
-              source,
-              {
-                ...account,
-                grantedScopes: account.grantedScopes.filter((scope) =>
-                  token.grantedScopes.includes(scope),
-                ),
-              },
-              revision.plugins?.plugins,
-              driver,
-              { target, bindings: uses },
-            )
-          : undefined;
-      if (!token || !runtime) {
-        if (!gateway.withdrawConnectionToken) {
-          throw new ResourceStateConflictError("The sender cannot withdraw this connection token.");
-        }
-        await this.credentialGatewayOperation(() => gateway.withdrawConnectionToken!(context));
-        if (!expected && token && uses.length > 0 && agent.activeRevisionId === revision.id) {
-          if (!gateway.prepareConnectionSource) {
-            throw new ResourceStateConflictError(
-              "The sender cannot preserve the withdrawn account attachment.",
-            );
-          }
-          // A running Sandbox keeps its admitted provider membership. Restore that exact
-          // profile only after confirmed withdrawal, and never release this account's bearer.
-          await this.credentialGatewayOperation(() => gateway.prepareConnectionSource!(context));
-          return { state: "withdrawn", source: admitted };
-        }
-        return undefined;
-      }
-      if (runtime.type !== admitted.type || runtime.driverId !== admitted.driverId) {
-        throw new ResourceStateConflictError("The account's admitted sender has changed.");
-      }
-      if (this.ownedPluginDriver(revision.plugins?.driver, revision.harness.id) !== driver) {
-        throw new ResourceStateConflictError(
-          "The revision's Plugin Driver changed. Retry preparation.",
-        );
-      }
-      const prepared = { ...context, source: { ...runtime, id: delivery.profileId } };
-      if (expected) {
-        signal.throwIfAborted();
-        if (!isDeepStrictEqual(runtime, expected) || !gateway.publishConnectionToken) {
-          throw new ResourceStateConflictError("The prepared account policy has changed.");
-        }
-        await this.credentialGatewayOperation(() =>
-          gateway.publishConnectionToken!(prepared, {
-            accessToken: token.accessToken,
-            expiresAt: token.expiresAt,
-          }),
-        );
-      } else {
-        if (!gateway.prepareConnectionSource) {
-          throw new ResourceStateConflictError(
-            "The sender cannot prepare an account without releasing its token.",
-          );
-        }
-        await this.credentialGatewayOperation(() => gateway.prepareConnectionSource!(prepared));
-      }
-      return { state: "prepared", source: runtime };
-    });
-  }
-
-  private async removeAccountDeliveries(namespace: Namespace, source: CredentialSource) {
-    // The registration survives deletion of the Agent and its immutable revisions.
-    const profiles = await this.read((state) =>
-      state.savedConnections.listDeliveryProfiles(namespace.id, source.id),
-    );
-    for (const profile of profiles) {
-      const gateway = this.credentialGatewayDriver(profile.gatewayId);
-      const placement = await this.credentialNamespace(namespace);
-      await this.credentialGatewayOperation(() =>
-        gateway.removeSource({
-          namespace: placement,
-          source: {
-            ...source,
-            id: profile.profileId,
-            type: profile.sourceType,
-            ownerCapability: "credential_gateway",
-            driverId: gateway.id,
-          },
-          signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-        }),
-      );
-    }
-  }
-
   private async savedPluginSlot(
     state: PlatformReadView,
     principalId: string,
@@ -5588,7 +5372,7 @@ export class OpenClawController {
     principalId: string,
     input: AgentCredentialSourceInput,
     audit?: AuditEvent,
-  ): Promise<{ readonly withdrawalRequested: boolean }> {
+  ): Promise<void> {
     const { namespaceId, agentId, credentialSourceId } = input;
     return this.mutate(async (state) => {
       await this.lockNamespace(state, namespaceId);
@@ -5605,16 +5389,10 @@ export class OpenClawController {
       if (agent === undefined || connection === undefined) {
         throw new ScopeViolationError("The Agent has no such connection.");
       }
-      const withdrawalRequested = await this.detachAgentConnectionSource(
-        state,
-        principalId,
-        agent,
-        credentialSourceId,
-      );
+      await this.detachAgentConnectionSource(state, agent, credentialSourceId);
       if (audit) {
         await state.audit.append(audit);
       }
-      return { withdrawalRequested };
     });
   }
 
@@ -5652,7 +5430,7 @@ export class OpenClawController {
       }
       await state.savedConnections.requestConnectionRevocation(namespaceId, sourceId, principalId);
       for (const agent of await state.agents.listAgents(namespaceId)) {
-        await this.detachAgentConnectionSource(state, principalId, agent, sourceId, true);
+        await this.detachAgentConnectionSource(state, agent, sourceId, true);
       }
       if (audit) {
         await state.audit.append(audit);
@@ -5679,7 +5457,7 @@ export class OpenClawController {
     if (pending.account.revokedAt === undefined) {
       await this.retireCredentialSourceMaterial(pending.namespace, pending.source, undefined);
     }
-    const canRemoveProfiles = await this.mutate(async (state) => {
+    await this.mutate(async (state) => {
       await this.lockNamespace(state, namespaceId);
       const account = await state.savedConnections.findSavedConnection(namespaceId, sourceId);
       if (account?.revocationRequestedBy === undefined) {
@@ -5692,17 +5470,11 @@ export class OpenClawController {
           this.timestamp(),
         );
       }
-      return !(await state.savedConnections.hasPendingConnectionWithdrawals(namespaceId, sourceId));
+      if (await state.credentialSources.hasReferences(namespaceId, sourceId)) {
+        return;
+      }
+      await state.credentialSources.deleteCredentialSource(namespaceId, sourceId);
     });
-    if (canRemoveProfiles) {
-      await this.removeAccountDeliveries(pending.namespace, pending.source);
-      await this.mutate(async (state) => {
-        await this.lockNamespace(state, namespaceId);
-        if (!(await state.credentialSources.hasReferences(namespaceId, sourceId))) {
-          await state.credentialSources.deleteCredentialSource(namespaceId, sourceId);
-        }
-      });
-    }
   }
 
   private resolveAccountToken(namespaceId: string, sourceId: string, signal: AbortSignal) {
@@ -8354,6 +8126,7 @@ export class OpenClawController {
   private async admitProxyPlan(
     state: PlatformUnitOfWork,
     agent: Readonly<Agent>,
+    admittedSources: readonly CredentialSourceSnapshot[],
     revisionId: string,
     configuration: OpenClawConfigurationDocument,
     sandboxDriverId?: string,
@@ -8362,7 +8135,7 @@ export class OpenClawController {
   ): Promise<ProxyPlan | undefined> {
     const sources: CredentialSource[] = [];
     let harnessCredentialSource: ProxyPlan["harnessCredentialSource"];
-    for (const binding of agent.credentialSources ?? []) {
+    for (const binding of admittedSources) {
       const source = await state.credentialSources.findCredentialSource(
         agent.namespaceId,
         binding.sourceId,
@@ -8397,7 +8170,7 @@ export class OpenClawController {
     const sourceCount = sources.length + (harnessCredentialSource ? 1 : 0);
     const owner = this.selectedProxyOwner();
     const driver = owner.require("credential_proxy");
-    if ((agent.credentialSources?.length ?? 0) !== sourceCount) {
+    if (admittedSources.length !== sourceCount) {
       if (repositoryGit === undefined) {
         // Finding 2360: when the Proxy serves only repository Git, replacing the source cannot
         // help, so that refusal comes first. Any other outcome leaves the binding refusal.
@@ -11077,12 +10850,6 @@ export class OpenClawController {
                 "Authorize the account for this MCP server first.",
               );
             }
-            const delivery = slot.delivery(target, account.grantedScopes);
-            if (!delivery) {
-              throw new ResourceStateConflictError(
-                "The account grants no operations for this receiver.",
-              );
-            }
             if (!slot.mcpServerUrl || slot.mcpServerUrl !== account.mcpServerUrl) {
               throw new ResourceStateConflictError(
                 "The account does not authorize this MCP receiver.",
@@ -12530,7 +12297,7 @@ export class OpenClawController {
       const attached = new Set(connections.map(({ credentialSourceId }) => credentialSourceId));
       let resultingSources = requestedSources;
       // Retaining an existing attachment uses the Agent's delegated authority. Removing one
-      // goes through detach so live revisions and the exact grant are withdrawn together.
+      // goes through detach so the source binding and its delegated IAM grant are removed together.
       await this.authorizeBoundCredentialSources(
         principalId,
         namespace.id,
@@ -13536,6 +13303,7 @@ export class OpenClawController {
       const egressPlan = await this.admitProxyPlan(
         state,
         lockedAgent,
+        credentialSources,
         revisionId,
         admittedConfiguration,
         sandbox?.id,
@@ -13770,50 +13538,38 @@ export class OpenClawController {
           "The Agent does not belong to the exact Installation and Namespace.",
         );
       }
-      if (agent.status !== "active") {
-        throw new ResourceStateConflictError(
-          "The Agent has no active revision to withdraw the credential source from.",
-        );
-      }
-      const revisions = await state.revisions.listRevisions(agent.namespaceId, agent.id);
-      const targets = await this.credentialSourceWithdrawalRevisions(
+      const revision = await this.activeCredentialSourceRevision(state, agent, input);
+      const withdrawal = await this.requestRevisionCredentialWithdrawal(
         state,
-        revisions,
-        agent.activeRevisionId,
+        principalId,
+        revision,
         input.credentialSourceId,
       );
-      const activeHoldsSource = targets.some(({ id }) => id === agent.activeRevisionId);
-      const withdrawals: Readonly<CredentialWithdrawal>[] = [];
-      for (const revision of targets) {
-        // Only a serving Agent binding can start a withdrawal here. A detach may already
-        // have requested one on a candidate before it or any other revision became active.
-        if (!activeHoldsSource) {
-          const previous = await state.credentialSources.findCredentialWithdrawal(
-            agent.namespaceId,
-            revision.id,
-            input.credentialSourceId,
-          );
-          if (previous === undefined) {
-            continue;
-          }
+      const others = (
+        await credentialWithdrawalCompanionRevisions(
+          state,
+          await state.revisions.listRevisions(agent.namespaceId, agent.id),
+          revision,
+          this.clock(),
+        )
+      ).filter((candidate) => revisionHoldsCredentialSource(candidate, input.credentialSourceId));
+      const pendingOthers: Readonly<CredentialWithdrawal>[] = [];
+      for (const other of others) {
+        const recorded = await this.requestRevisionCredentialWithdrawal(
+          state,
+          principalId,
+          other,
+          input.credentialSourceId,
+        );
+        if (recorded.state === "pending") {
+          pendingOthers.push(recorded);
         }
-        withdrawals.push(
-          await this.requestRevisionCredentialWithdrawal(
-            state,
-            principalId,
-            revision,
-            input.credentialSourceId,
-          ),
-        );
       }
-      const reported = withdrawals.find(({ state }) => state === "pending") ?? withdrawals[0];
-      if (!reported) {
-        throw new ResourceStateConflictError(
-          agent.activeRevisionId === undefined
-            ? "The Agent has no active revision to withdraw the credential source from."
-            : "The Agent's active version does not use this credential source, so there is nothing to withdraw. Withdraw a source that the deployed version uses.",
-        );
-      }
+      // Every pending withdrawal now has an attempt queued or running, either earlier or just
+      // now. Like the read, this reflects the queue at commit: a claim that expired on its last
+      // attempt counts until recoverStale fails it.
+      const reported =
+        withdrawal.state === "pending" ? withdrawal : (pendingOthers[0] ?? withdrawal);
       return credentialWithdrawalStatus(reported, reported.state === "pending");
     });
   }
@@ -13912,29 +13668,38 @@ export class OpenClawController {
       if (agent === undefined) {
         throw new ScopeViolationError("The Agent does not belong to this Namespace.");
       }
-      const withdrawals: Readonly<CredentialWithdrawal>[] = [];
-      const revisions = await state.revisions.listRevisions(agent.namespaceId, agent.id);
-      const targets = await this.credentialSourceWithdrawalRevisions(
-        state,
-        revisions,
+      // After Agent read, these name what the Agent lacks, as the request route's 409 does; they
+      // read only its active version's withdrawals, never the source (finding D762).
+      if (agent.activeRevisionId === undefined) {
+        throw new CredentialWithdrawalNotFoundError("no_active_version");
+      }
+      const withdrawal = await state.credentialSources.findCredentialWithdrawal(
+        agent.namespaceId,
         agent.activeRevisionId,
         input.credentialSourceId,
       );
-      for (const revision of targets) {
-        const withdrawal = await state.credentialSources.findCredentialWithdrawal(
-          agent.namespaceId,
-          revision.id,
+      if (withdrawal === undefined) {
+        throw new CredentialWithdrawalNotFoundError("not_withdrawn");
+      }
+      const withdrawals = [withdrawal];
+      const revisions = await state.revisions.listRevisions(agent.namespaceId, agent.id);
+      const active = revisions.find(({ id }) => id === withdrawal.revisionId);
+      const companions =
+        active === undefined
+          ? []
+          : await credentialWithdrawalCompanionRevisions(state, revisions, active, this.clock());
+      for (const companion of companions) {
+        if (!revisionHoldsCredentialSource(companion, input.credentialSourceId)) {
+          continue;
+        }
+        const recorded = await state.credentialSources.findCredentialWithdrawal(
+          companion.namespaceId,
+          companion.id,
           input.credentialSourceId,
         );
-        if (withdrawal) {
-          withdrawals.push(withdrawal);
+        if (recorded !== undefined) {
+          withdrawals.push(recorded);
         }
-      }
-      const first = withdrawals[0];
-      if (!first) {
-        throw new CredentialWithdrawalNotFoundError(
-          agent.activeRevisionId === undefined ? "no_active_version" : "not_withdrawn",
-        );
       }
       let inProgress: Readonly<CredentialWithdrawalStatus> | undefined;
       for (const candidate of withdrawals) {
@@ -13953,25 +13718,37 @@ export class OpenClawController {
         }
         inProgress ??= status;
       }
-      return inProgress ?? credentialWithdrawalStatus(first, false);
+      return inProgress ?? credentialWithdrawalStatus(withdrawal, false);
     });
   }
 
-  /** The active revision first, followed by any other revision that may still run with this source. */
-  private async credentialSourceWithdrawalRevisions(
-    state: PlatformUnitOfWork | PlatformReadView,
-    revisions: readonly Readonly<AgentRevision>[],
-    activeRevisionId: string | undefined,
-    sourceId: string,
-  ): Promise<readonly Readonly<AgentRevision>[]> {
-    const active = revisions.find(({ id }) => id === activeRevisionId);
-    const serving = active
-      ? [
-          active,
-          ...(await credentialWithdrawalCompanionRevisions(state, revisions, active, this.clock())),
-        ]
-      : revisions;
-    return serving.filter((revision) => revisionHoldsCredentialSource(revision, sourceId));
+  /** The active revision must hold the source as its Harness authentication or a non-model source. */
+  private async activeCredentialSourceRevision(
+    state: PlatformUnitOfWork,
+    agent: Readonly<Agent>,
+    input: AgentCredentialSourceInput,
+  ): Promise<Readonly<AgentRevision>> {
+    if (agent.status !== "active" || agent.activeRevisionId === undefined) {
+      throw new ResourceStateConflictError(
+        "The Agent has no active revision to withdraw the credential source from.",
+      );
+    }
+    const revision = await state.revisions.findRevision(
+      agent.namespaceId,
+      agent.id,
+      agent.activeRevisionId,
+    );
+    if (revision === undefined) {
+      throw new ScopeViolationError("The Agent's active revision is unavailable.");
+    }
+    if (!revisionHoldsCredentialSource(revision, input.credentialSourceId)) {
+      // After the Agent operate grant. The check reads only the revision's bindings, never the
+      // source, so a missing source ID and one the caller cannot read answer alike (finding 2536).
+      throw new ResourceStateConflictError(
+        "The Agent's active version does not use this credential source, so there is nothing to withdraw. Withdraw a source that the deployed version uses.",
+      );
+    }
+    return revision;
   }
 
   async stopAgent(
@@ -15085,56 +14862,6 @@ export class OpenClawController {
    * Namespace lock serializes binding, source deletion, and admission. The listing rule is
    * checked after every source authorization and lookup, so it never answers before a 403.
    */
-  private async runtimeAccountSource(
-    state: PlatformReadView,
-    source: CredentialSource,
-    account: SavedConnection,
-    plugins: PluginDesiredState | undefined,
-    driver: PluginDriver | undefined,
-    resolved?: {
-      readonly target: PluginAccountTarget;
-      readonly bindings: ReturnType<OpenClawController["pluginAccountBindings"]>;
-    },
-  ) {
-    const target = resolved?.target ?? (await this.accountTarget(state, account));
-    const uses =
-      resolved?.bindings ??
-      this.pluginAccountBindings(driver, plugins).filter(
-        (binding) => binding.sourceId === source.id,
-      );
-    if (uses.length === 0) {
-      return undefined; // A grant alone creates no workload credential.
-    }
-    const deliveries = uses.map(({ slot }) => {
-      if (!slot.issuers.includes(account.issuer) || !slot.acceptsRecipient(target)) {
-        throw new ResourceStateConflictError(
-          "Authorize an account for this plugin server before binding it.",
-        );
-      }
-      return slot.delivery(target, account.grantedScopes);
-    });
-    if (deliveries.some((delivery) => delivery === undefined)) {
-      return undefined;
-    }
-    const [delivery] = deliveries;
-    if (!delivery || deliveries.some((item) => !isDeepStrictEqual(item, delivery))) {
-      throw new ResourceStateConflictError(
-        "The selected slots require incompatible presentations for this account.",
-      );
-    }
-    return {
-      ...source,
-      ...delivery,
-      ownerCapability: "credential_gateway" as const,
-      driverId: this.credentialGatewayDriver().id,
-      config: {
-        ...delivery.config,
-        issuer: account.issuer,
-        client_id: account.clientId,
-      },
-    };
-  }
-
   private async authorizeAgentCredentialSources(
     state: PlatformUnitOfWork,
     principalId: string,
@@ -15198,34 +14925,39 @@ export class OpenClawController {
     sources: readonly CredentialSource[],
     harnessAuth?: HarnessAuthBinding | null,
   ): Promise<void> {
-    if (plugins && Object.keys(plugins).length) {
-      const projected: CredentialSource[] = [];
-      for (const source of sources) {
-        if (source.ownerCapability !== "token_service") {
-          projected.push(source);
-          continue;
-        }
-        const account = await state.savedConnections.findSavedConnection(
-          source.namespaceId,
-          source.id,
-        );
-        const runtime =
-          account && (await this.runtimeAccountSource(state, source, account, plugins, driver));
-        if (runtime) {
-          projected.push(runtime);
-        }
-      }
-      driver?.credentials?.validate(
-        plugins,
-        projected,
-        harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined,
-      );
+    if (!driver?.credentials || !plugins || Object.keys(plugins).length === 0) {
+      return;
     }
+    for (const { sourceId, slot } of this.pluginAccountBindings(driver, plugins)) {
+      const source = sources.find((candidate) => candidate.id === sourceId);
+      if (source?.ownerCapability !== "token_service") {
+        continue;
+      }
+      const account = await state.savedConnections.findSavedConnection(
+        source.namespaceId,
+        source.id,
+      );
+      if (
+        !account ||
+        account.revocationRequestedBy ||
+        !slot.issuers.includes(account.issuer) ||
+        !slot.acceptsRecipient(await this.accountTarget(state, account))
+      ) {
+        throw new ResourceStateConflictError(
+          "Authorize an account for this plugin server before binding it.",
+        );
+      }
+    }
+    driver.credentials.validate(
+      plugins,
+      sources,
+      harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined,
+    );
   }
 
   /**
-   * Freezes every source the Agent lists, including the one `harnessAuth` names. Each needs the
-   * Agent principal's `operate` and a ready record; any catalog type may be listed.
+   * Each admitted source needs a ready record and the Agent principal's operate grant.
+   * A saved account attached without a selected slot has no workload binding.
    */
   private async admitCredentialSources(
     state: PlatformUnitOfWork,
@@ -15244,12 +14976,6 @@ export class OpenClawController {
         agent.harnessAuth,
       );
       return [];
-    }
-    // A state refusal, so HTTP keeps the message instead of the generic "already exists".
-    if (sandbox === undefined) {
-      throw new ResourceStateConflictError(
-        "Agent credential sources require a selected Sandbox Driver.",
-      );
     }
     const sources = await this.authorizeAgentCredentialSources(
       state,
@@ -15270,60 +14996,30 @@ export class OpenClawController {
       sources,
       agent.harnessAuth,
     );
+    const selectedAccounts = this.pluginAccountBindings(driver, agent.plugins);
     const snapshots: CredentialSourceSnapshot[] = [];
-    for (const { sourceId } of bindings) {
+    for (const source of sources) {
+      const sourceId = source.id;
       await this.authorizeAgentPrincipal(principalId, agent, "operate", {
         kind: "credential_source",
         namespaceId: agent.namespaceId,
         id: sourceId,
       });
-      const source = await state.credentialSources.lockCredentialSource(
-        agent.namespaceId,
-        sourceId,
-      );
-      if (source === undefined || source.state !== "ready") {
-        throw new ScopeViolationError("The credential source is unavailable.");
-      }
       if (source.ownerCapability === "token_service") {
-        const account = await state.savedConnections.findSavedConnection(
-          agent.namespaceId,
-          sourceId,
-        );
-        if (!account || account.revocationRequestedBy) {
-          throw new ResourceStateConflictError("The connected account is unavailable.");
-        }
-        const runtime = await this.runtimeAccountSource(
-          state,
-          source,
-          account,
-          agent.plugins,
-          driver,
-        );
-        if (runtime) {
-          // Each approved presentation has an independent sender profile. Sharing an account
-          // cannot change another Agent's protected destination or placeholder.
-          const profileId = accountDeliveryProfileId(
-            sourceId,
-            runtime.driverId,
-            agent.id,
-            runtime.config,
+        if (selectedAccounts.some((binding) => binding.sourceId === sourceId)) {
+          // TODO: Admit the slot when Credential Proxy supports saved OAuth account dispatch
+          // and the sender can inject its resolved bearer on each authorized request.
+          throw new ResourceStateConflictError(
+            "Credential Proxy does not yet support request-time injection for saved OAuth accounts. Clear the plugin account binding before deploying this Agent.",
           );
-          await state.savedConnections.registerDeliveryProfile(agent.namespaceId, sourceId, {
-            profileId,
-            gatewayId: runtime.driverId,
-            sourceType: runtime.type,
-          });
-          snapshots.push({
-            sourceId,
-            sourceType: runtime.type,
-            credentialGatewayId: runtime.driverId,
-            accountDelivery: {
-              profileId,
-              config: runtime.config,
-            },
-          });
         }
         continue;
+      }
+      // A state refusal, so HTTP keeps the message instead of the generic "already exists".
+      if (sandbox === undefined) {
+        throw new ResourceStateConflictError(
+          "Agent credential sources require a selected Sandbox Driver.",
+        );
       }
       const owner = this.credentialSourceOwner(source);
       if (owner.kind === "proxy") {
@@ -16545,18 +16241,20 @@ export class OpenClawController {
     return Object.freeze(sources);
   }
 
-  /** The caller holds the Namespace and Agent locks. Only withdraw this Agent's copies. */
+  /** The caller holds the Namespace lock while removing this Agent's account and IAM binding. */
   private async detachAgentConnectionSource(
     state: PlatformUnitOfWork,
-    principalId: string,
     agent: Readonly<Agent>,
     sourceId: string,
     revokeForAllAgents = false,
-  ): Promise<boolean> {
+  ): Promise<void> {
     const { namespaceId, id: agentId } = agent;
     const bindings = agent.credentialSources ?? [];
     const attached = bindings.some((binding) => binding.sourceId === sourceId);
-    if (!attached && !revokeForAllAgents) {
+    if (!attached) {
+      if (revokeForAllAgents) {
+        return;
+      }
       throw new ScopeViolationError("The connection is not attached to this Agent.");
     }
     const remaining = bindings.filter((binding) => binding.sourceId !== sourceId);
@@ -16564,79 +16262,29 @@ export class OpenClawController {
       const driver = this.ownedPluginDriver(agent.pluginDriver);
       await this.guardAgentProvisioning(state, namespaceId, agentId);
       this.assertHarnessSourceListed(remaining, agent.harnessAuth);
-      const remainingSources: CredentialSource[] = [];
-      for (const binding of remaining) {
-        const source = await state.credentialSources.findCredentialSource(
-          namespaceId,
-          binding.sourceId,
+      if (
+        this.pluginAccountBindings(driver, agent.plugins).some(
+          (binding) => binding.sourceId === sourceId,
+        )
+      ) {
+        throw new ResourceStateConflictError(
+          "Clear the plugin slot that uses this account before detaching it.",
         );
-        if (source?.ownerCapability === "token_service") {
-          const account = await state.savedConnections.findSavedConnection(namespaceId, source.id);
-          const delivery =
-            account &&
-            (await this.runtimeAccountSource(state, source, account, agent.plugins, driver));
-          if (delivery) {
-            remainingSources.push(delivery);
-          }
-        } else if (source) {
-          remainingSources.push(source);
-        }
       }
-      await this.validatePluginCredentialSources(
-        state,
-        driver,
-        agent.plugins,
-        remainingSources,
-        agent.harnessAuth,
-      );
     }
-    const revisions = await state.revisions.listRevisions(namespaceId, agentId);
-    if (
-      !attached &&
-      !revisions.some((revision) => revisionHoldsCredentialSource(revision, sourceId))
-    ) {
-      return false;
-    }
-    const targets = await this.credentialSourceWithdrawalRevisions(
-      state,
-      revisions,
-      agent.activeRevisionId,
-      sourceId,
+    await state.agents.updateConfiguration(
+      namespaceId,
+      agentId,
+      agent.configurationId,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      remaining,
     );
-    let withdrawalRequested = false;
-    for (const revision of targets) {
-      if (!revokeForAllAgents) {
-        await this.authorize(principalId, "operate", {
-          kind: "agent",
-          namespaceId,
-          id: agentId,
-        });
-      }
-      const withdrawal = await this.requestRevisionCredentialWithdrawal(
-        state,
-        principalId,
-        revision,
-        sourceId,
-      );
-      if (withdrawal.state === "pending") {
-        withdrawalRequested = true;
-      }
-    }
-    if (attached) {
-      await state.agents.updateConfiguration(
-        namespaceId,
-        agentId,
-        agent.configurationId,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        remaining,
-      );
-    }
     const bindingId = `binding_${agentId}_${sourceId}_operate`;
     const grant = await state.iamPolicy.getAccessBinding(namespaceId, bindingId);
     if (
@@ -16656,7 +16304,6 @@ export class OpenClawController {
         driver.deleteNamespaceAccessBinding!({ policy: state.iamPolicy }, namespaceId, bindingId),
       );
     }
-    return withdrawalRequested;
   }
 
   private async ensureAgentOperateGrants(
@@ -17211,15 +16858,16 @@ export class OpenClawController {
 
   /** Recheck the immutable admission and its selected owner in the use or observation transaction. */
   private currentCredentialSourceOwner(source: CredentialSource, revision: AgentRevision): boolean {
-    const runtime = revisionCredentialSource(
-      source,
-      revisionCredentialSourceSnapshot(revision, source.id),
-    );
-    if (!runtime) {
+    if (
+      !credentialSourceMatchesSnapshot(
+        source,
+        revisionCredentialSourceSnapshot(revision, source.id),
+      )
+    ) {
       return false;
     }
     try {
-      this.credentialSourceOwner(runtime);
+      this.credentialSourceOwner(source);
       return true;
     } catch {
       return false;

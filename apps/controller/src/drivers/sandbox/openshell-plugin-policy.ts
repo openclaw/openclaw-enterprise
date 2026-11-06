@@ -2,7 +2,7 @@ import type { AgentRevision, HarnessWorkloadRequirements } from "@openclaw-enter
 import { SandboxRevisionUnsupportedError } from "@openclaw-enterprise/occ";
 import { asRecord, numericLastLabel } from "@openclaw-enterprise/utils";
 import { isDeepStrictEqual } from "node:util";
-import { openShellProviderName, revisionProviderSourceId } from "../../backends/openshell.ts";
+import { openShellProviderName } from "../../backends/openshell.ts";
 import {
   openShellProfileEndpoint,
   type OpenShellGatewayClient,
@@ -23,7 +23,6 @@ import {
 } from "../plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../plugin/google-workspace/install.ts";
 
-const googleCli = [managedGoogleInstall.binaryPath];
 const googleRequestRuleName = "oce-google-requests";
 
 function unsupported(message: string): never {
@@ -93,7 +92,7 @@ export function openShellPluginPolicy(
     installationProviders.length ||
     !endpoint ||
     model === binding.sourceId ||
-    selected?.ref !== openShellProviderName(revisionProviderSourceId(revision, binding.sourceId)) ||
+    selected?.ref !== openShellProviderName(binding.sourceId) ||
     (model &&
       !attachments.some((a) => a.sourceId === model && a.ref === openShellProviderName(model)))
   ) {
@@ -101,46 +100,40 @@ export function openShellPluginPolicy(
       "This Google account requires its selected OpenShell provider, the dedicated OpenClaw worker and the registered OCE plugin request guard.",
     );
   }
-  // Verify the effective provider routes and executables, including when adopting a Sandbox.
-  const request = selected.requestScope;
-  if (!request) {
+  // The ready source authorizes a single host and path. Verify the Gateway actually composed
+  // that provider without extra destinations or binaries, even on adoption.
+  const scope = attachments.find((item) => item.sourceId === binding.sourceId)?.requestScope;
+  if (!scope) {
     unsupported("The managed Google account requires its admitted endpoint and OAuth scopes.");
   }
-  const { binaries, ...scope } = request;
-  const saved = revision.credentialSources?.some(
-    (source) => source.sourceId === binding.sourceId && source.accountDelivery !== undefined,
-  );
-  if (saved ? !binaries?.includes(managedGoogleInstall.binaryPath) : binaries !== undefined) {
-    unsupported("The Google account is missing its admitted sender executable policy.");
-  }
-  const provider =
-    "_provider_" +
-    openShellProviderName(revisionProviderSourceId(revision, binding.sourceId)).replaceAll(
-      "-",
-      "_",
-    );
+  const provider = "_provider_" + openShellProviderName(binding.sourceId).replaceAll("-", "_");
   const providerRule = {
     name: provider,
-    binaries: (binaries ?? googleCli).map((path) => ({ path })),
-    endpoints: scope.destinations.map((target) => ({
-      ...openShellProfileEndpoint({ ...target, protocol: "rest" }),
-      provider_credentialed: true,
-    })),
+    binaries: [{ path: managedGoogleInstall.binaryPath }],
+    endpoints: [
+      {
+        ...openShellProfileEndpoint({
+          host: scope.host,
+          port: scope.port,
+          path: scope.path,
+          protocol: "rest",
+        }),
+        provider_credentialed: true,
+      },
+    ],
   };
-  return { ...googleRequestPolicy(scope, binaries), endpoint, providerRule };
+  return { ...googleRequestPolicy(scope), endpoint, providerRule };
 }
 
 // Both the authenticated supervisor and OCE see this field. It contains only the source's
 // permitted destination and requested scopes, never a credential or a caller-selected policy.
-export function googleRequestPolicy(scope: GoogleRequestScope, binaries?: readonly string[]) {
+export function googleRequestPolicy(scope: GoogleRequestScope) {
   const entries = eligibleGoogleOperations(scope);
   if (!entries.length) {
     unsupported("The Google account has no admitted plugin operations.");
   }
   const discovery = googleDiscoveryRequests(scope, entries);
-  const hosts = [
-    ...new Set([...entries.map(({ endpoint }) => endpoint.host), ...discovery.map((r) => r.host)]),
-  ];
+  const hosts = [...new Set([scope.host, ...discovery.map((r) => r.host)])];
   const middlewares = {
     [managedPluginMiddleware]: {
       name: managedPluginMiddleware,
@@ -148,11 +141,6 @@ export function googleRequestPolicy(scope: GoogleRequestScope, binaries?: readon
       config: {
         fields: {
           binding_id: { stringValue: managedGoogleInstall.releaseSha256 },
-          ...(binaries && {
-            sender_binaries: {
-              listValue: { values: binaries.map((path) => ({ stringValue: path })) },
-            },
-          }),
           request_scope: { stringValue: JSON.stringify(scope) },
         },
       },
@@ -167,8 +155,13 @@ export function googleRequestPolicy(scope: GoogleRequestScope, binaries?: readon
     rules.set(method + " " + path, { method, path });
     allows.set(host, rules);
   }
-  for (const { op, endpoint, rulePath } of entries) {
-    permit(endpoint.host, op.method, rulePath);
+  for (const [, op] of entries) {
+    const literal = op.path.split("{")[0]!;
+    const inside =
+      scope.path === "/**" ||
+      (scope.path.endsWith("/**") && literal.startsWith(scope.path.slice(0, -2)));
+    const path = inside ? op.path.replace(/\{\+?\w+\}/g, "*") : scope.path;
+    permit(scope.host, op.method, path);
   }
   for (const { host, path } of discovery) {
     permit(host, "GET", path);
@@ -176,7 +169,7 @@ export function googleRequestPolicy(scope: GoogleRequestScope, binaries?: readon
   const networks = {
     [googleRequestRuleName]: {
       name: googleRequestRuleName,
-      binaries: (binaries ?? googleCli).map((path) => ({ path })),
+      binaries: [{ path: managedGoogleInstall.binaryPath }],
       endpoints: [...allows].map(([host, rules]) => ({
         host,
         ports: [443],
@@ -188,7 +181,6 @@ export function googleRequestPolicy(scope: GoogleRequestScope, binaries?: readon
   };
   return {
     hosts,
-    binaries: binaries ?? googleCli,
     middlewares,
     networks,
     environment: managedGoogleInstall.credentials.account!.delivery.env,
@@ -206,35 +198,14 @@ export function googleRequestPolicyFromSandbox(policy: unknown) {
   if (!scope || asRecord(fields?.binding_id)?.stringValue !== managedGoogleInstall.releaseSha256) {
     unsupported("OpenShell has a stale or malformed Google account request guard.");
   }
-  // Reconstruct the last admitted policy while withdrawing the provider from an existing Sandbox.
-  const declared = fields?.sender_binaries;
-  let binaries: string[] | undefined;
-  if (declared !== undefined) {
-    const values = asRecord(asRecord(declared)?.listValue)?.values;
-    if (!Array.isArray(values)) {
-      unsupported("OpenShell has a malformed Google sender executable policy.");
-    }
-    const paths = values.map((value) => asRecord(value)?.stringValue);
-    if (
-      !paths.every((path): path is string => typeof path === "string" && path.startsWith("/")) ||
-      !paths.includes(managedGoogleInstall.binaryPath)
-    ) {
-      unsupported("OpenShell has a malformed Google sender executable policy.");
-    }
-    binaries = paths;
-  }
-  const expected = googleRequestPolicy(scope, binaries);
+  const expected = googleRequestPolicy(scope);
   assertPluginRequestPolicy(policy, expected);
   return expected;
 }
 
 // An IP (including numeric URL spellings), overlapping wildcard or TLS-pass-through grant can
 // send traffic to a protected destination outside HTTP inspection, regardless of its binary.
-export function assertPluginNetworkInspection(
-  rules: unknown,
-  hosts: readonly string[],
-  binaries: readonly string[],
-): void {
+export function assertPluginNetworkInspection(rules: unknown, hosts: readonly string[]): void {
   const record = asRecord(rules);
   if (!record) {
     unsupported("OpenShell could not verify the managed plugin network policy.");
@@ -265,10 +236,9 @@ export function assertPluginNetworkInspection(
         numericLastLabel(host) ||
         wildcard ||
         (exact &&
-          (!isDeepStrictEqual(
-            wirePolicy(rule?.binaries),
-            binaries.map((path) => ({ path })),
-          ) ||
+          (!isDeepStrictEqual(wirePolicy(rule?.binaries), [
+            { path: managedGoogleInstall.binaryPath },
+          ]) ||
             endpoint.protocol !== "rest" ||
             (endpoint.tls !== undefined &&
               endpoint.tls !== 0 &&
@@ -312,15 +282,12 @@ export function verifyPluginRequestGuard(
   // OpenShell stamps every effective endpoint whose host, port and top-level path
   // are covered by a credential. Our operation paths live under rules; their
   // enclosing endpoint has path /**. Only a host-wide source covers that endpoint.
-  const credentials = expected.providerRule.endpoints;
+  const credential = expected.providerRule.endpoints[0]!;
   const rule = expected.networks[googleRequestRuleName];
   const endpoints = rule.endpoints.map((endpoint) =>
-    credentials.some(
-      (credential) =>
-        credential.path === "/**" &&
-        endpoint.host === credential.host &&
-        endpoint.ports.includes(credential.port),
-    )
+    credential.path === "/**" &&
+    endpoint.host === credential.host &&
+    endpoint.ports.includes(credential.port)
       ? { ...endpoint, provider_credentialed: true }
       : endpoint,
   );
@@ -382,5 +349,5 @@ export function assertPluginRequestPolicy(
   ) {
     unsupported("OpenShell has not admitted the pinned Google request routes.");
   }
-  assertPluginNetworkInspection(networks, expected.hosts, expected.binaries);
+  assertPluginNetworkInspection(networks, expected.hosts);
 }

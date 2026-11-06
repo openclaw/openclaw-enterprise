@@ -349,102 +349,53 @@ test("managed MCP bindings preserve both servers' credentials and require unambi
   );
 });
 
-test("a Google account slot binds by issuer and approved recipient and can be replaced", () => {
-  const driver = new OCCPluginDriver();
-  const pluginId = "occ-plugin:google@1.0.0";
-  const selections = { [pluginId]: { enabled: true } };
-  const slot = driver.credentials.connectionSlot(selections, pluginId, "account");
+test("managed plugin slots match saved accounts by issuer and reviewed API or MCP recipient", () => {
+  const { credentials } = new OCCPluginDriver();
+  const googleId = "occ-plugin:google@1.0.0";
+  const slot = credentials.connectionSlot({}, googleId, "account");
+  const gmail = { host: "gmail.googleapis.com", port: 443, path: "/**" };
   const target = {
     issuer: "https://accounts.google.com",
     tokenUrl: "https://oauth2.googleapis.com/token",
-    destinations: [{ host: "gmail.googleapis.com", port: 443, path: "/**" }],
+    destinations: [gmail, { host: "www.googleapis.com", port: 443, path: "/calendar/**" }],
   };
   assert.deepEqual(slot.issuers, [target.issuer]);
   assert.equal(slot.acceptsRecipient(target), true);
+  const gmailRecipient = (path) =>
+    slot.acceptsRecipient({ ...target, destinations: [{ ...gmail, path }] });
+  assert.equal(gmailRecipient("/gmail/v1/users/me/messages"), true);
+  assert.equal(gmailRecipient("/gmail/v1/users/me/messages/**"), true);
+  assert.equal(gmailRecipient("/gmail/v1/users/me/unreviewed/**"), false);
+  assert.equal(gmailRecipient("/gmail/v1/users/me/../messages/**"), false);
+  for (const changes of [
+    { issuer: "https://other.example" },
+    { tokenUrl: "https://other.example/token" },
+    { destinations: [{ ...gmail, host: "other.example" }] },
+  ]) {
+    assert.equal(slot.acceptsRecipient({ ...target, ...changes }), false);
+  }
+  const saved = { [googleId]: slot.bind("cs_personal") };
   assert.equal(
-    slot.acceptsRecipient({
-      ...target,
-      tokenUrl: "https://other.example/token",
-    }),
-    false,
+    credentials.connectionSlot(saved, googleId, "account").credentialSourceId,
+    "cs_personal",
   );
-  assert.equal(
-    slot.acceptsRecipient({
-      ...target,
-      destinations: [{ ...target.destinations[0], host: "other.example" }],
-    }),
-    false,
-  );
-  assert.equal(slot.delivery(target, []), undefined);
-  const allGoogle = {
-    ...target,
-    destinations: [
-      ...target.destinations,
-      { host: "www.googleapis.com", port: 443, path: "/calendar/**" },
-    ],
-  };
-  assert.equal(slot.acceptsRecipient(allGoogle), true);
-  assert.equal(slot.acceptsRecipient({ ...allGoogle, issuer: "https://other.example" }), false);
-  assert.equal(
-    slot.acceptsRecipient({
-      ...allGoogle,
-      tokenUrl: "https://other.example/token",
-    }),
-    false,
-  );
-  const googleScopes = ["gmail.readonly", "calendar.readonly"].map(
-    (name) => "https://www.googleapis.com/auth/" + name,
-  );
-  const wide = slot.delivery(allGoogle, [...googleScopes, "unrelated"]).config;
-  assert.deepEqual(JSON.parse(wide.destinations), allGoogle.destinations);
-  assert.deepEqual([wide.host, wide.port, wide.path], [undefined, undefined, undefined]);
-  assert.deepEqual(wide.scope.split(" ").sort(), googleScopes.sort());
-  const mcp = managedMcpInstalls[0];
-  const server = driver.credentials.connectionSlot(
-    { [mcp.id]: { enabled: true } },
-    mcp.id,
-    mcp.slotId,
-  );
-  const recipient = {
-    host: mcp.endpoint.host,
-    port: mcp.endpoint.port,
-    path: mcp.endpoint.path,
-  };
-  const mcpTarget = {
-    issuer: mcp.credentials[mcp.slotId].issuer,
-    mcp: {
-      serverUrl: mcp.url,
-      resource: mcp.credentials[mcp.slotId].mcp.resource,
-    },
-    destinations: [recipient],
-  };
-  assert.equal(server.acceptsRecipient(mcpTarget), true);
-  const wideMcp = { ...mcpTarget, destinations: [recipient, ...target.destinations] };
-  assert.equal(server.acceptsRecipient({ ...mcpTarget, mcp: undefined }), false);
-  assert.equal(server.acceptsRecipient(wideMcp), false);
-  assert.equal(slot.acceptsRecipient({ ...allGoogle, mcp: mcpTarget.mcp }), false);
-  assert.throws(() => server.delivery(wideMcp, []), /approved destination/);
-  assert.equal(server.delivery(mcpTarget, []).config.access, "full");
-  assert.equal(
-    server.acceptsRecipient({
-      ...mcpTarget,
-      destinations: [{ ...recipient, path: "/other" }],
-    }),
-    false,
-  );
-  assert.equal(
-    server.acceptsRecipient({
-      ...mcpTarget,
-      mcp: { ...mcpTarget.mcp, resource: "https://other.example/resource" },
-    }),
-    false,
-  );
-  const saved = { [pluginId]: slot.bind("src-personal") };
-  assert.equal(
-    driver.credentials.connectionSlot(saved, pluginId, "account").credentialSourceId,
-    "src-personal",
-  );
-  assert.equal(driver.credentials.connectionSlot(saved, pluginId, "unknown-slot"), undefined);
+  assert.equal(credentials.connectionSlot(saved, googleId, "unknown-slot"), undefined);
+
+  const [install] = managedMcpInstalls;
+  const mcpSlot = credentials.connectionSlot({}, install.id, install.slotId);
+  const manifest = install.credentials[install.slotId];
+  const mcp = { serverUrl: install.url, resource: manifest.mcp.resource };
+  const mcpTarget = { issuer: manifest.issuer, destinations: [install.endpoint], mcp };
+  assert.equal(mcpSlot.acceptsRecipient(mcpTarget), true);
+  assert.equal(slot.acceptsRecipient({ ...target, mcp }), false);
+  for (const changes of [
+    { mcp: undefined },
+    { mcp: { ...mcp, resource: "https://other.example/resource" } },
+    { destinations: [{ ...install.endpoint, path: "/other" }] },
+    { destinations: [install.endpoint, gmail] },
+  ]) {
+    assert.equal(mcpSlot.acceptsRecipient({ ...mcpTarget, ...changes }), false);
+  }
 });
 
 test("OpenClaw plugin startup translation renders native install and enablement", () => {

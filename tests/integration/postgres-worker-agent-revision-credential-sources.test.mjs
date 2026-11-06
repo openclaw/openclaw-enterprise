@@ -2029,20 +2029,21 @@ revisionTest(
 );
 
 revisionTest(
-  "a denied withdrawal can be inspected and retried before the first deployment activates",
+  "a withdrawal whose requester lost Agent operate fails once with a denial, and another operator's replay completes it",
   async (fixture) => {
-    const owner = await fixture.agent("withdraw-denied", { auth: "credential_source" });
-    // A pending deployment must not hide the withdrawal or strand it after a failed attempt.
-    const candidate = await admitHeldRevision(fixture, owner, 1);
+    const { owner, candidate: active } = await admitInitialRevisionWithHarnessSource(
+      fixture,
+      "withdraw-denied",
+    );
     const withdrawn = [];
     const compute = revokingCompute(fixture, withdrawn);
     const startWorker = () =>
       fixture.start(compute, { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway });
-    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
+    await startWorker();
+    await fixture.work(active, "succeeded");
+    await fixture.stop();
 
-    // A detach already requested withdrawal from this candidate. Seed the same pending row an
-    // exhausted attempt leaves, so the operators must recover it without first deploying the Agent.
-    await recordPendingWithdrawal(fixture, owner, candidate, owner.harnessAuth.sourceId);
+    // A second operator requests the withdrawal and is offboarded before the worker runs it.
     const requester = `withdraw-requester-${randomUUID()}`;
     await fixture.copyActorGrants(requester);
     const withdrawal = await requestWithdrawal(
@@ -2052,7 +2053,7 @@ revisionTest(
       requester,
     );
     await removeAccessBindings(fixture, requester);
-    const work = await withdrawalAttempts(fixture, candidate);
+    const work = await withdrawalAttempts(fixture, active);
     assert.equal(work.length, 1);
     assert.equal(work[0].actorId, requester);
 
@@ -2089,17 +2090,16 @@ revisionTest(
     assert.equal(replayed.requestedBy, fixture.actor.id);
     assert.equal(replayed.requestedAt, recorded.requestedAt);
     assert.equal(replayed.withdrawalInProgress, true);
-    const retry = (await withdrawalAttempts(fixture, candidate)).filter(
+    const retry = (await withdrawalAttempts(fixture, active)).filter(
       ({ state }) => state === "queued",
     );
     assert.equal(retry.length, 1);
     assert.equal(retry[0].actorId, fixture.actor.id);
     await startWorker();
     await fixture.work(retry[0], "succeeded");
-    assert.deepEqual(withdrawn, [[candidate.id, owner.harnessAuth.sourceId]]);
+    assert.deepEqual(withdrawn, [[active.id, owner.harnessAuth.sourceId]]);
     const revoked = await withdrawal.read(fixture.actor.id);
     assert.equal(revoked.state, "revoked");
-    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
     assert.equal(revoked.requestedBy, fixture.actor.id);
     const revocations = await fixture.observerPool.query(
       `SELECT actor_id FROM occ.audit_events
@@ -2121,7 +2121,7 @@ revisionTest(
       assert.equal(final.withdrawalInProgress, false);
     }
     // Only the denied attempt and the replay that completed it.
-    assert.equal((await withdrawalAttempts(fixture, candidate)).length, 2);
+    assert.equal((await withdrawalAttempts(fixture, active)).length, 2);
   },
 );
 

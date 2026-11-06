@@ -16,7 +16,6 @@ import {
 import { Type } from "typebox";
 import {
   AgentConnectionParams,
-  AgentConnectionDetachResponse,
   PluginSlotParams,
   StartPluginConnectionBody,
   PluginTemplateChoicesResponse,
@@ -1161,7 +1160,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: AgentConnectionParams,
-      response: { 200: AgentConnectionDetachResponse, ...mutationErrors },
+      response: { 204: Type.Null(), ...mutationErrors },
     },
   },
   {

@@ -2587,34 +2587,6 @@ export const savedConnections = occSchema.table(
   ],
 );
 
-export const savedConnectionProfiles = occSchema.table(
-  "saved_connection_profiles",
-  {
-    namespaceId: text("namespace_id").notNull(),
-    credentialSourceId: text("credential_source_id").notNull(),
-    profileId: text("profile_id").notNull(),
-    gatewayId: text("gateway_id").notNull(),
-    sourceType: text("source_type").notNull(),
-  },
-  (table) => [
-    primaryKey({ columns: [table.namespaceId, table.credentialSourceId, table.profileId] }),
-    check(
-      "saved_connection_profiles_profile_id_check",
-      sql`${table.profileId} ~ '^account-[0-9a-f]{64}$'`,
-    ),
-    check("saved_connection_profiles_gateway_id_check", sql`btrim(${table.gatewayId}) <> ''`),
-    check(
-      "saved_connection_profiles_source_type_check",
-      sql`${table.sourceType} ~ '^[a-z][a-z0-9-]{0,63}$'`,
-    ),
-    foreignKey({
-      name: "saved_connection_profiles_owner",
-      columns: [table.namespaceId, table.credentialSourceId],
-      foreignColumns: [savedConnections.namespaceId, savedConnections.credentialSourceId],
-    }).onDelete("cascade"),
-  ],
-);
-
 export const connectionSessions = occSchema.table(
   "connection_sessions",
   {

@@ -85,15 +85,7 @@ OCC reads the Agent’s Configuration and selects the Plugin Driver for its Harn
 
 Saving a selection checks the exact slot, account and Agent permissions together. Starting OAuth from a saved slot also records the release and current binding. When the browser returns, OCC checks both before replacing that slot. The account stays with its owner if the binding changed during consent.
 
-Admission records the Plugin Driver, saved account and sender on the AgentRevision. During deployment and maintenance, the worker uses that revision’s driver and reads the account’s current template. For manual OAuth it reads the latest destinations from the same issuer. For MCP it checks the original server and resource. Console tool discovery makes the same check before it sends a credential.
-
-When a sender’s host, port or path changes, the Credential Gateway clears the bearer and waits for OpenShell to acknowledge withdrawal on the receiving Sandbox. The Sandbox Driver applies the updated network policy and checks its effective request guard. Compute then asks OCC to release the access token. OCC rechecks the Agent grant and the expected policy before publishing. An update that fails retries without releasing credentials to the new destination. Detaching queues withdrawal for the affected Agent. Other Agents retain their own sender.
-
-If a template changes to an incompatible recipient or allows no operation the account can perform, OCC withdraws that account’s token. The running Sandbox keeps the empty provider in its launch configuration. The worker can deliver tokens for the Agent’s other slots. If a later edit restores a usable destination, delivery can resume with the same saved account.
-
-For a saved Google account, the Credential Gateway configures one OpenShell provider. It includes a host, port and path only when the current template and a reviewed Google Workspace operation both allow it, and the account has the scope for that operation. The Sandbox Driver checks those routes and the Installation’s approved executables. Each executable uses the same request guard.
-
-An Agent network grant and a template edit can both change the running Sandbox policy. The Sandbox Driver reads the current policy before applying either change. A template edit preserves the Agent’s network grants. Applying a grant preserves the account’s current request guard. If the changes overlap in a way that would bypass the guard, the Driver refuses the update.
+For **Load tools**, OCC checks the caller’s permission and the saved MCP server and resource before resolving a token. This request originates in the Console. For Agent traffic, Credential Proxy must authorize the deployed revision and the slot’s operation before OpenShell can present the bearer. OCC refuses deployment of a selected saved-account slot until Credential Proxy supports dispatch for saved accounts and OpenShell supports injection for the authorized request. An unused account grant creates no runtime credential.
 
 ## Debugging and Verification
 

@@ -431,7 +431,6 @@ export const responseExamples = {
     authorizationUrl: "https://accounts.example.com/authorize?state=example-state",
     expiresAt: time,
   },
-  detachAgentConnection: { withdrawalRequested: false },
   listUsableConnectionTemplates: [connectionTemplate],
   listNamespaceConnections: [savedAccount],
   startNamespaceConnection: {

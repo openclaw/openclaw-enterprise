@@ -614,6 +614,7 @@ export function createWorkerRevisionFixtures(
             controller.admitProxyPlan(
               unit,
               owner,
+              sources,
               candidate.id,
               configuration,
               sandbox.id,

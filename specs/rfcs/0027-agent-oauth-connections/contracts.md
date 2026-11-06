@@ -162,20 +162,21 @@ administrators, who hold every action through the built-in administrator role.
 
 ## Update a running sender
 
-When recipients change, Credential Proxy disables the Agent’s affected binding and token.
-After confirmed withdrawal, the paired Sandbox updates policy and blocks direct egress.
-Compute verifies the revision’s installed policy. OCC rechecks the grant, template and Agent
-binding before releasing a prepared token. Failed or superseded updates keep that sender
-disabled until reconciliation succeeds.
-
-The Plugin Driver matches recipients independently of scopes. If no granted operation
-matches, the worker withdraws only that slot. Other slots and Agents keep working.
-A compatible template edit can restore delivery.
+At the next credentialed request, OCC checks the Agent’s grant and the current
+template destinations. Removing a destination denies further dispatches to it.
+Adding a destination can authorize a send once the deployed Sandbox policy also
+allows it. A request that has already passed its final send check can finish.
+Detaching removes the Agent’s grant. Other Agents keep their grants.
 
 ## Protected egress
 
-The sender authenticates the deployed execution and checks its authority to
-use the source for the actual request within the Installation’s egress ceiling.
+OpenShell intercepts the request and identifies the deployed execution and
+plugin slot to the Credential Proxy. OCC checks the live Agent grant, the
+slot’s saved account, and the actual request against the deployed tool or HTTP
+operation policy. Credential Proxy resolves the account’s access token through
+the Token Service and rechecks authorization before dispatch. OpenShell injects
+the bearer into that one request and discards the copy. No bearer is stored in
+an OpenShell provider or returned to the workload.
 [RFC-0023 admission and sender contracts](../0023-egress-proxy-credential-lifecycle/contracts.md)
 
 For manual OAuth, OCC reads the current rows from the same manual template and
@@ -207,9 +208,8 @@ sender cannot enforce the policy.
 | Token custody unavailable before source creation            | Connection cannot start                        | Restore the Token Service and Secret Driver    |
 | OIDC metadata mismatch or unreachable provider              | Version rejected with `400`                    | Administrator corrects `issuer` or URLs        |
 | ID token from a wrong issuer, untrusted key, or wrong nonce | Source deleted; `fix_configuration`            | Administrator checks the provider; reconnect   |
-| Manual destination rows edited                              | Existing senders reconcile the current rows    | Retry a failed reconciliation                  |
+| Manual destination rows edited                              | Next request uses the current rows    | Check the deployed Sandbox policy                  |
 | OAuth identity or MCP target changed                        | Original grant cannot authorize the new target | Owner reconnects for the new identity          |
-| Withdrawal pending or failed after detach or disconnect     | Affected attachments deny further use          | Retry withdrawal, or stop the affected Agent   |
 | Provider rejects the current client secret                  | Client authentication fails                    | Admin corrects secret, then refresh retries    |
 
 The operator guide documents provider rules. Google requires verification for
@@ -227,13 +227,15 @@ issue seven-day refresh tokens.
   Detach A with queued and serving revisions: A loses access and B retains it
   without reauthorization. Disconnect the account and verify B loses access.
   Keep codes and tokens out of responses, logs and audit.
-- **Manual destination changes.** Replace a host for a running Agent. After
-  reconciliation, verify delivery to the new host and no bearer at the old
-  one. Attempt a call between withholding the token and confirming the new policy. Verify that neither host receives a bearer and that another Agent using an unaffected template can still use its account. Change the default client: refresh still uses the original registration.
-  Change the issuer and verify delivery stops.
-- **Refresh ownership.** For manual OAuth and MCP, observe background issuer
-  refresh. With the same worker placeholder, OpenShell presents the new token.
-  Without an eligible token it refuses the request without contacting the issuer.
+- **Manual destination changes.** Replace a host for a running Agent. Verify the
+  old host receives no bearer on the next request and that a permitted request
+  to the new host succeeds. Changing the default client keeps the original
+  registration for refresh. Changing the issuer stops delivery.
+- **Refresh and detach.** Use the same account from two Agents. Observe OpenShell
+  present a renewed token on an authorized request. Detach A during token
+  resolution. Verify its final send check denies dispatch, the destination
+  sees no request from A, and B can still send. Inspect the OpenShell provider
+  inventory and the workload for retained tokens.
 - **MCP.** Verify supplied clients, successful DCR, and the prompt for a supplied
   client when DCR is unavailable or refused. On a dedicated worker, verify a
   Console tool call uses the selected scopes and an unselected scope stays

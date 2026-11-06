@@ -118,17 +118,3 @@ export const AgentConnectionParams = Type.Object(
   },
   { additionalProperties: false },
 );
-
-export const AgentConnectionDetachResponse = Type.Object(
-  {
-    data: Type.Object(
-      {
-        /** True when runtime withdrawal was requested for this Agent. */
-        withdrawalRequested: Type.Boolean(),
-      },
-      { additionalProperties: false },
-    ),
-    meta: Meta,
-  },
-  { additionalProperties: false },
-);
