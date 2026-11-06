@@ -361,20 +361,50 @@ func (client *Client) ProvisionAgentRuntimeCredentials(namespaceID, agentID stri
 }
 
 // DeployAgent deploys an Agent and creates an immutable revision.
-func (client *Client) DeployAgent(namespaceID, agentID string) (any, error) {
+func (client *Client) DeployAgent(namespaceID, agentID string, overrides map[string]any) (any, error) {
+	if overrides == nil {
+		overrides = map[string]any{}
+	}
 	return client.send(
 		http.MethodPost,
 		[]string{"namespaces", namespaceID, "agents", agentID, "deploy"},
-		nil,
+		map[string]any{"harnessOverrides": overrides},
 	)
+}
+
+// PreviewAgentDeployment resolves nonsecret Harness settings without admitting a revision.
+func (client *Client) PreviewAgentDeployment(namespaceID, agentID string, overrides map[string]any) (any, error) {
+	if overrides == nil {
+		overrides = map[string]any{}
+	}
+	result, err := client.send(http.MethodPost, []string{"namespaces", namespaceID, "agents", agentID, "deploy-preview"}, map[string]any{"harnessOverrides": overrides})
+	if err != nil {
+		return nil, err
+	}
+	record, ok := result.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("OCC returned an invalid deployment preview")
+	}
+	harness, ok := record["harness"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("OCC returned an invalid deployment preview")
+	}
+	if _, ok := harness["configuration"].(map[string]any); !ok {
+		return nil, fmt.Errorf("OCC returned an invalid deployment preview")
+	}
+	if _, ok := harness["overrides"].(map[string]any); !ok {
+		return nil, fmt.Errorf("OCC returned an invalid deployment preview")
+	}
+	return result, nil
 }
 
 // FirstDeploymentIntent identifies the reviewed saved Configuration and one caller intent.
 // Key is nonsecret and must be reused unchanged for exact recovery.
 type FirstDeploymentIntent struct {
-	Key                     string `json:"key"`
-	ExpectedConfigurationID string `json:"expectedConfigurationId"`
-	ExpectedGeneration      int64  `json:"expectedGeneration"`
+	HarnessOverrides        map[string]any `json:"harnessOverrides,omitempty"`
+	Key                     string         `json:"key"`
+	ExpectedConfigurationID string         `json:"expectedConfigurationId"`
+	ExpectedGeneration      int64          `json:"expectedGeneration"`
 }
 
 const firstDeploymentUUIDPattern = `[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}`
@@ -421,7 +451,22 @@ func (client *Client) RecoverAgentFirstDeployment(namespaceID, agentID string, i
 	if err := intent.Validate(); err != nil {
 		return nil, err
 	}
-	receipt, err := client.get("namespaces", namespaceID, "agents", agentID, "deploy-first", intent.Key, intent.ExpectedConfigurationID, strconv.FormatInt(intent.ExpectedGeneration, 10))
+	query := url.Values{}
+	if intent.HarnessOverrides != nil {
+		encoded, err := json.Marshal(intent.HarnessOverrides)
+		if err != nil {
+			return nil, err
+		}
+		query.Set("harnessOverrides", string(encoded))
+	}
+	status, headers, body, err := client.executeQuery(http.MethodGet, []string{"namespaces", namespaceID, "agents", agentID, "deploy-first", intent.Key, intent.ExpectedConfigurationID, strconv.FormatInt(intent.ExpectedGeneration, 10)}, query, nil)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, client.apiError(status, headers, body)
+	}
+	receipt, err := decodeResponseData(status, body)
 	if err != nil || receipt == nil {
 		return nil, err
 	}

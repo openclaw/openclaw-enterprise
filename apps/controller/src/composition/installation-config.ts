@@ -1,4 +1,3 @@
-import type { ModelProviderConfiguration } from "../drivers/compute/model-provider.ts";
 import {
   openShellProxyConfiguration,
   openShellRepositoryConfiguration,
@@ -1252,8 +1251,6 @@ export async function loadInstallationConfiguration(options: {
     resolveDelivery: repositoryRuntime?.resolveRepositoryDelivery,
   };
   let repositoryTransport: RepositoryTransportBinding | undefined;
-  const modelProvider = asRecord(compute.configuration.runtime)?.modelProvider as
-    ModelProviderConfiguration | undefined;
   const credentialGatewayDriver =
     credentialGateway === undefined
       ? undefined
@@ -1263,7 +1260,6 @@ export async function loadInstallationConfiguration(options: {
             id: credentialGateway.id,
             implementation: credentialGateway.implementation,
             backend: openShell!,
-            ...(modelProvider === undefined ? {} : { modelProvider }),
           },
         );
   const pluginSourceReader =
@@ -1330,7 +1326,6 @@ export async function loadInstallationConfiguration(options: {
           id: proxySelection.id,
           configuration: proxySelection.configuration as unknown as OpenShellProxyOptions,
           preparedProviders: preparedGitHub ? [githubMetadataProvider] : [],
-          ...(modelProvider === undefined ? {} : { modelProvider }),
           ...(egressAuthority && { exchangeAuthority: egressAuthority }),
         },
       });

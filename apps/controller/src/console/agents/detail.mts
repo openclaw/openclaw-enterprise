@@ -32,6 +32,7 @@ import {
 import {
   button,
   element,
+  field,
   fieldError,
   focusSaveOutcome,
   isUnavailable,
@@ -3617,6 +3618,12 @@ export async function renderAgentDetail(
       updateDeployControls();
     }
     function updateDeployControls() {
+      if (harnessReady && harnessPreviewInputs !== currentHarnessInputs()) {
+        harnessReady = false;
+        harnessPreviewAttempt++;
+        providerPreview.textContent =
+          "Saved Agent settings changed. Preview the destination again.";
+      }
       authenticationForm?.toggleAttribute("inert", Boolean(credentials?.mutationPending()));
       credentials?.section?.toggleAttribute("inert", authenticationSaveState !== "idle");
       const retainedConfiguration = retainedConfigurationState();
@@ -3629,7 +3636,8 @@ export async function renderAgentDetail(
           Boolean(draftEditorNavigationBlock) ||
           Boolean(credentials?.mutationPending());
       }
-      const deployUnavailable = deployIsDisabled();
+      const draftBlocksDeploy = deployIsDisabled();
+      const deployUnavailable = draftBlocksDeploy || !harnessReady;
       const rejectedAccess =
         !runtimeAuth && credentialRejected()
           ? credentialFixAccess(agent.harnessAuth, callerPermissions)
@@ -3744,11 +3752,12 @@ export async function renderAgentDetail(
       // An unavailable Deploy is described by the line that says why, or by a refused
       // deployment's alert when that line defers to it (finding D749), and stays in the Tab order
       // while one of them shows (finding 2878).
-      setUnavailable(
-        deploy,
-        deployUnavailable,
-        deployStatus.textContent ? deployStatus : deployFeedback,
-      );
+      let deployReason = deployStatus.textContent ? deployStatus : deployFeedback;
+      if (!draftBlocksDeploy && !harnessReady) {
+        deployStatus.textContent = "Preview the Harness destination before deploying.";
+        deployReason = providerPreview;
+      }
+      setUnavailable(deploy, deployUnavailable, deployReason);
       updateChecklist();
     }
     // The last deployment's model credential was rejected and the draft still uses it.
@@ -3856,6 +3865,146 @@ export async function renderAgentDetail(
       setStep(checklistSteps[2], false, "Creates an immutable version from the saved draft");
     }
     refreshDeployControls = updateDeployControls;
+    let harnessReady = false;
+    let harnessPreviewInputs: string | undefined;
+    function currentHarnessInputs() {
+      return JSON.stringify([
+        snapshot.id,
+        snapshot.generation,
+        "harnessAuth" in currentAgent ? currentAgent.harnessAuth : null,
+        currentAgent.executionMode,
+      ]);
+    }
+    let harnessOverrides: Record<string, unknown> = {};
+    let harnessPreviewAttempt = 0;
+    const retainedHarnessRevision =
+      visibleRevisions.find((revision) => revision.id === currentRevisionId) ?? visibleRevisions[0];
+    const harnessChoice = element(
+      "select",
+      {},
+      element("option", { value: "default" }, "Use Installation default"),
+      ...(retainedHarnessRevision
+        ? [
+            element(
+              "option",
+              { value: "retain" },
+              `Retain v${retainedHarnessRevision.revision} requested overrides`,
+            ),
+          ]
+        : []),
+      element("option", { value: "custom" }, "Override model provider"),
+    );
+    harnessChoice.value = retainedHarnessRevision ? "retain" : "default";
+    const providerUrl = element("input", {
+      type: "url",
+      placeholder: "https://models.example.com/v1",
+    });
+    const providerProtocol = element(
+      "select",
+      {},
+      element("option", { value: "openai-responses" }, "Responses"),
+      element("option", { value: "openai-completions" }, "Completions"),
+    );
+    const providerSearch = element("input", { type: "checkbox" });
+    const providerFields = element(
+      "div",
+      { hidden: true },
+      field({ label: "Provider base URL", control: providerUrl }),
+      field({ label: "Provider protocol", control: providerProtocol }),
+      field({ label: "Supports standalone web search", control: providerSearch }),
+      element(
+        "p",
+        { className: "hint" },
+        "Overrides require an API-key Credential Source authorized for this destination. Existing network restrictions apply.",
+      ),
+    );
+    const providerPreview = element(
+      "p",
+      { className: "hint", role: "status" },
+      "Preview the destination before deploying.",
+    );
+    async function previewHarness() {
+      const attempt = ++harnessPreviewAttempt;
+      const inputs = currentHarnessInputs();
+      harnessReady = false;
+      providerPreview.textContent = "Resolving destination…";
+      updateDeployControls();
+      try {
+        let overrides: Record<string, unknown> = {};
+        if (harnessChoice.value === "retain") {
+          const previous = revisionForPage(
+            await request(`${path}/revisions/${retainedHarnessRevision!.id}`),
+          );
+          if (!("harness" in previous) || previous.harness.overrides === undefined) {
+            throw new Error(
+              "The previous version's requested overrides are unavailable. Choose the Installation default or enter an override.",
+            );
+          }
+          overrides = previous.harness.overrides;
+        } else if (harnessChoice.value === "custom") {
+          overrides = {
+            modelProvider: {
+              protocol: providerProtocol.value,
+              baseUrl: providerUrl.value,
+              supportsStandaloneWebSearch: providerSearch.checked,
+            },
+          };
+        }
+        const preview = (await request(`${path}/deploy-preview`, {
+          method: "POST",
+          body: { harnessOverrides: overrides },
+        })) as {
+          harness: {
+            overrides: Record<string, unknown>;
+            configuration: {
+              modelProvider?: {
+                baseUrl: string;
+                protocol: string;
+                supportsStandaloneWebSearch: boolean;
+              };
+            };
+          };
+        };
+        if (attempt !== harnessPreviewAttempt || !context.isCurrent()) {
+          return;
+        }
+        const provider = preview.harness.configuration.modelProvider;
+        providerPreview.textContent = provider
+          ? `Destination: ${provider.baseUrl} · ${provider.protocol} · Standalone web search: ${provider.supportsStandaloneWebSearch ? "supported" : "not supported"}. Defaults are resolved again at deployment.`
+          : "The selected authentication uses its native provider destination.";
+        harnessOverrides = preview.harness.overrides;
+        harnessPreviewInputs = inputs;
+        harnessReady = true;
+      } catch (error) {
+        if (attempt !== harnessPreviewAttempt || !context.isCurrent()) {
+          return;
+        }
+        providerPreview.textContent =
+          requestFailure(error).serverMessage ??
+          (error instanceof Error
+            ? error.message
+            : "Destination preview is unavailable. Retry the preview.");
+      }
+      updateDeployControls();
+    }
+    const previewProvider = button("Preview destination", () => void previewHarness());
+    for (const control of [harnessChoice, providerUrl, providerProtocol, providerSearch]) {
+      control.addEventListener("input", () => {
+        harnessPreviewAttempt++;
+        harnessReady = false;
+        providerFields.hidden = harnessChoice.value !== "custom";
+        providerPreview.textContent = "Preview the changed destination before deploying.";
+        updateDeployControls();
+      });
+    }
+    const harnessControls = element(
+      "div",
+      {},
+      field({ label: "Harness settings", control: harnessChoice }),
+      providerFields,
+      previewProvider,
+      providerPreview,
+    );
     const deployStatus = element("p", { className: "muted", role: "status" });
     const deployFeedback = statusBlock("danger", null, null);
     const deploy = button(
@@ -3944,7 +4093,9 @@ export async function renderAgentDetail(
             return;
           }
           submitted = true;
-          const revision = revisionForPage(await request(`${path}/deploy`, { method: "POST" }));
+          const revision = revisionForPage(
+            await request(`${path}/deploy`, { method: "POST", body: { harnessOverrides } }),
+          );
           if (
             !("configurationGeneration" in revision) ||
             revision.configurationId !== snapshot.id ||
@@ -4107,6 +4258,7 @@ export async function renderAgentDetail(
       { className: "card agent-draft-actions" },
       draftActionsHeading,
       checklist,
+      harnessControls,
       // The status follows Deploy in reading order; on a wide screen it shows to its left.
       element("div", { className: "card-actions" }, setupCredentials, deploy, deployStatus),
       deployFeedback,
@@ -4118,6 +4270,7 @@ export async function renderAgentDetail(
     } else {
       versionSummary.append(draftActions);
     }
+    void previewHarness();
     renderDetailHeading();
     return {
       get snapshot() {
@@ -5638,6 +5791,8 @@ export async function renderAgentDetail(
       if (!draft) {
         details.push(
           ["Harness", `${snapshot.harness.id} · ${snapshot.harness.version}`],
+          ["Requested Harness overrides", JSON.stringify(snapshot.harness.overrides)],
+          ["Resolved Harness settings", JSON.stringify(snapshot.harness.configuration)],
           ["Compute", `${snapshot.compute.id} · ${snapshot.compute.implementation}`],
         );
       }

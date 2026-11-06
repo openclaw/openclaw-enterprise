@@ -72,13 +72,13 @@ OCC returns `201` with a `cs_` source ID, binding `ref` and status. Use the
   registration also requires a protected profile for that type.
 - `config` contains nonsecret catalog fields. OpenShell's `openai` type accepts
   `authorized_base_url` as immutable destination authorization. Omission authorizes
-  only `https://api.openai.com/v1`; a custom authorization must match the
-  [shared model provider](drivers/kubernetes-compute/model-provider.md).
+  only `https://api.openai.com/v1`. Custom authorization must match the
+  [revision provider](drivers/kubernetes-compute/model-provider.md) at deployment and delivery.
   `base_url` cannot select a route. Replace old sources before reuse.
 - `secrets` maps catalog fields to same-Namespace Secret references. OCC rejects
   cross-Namespace references with `400` and missing Secrets with `404`.
 
-OCC rejects unknown fields, missing required fields, and Driver-invalid configuration
+OCC rejects unknown or missing required fields and invalid configuration
 with `400 INVALID_REQUEST`, which names the field and points at `/config/<field>` or
 `/secrets/<field>`, before reading Secrets through
 the Secret Driver. OCC records `registering` before the external operation.

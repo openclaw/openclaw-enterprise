@@ -6,6 +6,7 @@ const scenarioPresets = {
   "openshell-linear-read": ["Codex"],
   "model-ui": ["OpenClaw"],
   "codex-search-config": ["Codex"],
+  "harness-overrides": ["OpenClaw", "Codex"],
   "console-secrets": ["OpenClaw", "Codex"],
   "git-write": ["Codex"],
   "git-push-denied": ["Codex"],
@@ -33,6 +34,7 @@ export function selectQaMatrix(env = process.env) {
               "plugin-install",
               "openshell-linear-read",
               "codex-search-config",
+              "harness-overrides",
             ].includes(name),
         )
       : input.split(",").map((name) => name.trim());
@@ -60,19 +62,32 @@ export function selectQaMatrix(env = process.env) {
       preset: name,
       scenarios: scenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
-          scenarioPresets[scenario].includes(name),
+          ![
+            "sandbox-policy",
+            "plugin-install",
+            "openshell-linear-read",
+            "harness-overrides",
+          ].includes(scenario) && scenarioPresets[scenario].includes(name),
       ),
       unselected: allScenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
+          ![
+            "sandbox-policy",
+            "plugin-install",
+            "openshell-linear-read",
+            "harness-overrides",
+          ].includes(scenario) &&
           scenarioPresets[scenario].includes(name) &&
           !scenarios.includes(scenario),
       ),
       notApplicable: allScenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
-          !scenarioPresets[scenario].includes(name),
+          ![
+            "sandbox-policy",
+            "plugin-install",
+            "openshell-linear-read",
+            "harness-overrides",
+          ].includes(scenario) && !scenarioPresets[scenario].includes(name),
       ),
     })),
   );
@@ -114,12 +129,28 @@ export function selectQaMatrix(env = process.env) {
   const sandboxPolicy = scenarios.includes("sandbox-policy");
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");
+  const harnessOverrides = scenarios.includes("harness-overrides");
+  if (harnessOverrides) {
+    assert.notEqual(
+      installation,
+      "compose",
+      "Harness override proof requires Kubernetes with OpenShell",
+    );
+    requiredEnv.push(
+      "OCC_TEST_QA_HARNESS_ENDPOINT_A",
+      "OCC_TEST_QA_HARNESS_ENDPOINT_B",
+      "OCC_TEST_QA_HARNESS_KEY_FILE_A",
+      "OCC_TEST_QA_HARNESS_KEY_FILE_B",
+      "OCC_TEST_QA_HARNESS_MODEL",
+    );
+  }
   assert.ok(
     exclusions.length === 0 ||
       activeScenarios.length > 0 ||
       sandboxPolicy ||
       pluginInstall ||
-      linearRead,
+      linearRead ||
+      harnessOverrides,
     "All selected QA scenarios require a custom Codex permission profile",
   );
   if (linearRead) {
@@ -166,6 +197,8 @@ export function selectQaMatrix(env = process.env) {
     sandboxPolicy,
     pluginInstall,
     linearRead,
+    harnessOverrides,
+    presets,
     cells,
     scenarios,
     requiredEnv,
@@ -175,7 +208,7 @@ export function selectQaMatrix(env = process.env) {
       exclusions.length === 0 &&
       installation === "all" &&
       preset === "all" &&
-      scenarios.length === allScenarios.length - 4
+      scenarios.length === allScenarios.length - 5
         ? "full"
         : "partial:selected",
   };

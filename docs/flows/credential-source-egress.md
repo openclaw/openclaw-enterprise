@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: 2026-11-05
-last_updated_session: authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0
+updated: 2026-11-06
+last_updated_session: authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0
 ---
 
 # Protected credential request flow
@@ -14,9 +14,8 @@ and [threat model](../reference/security/credential-proxy.md).
 
 ## Entry Points
 
-- A [source binding](../reference/credential-sources.md#bind-a-source-to-an-agent)
-  and deployment establish the route. The installation must have current
-  evidence of loaded enforcement.
+- Deployment establishes a [source route](../reference/credential-sources.md#bind-a-source-to-an-agent);
+  current enforcement evidence is required.
 - The authenticated supervisor opens one TLS stream,
   `HttpInstallationExchange.Exchange`, for credential resolution, send
   authorization and response release
@@ -69,11 +68,11 @@ graph TD
 
 ### 1. Admit source and install the revision plan
 
-OCC checks source and Secret permissions at admission. Existing sources need
-explicit opt-in. Version 3 binds Sandbox and Credential Proxy to one registered
-Driver. The plan identifies the Driver, configuration digest, execution, source
-generation, grant and routes. Empty routes deny all. The API checks registration.
-The worker compares the stored reference.
+OCC checks source and Secret permissions; existing sources need opt-in. Version 3
+binds Sandbox and Proxy to one registered Driver.
+The plan records its digest, execution, source generation, grant, and routes;
+empty routes deny all. `admitProxyPlan` derives routes from saved Harness settings
+and source consent. `checkEgressUseIn` rechecks before delivery and send authorization.
 
 For credential-free metadata, `packages/occ/src/index.ts:admitProxyPlan` rejects
 a Driver grant that differs from the source. Equivalent grants have the same
@@ -340,6 +339,8 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-06 01:25: Pin credential destinations. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
 
 - 2026-11-05 02:35: Refresh model observation after Git credential rotation. (authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0 - 261e4b54cbd0366ff0cba0dc6a00b7890b8e39f2)
 

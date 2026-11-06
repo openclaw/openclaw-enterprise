@@ -477,7 +477,6 @@ function externalGitJourney(
     const modelGateway = conversation
       ? new OpenShellCredentialGatewayDriver(modelGatewayConfiguration, {
           id: "external-journey-model",
-          modelProvider: { protocol: "openai-responses", baseUrl: conversation.baseUrl },
           backend: {
             id: "external-journey-model",
             drivers: { credential_gateway: "external-journey-model" },

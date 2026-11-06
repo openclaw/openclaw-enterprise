@@ -32,6 +32,9 @@ import {
 import {
   AgentParams,
   FirstDeploymentIntent,
+  AgentDeploymentBody,
+  RevisionHarnessSchema,
+  Meta,
   FirstDeploymentRecoveryTuple,
   AgentId,
   NamespaceId,
@@ -1986,7 +1989,10 @@ export const occApiRoutes = [
       "Read an exact first-deployment receipt; null does not prove failure; requires Configuration read",
     tags: ["Agents"],
     schema: {
-      querystring: EmptyQuery,
+      querystring: Type.Object(
+        { harnessOverrides: Type.Optional(Type.String({ maxLength: 8192 })) },
+        { additionalProperties: false },
+      ),
       params: Type.Object(
         { ...AgentParams.properties, ...FirstDeploymentRecoveryTuple.properties },
         { additionalProperties: false },
@@ -1997,6 +2003,34 @@ export const occApiRoutes = [
           headers: { "Cache-Control": Type.Literal("no-store") },
         },
         ...readErrors,
+      },
+    },
+  },
+  {
+    operationId: "previewAgentDeployment",
+    method: "POST",
+    path: "/namespaces/:namespaceId/agents/:agentId/deploy-preview",
+    action: "openclaw.agents.deploy",
+    iamAction: "deploy",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary:
+      "Preview resolved Harness settings without deploying; defaults can change before admission",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      body: AgentDeploymentBody,
+      response: {
+        200: Type.Object({
+          data: Type.Object({
+            harness: RevisionHarnessSchema,
+            configurationId: Type.String(),
+            configurationGeneration: Type.Integer(),
+          }),
+          meta: Meta,
+        }),
+        ...mutationErrors,
       },
     },
   },
@@ -2013,6 +2047,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: AgentParams,
+      body: AgentDeploymentBody,
       response: { 202: AgentRevisionResponse, ...mutationErrors },
     },
   },

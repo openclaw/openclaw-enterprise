@@ -480,7 +480,6 @@ export async function staticEgressFixture(
     baseUrl: `https://provider.example.test:${providerPort}/v1`,
   };
   const egress = new OpenShellCredentialProxyDriver(egressOptions, {
-    modelProvider,
     id: proxyDriverId,
     preparedProviders: preparedProvider
       ? [preparedProvider]
@@ -492,9 +491,11 @@ export async function staticEgressFixture(
   });
   const catalog = new OpenShellCredentialGatewayDriver(
     { binaries: ["/usr/bin/model-client"] },
-    { id: "openshell-credentials", backend, modelProvider },
+    { id: "openshell-credentials", backend },
   );
   const placement = createTestKubernetesComputeDriver("placement", {
+    gatewayRuntime: true,
+    modelProvider,
     authentication: { mode: "kubeconfig", kubeconfigPath, context: "fixture" },
   });
   const app = await appFactory(t, {
@@ -515,6 +516,9 @@ export async function staticEgressFixture(
     secretDriver,
     computeDriver: {
       ...createDevelopmentComputeDriver(),
+      normalizeHarnessOverrides: placement.normalizeHarnessOverrides.bind(placement),
+      resolveHarnessConfiguration: placement.resolveHarnessConfiguration.bind(placement),
+      validateHarnessCredentialSources: placement.validateHarnessCredentialSources.bind(placement),
       // Schema/protocol fixture only: no workload is released by this Compute.
       validateExecutionAdmission: assertExecutionAdmission,
       async resolveSandboxNamespace(value) {

@@ -308,3 +308,8 @@ export const ConfigurationSaveReadDenied = {
   ...story("configurationSaveReadDenied"),
   name: "Configuration Save read denied",
 };
+
+export const HarnessOverrides = story("harnessOverrides");
+export const HarnessPreviewLoading = story("harnessPreviewLoading");
+export const HarnessPreviewDenied = story("harnessPreviewDenied");
+export const HarnessPreviewUnavailable = story("harnessPreviewUnavailable");

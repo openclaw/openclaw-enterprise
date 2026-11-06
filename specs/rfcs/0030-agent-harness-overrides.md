@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Implemented
 author: kevinlin-openai
 ---
 
@@ -8,8 +8,9 @@ author: kevinlin-openai
 
 - **ID:** RFC-0030
 - **Created:** 2026-11-05
-- **Last updated:** 2026-11-05
+- **Last updated:** 2026-11-06
 - **Related:** [RFC-0028](0028-shared-model-provider.md), [PR #4528](https://github.com/openclaw/openclaw-enterprise/pull/4528)
+- **Implementation plan:** [Harness overrides](../plans/0030-agent-harness-overrides.md)
 
 ## Summary
 
@@ -201,8 +202,9 @@ Extend integration coverage at the normal Agent deployment boundary:
 
 Use real supported dependencies for integration proof. Distinguish HTTP fixture,
 PostgreSQL, live-cluster, and model-turn evidence; generated configuration alone
-does not prove runtime routing. This RFC contains no implementation or new
-runtime verification.
+does not prove runtime routing. The [implementation plan](../plans/0030-agent-harness-overrides.md)
+records delivery and verification limits. Current behavior is owned by the
+[provider reference](../../docs/reference/drivers/kubernetes-compute/model-provider.md).
 
 ## Rationale and alternatives
 

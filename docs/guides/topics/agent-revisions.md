@@ -70,6 +70,42 @@ The commands below also use `jq`.
    A succeeded deployment does not prove that the model responds; use the
    [runtime verification guide](../deploy/production-agents.md#verify-production-workloads).
 
+## Choose a Harness destination
+
+The Console's **Harness settings** control previews the destination before
+**Deploy new version**. Choose the Installation default, retain the previous
+requested overrides, or enter a provider override. A failed preview keeps
+deployment unavailable; correct the source or settings, then retry the preview.
+Saved version details show requested and resolved settings.
+
+For the CLI, write the override object to `harness-overrides.json`:
+
+```json
+{
+  "modelProvider": {
+    "protocol": "openai-responses",
+    "baseUrl": "https://evaluation.example.com/v1"
+  }
+}
+```
+
+```sh
+occ agent deploy "$AGENT_ID" --harness-overrides harness-overrides.json
+# Submit the requested overrides from an exact revision:
+occ agent deploy "$AGENT_ID" --retain-harness-overrides REVISION_ID
+```
+
+The flags are mutually exclusive. With neither flag, deployment uses current
+Installation defaults. The CLI prints the resolved preview to stderr before
+submitting. Defaults can change between preview and admission; inspect the
+returned revision's settings. Explicit provider overrides require an authorized
+API-key Credential Source. The [provider reference](../../reference/drivers/kubernetes-compute/model-provider.md)
+defines replacement semantics and authentication and network limits.
+
+For `deploy-first`, use the same `--harness-overrides` file on
+`recover-first-deployment`. Normalized overrides are part of the intent identity;
+a changed endpoint cannot recover or reuse a receipt for another destination.
+
 ## Guarded first deployment and receipt recovery
 
 To deploy a saved Agent only at its reviewed Configuration ID and generation, use:

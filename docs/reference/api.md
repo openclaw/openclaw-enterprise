@@ -86,7 +86,7 @@ the paths.
 | [Connections](#connections) | 10 operations |
 | [Installation](#installation) | 5 operations |
 | [Namespaces](#namespaces) | 6 operations |
-| [Agents](#agents) | 50 operations |
+| [Agents](#agents) | 51 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -3496,6 +3496,7 @@ Example response
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/deploy`](#post-namespacesnamespaceidagentsagentiddeploy) | Save an Agent revision from the Agent's saved settings |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/deploy-first`](#post-namespacesnamespaceidagentsagentiddeployfirst) | Admit the first deployment of an exact reviewed Configuration; requires Configuration read |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/deploy-first/{key}/{expectedConfigurationId}/{expectedGeneration}`](#get-namespacesnamespaceidagentsagentiddeployfirstkeyexpectedconfigurationidexpectedgeneration) | Read an exact first-deployment receipt; null does not prove failure; requires Configuration read |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/deploy-preview`](#post-namespacesnamespaceidagentsagentiddeploypreview) | Preview resolved Harness settings without deploying; defaults can change before admission |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/device-authorizations`](#post-namespacesnamespaceidagentsagentiddeviceauthorizations) | Experimental: Start a private device login for Agent configuration |
 | [`DELETE /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}`](#delete-namespacesnamespaceidagentsagentiddeviceauthorizationssecretid) | Experimental: Discard a local device login without upstream revocation |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}/poll`](#post-namespacesnamespaceidagentsagentiddeviceauthorizationssecretidpoll) | Experimental: Complete device login without returning credential material |
@@ -5399,6 +5400,21 @@ Save an Agent revision from the Agent's saved settings
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
+##### Request body
+
+**Required:** No
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `harnessOverrides` | `object<string, any>` | No | Nonsecret settings owned and validated by the selected Compute Driver. |
+
+Example request
+```json
+{}
+```
+
 ##### Responses
 
 | Status | Meaning |
@@ -5431,8 +5447,10 @@ Save an Agent revision from the Agent's saved settings
 | `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.gatewayManagedMode` | `boolean` | Yes | Gateway managed mode requested for this Agent version. It does not report Gateway runtime state. |
 | `data.harness` | `object` | Yes | — |
+| `data.harness.configuration` | `object<string, any>` | Yes | Nonsecret settings owned and validated by the selected Compute Driver. |
 | `data.harness.id` | `string` | Yes | min length: 1 |
 | `data.harness.mode` | `"embedded" or "dedicated"` | Yes | — |
+| `data.harness.overrides` | `object<string, any>` | Yes | Nonsecret settings owned and validated by the selected Compute Driver. |
 | `data.harness.version` | `string` | Yes | min length: 1 |
 | `data.harnessAuth` | `object or object or object or object` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -5545,8 +5563,16 @@ Example response
     "createdAt": "2026-10-01T12:00:00.000Z",
     "gatewayManagedMode": true,
     "harness": {
+      "configuration": {
+        "modelProvider": {
+          "baseUrl": "https://api.openai.com/v1",
+          "protocol": "openai-responses",
+          "supportsStandaloneWebSearch": false
+        }
+      },
       "id": "codex",
       "mode": "dedicated",
+      "overrides": {},
       "version": "1"
     },
     "harnessAuth": {
@@ -5605,6 +5631,7 @@ Admit the first deployment of an exact reviewed Configuration; requires Configur
 | --- | --- | --- | --- |
 | `expectedConfigurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `expectedGeneration` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
+| `harnessOverrides` | `object<string, any>` | No | Nonsecret settings owned and validated by the selected Compute Driver. |
 | `key` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._~-]*$` |
 
 Example request
@@ -5681,6 +5708,7 @@ Read an exact first-deployment receipt; null does not prove failure; requires Co
 
 | Name | In | Type | Required | Constraints | Example |
 | --- | --- | --- | --- | --- | --- |
+| `harnessOverrides` | query | `string` | No | max length: 8192 | "{}" |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 | `key` | path | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._~-]*$` | "review-1" |
@@ -5717,6 +5745,101 @@ Example response
     "createdAt": "2026-10-01T12:00:00.000Z",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
     "revisionId": "rev_123e4567-e89b-42d3-a456-426614174000"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/deploy-preview`
+
+<span id="post-namespacesnamespaceidagentsagentiddeploypreview"></span>
+
+Preview resolved Harness settings without deploying; defaults can change before admission
+
+**Operation ID:** `previewAgentDeployment`
+
+**Permissions:** Requires deploy on the exact Agent and read on its Configuration. The caller also needs operate on its Harness Secret or Credential Source, or read on its associated ServiceAccount. The Agent service principal needs operate on its Harness Secret or Credential Source. This preview creates no revision, reserves no defaults, and does not validate other deployment prerequisites.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `deploy` | `agent` | `requested` |
+| `read` | `configuration` | `requested` |
+| `read` | `service_account` | `requested` (when associated) |
+| `operate` | `secret` | `requested` (when bound) |
+| `operate` | `credential_source` | `requested` (when bound) |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `harnessOverrides` | `object<string, any>` | No | Nonsecret settings owned and validated by the selected Compute Driver. |
+
+Example request
+```json
+{}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.configurationGeneration` | `integer` | Yes | — |
+| `data.configurationId` | `string` | Yes | — |
+| `data.harness` | `object` | Yes | — |
+| `data.harness.configuration` | `object<string, any>` | Yes | Nonsecret settings owned and validated by the selected Compute Driver. |
+| `data.harness.id` | `string` | Yes | min length: 1 |
+| `data.harness.mode` | `"embedded" or "dedicated"` | Yes | — |
+| `data.harness.overrides` | `object<string, any>` | Yes | Nonsecret settings owned and validated by the selected Compute Driver. |
+| `data.harness.version` | `string` | Yes | min length: 1 |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "configurationGeneration": 1,
+    "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+    "harness": {
+      "configuration": {
+        "modelProvider": {
+          "baseUrl": "https://api.openai.com/v1",
+          "protocol": "openai-responses",
+          "supportsStandaloneWebSearch": false
+        }
+      },
+      "id": "codex",
+      "mode": "dedicated",
+      "overrides": {},
+      "version": "1"
+    }
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -8461,8 +8584,10 @@ List Agent revision summaries that you can read for the requested Agent, newest 
 | `data[].deploymentErrorCode` | `string or null` | Yes | The `error.code` that reading this revision's deployment would report, or `null` when it reports no error. It tells a failure from a deployment that a newer version or a Stop ended. |
 | `data[].deploymentStatus` | `"queued" or "running" or "succeeded" or "failed" or null` | Yes | The status that reading this revision's deployment would report, or `null` when OCC has no deployment record for it. |
 | `data[].harness` | `object` | Yes | — |
+| `data[].harness.configuration` | `object<string, any>` | Yes | Nonsecret settings owned and validated by the selected Compute Driver. |
 | `data[].harness.id` | `string` | Yes | min length: 1 |
 | `data[].harness.mode` | `"embedded" or "dedicated"` | Yes | — |
+| `data[].harness.overrides` | `object<string, any>` | Yes | Nonsecret settings owned and validated by the selected Compute Driver. |
 | `data[].harness.version` | `string` | Yes | min length: 1 |
 | `data[].id` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -8495,8 +8620,16 @@ Example response
       "deploymentErrorCode": null,
       "deploymentStatus": "succeeded",
       "harness": {
+        "configuration": {
+          "modelProvider": {
+            "baseUrl": "https://api.openai.com/v1",
+            "protocol": "openai-responses",
+            "supportsStandaloneWebSearch": false
+          }
+        },
         "id": "codex",
         "mode": "dedicated",
+        "overrides": {},
         "version": "1"
       },
       "id": "rev_123e4567-e89b-42d3-a456-426614174000",
@@ -8638,8 +8771,16 @@ Example response
     "createdAt": "2026-10-01T12:00:00.000Z",
     "gatewayManagedMode": true,
     "harness": {
+      "configuration": {
+        "modelProvider": {
+          "baseUrl": "https://api.openai.com/v1",
+          "protocol": "openai-responses",
+          "supportsStandaloneWebSearch": false
+        }
+      },
       "id": "codex",
       "mode": "dedicated",
+      "overrides": {},
       "version": "1"
     },
     "harnessAuth": {

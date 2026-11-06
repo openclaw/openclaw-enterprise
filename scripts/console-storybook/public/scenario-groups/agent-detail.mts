@@ -44,7 +44,8 @@ type AgentDetailScenario = {
   rules?: Parameters<typeof createFixtureFetch>[0];
   nextStory?: string;
   deployed?: true;
-  auth?: "oauth" | "codex_pat" | null;
+  auth?: "oauth" | "codex_pat" | "api-source" | null;
+  harnessOverrides?: Record<string, unknown>;
   agentPlugins?: PluginDesiredState;
   agentPluginApprovers?: PluginApprovers;
   pluginCapabilities?: PluginFieldsOptions["capabilities"];
@@ -238,6 +239,47 @@ export function createAgentDetailScenarios({
     } satisfies Record<string, AgentDetailScenario>,
 
     configuration: {
+      harnessOverrides: {
+        group: "Pages/Agent detail",
+        name: "Harness destination override",
+        path: draft,
+        deployed: true,
+        auth: "api-source",
+        harnessOverrides: {
+          modelProvider: {
+            baseUrl: "https://evaluation.example.com/v1",
+            protocol: "openai-responses",
+            supportsStandaloneWebSearch: false,
+          },
+        },
+        description:
+          "Preview a destination, retain requested overrides, and inspect the saved settings after deployment.",
+        steps: [
+          "Read the retained evaluation destination. Choose Override model provider and enter the authorized evaluation HTTPS /v1 endpoint. Preview it, then deploy and inspect requested and resolved settings.",
+        ],
+        gap: "Simulated UI proof only; source consent, persistence and inference routing require integration checks.",
+      },
+      harnessPreviewLoading: {
+        group: "Pages/Agent detail",
+        name: "Harness destination loading",
+        path: draft,
+        description: "Deployment waits for the destination preview.",
+        rules: [{ method: "POST", suffix: "/deploy-preview", hold: true }],
+      },
+      harnessPreviewDenied: {
+        group: "Pages/Agent detail",
+        name: "Harness destination permission denied",
+        path: draft,
+        description: "A refused preview keeps deployment unavailable.",
+        rules: [{ method: "POST", suffix: "/deploy-preview", status: 403 }],
+      },
+      harnessPreviewUnavailable: {
+        group: "Pages/Agent detail",
+        name: "Harness destination unavailable",
+        path: draft,
+        description: "Retry the preview after the dependency recovers.",
+        rules: [{ method: "POST", suffix: "/deploy-preview", status: 503, once: true }],
+      },
       draft: {
         group: "Pages/Agent detail",
         name: "First version",
