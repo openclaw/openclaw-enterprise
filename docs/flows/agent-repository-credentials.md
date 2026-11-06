@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-06"
-last_updated_session: authoring-run/b722f746-1774-4354-b82c-00dfe10fb371
+last_updated_session: authoring-run/d966f693-ccc4-4b07-8fbc-f66738672284
 ---
 
 # Agent repository credential flow
@@ -45,6 +45,8 @@ graph TD
   Protected --> Compute
   Worker -->|Active standing Git evidence missing| Observe["<b>Observe existing Harness</b><br/>No preparation or issuance"]
   Observe -->|Durable check within five seconds| Worker
+  Worker -->|Repository execution cannot resume| Withdraw["<b>Withdraw Git</b><br/>New revision required"]
+  Withdraw --> Close
   Capability -->|Available| Attempt["<b>Persist opening</b><br/>Before control request"]
   Capability -->|Unavailable| Blocked["<b>Block new admission</b><br/>Worker stays unready"]
   Attempt --> Service["<b>Private control</b><br/>Check bound registry grant"]
@@ -286,19 +288,18 @@ fresh installation tokens under the same grant until the version deadline.
 ### 6. Maintain, recover and retire ownership
 
 The [worker](../../apps/controller/src/worker.mjs) supplies `ProtectedRepositoryGitAuthority`
-to the [binder](../../apps/controller/src/composition/repository-credentials/transport.ts), owning maintenance and shutdown.
-Missing authority or mismatched Drivers prevent binding. OpenShell connects the store first;
-bare Sandboxes have no Git.
+to the [binder](../../apps/controller/src/composition/repository-credentials/transport.ts) for maintenance and shutdown.
+Missing authority or mismatched Drivers prevent binding; bare Sandboxes have no Git.
 
-External `reconcile` runs serially with a 25-second timeout and one-second interval.
-Close aborts and joins. Readback settles delivery without reinstalling or restoring withdrawn access.
+`reconcile` runs serially: 25-second timeout, one-second interval.
+Close aborts and joins. Readback never reinstalls or restores withdrawn access.
 
 [The gRPC client](../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts)
 defaults omitted endpoint/credential lists to empty arrays after checking profile identity.
 [Withdrawal checks](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
 accept files-only profiles; Git-overlapping, missing and mismatched profiles remain refused.
 
-Activation and maintenance use the same actor. Maintenance uses 30 seconds,
+Activation and maintenance share an actor. Maintenance uses 30 seconds,
 the sender interval or a shorter Compute interval. Restart invalidates missing sessions without
 reminting; cleanup permits deployment.
 [Prepared custody](../../apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts)
@@ -311,28 +312,31 @@ bound Installation policy or unbound Repo Driver. Conflicts prevent startup.
 Withdrawal or scope changes raise `REPOSITORY_STANDING_POLICY_CHANGED` before successor release.
 The [GitHub registry](../../apps/controller/src/drivers/repo/github/credentials/registry.ts)
 fingerprints canonical permissions and exact repository identity for `github-repository`.
-Issuance and delivery recheck opt-ins and the exact grant before selecting material;
-standing delivery requires one binding.
-After mandatory-hook acknowledgement, the [OpenShell observer](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
-rechecks expired predecessor policy and recipient for renewal, never authorizing expired
-requests, unacknowledged launches or observed-only previews.
-[Cold verification](../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts)
-checks workload and durable launch hash. [Launch evidence](../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts)
-accepts aggregate `WITHHELD/CREDENTIAL_EXPIRED` only as predecessor identity,
-with matching generation, session, process and network, observed within 30 seconds.
+Issuance and delivery recheck opt-ins and the grant; standing delivery requires one binding.
+After mandatory-hook acknowledgement, the [observer](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
+rechecks predecessor policy and recipient for renewal. It refuses expired requests,
+unacknowledged launches and observed-only previews.
+[Cold verification](../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts) checks workload and launch hash.
+[Predecessor evidence](../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts) accepts aggregate
+`WITHHELD/CREDENTIAL_EXPIRED` with matching generation, session, process and network,
+observed within 30 seconds.
 New installations and post-detach model completion require ready credentials.
 
-Prepared native Git issues tokens after activation.
-`ControllerWorker.assertRepositoryGitMaterial` waits at `REPOSITORY_GIT_MATERIAL_PENDING`;
-quarantine fails with `REPOSITORY_GIT_TOKEN_QUARANTINED`, convergence timeout with
-`REPOSITORY_GIT_TOKEN_PENDING`. For existing Agents, `continueRevisionWithoutGit`
-atomically records `continuingRevision` and queues maintenance under Namespace then
-Agent locks. Only these two failures preserve the running version for maintenance;
-others retire it ([reference](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token)).
+After activation, `ControllerWorker.assertRepositoryGitMaterial` waits for committed tokens.
+Quarantine or timeout fails deployment. For existing Agents, `continueRevisionWithoutGit`
+atomically records `REPOSITORY_GIT_TOKEN_QUARANTINED` or `REPOSITORY_GIT_TOKEN_PENDING`
+and maintenance under ownership locks; otherwise it retires the version.
+See [first-token handling](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token).
 
-Without standing evidence, Git stays closed. The worker observes the Harness without preparation
-or activation, rechecking model authority, withdrawal, stop and replacement within five seconds.
+Missing standing evidence closes Git. Without preparation or activation, the worker rechecks
+model authority, withdrawal, stop and replacement within five seconds.
 Harness readiness cannot authorize Git ([test](../../tests/integration/postgres-standing-session-worker.test.ts)).
+
+`OpenShellGitRuntime.verifyExecution` reports `RepositoryExecutionRequiresRedeployError`
+when a v5 held route's persisted owner, binding and stable fence prove non-adoptable replacement. `ControllerWorker.completeStandingRepositoryWithdrawal` rechecks
+ownership, closes sessions and queues withdrawal atomically.
+Work records `REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`; `getDeploymentStatus` projects
+`repositoryAccess`, preserving history ([regression](../../tests/integration/postgres-openshell-standing-selected-repository.test.ts)).
 
 `apps/controller/src/worker.ts:ControllerWorker.processRepositoryCleanup` consumes
 owner-bound Work without admission or material delivery. Terminal-runtime Work fences
@@ -373,11 +377,10 @@ Pending cleanup logs `worker.repository-cleanup-warning` and `cause` once.
 or `name-one-repository-ref` requires explicit selection. Inspect metadata
 and Pod generation without printing credentials.
 
-The [test guide](../testing/repository-credentials.md) separates lifecycle, installed-runtime
+The [test guide](../testing/repository-credentials.md) distinguishes lifecycle, installed-runtime
 and live-provider proof. [Docker/Helm checks](../testing/docker.md#repository-runtime-volume-test-environment)
-exclude CNI; console fixtures exclude model, Slack and GitHub execution. Driver tests cover
-local PR pushes and same-revision Codex turns across withdrawal. Verify real Agent PR updates,
-denial before provider contact, and continued chat on the team installation.
+exclude CNI; console fixtures exclude model, Slack and GitHub execution.
+Verify live PR updates, denial before provider contact and continued chat separately.
 
 ## Related docs
 
@@ -393,6 +396,7 @@ denial before provider contact, and continued chat on the team installation.
 
 ## Changelog
 
+- 2026-11-06 20:39: Distinguish terminal held-launch replacement from transient standing verification. (authoring-run/d966f693-ccc4-4b07-8fbc-f66738672284 - 21a933338904531c51a67f9aaf98c3401ceff025)
 - 2026-11-06 20:36: Document expired predecessor evidence. (authoring-run/b722f746-1774-4354-b82c-00dfe10fb371 - 7e80c3a05be9b84bb1c2fd502675111ca7621d54)
 
 - 2026-11-05 15:33: Document profile wire defaults. (authoring-run/6cd890b4-603a-482b-85a1-f9f601ae5c3c - 821ce63ee1)

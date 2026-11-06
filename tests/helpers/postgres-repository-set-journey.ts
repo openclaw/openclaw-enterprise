@@ -81,7 +81,7 @@ export async function narrowOnlineGitJourney(
 export async function repositorySetJourney(
   t: TestContext,
   standing = false,
-  pendingSuccessor?: "recipient" | "approval",
+  pendingSuccessor?: "recipient" | "approval" | "cold-worker",
 ) {
   return repositoryGitJourney(t, undefined, {}, standing, pendingSuccessor);
 }
@@ -91,7 +91,7 @@ async function repositoryGitJourney(
   narrow?: (journey: NarrowJourney) => Promise<void>,
   policy: NarrowPolicy = {},
   standing = false,
-  pendingSuccessor?: "recipient" | "approval",
+  pendingSuccessor?: "recipient" | "approval" | "cold-worker",
 ) {
   const selectedRepositories = repositorySet.slice(0, standing ? 1 : 2);
   const workspace = "selected-journey";
@@ -144,7 +144,7 @@ async function repositoryGitJourney(
   t.after(() => authorityPort.release());
   await bindReservedPortInProcess(authorityPort);
   const { port } = authorityPort;
-  const middleware = openShellMiddlewareClient(t, port, tls.caBundle);
+  let middleware = openShellMiddlewareClient(t, port, tls.caBundle);
   const order: string[] = [];
   const id = "selected-stock-openshell";
   const backend = {
@@ -157,60 +157,6 @@ async function repositoryGitJourney(
     repositoryMiddlewareName: "oce-prepared-git",
     authorityScope: "execution" as const,
   };
-  const runtime = new OpenShellGitRuntime(
-    {
-      registrationName: "oce-prepared-git",
-      authority: {
-        host: "127.0.0.1",
-        port,
-        issuer: "https://gateway.example.test",
-        audience: "repository-set",
-        keyId: "gateway-key",
-        certificatePath: tls.certPath,
-        privateKeyPath: tls.keyPath,
-        issuerPublicKeyPath,
-      },
-    },
-    (revision) => createGitHubRepositoryDeliveryResolver(peer.registry)(revision),
-  );
-  const sandbox = new OpenShellSandboxDriver(
-    {
-      gateway: { workspaceMode: "operator" },
-      kubernetes: {
-        runtimeClassName: "openshell-sandbox",
-        serviceAccount: { mode: "gatewayConfigured" },
-        sandboxDataMount: {
-          subPath: "workspace",
-          mountPath: "/sandbox/enterprise",
-          readOnly: false,
-        },
-      },
-      policy: {
-        process: { runAsUser: "1000", runAsGroup: "1000" },
-        networkPolicies: [
-          {
-            name: "model",
-            binaries: [{ path: "/usr/bin/codex" }],
-            endpoints: [{ host: "api.openai.com", ports: [443] }],
-          },
-        ],
-      },
-    },
-    { id, implementation: "openshell", backend: backend as never, openShellGit: runtime },
-  );
-  const proxy = new OpenShellCredentialProxyDriver(opts, {
-    id,
-    sandbox,
-    backend: backend as never,
-    bindRepositoryGit: (authority) => runtime.bindRepositoryGit(authority),
-    ...{
-      mandatoryEnforcement: (ctx: ProxyRevisionContext, box: string) => {
-        const observe = Reflect.get(runtime, "mandatoryEnforcement");
-        assert.equal(typeof observe, "function", "bundled runtime must own mandatory enforcement");
-        return observe.call(runtime, ctx, box);
-      },
-    },
-  });
   const selected = {
     id,
     implementation: "openshell",
@@ -221,9 +167,71 @@ async function repositoryGitJourney(
       configurationContributions: OpenShellSandboxDriver.configurationContributions,
     },
   };
-  const owner = new InstalledDriver(selected, {
-    capabilities: { sandbox, credential_proxy: proxy },
-  });
+  const createRuntimeOwner = () => {
+    const runtime = new OpenShellGitRuntime(
+      {
+        registrationName: "oce-prepared-git",
+        authority: {
+          host: "127.0.0.1",
+          port,
+          issuer: "https://gateway.example.test",
+          audience: "repository-set",
+          keyId: "gateway-key",
+          certificatePath: tls.certPath,
+          privateKeyPath: tls.keyPath,
+          issuerPublicKeyPath,
+        },
+      },
+      (revision) => createGitHubRepositoryDeliveryResolver(peer.registry)(revision),
+    );
+    const sandbox = new OpenShellSandboxDriver(
+      {
+        gateway: { workspaceMode: "operator" },
+        kubernetes: {
+          runtimeClassName: "openshell-sandbox",
+          serviceAccount: { mode: "gatewayConfigured" },
+          sandboxDataMount: {
+            subPath: "workspace",
+            mountPath: "/sandbox/enterprise",
+            readOnly: false,
+          },
+        },
+        policy: {
+          process: { runAsUser: "1000", runAsGroup: "1000" },
+          networkPolicies: [
+            {
+              name: "model",
+              binaries: [{ path: "/usr/bin/codex" }],
+              endpoints: [{ host: "api.openai.com", ports: [443] }],
+            },
+          ],
+        },
+      },
+      { id, implementation: "openshell", backend: backend as never, openShellGit: runtime },
+    );
+    const proxy = new OpenShellCredentialProxyDriver(opts, {
+      id,
+      sandbox,
+      backend: backend as never,
+      bindRepositoryGit: (authority) => runtime.bindRepositoryGit(authority),
+      ...{
+        mandatoryEnforcement: (ctx: ProxyRevisionContext, box: string) => {
+          const observe = Reflect.get(runtime, "mandatoryEnforcement");
+          assert.equal(
+            typeof observe,
+            "function",
+            "bundled runtime must own mandatory enforcement",
+          );
+          return observe.call(runtime, ctx, box);
+        },
+      },
+    });
+    const owner = new InstalledDriver(selected, {
+      capabilities: { sandbox, credential_proxy: proxy },
+    });
+    return { runtime, sandbox, proxy, owner };
+  };
+  let { runtime, sandbox, proxy, owner } = createRuntimeOwner();
   const gateway = new OpenShellCredentialGatewayDriver(
     { binaries: ["/usr/bin/codex"] },
     { id: CREDENTIAL_GATEWAY_FIXTURE_ID, backend: backend as never },
@@ -273,7 +281,7 @@ async function repositoryGitJourney(
     },
   });
   runtime["routes"] = new PostgresOpenShellGitRouteStore(f.observerPool);
-  const bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
+  let bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
   t.after(() => bound.close());
   // The authority listens now. Release the hold before the first request: while both listen, the
   // kernel may hand a connection to the hold, which resets it.
@@ -429,6 +437,9 @@ async function repositoryGitJourney(
     );
   };
   let preparationError: unknown;
+  // This protocol fixture has no Kubernetes client. The cold-owner verdict uses
+  // the durable route; any later continuity check must fail closed, not invent Pods.
+  const repositoryContext = { ...context, kubernetes: undefined };
   const compute = {
     ...f.compute,
     id: kube.id,
@@ -437,7 +448,13 @@ async function repositoryGitJourney(
     validateExecutionAdmission: kube.validateExecutionAdmission.bind(kube),
     ...(standing && {
       verifyRepositoryExecution: (r: AgentRevision, signal: AbortSignal) =>
-        runtime.verifyExecution(r, signal),
+        pendingSuccessor === "cold-worker"
+          ? sandbox.repositoryAccess!.verifyExecution({ ...repositoryContext, revision: r, signal })
+          : runtime.verifyExecution(r, signal),
+      ...(pendingSuccessor === "cold-worker" && {
+        retireExpiredRepositoryAccess: (r: AgentRevision, signal: AbortSignal) =>
+          sandbox.repositoryAccess!.retireExpired({ ...repositoryContext, revision: r, signal }),
+      }),
       observeRevision: async () => ({ state: "running" as const }),
     }),
     async prepareRevision(r: AgentRevision, custody: ComputeRevisionContext) {
@@ -674,6 +691,121 @@ async function repositoryGitJourney(
       assert.equal(((await request()) as { status: number }).status, 200);
       assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73]);
       await f.stop();
+      if (pendingSuccessor === "cold-worker") {
+        const queue = new f.PostgresWorkQueue(f.observerPool);
+        const maintenance = await queue.latestRevisionMaintenanceKey(ownerKey);
+        assert.ok(maintenance, "the running revision has a durable renewal obligation");
+        const original = await f.deploymentStatus(agent, revision);
+        assert.equal(original.status, "succeeded");
+        assert.equal(original.repositoryAccess, undefined);
+        const writes = wire.world.writes;
+        const installed = state.installed;
+        const readRoute = async () =>
+          (
+            await f.observerPool.query(
+              "SELECT binding_id, fence, worker_instance FROM occ.credential_deliveries WHERE revision_id=$1",
+              [revision.id],
+            )
+          ).rows[0];
+        const route = await readRoute();
+        assert.ok(route.worker_instance, "the original runtime committed its route ownership");
+        const replaceRuntime = async () => {
+          await bound.close();
+          ({ runtime, sandbox, proxy, owner } = createRuntimeOwner());
+          runtime["routes"] = new PostgresOpenShellGitRouteStore(f.observerPool);
+          bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
+          await runtime["running"];
+          middleware = openShellMiddlewareClient(t, port, tls.caBundle);
+        };
+        // Replace the actual runtime owner and listener, not only its worker loop. The
+        // durable route remains owned by the departed process and must not be adopted.
+        await replaceRuntime();
+        assert.deepEqual(await readRoute(), route);
+        assert.ok(Date.now() < credentials.deadlineWallMs, "restart precedes session expiry");
+        await f.advanceMaintenance(revision);
+        await start();
+        await waitFor(
+          "the cold worker records terminal Git withdrawal",
+          () =>
+            workerEvents.find((event) => event.code === "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED"),
+          { timeoutMs: 15_000 },
+        );
+        await f.stop();
+        const terminal = await queue.findWork(maintenance);
+        assert.equal(terminal?.state, "succeeded");
+        assert.equal(terminal?.reasonCode, "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED");
+        assert.ok(
+          ["expiry", "retiring"].includes((await queue.repositoryExpiryState(ownerKey))!),
+          "terminal verification durably handed the revision to repository cleanup",
+        );
+        assert.ok((await attempts()).every(({ phase }) => phase !== "open" && phase !== "opening"));
+        const status = await f.deploymentStatus(agent, revision);
+        assert.equal(status.status, "succeeded", "historical deployment success stays intact");
+        assert.equal(status.repositoryAccess?.state, "redeploy-required");
+        assert.equal(status.repositoryAccess?.code, "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED");
+        assert.match(status.repositoryAccess!.message, /deploy/i);
+        assert.equal(peer.gh.issuesOfTokens.length, 1, "cold verification issued no successor");
+        assert.equal(wire.world.writes, writes, "cold verification did not replay credentials");
+        assert.equal(state.installed, installed);
+
+        // A second process recovers the persisted handoff. This fixture lacks the
+        // admitted model provider and Kubernetes continuity needed to prove retention;
+        // the real Driver may safely retire the runtime instead of subtracting only Git.
+        await replaceRuntime();
+        workerEvents.length = 0;
+        await start();
+        await waitFor(
+          "the replacement worker resumes cleanup or observes completed retirement",
+          async () =>
+            (await f.currentAgent(agent))?.activeRevisionId === undefined ||
+            workerEvents.some((event) => event.code === "REPOSITORY_CLEANUP_PENDING")
+              ? true
+              : undefined,
+          { timeoutMs: 45_000 },
+        );
+        await f.stop();
+        assert.deepEqual(
+          (await f.deploymentStatus(agent, revision)).repositoryAccess,
+          status.repositoryAccess,
+        );
+        assert.equal((await attempts()).length, 1);
+        assert.equal(peer.gh.issuesOfTokens.length, 1);
+        assert.equal(wire.world.writes, writes);
+        assert.equal(wire.world.id, initialSandbox);
+        assert.equal((await evaluate(probe)).decision, 2, "the new listener cannot revive Git");
+
+        // If incomplete external observations retained the execution, its ordinary
+        // lifecycle owner must still honor stop. Confirmed retirement already cleared it.
+        if ((await f.currentAgent(agent))?.activeRevisionId !== undefined) {
+          const stop = await f.requestStop(agent);
+          await start();
+          await f.work(stop, "succeeded");
+          await f.stop();
+          assert.equal((await f.currentAgent(agent))?.desiredRuntimeState, "stopped");
+        }
+        assert.equal((await f.currentAgent(agent))?.activeRevisionId, undefined);
+        const finalStatus = await f.deploymentStatus(agent, revision);
+        assert.equal(finalStatus.status, "succeeded");
+        assert.deepEqual(finalStatus.repositoryAccess, status.repositoryAccess);
+        assert.equal(peer.gh.issuesOfTokens.length, 1);
+        assert.equal(wire.world.writes, writes);
+
+        // The terminal reason belongs to this deployment, not every revision of its
+        // Agent. Admit a replacement through the controller while the worker is stopped.
+        const replacement = await f.controller.deployAgent(
+          f.actor.id,
+          { namespaceId: f.namespace.id, agentId: agent.id },
+          resolveApprovedHarness,
+        );
+        assert.notEqual(replacement.id, revision.id);
+        const replacementStatus = await f.deploymentStatus(agent, replacement);
+        assert.equal(replacementStatus.status, "queued");
+        assert.equal(replacementStatus.repositoryAccess, undefined);
+        const previousStatus = await f.deploymentStatus(agent, revision);
+        assert.equal(previousStatus.status, "succeeded");
+        assert.deepEqual(previousStatus.repositoryAccess, status.repositoryAccess);
+        return;
+      }
       // Cross the original admitted session deadline in real time. Keep the exact
       // running Sandbox and provider; only the worker is restarted.
       await delay(Math.max(0, credentials.deadlineWallMs + 100 - Date.now()));

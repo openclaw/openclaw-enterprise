@@ -1084,6 +1084,17 @@ export class ActivationPendingError extends Error {
 /** An activation step that cannot complete for this revision. */
 export type ActivationFailedCode = "AGENT_GATEWAY_UNAUTHORIZED";
 
+/** The selected Driver proved that this execution's repository access cannot be resumed.
+ * Missing evidence or a failed dependency read must not produce this terminal result. */
+export class RepositoryExecutionRequiresRedeployError extends Error {
+  readonly code = "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED";
+
+  constructor() {
+    super("Repository access cannot resume on this execution. Deploy a new revision.");
+    this.name = "RepositoryExecutionRequiresRedeployError";
+  }
+}
+
 /**
  * Compute preparation cannot complete for this revision. The worker records a
  * terminal deployment failure and durable workload retirement in one transaction.
