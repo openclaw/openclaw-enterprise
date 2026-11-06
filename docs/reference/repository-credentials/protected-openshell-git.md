@@ -271,8 +271,7 @@ A deploying version has no credential; requests answer `route_not_ready` until a
 
 ### Worker log
 
-After cleaning up failed held enrollment, `worker.openshell-git-probe-failed` records
-the HTTP 400 `reason`:
+For failed held enrollment, `worker.openshell-git-probe-failed` records the HTTP 400 `reason`:
 
 - `probe_process_failed`: curl failed; optional integer `code` is its exit status (1–99).
 - `probe_response_invalid`: the launcher could not read response JSON.
