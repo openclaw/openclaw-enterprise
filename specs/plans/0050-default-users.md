@@ -59,6 +59,13 @@ are created, and deploy writes grants for any Role.
      authorize again under the Namespace lock, which AccessBinding deletes take.
    - Removed from the first branch: the Namespace limit, its lock, its `409`,
      and `namespaces.created_by`, which the Owner binding replaces.
+   - Console Agent creation for members, added after a live OpenShell
+     walkthrough on 2026-11-05: `GET /namespaces/:namespaceId/agent-capabilities`
+     answers a caller with `agent:create` there with the Installation
+     capabilities Agent creation uses, without `agentProvisioning` and
+     `nativeAdmin`. A member's Create Agent reads it after the refused
+     Installation read, registers the model Secret with a Credential Gateway, and
+     opens the draft instead of asking an administrator for the grant.
 2. **Bindings without a resource.** Optional `resourceKind` and `resourceId`
    and Group subjects in the Namespace IAM API for any Role.
 3. **Agent grant removal.** Deploy grants move to the binding ID
@@ -67,7 +74,9 @@ are created, and deploy writes grants for any Role.
    Agent setting, Configuration, or live revision references the source. OCC
    runs it after Agent and Configuration updates, and the worker runs it after
    an activation and after a stop. Sandbox policy editing and guided
-   provisioning accept the Agent's Owner binding. Rebases
+   provisioning accept the Agent's Owner binding. Members can then provision, so
+   the Namespace Agent capabilities report `agentProvisioning` and `nativeAdmin`
+   and a member's console offers native admin UI setup. Rebases
    `feat/default-users-grant-removal`.
 4. **Mapping rules.** Rule storage, the Installation API, the console Settings
    card, the membership `source` column, and the last mapped sign-in. Rules

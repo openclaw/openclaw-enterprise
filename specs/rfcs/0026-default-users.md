@@ -48,8 +48,7 @@ IAM already evaluates Group bindings stored in `iam_groups` and
 `iam_group_memberships`, but nothing writes them.
 
 A Namespace for each person isolates well, but 100,000 personal Agents would
-need 100,000 Kubernetes namespaces and their objects, and so several clusters.
-OCE supports that topology but does not make it the default. In the shared
+need 100,000 Kubernetes namespaces and several clusters. In the shared
 `default` Namespace, IAM isolates people at the resource level. The existing
 NetworkPolicies already stop one Agent from reaching another Agent in the same
 Kubernetes namespace ([security](../../docs/reference/security.md)).
@@ -269,9 +268,8 @@ _Proposed flow; none of these steps is implemented._
 ### Agent credentials and Slack
 
 An Agent's ServicePrincipal needs `operate` on each Secret and credential source
-it uses. Today only an Installation administrator grants it, through the console
-or guided provisioning (`ensureAgentOperateGrants` in
-`packages/occ/src/index.ts`); this RFC adds no Agent Role.
+it uses. Today an Installation administrator grants it
+(`ensureAgentOperateGrants`); this RFC adds no Agent Role.
 
 OCC also writes these exact grants in the deploy transaction when the caller
 can deploy the Agent and `operate` the source, through any Role. In `default`, a
@@ -280,6 +278,10 @@ audits each write and writes nothing when the deploy fails. OCC removes a grant
 it wrote when no Agent setting, Configuration, or live revision references the
 source, so a running Agent keeps its access. Guided provisioning accepts these
 grants instead of Installation `administer`.
+
+`GET /namespaces/:namespaceId/agent-capabilities` gives a member with
+`agent:create` the capabilities Agent creation uses, without provisioning and
+native admin setup.
 
 Slack needs no new contract: Slack tokens are Secrets referenced from the
 Agent's Configuration. The operator still provides the channel runtime and the
