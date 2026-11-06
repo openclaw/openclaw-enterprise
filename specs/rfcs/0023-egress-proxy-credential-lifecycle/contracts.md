@@ -176,20 +176,20 @@ Resolve neither contacts the provider nor signs, issues, refreshes or schedules 
 
 | Lifecycle owner interface                                   | Responsibility                                                                                                                                                                                                                                          |
 | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CredentialRefreshDriver.configureRefresh`, `refreshStatus` | Admit family, single owner, issuer, input authority, grant keys, renewal lead and minimum validity. Report configuration, eligibility, current attempt, activity, next renewal and required recovery separately.                                        |
+| `TokenService.configureRefresh`, `refreshStatus`             | Admit family, single owner, issuer, input authority, grant keys, renewal lead and minimum validity. Report configuration, eligibility, current attempt, activity, next renewal and required recovery separately.                                        |
 | `prepare`, `removeRefresh`                                  | Separately authorized management may ensure readiness or request rotation. Removal stops preparation and settles owned artifacts. Retain a family while another admitted source or grant depends on it.                                                 |
 | `CredentialIssuer.issue`, `inspect`, `retire`               | Bind attempt, input version, grant, family, epoch and deadline. Distinguish known refusal, no dispatch, candidate and uncertain exchange. Inspect without repeating issuance. Retire exact custody and report provider revocation only where supported. |
 
-For OCE-managed dynamic credentials, the **Token Service** owns this lifecycle and the warm
-reader. Start with the worker's existing background preparation, encrypted custody and fenced
-issuer attempts. The GitHub adapter issues, validates and retires an installation token. A trusted
+The **Token Service** is built into OCE. OCC uses it for dynamic credential setup, status, rotation and removal. The worker uses it for background preparation. OCE offers a credential family for enrollment when its issuer is configured. An issuer outage prevents new issuance or renewal. The sender can still use a committed token while it meets the [eligibility rules](protocol.md#dynamic-material).
+
+The Token Service owns the warm reader, encrypted custody and fenced issuer attempts for OCE-managed grants. The GitHub adapter issues, validates and retires an installation token. A trusted
 sender can receive only eligible, committed material for its admitted grant and isolation. The
 authorizer can check that the exact installed attempt and value version are still current without
 reading the token. A cold or expired lookup issues nothing. Distinguish confirmed retirement,
 expiry without confirmed revocation, and an operation whose outcome is still unknown.
 
 These interfaces can run in one process. [Protected Git](github-installation-access.md#let-a-team-keep-git-access-until-it-removes-approval)
-uses this owner. OpenShell can remain the lifecycle owner for a different credential family.
+uses this owner. A family whose grant stays in OpenShell can use an issuer adapter that delegates renewal to OpenShell. Only one component renews a given grant.
 
 ## Control operation recovery
 
