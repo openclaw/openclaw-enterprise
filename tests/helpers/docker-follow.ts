@@ -2,10 +2,15 @@
 // test that waits for a container to log something or to exit sleeps until the
 // next write, rather than starting `docker logs` and `docker inspect` every few
 // hundred milliseconds for minutes at a time.
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
+import type { Readable } from "node:stream";
+import type { TestContext } from "node:test";
+
+type CloseResult = { code?: number | null; signal?: NodeJS.Signals | null; error?: Error };
+type Child = ChildProcessByStdio<null, Readable, Readable>;
 
 // The end of a CLI's output for an error message.
-function tail(output, limit = 2048) {
+function tail(output: string, limit = 2048) {
   return output.length <= limit ? output : `[...]${output.slice(-limit)}`;
 }
 
@@ -13,7 +18,7 @@ function tail(output, limit = 2048) {
 // write or exit instead of polling.
 export function changeSignal() {
   let version = 0;
-  const waiters = new Set();
+  const waiters = new Set<() => void>();
   return {
     get version() {
       return version;
@@ -25,11 +30,11 @@ export function changeSignal() {
       }
     },
     // Resolves once anything changed after `since`, or after `timeoutMs`.
-    wait(since, timeoutMs) {
+    wait(since: number, timeoutMs: number) {
       if (version !== since) {
         return Promise.resolve();
       }
-      return new Promise((resolve) => {
+      return new Promise<void>((resolve) => {
         const done = () => {
           clearTimeout(timer);
           waiters.delete(done);
@@ -52,33 +57,43 @@ export function changeSignal() {
 // a check on a wait that has not seen the exit; an exit it finds counts from
 // Docker's FinishedAt. `t`, when given, stops both CLIs after the test.
 export function followContainer(
-  t,
-  containerName,
+  t: TestContext | null | undefined,
+  containerName: string,
   {
     docker = process.env.OCC_DOCKER_BIN ?? "docker",
     exit = true,
     changes = changeSignal(),
     inspectTimeoutMs = 20_000,
+  }: {
+    docker?: string;
+    exit?: boolean;
+    changes?: ReturnType<typeof changeSignal>;
+    inspectTimeoutMs?: number;
   } = {},
 ) {
   const streams = { stdout: "", stderr: "" };
-  const state = { running: true, exitCode: 0, exitedAt: undefined, following: true };
-  const children = [];
-  const closes = [];
-  let failure;
+  const state: {
+    running: boolean;
+    exitCode: number;
+    exitedAt: number | undefined;
+    following: boolean;
+  } = { running: true, exitCode: 0, exitedAt: undefined, following: true };
+  const children: Child[] = [];
+  const closes: Promise<CloseResult>[] = [];
+  let failure: Error | undefined;
   let stopping = false;
-  const fail = (message) => {
+  const fail = (message: string) => {
     if (!stopping && failure === undefined) {
       failure = new Error(message);
       changes.notify();
     }
   };
-  const start = (args) => {
+  const start = (args: string[]) => {
     const child = spawn(docker, args, { stdio: ["ignore", "pipe", "pipe"] });
     children.push(child);
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    const closed = new Promise((resolve) => {
+    const closed = new Promise<CloseResult>((resolve) => {
       child.once("error", (error) => resolve({ error }));
       child.once("close", (code, signal) => resolve({ code, signal }));
     });
@@ -86,7 +101,7 @@ export function followContainer(
     return { child, closed };
   };
   const logs = start(["logs", "--follow", containerName]);
-  for (const name of ["stdout", "stderr"]) {
+  for (const name of ["stdout", "stderr"] satisfies (keyof typeof streams)[]) {
     logs.child[name].on("data", (chunk) => {
       streams[name] += chunk;
       changes.notify();
@@ -104,7 +119,7 @@ export function followContainer(
   });
   let settled = false;
   // The exit as `docker wait` (or an inspect) saw it.
-  const exited = async (exitCode, at = Date.now()) => {
+  const exited = async (exitCode: number, at = Date.now()) => {
     if (settled) {
       return;
     }
@@ -113,10 +128,10 @@ export function followContainer(
     state.exitCode = exitCode;
     changes.notify();
     // `docker logs --follow` ends once it has written the container's last output.
-    let drained;
+    let drained: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       logsEnded,
-      new Promise((resolve) => (drained = setTimeout(resolve, 10_000))),
+      new Promise<void>((resolve) => (drained = setTimeout(resolve, 10_000))),
     ]);
     clearTimeout(drained);
     state.running = false;
@@ -126,7 +141,7 @@ export function followContainer(
   // finishedAt }, or undefined if it failed. finishedAt is Docker's exit time
   // (the daemon's clock, the same host here), or undefined when Docker has
   // none after the container's start or reports one later than now.
-  const inspect = async ({ timeoutMs = inspectTimeoutMs } = {}) => {
+  const inspect = async ({ timeoutMs = inspectTimeoutMs }: { timeoutMs?: number } = {}) => {
     const child = start([
       "inspect",
       containerName,
@@ -142,11 +157,11 @@ export function followContainer(
       .trim()
       .split("|")
       .map((field) => field.trim());
-    if (code !== 0 || !["true", "false"].includes(running)) {
+    if (code !== 0 || (running !== "true" && running !== "false")) {
       return undefined;
     }
-    const started = Date.parse(startedAt);
-    const finished = Date.parse(finishedAt);
+    const started = Date.parse(String(startedAt));
+    const finished = Date.parse(String(finishedAt));
     const result = {
       running: running === "true",
       exitCode: Number(exitCode),
@@ -187,10 +202,10 @@ export function followContainer(
     });
     // If the log stream ends but `docker wait` has not returned 10 s later, ask once.
     void logsEnded.then(async () => {
-      let timer;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([
         wait.closed,
-        new Promise((resolve) => (timer = setTimeout(resolve, 10_000))),
+        new Promise<void>((resolve) => (timer = setTimeout(resolve, 10_000))),
       ]);
       clearTimeout(timer);
       if (!settled && !stopping) {
