@@ -27,13 +27,14 @@ OCE already registers GitHub grants and saved OAuth accounts with its Token Serv
 
 ## What happens on a protected request?
 
-For v1, check every send online, including credential-cache hits. In one call the trusted sender asks OCC to authorize the captured request and resolve its credential. OCC checks the execution, destination and operation before resolution and rechecks access before release. Withdrawal denies the next fresh send. A redirect needs its own approval. A separately admitted positive authorization TTL could permit matching sends until a fixed deadline, even during a partition. [Request flow](request-lifecycle.svg) · [Editable diagram](request-lifecycle.mmd)
+For v1, defer both sender caches. On every protected send the trusted sender asks OCC to authorize the captured request and resolve the credential. The issuer may return an already minted token for that grant. OCC rechecks access before release. Withdrawal denies the next fresh send. A redirect requires its own approval. [Request flow](request-lifecycle.svg) · [Editable diagram](request-lifecycle.mmd) · [What a future cached read would have to match](github-integration.md#authorization-across-senders)
 
-## What must both teams agree on?
+## Proposed issuer contract
 
-OpenShell’s store and refresh engine run inside its gateway today. Versioned embedded grants are under review. The proposed remote gRPC service would let OCE deploy issuer and gateway together under separate identities, keeping signing keys and refresh tokens outside the gateway’s reach. [Embedded engine](https://github.com/NVIDIA/OpenShell/pull/5283) · [Versioned grants](https://github.com/NVIDIA/OpenShell/pull/5315) · [Remote API](https://github.com/NVIDIA/OpenShell/pull/5139)
+Deploy the issuer alongside OpenShell or separately, with its own process and service identity. Give the enrollment client authority to provision signing keys and refresh grants. Give the OCC resolver access only to the approved grant’s named output. The gateway can use neither the signer nor the refresh token.
 
-1. How does OCC enroll reusable material directly at the issuer and give its resolver access only to approved outputs, including when a Git token must be minted?
-2. How does OCC recover the committed grant or version after a lost reply? Can an imported OAuth grant stay paused until OCC switches owners?
+For a cold Git request, extend `EnsureFresh` to start or join issuance for an authorized delivery. Read the committed version through `ResolveSecrets`. If OCC loses a mutation reply, replay the same operation ID to recover its recorded result. An uncertain provider exchange stays with the issuer. [Upstream API proposal](https://github.com/NVIDIA/OpenShell/pull/5139)
+
+OpenShell has merged the embedded refresh engine. Remote delivery authorization and recovery still need implementation. During OAuth cutover, pause the selected grant, drain the old owner, and transfer its last confirmed version before enabling renewal at the new owner. [Embedded engine](https://github.com/NVIDIA/OpenShell/pull/5283) · [Proposed embedded versioning](https://github.com/NVIDIA/OpenShell/pull/5315)
 
 [Migration plan and OAuth acceptance](../../plans/0030-openshell-credential-service.md) · [First GitHub integration and installed test](github-integration.md)

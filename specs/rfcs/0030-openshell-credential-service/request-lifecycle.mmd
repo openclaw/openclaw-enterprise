@@ -1,5 +1,5 @@
 ---
-title: Proposed credential renewal and use
+title: Proposed v1 credential renewal and use
 config:
   theme: base
   themeVariables:
@@ -30,26 +30,25 @@ sequenceDiagram
     participant I as OpenShell<br/>refresh service
     participant P as Provider
     Note over A,P: Renew a saved OAuth grant, even with zero Agents
+    Note over I: Claim this grant
     I->>P: Exchange refresh token
     P-->>I: New token set
-    Note over I: Save new version
+    Note over I: Commit successor and<br/>access token together
     Note over A,P: Send a protected request
     A->>S: Request
-    opt Cache miss or zero authorization TTL
-        S->>O: Authorize and resolve
-        Note over O: Check execution,<br/>target and operation
-        O->>I: Resolve approved scope
-        alt GitHub App grant needs a token
-            I->>P: Exchange signed App JWT
-            P-->>I: Scoped token
-            Note over I: Verify and save
-        else Static key or prepared token
-            Note over I: Read current version
-        end
-        I-->>O: Credential and version
-        Note over O: Recheck grant
-        O-->>S: Credential and approval expiry
+    S->>O: Authorize and resolve
+    Note over O: Check execution,<br/>target and operation
+    O->>I: Resolve approved scope
+    alt GitHub App grant needs a token
+        I->>P: Exchange signed App JWT
+        P-->>I: Scoped token
+        Note over I: Verify and save
+    else Static key or prepared token
+        Note over I: Read current version
     end
+    I-->>O: Credential and version
+    Note over O: Recheck grant
+    O-->>S: Credential for this send
     S->>P: Inject credential and send
     P-->>S: Response
     S-->>A: Response
