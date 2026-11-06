@@ -251,14 +251,24 @@ export function googleRequestScope(input: unknown): GoogleRequestScope | undefin
 export function googleDiscoveryRequests(
   scope: GoogleRequestScope,
   entries = eligibleGoogleOperations(scope),
+  omitProviderCredentialedPaths = true,
 ) {
+  return publicGoogleDiscoveryRequests(entries.map(([id]) => id)).filter(
+    ({ host, path }) =>
+      !omitProviderCredentialedPaths ||
+      host !== scope.host ||
+      !googleSourcePathMatches(scope.path, path),
+  );
+}
+
+export function publicGoogleDiscoveryRequests(operationIds: readonly string[]) {
   const root = "www.googleapis.com";
   const directory = "/discovery/v1/apis";
   const publicRequests = [
     { host: root, path: directory, query: "" },
     { host: root, path: directory, query: "preferred=true" },
   ];
-  for (const api of new Set(entries.map(([id]) => id.split("/")[0]!))) {
+  for (const api of new Set(operationIds.map((id) => id.split("/")[0]!))) {
     const [service, version] = api.split(":");
     if (!service || !version) {
       continue;
@@ -268,7 +278,5 @@ export function googleDiscoveryRequests(
       { host: service + ".googleapis.com", path: "/$discovery/rest", query: "version=" + version },
     );
   }
-  return publicRequests.filter(
-    ({ host, path }) => host !== scope.host || !googleSourcePathMatches(scope.path, path),
-  );
+  return publicRequests;
 }

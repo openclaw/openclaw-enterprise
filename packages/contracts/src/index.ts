@@ -46,6 +46,8 @@ export type {
 export type {
   CredentialProxyBinding,
   CredentialProxyExchange,
+  SavedAccountRequest,
+  SavedAccountResolution,
   EgressPeer,
   CapturedEgressUse,
   EgressExchangeOwner,
@@ -177,7 +179,7 @@ export {
 export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";
 export { isComputePreparationFailureEvidence } from "./compute-preparation.ts";
 
-import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { asRecord, immutableCopy, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
 import {
   PluginDesiredSelectionSchema,
   PluginDesiredStateSchema,
@@ -831,7 +833,24 @@ export interface PluginCatalogPage {
   readonly setup?: { readonly message: string; readonly links: readonly PluginCatalogLink[] };
 }
 
+/** Identifies an operator-installed middleware binding without exposing its account to the workload. */
+export function savedAccountBindingId(
+  revisionId: string,
+  pluginId: string,
+  slotId: string,
+  sourceId: string,
+): string {
+  return sha256Hex(JSON.stringify([revisionId, pluginId, slotId, sourceId]));
+}
+
 export interface PluginRevisionState {
+  /** Saved OAuth selections are authorized at send time by this admitted Credential Proxy. */
+  readonly savedAccounts?: {
+    readonly credentialProxyId: string;
+    readonly registrationName: string;
+    readonly audience: string;
+    readonly sourceIds: readonly string[];
+  };
   readonly driver: PluginDriverIdentity;
   readonly plugins: PluginDesiredState;
 }
@@ -892,12 +911,32 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
   const record = asRecord(value);
   if (
     record === undefined ||
-    Object.keys(record).some((key) => key !== "driver" && key !== "plugins")
+    Object.keys(record).some(
+      (key) => key !== "driver" && key !== "plugins" && key !== "savedAccounts",
+    )
   ) {
     return false;
   }
   if (!validPluginDriverIdentity(record.driver) || record.plugins === undefined) {
     return false;
+  }
+  if (record.savedAccounts !== undefined) {
+    const saved = asRecord(record.savedAccounts);
+    if (
+      !saved ||
+      Object.keys(saved).some(
+        (key) => !["credentialProxyId", "registrationName", "audience", "sourceIds"].includes(key),
+      ) ||
+      !isNonEmptyString(saved.credentialProxyId) ||
+      !isNonEmptyString(saved.registrationName) ||
+      !isNonEmptyString(saved.audience) ||
+      !Array.isArray(saved.sourceIds) ||
+      saved.sourceIds.length === 0 ||
+      !saved.sourceIds.every(isNonEmptyString) ||
+      new Set(saved.sourceIds).size !== saved.sourceIds.length
+    ) {
+      return false;
+    }
   }
   try {
     normalizePluginDesiredState(record.plugins, (message) => {
@@ -1471,6 +1510,7 @@ export type {
 } from "./drivers/sandbox/index.ts";
 export type {
   PluginDriver,
+  PluginAccountRequest,
   PluginAccountTarget,
   PluginDriverContext,
   PluginDiscoveryAuthentication,

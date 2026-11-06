@@ -10,12 +10,39 @@ import type {
   EgressRoute,
 } from "./drivers/credential-proxy/index.ts";
 
+import type { ResolvedToken } from "./prepared-token.ts";
+import type { PluginAccountRequest } from "./drivers/plugin/index.ts";
+
+/** The selected sender authenticates the sandbox and supplies its installed route binding. */
+export interface SavedAccountRequest {
+  readonly sandboxId: string;
+  readonly workspace: string;
+  readonly requestId: string;
+  readonly deadlineAt: string;
+  readonly bindingId: string;
+  readonly binding: {
+    readonly namespaceId: string;
+    readonly agentId: string;
+    readonly revisionId: string;
+    readonly pluginId: string;
+    readonly slotId: string;
+  };
+  readonly http: PluginAccountRequest;
+}
+
+export type SavedAccountResolution = ResolvedToken | { readonly kind: "without_credential" };
+
 export interface CredentialProxyBinding {
   close(): void | Promise<void>;
 }
 
 /** Request, send and response decisions available only to the selected transport. */
 export interface CredentialProxyExchange {
+  /** Only the authenticated terminal request handler may receive the token for this dispatch. */
+  resolveSavedAccount?(
+    request: SavedAccountRequest,
+    signal: AbortSignal,
+  ): Promise<SavedAccountResolution | undefined>;
   resolve(
     authorization: string,
     sandboxId: string,

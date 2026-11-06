@@ -93,6 +93,18 @@ export class OpenShellExtensionJwtVerifier {
   }
 }
 
+export function signedSandboxId(claims: Record<string, unknown> | undefined): string | undefined {
+  const id = claims?.sandbox_id;
+  return claims?.caller_kind === "supervisor" &&
+    typeof id === "string" &&
+    id.length > 0 &&
+    id.length <= 256 &&
+    id.trim() === id &&
+    claims.sub === `spiffe://openshell/sandbox/${id}`
+    ? id
+    : undefined;
+}
+
 function instanceId(value: unknown): value is string {
   return (
     typeof value === "string" &&
@@ -276,6 +288,13 @@ export class OpenShellEgressIdentity implements EgressExchangeOwner {
       instanceId: claims.instance_id,
       expiresAt: new Date(Number(claims.exp) * 1000).toISOString(),
     };
+  }
+
+  /** The terminal credential RPC authenticates the Sandbox through its audience-bound extension JWT. */
+  credentialSandbox(authorization: string) {
+    const claims = this.claims(authorization);
+    const sandboxId = signedSandboxId(claims);
+    return sandboxId ? { sandboxId, expiresAt: Number(claims!.exp) * 1000 } : undefined;
   }
 
   /** Preliminary identity only; it cannot establish an exchange or resolve material. */

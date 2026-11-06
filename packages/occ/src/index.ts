@@ -44,6 +44,7 @@ import {
   repositoryGitAuthorization,
   credentialFreeMetadataType,
   credentialSourceMatchesSnapshot,
+  savedAccountBindingId,
   revisionCredentialSourceSnapshot,
   credentialFreeProviderRef,
   pluginRuntimeHarnessRequirement,
@@ -165,6 +166,8 @@ import type {
   CredentialProviderDefinition,
   OAuthConnectionTemplateVersion,
   SavedConnection,
+  SavedAccountRequest,
+  OAuthConnectionAccessToken,
   ConnectionAttachmentIntent,
   OAuthRefreshTokenRegistration,
   OAuthConnectionStatus,
@@ -7386,6 +7389,12 @@ export class OpenClawController {
             materialId: secret.backendRef.uid,
           };
         },
+        ...(this.selections.has("credential_proxy") && {
+          savedAccountSender: this.selectedDriver("credential_proxy").sourceControl.sender,
+        }),
+        checkSavedAccount: (request, signal, selected) =>
+          this.checkSavedAccountRequest(request, signal, selected),
+        resolveOAuth: (ref, options) => this.tokenService().resolve(ref, options),
         resolvePrepared: (key, options) =>
           this.tokenService().resolve(
             { kind: this.preparedIssuer(key.provider).tokenKind, key },
@@ -7510,6 +7519,165 @@ export class OpenClawController {
       },
       this.credentialProxyCapacity,
     );
+  }
+
+  /** Validate the installed sender before opening a fresh Agent-grant transaction. */
+  private async checkSavedAccountRequest(
+    request: SavedAccountRequest,
+    signal: AbortSignal,
+    selected?: Pick<OAuthConnectionAccessToken, "version" | "grantedScopes">,
+  ): Promise<OAuthAccountRef | { readonly kind: "without_credential" } | undefined> {
+    if (
+      signal.aborted ||
+      this.transactionContext.getStore() ||
+      !this.selections.has("credential_proxy")
+    ) {
+      return undefined;
+    }
+    const { namespaceId, agentId, revisionId, pluginId, slotId } = request.binding;
+    const owner = this.selectedProxyOwner();
+    const proxy = owner.require("credential_proxy");
+    const sandbox = owner.require("sandbox");
+    const middleware = proxy.savedAccountMiddleware;
+    if (!middleware) {
+      return undefined;
+    }
+    const { namespace, revision } = await this.state.read(async (state) => ({
+      namespace: await state.namespaces.findNamespace(namespaceId),
+      revision: await state.revisions.findRevision(namespaceId, agentId, revisionId),
+    }));
+    const plugins = revision?.plugins;
+    const saved = plugins?.savedAccounts;
+    if (
+      namespace?.status !== "ready" ||
+      !revision ||
+      revision.sandboxDriverId !== sandbox.id ||
+      !plugins ||
+      !saved ||
+      saved.credentialProxyId !== proxy.id ||
+      saved.registrationName !== middleware.registrationName ||
+      saved.audience !== middleware.audience ||
+      !plugins.plugins[pluginId]?.enabled
+    ) {
+      return undefined;
+    }
+    const driver = this.ownedPluginDriver(plugins.driver, revision.harness.id);
+    const slot = driver?.credentials?.connectionSlot?.(plugins.plugins, pluginId, slotId);
+    const sourceId = slot?.credentialSourceId;
+    if (
+      !slot?.authorizeRequest ||
+      !sourceId ||
+      !saved.sourceIds.includes(sourceId) ||
+      savedAccountBindingId(revisionId, pluginId, slotId, sourceId) !== request.bindingId ||
+      signal.aborted ||
+      !(await middleware.verifySandbox(
+        await this.credentialNamespace(namespace),
+        revision,
+        {
+          sandboxId: request.sandboxId,
+          workspace: request.workspace,
+        },
+        signal,
+      ))
+    ) {
+      return undefined;
+    }
+    return this.transact(async (state) => {
+      const currentNamespace = await this.lockNamespace(state, namespaceId);
+      const resource = { kind: "credential_source" as const, namespaceId, id: sourceId };
+      const deny = async (code: string) => {
+        await state.audit.append({
+          id: `aud_${crypto.randomUUID()}`,
+          installationId: this.installation.id,
+          namespaceId,
+          occurredAt: this.timestamp(),
+          kind: "authorization_denial",
+          actorId: revision.servicePrincipalId,
+          source: "occ",
+          action: "openclaw.egress.authorize",
+          resource,
+          outcome: "denied",
+          details: {
+            code,
+            phase: selected ? "before_send" : "before_access",
+            requestId: request.requestId,
+            revisionId,
+          },
+        });
+        return undefined;
+      };
+      const agent = await state.agents.lockAgent(namespaceId, agentId);
+      if (
+        signal.aborted ||
+        !isDeepStrictEqual(currentNamespace, namespace) ||
+        agent?.status !== "active" ||
+        agent.desiredRuntimeState !== "running" ||
+        agent.servicePrincipalId !== revision.servicePrincipalId ||
+        !agent.credentialSources?.some((binding) => binding.sourceId === sourceId)
+      ) {
+        return deny("withdrawn");
+      }
+      // A starting worker can initialize its MCP session before OCC marks that revision active.
+      if (agent.activeRevisionId !== revisionId) {
+        const latest = (await state.revisions.listRevisionMetadata(namespaceId, agentId)).at(-1);
+        const work = await state.operations.findWork(`agent_revision:${revisionId}:reconcile`);
+        if (
+          latest?.id !== revisionId ||
+          !work ||
+          controllerWorkDeploymentStatus(work, this.clock()) !== "running"
+        ) {
+          return deny("withdrawn");
+        }
+      }
+      const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
+      const account = await state.savedConnections.findSavedConnection(namespaceId, sourceId);
+      if (
+        source?.ownerCapability !== "token_service" ||
+        source.state !== "ready" ||
+        !account ||
+        account.revocationRequestedBy ||
+        !slot.issuers.includes(account.issuer)
+      ) {
+        return deny("withdrawn");
+      }
+      const target = await this.accountTarget(state, account);
+      if (!slot.acceptsRecipient(target)) {
+        return deny("scope_mismatch");
+      }
+      const decisionForRequest = slot.authorizeRequest!(
+        target,
+        selected?.grantedScopes ?? account.grantedScopes,
+        request.http,
+      );
+      if (decisionForRequest !== "credential" && decisionForRequest !== "public") {
+        return deny("scope_mismatch");
+      }
+      if (selected) {
+        const custody = await state.savedConnections.findTokenCustody(namespaceId, sourceId);
+        if (custody?.scheduledVersion !== selected.version) {
+          return deny("stale_configuration");
+        }
+      }
+      const { decision } = await this.authorizationDecision(
+        agent.servicePrincipalId,
+        "operate",
+        resource,
+      );
+      if (!decision.allowed) {
+        return deny("unauthorized");
+      }
+      if (
+        signal.aborted ||
+        this.selectedProxyOwner() !== owner ||
+        proxy.savedAccountMiddleware !== middleware ||
+        this.ownedPluginDriver(plugins.driver, revision.harness.id) !== driver
+      ) {
+        return undefined;
+      }
+      return decisionForRequest === "public"
+        ? { kind: "without_credential" }
+        : { kind: "oauth_refresh_token", namespaceId, sourceId };
+    });
   }
 
   /**
@@ -8132,6 +8300,7 @@ export class OpenClawController {
     sandboxDriverId?: string,
     repositoryGit?: RepositoryRevisionState,
     harnessAuth?: HarnessAuthSnapshot,
+    savedAccountRequests = false,
   ): Promise<ProxyPlan | undefined> {
     const sources: CredentialSource[] = [];
     let harnessCredentialSource: ProxyPlan["harnessCredentialSource"];
@@ -8164,6 +8333,16 @@ export class OpenClawController {
       }
       if (sources.length > 0) {
         throw new CredentialProxyAdmissionError("sourcesWithoutProxy");
+      }
+      return undefined;
+    }
+    if (savedAccountRequests) {
+      // Saved-account middleware applies to plugin routes, alongside the ordinary Harness.
+      // A revision with a protected Git or inference plan still needs that plan's exclusive sender.
+      if (sources.length || repositoryGit) {
+        throw new ResourceStateConflictError(
+          "The selected protected execution cannot also install a saved OAuth plugin request policy.",
+        );
       }
       return undefined;
     }
@@ -13131,20 +13310,21 @@ export class OpenClawController {
         lockedAgent.plugins && Object.keys(lockedAgent.plugins).length
           ? this.pluginDriver(revisionHarness.id, true)
           : undefined;
-      const pluginState =
-        driver && lockedAgent.plugins
-          ? immutableCopy({
-              driver: this.pluginOwner(driver, lockedAgent),
-              plugins: lockedAgent.plugins,
-            } satisfies PluginRevisionState)
-          : undefined;
-      const credentialSources = await this.admitCredentialSources(
+      const { snapshots: credentialSources, savedAccounts } = await this.admitCredentialSources(
         state,
         principalId,
         lockedAgent,
         sandbox,
         driver,
       );
+      const pluginState =
+        driver && lockedAgent.plugins
+          ? immutableCopy({
+              driver: this.pluginOwner(driver, lockedAgent),
+              plugins: lockedAgent.plugins,
+              ...(savedAccounts && { savedAccounts }),
+            } satisfies PluginRevisionState)
+          : undefined;
       const secretBindings = this.bindings(metadata.secretBindings);
       const sources = await this.authorizeBindings(
         state,
@@ -13309,6 +13489,7 @@ export class OpenClawController {
         sandbox?.id,
         repositoryCredentials,
         harnessAuth,
+        savedAccounts !== undefined,
       );
       let executionAdmission: ExecutionAdmission;
       if (egressPlan === undefined) {
@@ -14965,7 +15146,10 @@ export class OpenClawController {
     agent: Readonly<Agent>,
     sandbox: SandboxDriver | undefined,
     driver: PluginDriver | undefined,
-  ): Promise<readonly CredentialSourceSnapshot[]> {
+  ): Promise<{
+    snapshots: readonly CredentialSourceSnapshot[];
+    savedAccounts?: PluginRevisionState["savedAccounts"];
+  }> {
     const bindings = agent.credentialSources ?? [];
     if (bindings.length === 0) {
       await this.validatePluginCredentialSources(
@@ -14975,7 +15159,7 @@ export class OpenClawController {
         [],
         agent.harnessAuth,
       );
-      return [];
+      return { snapshots: [] };
     }
     const sources = await this.authorizeAgentCredentialSources(
       state,
@@ -14998,6 +15182,7 @@ export class OpenClawController {
     );
     const selectedAccounts = this.pluginAccountBindings(driver, agent.plugins);
     const snapshots: CredentialSourceSnapshot[] = [];
+    const savedSourceIds: string[] = [];
     for (const source of sources) {
       const sourceId = source.id;
       await this.authorizeAgentPrincipal(principalId, agent, "operate", {
@@ -15006,12 +15191,14 @@ export class OpenClawController {
         id: sourceId,
       });
       if (source.ownerCapability === "token_service") {
-        if (selectedAccounts.some((binding) => binding.sourceId === sourceId)) {
-          // TODO: Admit the slot when Credential Proxy supports saved OAuth account dispatch
-          // and the sender can inject its resolved bearer on each authorized request.
-          throw new ResourceStateConflictError(
-            "Credential Proxy does not yet support request-time injection for saved OAuth accounts.",
-          );
+        const slots = selectedAccounts.filter((binding) => binding.sourceId === sourceId);
+        if (slots.length) {
+          if (!sandbox || slots.some(({ slot }) => !slot.authorizeRequest)) {
+            throw new ResourceStateConflictError(
+              "Credential Proxy does not yet support request-time injection for this plugin and Sandbox.",
+            );
+          }
+          savedSourceIds.push(sourceId);
         }
         continue;
       }
@@ -15032,7 +15219,28 @@ export class OpenClawController {
         snapshots.push({ sourceId, credentialGatewayId: owner.driver.id, sourceType: source.type });
       }
     }
-    return immutableCopy(snapshots);
+    if (!savedSourceIds.length) {
+      return { snapshots: immutableCopy(snapshots) };
+    }
+    const proxy = this.selections.has("credential_proxy")
+      ? this.selectedProxyOwner().require("credential_proxy")
+      : undefined;
+    const middleware = proxy?.savedAccountMiddleware;
+    if (!proxy || !middleware) {
+      throw new ResourceStateConflictError(
+        "Credential Proxy does not yet support request-time injection for saved OAuth accounts.",
+      );
+    }
+    await middleware.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
+    return immutableCopy({
+      snapshots,
+      savedAccounts: {
+        credentialProxyId: proxy.id,
+        registrationName: middleware.registrationName,
+        audience: middleware.audience,
+        sourceIds: savedSourceIds,
+      },
+    });
   }
 
   /**
@@ -17465,6 +17673,9 @@ export class OpenClawController {
     driver.validatePlacement?.(plugins, harness, this.selectedDriver("compute").implementation, {
       sandbox: this.selections.get("sandbox")?.implementation,
       gateway: this.selections.get("credential_gateway")?.implementation,
+      savedAccountMiddleware:
+        this.selections.has("credential_proxy") &&
+        !!this.selectedDriver("credential_proxy").savedAccountMiddleware,
     });
     const required = pluginRuntimeHarnessRequirement(driver.implementation, harness);
     if (required !== undefined) {

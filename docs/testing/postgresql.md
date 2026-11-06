@@ -91,6 +91,18 @@ live gateway. Four optional Configuration cases also require
 Broad `pnpm test`, `pnpm test:integration`, and `pnpm test:postgres` include
 version-worker tests and therefore require prepared ownership.
 
+## Saved OAuth accounts on two Agents
+
+Run the [Keycloak lane](kubernetes.md#run-the-keycloak-lane) to exercise consent, rotation and detach through the OCC API. Its saved-account test sends two Agents’ requests to an HTTPS resource that calls the issuer’s userinfo endpoint. It compares bearer digests before and after rotation. It also detaches one Agent while token resolution is pending and checks that only its sibling can still reach the resource.
+
+By default a controlled client calls the real Credential Proxy over TLS. For a native sender run, set `OCC_TEST_OPENSHELL_CREDENTIAL_SENDER` to an executable that runs the compiled `openshell-supervisor-network` test binary with these arguments:
+
+```text
+--ignored --exact l7::relay::request_credential_tests::external_request_credential_dispatch --nocapture
+```
+
+Build the binary with `cargo test --locked -p openshell-supervisor-network --lib --no-run` from a version containing the terminal sender. The test passes a private fixture file through `OPENSHELL_TEST_BROKER_REQUEST` and reads the downstream HTTP status. The probe uses the production relay, verified upstream TLS and an authenticated gRPC authority. Both modes use a test-owned gateway inventory and signing key. The test never needs a personal provider account.
+
 ## GitHub human sign-in
 
 With a fresh migrated `OCC_TEST_DATABASE_URL` and the

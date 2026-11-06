@@ -170,13 +170,12 @@ Detaching removes the Agent’s grant. Other Agents keep their grants.
 
 ## Protected egress
 
-OpenShell intercepts the request and identifies the deployed execution and
-plugin slot to the Credential Proxy. OCC checks the live Agent grant, the
-slot’s saved account, and the actual request against the deployed tool or HTTP
-operation policy. Credential Proxy resolves the account’s access token through
-the Token Service and rechecks authorization before dispatch. OpenShell injects
-the bearer into that one request and discards the copy. No bearer is stored in
-an OpenShell provider or returned to the workload.
+OpenShell sends the deployed execution, plugin slot and final request to
+Credential Proxy. OCC checks the Agent grant, saved account and operation.
+Credential Proxy resolves the access token through Token Service, rechecks
+authorization, then returns the bearer and send deadline. OpenShell strips
+caller credentials, injects the bearer once and discards it. A reviewed public
+discovery request needs explicit permission to send without credentials.
 [RFC-0023 admission and sender contracts](../0023-egress-proxy-credential-lifecycle/contracts.md)
 
 For manual OAuth, OCC reads the current rows from the same manual template and

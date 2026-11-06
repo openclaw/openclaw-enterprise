@@ -607,7 +607,12 @@ export function createWorkerRevisionFixtures(
         await state.transact(async (unit) => {
           const [auth] = await controller.admitHarnessAuth(unit, actorId, owner);
           assert.deepEqual(auth, harnessAuth);
-          const sources = await controller.admitCredentialSources(unit, actorId, owner, sandbox);
+          const { snapshots: sources } = await controller.admitCredentialSources(
+            unit,
+            actorId,
+            owner,
+            sandbox,
+          );
           assert.deepEqual(sources, credentialSources);
           const configuration = { agents: { defaults: { model: "codex/fixture-model" } } };
           const plan = (chosen) =>

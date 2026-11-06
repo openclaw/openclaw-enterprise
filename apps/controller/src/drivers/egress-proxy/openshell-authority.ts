@@ -1,3 +1,8 @@
+import {
+  savedAccountBinding,
+  savedAccountCapability,
+  savedAccountHandler,
+} from "./openshell-saved-account.ts";
 import type { CredentialProxyExchange } from "@openclaw-enterprise/contracts";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -104,19 +109,28 @@ export function describeOpenShellMiddleware(
   audience: string,
   implementation: "static-egress" | "online-request-authorization",
   httpPolicySet?: OpenShellHttpPolicySet,
+  savedAccounts = false,
 ): Wire | undefined {
   const execution = implementation === "static-egress";
-  const profile = execution
-    ? [contractCapability, ...openShellExchangeCapabilities]
-    : [contractCapability];
   const peer = record(gateway);
   const supported = peer.supported_capabilities;
   const required = peer.required_capabilities;
+  const legacyExecution = execution && advertisesOpenShellExecutionProfile(supported);
+  const terminal =
+    execution &&
+    savedAccounts &&
+    Array.isArray(supported) &&
+    supported.includes(savedAccountCapability);
+  const profile = [
+    contractCapability,
+    ...(legacyExecution ? openShellExchangeCapabilities : []),
+    ...(terminal ? [savedAccountCapability] : []),
+  ];
   if (
     record(peer.protocol_version).major !== 1 ||
     !Array.isArray(supported) ||
     !supported.includes(contractCapability) ||
-    (execution && !advertisesOpenShellExecutionProfile(supported)) ||
+    (execution && !legacyExecution && !terminal) ||
     // Describe precedes protected-policy selection; only the base contract is required here.
     !Array.isArray(required) ||
     !required.includes(contractCapability) ||
@@ -126,9 +140,14 @@ export function describeOpenShellMiddleware(
   }
   const bindings = execution
     ? [
-        [1, 1],
-        [4, 1],
-        [3, 2],
+        ...(legacyExecution
+          ? [
+              [1, 1],
+              [4, 1],
+              [3, 2],
+            ]
+          : []),
+        ...(terminal ? [[5, 3]] : []),
       ]
     : httpPolicySet
       ? [
@@ -160,6 +179,7 @@ export function createOpenShellEgressAuthority(
   controller: {
     createCredentialProxy: (owner: OpenShellEgressIdentity) => CredentialProxyExchange;
   },
+  registrationName?: string,
 ): Server {
   // The verifier owns acceptance on the actual stream. No separate synthetic owner,
   // bearer-only profile or caller-selected response destination can enter this composition.
@@ -183,11 +203,28 @@ export function createOpenShellEgressAuthority(
           callback({ code: status.UNAVAILABLE, message: "Egress authority unavailable." }, null),
       );
     };
+  const savedAccounts = !!registrationName && !!forwarder.resolveSavedAccount;
+  if (registrationName && forwarder.resolveSavedAccount) {
+    server.addService(service.HttpRequestCredential!.service, {
+      Resolve: savedAccountHandler(
+        identity,
+        registrationName,
+        forwarder.resolveSavedAccount.bind(forwarder),
+      ),
+    });
+  }
   server.addService(service.SupervisorMiddleware!.service, {
     Describe: unary(async (call) => {
       const description =
-        identity.verifyControl(middlewareBearer(call.metadata)) &&
-        describeOpenShellMiddleware(call.request.gateway, identity.audience, "static-egress");
+        (identity.verifyControl(middlewareBearer(call.metadata)) ||
+          (savedAccounts && identity.credentialSandbox(middlewareBearer(call.metadata)))) &&
+        describeOpenShellMiddleware(
+          call.request.gateway,
+          identity.audience,
+          "static-egress",
+          undefined,
+          savedAccounts,
+        );
       if (!description) {
         throw new Error("Unsupported or unauthenticated counterpart.");
       }
@@ -195,8 +232,12 @@ export function createOpenShellEgressAuthority(
     }),
     ValidateConfig: unary(async (call) => ({
       valid:
-        identity.verifyControl(middlewareBearer(call.metadata)) &&
-        Object.keys(record(record(call.request.config).fields)).length === 0,
+        (identity.verifyControl(middlewareBearer(call.metadata)) &&
+          Object.keys(record(record(call.request.config).fields)).length === 0) ||
+        (savedAccounts &&
+          !!savedAccountBinding(call.request.config) &&
+          (identity.verifyControl(middlewareBearer(call.metadata)) ||
+            !!identity.credentialSandbox(middlewareBearer(call.metadata)))),
     })),
     EvaluateHttpRequest: unary(async (call) => ({
       decision: identity.supervisor(middlewareBearer(call.metadata)) ? 1 : 2,

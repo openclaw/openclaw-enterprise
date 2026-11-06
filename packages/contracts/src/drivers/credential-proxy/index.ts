@@ -1,6 +1,7 @@
 import type {
   CredentialProxyBinding,
   CredentialProxyExchange,
+  SavedAccountRequest,
   EgressExchangeOwner,
 } from "../../credential-proxy-exchange.ts";
 import { repositoryGitDeliveryProfile } from "../repo/index.ts";
@@ -434,6 +435,19 @@ export interface CredentialPolicyWithdrawalOptions {
 export interface CredentialProxyDriver extends Driver {
   readonly capability: "credential_proxy";
   readonly sourceControl: CredentialSourceControl;
+  /** The installed terminal HTTP credential operation on the paired Sandbox. */
+  readonly savedAccountMiddleware?: {
+    readonly registrationName: string;
+    readonly audience: string;
+    assertAvailable(signal: AbortSignal): Promise<void>;
+    /** Confirm the authenticated sandbox is the installed recipient for this exact revision. */
+    verifySandbox(
+      namespace: Readonly<Namespace>,
+      revision: Readonly<AgentRevision>,
+      recipient: Pick<SavedAccountRequest, "sandboxId" | "workspace">,
+      signal: AbortSignal,
+    ): Promise<boolean>;
+  };
   readonly policyReduction?: CredentialPolicyReducer;
   /** API process: bind the installed transport's exchange owner once, before accepting requests. */
   bindExchange?(

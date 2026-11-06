@@ -79,4 +79,4 @@ Saving the selection requires permission to update the Agent and operate the sav
 
 To detach a saved account, clear the plugin slots that use it on that Agent. Then call `DELETE /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`. OCC removes that Agent’s grant. Other Agents can still use their own grants.
 
-You can save an account selection and use **Load tools** for an MCP server. OCC currently refuses deployment of a plugin slot backed by a saved account. Deployment requires both saved-account request authorization in Credential Proxy and per-request bearer injection in OpenShell.
+Use **Load tools** to discover an MCP server’s tools before deployment. To use a saved account from a dedicated OpenClaw worker, select an OpenShell Credential Proxy and a supervisor that supports the [saved-account request contract](drivers/credential-proxy.md#saved-oauth-accounts). OCC checks the deployed slot and the Agent’s current grant on each request. The Token Service supplies the current access token, and the supervisor injects it for that send. OpenShell releases 0.1.6 and 0.1.7 lack this capability.

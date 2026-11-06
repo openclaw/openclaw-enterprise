@@ -12,6 +12,11 @@ import {
   managedMcpInstalls,
   managedPluginAccountSlot,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { createSavedAccountOrigin } from "../helpers/saved-account-origin.ts";
+import {
+  installSavedAccountProxy,
+  savedAccountSandboxRegistration,
+} from "../helpers/saved-account-proxy.ts";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
@@ -89,13 +94,15 @@ const lane = {
     requiresPostgres.skip ||
     (!(issuer && tokenOrigin && secretsFile) && "Prepare the keycloak-oidc CI lane."),
 };
-const reportsUrl = "https://reports.example.test/mcp";
 
 async function oauthAccounts(
   t: TestContext,
-  readManagedMcpToolNames?: ControllerAppOptions["readManagedMcpToolNames"],
+  reports?: {
+    url: string;
+    readTools: NonNullable<ControllerAppOptions["readManagedMcpToolNames"]>;
+  },
 ) {
-  const pluginWorkflow = readManagedMcpToolNames !== undefined;
+  const pluginWorkflow = reports !== undefined;
   assert.ok(issuer && tokenOrigin && secretsFile);
   const secrets = JSON.parse(await readFile(secretsFile, "utf8"));
   const clientId = `oce-saved-${randomUUID()}`;
@@ -144,21 +151,25 @@ async function oauthAccounts(
       }),
       controllerOptions: {
         preparedTokens,
-        ...(pluginWorkflow && { nativeWorkerSupport: "custom-image" }),
+        ...(pluginWorkflow && {
+          nativeWorkerSupport: "custom-image",
+          credentialProxyCapacity: { sandboxOperations: 1 },
+          driverConfigurations: [savedAccountSandboxRegistration],
+        }),
       },
       appOptions: {
         publicOrigin,
-        ...(readManagedMcpToolNames && { readManagedMcpToolNames }),
+        ...(reports && { readManagedMcpToolNames: reports.readTools }),
         // Only the fixture MCP metadata is supplied locally. OCC creates the template and
         // Keycloak serves authorization, token exchange, and user logins for this issuer.
         async discoverMcpAuthorization(serverUrl: string, selectedIssuer?: string) {
           if (pluginWorkflow) {
-            assert.equal(serverUrl, reportsUrl);
+            assert.equal(serverUrl, reports.url);
           }
           assert.equal(selectedIssuer, issuer);
           return {
             serverUrl,
-            resource: pluginWorkflow ? new URL(reportsUrl).origin : discoveredResource,
+            resource: reports ? new URL(reports.url).origin : discoveredResource,
             issuers: [issuer],
             requestedScopes: ["openid"],
             resourceScopes: ["openid", "profile"],
@@ -1061,6 +1072,8 @@ test(
   lane,
   async (t) => {
     assert.ok(issuer);
+    const origin = await createSavedAccountOrigin(t, issuer);
+    const reportsUrl = String(origin.url);
     const subjects: string[] = [];
     // Only the MCP tool reader is controlled. Keycloak must accept the real
     // bearer supplied by OCC and identify the user who granted this account.
@@ -1077,6 +1090,7 @@ test(
       controller,
       state,
       pool,
+      secretDriver,
       inject,
       namespaceId,
       base,
@@ -1087,7 +1101,7 @@ test(
       oauthClientId,
       tokenUrl,
       issuerAdmin,
-    } = await oauthAccounts(t, readTools);
+    } = await oauthAccounts(t, { url: reportsUrl, readTools });
     const pluginId = "test-keycloak";
     const slotId = "account";
     const releaseSha256 = "a".repeat(64);
@@ -1112,7 +1126,12 @@ test(
       id: pluginId,
       releaseSha256,
       url: reportsUrl,
-      endpoint: { host: new URL(reportsUrl).hostname, port: 443, path: "/mcp" },
+      slotId: "reports",
+      endpoint: {
+        host: new URL(reportsUrl).hostname,
+        port: Number(new URL(reportsUrl).port),
+        path: "/mcp",
+      },
       credentials: {
         reports: {
           ...reportAccount,
@@ -1477,5 +1496,147 @@ test(
     assert.deepEqual(admitted.json().data.credentialSources ?? [], []);
     assert.equal(await canUse(b, grant.id), true);
     assert.equal(await canUse(slotAgent, grant.id), true);
+
+    // Install the selected terminal authority and admit two actual revisions for the same
+    // saved grant. The fixture stands in for Compute activation and Gateway inventory.
+    const runtime = await installSavedAccountProxy(t, controller);
+    const ns = await state.read((view) => view.namespaces.findNamespace(namespaceId));
+    assert.ok(ns);
+    const admittedPeers = [];
+    const selectedPlugin = {
+      [pluginId]: {
+        enabled: true,
+        driverPolicy: {
+          releaseSha256,
+          credentials: { reports: report.id },
+          toolNames: ["list_reports"],
+        },
+      },
+    };
+    for (const name of ["Agent with renewed access", "Agent keeping access"]) {
+      const id = await agent(name);
+      await grantAgentSecretOperate(pool, { namespaceId, id }, harnessRef.id);
+      const save = await owner("PATCH", path(id), {
+        configurationId: config.json().data.id,
+        plugins: selectedPlugin,
+      });
+      assert.equal(save.statusCode, 200, save.body);
+      const deployment = await owner("POST", path(id) + "/deploy");
+      assert.equal(deployment.statusCode, 202, deployment.body);
+      const revision = await state.read((view) =>
+        view.revisions.findRevision(namespaceId, id, deployment.json().data.id),
+      );
+      assert.ok(revision);
+      assert.ok(
+        await state.transact((unit) =>
+          unit.agents.compareAndSetActiveRevision(namespaceId, id, undefined, revision.id),
+        ),
+      );
+      admittedPeers.push({ id, peer: runtime.peer(ns, revision, pluginId, "reports", report.id) });
+    }
+    const [agentA, agentB] = admittedPeers;
+    assert.ok(agentA && agentB);
+    const allowed = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "list_reports", arguments: {} },
+    };
+    const call = (peer: typeof agentA.peer) => origin.dispatch(peer, allowed);
+    assert.equal(await call(agentA.peer), true);
+    assert.equal(await call(agentB.peer), true);
+    assert.deepEqual(
+      origin.requests.map((r) => r.subject),
+      [carol.id, carol.id],
+    );
+    const before = origin.requests[0]!.tokenHash;
+    assert.equal(before, origin.requests[1]!.tokenHash);
+    assert.equal(
+      await origin.dispatch(agentA.peer, {
+        ...allowed,
+        params: { name: "delete_reports", arguments: {} },
+      }),
+      false,
+    );
+    assert.equal(origin.requests.length, 2, "a disabled tool never reached the issuer's resource");
+
+    // Refresh the stored grant using the normal API and real issuer, then use the unchanged deployments.
+    const tokenVersion = async () =>
+      (await state.read((view) => view.savedConnections.findTokenCustody(namespaceId, report.id)))
+        ?.scheduledVersion;
+    const initialVersion = await tokenVersion();
+    assert.ok(initialVersion);
+    const renewed = await owner("POST", base + "/credential-sources/" + report.id + "/rotate");
+    assert.equal(renewed.statusCode, 200, renewed.body);
+    const renewedVersion = await tokenVersion();
+    assert.ok(
+      renewedVersion && renewedVersion !== initialVersion,
+      "Token Service committed a new version for the existing grant",
+    );
+    assert.equal(await call(agentA.peer), true);
+    assert.equal(origin.requests[2]!.subject, carol.id);
+    const after = origin.requests[2]!.tokenHash;
+    assert.notEqual(before, after, "the first request after renewal presented the new bearer");
+
+    // Pause a real token read after Secret Driver returned its value. Commit detach before
+    // Credential Proxy's final authorization so even the in-flight request must withhold it.
+    const observed = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const read = secretDriver.withValue.bind(secretDriver);
+    const pendingRead = t.mock.method(
+      secretDriver,
+      "withValue",
+      async (...args: Parameters<typeof read>) => {
+        const selected = await read(...args);
+        observed.resolve();
+        await release.promise;
+        return selected;
+      },
+      { times: 1 },
+    );
+    const inFlight = call(agentA.peer);
+    try {
+      await Promise.race([
+        observed.promise,
+        inFlight.then(() => {
+          throw new Error("The request finished before selecting its access token.");
+        }),
+      ]);
+      assert.equal(
+        await call(agentA.peer),
+        false,
+        "one held request fills this Sandbox’s configured operation share",
+      );
+      const clear = await owner("PATCH", path(agentA.id), {
+        configurationId: config.json().data.id,
+        plugins: { [pluginId]: { enabled: true } },
+      });
+      assert.equal(clear.statusCode, 200, clear.body);
+      const revoke = await owner("DELETE", path(agentA.id) + "/connections/" + report.id);
+      assert.equal(revoke.statusCode, 204, revoke.body);
+    } finally {
+      release.resolve();
+      pendingRead.mock.restore();
+    }
+    assert.equal(await inFlight, false);
+    const beforeDenied = secretDriver.calls.length;
+    assert.equal(await call(agentA.peer), false);
+    assert.equal(
+      secretDriver.calls.length,
+      beforeDenied,
+      "a detached Agent was refused before another token read",
+    );
+    assert.equal(origin.requests.length, 3, "the detached Agent never reached the resource");
+    assert.equal(await call(agentB.peer), true);
+    assert.deepEqual(origin.requests[3], {
+      subject: carol.id,
+      tokenHash: after,
+      tool: "list_reports",
+    });
+    t.diagnostic(
+      process.env.OCC_TEST_OPENSHELL_CREDENTIAL_SENDER
+        ? "Native OpenShell relay sent four accepted requests and withheld four denied requests."
+        : "Signed gRPC test sender sent four accepted requests and withheld four denied requests.",
+    );
   },
 );

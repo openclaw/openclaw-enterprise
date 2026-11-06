@@ -67,6 +67,9 @@ export function openShellPluginPolicy(
   installationProviders: readonly string[],
 ) {
   const binding = managedCredentialBinding(revision.plugins?.plugins, managedGoogleInstall);
+  if (binding && revision.plugins?.savedAccounts?.sourceIds.includes(binding.sourceId)) {
+    return undefined; // The terminal Credential Proxy owns this slot.
+  }
   if (!binding) {
     return undefined;
   }
@@ -187,7 +190,10 @@ export function googleRequestPolicy(scope: GoogleRequestScope) {
   };
 }
 
-export function googleRequestPolicyFromSandbox(policy: unknown) {
+export function googleRequestPolicyFromSandbox(
+  policy: unknown,
+  savedMiddlewares?: Readonly<Record<string, unknown>>,
+) {
   const middlewares = asRecord(asRecord(policy)?.network_middlewares);
   if (!middlewares || !Object.hasOwn(middlewares, managedPluginMiddleware)) {
     return undefined;
@@ -199,7 +205,7 @@ export function googleRequestPolicyFromSandbox(policy: unknown) {
     unsupported("OpenShell has a stale or malformed Google account request guard.");
   }
   const expected = googleRequestPolicy(scope);
-  assertPluginRequestPolicy(policy, expected);
+  assertPluginRequestPolicy(policy, expected, savedMiddlewares);
   return expected;
 }
 
@@ -256,6 +262,7 @@ export function verifyPluginRequestGuard(
   config: Readonly<Record<string, unknown>> | undefined,
   expected: NonNullable<ReturnType<typeof openShellPluginPolicy>>,
   workspace: string,
+  savedMiddlewares?: Readonly<Record<string, unknown>>,
 ): void {
   const services = config?.supervisor_middleware_services;
   const service =
@@ -291,10 +298,14 @@ export function verifyPluginRequestGuard(
       ? { ...endpoint, provider_credentialed: true }
       : endpoint,
   );
-  assertPluginRequestPolicy(config.policy, {
-    ...expected,
-    networks: { [googleRequestRuleName]: { ...rule, endpoints } },
-  });
+  assertPluginRequestPolicy(
+    config.policy,
+    {
+      ...expected,
+      networks: { [googleRequestRuleName]: { ...rule, endpoints } },
+    },
+    savedMiddlewares,
+  );
   const routes = asRecord(asRecord(config.policy)?.network_policies);
   for (const [name, value] of Object.entries(routes ?? {})) {
     if (name === expected.providerRule.name || name === googleRequestRuleName) {
@@ -326,13 +337,14 @@ export function verifyPluginRequestGuard(
 export function assertPluginRequestPolicy(
   value: unknown,
   expected: ReturnType<typeof googleRequestPolicy>,
+  savedMiddlewares?: Readonly<Record<string, unknown>>,
 ): void {
   const policy = asRecord(value);
   if (
     !policy ||
     !isDeepStrictEqual(
       wirePolicy({ network_middlewares: policy.network_middlewares }),
-      wirePolicy({ network_middlewares: expected.middlewares }),
+      wirePolicy({ network_middlewares: { ...expected.middlewares, ...savedMiddlewares } }),
     )
   ) {
     unsupported(

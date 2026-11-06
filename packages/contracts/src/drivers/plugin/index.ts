@@ -35,6 +35,20 @@ export type PluginAccountTarget = Pick<
   "issuer" | "tokenUrl" | "destinations" | "mcp"
 >;
 
+/** The actual HTTPS request inspected by the sender, before secret headers are injected. */
+export interface PluginAccountRequest {
+  readonly target: {
+    readonly reportedScheme: "https";
+    readonly host: string;
+    readonly port: number;
+    readonly path: string;
+    readonly query: string;
+    readonly method: string;
+  };
+  readonly headers: readonly (readonly [string, string])[];
+  readonly body: Uint8Array;
+}
+
 export interface PluginDriver extends Driver {
   readonly capability: "plugin";
   /** Harness family authorized to use this catalog. */
@@ -56,6 +70,12 @@ export interface PluginDriver extends Driver {
           /** The reviewed endpoint for MCP tool discovery with a saved account. */
           readonly mcpServerUrl?: string;
           acceptsRecipient(target: PluginAccountTarget): boolean;
+          /** Decide whether this release may present the account for this request. */
+          authorizeRequest?(
+            target: PluginAccountTarget,
+            grantedScopes: readonly string[],
+            request: PluginAccountRequest,
+          ): "credential" | "public" | "deny";
           bind(sourceId: string): PluginDesiredSelection;
         }
       | undefined;
@@ -90,6 +110,7 @@ export interface PluginDriver extends Driver {
     credentialRuntime?: {
       readonly sandbox: string | undefined;
       readonly gateway: string | undefined;
+      readonly savedAccountMiddleware?: boolean;
     },
   ): void;
   listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]>;

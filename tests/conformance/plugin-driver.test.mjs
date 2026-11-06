@@ -396,6 +396,91 @@ test("managed plugin slots match saved accounts by issuer and reviewed API or MC
   ]) {
     assert.equal(mcpSlot.acceptsRecipient({ ...mcpTarget, ...changes }), false);
   }
+  const sourceId = "cs_00000000-0000-4000-8000-000000000091";
+  const activeMcp = credentials.connectionSlot(
+    {
+      [install.id]: {
+        ...mcpSlot.bind(sourceId),
+        driverPolicy: {
+          ...mcpSlot.bind(sourceId).driverPolicy,
+          toolNames: ["slack_search_messages"],
+        },
+      },
+    },
+    install.id,
+    install.slotId,
+  );
+  const request = {
+    target: { ...install.endpoint, reportedScheme: "https", query: "", method: "POST" },
+    headers: [["content-type", "application/json"]],
+    body: Buffer.alloc(0),
+  };
+  const call = (name) =>
+    JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name } });
+  const permits = (body, target = mcpTarget) =>
+    activeMcp.authorizeRequest(target, [], { ...request, body: Buffer.from(body) });
+  assert.equal(permits(call("slack_search_messages")), "credential");
+  assert.equal(permits(call("slack_send_message")), "deny");
+  assert.equal(
+    permits(call("slack_search_messages"), {
+      ...mcpTarget,
+      mcp: { ...mcp, resource: "https://other.example" },
+    }),
+    "deny",
+  );
+  assert.equal(
+    permits(
+      '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"slack_send_message","name":"slack_search_messages"}}',
+    ),
+    "deny",
+  );
+
+  // The same request body and destination become eligible only under the token's actual scopes.
+  const activeGoogle = credentials.connectionSlot(
+    { [googleId]: slot.bind(sourceId) },
+    googleId,
+    "account",
+  );
+  const google = {
+    target: {
+      reportedScheme: "https",
+      host: gmail.host,
+      port: 443,
+      method: "GET",
+      path: "/gmail/v1/users/me/messages/123",
+      query: "format=full",
+    },
+    headers: [],
+    body: Buffer.alloc(0),
+  };
+  const permitsMail = (scope, input = google) =>
+    activeGoogle.authorizeRequest(target, ["https://www.googleapis.com/auth/" + scope], input);
+  assert.equal(permitsMail("gmail.metadata"), "deny");
+  assert.equal(permitsMail("gmail.readonly"), "credential");
+  assert.equal(
+    permitsMail("gmail.metadata", {
+      ...google,
+      target: { ...google.target, query: "format=metadata" },
+    }),
+    "credential",
+  );
+  const publicRead = {
+    ...google,
+    target: {
+      ...google.target,
+      host: "www.googleapis.com",
+      path: "/discovery/v1/apis/gmail/v1/rest",
+      query: "",
+    },
+  };
+  assert.equal(permitsMail("gmail.metadata", publicRead), "public");
+  assert.equal(
+    permitsMail("gmail.metadata", {
+      ...publicRead,
+      target: { ...publicRead.target, query: "key=attacker" },
+    }),
+    "deny",
+  );
 });
 
 test("OpenClaw plugin startup translation renders native install and enablement", () => {

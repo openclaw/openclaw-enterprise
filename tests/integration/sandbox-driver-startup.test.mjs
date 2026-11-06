@@ -1424,6 +1424,106 @@ test("OpenShell builds managed MCP rules for the declared endpoint and upstream 
   );
 });
 
+test("OpenShell provisions saved OAuth slots with an authenticated terminal request authority", async () => {
+  const registrationName = "oauth-requests";
+  const audience = "oce-test-oauth-broker";
+  const client = workspaceGatewayClient();
+  const driver = openShellDriver(client, {
+    ...sandboxInstallation().drivers.sandbox.configuration,
+    egress: { middlewareName: registrationName, authorityScope: "execution" },
+  });
+  const { context, revision, requirements } = runtimeSandboxFixture(driver, {
+    harnessId: "openclaw",
+  });
+  const slackId = "cs_00000000-0000-4000-8000-000000000091";
+  const googleId = "cs_00000000-0000-4000-8000-000000000092";
+  revision.plugins = {
+    driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+    savedAccounts: {
+      credentialProxyId: "openshell-proxy",
+      audience,
+      registrationName,
+      sourceIds: [slackId, googleId],
+    },
+    plugins: {
+      [managedSlackInstall.id]: {
+        enabled: true,
+        driverPolicy: {
+          releaseSha256: managedSlackInstall.releaseSha256,
+          credentials: { account: slackId },
+          toolNames: ["slack_search_public"],
+        },
+      },
+      [managedGoogleInstall.id]: {
+        enabled: true,
+        driverPolicy: {
+          releaseSha256: managedGoogleInstall.releaseSha256,
+          credentials: { account: googleId },
+        },
+      },
+    },
+  };
+  revision.sandboxPolicy = { defaults: {}, additions: [] };
+  let created;
+  let registeredBindings = [4];
+  let bindingPolicy = 3;
+  client.createSandbox = async (input) => {
+    created = { ...input, serviceUrls: {}, resourceVersion: "1" };
+    return created;
+  };
+  client.getSandbox = async () => created;
+  // Report the policy actually sent to the gateway, with a separately observed registration.
+  client.getSandboxConfig = async (workspace) => ({
+    workspace,
+    policy_source: 1,
+    configuration_admitted: true,
+    policy_validation_failure_mode: "fail_closed",
+    extension_authentication_enabled: true,
+    supervisor_middleware_services: [
+      {
+        name: registrationName,
+        grpc_endpoint: "https://oauth-requests.example:443",
+        audience,
+        binding_policy: bindingPolicy,
+        bindings: registeredBindings,
+      },
+    ],
+    policy: created.spec.policy,
+  });
+  await driver.ensureNamespace(context);
+  const provision = () => driver.provisionHarness({ ...context, revision, requirements });
+  await provision();
+  const { network_policies: routes, network_middlewares: middleware } = created.spec.policy;
+  assert.deepEqual(
+    routes["oce-slack-mcp"].endpoints[0].rules
+      .filter(({ allow }) => allow.method === "tools/call")
+      .map(({ allow }) => allow.params.name.glob),
+    ["slack_search_public"],
+  );
+  assert.equal(middleware["oce-oauth-slack"].config.fields.agent_id.stringValue, revision.agentId);
+  assert.deepEqual(middleware["oce-oauth-slack"].endpoints.include, [
+    managedSlackInstall.endpoint.host,
+  ]);
+  assert.ok(middleware["oce-oauth-google"].endpoints.include.includes("www.googleapis.com"));
+  assert.ok(
+    routes["oce-oauth-google"].endpoints.some((endpoint) =>
+      endpoint.rules?.some(
+        ({ allow }) => allow.method === "GET" && allow.path === "/discovery/v1/apis/gmail/v1/rest",
+      ),
+    ),
+  );
+  assert.equal(created.spec.environment.SLACK_MCP_TOKEN, "oce:saved-account:SLACK_MCP_TOKEN");
+  assert.equal(created.spec.environment.GOG_ACCESS_TOKEN, "oce:saved-account:GOG_ACCESS_TOKEN");
+  assert.ok(
+    ![slackId, googleId].some((id) => created.spec.providers.includes(openShellProviderName(id))),
+  );
+  // The Gateway attests the allowed binding (4). A service that reports only the terminal RPC operation (5) has not admitted that binding.
+  bindingPolicy = 2;
+  await provision(); // An explicit operator allowlist can authorize the same terminal binding.
+  registeredBindings = [5];
+  await assert.rejects(provision, /authenticated request-time credential authority/);
+});
+
 test("OpenShell limits a Slack connection to the revision's exact MCP tools and recovers after detach", async () => {
   assert.ok(managedSlackInstall);
   const client = workspaceGatewayClient();

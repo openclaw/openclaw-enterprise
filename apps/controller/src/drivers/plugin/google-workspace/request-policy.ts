@@ -1,6 +1,9 @@
+import type { PluginAccountRequest, ConnectionEndpoint } from "@openclaw-enterprise/contracts";
 import { hasControlCharacter } from "@openclaw-enterprise/utils";
 import {
   googleCatalog,
+  eligibleGoogleOperations,
+  isGoogleWorkspaceRecipient,
   googleDiscoveryRequests,
   googleRouteCandidates,
   googleReleaseSha256,
@@ -140,7 +143,7 @@ function matchesJson(value: unknown, schema: GoogleSchema | undefined, depth = 0
 }
 
 const utf8 = new TextDecoder("utf-8", { fatal: true });
-function matchesBody(op: GoogleOperation, request: OpenShellOnlineHttpRequest) {
+function matchesBody(op: GoogleOperation, request: PluginAccountRequest) {
   if (!op.requestSchema) {
     return request.body.length === 0;
   }
@@ -176,7 +179,8 @@ function matchesBody(op: GoogleOperation, request: OpenShellOnlineHttpRequest) {
 
 function validGoogleRequest(
   scope: GoogleRequestScope,
-  request: OpenShellOnlineHttpRequest,
+  request: PluginAccountRequest,
+  discovery: "provider" | "proxy",
 ): boolean {
   const { host, path, query, port, reportedScheme, method } = request.target;
   const names = request.headers.map(([name]) => name);
@@ -210,7 +214,7 @@ function validGoogleRequest(
     return (
       method === "GET" &&
       !request.body.length &&
-      googleDiscoveryRequests(scope).some(
+      googleDiscoveryRequests(scope, undefined, discovery === "provider").some(
         (r) => r.host === host && r.path === path && r.query === query,
       )
     );
@@ -284,6 +288,30 @@ function validGoogleRequest(
   );
 }
 
+/** Public discovery uses no credential, including when an approved API shares its host. */
+export function classifyGoogleAccountRequest(
+  destinations: readonly ConnectionEndpoint[],
+  scopes: readonly string[],
+  request: PluginAccountRequest,
+): "credential" | "public" | "deny" {
+  const publicPath =
+    request.target.path.startsWith("/discovery/v1/apis") ||
+    request.target.path === "/$discovery/rest";
+  for (const endpoint of destinations) {
+    if (!isGoogleWorkspaceRecipient(endpoint)) {
+      continue;
+    }
+    const scope = { ...endpoint, scopes };
+    if (publicPath && !eligibleGoogleOperations(scope).length) {
+      continue;
+    }
+    if (validGoogleRequest(scope, request, "proxy")) {
+      return publicPath ? "public" : "credential";
+    }
+  }
+  return "deny";
+}
+
 export const googleWorkspaceRequestPolicy = {
   releaseSha256: googleReleaseSha256,
   acceptsScope(raw: string): boolean {
@@ -291,6 +319,6 @@ export const googleWorkspaceRequestPolicy = {
   },
   allows(request: OpenShellOnlineHttpRequest): boolean {
     const scope = googleScopeFromString(request.bindingConfig);
-    return scope !== undefined && validGoogleRequest(scope, request);
+    return scope !== undefined && validGoogleRequest(scope, request, "provider");
   },
 };

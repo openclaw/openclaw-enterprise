@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   isAllowedSecretBindingDestination,
   type CredentialSource,
+  type PluginAccountRequest,
   type PluginAccountTarget,
   type PluginCatalogEntry,
   type PluginDesiredState,
@@ -11,6 +12,8 @@ import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { exactDnsName } from "../credential-source-endpoint.ts";
 import { isGoogleWorkspaceRecipient } from "./google-workspace/operations.ts";
+import { classifyGoogleAccountRequest } from "./google-workspace/request-policy.ts";
+import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
 import { googleWorkspaceCredentialPolicy } from "./google-workspace/credential-policy.ts";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
@@ -402,6 +405,75 @@ export function managedMcpSlotAcceptsSource(
   );
 }
 
+const mcpClientHeaders = new Set([
+  "accept",
+  "accept-encoding",
+  "accept-language",
+  "cache-control",
+  "content-type",
+  "last-event-id",
+  "mcp-method",
+  "mcp-name",
+  "mcp-protocol-version",
+  "mcp-session-id",
+  "pragma",
+  "sec-fetch-mode",
+  "user-agent",
+]);
+
+/** The receiver can act on only the MCP methods and literal tools admitted for this release. */
+function allowsMcpAccountRequest(
+  install: ManagedMcpInstall,
+  toolNames: readonly string[],
+  request: PluginAccountRequest,
+) {
+  const { host, port, path, query, method } = request.target;
+  if (
+    host !== install.endpoint.host ||
+    port !== install.endpoint.port ||
+    path !== install.endpoint.path ||
+    new Set(request.headers.map(([header]) => header)).size !== request.headers.length ||
+    request.headers.some(([header]) => !mcpClientHeaders.has(header)) ||
+    query
+  ) {
+    return false;
+  }
+  if (method === "GET" || method === "DELETE") {
+    return toolNames.length > 0 && request.body.length === 0;
+  }
+  if (
+    method !== "POST" ||
+    !/^application\/json(?:;\s*charset=utf-8)?$/i.test(
+      request.headers.find(([name]) => name === "content-type")?.[1] ?? "",
+    )
+  ) {
+    return false;
+  }
+  const rpc = asRecord(
+    parseUnambiguousJson(new TextDecoder("utf-8", { fatal: true }).decode(request.body)),
+  );
+  if (!rpc || rpc.jsonrpc !== "2.0" || typeof rpc.method !== "string") {
+    return false;
+  }
+  const name = asRecord(rpc.params)?.name;
+  for (const [header, value] of request.headers) {
+    if (
+      (header === "mcp-method" && value !== rpc.method) ||
+      (header === "mcp-name" && value !== name)
+    ) {
+      return false;
+    }
+  }
+  if (rpc.method === "ping") {
+    return true;
+  }
+  return (
+    toolNames.length > 0 &&
+    (["initialize", "notifications/initialized", "tools/list"].includes(rpc.method) ||
+      (rpc.method === "tools/call" && typeof name === "string" && toolNames.includes(name)))
+  );
+}
+
 /** Resolve the release's named account independently of any account currently bound to it. */
 export function managedPluginAccountSlot(
   install: ManagedCliInstall | ManagedMcpInstall,
@@ -445,6 +517,32 @@ export function managedPluginAccountSlot(
     issuers: [slot.issuer],
     ...(install.kind === "mcp" && { mcpServerUrl: install.url }),
     acceptsRecipient,
+    authorizeRequest(
+      target: PluginAccountTarget,
+      grantedScopes: readonly string[],
+      request: PluginAccountRequest,
+    ): "credential" | "public" | "deny" {
+      if (
+        !selection?.enabled ||
+        !current ||
+        request.target.reportedScheme !== "https" ||
+        !acceptsRecipient(target)
+      ) {
+        return "deny";
+      }
+      try {
+        if (install.kind === "mcp") {
+          const binding = managedMcpCredentialBinding(selections, install);
+          return binding && allowsMcpAccountRequest(install, binding.toolNames, request)
+            ? "credential"
+            : "deny";
+        }
+        return classifyGoogleAccountRequest(target.destinations, grantedScopes, request);
+      } catch {
+        // Malformed encodings and ambiguous JSON cannot identify an authorized operation.
+        return "deny";
+      }
+    },
     bind(sourceId: string) {
       return {
         ...selection,

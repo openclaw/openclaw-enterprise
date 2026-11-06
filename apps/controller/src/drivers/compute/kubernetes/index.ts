@@ -6429,6 +6429,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       revision.plugins?.plugins,
       sandboxDriver?.implementation,
       this.credentialGatewayDriver?.implementation,
+      !!revision.plugins?.savedAccounts,
     );
     requireNativeWorkerSandbox(revision.harness, sandboxDriver);
     if (sandboxDriver !== undefined && embedded) {

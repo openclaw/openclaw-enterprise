@@ -1,3 +1,8 @@
+import {
+  assertSavedAccountRules,
+  openShellSavedAccountPolicy,
+  verifySavedAccountPolicy,
+} from "./openshell-saved-account-policy.ts";
 import { managedCredentialEnvironment } from "./openshell-plugin-runtime.ts";
 import {
   openShellRepositoryAccess,
@@ -2183,6 +2188,7 @@ function sandboxSpec(
   egressPolicy?: Readonly<Record<string, unknown>>,
   plugin?: ReturnType<typeof openShellPluginPolicy>,
   mcpPolicies: ReturnType<typeof openShellManagedMcpPolicies> = [],
+  savedAccounts?: ReturnType<typeof openShellSavedAccountPolicy>,
 ) {
   const defaults = revision.sandboxPolicy?.defaults ?? networkPolicies(options);
   const additions = openShellAgentNetworkRules(revision.sandboxPolicy?.additions ?? []);
@@ -2198,6 +2204,11 @@ function sandboxSpec(
   for (const { install } of mcpPolicies) {
     assertNoManagedMcpRouteOverlap(defaults, install);
     assertNoManagedMcpRouteOverlap(additions, install);
+  }
+  if (savedAccounts) {
+    const hosts = [...savedAccounts.hosts];
+    assertPluginNetworkInspection(defaults, hosts);
+    assertPluginNetworkInspection(additions, hosts);
   }
   const dataMount = sandboxDataMount(options, requirements);
   const workspace = workspaceVolumeMounts(requirements, dataMount, revision.id);
@@ -2241,6 +2252,7 @@ function sandboxSpec(
         workspace.workspaceMountPaths,
       ),
       ...(plugin && { [managedCredentialEnvironment]: plugin.environment }),
+      ...savedAccounts?.environment,
     },
     template: {
       image: requirements.image,
@@ -2260,12 +2272,15 @@ function sandboxSpec(
         run_as_group: options.policy.process.runAsGroup,
       },
       ...(egressPolicy && { network_middlewares: egressPolicy.network_middlewares }),
-      ...(plugin && { network_middlewares: plugin.middlewares }),
+      ...((plugin || savedAccounts) && {
+        network_middlewares: { ...plugin?.middlewares, ...savedAccounts?.middlewares },
+      }),
       network_policies: {
         // A protected execution keeps the exact policy and model attachment verified before provisioning.
         ...(egressPolicy ? asRecord(egressPolicy.network_policies) : defaults),
         ...(egressPolicy ? {} : additions),
         ...plugin?.networks,
+        ...savedAccounts?.networks,
         ...Object.fromEntries(mcpPolicies.map(({ network }) => [network.name, network])),
         ...(runtimeProvider === undefined || workspaceNodeBinding === undefined
           ? {}
@@ -3254,6 +3269,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const codex = context.revision.harness.id === "codex";
     const client = this.gatewayClientForNamespace(sandbox.namespaceName);
     const workspace = workspaceName(context.namespace);
+    const savedAccounts = openShellSavedAccountPolicy(
+      context.revision,
+      this.options.egress?.middlewareName,
+    );
     const plugin = openShellPluginPolicy(
       context.revision,
       context.requirements,
@@ -3306,11 +3325,14 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     const checkEffectivePolicy = async () => {
       const config =
-        plugin || mcpPolicies.length
+        plugin || mcpPolicies.length || savedAccounts
           ? await client.getSandboxConfig?.(workspace, sandbox.resourceName, context.signal)
           : undefined;
+      if (savedAccounts) {
+        verifySavedAccountPolicy(config, savedAccounts, workspace);
+      }
       if (plugin) {
-        verifyPluginRequestGuard(config, plugin, workspace);
+        verifyPluginRequestGuard(config, plugin, workspace, savedAccounts?.middlewares);
       }
       for (const policy of mcpPolicies) {
         verifyManagedMcpPolicy(config, policy, workspace);
@@ -3380,6 +3402,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         egressPolicy,
         plugin,
         mcpPolicies,
+        savedAccounts,
       ),
       serviceExposures,
     };
@@ -3549,7 +3572,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       !plugin &&
       managedCredentialBinding(context.revision.plugins?.plugins, managedGoogleInstall)
     ) {
-      const previous = googleRequestPolicyFromSandbox(existing.spec?.policy);
+      const previous = googleRequestPolicyFromSandbox(
+        existing.spec?.policy,
+        savedAccounts?.middlewares,
+      );
       if (previous) {
         expectedSpec = {
           ...expectedSpec,
@@ -3559,7 +3585,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           },
           policy: {
             ...expectedSpec.policy,
-            network_middlewares: previous.middlewares,
+            network_middlewares: { ...previous.middlewares, ...savedAccounts?.middlewares },
             network_policies: { ...expectedSpec.policy.network_policies, ...previous.networks },
           },
         };
@@ -4517,9 +4543,19 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new Error("Missing policy baseline.");
     }
     const candidate = openShellPolicyCandidate(baseline, input.snapshot);
-    const plugin = googleRequestPolicyFromSandbox(baseline);
+    const savedAccounts = openShellSavedAccountPolicy(
+      context.revision,
+      this.options.egress?.middlewareName,
+    );
+    if (savedAccounts) {
+      assertSavedAccountRules(candidate, savedAccounts);
+      assertPluginNetworkInspection(openShellAgentNetworkRules(input.snapshot.additions), [
+        ...savedAccounts.hosts,
+      ]);
+    }
+    const plugin = googleRequestPolicyFromSandbox(baseline, savedAccounts?.middlewares);
     if (plugin) {
-      assertPluginRequestPolicy(candidate, plugin);
+      assertPluginRequestPolicy(candidate, plugin, savedAccounts?.middlewares);
     } else {
       const binding = managedCredentialBinding(
         context.revision.plugins?.plugins,

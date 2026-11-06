@@ -1,3 +1,4 @@
+import { savedAccountCapability } from "./openshell-saved-account.ts";
 import type { ModelProviderConfiguration } from "../compute/model-provider.ts";
 import { wirePolicy } from "./openshell-wire-policy.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
@@ -266,6 +267,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   readonly implementation = "openshell";
   readonly id: string;
   readonly sourceControl: CredentialSourceControl;
+  readonly savedAccountMiddleware?: NonNullable<CredentialProxyDriver["savedAccountMiddleware"]>;
   readonly bindExchange?: NonNullable<CredentialProxyDriver["bindExchange"]>;
   readonly bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>;
   private readonly mandatoryEnforcement?: OpenShellGitRuntime["mandatoryEnforcement"];
@@ -341,7 +343,51 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     const exchange = selection.exchangeAuthority;
     if (exchange) {
       this.bindExchange = (createProxy) =>
-        bindOpenShellExchange(exchange, this.sourceControl.sender, createProxy);
+        bindOpenShellExchange(
+          exchange,
+          this.sourceControl.sender,
+          options.middlewareName,
+          createProxy,
+        );
+      this.savedAccountMiddleware = {
+        registrationName: options.middlewareName,
+        audience: exchange.audience,
+        verifySandbox: async (namespace, revision, recipient, signal) => {
+          const workspace = openShellWorkspaceName(namespace);
+          if (workspace !== recipient.workspace) {
+            return false;
+          }
+          const ref = this.sandbox.harnessResource!({ namespace, revision });
+          const client = this.backend.client.clientForNamespace(ref.namespaceName);
+          const existing = await client.getSandbox({ workspace, name: ref.resourceName }, signal);
+          if (!existing || existing.id !== recipient.sandboxId) {
+            return false;
+          }
+          this.assertOwned(existing.annotations, { namespace, revision });
+          return true;
+        },
+        assertAvailable: async (signal) => {
+          const client = this.backend.client.clientForNamespace("");
+          const info = await client.getGatewayInfo?.(signal);
+          if (
+            !Array.isArray(info?.extensions) ||
+            !info.extensions.some((value) => {
+              const item = asRecord(value);
+              return (
+                item?.configured_name === options.middlewareName &&
+                (item.kind === 4 || item.kind === "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE") &&
+                item.protocol_major === 1 &&
+                Array.isArray(item.supported_capabilities) &&
+                item.supported_capabilities.includes(savedAccountCapability)
+              );
+            })
+          ) {
+            throw new DependencyUnavailableError(
+              "The selected OpenShell gateway must support request-time credential injection for saved OAuth accounts.",
+            );
+          }
+        },
+      };
     }
     if (options.observedHookPreviewWorkspace && selection.previewEnforcement) {
       this.previewEnforcement = selection.previewEnforcement;
@@ -667,7 +713,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
 
   private assertOwned(
     annotations: Readonly<Record<string, string>>,
-    context: ProxyRevisionContext,
+    context: Pick<ProxyRevisionContext, "namespace" | "revision">,
   ): void {
     if (
       annotations["openclaw.dev/namespace-id"] !== context.namespace.id ||

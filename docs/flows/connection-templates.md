@@ -85,7 +85,9 @@ OCC reads the Agent’s Configuration and selects the Plugin Driver for its Harn
 
 Saving a selection checks the exact slot, account and Agent permissions together. Starting OAuth from a saved slot also records the release and current binding. When the browser returns, OCC checks both before replacing that slot. The account stays with its owner if the binding changed during consent.
 
-For **Load tools**, OCC checks the caller’s permission and the saved MCP server and resource before resolving a token. This request originates in the Console. For Agent traffic, Credential Proxy must authorize the deployed revision and the slot’s operation before OpenShell can present the bearer. OCC refuses deployment of a selected saved-account slot until Credential Proxy supports dispatch for saved accounts and OpenShell supports injection for the authorized request. An unused account grant creates no runtime credential.
+For **Load tools**, OCC checks the caller’s permission and the saved MCP server and resource before resolving a token. This request originates in the Console.
+
+At deployment, OCC records the selected Credential Proxy and source IDs on the revision. The Sandbox Driver puts each slot’s nonsecret binding into a terminal middleware rule. OpenShell applies its network and operation policies, then sends the final HTTPS request details to the selected authority. OCC verifies the supervisor’s signed Sandbox identity against the revision and checks the Agent grant, saved account, current destinations and operation. Token Service resolves the token outside the policy transaction. Before replying, OCC rechecks authorization and the token version. OpenShell presents the bearer once. An already authorized send can finish after detach. [Terminal request handler](../../apps/controller/src/drivers/egress-proxy/openshell-saved-account.ts) · [Credential Proxy contract](../reference/drivers/credential-proxy.md#saved-oauth-accounts)
 
 ## Debugging and Verification
 
