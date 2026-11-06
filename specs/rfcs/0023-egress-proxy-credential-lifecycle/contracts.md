@@ -27,9 +27,14 @@ account served by Credential Proxy. With a selected Proxy, omitting this option 
 the protected admission rules. A missing sender capability never changes the selected
 delivery path. Existing sources keep their recorded custody and protection.
 
+Compute checks the complete candidate revision and records the selected delivery at admission.
+A worker rechecks that admission and the current drivers before releasing credentials. A historical
+unprotected revision alone cannot establish that the operator selected Gateway model delivery or
+a saved plugin account’s request-time sender.
+
 | Protection                         | What Compute may release                                                                                                                                                                                                                                                                          |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `unprotected`                      | An explicit no-op for local development or minimal CI. The Agent has a control-plane identity, but OCE does not govern its direct requests. Refuse managed routes, bindings, preparation or clone. Supply no managed or ambient substitute credential.                                            |
+| `unprotected`                      | No protected dispatch plan. Local and minimal CI executions receive no substitute credential. A dedicated revision may carry its separately admitted Gateway model binding and saved plugin account sender. Refuse bindings that require protected dispatch.                                      |
 | `protected {authority: execution}` | Sandbox prevents bypass. Every process in the execution shares its egress authority. A route may explicitly require no provider credential. Zero allowed routes means deny all. Carry forward narrower legacy authority only with evidence of equivalence or fresh consent to the wider boundary. |
 
 OCC validates closed, versioned schemas before reading a Secret or causing effects. A reference is
@@ -177,16 +182,16 @@ identity, value version and `usableUntil`. Caller limits may tighten, never wide
 For a dynamic credential, OCC delegates freshness to the Token Service. The sender
 receives only committed material for the authorized operation.
 
-| Interface                                                                       | Responsibility                                                                                                            |
-| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `SecretDriver.readCredentialInput(secret, material, permit, retention, bounds)` | Read the authorized static target with an immutable version, authoritative observation time and expiry where present.     |
-| `WarmCredentialReader.readWarm`                                                 | Read eligible committed material for the exact grant and isolation after the Token Service resolves freshness. |
+| Interface                                                                       | Responsibility                                                                                                        |
+| ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `SecretDriver.readCredentialInput(secret, material, permit, retention, bounds)` | Read the authorized static target with an immutable version, authoritative observation time and expiry where present. |
+| `WarmCredentialReader.readWarm`                                                 | Read eligible committed material for the exact grant and isolation after the Token Service resolves freshness.        |
 
-| Lifecycle owner interface                                   | Responsibility                                                                                                                                                                                                                                          |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TokenService.configureRefresh`, `refreshStatus`             | Admit family, single owner, issuer, input authority, grant keys, renewal lead and minimum validity. Report configuration, eligibility, current attempt, activity, next renewal and required recovery separately.                                        |
-| `prepare`, `removeRefresh`                                  | Separately authorized management may ensure readiness or request rotation. Removal stops preparation and settles owned artifacts. Retain a family while another admitted source or grant depends on it.                                                 |
-| `CredentialIssuer.issue`, `inspect`, `retire`               | Bind attempt, input version, grant, family, epoch and deadline. Distinguish known refusal, no dispatch, candidate and uncertain exchange. Inspect without repeating issuance. Retire exact custody and report provider revocation only where supported. |
+| Lifecycle owner interface                        | Responsibility                                                                                                                                                                                                                                          |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TokenService.configureRefresh`, `refreshStatus` | Admit family, single owner, issuer, input authority, grant keys, renewal lead and minimum validity. Report configuration, eligibility, current attempt, activity, next renewal and required recovery separately.                                        |
+| `prepare`, `removeRefresh`                       | Separately authorized management may ensure readiness or request rotation. Removal stops preparation and settles owned artifacts. Retain a family while another admitted source or grant depends on it.                                                 |
+| `CredentialIssuer.issue`, `inspect`, `retire`    | Bind attempt, input version, grant, family, epoch and deadline. Distinguish known refusal, no dispatch, candidate and uncertain exchange. Inspect without repeating issuance. Retire exact custody and report provider revocation only where supported. |
 
 OCE’s built-in **Token Service** owns the warm reader, encrypted custody and fenced issuer
 attempts. OCC uses it for setup, status, rotation and removal. The worker uses it for background
