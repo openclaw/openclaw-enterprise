@@ -84,8 +84,7 @@ QA model overrides default to `gpt-6-luna`.
 For hosted QA scenario exclusions, see [Full Integration](full-integration.md#scenarios).
 
 Every `integration-main` job can reference its combined secret set. Workflow
-steps pass only their selected inputs to tests. Preserve the old environments
-until credential migration and hosted verification are complete.
+steps pass only their selected inputs to tests.
 
 <a id="cleanup-command-deadlines"></a>
 <a id="select-immutable-images-for-local-preparation"></a>
