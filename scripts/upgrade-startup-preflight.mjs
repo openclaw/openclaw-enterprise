@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Builds and reads the one-shot Pods that scripts/upgrade-production-images runs
+// Builds and reads the one-shot Jobs that scripts/upgrade-production-images runs
 // before it stops OCC: the selected controller image loads the candidate
 // Installation and runs the bundled Kubernetes Compute preflight exactly as the
 // API and worker do at startup, without a database.
@@ -270,12 +270,12 @@ const containerFields = [
   "resources",
 ];
 
-// One Pod per component, copied from the rendered candidate Deployment: the same
-// image, environment, mounts, service account and placement, with the Installation
+// One Job per component uses the rendered Deployment's image, environment, mounts,
+// service account and placement, with the Installation
 // volume pointed at the temporary candidate Secret. Probes, ports and the chart's
 // other containers are left out; the Pod runs the startup check once. The stored
 // Installation name comes from the helper's `occ installation get` output.
-function pod([
+function job([
   renderedPath,
   component,
   name,
@@ -356,18 +356,27 @@ function pod([
     container.env.push({ name: draftsVariable, value: `${draftsDirectory}/${draftsKey}` });
   }
   return {
-    apiVersion: "v1",
-    kind: "Pod",
+    apiVersion: "batch/v1",
+    kind: "Job",
     metadata: { name, namespace, labels: labels(release) },
     spec: {
-      ...Object.fromEntries(
-        podFields.filter((field) => field in spec).map((field) => [field, spec[field]]),
-      ),
-      restartPolicy: "Never",
+      backoffLimit: 0,
+      completions: 1,
+      parallelism: 1,
       activeDeadlineSeconds: Number(timeoutSeconds),
-      enableServiceLinks: false,
-      containers: [container],
-      volumes,
+      template: {
+        metadata: { labels: labels(release) },
+        spec: {
+          ...Object.fromEntries(
+            podFields.filter((field) => field in spec).map((field) => [field, spec[field]]),
+          ),
+          restartPolicy: "Never",
+          activeDeadlineSeconds: Number(timeoutSeconds),
+          enableServiceLinks: false,
+          containers: [container],
+          volumes,
+        },
+      },
     },
   };
 }
@@ -401,6 +410,85 @@ function networkPolicy([renderedPath, name, namespace, release]) {
       egress: structuredClone(sources.flatMap((document) => document.spec?.egress ?? [])),
     },
   };
+}
+
+// Labels discover candidates; only the actual Job controller reference establishes ownership.
+function ownedPods(document, jobUid) {
+  if (!Array.isArray(document.items)) {
+    fail("cannot read startup preflight child Pods.");
+  }
+  const pods = document.items.filter(
+    (pod) =>
+      Array.isArray(pod.metadata?.ownerReferences) &&
+      pod.metadata.ownerReferences.some(
+        (owner) =>
+          owner.apiVersion === "batch/v1" &&
+          owner.kind === "Job" &&
+          owner.controller === true &&
+          owner.uid === jobUid,
+      ),
+  );
+  if (pods.length !== document.items.length) {
+    fail("startup preflight Pod labels do not match its controller ownership.");
+  }
+  return pods;
+}
+
+function child([jobPath, jobUid, podsPath, previousUid]) {
+  const job = JSON.parse(readFileSync(jobPath, "utf8"));
+  if (job.metadata?.uid !== jobUid) {
+    fail("startup preflight Job identity changed.");
+  }
+  const pods = ownedPods(JSON.parse(readFileSync(podsPath, "utf8")), jobUid);
+  if (pods.length > 1) {
+    fail("startup preflight Job created more than one child Pod.");
+  }
+  if (pods.length === 0) {
+    if (
+      job.status?.conditions?.some(
+        (condition) =>
+          ["Failed", "Complete"].includes(condition.type) && condition.status === "True",
+      )
+    ) {
+      fail("startup preflight Job ended without its child Pod evidence.");
+    }
+    return "";
+  }
+  const pod = pods[0];
+  if (
+    typeof pod.metadata.name !== "string" ||
+    !/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(pod.metadata.name) ||
+    typeof pod.metadata.uid !== "string" ||
+    !pod.metadata.uid ||
+    /[\s\p{C}]/u.test(pod.metadata.uid) ||
+    pod.metadata.namespace !== job.metadata.namespace ||
+    !pod.metadata.ownerReferences.some(
+      (owner) =>
+        owner.apiVersion === "batch/v1" &&
+        owner.kind === "Job" &&
+        owner.controller === true &&
+        owner.uid === jobUid &&
+        owner.name === job.metadata.name,
+    ) ||
+    (previousUid && pod.metadata.uid !== previousUid)
+  ) {
+    fail("startup preflight child Pod identity changed or is invalid.");
+  }
+  return JSON.stringify(pod);
+}
+
+function remaining([jobPath, jobUid, podsPath, childPath, childUid]) {
+  const jobText = readFileSync(jobPath, "utf8").trim();
+  const job = jobText ? JSON.parse(jobText) : undefined;
+  const childText = readFileSync(childPath, "utf8").trim();
+  const pod = childText ? JSON.parse(childText) : undefined;
+  return String(
+    Boolean(
+      job?.metadata?.uid === jobUid ||
+      ownedPods(JSON.parse(readFileSync(podsPath, "utf8")), jobUid).length ||
+      (childUid && pod?.metadata?.uid === childUid),
+    ),
+  );
 }
 
 // Prints Succeeded, Failed, Stuck:<reason> for a waiting state that never resolves
@@ -441,12 +529,16 @@ const [action, ...input] = process.argv.slice(2);
 const actions = {
   drafts: [3, drafts],
   secret: [6, (values) => JSON.stringify(secret(values))],
-  pod: [11, (values) => JSON.stringify(pod(values))],
+  job: [11, (values) => JSON.stringify(job(values))],
+  child: [4, child],
+  remaining: [5, remaining],
   refusals: [1, refusals],
   networkpolicy: [4, (values) => JSON.stringify(networkPolicy(values))],
   phase: [1, phase],
 };
 if (!(action in actions) || input.length !== actions[action][0]) {
-  fail("expected drafts, secret, pod, refusals, networkpolicy, or phase with its arguments.");
+  fail(
+    "expected drafts, secret, job, child, remaining, refusals, networkpolicy, or phase with its arguments.",
+  );
 }
 process.stdout.write(`${actions[action][1](input)}\n`);

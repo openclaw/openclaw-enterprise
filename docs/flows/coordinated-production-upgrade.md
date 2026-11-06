@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-05"
-last_updated_session: "authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2"
+updated: "2026-11-06"
+last_updated_session: "authoring-run/fd9ca628-3661-4fb1-927c-661ea85ae64d"
 ---
 
 # Production image upgrade flow
@@ -29,9 +29,11 @@ read-only Doctor lint.
 graph TD
     A["Validate inputs"] --> Q{"Repository broker enabled?"}
     Q -->|Yes| P["Check image protocol and node architectures"]
-    Q -->|No| B["Render and check candidate startup"]
+    Q -->|No| B["Render and check candidate startup with Jobs"]
     P --> B
-    B --> R{"Preflight only?"}
+    B --> V{"Startup and cleanup confirmed?"}
+    V -->|No| X["Stop and retain recovery evidence"]
+    V -->|Yes| R{"Preflight only?"}
     R -->|Yes| S["Exit without prepared deployment"]
     R -->|No| T["Save prepared recovery record"]
     T --> C["Read live Secret and Helm state"]
@@ -100,11 +102,13 @@ This verifies the Driver and broker protocol; Kubernetes image availability,
 receipt durability and disposal remain unverified. The live broker hostname
 stays fixed. For restart recovery, follow the [broker procedure](../guides/repository-credentials/installation.md#install-and-verify).
 
-After rendering and a server-side Helm dry run,
+After the Helm server dry run,
 [`scripts/upgrade-startup-preflight.mjs`](../../scripts/upgrade-startup-preflight.mjs)
-copies API and worker templates into one-shot Pods with the image,
-environment, mounts and service account; the Installation mount uses a temporary
-candidate Secret.
+copies API/worker images, environment, mounts and service accounts into Jobs,
+substituting the candidate Installation Secret. Each Job allows one completion,
+one parallel Pod, no retry, and the selected deadline. `preflight_startup` verifies
+the acknowledged Job UID and child controller reference. Missing children wait;
+replaced or multiple children refuse preparation.
 
 An API Pod with a theme first calls
 `apps/controller/src/composition/console-theme.ts:loadConsoleTheme`. Invalid bundles
@@ -115,20 +119,18 @@ Drivers and Preset files without opening the database.
 typed configuration refusals with up to 32 field diagnostics through the API/worker
 log filter. The helper saves logs before writers stop.
 
-With the bundled Kubernetes Compute Driver, each Pod runs
-`KubernetesComputeDriver.preflight` with its Kubernetes credentials (its service
-account in `inCluster` mode), as API and worker startup do. This refuses, for
-example, single-cluster [split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
-Each Pod checks the stored Installation name from `occ installation get` with
-the image's `isName`, as the controller does after reading the database
-(`INSTALLATION_NAME_INVALID`); an image without the rule skips it.
+Each Pod runs `KubernetesComputeDriver.preflight` with its Kubernetes credentials
+(service account in `inCluster` mode), matching normal startup and refusing
+[split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
+The image's `isName` validates the stored name from `occ installation get`
+(`INSTALLATION_NAME_INVALID`); images without this rule skip it.
 
-During runtime upgrades the candidate API Pod resolves each recorded draft's Harness
-(`resolveConfiguredHarnessId`) before `refuseUndeployableConfigurationValues`. Deploy checks
-live Harness state. Refusals stop preparation while the old API and worker serve. Correct
-refused drafts or stop their Agents. For images providing values checks without a working resolver,
-select a corrected controller image. Retry with a new evidence directory. Preflight warns and defers
-to deploy when images predate the check or gzipped drafts plus the Installation exceed 1 MiB.
+For runtime upgrades, the API Pod calls `resolveConfiguredHarnessId` before
+`refuseUndeployableConfigurationValues` on recorded drafts; deploy checks live
+Harness state. Refusals leave old writers serving. Correct drafts, stop affected
+Agents, or replace images lacking a working resolver, then use fresh evidence.
+Images predating this check, or drafts plus Installation exceeding 1 MiB gzipped,
+warn and defer validation to deploy.
 
 Experimental two-cluster Pods also run
 `KubernetesComputeDriver.verifyExecutionTenantGrants` for their component; startup
@@ -140,16 +142,19 @@ and `delete`. Worker Job grants are required even with runtime logs disabled.
 A missing rule refuses the candidate and points to
 [upgrading the execution chart](../testing/kubernetes.md#upgrade-the-execution-chart).
 
-When the chart renders `openclaw-enterprise-dependency-egress`, the helper first
-creates a temporary NetworkPolicy with its egress and execution-cluster API
-rules. The chart's default-deny NetworkPolicy also selects the Pods. It saves Pod
-statuses and logs only after both creates. A startup failure, stuck image pull,
-timeout, failed create, or missing usable UID stops preparation before writers
-stop and keeps kubectl's error in `preflight-<resource>-create.err`. Best-effort
-cleanup deletes the temporary Secret, Pods, and conditional NetworkPolicy only by
-the unique ID (UID) returned on create, leaving same-name replacements alone;
-`preflight-cleanup.err` records refusals. The operator checks whether an
-ambiguous create left an object behind.
+The helper copies `openclaw-enterprise-dependency-egress` into a temporary
+NetworkPolicy, including execution-cluster API rules. Job templates retain the
+labels selecting this policy and the chart's default deny. Controller ownership
+addresses the EKS standalone-Pod limitation; verify target-cluster enforcement.
+
+Startup failures, timeouts and unconfirmed creates stop preparation before writers
+stop. Create errors remain in `preflight-<resource>-create.err`.
+`cleanup_preflight` requests UID-guarded foreground Job deletion and polls with a
+30-second deadline per Job for removal of that Job, its UID-selected children and
+recorded child. Only then does it delete the Secret and policy by original UID.
+Ambiguous Job creates or unconfirmed consumer cleanup retain these dependencies
+and refuse progress. Replacements remain untouched. Reconcile failures recorded
+in `preflight-cleanup.err` before retrying.
 
 `--preflight-only` leaves writers serving with private, non-resumable evidence.
 Preparation saves candidates, inventory, target identity and parameter hashes
@@ -161,7 +166,7 @@ drafts per the [production guide](../guides/deploy/production-upgrade.md).
 
 ### 2. Reconcile a prior attempt
 
-`scripts/upgrade-production-images:1040`
+`scripts/upgrade-production-images:1419`
 
 Resume requires prepared evidence; otherwise reconcile preflight resources and
 use fresh evidence per [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
@@ -178,7 +183,7 @@ committed; operator-owned checks do not roll them back.
 
 ### 3. Quiesce writers and run the candidate release
 
-`scripts/upgrade-production-images:624`
+`scripts/upgrade-production-images:quiescence_remaining`
 
 Before changing the Secret or invoking Helm, the script scales the selected API
 and worker Deployments to zero, waits until their Pods disappear, and confirms
@@ -202,7 +207,7 @@ it does not start the old image to undo a committed schema change.
 
 ### 4. Verify control-plane recovery
 
-`scripts/upgrade-production-images:694`
+`scripts/upgrade-production-images:1565`
 
 The script waits for both OCC Deployments and checks controller images,
 replica counts, and changed Installation checksums. Each component needs
@@ -327,6 +332,8 @@ saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 10:19: Run startup preflight in controller-owned Jobs and retain dependencies until consumer cleanup is confirmed. (authoring-run/fd9ca628-3661-4fb1-927c-661ea85ae64d - 8e8035a0c073e2779aa7b32ece5dff449449f5b2)
 
 - 2026-11-05 13:53: Require settled Doctor maintenance before runtime startup. (authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2 - 644b3f9328e9125030e958c7b4233ac37c54b139)
 
