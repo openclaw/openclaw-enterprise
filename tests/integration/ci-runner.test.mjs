@@ -5251,6 +5251,123 @@ test('scenario', { signal: controller.signal }, async (t) => {
   }
 });
 
+test("first-Agent command timing pairs runtime outcomes before CI projection", async (t) => {
+  const root = await fixture(t);
+  const resultsPath = join(root, "results/runtime-outcomes.json");
+  await mkdir(join(root, "bin"));
+  await mkdir(join(root, "tests/helpers"));
+  await writeFile(
+    join(root, "tests/helpers/local-first-agent-stack.mjs"),
+    await readFile(join(repositoryRoot, "tests/helpers/local-first-agent-stack.mjs")),
+  );
+  const runtime = "[occ-dev-timing] stage=runtime-build elapsed_ms=11 failed=true";
+  const outcome = "[occ-dev-outcome] stage=runtime-build outcome=";
+  const lines = [
+    runtime,
+    outcome + "nonzero-exit",
+    outcome + "nonzero-exit",
+    runtime,
+    outcome + "signaled",
+    runtime,
+    outcome + "signaled token=private-outcome-canary",
+    runtime,
+    outcome + "private-outcome-canary",
+    runtime,
+    "unrelated child output",
+    outcome + "signaled",
+    // Legacy timing still counts this row, but its elapsed value is not canonical.
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=00011 failed=true",
+    outcome + "signaled",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=3 failed=false",
+    outcome + "signaled",
+    "[occ-dev-timing] stage=controller-build elapsed_ms=5 failed=true",
+    outcome + "signaled",
+  ];
+  await writeFile(
+    join(root, "bin/occ"),
+    [
+      "#!" + process.execPath,
+      'if (process.argv[3] === "up") {',
+      "  process.stdout.write(" + JSON.stringify(lines.join("\n") + "\n") + ");",
+      "  process.exitCode = 23;",
+      "}",
+      "",
+    ].join("\n"),
+    { mode: 0o700 },
+  );
+  const testPath = "tests/integration/runtime-outcomes.test.mjs";
+  await writeFile(
+    join(root, testPath),
+    `import assert from "node:assert/strict";
+import { syncBuiltinESMExports } from "node:module";
+import net from "node:net";
+import test from "node:test";
+// The owned CLI fixture does not bind ports. Only the port reservation is stubbed.
+net.createServer = () => ({
+  once() {},
+  listen(_address, ready) { ready(); },
+  address() { return { port: 3000 }; },
+  close(done) { done(); },
+});
+syncBuiltinESMExports();
+const { localFirstAgentStack } = await import("../helpers/local-first-agent-stack.mjs");
+test("a failed local setup reports only paired outcomes", async (t) => {
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL = "1";
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "compose";
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "none";
+  process.env.OPENAI_API_KEY = "invented-fixture-input";
+  delete process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
+  delete process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
+  await assert.rejects(localFirstAgentStack(t), /Start Local Setup exited with status 23/);
+});
+`,
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { measure: { files: [{ path: testPath }] } },
+    groups: { ci: ["measure"] },
+  });
+  const result = run(root, [
+    "run",
+    "measure",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    "state/runtime-outcomes.jsonl",
+    "--results",
+    resultsPath,
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  const artifact = await readFile(resultsPath, "utf8");
+  const measurements = JSON.parse(artifact).files[0].measurements;
+  assert.deepEqual(
+    measurements.filter(({ kind }) => kind === "local-first-agent-command"),
+    [
+      {
+        kind: "local-first-agent-command",
+        phase: "setup",
+        stage: "runtime-build",
+        count: 7,
+        failed: 6,
+        elapsedMs: 69,
+        nonzeroExitCount: 1,
+        signaledCount: 1,
+      },
+      {
+        kind: "local-first-agent-command",
+        phase: "setup",
+        stage: "controller-build",
+        count: 1,
+        failed: 1,
+        elapsedMs: 5,
+      },
+    ],
+  );
+  assert.doesNotMatch(artifact, /private-outcome-canary|invented-fixture-input/);
+});
+
 test("run records only allowlisted measurements from test diagnostics", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/measurements.json");
@@ -5260,6 +5377,14 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     stage: "exposure-auth",
     outcome: "passed",
     elapsedMs: 39_000,
+  };
+  const runtimeFailure = {
+    kind: "local-first-agent-command",
+    phase: "setup",
+    stage: "runtime-build",
+    count: 4,
+    failed: 3,
+    elapsedMs: 200,
   };
   await writeFile(
     join(root, "tests/integration/measurements.test.mjs"),
@@ -5288,6 +5413,19 @@ test("run records only allowlisted measurements from test diagnostics", async (t
           failed: 0,
           elapsedMs: 100,
           args: "secretauthvalue-args",
+        }),
+        measurement({ ...runtimeFailure, nonzeroExitCount: 1, signaledCount: 1 }),
+        measurement({
+          ...runtimeFailure,
+          elapsedMs: 201,
+          signaledCount: "secretauthvalue-outcome",
+        }),
+        measurement({ ...runtimeFailure, elapsedMs: 202, nonzeroExitCount: 2, signaledCount: 2 }),
+        measurement({
+          ...runtimeFailure,
+          elapsedMs: 203,
+          stage: "controller-build",
+          signaledCount: 1,
         }),
         measurement({
           kind: "local-first-agent-command",
@@ -5493,6 +5631,10 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       failed: 0,
       elapsedMs: 100,
     },
+    { ...runtimeFailure, nonzeroExitCount: 1, signaledCount: 1 },
+    { ...runtimeFailure, elapsedMs: 201 },
+    { ...runtimeFailure, elapsedMs: 202 },
+    { ...runtimeFailure, elapsedMs: 203, stage: "controller-build" },
     {
       kind: "local-first-agent-pod",
       stage: "native-initial",

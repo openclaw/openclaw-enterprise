@@ -138,6 +138,8 @@ function run(
     }, timeout);
     for (const [index, stream] of [child.stdout, child.stderr].entries()) {
       let partial = "";
+      let partialClipped = false;
+      let previousRuntimeFailure = false;
       stream.setEncoding("utf8");
       stream.on("data", (chunk) => {
         if (collect && index === 0) {
@@ -148,20 +150,44 @@ function run(
         }
         partial += chunk;
         const lines = partial.split("\n");
-        partial = lines.pop().slice(-4_096);
+        const tail = lines.pop();
+        let lineClipped = partialClipped;
+        partialClipped = tail.length > 4_096 || (lines.length === 0 && partialClipped);
+        partial = tail.slice(-4_096);
         for (const line of lines) {
+          // Pair only adjacent, complete lines on the same child stream.
+          if (previousRuntimeFailure && !lineClipped) {
+            const outcome =
+              /^\[occ-dev-outcome\] stage=runtime-build outcome=(nonzero-exit|signaled)$/.exec(
+                line,
+              );
+            if (outcome) {
+              const total = commands.get("runtime-build");
+              const key = outcome[1] === "nonzero-exit" ? "nonzeroExitCount" : "signaledCount";
+              total[key] = (total[key] ?? 0) + 1;
+            }
+          }
           const timing =
             context &&
             /^\[occ-dev-timing\] stage=([a-z0-9-]+) elapsed_ms=([0-9]+) failed=(true|false)$/.exec(
               line,
             );
+          previousRuntimeFailure = false;
           if (timing) {
+            const elapsedMs = Number(timing[2]);
             const total = commands.get(timing[1]) ?? { count: 0, elapsedMs: 0, failed: 0 };
             total.count++;
-            total.elapsedMs += Number(timing[2]);
+            total.elapsedMs += elapsedMs;
             total.failed += Number(timing[3] === "true");
             commands.set(timing[1], total);
+            previousRuntimeFailure =
+              !lineClipped &&
+              timing[1] === "runtime-build" &&
+              timing[3] === "true" &&
+              Number.isSafeInteger(elapsedMs) &&
+              String(elapsedMs) === timing[2];
           }
+          lineClipped = false;
           const known = phases.find(([prefix]) => line.startsWith(prefix));
           if (known) {
             phase = known[1];
