@@ -236,17 +236,15 @@ See [Credential Proxy uncertainty](../drivers/credential-proxy.md#cancellation-r
 
 ## Diagnose a refused request
 
-Git does not print the body of a JSON error response. When OpenShell refuses the
-first request of a clone, fetch, `ls-remote` or push, Git shows only
-`The requested URL returned error: 403` (exit 128). When it refuses only the
-push's upload, usually `request_not_allowed` for another branch or tag, Git
-shows `error: RPC failed; HTTP 403`, then
-`fatal: the remote end hung up unexpectedly`, and may end with
-`Everything up-to-date` (exit 1). That last line does not mean there was nothing
-to push: the push never reached GitHub.
+Git hides JSON error bodies. If OpenShell refuses the first clone, fetch,
+`ls-remote` or push request, Git reports `The requested URL returned error: 403`
+(exit 128). If only the push upload is refused, usually for another branch or tag
+(`request_not_allowed`), Git reports `error: RPC failed; HTTP 403`, then
+`fatal: the remote end hung up unexpectedly`. Even if it prints
+`Everything up-to-date` (exit 1), the push never reached GitHub.
 
-Only after a known pre-send refusal, diagnose with a fresh read using Git's HTTP
-trace, which redacts the authorization header. Never rerun an uncertain write. The trace splits the body across lines, so join them first:
+After a known pre-send refusal, trace a fresh read. Git redacts the authorization
+header. Join the response lines to extract the reason. Never replay an uncertain write.
 
 ```bash
 GIT_TRACE_CURL=1 git ls-remote origin 2>&1 | sed -n 's/.*<= Recv data: //p' \
@@ -275,14 +273,23 @@ A version that is still deploying has no credential yet, so its requests answer
 
 ### Worker log
 
-Each refused request logs one `worker.openshell-git-denied` line. Its `reasonCode`
-is the code above, and its `reason` is the worker's detailed cause, such as
-`ref_not_allowed`, `draft_rejected`, `session_closed`, `material_unavailable`,
-`installation_changed` or `route_blocked`. The line also carries the Sandbox ID and
-the request ID that the supervisor's own log shows. The
-`worker.openshell-git-route-warning` line for a lost credential carries the same
-`reasonCode`, so an alert can tell a removed binding (`access_withdrawn`) from a
-rejected App key (`credential_unavailable`).
+After held enrollment failure and cleanup, check worker logs.
+`worker.openshell-git-probe-failed` records the HTTP 400 `reason`:
+
+- `probe_process_failed`: curl failed; optional integer `code` is its exit status (1–99).
+- `probe_response_invalid`: the launcher could not read response JSON.
+
+The event omits stdout, stderr, response bodies, URLs and proofs. Collector
+attributes: `occ.git_probe.reason` and optional `occ.git_probe.exit_code`
+([limits](../../flows/common-logging.md#7-collector-exports-only-operational-classes)).
+A parsed unexpected denial returns HTTP 409 `preview_not_observed`.
+
+For refused Git requests, `worker.openshell-git-denied` records `reasonCode`
+from the table, the detailed `reason` (such as `ref_not_allowed`, `draft_rejected`,
+`session_closed`, `material_unavailable`, `installation_changed` or `route_blocked`),
+Sandbox ID and supervisor request ID. For lost credentials,
+`worker.openshell-git-route-warning` carries the same `reasonCode` to distinguish
+a removed binding (`access_withdrawn`) from a rejected App key (`credential_unavailable`).
 
 ## Route state, restarts and recovery
 

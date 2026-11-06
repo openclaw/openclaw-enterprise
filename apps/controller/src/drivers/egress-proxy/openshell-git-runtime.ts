@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { dirname, posix } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { asRecord } from "@openclaw-enterprise/utils";
 import { githubInstallationProfile } from "@openclaw-enterprise/contracts";
 import type {
   AgentRevision,
@@ -1255,7 +1256,31 @@ export class OpenShellGitRuntime {
       }
       try {
         const path = preview.arm(startupId, entry.authorization.delivery.repository);
-        preview.confirm(await probe(path));
+        const result = await probe(path);
+        const failure = asRecord(asRecord(result)?.probeFailure);
+        if (
+          failure?.error === "probe_process_failed" ||
+          failure?.error === "probe_response_invalid"
+        ) {
+          try {
+            const code = failure.code;
+            this.emit?.({
+              event: "worker.openshell-git-probe-failed",
+              reason: failure.error,
+              ...(failure.error === "probe_process_failed" &&
+              typeof code === "number" &&
+              Number.isInteger(code) &&
+              code > 0 &&
+              code <= 99
+                ? { code }
+                : {}),
+              ...this.identity(entry),
+            });
+          } catch {
+            // Diagnostics must not change the original one-shot refusal.
+          }
+        }
+        preview.confirm(result);
         await this.fenced(entry, signal);
       } catch (error) {
         this.block(entry, "bootstrap_failed");

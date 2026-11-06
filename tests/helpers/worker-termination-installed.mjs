@@ -244,7 +244,15 @@ export async function verifyInstalledWorkerRestarts(f, readLogs, kind) {
       );
     }
     const captured = [];
+    let running = status(pod);
     for (let index = 0; index < 2; index++) {
+      // Identify the live instance before requesting its exit. Kubernetes can
+      // discard lastState before the replacement becomes ready; backend evidence
+      // must still identify this exact instance rather than its replacement.
+      const containerID = running.containerID;
+      const startedAt = Date.parse(running.state?.running?.startedAt);
+      assert.match(containerID, /^[a-zA-Z0-9_.-]+:\/\/[^\s]+$/);
+      assert.ok(Number.isFinite(startedAt));
       // The installed worker is PID 1. Its SIGTERM handler closes the actual
       // worker, and kubelet's Always policy starts a replacement in the same Pod.
       await f.kubectl(
@@ -260,9 +268,9 @@ export async function verifyInstalledWorkerRestarts(f, readLogs, kind) {
         "process.kill(1, 'SIGTERM')",
       );
       let observed;
-      const exit = await f.waitFor(
+      running = await f.waitFor(
         () =>
-          `same worker Pod restarted with termination evidence (${kind}, expected restart count ${initial + index + 1}, observed ${JSON.stringify(observed)})`,
+          `same worker Pod replacement ready (${kind}, expected restart count ${initial + index + 1}, observed ${JSON.stringify(observed)})`,
         async () => {
           const current = await f.get("pod", pod.metadata.name);
           assert.equal(current.metadata.uid, pod.metadata.uid);
@@ -276,23 +284,26 @@ export async function verifyInstalledWorkerRestarts(f, readLogs, kind) {
             exitCode: worker.state?.terminated?.exitCode,
             previousExitCode: worker.lastState?.terminated?.exitCode,
           };
-          // Restart count and readiness alone do not establish that the previous
-          // exit is available. Require the replacement and its termination record.
+          // Readiness establishes replacement only. The observer's retained OTLP
+          // event below proves the prior instance's exit independently of lastState.
           return worker.restartCount === initial + index + 1 &&
             worker.ready &&
             worker.state?.running
-            ? worker.lastState?.terminated
+            ? worker
             : false;
         },
       );
-      assert.equal(exit.exitCode, 0, "Worker completed its shutdown handler");
-      captured.push(exit);
+      assert.notEqual(running.containerID, containerID);
+      const replacedAt = Date.parse(running.state.running.startedAt);
+      assert.ok(Number.isFinite(replacedAt));
+      captured.push({ containerID, startedAt, replacedAt });
       await f.waitFor("worker exit retained at OTLP backend", async () =>
         (await records()).some(
           (record) =>
             record["k8s.pod.uid"] === pod.metadata.uid &&
+            record["event.name"] === "worker.termination.observed" &&
             record["oce.restart.incarnation"] === initial + index &&
-            record["oce.termination.finished_at"] === exit.finishedAt,
+            record["oce.termination.container_id"] === containerID,
         ),
       );
     }
@@ -314,8 +325,16 @@ export async function verifyInstalledWorkerRestarts(f, readLogs, kind) {
       for (const record of matches) {
         assert.equal(record["oce.restart.incarnation"], initial + index);
         assert.equal(record["oce.container.kind"], kind);
-        assert.equal(record["oce.termination.exit_code"], expected.exitCode);
-        assert.equal(record["oce.termination.finished_at"], expected.finishedAt);
+        assert.equal(
+          record["oce.termination.exit_code"],
+          0,
+          "Worker completed its shutdown handler",
+        );
+        const finishedAt = Date.parse(record["oce.termination.finished_at"]);
+        assert.ok(
+          finishedAt >= expected.startedAt && finishedAt <= expected.replacedAt,
+          "Observed exit falls between the actual instance and replacement start times",
+        );
         assert.match(record["oce.observation.id"], /^[a-f0-9]{64}$/);
         ids.add(record["oce.observation.id"]);
       }

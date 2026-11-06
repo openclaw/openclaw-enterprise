@@ -528,6 +528,21 @@ test("the smoke bake only pushes the controller and runtime images, and loads th
   }
 });
 
+test("an artifact-backed smoke derives trust and provider images without compiling a runtime", () => {
+  const runtimeContext = `oci-layout:///work/verified-runtime@sha256:${"d".repeat(64)}`;
+  for (const load of [false, true]) {
+    const { target } = smokeBakeDefinition({ ...bakeInput, runtimeContext, load });
+    // Both FROM (trust) and COPY --from (provider) must resolve the same verified
+    // image. Keeping the source target here would silently reintroduce a cold build.
+    assert.equal(target["smoke-runtime-base"], undefined);
+    assert.deepEqual(target["smoke-runtime"].contexts, { "smoke-runtime-base": runtimeContext });
+    assert.equal(target["smoke-runtime"].args.RUNTIME_IMAGE, "smoke-runtime-base");
+    if (!load) {
+      assert.deepEqual(target["smoke-provider"].contexts, { "smoke-runtime-base": runtimeContext });
+    }
+  }
+});
+
 test("the prepared-Git bake still loads both images and builds no provider image", () => {
   const { target } = smokeBakeDefinition({ ...bakeInput, load: true });
   assert.deepEqual(target["smoke-controller"].output, [

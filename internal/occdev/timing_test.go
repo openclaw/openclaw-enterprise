@@ -50,3 +50,46 @@ func TestDevelopmentCommandTimingPreservesExecutionAndRedactsInputs(t *testing.T
 		})
 	}
 }
+
+func TestRuntimeBuildTimingReportsOnlyObservedTerminalFailure(t *testing.T) {
+	directory := t.TempDir()
+	command := filepath.Join(directory, "docker")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nif [ \"$4\" = signal ]; then kill -TERM $$; fi\nexit \"$4\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		mode, outcome string
+	}{
+		{mode: "0"},
+		{mode: "23", outcome: "nonzero-exit"},
+		{mode: "signal", outcome: "signaled"},
+		{mode: "missing"},
+	} {
+		t.Run(test.mode, func(t *testing.T) {
+			var output bytes.Buffer
+			r := newRunner(Options{Repository: directory, Out: &output})
+			name := command
+			if test.mode == "missing" {
+				name = filepath.Join(directory, "missing", "docker")
+			}
+			err := r.run(context.Background(), name, "build", "-f", "deploy/runtime/Dockerfile", test.mode)
+			if (err == nil) != (test.mode == "0") {
+				t.Fatalf("unexpected child result: %v", err)
+			}
+			failed := "true"
+			if err == nil {
+				failed = "false"
+			}
+			pattern := `^
+\[occ-dev-timing\] stage=runtime-build elapsed_ms=[0-9]+ failed=` + failed + `
+`
+			if test.outcome != "" {
+				pattern += `\[occ-dev-outcome\] stage=runtime-build outcome=` + test.outcome + `
+`
+			}
+			if !regexp.MustCompile(pattern + "$").MatchString(output.String()) {
+				t.Fatalf("unexpected runtime build timing: %q", output.String())
+			}
+		})
+	}
+}
