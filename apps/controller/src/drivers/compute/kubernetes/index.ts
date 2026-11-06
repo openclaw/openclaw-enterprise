@@ -1,10 +1,11 @@
 import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
+import type { OpenShellCredentialAttachments } from "../../sandbox/openshell-credential-attachments.ts";
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
   assertExecutionAdmission,
   codexProxiesRepositoryBroker,
   codexRepositoryBrokerNetworkProxy,
-  type PreparedTokenService,
+  type TokenService,
 } from "@openclaw-enterprise/contracts";
 import {
   harnessEgressEnrollment,
@@ -3294,13 +3295,11 @@ function gatewayDocumentBeforeLanBind(
 
 /** Compute observes prepared-source readiness; it does not resolve warm credentials. */
 type PreparedTokenReadinessIssuer = Pick<
-  NonNullable<ReturnType<PreparedTokenService["issuer"]>>,
+  NonNullable<ReturnType<TokenService["issuer"]>>,
   "sourceFromRoute" | "ready"
 >;
 type PreparedTokenReadinessService = {
-  issuer(
-    ...args: Parameters<PreparedTokenService["issuer"]>
-  ): PreparedTokenReadinessIssuer | undefined;
+  issuer(...args: Parameters<TokenService["issuer"]>): PreparedTokenReadinessIssuer | undefined;
 };
 
 function preparedTokenReadiness(
@@ -3577,6 +3576,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private readonly preparedRepositoryIngress: boolean;
   private readonly preparedTokens: PreparedTokenReadinessService | undefined;
   private readonly credentialGatewayDriver: CredentialGatewayDriver | undefined;
+  private readonly openShellAttachments: OpenShellCredentialAttachments | undefined;
   private readonly protectedExecution: ProtectedExecutionDriver | undefined;
 
   private get proxyDriver() {
@@ -4113,9 +4113,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
       readonly lifecycleDrivers?: readonly Driver[];
       readonly sandboxDriver?: SandboxDriver;
       readonly preparedRepositoryIngress?: true;
-      readonly preparedTokens?: PreparedTokenService;
+      readonly preparedTokens?: TokenService;
       readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
       readonly credentialGatewayDriver?: CredentialGatewayDriver;
+      /** Internal composition data for the exact built-in same-Backend pair. */
+      readonly openShellAttachments?: {
+        readonly sandboxDriver: SandboxDriver;
+        readonly credentialGatewayDriver: CredentialGatewayDriver;
+        readonly attachments: OpenShellCredentialAttachments;
+      };
       readonly protectedDriver?: InstalledDriver;
       readonly nodeEnrollment?: GatewayNodeEnrollment;
       readonly readNodeCa?: () => Promise<string | undefined>;
@@ -4159,6 +4165,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     this.credentialGatewayDriver = selection.credentialGatewayDriver;
+    const openShellAttachments = selection.openShellAttachments;
+    if (
+      openShellAttachments !== undefined &&
+      (openShellAttachments.sandboxDriver !== this.sandboxDriver ||
+        openShellAttachments.credentialGatewayDriver !== this.credentialGatewayDriver)
+    ) {
+      throw new ConfigurationFailure(
+        "OpenShell attachments require the exact composed Sandbox and Credential Gateway.",
+      );
+    }
+    this.openShellAttachments = openShellAttachments?.attachments;
     this.nodeEnrollment = selection.nodeEnrollment;
     this.readNodeCa = selection.readNodeCa;
     const lifecycleDrivers = selection.lifecycleDrivers ?? [];
@@ -7123,10 +7140,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
           this.sandboxNamespaceForRevision(revision, namespace),
           namespace,
         );
-        const sources = [
+        const boundSources = [
           ...(harnessAuth.credentialSource === undefined ? [] : [harnessAuth.credentialSource]),
           ...credentialSources,
-        ].filter((source) => source.egress === undefined);
+        ];
+        const directAttachments = this.staticOpenAiAttachmentsForRevision(revision, boundSources);
+        const sources = boundSources.filter((source) => source.egress === undefined);
         const credentialContext =
           sources.length === 0
             ? undefined
@@ -7139,7 +7158,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         const attachments =
           credentialContext === undefined
             ? []
-            : await this.requireCredentialGateway().attachForRevision(credentialContext);
+            : await (directAttachments ?? this.requireCredentialGateway()).attachForRevision(
+                credentialContext,
+              );
         const sourceIds = new Set(credentialContext?.sources.map(({ id }) => id));
         const attachedSourceIds = new Set(attachments.map(({ sourceId }) => sourceId));
         if (
@@ -7429,7 +7450,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
           await withdrawProviderExposure();
         }
         if (credentialContext !== undefined) {
-          const statuses = await this.requireCredentialGateway().attachmentStatus({
+          const statuses = await (
+            directAttachments ?? this.requireCredentialGateway()
+          ).attachmentStatus({
             ...credentialContext,
             sandbox,
           });
@@ -8455,7 +8478,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const sandbox = sandboxDriver.harnessResource({ namespace: sandboxNamespace, revision });
     this.verifySandboxResourceRef(sandbox, revision, namespace);
-    const status = await this.requireCredentialGateway().withdraw({
+    const directAttachments = this.staticOpenAiAttachmentsForRevision(revision, [source]);
+    const status = await (directAttachments ?? this.requireCredentialGateway()).withdraw({
       namespace: sandboxNamespace,
       revision,
       sandbox,
@@ -11277,6 +11301,58 @@ export class KubernetesComputeDriver implements ComputeDriver {
       signal: this.operationSignal(),
     });
     return catalog.find((entry) => entry.type === sourceType);
+  }
+
+  /** Admission selects the route; a changed or missing live source cannot change that route. */
+  private staticOpenAiAttachmentsForRevision(
+    revision: Readonly<AgentRevision>,
+    sources: readonly Readonly<CredentialSource>[],
+  ): OpenShellCredentialAttachments | undefined {
+    const auth = revision.harnessAuth;
+    if (
+      this.openShellAttachments === undefined ||
+      revision.executionAdmission.mode !== "unprotected" ||
+      revision.egressPlan !== undefined ||
+      revision.harness.mode !== "dedicated" ||
+      (revision.harness.id !== "codex" && revision.harness.id !== "openclaw") ||
+      auth.method !== "credential_source" ||
+      auth.sourceType !== "openai" ||
+      auth.loginMode !== "api_key" ||
+      auth.credentialGatewayId !== this.credentialGatewayDriver?.id
+    ) {
+      return undefined;
+    }
+    // OCC lists the Harness credential too. Only its exact snapshot is redundant;
+    // additional, duplicate, or inconsistent admission stays on the public Gateway.
+    // An absent/empty list remains supported for revisions predating this source list.
+    const admitted = revision.credentialSources ?? [];
+    if (
+      admitted.length > 1 ||
+      admitted.some(
+        (snapshot) =>
+          snapshot.sourceId !== auth.sourceId ||
+          snapshot.sourceType !== auth.sourceType ||
+          snapshot.credentialGatewayId !== auth.credentialGatewayId ||
+          snapshot.credentialProxyId !== undefined,
+      )
+    ) {
+      return undefined;
+    }
+    // Selection is final: a source refusal must never retry through Gateway compatibility.
+    const source = sources[0];
+    if (
+      sources.length !== 1 ||
+      source === undefined ||
+      source.ownerCapability !== "credential_gateway" ||
+      source.namespaceId !== revision.namespaceId ||
+      source.egress !== undefined ||
+      !credentialSourceMatchesSnapshot(source, auth)
+    ) {
+      throw new OwnershipFailure(
+        "The direct OpenShell attachment requires the exact admitted Harness source and Namespace.",
+      );
+    }
+    return this.openShellAttachments;
   }
 
   private requireCredentialGateway(): CredentialGatewayDriver {

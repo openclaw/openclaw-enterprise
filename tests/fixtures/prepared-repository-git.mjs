@@ -232,6 +232,7 @@ export async function fixture(
     });
   await admit(sessionId, attempt.admissionId);
   const ownerOptions = {
+    repositoryGitCustody: { kind: "native-broker" },
     pool,
     controlSocket: join(directory, "control.sock"),
     driverId,
@@ -247,7 +248,13 @@ export async function fixture(
   owner = await startPreparedGitHubGitOwner(ownerOptions, ownerClock);
   return {
     /** Another worker owner on the same database, such as one after an issuer change. */
-    async startOwner(overrides) {
+    async startOwner(overrides = {}) {
+      assert.ok(
+        !Object.hasOwn(overrides, "controlSocket") ||
+          overrides.controlSocket !== undefined ||
+          Object.hasOwn(overrides, "repositoryGitCustody"),
+        "A socketless fixture owner requires an explicit custody selection",
+      );
       // Each owner serves its use socket beside its control socket: give it its own directory.
       const sockets = await socketDirectory(t, "pgit-", { longest: "prepared-git-use.sock" });
       const other = await startPreparedGitHubGitOwner({
