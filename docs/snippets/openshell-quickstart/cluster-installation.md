@@ -54,6 +54,17 @@ jq -e --arg d "$CLUSTER_NAME.oce.localhost" '
 
 The templates use `CLUSTER_DOMAIN` for route and certificate names; the browser listener uses namespace-relative Service DNS. Preserve mTLS, OpenShell PKI and JWT signing material through upgrades.
 
+The quickstart enables `pkiInitJob`, which configures the Gateway peer CA automatically. If you set both `pkiInitJob.enabled` and `certManager.enabled` to `false` and your Gateway issuing CA is absent from the container trust store, add this entry to the OpenShell chart's `server.extraEnv`:
+
+```yaml
+server:
+  extraEnv:
+    - name: OPENSHELL_PEER_TLS_CA_FILE
+      value: /etc/openshell-tls/server/ca.crt
+```
+
+The example requires the public CA bundle in `ca.crt` of `server.tls.certSecretName`, mounted at that path. This setting controls Gateway-to-Gateway TLS; OCE middleware uses its separate `tls_ca_cert_path` setting.
+
 Create `occ_migrator` and `occ_app` logins without superuser, role/database creation, replication or row-security bypass. As administrator, prepare the fresh **application database**:
 
 ```sql
