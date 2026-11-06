@@ -2200,9 +2200,7 @@ export class OpenClawController {
       ) {
         throw new DriverSelectionError("Repository admission must bind its exact owning Backend.");
       }
-      controller.installationRepositoryAdmission = Object.freeze({
-        ...repositoryAdmission,
-      });
+      controller.installationRepositoryAdmission = Object.freeze({ ...repositoryAdmission });
     }
     return controller;
   }
@@ -3225,10 +3223,7 @@ export class OpenClawController {
     const unknown = Object.freeze({
       status: "observed" as const,
       revisionId,
-      harness: Object.freeze({
-        state: "unknown" as const,
-        code: "UNAVAILABLE" as const,
-      }),
+      harness: Object.freeze({ state: "unknown" as const, code: "UNAVAILABLE" as const }),
     });
     const binding = await this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
@@ -3646,17 +3641,11 @@ export class OpenClawController {
         actorId: principalId,
         source: "occ",
         action: "openclaw.agents.provision",
-        resource: {
-          kind: "agent",
-          namespaceId: namespace.id,
-          id: namespace.id,
-        },
+        resource: { kind: "agent", namespaceId: namespace.id, id: namespace.id },
         outcome: "success",
         details: { workId },
       });
-      const result = Object.freeze({
-        provisioning: provisioningProgress(record.record),
-      });
+      const result = Object.freeze({ provisioning: provisioningProgress(record.record) });
       if (auditEvent) {
         await state.audit.append(auditEvent(result));
       }
@@ -3787,9 +3776,7 @@ export class OpenClawController {
       }
       const retried = await state.provisioning.retryByWorkId(namespaceId, workId, principalId);
       const work = await state.operations.findWork(record.workId);
-      return Object.freeze({
-        provisioning: provisioningProgress(retried, work, this.clock()),
-      });
+      return Object.freeze({ provisioning: provisioningProgress(retried, work, this.clock()) });
     });
   }
 
@@ -3810,28 +3797,16 @@ export class OpenClawController {
         operation(new AbortController().signal));
     let record = await this.read((state) => state.provisioning.findByWorkId(claim.idempotencyKey));
     if (record === undefined) {
-      return Object.freeze({
-        outcome: "permanent" as const,
-        code: "PROVISIONING_WORK_NOT_FOUND",
-      });
+      return Object.freeze({ outcome: "permanent" as const, code: "PROVISIONING_WORK_NOT_FOUND" });
     }
     if (record.status === "succeeded" && record.revisionId !== undefined) {
-      return Object.freeze({
-        outcome: "succeeded" as const,
-        revisionId: record.revisionId,
-      });
+      return Object.freeze({ outcome: "succeeded" as const, revisionId: record.revisionId });
     }
     if (record.status === "cancelled") {
-      return Object.freeze({
-        outcome: "permanent" as const,
-        code: "PROVISIONING_CANCELLED",
-      });
+      return Object.freeze({ outcome: "permanent" as const, code: "PROVISIONING_CANCELLED" });
     }
     if (record.status === "failed") {
-      return Object.freeze({
-        outcome: "permanent" as const,
-        code: "PROVISIONING_FAILED",
-      });
+      return Object.freeze({ outcome: "permanent" as const, code: "PROVISIONING_FAILED" });
     }
     try {
       if (record.revisionId !== undefined) {
@@ -3938,16 +3913,10 @@ export class OpenClawController {
         state.provisioning.findByWorkId(claim.idempotencyKey),
       );
       if (observed?.status === "succeeded" && observed.revisionId !== undefined) {
-        return Object.freeze({
-          outcome: "succeeded" as const,
-          revisionId: observed.revisionId,
-        });
+        return Object.freeze({ outcome: "succeeded" as const, revisionId: observed.revisionId });
       }
       if (observed?.status === "cancelled") {
-        return Object.freeze({
-          outcome: "permanent" as const,
-          code: "PROVISIONING_CANCELLED",
-        });
+        return Object.freeze({ outcome: "permanent" as const, code: "PROVISIONING_CANCELLED" });
       }
       let code = "PROVISIONING_DEPENDENCY_UNAVAILABLE";
       if (
@@ -4057,19 +4026,10 @@ export class OpenClawController {
                 reasonCode: "AUTHORIZATION_DENIED",
                 ...(error.authorization === undefined
                   ? {}
-                  : {
-                      authorization: {
-                        principalId: current.actorId,
-                        ...error.authorization,
-                      },
-                    }),
+                  : { authorization: { principalId: current.actorId, ...error.authorization } }),
               }
             : {}),
-          details: {
-            workId: current.workId,
-            phase: current.completedPhase,
-            code,
-          },
+          details: { workId: current.workId, phase: current.completedPhase, code },
         });
       });
       return Object.freeze({
@@ -4316,12 +4276,7 @@ export class OpenClawController {
           description,
           query,
           codec: options.codec,
-          binding: {
-            principalId,
-            agentId,
-            revisionId: binding.revision.id,
-            source: "sandbox",
-          },
+          binding: { principalId, agentId, revisionId: binding.revision.id, source: "sandbox" },
           admitView: async (admission) => {
             try {
               await options.admitView(admission);
@@ -4414,10 +4369,7 @@ export class OpenClawController {
     ) {
       return undefined;
     }
-    const unavailable = Object.freeze({
-      state: "unknown" as const,
-      code: "UNAVAILABLE" as const,
-    });
+    const unavailable = Object.freeze({ state: "unknown" as const, code: "UNAVAILABLE" as const });
     let observed: unknown;
     try {
       const namespace = await compute.resolveSandboxNamespace!.call(compute, binding.namespace);
@@ -5441,11 +5393,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
   ): Promise<readonly Readonly<SavedConnection>[]> {
-    await this.authorize(principalId, "read", {
-      kind: "namespace",
-      id: namespaceId,
-      namespaceId,
-    });
+    await this.authorize(principalId, "read", { kind: "namespace", id: namespaceId, namespaceId });
     return this.read(async (state) => {
       const connections = await state.savedConnections.listNamespaceConnections(namespaceId);
       const visible: Readonly<SavedConnection>[] = [];
@@ -5723,11 +5671,7 @@ export class OpenClawController {
       if (source?.state !== "deleting") {
         throw new ResourceStateConflictError("The connected source has no pending retirement.");
       }
-      return {
-        account,
-        source,
-        namespace: await this.exactNamespace(state, namespaceId),
-      };
+      return { account, source, namespace: await this.exactNamespace(state, namespaceId) };
     });
     if (!pending) {
       return;
@@ -6077,9 +6021,7 @@ export class OpenClawController {
             }
           : undefined;
       const updated = await state.connectionTemplates.updateConnectionTemplate(id, {
-        ...(input.displayName !== undefined && {
-          displayName: input.displayName,
-        }),
+        ...(input.displayName !== undefined && { displayName: input.displayName }),
         ...(version && { version }),
       });
       if (!updated) {
@@ -6618,10 +6560,7 @@ export class OpenClawController {
         {
           completedPhase: "handoff",
           revisionId,
-          progress: {
-            ...record.progress,
-            ...(error === null ? {} : { error }),
-          },
+          progress: { ...record.progress, ...(error === null ? {} : { error }) },
         },
         pending
           ? { disposition: "defer", code, message, delayMs: 1000 }
@@ -6637,18 +6576,9 @@ export class OpenClawController {
           actorId: record.actorId,
           source: "occ",
           action: "openclaw.agents.provision.failure",
-          resource: {
-            kind: "agent",
-            namespaceId: record.namespaceId,
-            id: record.agentId!,
-          },
+          resource: { kind: "agent", namespaceId: record.namespaceId, id: record.agentId! },
           outcome: "failure",
-          details: {
-            workId: record.workId,
-            phase: "handoff",
-            revisionId,
-            code,
-          },
+          details: { workId: record.workId, phase: "handoff", revisionId, code },
         });
       }
       return Object.freeze({
@@ -6811,11 +6741,7 @@ export class OpenClawController {
         newest === undefined
           ? undefined
           : await state.revisions.findRevision(namespace.id, agent.id, newest.id);
-      return Object.freeze({
-        agent,
-        revision,
-        ...(successor === undefined ? {} : { successor }),
-      });
+      return Object.freeze({ agent, revision, ...(successor === undefined ? {} : { successor }) });
     });
   }
 
@@ -7067,9 +6993,7 @@ export class OpenClawController {
       return;
     }
     const template = await this.admitPresetTemplate(seeded.template, namespace.id);
-    const updated = await state.presets.updatePreset(namespace.id, copy.id, {
-      template,
-    });
+    const updated = await state.presets.updatePreset(namespace.id, copy.id, { template });
     if (!updated) {
       throw new ResourceStateConflictError("The Preset changed during default refresh.");
     }
@@ -7146,11 +7070,7 @@ export class OpenClawController {
     namespaceId: string,
     presetId: string,
   ): Promise<Readonly<Preset>> {
-    await this.authorize(principalId, "read", {
-      kind: "preset",
-      id: presetId,
-      namespaceId,
-    });
+    await this.authorize(principalId, "read", { kind: "preset", id: presetId, namespaceId });
     return this.read(async (state) => {
       await this.exactNamespace(state, namespaceId);
       const preset = await state.presets.findPreset(namespaceId, presetId);
@@ -7246,11 +7166,7 @@ export class OpenClawController {
     return this.mutate(async (state) => {
       // Before any lookup, so a missing target is refused like an existing one;
       // deletePresetInState re-checks under the Namespace lock.
-      await this.authorize(principalId, "delete", {
-        kind: "preset",
-        id: presetId,
-        namespaceId,
-      });
+      await this.authorize(principalId, "delete", { kind: "preset", id: presetId, namespaceId });
       const namespace = await this.lockNamespace(state, namespaceId);
       return this.deletePresetInState(state, principalId, namespace.id, presetId);
     });
@@ -7323,10 +7239,7 @@ export class OpenClawController {
       // put a placeholder into waits on a variable, located by its path: an escaped token is
       // literal text that stays in the launch render, so it is checked as written (finding
       // 1214), even where it reads like a placeholder elsewhere (finding 1220).
-      const options: ConfigurationValidationOptions = {
-        unresolved,
-        unresolvedType,
-      };
+      const options: ConfigurationValidationOptions = { unresolved, unresolvedType };
       this.validateConfigurationContent(values, options);
       // Validation owns native credential rules; Preset CRUD never creates runtime resources.
       await driver.validateValues(values, options);
@@ -7507,11 +7420,7 @@ export class OpenClawController {
     namespaceId: string,
     secretId: string,
   ): Promise<Readonly<SecretDetail>> {
-    await this.authorize(principalId, "read", {
-      kind: "secret",
-      id: secretId,
-      namespaceId,
-    });
+    await this.authorize(principalId, "read", { kind: "secret", id: secretId, namespaceId });
     return this.read(async (state) => {
       await this.exactNamespace(state, namespaceId);
       const secret = await state.secrets.findSecret(namespaceId, secretId);
@@ -7582,11 +7491,7 @@ export class OpenClawController {
       const readable: string[] = [];
       let unreadableCount = 0;
       for (const secret of await state.secrets.listSecrets(namespace.id)) {
-        const resource: ResourceRef = {
-          kind: "secret",
-          id: secret.id,
-          namespaceId: namespace.id,
-        };
+        const resource: ResourceRef = { kind: "secret", id: secret.id, namespaceId: namespace.id };
         const read = await this.canRead(principalId, resource);
         if (!read && !unreadableAmong.has(secret.id)) {
           continue;
@@ -7705,11 +7610,7 @@ export class OpenClawController {
             throw new DependencyUnavailableError("Selected credential provider changed.");
           }
           return {
-            ...(await driver.readCredentialInput({
-              secret,
-              lifetime,
-              retention: "none",
-            })),
+            ...(await driver.readCredentialInput({ secret, lifetime, retention: "none" })),
             materialId: secret.backendRef.uid,
           };
         },
@@ -8301,11 +8202,7 @@ export class OpenClawController {
     const control = this.selectedDriver("credential_proxy").sourceControl;
     const grant = credentialFreeMetadataGrant(config);
     const id = grant.isolationId;
-    await this.authorize(principalId, "operate", {
-      kind: "agent",
-      namespaceId,
-      id,
-    });
+    await this.authorize(principalId, "operate", { kind: "agent", namespaceId, id });
     const agent = await state.agents.findAgent(namespaceId, id);
     if (!agent) {
       throw new ScopeViolationError("Credential-free metadata requires this dedicated Agent.");
@@ -8668,10 +8565,7 @@ export class OpenClawController {
       const config = Object.freeze({
         ...(protectedType
           ? written
-          : (selected!.validateSourceConfig({
-              type: type.type,
-              config: written,
-            }) ?? written)),
+          : (selected!.validateSourceConfig({ type: type.type, config: written }) ?? written)),
       });
       credentialSourceFieldsMatch(type, "config", config);
       const refreshDriver =
@@ -8771,9 +8665,7 @@ export class OpenClawController {
       }
       status =
         source.egress !== undefined
-          ? {
-              state: source.egress.adoption === "prepared" ? "pending" : "ready",
-            }
+          ? { state: source.egress.adoption === "prepared" ? "pending" : "ready" }
           : await this.credentialGatewayOperation(() =>
               gateway!.registerSource(
                 {
@@ -8782,11 +8674,7 @@ export class OpenClawController {
                   signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
                 },
                 // A refresh type's secrets are issuer material, held only by the refresh Driver.
-                {
-                  type: source.type,
-                  config,
-                  secrets: refresh === undefined ? values : {},
-                },
+                { type: source.type, config, secrets: refresh === undefined ? values : {} },
               ),
             );
       terminal = true;
@@ -8965,9 +8853,7 @@ export class OpenClawController {
         // Reconfiguring from an empty reference set could revoke the active grant.
         throw new ResourceStateConflictError("Reconnect by creating a new device-login source.");
       }
-      const secretRefs = Object.freeze({
-        ...(input.secrets ?? source.secrets),
-      });
+      const secretRefs = Object.freeze({ ...(input.secrets ?? source.secrets) });
       credentialSourceFieldsMatch(type, "secrets", secretRefs);
       if (type.rotation === "refresh") {
         refuseIssuerRotatedResend(type, source.secrets, secretRefs);
@@ -9157,10 +9043,7 @@ export class OpenClawController {
       if (audit) {
         await state.audit.append(audit);
       }
-      return this.credentialSourceMetadata(source, {
-        ...status,
-        refresh: minted,
-      });
+      return this.credentialSourceMetadata(source, { ...status, refresh: minted });
     });
     if ("managedSource" in rotation) {
       const source = rotation.managedSource;
@@ -9555,10 +9438,7 @@ export class OpenClawController {
           return;
         }
         await this.driverOperation(() =>
-          driver.delete({
-            id: configuration.id,
-            namespaceId: configuration.namespaceId,
-          }),
+          driver.delete({ id: configuration.id, namespaceId: configuration.namespaceId }),
         );
       });
       const result = await this.driverOperation(() => driver.create(configuration));
@@ -9938,10 +9818,7 @@ export class OpenClawController {
       // replacement of a leftover ahead of the record restores that leftover, which a retry can
       // replace again (finding 1396).
       this.registerRollback(async () => {
-        const stored = await driver.read({
-          id: previous.id,
-          namespaceId: previous.namespaceId,
-        });
+        const stored = await driver.read({ id: previous.id, namespaceId: previous.namespaceId });
         if (
           stored.generation === configuration.generation &&
           (await this.configurationRecordUnchanged(metadata))
@@ -10117,11 +9994,7 @@ export class OpenClawController {
     ) => AuditEvent,
   ) {
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-    await this.authorize(principalId, "create", {
-      kind: "secret",
-      id: namespaceId,
-      namespaceId,
-    });
+    await this.authorize(principalId, "create", { kind: "secret", id: namespaceId, namespaceId });
     // The source registration below checks credential source create again. Checking it here too
     // means a caller who can never start gets the 403 naming that grant, not the Driver-selection
     // 501, and no Gateway call (finding 2995).
@@ -10151,9 +10024,7 @@ export class OpenClawController {
       );
     }
     const types = await this.credentialGatewayOperation(() =>
-      gateway.listSourceTypes({
-        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-      }),
+      gateway.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) }),
     );
     const supported = types.filter(
       (type) => type.rotation === "refresh" && type.deviceAuthorization?.harnessId === harnessId,
@@ -10216,12 +10087,7 @@ export class OpenClawController {
       }
       return created;
     });
-    return {
-      session: secret.ref,
-      status: "pending" as const,
-      expiresAt,
-      ...authorization,
-    };
+    return { session: secret.ref, status: "pending" as const, expiresAt, ...authorization };
   }
 
   private async readAgentDeviceAuthorization(
@@ -10231,11 +10097,7 @@ export class OpenClawController {
     agentId?: string,
   ) {
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-    await this.authorize(principalId, "operate", {
-      kind: "secret",
-      id: secretId,
-      namespaceId,
-    });
+    await this.authorize(principalId, "operate", { kind: "secret", id: secretId, namespaceId });
     const secret = await this.read((state) => state.secrets.findSecret(namespaceId, secretId));
     if (secret === undefined) {
       throw new ScopeViolationError("The login Secret does not belong to the exact Namespace.");
@@ -10269,12 +10131,7 @@ export class OpenClawController {
         privateState: undefined,
       });
       if (await this.secretOperation(() => driver.compareAndSwap!(secret, value, expired))) {
-        return {
-          secret,
-          driver,
-          value: expired,
-          session: deviceAuthorizationSession(expired),
-        };
+        return { secret, driver, value: expired, session: deviceAuthorizationSession(expired) };
       }
     }
     return { secret, driver, value, session };
@@ -10342,21 +10199,13 @@ export class OpenClawController {
         driver.compareAndSwap!(
           secret,
           claimed,
-          JSON.stringify({
-            ...session,
-            phase: "cancelled",
-            privateState: undefined,
-          }),
+          JSON.stringify({ ...session, phase: "cancelled", privateState: undefined }),
         ),
       );
       throw new RetryLaterError("deviceLoginFailed", error);
     }
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-    await this.authorize(principalId, "operate", {
-      kind: "secret",
-      id: secretId,
-      namespaceId,
-    });
+    await this.authorize(principalId, "operate", { kind: "secret", id: secretId, namespaceId });
     const current = await this.authorizedCredentialSource(
       principalId,
       namespaceId,
@@ -10426,11 +10275,7 @@ export class OpenClawController {
       readonly apiKey: string;
     },
   ) {
-    await this.authorize(principalId, "create", {
-      kind: "agent",
-      id: namespaceId,
-      namespaceId,
-    });
+    await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
     await this.read((state) => this.exactNamespace(state, namespaceId));
     const driver = this.selectedDriver("compute");
     if (!driver.discoverHarnessModels) {
@@ -10916,11 +10761,7 @@ export class OpenClawController {
         const sources: CredentialSource[] = [];
         if (credentials) {
           for (const { sourceId } of agent.credentialSources ?? []) {
-            const ref = {
-              kind: "credential_source" as const,
-              namespaceId,
-              id: sourceId,
-            };
+            const ref = { kind: "credential_source" as const, namespaceId, id: sourceId };
             if (
               (await this.canRead(principalId, ref)) &&
               (await this.authorizationDecision(principalId, "operate", ref)).decision.allowed &&
@@ -11475,11 +11316,7 @@ export class OpenClawController {
       throw new ScopeViolationError("Unsupported configuration scope.");
     }
     const { namespaceId, agentId } = context;
-    await this.authorize(principalId, "read", {
-      kind: "agent",
-      id: agentId,
-      namespaceId,
-    });
+    await this.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
     await this.read(async (state) => {
       await this.exactNamespace(state, namespaceId);
       if ((await state.agents.findAgent(namespaceId, agentId)) === undefined) {
@@ -11531,11 +11368,7 @@ export class OpenClawController {
       "agent",
       "sandbox-network-policy",
     );
-    const resource = {
-      kind: "agent" as const,
-      id: agent.id,
-      namespaceId: agent.namespaceId,
-    };
+    const resource = { kind: "agent" as const, id: agent.id, namespaceId: agent.namespaceId };
     const manage = await this.authorizationDecision(principalId, "manage_policy", resource);
     const update = await this.authorizationDecision(principalId, "update", {
       kind: "sandbox_policy",
@@ -11585,11 +11418,7 @@ export class OpenClawController {
     additions: unknown,
   ): Promise<ConfigurationResult<{ readonly additions: readonly SandboxNetworkGrant[] }>> {
     this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "manage_policy", {
-      kind: "agent",
-      id: agentId,
-      namespaceId,
-    });
+    await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
     await this.authorize(principalId, "update", {
       kind: "sandbox_policy",
       id: `sbp_${agentId.slice(4)}`,
@@ -11670,11 +11499,7 @@ export class OpenClawController {
     facet: SandboxFacet,
   ) {
     this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "read", {
-      kind: "agent",
-      id: agentId,
-      namespaceId,
-    });
+    await this.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
     await this.authorize(principalId, "read", {
       kind: "sandbox_policy",
       id: `sbp_${agentId.slice(4)}`,
@@ -11737,11 +11562,7 @@ export class OpenClawController {
       kind: "installation",
       id: this.installation.id,
     });
-    await this.authorize(principalId, "administer", {
-      kind: "agent",
-      id: agentId,
-      namespaceId,
-    });
+    await this.authorize(principalId, "administer", { kind: "agent", id: agentId, namespaceId });
     return this.mutate(async (state) => {
       await this.lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
@@ -11972,11 +11793,7 @@ export class OpenClawController {
     additions: readonly SandboxNetworkGrant[],
   ): Promise<Readonly<SandboxPolicy>> {
     this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "manage_policy", {
-      kind: "agent",
-      id: agentId,
-      namespaceId,
-    });
+    await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
     await this.authorize(principalId, "update", {
       kind: "sandbox_policy",
       id: `sbp_${agentId.slice(4)}`,
@@ -12039,11 +11856,7 @@ export class OpenClawController {
     revisionId: string,
   ): Promise<Readonly<SandboxPolicy>> {
     this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "manage_policy", {
-      kind: "agent",
-      id: agentId,
-      namespaceId,
-    });
+    await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
     const sandboxPolicy = {
       kind: "sandbox_policy",
       id: `sbp_${agentId.slice(4)}`,
@@ -12142,11 +11955,7 @@ export class OpenClawController {
     ) => Promise<SandboxPolicyRecommendations>,
   ): Promise<SandboxPolicyRecommendations> {
     this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "read", {
-      kind: "agent",
-      id: agentId,
-      namespaceId,
-    });
+    await this.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
     await this.authorize(principalId, "read", {
       kind: "sandbox_policy",
       id: `sbp_${agentId.slice(4)}`,
@@ -12192,11 +12001,7 @@ export class OpenClawController {
         }
         const namespace = await compute.resolveSandboxNamespace(binding.namespace);
         result = await readRecommendations(
-          {
-            namespace,
-            revision: binding.revision,
-            signal: AbortSignal.timeout(15_000),
-          },
+          { namespace, revision: binding.revision, signal: AbortSignal.timeout(15_000) },
           32,
         );
       } catch {
@@ -12514,11 +12319,7 @@ export class OpenClawController {
   }
 
   async listAgentStandingApprovals(principalId: string, namespaceId: string, agentId: string) {
-    await this.authorize(principalId, "administer", {
-      kind: "agent",
-      id: agentId,
-      namespaceId,
-    });
+    await this.authorize(principalId, "administer", { kind: "agent", id: agentId, namespaceId });
     return this.read(async (state) => {
       await this.exactNamespace(state, namespaceId);
       if (!(await state.agents.findAgent(namespaceId, agentId))) {
@@ -12542,11 +12343,7 @@ export class OpenClawController {
 
   /** A review projection only: it neither creates nor extends authority. */
   async listAgentStandingApprovalScopes(principalId: string, namespaceId: string, agentId: string) {
-    await this.authorize(principalId, "administer", {
-      kind: "agent",
-      id: agentId,
-      namespaceId,
-    });
+    await this.authorize(principalId, "administer", { kind: "agent", id: agentId, namespaceId });
     return this.read(async (state) => {
       const agent = await state.agents.findAgent(namespaceId, agentId);
       if (!agent) {
@@ -12564,10 +12361,7 @@ export class OpenClawController {
         this.selectedStandingRepositoryAdmission(),
       );
       return (resolved?.resolution.bindings ?? []).flatMap((binding) => {
-        const scope = eligibleRepositoryApprovalScope(resolved!.driver, {
-          namespaceId,
-          binding,
-        });
+        const scope = eligibleRepositoryApprovalScope(resolved!.driver, { namespaceId, binding });
         return scope
           ? [
               {
@@ -12598,9 +12392,7 @@ export class OpenClawController {
       namespaceId: input.namespaceId,
     });
     await this.mutate(async (state) => {
-      await state.namespaces.lockNamespace(input.namespaceId, {
-        includeDeleted: true,
-      });
+      await state.namespaces.lockNamespace(input.namespaceId, { includeDeleted: true });
       const agent = await state.agents.lockAgent(input.namespaceId, input.agentId);
       if (!agent) {
         throw new ScopeViolationError("Agent does not belong to the exact Namespace.");
@@ -12684,11 +12476,7 @@ export class OpenClawController {
       input.pluginApprovers === null ? null : normalizeAgentPluginApprovers(input.pluginApprovers);
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
-      const target = {
-        kind: "agent",
-        id: input.agentId,
-        namespaceId: input.namespaceId,
-      } as const;
+      const target = { kind: "agent", id: input.agentId, namespaceId: input.namespaceId } as const;
       await this.authorize(principalId, "update", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
       // Namespace IAM writes share this lock. Use the policy after any writer ahead of us.
@@ -13524,10 +13312,7 @@ export class OpenClawController {
       const configurationDriver = this.configurationDriver();
       const configuration = this.exactConfiguration(
         await this.driverOperation(() =>
-          configurationDriver.read({
-            id: metadata.id,
-            namespaceId: namespace.id,
-          }),
+          configurationDriver.read({ id: metadata.id, namespaceId: namespace.id }),
         ),
         metadata,
       );
@@ -13634,10 +13419,7 @@ export class OpenClawController {
       // OpenClaw's sandbox (finding 2767). The upgrade preflight runs the same values-only rules.
       refuseUndeployableConfigurationValues(configuration.values);
       this.validateComputeConfiguration(configuration.values);
-      await configurationDriver.validate({
-        ...configuration,
-        values: admittedConfiguration,
-      });
+      await configurationDriver.validate({ ...configuration, values: admittedConfiguration });
       if (resolveConfiguredHarnessId(admittedConfiguration) !== configuredHarnessId) {
         throw new ScopeViolationError(
           "A Sandbox Driver cannot change the selected Harness runtime.",
@@ -13724,12 +13506,7 @@ export class OpenClawController {
         if (approval) {
           const resolved = this.resolveRepositoryBindings(
             namespace.id,
-            [
-              {
-                repositoryRef: binding.repositoryRef,
-                profile: binding.profile,
-              },
-            ],
+            [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
             "saved",
             this.selectedStandingRepositoryAdmission(),
           )!;
@@ -13784,10 +13561,7 @@ export class OpenClawController {
         }
         executionAdmission = { version, mode: "protected" };
       }
-      const execution = {
-        executionAdmission,
-        ...(egressPlan === undefined ? {} : { egressPlan }),
-      };
+      const execution = { executionAdmission, ...(egressPlan === undefined ? {} : { egressPlan }) };
       assertExecutionAdmission(execution);
       try {
         if (compute.validateExecutionAdmission === undefined) {
@@ -13801,9 +13575,7 @@ export class OpenClawController {
         );
       }
       const policy = await state.sandboxPolicies.find(namespace.id, lockedAgent.id);
-      const policyScope = {
-        repositoryCredentials: repositoryCredentials !== undefined,
-      };
+      const policyScope = { repositoryCredentials: repositoryCredentials !== undefined };
       // Finding 2053: protected execution refuses Agent additions, never drops them. Only an
       // explicitly acknowledged artifact snapshot can accompany dedicated Codex repository
       // execution. The caller learns of saved additions only with SandboxPolicy read access.
@@ -14313,11 +14085,7 @@ export class OpenClawController {
             actorId: principalId,
             source: "occ",
             action: "openclaw.namespaces.delete.retry",
-            resource: {
-              kind: "namespace",
-              id: namespace.id,
-              namespaceId: namespace.id,
-            },
+            resource: { kind: "namespace", id: namespace.id, namespaceId: namespace.id },
             outcome: "success",
             details: {
               workId,
@@ -14346,11 +14114,7 @@ export class OpenClawController {
         const readable: string[] = [];
         for (const { id } of resources.slice(0, NAMESPACE_NOT_EMPTY_ID_LIMIT)) {
           // An authorization outage hides the ID rather than the conflict.
-          const resource = {
-            kind: resourceKind,
-            id,
-            namespaceId: namespace.id,
-          };
+          const resource = { kind: resourceKind, id, namespaceId: namespace.id };
           if (await this.canRead(principalId, resource).catch(() => false)) {
             readable.push(id);
           }
@@ -14425,11 +14189,7 @@ export class OpenClawController {
           actorId: principalId,
           source: "occ",
           action: "openclaw.presets.delete",
-          resource: {
-            kind: "preset",
-            id: preset.id,
-            namespaceId: namespace.id,
-          },
+          resource: { kind: "preset", id: preset.id, namespaceId: namespace.id },
           outcome: "success",
           // Like a direct Preset delete, name the AccessBindings removed with it.
           details: {
@@ -14542,11 +14302,7 @@ export class OpenClawController {
             actorId: principalId,
             source: "occ",
             action: "openclaw.agents.delete.retry",
-            resource: {
-              kind: "agent",
-              namespaceId: namespace.id,
-              id: agent.id,
-            },
+            resource: { kind: "agent", namespaceId: namespace.id, id: agent.id },
             outcome: "success",
             details: {
               workId,
@@ -14892,11 +14648,7 @@ export class OpenClawController {
               reference.id,
               allowed,
             )
-          : await allowed("read", {
-              kind: reference.kind,
-              id: reference.id,
-              namespaceId,
-            });
+          : await allowed("read", { kind: reference.kind, id: reference.id, namespaceId });
       if (!readable) {
         unreadable += 1;
         continue;
@@ -14961,11 +14713,7 @@ export class OpenClawController {
         : (["read", "update"] as const).map(
             (action): [AuthorizationRequest["action"], ResourceRef] => [
               action,
-              {
-                kind: "configuration",
-                namespaceId,
-                id: record.configurationId as string,
-              },
+              { kind: "configuration", namespaceId, id: record.configurationId as string },
             ],
           )),
       ...Object.values(plan.configuration.secretBindings ?? {}).map(
@@ -14976,26 +14724,18 @@ export class OpenClawController {
         : []),
       ...(harnessAuth?.method === "credential_source"
         ? [
-            [
-              "operate",
-              {
-                kind: "credential_source",
-                namespaceId,
-                id: harnessAuth.sourceId,
-              },
-            ] as [AuthorizationRequest["action"], ResourceRef],
+            ["operate", { kind: "credential_source", namespaceId, id: harnessAuth.sourceId }] as [
+              AuthorizationRequest["action"],
+              ResourceRef,
+            ],
           ]
         : []),
       ...(isServiceAccountHarnessAuth(harnessAuth)
         ? [
-            [
-              "read",
-              {
-                kind: "service_account",
-                namespaceId,
-                id: harnessAuth.source.id,
-              },
-            ] as [AuthorizationRequest["action"], ResourceRef],
+            ["read", { kind: "service_account", namespaceId, id: harnessAuth.source.id }] as [
+              AuthorizationRequest["action"],
+              ResourceRef,
+            ],
           ]
         : []),
     ];
@@ -15590,18 +15330,10 @@ export class OpenClawController {
         if (!this.protectedSourceTypes().some((p) => p.type.type === source.type)) {
           throw new CredentialSourceTypeNotOfferedError("proxy");
         }
-        snapshots.push({
-          sourceId,
-          credentialProxyId: owner.driver.id,
-          sourceType: source.type,
-        });
+        snapshots.push({ sourceId, credentialProxyId: owner.driver.id, sourceType: source.type });
       } else {
         await this.credentialSourceType(owner.driver, source.type);
-        snapshots.push({
-          sourceId,
-          credentialGatewayId: owner.driver.id,
-          sourceType: source.type,
-        });
+        snapshots.push({ sourceId, credentialGatewayId: owner.driver.id, sourceType: source.type });
       }
     }
     return immutableCopy(snapshots);
@@ -15617,11 +15349,7 @@ export class OpenClawController {
     namespaceId: string,
   ): Promise<void> {
     this.namespaceIdentity(namespaceId);
-    await this.authorize(principalId, "create", {
-      kind: "agent",
-      namespaceId,
-      id: namespaceId,
-    });
+    await this.authorize(principalId, "create", { kind: "agent", namespaceId, id: namespaceId });
     await this.authorize(principalId, "create", {
       kind: "configuration",
       namespaceId,
@@ -16311,10 +16039,7 @@ export class OpenClawController {
     ) {
       return undefined;
     }
-    return Object.freeze({
-      id: receipt.targetId,
-      namespaceId: record.namespaceId,
-    });
+    return Object.freeze({ id: receipt.targetId, namespaceId: record.namespaceId });
   }
 
   /** Whether the accepted plan names the Configuration Driver the Installation selects. */
@@ -16366,10 +16091,7 @@ export class OpenClawController {
     }
     if ((await this.driverOperation(() => driver.inspectExact!(configuration))) !== undefined) {
       await this.driverOperation(() =>
-        driver.delete({
-          id: configuration.id,
-          namespaceId: configuration.namespaceId,
-        }),
+        driver.delete({ id: configuration.id, namespaceId: configuration.namespaceId }),
       );
     }
   }
@@ -16527,10 +16249,7 @@ export class OpenClawController {
         "The Configuration Driver does not support exact provisioning recovery.",
       );
     }
-    const effect = {
-      kind: "configuration" as const,
-      targetId: configurationId,
-    };
+    const effect = { kind: "configuration" as const, targetId: configurationId };
     let current = record;
     if (this.provisioningEffectReceipt(current, effect) === undefined) {
       const metadata = await this.read((state) =>
@@ -17090,10 +16809,7 @@ export class OpenClawController {
     }
     return immutableCopy({
       ...binding,
-      credential: {
-        kind: "access_token" as const,
-        secretRef: account.credential.secretRef,
-      },
+      credential: { kind: "access_token" as const, secretRef: account.credential.secretRef },
       backendBinding,
     });
   }
@@ -17161,10 +16877,7 @@ export class OpenClawController {
     return [
       immutableCopy({
         ...binding,
-        credential: {
-          kind: "access_token" as const,
-          secretRef: account.credential.secretRef,
-        },
+        credential: { kind: "access_token" as const, secretRef: account.credential.secretRef },
         backendBinding,
       }),
     ];
@@ -17405,9 +17118,7 @@ export class OpenClawController {
       return undefined;
     }
     const catalog = await this.credentialGatewayOperation(() =>
-      gateway.listSourceTypes({
-        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-      }),
+      gateway.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) }),
     );
     return catalog.some((entry) => entry.type === type && entry.rotation === "refresh")
       ? this.credentialRefreshDriver()
@@ -17495,10 +17206,7 @@ export class OpenClawController {
       }
       return { kind: "proxy" as const, driver };
     }
-    return {
-      kind: "gateway" as const,
-      driver: this.ownedCredentialGatewayDriver(source),
-    };
+    return { kind: "gateway" as const, driver: this.ownedCredentialGatewayDriver(source) };
   }
 
   /** Recheck the immutable admission and its selected owner in the use or observation transaction. */
@@ -17523,9 +17231,7 @@ export class OpenClawController {
     type: string,
   ): Promise<CredentialSourceType> {
     const catalog = await this.credentialGatewayOperation(() =>
-      driver.listSourceTypes({
-        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-      }),
+      driver.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) }),
     );
     const entry = catalog.find((candidate) => candidate.type === type);
     if (entry === undefined) {
@@ -17550,12 +17256,7 @@ export class OpenClawController {
       secrets: source.secrets,
       ...(source.egress === undefined
         ? {}
-        : {
-            egress: {
-              adoption: source.egress.adoption,
-              retention: source.egress.retention,
-            },
-          }),
+        : { egress: { adoption: source.egress.adoption, retention: source.egress.retention } }),
       state: source.state,
       ref: Object.freeze({
         kind: "credential_source" as const,
@@ -17683,11 +17384,7 @@ export class OpenClawController {
       kind: "installation",
       id: this.installation.id,
     });
-    await this.authorize(principalId, "read", {
-      kind: "namespace",
-      id: namespaceId,
-      namespaceId,
-    });
+    await this.authorize(principalId, "read", { kind: "namespace", id: namespaceId, namespaceId });
     if (target !== undefined) {
       await this.authorize(principalId, "read", target);
     }
@@ -18332,11 +18029,7 @@ export class OpenClawController {
       // A model selection that names no supported Harness: admission refuses it below.
       return;
     }
-    const harness = {
-      id: harnessId,
-      version: "provisioning",
-      mode: executionMode,
-    };
+    const harness = { id: harnessId, version: "provisioning", mode: executionMode };
     try {
       compute.validateHarnessAuth(
         harness,
@@ -18355,10 +18048,7 @@ export class OpenClawController {
   private secretHarnessAuthSnapshot(
     binding: Extract<HarnessAuthBinding, { readonly source: SecretReference }>,
   ): HarnessAuthSnapshot {
-    return immutableCopy({
-      ...binding,
-      secretDriverId: this.secretDriver().id,
-    });
+    return immutableCopy({ ...binding, secretDriverId: this.secretDriver().id });
   }
 
   // The Configuration values a deployment admits for this Harness: the Sandbox Driver's view,
@@ -18635,10 +18325,7 @@ export class OpenClawController {
     }
     validateRepositoryTopology(compute, harness, sandboxDriverId);
     const snapshot: RepositoryRevisionState = {
-      driver: {
-        id: resolved.driver.id,
-        implementation: resolved.driver.implementation,
-      },
+      driver: { id: resolved.driver.id, implementation: resolved.driver.implementation },
       deadlineWallMs: admittedAtWallMs + resolved.resolution.sessionDurationSeconds * 1000,
       bindings: resolved.resolution.bindings,
     };

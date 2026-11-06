@@ -782,10 +782,7 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
     }
     if (value.method === "credential_source") {
       return (
-        normalizeHarnessAuthBinding({
-          method: value.method,
-          sourceId: value.sourceId,
-        }) !== null &&
+        normalizeHarnessAuthBinding({ method: value.method, sourceId: value.sourceId }) !== null &&
         Object.keys(value).length === 5 &&
         isNonEmptyString(value.credentialGatewayId) &&
         isNonEmptyString(value.sourceType) &&
@@ -794,10 +791,7 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
           value.loginMode === "chatgptAuthTokens")
       );
     }
-    const binding = normalizeHarnessAuthBinding({
-      method: value.method,
-      source: value.source,
-    });
+    const binding = normalizeHarnessAuthBinding({ method: value.method, source: value.source });
     if (isSecretHarnessAuth(binding)) {
       return (
         Object.keys(value).length === 3 &&
@@ -2757,10 +2751,7 @@ function repositories(
     },
     listReferences: async (namespaceId, secretId, limit) => {
       if ((await secrets.findSecret(namespaceId, secretId)) === undefined) {
-        return Object.freeze({
-          references: Object.freeze([]),
-          truncated: false,
-        });
+        return Object.freeze({ references: Object.freeze([]), truncated: false });
       }
       const found = new Map<string, Readonly<SecretReferenceEntry>>();
       const add = (kind: SecretReferenceKind, id: string): void => {
@@ -3072,11 +3063,7 @@ function repositories(
       if (current === undefined || current.state !== "pending") {
         return undefined;
       }
-      const saved = immutableCopy({
-        ...current,
-        state: "revoked" as const,
-        completedAt,
-      });
+      const saved = immutableCopy({ ...current, state: "revoked" as const, completedAt });
       snapshot.credentialWithdrawals.set(
         withdrawalKey(namespaceId, revisionId, credentialSourceId),
         saved,
@@ -3561,10 +3548,7 @@ function repositories(
       if (current === undefined) {
         return undefined;
       }
-      const saved = immutableCopy({
-        ...current,
-        sandboxPolicyEditing: enabled,
-      });
+      const saved = immutableCopy({ ...current, sandboxPolicyEditing: enabled });
       snapshot.agents.set(key, saved);
       return saved;
     },
@@ -3848,10 +3832,7 @@ function repositories(
           });
         }
       }
-      const updated = immutableCopy({
-        ...current,
-        activeRevisionId: candidateRevisionId,
-      });
+      const updated = immutableCopy({ ...current, activeRevisionId: candidateRevisionId });
       snapshot.agents.set(agentKey(namespaceId, agentId), updated);
       return updated;
     },
@@ -3909,14 +3890,7 @@ function repositories(
                 (revision) => revision.namespaceId === namespaceId && revision.agentId === agentId,
               )
               .map(({ id, namespaceId, agentId, revision, backendId, createdAt }) =>
-                Object.freeze({
-                  id,
-                  namespaceId,
-                  agentId,
-                  revision,
-                  backendId,
-                  createdAt,
-                }),
+                Object.freeze({ id, namespaceId, agentId, revision, backendId, createdAt }),
               )
           : [],
       ),
@@ -4649,9 +4623,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
 
   constructor(options: InMemoryPlatformStateOptions = {}) {
     this.auditSink = options.auditSink;
-    this.preparedTokenProof = options.preparedTokenProof ?? {
-      current: async () => false,
-    };
+    this.preparedTokenProof = options.preparedTokenProof ?? { current: async () => false };
     this.iamSubjects = {
       identities: immutableCopy(options.iamIdentities ?? []),
       resolve: options.resolveIAMIdentity,
