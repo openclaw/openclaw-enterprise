@@ -200,7 +200,7 @@ resource-version precondition, preserving other data and metadata.
 An already-present candidate is not rewritten after a lost response.
 Both OCC Pod templates include its checksum.
 
-Each submission atomically records prior/expected revisions in `helm-started`
+Each submission durably records prior/expected revisions in private `helm-started`
 after rechecking status. The initialization hook checks Installation, then runs
 candidate migration and bootstrap before rollout. Failures require release/schema
 reconciliation; restarting old images cannot undo committed migrations.

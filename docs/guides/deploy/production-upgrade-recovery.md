@@ -89,10 +89,8 @@ Helm status/history, initialization Job/Pod logs and the retained database.
 separately. Never start old writers against a migrated database. If the
 deployed revision equals `helm-started`'s expected revision and matches candidate
 values, resume skips Helm. Invalid or empty intents and revisions outside the
-recorded prior/expected pair refuse resume, even with checked history. Preserve
-the operator freeze: revision binding does not fence concurrent Helm clients.
-Otherwise, wait
-until the initialization Job and its Pods are terminal, then run the **candidate controller
+recorded prior/expected pair refuse resume, even with checked history. Stop/reconcile the original Helm client before retry; revision binding cannot
+fence concurrent clients. Keep the operator freeze. Wait until the initialization Job and its Pods are terminal, then run the **candidate controller
 image** with `node scripts/migrate-production.mjs --check` against the same
 retained database, using its dedicated migrator credential and required database
 CA in an authorized environment. On Kubernetes, the

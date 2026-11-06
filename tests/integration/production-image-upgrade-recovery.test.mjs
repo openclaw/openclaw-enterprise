@@ -1960,11 +1960,37 @@ test("resume refuses missing, empty or malformed Helm submission evidence", asyn
     JSON.stringify({ previousRevision: 1, expectedRevision: 3 }),
     JSON.stringify({ previousRevision: 1, expectedRevision: 2 }) + "\n{}",
   ]) {
-    await writeFile(path, intent);
+    await writeFile(path, intent, { mode: 0o600 });
     await assert.rejects(f.run("--resume", "--migration-history-checked"), /submission intent/);
   }
   assert.deepEqual(await f.events(), events);
   assert.equal(existsSync(join(f.evidence, "completed")), false);
+});
+
+test("resume rejects invalid intent paths before any new submission", async (t) => {
+  const f = await fixture(t);
+  await f.failNext("fail-scale-worker");
+  await assert.rejects(f.run(), injectedFault);
+  const events = await f.events();
+  const path = join(f.evidence, "helm-started");
+  // No Helm request exists at revision 1. A directory must not look absent,
+  // or mv can publish inside it and continue without an authoritative intent.
+  for (const kind of ["directory", "symlink", "public-file"]) {
+    if (kind === "directory") {
+      await mkdir(path);
+    } else if (kind === "symlink") {
+      symlinkSync(join(f.evidence, "before-helm-status.json"), path);
+    } else {
+      await writeFile(path, JSON.stringify({ previousRevision: 1, expectedRevision: 2 }));
+      await chmod(path, 0o644);
+    }
+    const failure = await f.run("--resume").catch((error) => error);
+    assert.equal((await f.state()).helmSubmissions ?? 0, 0);
+    assert.deepEqual(await f.events(), events);
+    assert.equal(existsSync(join(f.evidence, "completed")), false);
+    assert.match(failure.stderr, /regular file|group or other permissions/);
+    await rm(path, { recursive: true });
+  }
 });
 
 test("resume refuses deployed candidate drift rather than retrying Helm", async (t) => {

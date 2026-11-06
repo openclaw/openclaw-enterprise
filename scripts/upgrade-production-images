@@ -536,6 +536,11 @@ else
   ((migration_history_checked == 0)) || die "--migration-history-checked is only valid with --resume."
 fi
 
+# An invalid existing intent is never equivalent to an unsubmitted attempt.
+if [[ -e "$evidence_dir/helm-started" || -L "$evidence_dir/helm-started" ]]; then
+  require_private_file "$evidence_dir/helm-started"
+fi
+
 require_private_file "$kubeconfig"
 require_private_file "$values"
 require_private_file "$installation"
@@ -1625,7 +1630,26 @@ PYTHON
     {previousRevision: ., expectedRevision: (. + 1)}
   ' "$evidence_dir/before-helm-submission.json" >"$submission" ||
     die "cannot bind the next Helm release revision."
-  install_atomically "$submission" "$evidence_dir/helm-started"
+  # Publish only at the exact filename, with file and directory durability before
+  # dispatch. Unlike mv, replace must not move the intent inside a directory.
+  python3 - "$submission" "$evidence_dir/helm-started" <<'PYTHON'
+import os, stat, sys
+source, destination = sys.argv[1:]
+try:
+    current = os.lstat(destination)
+except FileNotFoundError:
+    current = None
+if current is not None and (not stat.S_ISREG(current.st_mode) or current.st_mode & 0o077):
+    sys.exit("Helm submission intent must be a private regular file, not a symbolic link.")
+with open(source, "rb") as staged:
+    os.fsync(staged.fileno())
+directory = os.open(os.path.dirname(destination), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    os.replace(source, destination)
+    os.fsync(directory)
+finally:
+    os.close(directory)
+PYTHON
   # Open stdout before entering the native failure handler.
   {
     helm upgrade --install "$release" "$chart" "${helm_args[@]}" \
