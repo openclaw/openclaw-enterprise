@@ -74,22 +74,23 @@ establish ownership.
 
 ## Resume an unfinished prepared upgrade
 
-For a failed writer scale, Helm upgrade, or rollout wait, read
-`native-command-failures.tsv` in the evidence directory. Each tab-separated row
-records the operation, component (`api`, `worker`, or `release`), and native exit
-code. Rows remain after resume; they record client failures, not whether a
-request took effect. Reconcile live state as described below before resuming.
-Other failures and killed processes might not produce a row.
+Read `native-command-failures.tsv` for failed scale, Helm or rollout commands:
+rows retain the operation, component (`api`, `worker`, `release`) and exit code.
+Client failures do not establish whether requests took effect; other failures
+may leave no row. Reconcile live state before resuming.
 
-A Helm failure or disconnected response does not prove that the migration
-rolled back. Read the current Helm status and history, inspect the initialization
-Job and its Pods and logs, and inspect the retained database. The saved
-`current-helm-status.json` is the last read and can predate the failed request.
-A `pending-*` Helm release must be resolved separately before the helper can
-continue. Do not start the old API or worker against a migrated database. If the
-candidate Helm revision is deployed, the helper reads it back and continues
-without rerunning Helm. Otherwise, wait
-until the initialization Job and its Pods are terminal, then run the **candidate controller
+UID, resource-version or replica drift refuses the stop before migration;
+the API may already be stopped. Reconcile `current-<component>-deployment.json`
+and `quiescence-<component>-patch.json` against live state before resuming.
+
+Helm failure or disconnection does not prove migration rollback. Inspect current
+Helm status/history, initialization Job/Pod logs and the retained database.
+`current-helm-status.json` may predate the failure. Resolve `pending-*` releases
+separately. Never start old writers against a migrated database. If the
+deployed revision equals `helm-started`'s expected revision and matches candidate
+values, resume skips Helm. Invalid or empty intents and revisions outside the
+recorded prior/expected pair refuse resume, even with checked history. Stop/reconcile the original Helm client before retry; revision binding cannot
+fence concurrent clients. Keep the operator freeze. Wait until the initialization Job and its Pods are terminal, then run the **candidate controller
 image** with `node scripts/migrate-production.mjs --check` against the same
 retained database, using its dedicated migrator credential and required database
 CA in an authorized environment. On Kubernetes, the
@@ -100,8 +101,8 @@ CA in an authorized environment. On Kubernetes, the
 to interpret unsupported or uncertain state. Only after this check and review of
 the Job outcome, repeat the command with `--resume --migration-history-checked`.
 That flag records your attestation; it does not run the database check. The
-helper keeps or returns OCC to zero replicas before retrying the candidate Helm
-release. Prefer a reviewed forward fix; neither Helm rollback nor the helper
+helper keeps or returns OCC to zero replicas and records a new expected successor
+from the live revision before retrying. Prefer a reviewed forward fix; neither Helm rollback nor the helper
 reverses committed migrations.
 
 After an unknown Agent dispatch, requests in the same batch may still finish.
@@ -250,10 +251,12 @@ with `--resume --migration-history-checked`.
 
 ## Correct values the candidate refuses
 
-Before the window, render the candidate chart with live values from its checkout:
+Before maintenance, use the candidate checkout with live release, namespace and values:
 
 ```bash
-helm template --is-upgrade oce deploy/helm/openclaw-enterprise -f /secure/occ/values.yaml > /dev/null
+helm template --is-upgrade oce deploy/helm/openclaw-enterprise \
+  --namespace openclaw-system \
+  -f /secure/occ/values.yaml > /dev/null
 ```
 
 The helper renders and runs its

@@ -53,8 +53,8 @@ Prepare:
 - the production kubeconfig, Helm values, Installation YAML, OCC service key,
   and optional CA bundle in protected files;
 - Bash, Python 3, Node.js, Helm, kubectl, jq, yq, cmp and mktemp on the operator host. The Kubernetes identity must
-  create and delete Jobs, Secrets and NetworkPolicies; get Jobs and Pods; list Pods; and read Pod logs in the release
-  namespace;
+  create and delete Jobs, Secrets and NetworkPolicies; get Jobs and Pods; list Pods;
+  read Pod logs; and get and patch Deployments in the release namespace;
 - for the bundled Collector, [refresh its config Secret](../observability.md#refresh-the-collector-configuration-on-upgrade)
   from the release checkout and restart the Collector, even for image-only
   releases. Helm leaves the Secret as is. The helper stops before mutation if

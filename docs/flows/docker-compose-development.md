@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-04
-last_updated_session: authoring-run/73695cc1-a0da-41a6-9cb1-c3fbde5f5a71
+updated: 2026-11-06
+last_updated_session: authoring-run/06ea0064-3df1-4770-ab8a-64a5abc819b4
 ---
 
 # Compose development flow
@@ -49,8 +49,10 @@ owns the operator procedure and destructive cleanup boundary.
 
 ```mermaid
 graph TD
-  A["./bin/occ dev up"] --> Guard{"Development settings valid?"}
-  Guard -->|No| Refuse["Refuse before startup"]
+  A["./bin/occ dev up"] --> Checkout{"Nearest checkout uses LF?"}
+  Checkout -->|No| Refuse["Refuse before startup"]
+  Checkout -->|Yes| Guard{"Development settings valid?"}
+  Guard -->|No| Refuse
   Guard -->|Yes| Profile{"Compute profile"}
   Profile -->|Docker| B["Preflight host tools, resolve Podman machine connection,<br/>and inspect Compose config"]
   Profile -->|Kubernetes| KPre["Pin local engine endpoint<br/>and reject existing resources"]
@@ -109,6 +111,12 @@ graph TD
 
 `internal/occcli/dev.go:developmentCommand`,
 `internal/occdev/egress_k3d.go:CheckDevelopmentProfile`, `scripts/dev-up`
+
+`internal/occcli/dev.go:developmentRepository` selects the nearest enclosing
+checkout with an OCE module declaration and `compose.yaml`. A matching checkout
+with CRLF in `go.mod` stops both `up` and `down` with an LF repair error before
+profile dispatch. It cannot fall through to an outer checkout and target that
+checkout's stack or volumes.
 
 Before Compute dispatch, the CLI checks protected-egress, database, and host-gateway
 selectors through the existing development validators. Direct Docker script startup
@@ -318,6 +326,10 @@ describes accepted selectors.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 18:12: Preserve the checkout line-ending guard and both development cleanup histories while merging main. (authoring-run/06ea0064-3df1-4770-ab8a-64a5abc819b4 - 11214072c8afd401fbf217f564627a63caabffc1)
+
+- 2026-11-06 20:03: Refuse a nearest CRLF checkout before startup or cleanup can select an outer stack. (authoring-run/b63d4772-19f9-4e46-8f8e-bd52bd2ea26f - 7cc3f1b9f2b372bf6da57a980d03eeebf8256506)
 
 - 2026-11-04 19:20: Preserve durable cleanup and joined readiness while overlapping image preparation. (authoring-run/73695cc1-a0da-41a6-9cb1-c3fbde5f5a71 - 3f3150ce8a8b024e902ecf493a5e41ff5b72c934)
 

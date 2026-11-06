@@ -54,7 +54,7 @@ import type {
   BackendDefinition,
   OpenShellBackendDefinition,
   Permission,
-  Preset,
+  PresetDraftDefinition,
   BackendSummary,
   RepositoryPolicyDriver,
   NativeRepositorySender,
@@ -234,7 +234,7 @@ export type ServiceAccountDriverFactory = (
 ) => void;
 
 export interface InstallationRuntimeDrivers {
-  readonly defaultPresets?: readonly Pick<Preset, "name" | "template">[];
+  readonly defaultPresets?: readonly PresetDraftDefinition[];
   /** Bundled defaults replaced by a same-named `presets.files` entry; startup warns once each. */
   readonly shadowedDefaultPresets?: readonly ShadowedDefaultPreset[];
   /** Shipped versions of the bundled defaults, loaded even when they are not seeded. */
@@ -288,7 +288,7 @@ export async function initializeInstallationPresets(
   controller: OpenClawController,
   iam: IAMDriver,
   identities: readonly Identity[],
-  defaults: readonly Pick<Preset, "name" | "template">[],
+  defaults: readonly PresetDraftDefinition[],
   onWarning?: (event: Readonly<Record<string, unknown>>) => void,
 ): Promise<void> {
   if (defaults.length === 0) {

@@ -24,6 +24,7 @@ import {
 import { migrateWithHistory } from "../../scripts/migration-history.mjs";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { assertReleasedControllerCompatibility } from "../helpers/released-controller-compatibility.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const migrationsDirectory = join(repositoryRoot, "migrations");
@@ -39,6 +40,16 @@ const providerMigrationTags = new Set([
   "0030_codex_pat_harness_auth",
 ]);
 const execFileAsync = promisify(execFile);
+const controllerImages = {
+  released: {
+    reference: process.env.OCC_TEST_RELEASED_CONTROLLER_IMAGE,
+    revision: process.env.OCC_TEST_RELEASED_CONTROLLER_REVISION,
+  },
+  candidate: {
+    reference: process.env.OCC_TEST_CANDIDATE_CONTROLLER_IMAGE,
+    revision: process.env.OCC_TEST_CANDIDATE_CONTROLLER_REVISION,
+  },
+};
 const dependency = createRequire(new URL("../../packages/occ/package.json", import.meta.url));
 const { drizzle } = dependency("drizzle-orm/node-postgres");
 const { migrate } = dependency("drizzle-orm/node-postgres/migrator");
@@ -3691,3 +3702,27 @@ test(
     assert.equal(await authorize(principals[2], "read"), true);
   },
 );
+
+// An unselected opt-in case must not become an unexpected skip in native PostgreSQL CI.
+if (
+  Object.values(controllerImages).some((image) =>
+    Object.values(image).some((value) => value !== undefined),
+  )
+) {
+  test(
+    "Released controller remains usable across candidate database writes",
+    { timeout: 360_000 },
+    async (t) => {
+      assert.ok(
+        Object.values(controllerImages).every(
+          (image) => typeof image.reference === "string" && typeof image.revision === "string",
+        ),
+        "Both released and candidate controller image references and revisions are required.",
+      );
+      await assertReleasedControllerCompatibility(t, controllerImages, async () => {
+        const fixture = await migrationHistoryFixture();
+        return historyDatabase(t, fixture, "released_controller");
+      });
+    },
+  );
+}

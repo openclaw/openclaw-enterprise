@@ -536,6 +536,11 @@ else
   ((migration_history_checked == 0)) || die "--migration-history-checked is only valid with --resume."
 fi
 
+# An invalid existing intent is never equivalent to an unsubmitted attempt.
+if [[ -e "$evidence_dir/helm-started" || -L "$evidence_dir/helm-started" ]]; then
+  require_private_file "$evidence_dir/helm-started"
+fi
+
 require_private_file "$kubeconfig"
 require_private_file "$values"
 require_private_file "$installation"
@@ -1493,12 +1498,24 @@ if [[ ! -f "$evidence_dir/helm-started" ]]; then
 fi
 
 helm_complete=0
-if [[ -f "$evidence_dir/helm-started" && "$helm_state" == deployed ]] &&
-  matches_yaml "$evidence_dir/current-live-values.yaml" "$candidate_values"; then
-  # A deployed Helm revision includes successful hooks, but ensure it is newer
-  # than the baseline before interpreting a lost response as success.
-  if jq -e --slurpfile before "$evidence_dir/before-helm-status.json" \
-    '.version > $before[0].version' "$evidence_dir/current-helm-status.json" >/dev/null; then
+if [[ -f "$evidence_dir/helm-started" ]]; then
+  jq -es '
+    length == 1 and (.[0] |
+    (.previousRevision | type == "number" and . > 0 and floor == .) and
+    (.expectedRevision | type == "number" and . > 0 and floor == .) and
+    .expectedRevision == .previousRevision + 1 and
+    .expectedRevision > .previousRevision)
+  ' "$evidence_dir/helm-started" >/dev/null ||
+    die "the Helm submission intent is missing or invalid; reconcile the release before continuing."
+  jq -e --slurpfile submission "$evidence_dir/helm-started" '
+    .version == $submission[0].previousRevision or .version == $submission[0].expectedRevision
+  ' "$evidence_dir/current-helm-status.json" >/dev/null ||
+    die "the Helm release revision is outside this submission; investigate before continuing."
+  if [[ "$helm_state" == deployed ]] &&
+    jq -e --slurpfile submission "$evidence_dir/helm-started" \
+      '.version == $submission[0].expectedRevision' "$evidence_dir/current-helm-status.json" >/dev/null; then
+    matches_yaml "$evidence_dir/current-live-values.yaml" "$candidate_values" ||
+      die "the expected deployed Helm revision does not match the candidate values; investigate before continuing."
     helm_complete=1
   fi
 fi
@@ -1540,10 +1557,21 @@ if ((helm_complete == 0)); then
     jq -e --arg release "$release" --arg component "$component" '
       .metadata.labels["app.kubernetes.io/instance"] == $release and
       .metadata.labels["app.kubernetes.io/component"] == $component and
+      (.metadata.uid | type == "string" and length > 0) and
+      (.metadata.resourceVersion | type == "string" and length > 0) and
+      .metadata.deletionTimestamp == null and
       (.spec.replicas == 0 or .spec.replicas == 1)
     ' "$evidence_dir/current-$component-deployment.json" >/dev/null || die "$deployment has unexpected ownership or replicas."
+    # Test and scale atomically: a replacement or concurrent edit must not be stopped.
+    jq '[
+      {op: "test", path: "/metadata/uid", value: .metadata.uid},
+      {op: "test", path: "/metadata/resourceVersion", value: .metadata.resourceVersion},
+      {op: "test", path: "/spec/replicas", value: .spec.replicas},
+      {op: "replace", path: "/spec/replicas", value: 0}
+    ]' "$evidence_dir/current-$component-deployment.json" >"$evidence_dir/quiescence-$component-patch.json"
     quiescence_remaining
-    "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" scale "deployment/$deployment" --replicas=0 ||
+    "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" patch "deployment/$deployment" \
+      --type json --patch-file "$evidence_dir/quiescence-$component-patch.json" ||
       native_command_failed "$?" quiescence-scale "$component"
   done
   while true; do
@@ -1562,8 +1590,11 @@ if ((helm_complete == 0)); then
     quiescence_remaining
     "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" get "deployment/openclaw-enterprise-$component" --output json \
       >"$evidence_dir/quiescence-$component-deployment.json"
-    jq -e '.spec.replicas == 0' "$evidence_dir/quiescence-$component-deployment.json" >/dev/null ||
-      die "OCC replicas changed during quiescence; migration was not started."
+    jq -e --slurpfile observed "$evidence_dir/current-$component-deployment.json" '
+      .metadata.uid == $observed[0].metadata.uid and
+      .metadata.deletionTimestamp == null and .spec.replicas == 0
+    ' "$evidence_dir/quiescence-$component-deployment.json" >/dev/null ||
+      die "OCC identity or replicas changed during quiescence; migration was not started."
   done
 
   install_atomically "$candidate_values" "$values"
@@ -1588,7 +1619,37 @@ PYTHON
   if [[ "$repository_enabled" == true ]]; then
     verify_pair_nodes
   fi
-  touch "$evidence_dir/helm-started"
+  helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/before-helm-submission.json"
+  jq -e --slurpfile observed "$evidence_dir/current-helm-status.json" '
+    .version == $observed[0].version and .info.status == $observed[0].info.status
+  ' "$evidence_dir/before-helm-submission.json" >/dev/null ||
+    die "the Helm release changed before submission; investigate before continuing."
+  submission=$(mktemp "$evidence_dir/helm-submission.XXXXXXXX.json")
+  jq -e '
+    .version | select(type == "number" and . > 0 and floor == . and . + 1 > .) |
+    {previousRevision: ., expectedRevision: (. + 1)}
+  ' "$evidence_dir/before-helm-submission.json" >"$submission" ||
+    die "cannot bind the next Helm release revision."
+  # Publish only at the exact filename, with file and directory durability before
+  # dispatch. Unlike mv, replace must not move the intent inside a directory.
+  python3 - "$submission" "$evidence_dir/helm-started" <<'PYTHON'
+import os, stat, sys
+source, destination = sys.argv[1:]
+try:
+    current = os.lstat(destination)
+except FileNotFoundError:
+    current = None
+if current is not None and (not stat.S_ISREG(current.st_mode) or current.st_mode & 0o077):
+    sys.exit("Helm submission intent must be a private regular file, not a symbolic link.")
+with open(source, "rb") as staged:
+    os.fsync(staged.fileno())
+directory = os.open(os.path.dirname(destination), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    os.replace(source, destination)
+    os.fsync(directory)
+finally:
+    os.close(directory)
+PYTHON
   # Open stdout before entering the native failure handler.
   {
     helm upgrade --install "$release" "$chart" "${helm_args[@]}" \
@@ -2233,6 +2294,11 @@ if [[ "$repository_enabled" == true ]]; then
 fi
 
 helm status "$release" "${helm_args[@]}" >"$evidence_dir/after-helm-status.txt"
+helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/after-helm-status.json"
+jq -e --slurpfile submission "$evidence_dir/helm-started" '
+  .info.status == "deployed" and .version == $submission[0].expectedRevision
+' "$evidence_dir/after-helm-status.json" >/dev/null ||
+  die "the final Helm release is not this submission's deployed revision; completion was not recorded."
 "${kube[@]}" get deployments,statefulsets,pods,persistentvolumeclaims --all-namespaces \
   --output json >"$evidence_dir/after-workloads.json"
 # Record the terminal state only after every required check and evidence read.
