@@ -140,7 +140,7 @@
     "tests/conformance/slack-configuration.test.mjs": 100,
     "tests/conformance/slack-proxy-reset.test.mjs": 100,
     "tests/conformance/slack-proxy-tunnel.test.mjs": 2000,
-    "tests/conformance/socket-directory.test.ts": 100,
+    "tests/conformance/socket-directory.test.mjs": 100,
     "tests/conformance/split-layout-adopt.test.mjs": 400,
     "tests/conformance/split-layout-tenants.test.mjs": 1200,
     "tests/conformance/ssh-compute.test.mjs": 17500,

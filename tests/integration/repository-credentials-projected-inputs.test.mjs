@@ -21,7 +21,7 @@ import {
   createTlsMaterial,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
-import { socketDirectory } from "../helpers/socket-directory.ts";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 
 async function project(directory, generation, values) {
   const path = join(directory, generation);

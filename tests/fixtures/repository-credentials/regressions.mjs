@@ -9,7 +9,7 @@ import { registerResourceCleanup, closeAndDispose } from "./cleanup.mjs";
 import { appModule } from "./runtime.mjs";
 import { startCredentialServiceFixture, gatewayRequest } from "./service.mjs";
 import { runInFixtureContainer } from "./container.mjs";
-import { socketDirectory } from "../../helpers/socket-directory.ts";
+import { socketDirectory } from "../../helpers/socket-directory.mjs";
 
 async function runningProcessesMentioning(marker) {
   const running = [];

@@ -37,7 +37,7 @@ import {
   reservePort,
   reservedPortArgs,
 } from "../helpers/available-port.mjs";
-import { socketDirectory } from "../helpers/socket-directory.ts";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";

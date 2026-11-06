@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { withEnvironment } from "../helpers/environment.ts";
-import { socketDirectory, socketPathLimit } from "../helpers/socket-directory.ts";
+import { socketDirectory, socketPathLimit } from "../helpers/socket-directory.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // An owner whose cleanups the test runs itself, so it can observe the removal.

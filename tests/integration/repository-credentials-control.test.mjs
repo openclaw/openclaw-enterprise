@@ -42,7 +42,7 @@ import {
   startServiceListeners,
   startStaticTokenService,
 } from "../fixtures/repository-credentials/service-resources.mjs";
-import { socketDirectory } from "../helpers/socket-directory.ts";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 
 // Session opens need an admission id; a fresh one per call unless the test names it.

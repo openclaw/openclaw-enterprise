@@ -41,7 +41,7 @@ import {
   createInstallationDriverConfiguration as installation,
 } from "../helpers/installation-driver-configuration.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
-import { socketDirectory } from "../helpers/socket-directory.ts";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
