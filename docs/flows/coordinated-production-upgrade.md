@@ -170,20 +170,22 @@ drafts per the [production guide](../guides/deploy/production-upgrade.md).
 ### 2. Reconcile a prior attempt
 
 `scripts/upgrade-production-images` binds resume to the prepared inputs, directory,
-source and cluster, requalifies the image pair, and rejects changed eligible nodes.
-Values must match baseline, candidate or the exact recorded predecessor at its
-revision. Installation identity and unrelated Secret data remain unchanged.
-Resume checks immutable intent equality. Retries require migration-history review
-and terminal initializer Jobs/Pods.
+source and cluster, requalifies images, and rejects changed eligible nodes.
+Values must match baseline, candidate or the recorded predecessor and revision.
+Installation identity and unrelated Secret data remain unchanged. Resume checks
+immutable intent equality. Retries require migration-history review and terminal
+initializer Jobs/Pods. `new_attempt` fsyncs attempt-directory ancestors before
+publishing pointers.
 
 For [same-candidate recovery](../guides/deploy/production-helm-recovery.md),
 `scripts/upgrade-helm-state.py:recover` checks the original Helm payload, ownership,
-completed Job and owned Pod, rejecting added execution behavior. Reads use each
-manifest's namespace; ownership stays bound to the release. It durably records
-exclusive intent, rereads identities and rolls back with hooks enabled. Only pre-upgrade hooks are
-supported. Resume requires the acknowledged successor; lost acknowledgement
-refuses replay. Client shutdown, exclusive ownership, resource reconciliation and
-database history remain operator attestations.
+completed Job and owned Pod, including exact security contexts. `pod_matches`
+uses Compute's `resource-quantities.ts` comparator for declared requests/limits.
+Reads use manifest namespaces; ownership stays bound to the release. Durable
+exclusive intent precedes identity rechecks and rollback with hooks enabled.
+Only pre-upgrade hooks are supported. Resume requires an acknowledged successor.
+Client shutdown, exclusive ownership, resource reconciliation and database history
+remain operator attestations.
 
 ### 3. Quiesce writers and run the candidate release
 
@@ -311,9 +313,8 @@ saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
   changes. After a controller-only release, expect one same-image Pod template
   rollout per affected Agent. Separately check
   repository-bound versions affected by broker restart.
-- Use credentialed production Kubernetes integration with distinct baseline
-  and candidate images for end-to-end proof. Mocked commands prove only script
-  control flow.
+- End-to-end proof requires credentialed production Kubernetes integration with
+  distinct images. Mocked commands prove script control flow.
 
 ## Related docs
 
@@ -331,6 +332,7 @@ saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-06 23:52: Check container identity, quantities and attempt durability. (authoring-run/9507f38c-1639-4152-a4ae-0de499d7ca5d - a0560795)
 - 2026-11-06 23:37: Fix retry publication, resource lookup and execution checks. (authoring-run/9507f38c-1639-4152-a4ae-0de499d7ca5d - bbf4891d)
 - 2026-11-06 23:24: Bind attempts and acknowledge same-candidate recovery. (authoring-run/9507f38c-1639-4152-a4ae-0de499d7ca5d - 1b6c65cc)
 

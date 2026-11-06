@@ -44,8 +44,14 @@ The candidate's exact revision, stored values, ordinary manifests and hook set
 must match its original attempt. The command verifies the attempt UUID on the
 live hooks, initializer Job and its successful owned Pod. It compares the Job
 and Pod specifications, including images and commands, with the candidate.
-Missing, deleting, failed or mismatched objects stop recovery. Admission-added execution behavior, inputs, mounts, probes or lifecycle handlers
-also stop recovery; only unrelated API defaults are tolerated.
+Missing, deleting, failed or mismatched objects stop recovery. Added commands,
+inputs, mounts, probes or lifecycle handlers also stop recovery. Pod and container
+security settings must match exactly; absent or null settings match an empty
+context. Admission rewrites refuse recovery, even copying an inherited setting
+to a container without changing its effect. Declared CPU and memory
+requests and limits compare by value, so `1.5Gi` and `1536Mi` are equivalent.
+These checks allow API defaults on otherwise unspecified fields; they do not
+prove that no admission mutation occurred.
 
 The command reads each resource in its declared namespace (defaulting to the
 release namespace), then checks Helm ownership against the original release.

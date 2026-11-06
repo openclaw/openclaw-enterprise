@@ -108,7 +108,7 @@ const yqOr = (value, alternative) =>
 
 // Unless a case selects the real chart, a stand-in renders only what the startup
 // preflight reads: each controller container's image and Installation mount.
-async function standInChart(file, policy, recoveryHooks = false) {
+async function standInChart(file, policy, recoveryHooks = false, initializationResources) {
   const values = await yamlFile(file);
   const secretName = yqRaw(yqOr(values?.installation?.secretName, "occ-installation-startup"));
   const key = yqRaw(yqOr(values?.installation?.key, "installation.yaml"));
@@ -173,11 +173,29 @@ async function standInChart(file, policy, recoveryHooks = false) {
                 },
                 spec: {
                   restartPolicy: "Never",
+                  securityContext: {
+                    runAsUser: 1000,
+                    runAsGroup: 1000,
+                    runAsNonRoot: true,
+                    seccompProfile: { type: "RuntimeDefault" },
+                  },
                   containers: [
-                    { name: "bootstrap", image, args: ["scripts/bootstrap-installation.mjs"] },
+                    {
+                      name: "bootstrap",
+                      image,
+                      args: ["scripts/bootstrap-installation.mjs"],
+                      ...(initializationResources ? { resources: initializationResources } : {}),
+                      securityContext: { capabilities: { drop: ["ALL"] } },
+                    },
                   ],
                   initContainers: [
-                    { name: "migration", image, args: ["scripts/migrate-production.mjs"] },
+                    {
+                      name: "migration",
+                      image,
+                      args: ["scripts/migrate-production.mjs"],
+                      ...(initializationResources ? { resources: initializationResources } : {}),
+                      securityContext: { capabilities: { drop: ["ALL"] } },
+                    },
                   ],
                 },
               },
@@ -407,6 +425,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       if (
         state.api === 0 &&
         state.worker === 0 &&
+        existsSync(join(root, "fail-before-helm-intent")) &&
         (await yamlFile(join(root, "values.json")))?.installation?.upgradeAttemptId !==
           (await yamlFile(join(root, "live-values")))?.installation?.upgradeAttemptId &&
         take("fail-before-helm-intent")
@@ -436,7 +455,14 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       }
       out(rendered.stdout);
     } else if (args[0] === "template") {
-      out(await standInChart(fileArg("--values"), state.preflightPolicy, state.recoveryHooks));
+      out(
+        await standInChart(
+          fileArg("--values"),
+          state.preflightPolicy,
+          state.recoveryHooks,
+          state.initializationResources,
+        ),
+      );
     } else if (args[0] === "rollback") {
       assert.ok(!args.includes("--no-hooks"));
       assert.equal(Number(args[2]), state.version);
@@ -1460,6 +1486,7 @@ async function fixture(
     chart = null,
     preflightResults = null,
     recoveryHooks = false,
+    initializationResources,
     preflightPolicy = false,
     preflightFault = null,
     kubernetesNamespaces = [],
@@ -1658,6 +1685,7 @@ async function fixture(
     kubeconfig: api?.kubeconfig ?? null,
     preflightResults,
     recoveryHooks,
+    initializationResources,
     preflightPolicy,
     preflightFault,
     installationName,
@@ -5694,4 +5722,94 @@ test("failed attempt preparation preserves native dry-run diagnostics before sto
   );
   assert.deepEqual(await f.events(), []);
   assert.equal(existsSync(join(f.evidence, "prepared")), false);
+});
+
+test("recovery refuses a container override of the inherited initializer identity", async (t) => {
+  const f = await fixture(t, { recoveryHooks: true });
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  const original = await completedHookInPendingRelease(f);
+  // Admission may leave the Job intact and override identity only on its Pod.
+  for (const placement of ["initContainers", "containers"]) {
+    for (const [key, value] of [
+      ["runAsUser", 1001],
+      ["runAsGroup", 1001],
+      ["runAsNonRoot", false],
+    ]) {
+      await t.test(`${placement} ${key}`, async () => {
+        const state = structuredClone(original);
+        state.recoveryPod.spec[placement][0].securityContext[key] = value;
+        await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+        await assert.rejects(f.run(...recoverHelm), /Pod identity/);
+        assert.equal((await f.state()).rollbackSubmissions, undefined);
+        assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+      });
+    }
+  }
+});
+
+test("recovery compares initializer resource quantities by value and refuses changed limits", async (t) => {
+  const f = await fixture(t, {
+    recoveryHooks: true,
+    initializationResources: {
+      requests: { cpu: "0.1", memory: "128Mi" },
+      limits: { cpu: "0.5", memory: "1.5Gi" },
+    },
+  });
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  const original = await completedHookInPendingRelease(f);
+  // Kubernetes serializes equivalent fixed-point quantities canonically on
+  // the Job and Pod; the stored Helm manifest retains the original spelling.
+  for (const spec of [
+    original.recoveryResources["Job/oce-initialization"].spec.template.spec,
+    original.recoveryPod.spec,
+  ]) {
+    for (const container of [...spec.initContainers, ...spec.containers]) {
+      container.resources.requests.cpu = "100m";
+      container.resources.limits = { cpu: "500m", memory: "1536Mi" };
+    }
+  }
+  for (const [placement, section, resource, value] of [
+    ["containers", "limits", "memory", "1537Mi"],
+    ["initContainers", "requests", "cpu", "101m"],
+  ]) {
+    const changed = structuredClone(original);
+    changed.recoveryPod.spec[placement][0].resources[section][resource] = value;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(changed));
+    await assert.rejects(f.run(...recoverHelm), /Pod identity/);
+    assert.equal((await f.state()).rollbackSubmissions, undefined);
+    assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+  }
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(original));
+  await f.run(...recoverHelm);
+  assert.equal((await f.state()).rollbackSubmissions, 1);
+  assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+});
+
+test("recovery refuses admission changes to Pod and container security settings", async (t) => {
+  for (const change of ["Pod sysctls", "container seccomp", "init capabilities"]) {
+    await t.test(change, async (subtest) => {
+      const f = await fixture(subtest, { recoveryHooks: true });
+      await f.failNext("lost-helm-response");
+      await assert.rejects(f.run(), injectedFault);
+      const state = await completedHookInPendingRelease(f);
+      // Admission can preserve every requested field while adding privileges or
+      // overriding a profile inherited from the Pod onto one container.
+      const spec = state.recoveryPod.spec;
+      if (change === "Pod sysctls") {
+        spec.securityContext.sysctls = [
+          { name: "net.ipv4.ip_local_port_range", value: "1024 65535" },
+        ];
+      } else if (change === "container seccomp") {
+        spec.containers[0].securityContext.seccompProfile = { type: "Unconfined" };
+      } else {
+        spec.initContainers[0].securityContext.capabilities.add = ["NET_ADMIN"];
+      }
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      await assert.rejects(f.run(...recoverHelm), /Pod identity/);
+      assert.equal((await f.state()).rollbackSubmissions, undefined);
+      assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+    });
+  }
 });

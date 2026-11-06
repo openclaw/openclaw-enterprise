@@ -141,6 +141,10 @@ def new_attempt(directory, release, helm_args):
     nonce = str(uuid.uuid4())
     root = directory / "helm-attempts" / nonce
     root.mkdir(parents=True, mode=0o700)
+    # Persist both the UUID entry and a newly created helm-attempts entry before
+    # any prepared/submission pointer can name this attempt.
+    sync_directory(root.parent)
+    sync_directory(directory)
     values = command(["yq", '.installation.upgradeAttemptId = strenv(OCE_UPGRADE_ATTEMPT)',
                       str(directory / "candidate-values.yaml")],
                      env={**os.environ, "OCE_UPGRADE_ATTEMPT": nonce})
@@ -211,23 +215,55 @@ def contains(actual, expected):
     return actual == expected
 
 
+def same_security_context(actual, expected):
+    # Kubernetes defaults an absent Pod context to {}; preserve every supplied
+    # setting and refuse admission rewrites, even equivalent inherited settings.
+    left, right = actual.get("securityContext"), expected.get("securityContext")
+    return ({} if left is None else left) == ({} if right is None else right)
+
+
 def pod_matches(actual, expected):
-    if not contains(actual, expected):
+    if not same_security_context(actual, expected):
         return False
-    # The API defaults omitted fields, but admission must not add executable
-    # containers or override the image's entrypoint/arguments during recovery.
+    normalized = json.loads(json.dumps(expected))
+    normalized.pop("securityContext", None)
+    quantities = []
+    # The API defaults omitted fields, but admission must not change execution.
     for field in ("containers", "initContainers"):
-        left, right = actual.get(field, []), expected.get(field, [])
+        left, right = actual.get(field, []), normalized.get(field, [])
         if len(left) != len(right):
             return False
         for live, candidate in zip(left, right):
+            if not same_security_context(live, candidate):
+                return False
+            candidate.pop("securityContext", None)
             # These fields are not harmless API defaults: additions change
             # executed code, its inputs, filesystem or execution location.
             for key in ("command", "args", "env", "envFrom", "volumeMounts", "volumeDevices",
                         "workingDir", "lifecycle", "livenessProbe", "readinessProbe", "startupProbe"):
                 if live.get(key) != candidate.get(key):
                     return False
-    return True
+            for section in ("requests", "limits"):
+                for resource, quantity in candidate.get("resources", {}).get(section, {}).items():
+                    observed = live.get("resources", {}).get(section, {}).get(resource)
+                    quantities.append([str(observed), str(quantity)])
+                    candidate["resources"][section][resource] = observed
+    if quantities:
+        # Reuse Compute's fixed-point Kubernetes semantics, including native
+        # precision/capping rules, rather than maintaining a second parser.
+        comparator = Path(__file__).resolve().parents[1] / "apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"
+        equal = command(["node", "--input-type=module", "--eval", """
+import { readFileSync } from "node:fs";
+const { compareResourceQuantities } = await import(process.argv[1]);
+process.stdout.write(JSON.stringify(JSON.parse(readFileSync(0, "utf8")).map(
+  ([actual, expected]) => compareResourceQuantities(actual, expected) === 0
+)));
+""", comparator.as_uri()], input=json.dumps(quantities).encode(), timeout=15)
+        compared = json.loads(equal)
+        if not isinstance(compared, list) or len(compared) != len(quantities) or not all(
+                value is True for value in compared):
+            return False
+    return contains(actual, normalized)
 
 
 def release_matches(state, rendered, values, release, namespace):
@@ -290,7 +326,11 @@ def recover(directory, release, kubeconfig, context, namespace):
         if desired in hooks:
             require(metadata.get("annotations", {}).get(ATTEMPT_ANNOTATION) == record["nonce"],
                     "hook does not identify the original upgrade attempt")
-            require(contains(actual, desired), "live hook specification differs from its candidate")
+            expected_hook = json.loads(json.dumps(desired))
+            if desired["kind"] == "Job":
+                # Pod comparison below understands API quantity normalization.
+                expected_hook["spec"]["template"]["spec"] = {}
+            require(contains(actual, expected_hook), "live hook specification differs from its candidate")
             if desired["kind"] == "Job":
                 require(pod_matches(actual["spec"]["template"]["spec"], desired["spec"]["template"]["spec"]),
                         "initializer Job execution differs from its candidate")
@@ -425,9 +465,9 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         # Native command output can contain protected values; retain the operation,
         # not its stdout/stderr or argument vector, in the public diagnostic.
-        message = "Helm evidence command failed" if isinstance(error, subprocess.CalledProcessError) else str(error)
+        message = "Helm evidence command failed" if isinstance(error, subprocess.SubprocessError) else str(error)
         print(f"upgrade-helm-state: {message}", file=sys.stderr)
         sys.exit(1)
