@@ -729,7 +729,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       if (take("fail-rollout-" + component)) {
         return fail(9);
       }
-    } else if (args.includes("scale")) {
+    } else if (args.includes("scale") || args.includes("patch")) {
       const component = args
         .find((a) => a.startsWith("deployment/"))
         .split("-")
@@ -740,7 +740,45 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
         }
         return fail(9);
       }
-      state[component] = 0;
+      // Simulate another actor between the helper's GET and its mutation. Keep
+      // scale support so the same scenario demonstrates the unguarded baseline.
+      state.deploymentIdentities ??= {};
+      const identity = (state.deploymentIdentities[component] ??= {
+        uid: component + "-deployment-uid",
+        resourceVersion: "1",
+      });
+      if (component === "worker" && take("replace-worker-before-scale")) {
+        identity.uid = "replacement-worker-uid";
+        identity.resourceVersion = "2";
+        state.worker = 1;
+      }
+      if (component === "worker" && take("edit-worker-before-scale")) {
+        identity.resourceVersion = "2";
+      }
+      save();
+      if (args.includes("patch")) {
+        assert.equal(fileArg("--type"), "json");
+        const patch = JSON.parse(readFileSync(fileArg("--patch-file"), "utf8"));
+        const document = { metadata: identity, spec: { replicas: state[component] } };
+        // Kubernetes JSON Patch tests are evaluated before committing any writes.
+        for (const operation of patch) {
+          const keys = operation.path.slice(1).split("/");
+          const parent = keys.slice(0, -1).reduce((value, key) => value[key], document);
+          const key = keys.at(-1);
+          if (operation.op === "test") {
+            if (parent[key] !== operation.value) {
+              return fail(1, "JSON Patch test failed");
+            }
+          } else {
+            assert.equal(operation.op, "replace");
+            parent[key] = operation.value;
+          }
+        }
+        state[component] = document.spec.replicas;
+      } else {
+        state[component] = 0;
+      }
+      identity.resourceVersion = String(Number(identity.resourceVersion) + 1);
       save();
       log("scale-" + component);
     } else if (args.includes("replace")) {
@@ -838,7 +876,8 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
         out({
           metadata: {
             name: "openclaw-enterprise-" + component,
-            uid: component + "-deployment-uid",
+            uid: state.deploymentIdentities?.[component]?.uid ?? component + "-deployment-uid",
+            resourceVersion: state.deploymentIdentities?.[component]?.resourceVersion ?? "1",
             generation: 1,
             labels: {
               "app.kubernetes.io/instance": state.release,
@@ -1993,6 +2032,48 @@ test("an interrupted quiescence never starts migration while the worker still ru
   await f.run("--resume");
   assert.equal(await readFile(path, "utf8"), receipt + receipt);
   assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+});
+
+test("quiescence refuses a worker changed after observation and preserves partial recovery", async (t) => {
+  for (const fault of ["replace-worker-before-scale", "edit-worker-before-scale"]) {
+    await t.test(fault, async (t) => {
+      const f = await fixture(t);
+      await f.failNext(fault);
+      const failure = await f.run().then(
+        () => null,
+        (error) => error,
+      );
+      const state = await f.state();
+      const events = await f.events();
+      t.diagnostic(JSON.stringify({ api: state.api, worker: state.worker, events }));
+      assert.equal(failure?.code, 1);
+      assert.equal(state.api, 0);
+      assert.equal(state.worker, 1);
+      assert.equal(
+        state.deploymentIdentities.worker.uid,
+        fault === "replace-worker-before-scale"
+          ? "replacement-worker-uid"
+          : "worker-deployment-uid",
+      );
+      assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+      assert.deepEqual(await f.events(), ["scale-api"]);
+      assert.equal(
+        await readFile(join(f.evidence, "native-command-failures.tsv"), "utf8"),
+        "quiescence-scale\tworker\t1\n",
+      );
+      // After the operator reconciles the conflict, resume observes the current
+      // worker and the already-stopped API instead of replaying stale preconditions.
+      await f.run("--resume");
+      assert.deepEqual(await f.events(), [
+        "scale-api",
+        "scale-api",
+        "scale-worker",
+        "secret-replaced",
+        "migration",
+      ]);
+      assert.equal((await f.state()).worker, 1);
+    });
+  }
 });
 
 test("native failure status survives failed diagnostics and receipt writes", async (t) => {

@@ -188,11 +188,11 @@ Jobs and Pods; checks cannot undo committed migrations.
 
 `scripts/upgrade-production-images:quiescence_remaining`
 
-Before changing the Secret or invoking Helm, the script scales the selected API
-and worker Deployments to zero, waits until their Pods disappear, and confirms
-both stay at zero, within the shutdown deadline. It cannot detect independent
-database writers, autoscalers, or partitioned nodes; the operator stops those
-writers and keeps nodes reachable.
+Before Secret changes or Helm, JSON Patch atomically tests each writer's observed
+UID, resource version and replicas before setting replicas to zero. Conflicts
+stop without retry; an earlier API stop remains. Within the shutdown deadline,
+Pods must disappear and both original Deployments remain at zero. Operators stop
+other writers and autoscalers and keep nodes reachable.
 
 The script atomically replaces protected files with the saved candidate. For
 Installation changes, it updates the Secret's Installation key with a
@@ -200,12 +200,10 @@ resource-version precondition, preserving other data and metadata.
 An already-present candidate is not rewritten after a lost response.
 Both OCC Pod templates include its checksum.
 
-Each submission atomically saves prior/expected revisions in `helm-started` after
-rechecking live status. Retries bind the next live revision. The initialization hook checks
-the Installation, then runs the candidate migrator and bootstrap, before API and
-worker rollout. If Helm
-fails, resumption reads its current status and migration state before a retry;
-it does not start the old image to undo a committed schema change.
+Each submission atomically records prior/expected revisions in `helm-started`
+after rechecking status. The initialization hook checks Installation, then runs
+candidate migration and bootstrap before rollout. Failures require release/schema
+reconciliation; restarting old images cannot undo committed migrations.
 
 ### 4. Verify control-plane recovery
 
@@ -337,6 +335,7 @@ saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 
 - 2026-11-06 19:10: Bind resume to each submitted Helm revision. (authoring-run/9ac3c663-290c-4524-94bd-7157cbd44914 - f1c0865be4c523090af0dccc29c613ad1d47d542)
 
+- 2026-11-06 18:44: Bind writer quiescence to observed Deployment identity and version. (authoring-run/4f41f7ed-7c0b-484d-b6b3-85c39a31a8c6 - 5b8901213714a5b0d99f82af8eae1d425ee7cd18)
 - 2026-11-06 10:19: Bind startup results and logs to controller-owned Jobs; retain dependencies until cleanup is confirmed. (authoring-run/fd9ca628-3661-4fb1-927c-661ea85ae64d - 8e8035a0c073e2779aa7b32ece5dff449449f5b2)
 
 - 2026-11-05 13:53: Require settled Doctor maintenance before runtime startup. (authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2 - 644b3f9328e9125030e958c7b4233ac37c54b139)

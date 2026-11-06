@@ -79,11 +79,14 @@ rows retain the operation, component (`api`, `worker`, `release`) and exit code.
 Client failures do not establish whether requests took effect; other failures
 may leave no row. Reconcile live state before resuming.
 
-A Helm failure or disconnected response does not prove that the migration
-rolled back. Read the current Helm status and history, inspect the initialization
-Job and its Pods and logs, and inspect the retained database. Saved `current-helm-status.json` can predate the failed request.
-A `pending-*` Helm release must be resolved separately before the helper can
-continue. Do not start the old API or worker against a migrated database. If the
+UID, resource-version or replica drift refuses the stop before migration;
+the API may already be stopped. Reconcile `current-<component>-deployment.json`
+and `quiescence-<component>-patch.json` against live state before resuming.
+
+Helm failure or disconnection does not prove migration rollback. Inspect current
+Helm status/history, initialization Job/Pod logs and the retained database.
+`current-helm-status.json` may predate the failure. Resolve `pending-*` releases
+separately. Never start old writers against a migrated database. If the
 deployed revision equals `helm-started`'s expected revision and matches candidate
 values, resume skips Helm. Invalid or empty intents and revisions outside the
 recorded prior/expected pair refuse resume, even with checked history. Preserve
