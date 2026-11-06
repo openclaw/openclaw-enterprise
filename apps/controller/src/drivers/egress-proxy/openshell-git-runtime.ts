@@ -576,7 +576,11 @@ export class OpenShellGitRuntime {
         return;
       }
       const box = await client.getSandbox({ workspace, name: sandbox }, signal);
-      const hash = box && (await witnessOpenShellGitLaunch(client, continuity, box, git, signal));
+      const hash =
+        box &&
+        (await witnessOpenShellGitLaunch(client, continuity, box, git, signal, {
+          kind: "predecessor",
+        }));
       const identity = openShellGitExecutionIdentity(git);
       if (
         hash !== saved.retainedLaunchHash ||

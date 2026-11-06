@@ -2,6 +2,10 @@ import { immutableCopy, isNonEmptyString, isPositiveSafeInteger } from "@opencla
 import { isComputePreparationFailureEvidence } from "@openclaw-enterprise/contracts";
 import type { RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
 
+import {
+  repositoryExecutionRedeployMessage,
+  type DeploymentRepositoryAccessStatus,
+} from "../deployment-repository-access.ts";
 import { SandboxRepositoryRecipientUnverifiedError, ScopeViolationError } from "../errors.ts";
 import { recognizedRuntimeFailureValues, runtimeFailureCause } from "../runtime-failure-cause.ts";
 
@@ -27,11 +31,7 @@ export interface DeploymentStatusResult {
   readonly agentId: string;
   readonly status: DeploymentStatus;
   readonly error: DeploymentStatusError | null;
-  readonly repositoryAccess?: {
-    readonly state: "redeploy-required";
-    readonly code: "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED";
-    readonly message: string;
-  };
+  readonly repositoryAccess?: DeploymentRepositoryAccessStatus;
   readonly warnings: readonly PluginDeploymentWarning[];
   readonly progress: {
     readonly lastAttempt: {
@@ -45,19 +45,6 @@ export interface DeploymentStatusResult {
     readonly status: DeploymentStatus;
     readonly nextAttemptAt: string | null;
   } | null;
-}
-
-export function deploymentRepositoryAccessStatus(
-  redeployRequired: boolean,
-): DeploymentStatusResult["repositoryAccess"] {
-  if (!redeployRequired) {
-    return undefined;
-  }
-  return Object.freeze({
-    state: "redeploy-required",
-    code: "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED",
-    message: deploymentErrorMessage("REPOSITORY_EXECUTION_REDEPLOY_REQUIRED"),
-  });
 }
 
 export interface ControllerWorkAttempt {
@@ -873,7 +860,7 @@ function deploymentErrorMessage(code: string): string {
     case "REPOSITORY_EXECUTION_CLOSED":
       return "This version's standing repository access was closed, and the controller does not reopen it for the same version. Deploy again to restore repository access.";
     case "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED":
-      return "The controller can no longer renew this version's repository access on its current runtime. Deploy a new revision to restore repository access.";
+      return repositoryExecutionRedeployMessage;
     case "REPOSITORY_EXECUTION_CHANGED":
     case "REPOSITORY_EXECUTION_REPLACED":
       return "This version's runtime was replaced after the controller checked it for repository access, so the controller closed that access. Deploy again to restore repository access.";

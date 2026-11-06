@@ -1,3 +1,4 @@
+import { deploymentRepositoryAccessStatus } from "./deployment-repository-access.ts";
 import { exchangeAuthorizationCode, startBrowserAuthorization } from "./browser-authorization.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import { isReducedCredentialPlan } from "./credential-policy-reduction.ts";
@@ -409,7 +410,6 @@ import {
   controllerWorkDeploymentStatus,
   deploymentErrorForWork,
   deploymentProgressForWork,
-  deploymentRepositoryAccessStatus,
   deploymentStatusForWork,
   deploymentWarningsForWork,
   type DeploymentStatusResult,
