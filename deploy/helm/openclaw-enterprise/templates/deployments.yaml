@@ -86,6 +86,9 @@ spec:
             secretName: {{ $.Values.egressAuthority.issuerSecretName | quote }}
             items:
               - {key: public.pem, path: issuer.pub}
+              {{- if $.Values.egressAuthority.tokenGrant.enabled }}
+              - {key: spiffe-bundle.json, path: spiffe-bundle.json}
+              {{- end }}
         {{- end }}
         {{- if and (eq $component "worker") $.Values.openshellGit.enabled }}
         - name: openshell-git
@@ -613,6 +616,10 @@ spec:
             {{- if $.Values.egressAuthority.enabled }}
             - name: egress-tls
               containerPort: {{ $.Values.egressAuthority.port }}
+            {{- if $.Values.egressAuthority.tokenGrant.enabled }}
+            - name: spiffe-grant
+              containerPort: {{ $.Values.egressAuthority.tokenGrant.port }}
+            {{- end }}
             {{- end }}
             {{- end }}
           {{- end }}

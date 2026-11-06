@@ -354,6 +354,11 @@ worker:
 # The Installation Credential Proxy authority must use the same port and file paths, on
 # host 0.0.0.0 or ::; startup and the upgrade check refuse a mismatch.
 egressAuthority:
+  # Optional HTTPS token endpoint for stock OpenShell saved-account injection.
+  # When enabled, issuerSecretName must also contain the public spiffe-bundle.json.
+  tokenGrant:
+    enabled: false
+    port: 8450
   enabled: false
   port: 9444 # decimal, without leading zeros
   tlsSecretName: ""

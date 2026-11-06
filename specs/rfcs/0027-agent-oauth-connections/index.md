@@ -109,7 +109,7 @@ Each Installation starts with an editable Google OAuth template whose
 destinations cover the Google Workspace release’s reviewed operations. The administrator controls where existing accounts can send
 access tokens, including newly added hosts. A request must match a current row,
 the selected plugin operation and the Agent’s deployed policy. The provider
-enforces its grant. Public discovery requests carry no bearer token.
+enforces its grant. Public discovery receives no saved credential. The workload can supply its own Authorization header.
 
 An administrator registers an OAuth client against a saved template version.
 OCC takes its availability, issuer and client authentication endpoints from that

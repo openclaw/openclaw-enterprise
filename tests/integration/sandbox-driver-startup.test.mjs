@@ -1424,11 +1424,15 @@ test("OpenShell builds managed MCP rules for the declared endpoint and upstream 
   );
 });
 
-test("OpenShell provisions saved OAuth slots with an authenticated terminal request authority", async (t) => {
+test("OpenShell provisions zero-cache token grants and authorizes each saved OAuth slot before injection", async (t) => {
   const registrationName = "oauth-requests";
   const audience = "oce-test-oauth-broker";
+  const tokenEndpoint = "https://oauth-requests.example:8454/token";
   const client = workspaceGatewayClient();
+  client.getGatewayInfo = async () => ({ extensions: [negotiatedGoogleGuard()] });
   const installation = sandboxInstallation();
+  const legacyEndpoint = "https://legacy-guard.test:443";
+  installation.drivers.sandbox.configuration.gateway.managedPluginMiddleware = legacyEndpoint;
   installation.backend[0].configuration = {
     endpoint: "https://openshell-gateway.openshell.svc:8080",
     auth: { mode: "bearerTokenFile", path: "/etc/openclaw/openshell/token" },
@@ -1439,6 +1443,12 @@ test("OpenShell provisions saved OAuth slots with an authenticated terminal requ
     configuration: {
       middlewareName: registrationName,
       authorityScope: "execution",
+      tokenGrant: {
+        endpoint: tokenEndpoint,
+        port: 8454,
+        trustDomain: "openshell.local",
+        bundlePath: "/etc/openclaw/openshell/spiffe-jwks.json",
+      },
       authority: {
         host: "127.0.0.1",
         port: 8453,
@@ -1486,8 +1496,38 @@ test("OpenShell provisions saved OAuth slots with an authenticated terminal requ
     },
   };
   revision.sandboxPolicy = { defaults: {}, additions: [] };
+  let droppedCacheTtl = false;
+  const readProfile = client.getProviderProfile;
+  client.getProviderProfile = async (...args) => {
+    const stored = await readProfile(...args);
+    const credential = stored?.profile.credentials[0];
+    if (!credential?.tokenGrant) {
+      return stored;
+    }
+    const tokenGrant = { ...credential.tokenGrant };
+    if (droppedCacheTtl) {
+      delete tokenGrant.cache_ttl;
+    }
+    return {
+      ...stored,
+      definition: {
+        scope: "workspace",
+        credentials: [
+          {
+            name: credential.name,
+            auth_style: credential.authStyle,
+            header_name: credential.headerName,
+            token_grant: tokenGrant,
+          },
+        ],
+      },
+    };
+  };
   let created;
-  let registeredBindings = [4];
+  let registeredBindings = [1];
+  let wrongOwner = false;
+  let laterGuard;
+  let legacyRule;
   let registeredAudience = audience;
   let bindingPolicy = 3;
   client.createSandbox = async (input) => {
@@ -1495,7 +1535,32 @@ test("OpenShell provisions saved OAuth slots with an authenticated terminal requ
     return created;
   };
   client.getSandbox = async () => created;
-  // Report the policy actually sent to the gateway, with a separately observed registration.
+  // The gateway adds each attached provider's endpoint rules to the authored policy.
+  const providerRules = () =>
+    Object.fromEntries(
+      [...client.profiles.values()]
+        .map(({ profile }) => profile)
+        .filter(
+          ({ credentials, id }) =>
+            created.spec.providers.includes(id) && credentials.some(({ tokenGrant }) => tokenGrant),
+        )
+        .map((profile) => {
+          const name = "_provider_" + profile.id.replaceAll("-", "_");
+          return [
+            name,
+            {
+              name,
+              binaries: profile.binaries.map((path) => ({ path })),
+              endpoints: profile.endpoints.map(({ access, rules, ...endpoint }) => ({
+                ...endpoint,
+                ...(rules ? { rules } : { access }),
+                enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+                provider_credentialed: true,
+              })),
+            },
+          ];
+        }),
+    );
   client.getSandboxConfig = async (workspace) => ({
     workspace,
     policy_source: 1,
@@ -1510,15 +1575,68 @@ test("OpenShell provisions saved OAuth slots with an authenticated terminal requ
         binding_policy: bindingPolicy,
         bindings: registeredBindings,
       },
+      ...(legacyRule
+        ? [
+            {
+              name: "oce-plugin-requests",
+              grpc_endpoint: legacyEndpoint,
+              audience: "urn:openshell:extension:middleware:oce-plugin-requests",
+            },
+          ]
+        : []),
     ],
-    policy: created.spec.policy,
+    tokenGrantOwners: Object.fromEntries(
+      Object.entries(providerRules()).map(([name, rule], index) => [
+        name,
+        rule.endpoints.map((_, i) =>
+          wrongOwner
+            ? ""
+            : "grant-owner:v1:" + (100 * index + i + 1).toString(16).padStart(64, "0"),
+        ),
+      ]),
+    ),
+    policy: {
+      ...created.spec.policy,
+      network_middlewares: {
+        ...created.spec.policy.network_middlewares,
+        ...(laterGuard && { constructor: laterGuard }),
+      },
+      network_policies: {
+        ...created.spec.policy.network_policies,
+        ...providerRules(),
+        ...(legacyRule && { [legacyRule.name]: legacyRule }),
+      },
+    },
   });
   await driver.ensureNamespace(context);
   const provision = () => driver.provisionHarness({ ...context, revision, requirements });
   await provision();
   const { network_policies: routes, network_middlewares: middleware } = created.spec.policy;
+  const grantProfiles = created.spec.providers
+    .map((id) => client.profiles.get(id)?.profile)
+    .filter((profile) => profile?.credentials.some(({ tokenGrant }) => tokenGrant));
+  assert.equal(grantProfiles.length, 2);
+  const slack = grantProfiles.find(({ displayName }) => displayName === "slack saved account");
+  const google = grantProfiles.find(({ displayName }) => displayName === "google saved account");
+  for (const profile of grantProfiles) {
+    const [credential] = profile.credentials;
+    assert.deepEqual(credential.tokenGrant, {
+      token_endpoint: tokenEndpoint,
+      jwt_svid_audience: tokenEndpoint,
+      audience:
+        middleware["oce-oauth-" + profile.displayName.split(" ")[0]].config.fields.binding_id
+          .stringValue,
+      client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+      cache_ttl: { seconds: 0, nanos: 0 },
+    });
+    const provider = client.calls.find(
+      ([op, request]) => op === "createProvider" && request.name === profile.id,
+    );
+    assert.deepEqual(provider[1].credentials, {});
+  }
+  assert.ok(google.endpoints.every(({ path }) => path && !path.includes("discovery")));
   assert.deepEqual(
-    routes["oce-slack-mcp"].endpoints[0].rules
+    slack.endpoints[0].rules
       .filter(({ allow }) => allow.method === "tools/call")
       .map(({ allow }) => allow.params.name.glob),
     ["slack_search_public"],
@@ -1538,19 +1656,107 @@ test("OpenShell provisions saved OAuth slots with an authenticated terminal requ
       ),
     ),
   );
+  assert.deepEqual(
+    Object.values(middleware)
+      .map(({ order }) => order)
+      .sort(),
+    [2_147_483_645, 2_147_483_646],
+  );
   assert.equal(created.spec.environment.SLACK_MCP_TOKEN, "oce:saved-account:SLACK_MCP_TOKEN");
   assert.equal(created.spec.environment.GOG_ACCESS_TOKEN, "oce:saved-account:GOG_ACCESS_TOKEN");
   assert.ok(
     ![slackId, googleId].some((id) => created.spec.providers.includes(openShellProviderName(id))),
   );
-  // The Gateway attests the allowed binding (4). A service that reports only the terminal RPC operation (5) has not admitted that binding.
+  // Both configured policies must explicitly bind the pre-credentials HTTP hook.
   bindingPolicy = 2;
-  await provision(); // An explicit operator allowlist can authorize the same terminal binding.
+  await provision();
   registeredAudience = "different-audience";
   await assert.rejects(provision, /authenticated request-time credential authority/);
   registeredAudience = audience;
-  registeredBindings = [5];
+  const slotHost = managedSlackInstall.endpoint.host;
+  for (const include of [[], [slotHost], [slotHost + "."]]) {
+    laterGuard = { name: "constructor", order: 2_147_483_647, endpoints: { include } };
+    await assert.rejects(provision, /later request middleware/);
+  }
+  laterGuard = undefined;
+  wrongOwner = true;
+  await assert.rejects(provision, /unique grant owner/);
+  wrongOwner = false;
+  droppedCacheTtl = true;
+  await assert.rejects(provision, /zero-cache saved account token grant/);
+  droppedCacheTtl = false;
+  registeredBindings = [2];
   await assert.rejects(provision, /authenticated request-time credential authority/);
+  // The legacy Google provider and a saved MCP account share the Sandbox. The
+  // existing CLI gets its independent read-only MCP route; its grant must not add POST.
+  registeredBindings = [1];
+  revision.id = revision.id.slice(0, -1) + (revision.id.endsWith("a") ? "b" : "a");
+  revision.plugins.savedAccounts = { driver: runtime.protectedDriver.ref, sourceIds: [slackId] };
+  revision.sandboxPolicy.defaults = {
+    extra: {
+      name: "extra",
+      binaries: [{ path: managedGoogleInstall.binaryPath }],
+      endpoints: [
+        {
+          host: slotHost,
+          ports: [443],
+          protocol: "rest",
+          enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+          access: "NETWORK_ACCESS_PRESET_READ_ONLY",
+        },
+      ],
+    },
+  };
+  const requestScope = {
+    host: "gmail.googleapis.com",
+    port: 443,
+    path: "/gmail/v1/users/me/messages",
+    scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+  };
+  const ref = openShellProviderName(googleId);
+  requirements.credentialAttachments = [{ sourceId: googleId, ref, requestScope }];
+  legacyRule = {
+    name: "_provider_" + ref.replaceAll("-", "_"),
+    binaries: [{ path: managedGoogleInstall.binaryPath }],
+    endpoints: [
+      {
+        host: requestScope.host,
+        port: 443,
+        path: requestScope.path,
+        protocol: "rest",
+        access: "NETWORK_ACCESS_PRESET_READ_WRITE",
+        enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+        provider_credentialed: true,
+      },
+    ],
+  };
+  created = undefined;
+  await provision();
+  const mixed = created.spec.policy.network_middlewares;
+  assert.ok(mixed["oce-plugin-requests"].order > mixed["oce-oauth-slack"].order);
+  assert.ok(!mixed["oce-plugin-requests"].endpoints.include.includes(slotHost));
+  const extra = created.spec.providers
+    .map((id) => client.profiles.get(id)?.profile)
+    .find(
+      (p) => p?.credentials[0]?.tokenGrant && p.binaries[0] === managedGoogleInstall.binaryPath,
+    );
+  assert.deepEqual(extra.endpoints, [
+    {
+      host: slotHost,
+      port: 443,
+      path: managedSlackInstall.endpoint.path,
+      protocol: "rest",
+      access: "NETWORK_ACCESS_PRESET_READ_ONLY",
+    },
+  ]);
+  // A retry must also remove an owned profile if creating its provider stopped halfway.
+  client.providers.delete(extra.id);
+  await driver.cleanup({ ...context, revision });
+  assert.equal(client.profiles.has(extra.id), false);
+  assert.ok(
+    grantProfiles.every(({ id }) => client.providers.has(id)),
+    "other revision providers survive cleanup",
+  );
 });
 
 test("OpenShell limits a Slack connection to the revision's exact MCP tools and recovers after detach", async () => {

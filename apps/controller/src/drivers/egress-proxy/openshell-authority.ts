@@ -1,7 +1,7 @@
 import {
   requestCredentialBinding,
-  requestCredentialCapability,
-  requestCredentialHandler,
+  middlewareContract,
+  authorizeOpenShellRequest,
 } from "./openshell-request-credential.ts";
 import type { CredentialProxyExchange } from "@openclaw-enterprise/contracts";
 import { randomBytes } from "node:crypto";
@@ -33,7 +33,6 @@ type AuthorityCall = {
   authorization: string;
   signal: AbortSignal;
 };
-const contractCapability = "openshell.supervisor-middleware.contract";
 export const record = (input: unknown): Wire => asRecord(input) ?? {};
 const string = (input: unknown): string => (typeof input === "string" ? input : "");
 const bytes = (input: unknown): Buffer =>
@@ -116,38 +115,29 @@ export function describeOpenShellMiddleware(
   const supported = peer.supported_capabilities;
   const required = peer.required_capabilities;
   const legacyExecution = execution && advertisesOpenShellExecutionProfile(supported);
-  const terminal =
-    execution &&
-    requestTimeCredentials &&
-    Array.isArray(supported) &&
-    supported.includes(requestCredentialCapability);
-  const profile = [
-    contractCapability,
-    ...(legacyExecution ? openShellExchangeCapabilities : []),
-    ...(terminal ? [requestCredentialCapability] : []),
-  ];
+  const stock = execution && requestTimeCredentials;
+  const profile = [middlewareContract, ...(legacyExecution ? openShellExchangeCapabilities : [])];
   if (
     record(peer.protocol_version).major !== 1 ||
     !Array.isArray(supported) ||
-    !supported.includes(contractCapability) ||
-    (execution && !legacyExecution && !terminal) ||
+    !supported.includes(middlewareContract) ||
+    (execution && !legacyExecution && !stock) ||
     // Describe precedes protected-policy selection; only the base contract is required here.
     !Array.isArray(required) ||
-    !required.includes(contractCapability) ||
+    !required.includes(middlewareContract) ||
     !required.every((capability) => profile.includes(capability))
   ) {
     return undefined;
   }
   const bindings = execution
     ? [
+        [1, 1],
         ...(legacyExecution
           ? [
-              [1, 1],
               [4, 1],
               [3, 2],
             ]
           : []),
-        ...(terminal ? [[5, 3]] : []),
       ]
     : httpPolicySet
       ? [
@@ -176,14 +166,11 @@ export function describeOpenShellMiddleware(
 /** Actual gRPC adapter for the supervisor's exclusive static-credential authority. */
 export function createOpenShellEgressAuthority(
   identity: OpenShellEgressIdentity,
-  controller: {
-    createCredentialProxy: (owner: OpenShellEgressIdentity) => CredentialProxyExchange;
-  },
+  forwarder: CredentialProxyExchange,
   registrationName?: string,
 ): Server {
   // The verifier owns acceptance on the actual stream. No separate synthetic owner,
   // bearer-only profile or caller-selected response destination can enter this composition.
-  const forwarder = controller.createCredentialProxy(identity);
   const { service, definition } = loadOpenShellMiddleware();
   const server = new Server({
     "grpc.max_receive_message_length": 5 * 1024 * 1024,
@@ -203,16 +190,8 @@ export function createOpenShellEgressAuthority(
           callback({ code: status.UNAVAILABLE, message: "Egress authority unavailable." }, null),
       );
     };
-  const requestTimeCredentials = !!registrationName && !!forwarder.resolveRequestCredential;
-  if (registrationName && forwarder.resolveRequestCredential) {
-    server.addService(service.HttpRequestCredential!.service, {
-      Resolve: requestCredentialHandler(
-        identity,
-        registrationName,
-        forwarder.resolveRequestCredential.bind(forwarder),
-      ),
-    });
-  }
+  const authorize = forwarder.authorizeRequestCredential?.bind(forwarder);
+  const requestTimeCredentials = !!registrationName && !!authorize;
   server.addService(service.SupervisorMiddleware!.service, {
     Describe: unary(async (call) => {
       const description =
@@ -236,14 +215,24 @@ export function createOpenShellEgressAuthority(
         (identity.verifyControl(middlewareBearer(call.metadata)) &&
           Object.keys(record(record(call.request.config).fields)).length === 0) ||
         (requestTimeCredentials &&
+          call.request.middleware_name === registrationName &&
           !!requestCredentialBinding(call.request.config) &&
           (identity.verifyControl(middlewareBearer(call.metadata)) ||
             !!identity.credentialSandbox(middlewareBearer(call.metadata)))),
     })),
-    EvaluateHttpRequest: unary(async (call) => ({
-      decision: identity.supervisor(middlewareBearer(call.metadata)) ? 1 : 2,
-      reason_code: "egress_identity",
-    })),
+    EvaluateHttpRequest: unary(async (call) => {
+      if (
+        registrationName &&
+        authorize &&
+        Object.keys(record(record(call.request.config).fields)).length > 0
+      ) {
+        return authorizeOpenShellRequest(call, identity, registrationName, authorize);
+      }
+      return {
+        decision: identity.supervisor(middlewareBearer(call.metadata)) ? 1 : 2,
+        reason_code: "egress_identity",
+      };
+    }),
   });
   const resolve = async (call: AuthorityCall): Promise<Wire> => {
     if (call.request.audience !== identity.audience) {

@@ -569,6 +569,14 @@
       "tag": "0071_connection_attachment_intent",
       "breakpoints": true,
       "sha256": "27cca1a329b0ac89434f27d1fd077b527c8cc91eb1e56f54ac830ca3e3ac33ad"
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1787000000072,
+      "tag": "0072_request_credential_approvals",
+      "breakpoints": true,
+      "sha256": "229b4f618d66825ca8e8910214a7876e9c03a5765369d393885ac99d50b77c30"
     }
   ],
   "initialSchemaStates": {
@@ -638,6 +646,10 @@
     "8c60ec8102269c5845501bbec5d386e98fa21f2f7f2cde45f80521103e0197ed": [
       "7acd0e5970ac64b3fc4ce614f1e2cb9f801cb72f36bda2cfc9f1462b98140286",
       "4e7d34e54517127ef3cd8bc856084a47490796c7402a860257b613c65c2a872d"
+    ],
+    "39f8a4ab259825e59607739a47f5fd6dda6ab2d63fb107b43d9bc72a810715f5": [
+      "0f277bdddc60aeac8c968c647c409dcb79cd781315f5c3c66b615325e7b6292f",
+      "7213f2ace18f3c26c4bb5fb3a60f3d69979bbce5c3f05b609e95a4a1ef112374"
     ]
   },
   "catalogs": {
@@ -646,7 +658,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "8c60ec8102269c5845501bbec5d386e98fa21f2f7f2cde45f80521103e0197ed",
+    "completed": "39f8a4ab259825e59607739a47f5fd6dda6ab2d63fb107b43d9bc72a810715f5",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -687,7 +699,8 @@
     "preAgentPluginDriver": "c74762d7f4d45b4215f42fcc8cf9e43d01fae03dbb80522d84c4e17370a2f7c3",
     "preConnectionTemplates": "8fc3e20bcb36ad9b2afe8ab96077139b12b50c825dd18ff323603d0e0540b250",
     "preSavedConnections": "1989ad2291a59e5d15e7f35fd008677449cac6cd11e653605b3d48675655dba9",
-    "preConnectionAttachmentIntent": "b3d9b0b499a4ea4a0cab68cd2836ab6ceba96be82c3f2bb6faac5e7fcb2a06c4"
+    "preConnectionAttachmentIntent": "b3d9b0b499a4ea4a0cab68cd2836ab6ceba96be82c3f2bb6faac5e7fcb2a06c4",
+    "preRequestCredentialApprovals": "8c60ec8102269c5845501bbec5d386e98fa21f2f7f2cde45f80521103e0197ed"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

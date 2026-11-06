@@ -1,4 +1,4 @@
-import { status, type ServerUnaryCall, type sendUnaryData } from "@grpc/grpc-js";
+import type { ServerUnaryCall } from "@grpc/grpc-js";
 import type {
   CredentialProxyExchange,
   RequestCredentialInput,
@@ -9,8 +9,7 @@ import { readOpenShellHttpRequest } from "./openshell-http-request.ts";
 
 type Wire = Record<string, unknown>;
 
-export const requestCredentialCapability =
-  "openshell.supervisor-middleware.http-request-credential.v1";
+export const middlewareContract = "openshell.supervisor-middleware.contract";
 
 /** The installed binding identifies the credential. The workload supplies only the outbound request. */
 export function requestCredentialBinding(
@@ -41,82 +40,56 @@ export function requestCredentialBinding(
   return { bindingId, execution: { namespaceId, agentId, revisionId } };
 }
 
-/** OpenShell freezes this request before calling and consumes the bearer once before expires_at. */
-export function requestCredentialHandler(
+/** Approve this operation before the stock relay attempts its zero-cache token grant. */
+export async function authorizeOpenShellRequest(
+  call: ServerUnaryCall<Wire, Wire>,
   identity: OpenShellEgressIdentity,
   registrationName: string,
-  resolve: NonNullable<CredentialProxyExchange["resolveRequestCredential"]>,
-) {
-  return async (call: ServerUnaryCall<Wire, Wire>, callback: sendUnaryData<Wire>) => {
-    const values = call.metadata.get("authorization");
-    const peer =
-      values.length === 1 && typeof values[0] === "string" && identity.credentialSandbox(values[0]);
-    const binding = requestCredentialBinding(call.request.config);
-    const view = peer && readOpenShellHttpRequest(call.request, peer.sandboxId);
-    const denied = { code: status.PERMISSION_DENIED, message: "Request credential denied." };
-    if (
-      !peer ||
-      !binding ||
-      !view ||
-      call.request.phase !== 3 ||
-      call.request.middleware_name !== registrationName
-    ) {
-      callback(denied, null);
-      return;
+  authorize: NonNullable<CredentialProxyExchange["authorizeRequestCredential"]>,
+): Promise<Wire> {
+  const values = call.metadata.get("authorization");
+  const peer =
+    values.length === 1 && typeof values[0] === "string" && identity.credentialSandbox(values[0]);
+  const binding = requestCredentialBinding(call.request.config);
+  const view = peer && readOpenShellHttpRequest(call.request, peer.sandboxId);
+  const denied = { decision: 2, reason_code: "request_credential_denied" };
+  if (
+    !peer ||
+    !binding ||
+    !view ||
+    call.request.phase !== 1 ||
+    call.request.middleware_name !== registrationName
+  ) {
+    return denied;
+  }
+  // The supervisor finishes this RPC before it starts the token POST. Its short RPC
+  // timeout bounds the check; the subsequent exchange has its own signed, bounded window.
+  const redeemBy = Math.min(peer.expiresAt, Date.now() + 30_000);
+  const deadline = Math.min(Number(call.getDeadline()), redeemBy);
+  if (!Number.isFinite(deadline) || deadline <= Date.now() || call.cancelled) {
+    return denied;
+  }
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  call.once("cancelled", cancel);
+  const timer = setTimeout(cancel, deadline - Date.now()).unref();
+  try {
+    const decision = await authorize(
+      {
+        ...binding,
+        recipient: { id: peer.sandboxId, context: view.workspace },
+        requestId: view.requestId,
+        deadlineAt: new Date(redeemBy).toISOString(),
+        http: { target: view.target, headers: view.headers, body: view.body },
+      },
+      controller.signal,
+    );
+    if (Date.now() >= deadline || call.cancelled || controller.signal.aborted || !decision) {
+      return denied;
     }
-    const deadline = Math.min(Number(call.getDeadline()), peer.expiresAt, Date.now() + 30_000);
-    if (!Number.isFinite(deadline) || deadline <= Date.now() || call.cancelled) {
-      callback(denied, null);
-      return;
-    }
-    const controller = new AbortController();
-    const cancel = () => controller.abort();
-    call.once("cancelled", cancel);
-    const timer = setTimeout(cancel, Math.max(0, deadline - Date.now()));
-    try {
-      const result = await resolve(
-        {
-          ...binding,
-          recipient: { id: peer.sandboxId, context: view.workspace },
-          requestId: view.requestId,
-          deadlineAt: new Date(deadline).toISOString(),
-          http: { target: view.target, headers: view.headers, body: view.body },
-        },
-        controller.signal,
-      );
-      if (!result || controller.signal.aborted || call.cancelled) {
-        callback(denied, null);
-        return;
-      }
-      // Use the same one-second send window as the protected exchange.
-      const token = "accessToken" in result ? result : undefined;
-      if (!token && (!("kind" in result) || result.kind !== "without_credential")) {
-        callback(denied, null);
-        return;
-      }
-      const until = Math.min(
-        deadline,
-        token ? Date.parse(token.expiresAt) : Infinity,
-        Date.now() + 1_000,
-      );
-      if (
-        !Number.isFinite(until) ||
-        until <= Date.now() ||
-        (token && !/^[A-Za-z0-9._~+/-]+=*$/.test(token.accessToken))
-      ) {
-        callback(denied, null);
-        return;
-      }
-      callback(null, {
-        request_id: view.requestId,
-        ...(token ? { bearer_token: token.accessToken } : { send_without_credential: true }),
-        expires_at: { seconds: Math.floor(until / 1000), nanos: (until % 1000) * 1_000_000 },
-      });
-    } catch {
-      callback({ code: status.UNAVAILABLE, message: "Credential authority unavailable." }, null);
-    } finally {
-      clearTimeout(timer);
-      call.off("cancelled", cancel);
-    }
-  };
+    return { decision: 1 };
+  } finally {
+    clearTimeout(timer);
+    call.off("cancelled", cancel);
+  }
 }

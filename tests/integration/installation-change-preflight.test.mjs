@@ -60,6 +60,10 @@ const preparedGitHubValues = {
   "preparedGitHub.custodySecretName": "prepared-github-custody",
   "preparedGitHub.issuerCidrs[0]": "192.0.2.3/32",
 };
+const stockTokenGrantValues = {
+  ...preparedGitHubValues,
+  "egressAuthority.tokenGrant.enabled": "true",
+};
 const issuerCaValues = {
   ...preparedGitHubValues,
   "preparedGitHub.issuerCaConfigMapName": "prepared-github-issuer-ca",
@@ -98,6 +102,7 @@ test(
       gatewayValues,
       { ...repositoryCredentialValues, ...themeValues },
       preparedGitHubValues,
+      stockTokenGrantValues,
       issuerCaValues,
     ]) {
       const { job, hook, api } = await render(values, true);
@@ -127,6 +132,7 @@ test(
         environment(server, "OCC_CONFIG_PATH"),
         environment(server, "OCC_EGRESS_AUTHORITY_PORT"),
         environment(server, "OCC_OPENSHELL_GIT_PORT"),
+        environment(server, "OCC_OPENSHELL_TOKEN_GRANT_PORT"),
         ...("gatewayRouting.enabled" in values
           ? [environment(server, "OCC_CHART_GATEWAY_ROUTING")]
           : []),
@@ -138,6 +144,15 @@ test(
         "egressAuthority.enabled" in values ? "9444" : "disabled",
       );
       assert.equal(environment(check, "OCC_OPENSHELL_GIT_PORT").value, "disabled");
+      const stock = "egressAuthority.tokenGrant.enabled" in values;
+      assert.equal(
+        environment(check, "OCC_OPENSHELL_TOKEN_GRANT_PORT").value,
+        stock ? "8450" : "disabled",
+      );
+      if (stock) {
+        const issuer = api.volumes.find(({ name }) => name === "egress-authority-issuer");
+        assert.ok(issuer.secret.items.some(({ path }) => path === "spiffe-bundle.json"));
+      }
       // Each file the check reads comes from the API's own volume at the API's path.
       const expected = ["installation-startup"];
       if (theme) {
@@ -345,8 +360,12 @@ test(
       const [check] = (await render(values, true)).hook.initContainers;
       return Object.fromEntries(
         check.env
-          .filter(
-            ({ name }) => name === "OCC_EGRESS_AUTHORITY_PORT" || name === "OCC_OPENSHELL_GIT_PORT",
+          .filter(({ name }) =>
+            [
+              "OCC_EGRESS_AUTHORITY_PORT",
+              "OCC_OPENSHELL_GIT_PORT",
+              "OCC_OPENSHELL_TOKEN_GRANT_PORT",
+            ].includes(name),
           )
           .map(({ name, value }) => [name, value]),
       );
@@ -361,6 +380,17 @@ test(
       assert.equal(accepted.stdout, "installation-startup-ready\n");
     }
 
+    // A stock supervisor must reach the configured token endpoint through the chart Service.
+    const stock = structuredClone(reachable);
+    stock.drivers.credential_proxy.configuration.tokenGrant = {
+      endpoint: "https://oce.example.test:8450/token",
+      port: 8450,
+      trustDomain: "openshell.local",
+      bundlePath: "/etc/openclaw/egress/issuer/spiffe-bundle.json",
+    };
+    const stockEnv = await chartEnvironment(stockTokenGrantValues);
+    const admitted = await runCheck(t, stock, {}, () => stockEnv);
+    assert.equal(admitted.status, 0, admitted.stderr);
     const loopback = structuredClone(reachable);
     loopback.drivers.credential_proxy.configuration.authority.host = "127.0.0.1";
     for (const [configuration, environment, message] of [
@@ -373,6 +403,11 @@ test(
         reachable,
         await chartEnvironment({}),
         "drivers.credential_proxy.configuration.authority.port is 9444, but Helm egressAuthority.enabled is false, so no chart Service reaches it.",
+      ],
+      [
+        stock,
+        enabled,
+        "drivers.credential_proxy.configuration.tokenGrant.port is 8450, but Helm egressAuthority.tokenGrant.enabled is false, so no chart Service reaches it.",
       ],
       [
         loopback,

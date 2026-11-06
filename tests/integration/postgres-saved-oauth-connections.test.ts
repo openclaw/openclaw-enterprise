@@ -15,6 +15,7 @@ import {
 import { createSavedAccountOrigin } from "../helpers/saved-account-origin.ts";
 import {
   installSavedAccountPlacement,
+  savedAccountProxyFixture,
   installSavedAccountProxy,
   savedAccountSandboxRegistration,
 } from "../helpers/saved-account-proxy.ts";
@@ -30,6 +31,7 @@ import {
   DependencyUnavailableError,
   OpenClawController,
   PostgresHumanAuthentication,
+  PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
@@ -1539,7 +1541,8 @@ test(
       permissions: [{ action: "operate", resourceKind: "credential_source" }],
     });
     assert.equal(modelRole.statusCode, 201, modelRole.body);
-    const runtime = await installSavedAccountProxy(t, controller);
+    const proxyFixture = await savedAccountProxyFixture(t);
+    const runtime = await installSavedAccountProxy(proxyFixture, controller);
     const ns = await state.read((view) => view.namespaces.findNamespace(namespaceId));
     assert.ok(ns);
     const admittedPeers = [];
@@ -1553,7 +1556,11 @@ test(
         },
       },
     };
-    for (const name of ["Agent with renewed access", "Agent keeping access"]) {
+    // Stable test Sandbox IDs let an external SPIRE authority attest distinct supervisor processes.
+    for (const [name, sandboxId] of [
+      ["Agent with renewed access", "00000000-0000-4000-8000-000000000001"],
+      ["Agent keeping access", "00000000-0000-4000-8000-000000000002"],
+    ] as const) {
       const id = await agent(name);
       const checkUnrelated = name === "Agent with renewed access";
       const initialSources = checkUnrelated ? legacySources : [modelSource];
@@ -1609,7 +1616,7 @@ test(
       admittedPeers.push({
         id,
         revision,
-        peer: runtime.peer(ns, revision, pluginId, "reports", report.id),
+        peer: runtime.peer(ns, revision, pluginId, "reports", report.id, sandboxId),
       });
     }
     const [agentA, agentB] = admittedPeers;
@@ -1632,36 +1639,25 @@ test(
     // A valid Sandbox signature for another registration or audience cannot release a token.
     const target = new URL(origin.url);
     for (const wire of [{ middlewareName: "other-registration" }, { audience: "other-audience" }]) {
-      assert.equal(await agentA.peer.resolve(target, allowed, wire), undefined);
+      assert.equal(await agentA.peer.authorize(target, allowed, wire), undefined);
     }
-    // A restart preserves an admitted revision's authority only for the same configured Driver.
-    // Both peers sign fresh valid requests and use the same Sandbox and Credential Proxy IDs.
-    for (const [registration, accepted] of [
-      ["oauth-credential", true],
-      ["replacement-credential", false],
-    ] as const) {
-      const restarted = new OpenClawController(controller.installation, {
-        state,
-        preparedTokens,
-        driverConfigurations: [savedAccountSandboxRegistration],
-      });
-      for (const capability of ["iam", "compute"] as const) {
-        const driver = controller.selectedDriver(capability);
-        restarted.registerDriver(driver);
-        restarted.selectDriver(capability, driver.id);
-      }
-      restarted.installPluginDrivers([codexCatalog, plugin]);
-      const pair = await installSavedAccountProxy(t, restarted, registration);
-      const peer = pair.peer(
-        ns,
-        agentA.revision,
-        pluginId,
-        "reports",
-        report.id,
-        agentA.peer.sandboxId,
-      );
-      assert.equal(typeof (await peer.resolve(target, allowed)) === "string", accepted);
-    }
+    // Token release needs the same authenticated Sandbox, slot and request, once.
+    const receipt = await agentA.peer.authorize(target, allowed);
+    assert.ok(receipt);
+    assert.equal(
+      await agentB.peer.redeem(receipt, { bindingId: agentA.peer.bindingConfig.binding_id }),
+      undefined,
+    );
+    assert.equal(
+      await agentA.peer.redeem(receipt, { svidAudience: "https://other.example.test/token" }),
+      undefined,
+    );
+    assert.equal(
+      await agentA.peer.redeem(receipt, { bindingId: agentB.peer.bindingConfig.binding_id }),
+      undefined,
+    );
+    assert.equal(typeof (await agentA.peer.redeem(receipt)), "string");
+    assert.equal(await agentA.peer.redeem(receipt), undefined);
     assert.equal(
       await origin.dispatch(agentA.peer, {
         ...allowed,
@@ -1744,10 +1740,48 @@ test(
       tokenHash: after,
       tool: "list_reports",
     });
+    // Route the two calls to distinct OCC instances sharing PostgreSQL and trust configuration.
+    // Only the same installed Driver can consume the decision; either instance rejects a replay.
+    for (const [registration, accepted] of [
+      ["oauth-credential", true],
+      ["replacement-credential", false],
+    ] as const) {
+      const restarted = new OpenClawController(controller.installation, {
+        state: new PostgresPlatformState(pool),
+        preparedTokens,
+        driverConfigurations: [savedAccountSandboxRegistration],
+      });
+      for (const capability of ["iam", "compute"] as const) {
+        const driver = controller.selectedDriver(capability);
+        restarted.registerDriver(driver);
+        restarted.selectDriver(capability, driver.id);
+      }
+      restarted.installPluginDrivers([codexCatalog, plugin]);
+      const pair = await installSavedAccountProxy(
+        proxyFixture,
+        restarted,
+        registration,
+        "127.0.0.2",
+      );
+      const peer = pair.peer(
+        ns,
+        agentB.revision,
+        pluginId,
+        "reports",
+        report.id,
+        agentB.peer.sandboxId,
+      );
+      const firstReplicaReceipt: string | undefined = await agentB.peer.authorize(target, allowed);
+      assert.ok(firstReplicaReceipt);
+      assert.equal(typeof (await peer.redeem(firstReplicaReceipt)) === "string", accepted);
+      assert.equal(typeof (await agentB.peer.redeem(firstReplicaReceipt)) === "string", !accepted);
+      assert.equal(typeof (await peer.authorize(target, allowed)) === "string", accepted);
+      await pair.close();
+    }
     t.diagnostic(
       process.env.OCC_TEST_OPENSHELL_CREDENTIAL_SENDER
         ? "Native OpenShell relay sent four accepted requests and withheld four denied requests."
-        : "Signed gRPC test sender sent four accepted requests and withheld four denied requests.",
+        : "Signed middleware and SPIFFE token-grant client sent four accepted requests and withheld four denied requests.",
     );
   },
 );

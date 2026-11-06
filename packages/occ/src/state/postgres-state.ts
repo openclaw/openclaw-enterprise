@@ -1,6 +1,7 @@
 import { CredentialDeliveryReductions } from "./credential-delivery-reductions.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
+import { postgresRequestCredentialApprovals } from "./request-credential-approvals.ts";
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
 import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
@@ -4367,6 +4368,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       iamPolicy,
       repositorySessions: postgresRepositorySessions(client),
       preparedTokenProof: this.preparedTokenProof(client),
+      requestCredentialApprovals: postgresRequestCredentialApprovals(client),
       egressSendReceipts: postgresEgressSendReceipts(client),
       provisioning: {
         findByWorkId: async (workId) => {

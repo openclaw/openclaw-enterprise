@@ -184,6 +184,14 @@ Records the Namespace, consenting principal, approved template version and revoc
 - `revocation_requested_by`
 - `revoked_at`
 
+### `request_credential_approvals`
+
+Correlates an inspected request with one token redemption by the same Sandbox and binding. The policy digest covers the recipient and granted scopes. Expired entries are removed on subsequent approvals.
+
+- `recipient_id`, `request_id`, `binding_id`
+- `namespace_id`, `agent_id`, `revision_id`
+- `driver_ref`, `policy_digest`, `expires_at`, `consumed`
+
 ### `connection_sessions`
 
 Stores the private, single-use OAuth attempt for the initiating principal and browser session.

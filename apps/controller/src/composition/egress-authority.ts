@@ -36,6 +36,7 @@ export async function installEgressAuthority(
       return Object.freeze({
         resolve: proxy.resolve.bind(proxy),
         ...(driver.requestTimeCredentials && {
+          authorizeRequestCredential: proxy.authorizeRequestCredential.bind(proxy),
           resolveRequestCredential: proxy.resolveRequestCredential.bind(proxy),
         }),
         authorizeSend: proxy.authorizeSend.bind(proxy),

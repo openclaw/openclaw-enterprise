@@ -51,20 +51,6 @@ service HttpResponsePreReturn {
       returns (stream HttpResponseEventResult);
 }
 
-// A terminal, operator-approved binding resolves a credential for one HTTPS send.
-service HttpRequestCredential {
-  rpc Resolve(HttpRequestEvaluation) returns (HttpRequestCredentialResult);
-}
-
-message HttpRequestCredentialResult {
-  string request_id = 1;
-  oneof credential {
-    string bearer_token = 2;
-    bool send_without_credential = 4;
-  }
-  google.protobuf.Timestamp expires_at = 3;
-}
-
 // Historical unary wire shape. Current protected policy requires HttpInstallationExchange;
 // supervisors must never fall back to a bearer-authenticated unary credential send.
 // Implementations must authenticate the supervisor, bind its immutable sandbox
@@ -594,7 +580,6 @@ enum SupervisorMiddlewareOperation {
   SUPERVISOR_MIDDLEWARE_OPERATION_HTTP_RESPONSE = 3;
   // Per-operation STATIC resolution and final authorization over selected material.
   SUPERVISOR_MIDDLEWARE_OPERATION_HTTP_CREDENTIALS = 4;
-  SUPERVISOR_MIDDLEWARE_OPERATION_HTTP_REQUEST_CREDENTIAL = 5;
 }
 
 // Ordered phase within a supervisor operation.
@@ -602,7 +587,6 @@ enum SupervisorMiddlewarePhase {
   SUPERVISOR_MIDDLEWARE_PHASE_UNSPECIFIED = 0;
   SUPERVISOR_MIDDLEWARE_PHASE_PRE_CREDENTIALS = 1;
   SUPERVISOR_MIDDLEWARE_PHASE_PRE_RETURN = 2;
-  SUPERVISOR_MIDDLEWARE_PHASE_CREDENTIAL_INJECTION = 3;
 }
 
 // WebSocketSessionEvent is one ordered event in a stage-local stream.

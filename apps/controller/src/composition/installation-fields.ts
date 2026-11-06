@@ -220,24 +220,16 @@ export const chartListeners = {
  * Without the chart's variable (no chart, for example a test or another packaging) there is
  * nothing to compare.
  */
-export function requireChartListener(
+export function requireChartListener<Field extends string>(
   authority:
-    | Pick<
-        EgressAuthorityConfiguration,
-        "host" | "port" | "certificatePath" | "privateKeyPath" | "issuerPublicKeyPath"
-      >
+    | (Pick<EgressAuthorityConfiguration, "host" | "port"> & Record<NoInfer<Field>, string>)
     | undefined,
   environment: Readonly<Record<string, string | undefined>>,
   listener: {
     readonly path: string;
     readonly chart: string;
     readonly variable: string;
-    readonly files: Readonly<
-      Record<
-        "certificatePath" | "privateKeyPath" | "issuerPublicKeyPath",
-        readonly [string, string]
-      >
-    >;
+    readonly files: Readonly<Record<Field, readonly [string, string]>>;
   },
 ): void {
   const declared = environment[listener.variable];
@@ -277,8 +269,9 @@ export function requireChartListener(
   }
   // The listener reads these files only when it starts, after a Recreate upgrade has stopped
   // the old Pod. Name only the chart's path: the configured one is the operator's layout.
-  for (const [field, [mounted, value]] of Object.entries(listener.files)) {
-    if (authority[field as keyof typeof listener.files] !== mounted) {
+  for (const field of Object.keys(listener.files) as Field[]) {
+    const [mounted, value] = listener.files[field];
+    if (authority[field] !== mounted) {
       throw new ChartListenerMismatchError(
         `${listener.path}.${field} must be ${mounted}, where the chart mounts the file from Helm ${value}.`,
         `${listener.path}.${field}`,

@@ -6,6 +6,7 @@ import type {
   AcceptedEgressAssociation,
   AuthorizedSend,
 } from "./egress-send-receipts.ts";
+import type { RequestCredentialApproval } from "./state/request-credential-approvals.ts";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
@@ -14,6 +15,8 @@ import type {
   OAuthAccountRef,
   OAuthConnectionAccessToken,
   RequestCredentialInput,
+  RequestCredentialGrant,
+  ResolvedToken,
   TokenResolveOptions,
   EgressExchangeOwner,
   EgressPeer,
@@ -84,16 +87,19 @@ export interface EgressAuthorityPorts {
     isProviderCurrent: () => boolean,
   ): Promise<VersionedSecretValue & { readonly materialId: string }>;
   readonly resolvePrepared?: PreparedTokenIssuer["resolve"];
-  readonly savedAccountSender?: EgressRef;
-  checkSavedAccount?(
-    request: RequestCredentialInput,
-    signal: AbortSignal,
-    selected?: Pick<OAuthConnectionAccessToken, "version" | "grantedScopes">,
-  ): Promise<OAuthAccountRef | { readonly kind: "without_credential" } | undefined>;
-  resolveOAuth?(
-    ref: OAuthAccountRef,
-    options: TokenResolveOptions,
-  ): Promise<OAuthConnectionAccessToken | undefined>;
+  readonly requestCredentials?: {
+    readonly sender: EgressRef;
+    check(
+      request: RequestCredentialInput | RequestCredentialApproval,
+      signal: AbortSignal,
+      selected?: Pick<OAuthConnectionAccessToken, "version" | "grantedScopes">,
+    ): Promise<OAuthAccountRef | "without_credential" | undefined>;
+    consume(grant: RequestCredentialGrant): Promise<RequestCredentialApproval | undefined>;
+    resolve(
+      ref: OAuthAccountRef,
+      options: TokenResolveOptions,
+    ): Promise<OAuthConnectionAccessToken | undefined>;
+  };
   /** Check the exact selection, then mint once immediately before the possible-send receipt. */
   authorizeSend(
     use: CapturedEgressUse,
@@ -421,56 +427,89 @@ export class CredentialProxy implements CredentialProxyExchange {
     this.capacity = resolved.capacity;
   }
 
-  async resolveRequestCredential(request: RequestCredentialInput, signal: AbortSignal) {
-    const { checkSavedAccount, resolveOAuth } = this.ports;
-    const deadline = Date.parse(request.deadlineAt);
+  private async withRequestCredential<T>(
+    recipientId: string,
+    deadlineAt: string,
+    signal: AbortSignal,
+    operation: (
+      ports: NonNullable<EgressAuthorityPorts["requestCredentials"]>,
+      signal: AbortSignal,
+    ) => Promise<T | undefined>,
+  ): Promise<T | undefined> {
+    const ports = this.ports.requestCredentials;
+    const deadline = Date.parse(deadlineAt);
     const budget = Math.ceil(deadline - this.ports.now());
-    if (
-      !checkSavedAccount ||
-      !resolveOAuth ||
-      signal.aborted ||
-      !(budget > 0 && budget <= 30_000)
-    ) {
+    if (!ports || signal.aborted || !(budget > 0 && budget <= 30_000)) {
       return undefined;
     }
-    if (!this.ports.savedAccountSender) {
-      return undefined;
-    }
-    const share = JSON.stringify([this.ports.savedAccountSender, request.recipient.id]);
-    const charge = this.reserveOperation(share);
+    const charge = this.reserveOperation(JSON.stringify([ports.sender, recipientId]));
     if (!charge) {
       return undefined;
     }
     try {
       const lifetime = AbortSignal.any([signal, AbortSignal.timeout(budget)]);
-      const ref = await checkSavedAccount(request, lifetime);
-      const remaining = deadline - this.ports.now();
-      if (!ref || lifetime.aborted || remaining <= 0) {
-        return undefined;
-      }
-      if (ref.kind === "without_credential") {
-        return ref;
-      }
-      // A cold resolve can refresh. Do not hold the Agent's policy transaction during issuer I/O.
-      const token = await resolveOAuth(ref, {
-        signal: lifetime,
-        deadlineAt: request.deadlineAt,
-        minimumValidityMs: remaining,
-      });
-      if (!token || lifetime.aborted || !(Date.parse(token.expiresAt) > deadline)) {
-        return undefined;
-      }
-      const current = await checkSavedAccount(request, lifetime, {
-        version: token.version,
-        grantedScopes: token.grantedScopes,
-      });
-      if (!isDeepStrictEqual(current, ref) || lifetime.aborted || this.ports.now() >= deadline) {
-        return undefined;
-      }
-      return { accessToken: token.accessToken, expiresAt: token.expiresAt };
+      const result = await operation(ports, lifetime);
+      return lifetime.aborted || this.ports.now() >= deadline ? undefined : result;
     } finally {
       this.releaseCharge(charge);
     }
+  }
+
+  authorizeRequestCredential(request: RequestCredentialInput, signal: AbortSignal) {
+    return this.withRequestCredential<"credential" | "without_credential">(
+      request.recipient.id,
+      request.deadlineAt,
+      signal,
+      async (ports, lifetime) => {
+        const approved = await ports.check(request, lifetime);
+        return typeof approved === "object" ? "credential" : approved;
+      },
+    );
+  }
+
+  resolveRequestCredential(grant: RequestCredentialGrant, signal: AbortSignal) {
+    return this.withRequestCredential<ResolvedToken>(
+      grant.recipientId,
+      grant.deadlineAt,
+      signal,
+      async (ports, lifetime) => {
+        const approval = await ports.consume(grant);
+        if (!approval || lifetime.aborted) {
+          return undefined;
+        }
+        const deadline = Math.min(Date.parse(approval.deadlineAt), Date.parse(grant.deadlineAt));
+        const remaining = Math.ceil(deadline - this.ports.now());
+        if (!(remaining > 0)) {
+          return undefined;
+        }
+        const approvedLifetime = AbortSignal.any([lifetime, AbortSignal.timeout(remaining)]);
+        const ref = await ports.check(approval, approvedLifetime);
+        if (!ref || ref === "without_credential" || approvedLifetime.aborted) {
+          return undefined;
+        }
+        // Refresh outside the policy transaction. Never release a token for an expired or withdrawn approval.
+        const token = await ports.resolve(ref, {
+          signal: approvedLifetime,
+          deadlineAt: new Date(deadline).toISOString(),
+          minimumValidityMs: remaining,
+        });
+        if (!token || approvedLifetime.aborted || !(Date.parse(token.expiresAt) > deadline)) {
+          return undefined;
+        }
+        const current = await ports.check(approval, approvedLifetime, {
+          version: token.version,
+          grantedScopes: token.grantedScopes,
+        });
+        if (
+          !isDeepStrictEqual(current, ref) ||
+          approvedLifetime.aborted ||
+          this.ports.now() >= deadline
+        ) {
+          return undefined;
+        }
+        return { accessToken: token.accessToken, expiresAt: token.expiresAt };
+      },
+    );
   }
 
   private async verifyPeer(authorization: string): Promise<EgressPeer | undefined> {

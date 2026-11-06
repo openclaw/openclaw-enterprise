@@ -2587,6 +2587,32 @@ export const savedConnections = occSchema.table(
   ],
 );
 
+export const requestCredentialApprovals = occSchema.table(
+  "request_credential_approvals",
+  {
+    recipientId: text("recipient_id").notNull(),
+    requestId: text("request_id").notNull(),
+    bindingId: text("binding_id").notNull(),
+    namespaceId: text("namespace_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    policyDigest: text("policy_digest").notNull(),
+    driverRef: jsonb("driver_ref").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumed: boolean("consumed").notNull().default(false),
+  },
+  (table) => [
+    primaryKey({ columns: [table.recipientId, table.requestId] }),
+    foreignKey({
+      name: "request_credential_approval_revision",
+      columns: [table.namespaceId, table.agentId, table.revisionId],
+      foreignColumns: [agentRevisions.namespaceId, agentRevisions.agentId, agentRevisions.id],
+    }).onDelete("cascade"),
+    check("request_credential_approval_digest", sql`${table.policyDigest} ~ '^[a-f0-9]{64}$'`),
+    index("request_credential_approvals_expiry").on(table.expiresAt),
+  ],
+);
+
 export const connectionSessions = occSchema.table(
   "connection_sessions",
   {

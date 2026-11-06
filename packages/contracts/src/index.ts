@@ -52,7 +52,7 @@ export type {
   CredentialProxyExchange,
   CredentialHttpRequest,
   RequestCredentialInput,
-  RequestCredentialResolution,
+  RequestCredentialGrant,
   EgressPeer,
   CapturedEgressUse,
   EgressExchangeOwner,

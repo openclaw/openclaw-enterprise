@@ -1,3 +1,4 @@
+import type { RequestCredentialApproval } from "./state/request-credential-approvals.ts";
 import { exchangeAuthorizationCode, startBrowserAuthorization } from "./browser-authorization.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import { isReducedCredentialPlan } from "./credential-policy-reduction.ts";
@@ -7397,10 +7398,20 @@ export class OpenClawController {
           };
         },
         ...(installedDriver?.require("credential_proxy").requestTimeCredentials && {
-          savedAccountSender: installedDriver.require("credential_proxy").sourceControl.sender,
-          checkSavedAccount: (request, signal, selected) =>
-            this.checkSavedAccountRequest(installedDriver, request, signal, selected),
-          resolveOAuth: (ref, options) => this.tokenService().resolve(ref, options),
+          requestCredentials: {
+            sender: installedDriver.require("credential_proxy").sourceControl.sender,
+            check: (request, signal, selected) =>
+              this.checkSavedAccountRequest(installedDriver, request, signal, selected),
+            consume: (grant) =>
+              this.transact((state) =>
+                state.requestCredentialApprovals.consume(
+                  grant,
+                  installedDriver.ref,
+                  this.timestamp(),
+                ),
+              ),
+            resolve: (ref, options) => this.tokenService().resolve(ref, options),
+          },
         }),
         resolvePrepared: (key, options) =>
           this.tokenService().resolve(
@@ -7531,10 +7542,10 @@ export class OpenClawController {
   /** Validate the installed sender before opening a fresh Agent-grant transaction. */
   private async checkSavedAccountRequest(
     owner: InstalledDriver,
-    request: RequestCredentialInput,
+    request: RequestCredentialInput | RequestCredentialApproval,
     signal: AbortSignal,
     selected?: Pick<OAuthConnectionAccessToken, "version" | "grantedScopes">,
-  ): Promise<OAuthAccountRef | { readonly kind: "without_credential" } | undefined> {
+  ): Promise<OAuthAccountRef | "without_credential" | undefined> {
     if (
       signal.aborted ||
       this.transactionContext.getStore() ||
@@ -7578,7 +7589,7 @@ export class OpenClawController {
       !(await requestCredentials.verifyRecipient(
         await this.credentialNamespace(namespace),
         revision,
-        request.recipient,
+        "recipient" in request ? request.recipient : { id: request.recipientId },
         signal,
       ))
     ) {
@@ -7647,13 +7658,20 @@ export class OpenClawController {
       if (!slot.acceptsRecipient(target)) {
         return deny("scope_mismatch");
       }
-      const decisionForRequest = slot.authorizeRequest!(
-        target,
-        selected?.grantedScopes ?? account.grantedScopes,
-        request.http,
-      );
-      if (decisionForRequest !== "credential" && decisionForRequest !== "public") {
-        return deny("scope_mismatch");
+      const scopes = selected?.grantedScopes ?? account.grantedScopes;
+      // The immutable revision pins the slot and operation policy. Only these account inputs
+      // can change between inspection and token redemption. No request headers or body are stored.
+      const policyDigest = createHash("sha256")
+        .update(canonicalProvisioningJson({ target, scopes: [...scopes].sort() }))
+        .digest("hex");
+      let decisionForRequest: "credential" | "public" | "deny" = "credential";
+      if ("http" in request) {
+        decisionForRequest = slot.authorizeRequest!(target, scopes, request.http);
+        if (decisionForRequest !== "credential" && decisionForRequest !== "public") {
+          return deny("scope_mismatch");
+        }
+      } else if (request.policyDigest !== policyDigest) {
+        return deny("stale_configuration");
       }
       if (selected) {
         const custody = await state.savedConnections.findTokenCustody(namespaceId, sourceId);
@@ -7677,9 +7695,27 @@ export class OpenClawController {
       ) {
         return undefined;
       }
-      return decisionForRequest === "public"
-        ? { kind: "without_credential" }
-        : { kind: "oauth_refresh_token", namespaceId, sourceId };
+      if (decisionForRequest === "public") {
+        return "without_credential";
+      }
+      if ("http" in request) {
+        const recorded = await state.requestCredentialApprovals.insert(
+          {
+            recipientId: request.recipient.id,
+            requestId: request.requestId,
+            bindingId: request.bindingId,
+            execution: request.execution,
+            driver: owner.ref,
+            deadlineAt: request.deadlineAt,
+            policyDigest,
+          },
+          this.timestamp(),
+        );
+        if (!recorded) {
+          return deny("stale_configuration");
+        }
+      }
+      return { kind: "oauth_refresh_token", namespaceId, sourceId };
     });
   }
 

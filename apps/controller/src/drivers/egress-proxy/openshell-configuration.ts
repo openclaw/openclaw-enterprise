@@ -74,7 +74,7 @@ export function openShellProxyConfiguration(
   }
   closed(
     egress,
-    ["middlewareName", "authorityScope", "authority", "preparedGitHub"],
+    ["middlewareName", "authorityScope", "authority", "preparedGitHub", "tokenGrant"],
     "drivers.credential_proxy.configuration",
   );
   const { authority, preparedGitHub, ...policy } = egress;

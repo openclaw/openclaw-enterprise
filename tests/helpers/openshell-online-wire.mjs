@@ -83,7 +83,13 @@ export async function openShellOnlineWire(
   };
 }
 
-export function openShellMiddlewareClient(t, port, caBundle, service = "SupervisorMiddleware") {
+export function openShellMiddlewareClient(
+  t,
+  port,
+  caBundle,
+  service = "SupervisorMiddleware",
+  address = "localhost",
+) {
   // An independently supplied released OpenShell proto can serve as the client decoder.
   const proto =
     process.env.OCC_TEST_OPENSHELL_MIDDLEWARE_PROTO ??
@@ -101,7 +107,11 @@ export function openShellMiddlewareClient(t, port, caBundle, service = "Supervis
     oneofs: true,
   });
   const Client = grpc.loadPackageDefinition(definition).openshell.middleware.v1[service];
-  const client = new Client(`localhost:${port}`, grpc.credentials.createSsl(Buffer.from(caBundle)));
+  const client = new Client(
+    `${address}:${port}`,
+    grpc.credentials.createSsl(Buffer.from(caBundle)),
+    address === "localhost" ? {} : { "grpc.ssl_target_name_override": "localhost" },
+  );
   t.after(() => client.close());
   return client;
 }

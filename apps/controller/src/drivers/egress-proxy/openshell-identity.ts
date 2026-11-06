@@ -290,7 +290,7 @@ export class OpenShellEgressIdentity implements EgressExchangeOwner {
     };
   }
 
-  /** The terminal credential RPC authenticates the Sandbox through its audience-bound extension JWT. */
+  /** The request policy middleware authenticates its Sandbox with the Gateway-issued JWT. */
   credentialSandbox(authorization: string) {
     const claims = this.claims(authorization);
     const sandboxId = signedSandboxId(claims);

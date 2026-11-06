@@ -41,7 +41,13 @@ export interface RequestCredentialInput {
   readonly http: CredentialHttpRequest;
 }
 
-export type RequestCredentialResolution = ResolvedToken | { readonly kind: "without_credential" };
+/** The token transport has independently authenticated the recipient for this request. */
+export interface RequestCredentialGrant {
+  readonly recipientId: string;
+  readonly requestId: string;
+  readonly bindingId: string;
+  readonly deadlineAt: string;
+}
 
 export interface CredentialProxyBinding {
   close(): void | Promise<void>;
@@ -49,11 +55,16 @@ export interface CredentialProxyBinding {
 
 /** Request, send and response decisions available only to the selected transport. */
 export interface CredentialProxyExchange {
-  /** Only the authenticated terminal request handler may receive the token for this dispatch. */
-  resolveRequestCredential?(
+  /** Authorize the operation before injection. A public request creates no token grant. */
+  authorizeRequestCredential?(
     request: RequestCredentialInput,
     signal: AbortSignal,
-  ): Promise<RequestCredentialResolution | undefined>;
+  ): Promise<"credential" | "without_credential" | undefined>;
+  /** Redeem the same request, binding and authenticated recipient once. */
+  resolveRequestCredential?(
+    grant: RequestCredentialGrant,
+    signal: AbortSignal,
+  ): Promise<ResolvedToken | undefined>;
   resolve(
     authorization: string,
     sandboxId: string,

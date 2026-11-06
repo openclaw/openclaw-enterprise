@@ -176,7 +176,7 @@ The supervisor uses its SPIFFE identity to redeem that approval for the same San
 and binding. OCC rechecks the grant and policy across Token Service resolution.
 OpenShell uses `cache_ttl: 0s` to obtain a bearer on each credentialed request.
 OCC limits the time to redeem the approval. A send already authorized can finish.
-Public discovery requires separate approval to proceed without credentials.
+Public discovery requires separate approval and receives no saved credential.
 [RFC-0023 admission and sender contracts](../0023-egress-proxy-credential-lifecycle/contracts.md)
 
 For manual OAuth, OCC reads the current rows from the same manual template and

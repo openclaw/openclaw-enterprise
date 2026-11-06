@@ -68,7 +68,7 @@ export function openShellPluginPolicy(
 ) {
   const binding = managedCredentialBinding(revision.plugins?.plugins, managedGoogleInstall);
   if (binding && revision.plugins?.savedAccounts?.sourceIds.includes(binding.sourceId)) {
-    return undefined; // The terminal Credential Proxy owns this slot.
+    return undefined; // The revision-scoped token-grant provider owns this slot.
   }
   if (!binding) {
     return undefined;

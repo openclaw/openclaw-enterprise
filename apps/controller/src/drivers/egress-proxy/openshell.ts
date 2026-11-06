@@ -1,4 +1,9 @@
-import { requestCredentialCapability } from "./openshell-request-credential.ts";
+import {
+  tokenGrantSchema,
+  validTokenGrantConfiguration,
+  type OpenShellTokenGrantConfiguration,
+} from "./openshell-token-grant.ts";
+import { middlewareContract } from "./openshell-request-credential.ts";
 import type { ModelProviderConfiguration } from "../compute/model-provider.ts";
 import { wirePolicy } from "./openshell-wire-policy.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
@@ -65,6 +70,7 @@ function registeredWithoutExecution(extensions: unknown, registration: string): 
 }
 
 export interface OpenShellProxyOptions {
+  readonly tokenGrant?: OpenShellTokenGrantConfiguration;
   readonly middlewareName: string;
   readonly repositoryMiddlewareName?: string;
   /** Installation operator promises a dedicated, operator-controlled supported stock gateway. */
@@ -282,6 +288,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     required: ["middlewareName", "authorityScope"],
     properties: {
       middlewareName: { type: "string", minLength: 1 },
+      tokenGrant: tokenGrantSchema,
       repositoryMiddlewareName: { type: "string", minLength: 1 },
       observedHookPreviewWorkspace: { type: "string", maxLength: 19, minLength: 1 },
       authorityScope: { type: "string", const: "execution" },
@@ -296,11 +303,13 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         (key) =>
           ![
             "middlewareName",
+            "tokenGrant",
             "authorityScope",
             "repositoryMiddlewareName",
             "observedHookPreviewWorkspace",
           ].includes(key),
       ) ||
+      (value.tokenGrant !== undefined && !validTokenGrantConfiguration(value.tokenGrant)) ||
       typeof value.middlewareName !== "string" ||
       !value.middlewareName.trim() ||
       (value.observedHookPreviewWorkspace !== undefined &&
@@ -348,11 +357,14 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           this.sourceControl.sender,
           options.middlewareName,
           createProxy,
+          options.tokenGrant,
         );
+    }
+    if (exchange && options.tokenGrant) {
       this.requestTimeCredentials = {
         verifyRecipient: async (namespace, revision, recipient, signal) => {
           const workspace = openShellWorkspaceName(namespace);
-          if (workspace !== recipient.context) {
+          if (recipient.context !== undefined && workspace !== recipient.context) {
             return false;
           }
           const ref = this.sandbox.harnessResource!({ namespace, revision });
@@ -376,7 +388,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
                 (item.kind === 4 || item.kind === "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE") &&
                 item.protocol_major === 1 &&
                 Array.isArray(item.supported_capabilities) &&
-                item.supported_capabilities.includes(requestCredentialCapability)
+                item.supported_capabilities.includes(middlewareContract)
               );
             })
           ) {

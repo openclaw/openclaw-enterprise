@@ -1,3 +1,6 @@
+{{- if and .Values.egressAuthority.tokenGrant.enabled (not .Values.egressAuthority.enabled) }}
+{{- fail "egressAuthority.tokenGrant.enabled requires egressAuthority.enabled" }}
+{{- end }}
 {{- if .Values.egressAuthority.enabled }}
 {{- $authority := .Values.egressAuthority }}
 {{- include "openclaw.validateResourceName" (dict "label" "egressAuthority.tlsSecretName" "value" (required "egressAuthority.tlsSecretName is required" $authority.tlsSecretName)) }}
@@ -6,6 +9,13 @@
 {{- /* The API runs as a non-root user without capabilities: no port below 1024. */ -}}
 {{- if or (lt $port 1024) (gt $port 65535) (eq $port (int .Values.api.port)) (and .Values.metrics.enabled (eq $port (int .Values.metrics.port))) }}
 {{- fail "egressAuthority.port must be a distinct TCP port from 1024 to 65535" }}
+{{- end }}
+{{- $grantPort := 0 }}
+{{- if $authority.tokenGrant.enabled }}
+{{- $grantPort = include "openclaw.positiveSafeInteger" (dict "name" "egressAuthority.tokenGrant.port" "value" $authority.tokenGrant.port "port" true) | int }}
+{{- if or (lt $grantPort 1024) (eq $grantPort $port) (eq $grantPort (int .Values.api.port)) (and .Values.metrics.enabled (eq $grantPort (int .Values.metrics.port))) }}
+{{- fail "egressAuthority.tokenGrant.port must be a distinct TCP port from 1024 to 65535" }}
+{{- end }}
 {{- end }}
 {{- if not $authority.clients }}
 {{- fail "egressAuthority.clients must select trusted callers" }}
@@ -33,6 +43,11 @@ spec:
     - name: egress-tls
       port: {{ $port }}
       targetPort: egress-tls
+    {{- if $authority.tokenGrant.enabled }}
+    - name: spiffe-grant
+      port: {{ $grantPort }}
+      targetPort: spiffe-grant
+    {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -51,4 +66,8 @@ spec:
       ports:
         - protocol: TCP
           port: {{ $port }}
+        {{- if $authority.tokenGrant.enabled }}
+        - protocol: TCP
+          port: {{ $grantPort }}
+        {{- end }}
 {{- end }}

@@ -1,17 +1,16 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, unlink, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { Agent, createServer, request } from "node:https";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { createSecureContext } from "node:tls";
-import { promisify } from "node:util";
+import { createInterface } from "node:readline";
 import { certificateAuthority, signedLeaf } from "./certificates.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import type { SavedAccountPeer } from "./saved-account-proxy.ts";
 
-const execute = promisify(execFile);
 const host = "reports.example.test";
 
 /** The HTTPS origin validates the presented bearer with the issuer and retains only its digest. */
@@ -84,7 +83,79 @@ export async function createSavedAccountOrigin(t: TestContext, issuer: string) {
   );
   const address = server.address();
   assert.ok(address && typeof address !== "string");
-  const url = new URL(`https://${host}:${address.port}/mcp`);
+  const port = address.port;
+  const url = new URL(`https://${host}:${port}/mcp`);
+
+  async function startSender(runner: string, peer: SavedAccountPeer) {
+    // The supervisor identity is private to the fixture. Its cache and SPIFFE client
+    // live in one process for this Sandbox across rotation, retry and detach.
+    const file = join(directory, randomUUID() + ".json");
+    await writeFile(
+      file,
+      JSON.stringify({
+        brokerUrl: peer.brokerUrl,
+        brokerCaPem: peer.brokerCaPem,
+        tokenUrl: peer.tokenUrl,
+        audience: peer.audience,
+        supervisorToken: peer.supervisorToken,
+        sandboxId: peer.sandboxId,
+        sandboxName: peer.sandboxName,
+        workspace: peer.workspace,
+        middlewareName: peer.middlewareName,
+        bindingConfig: peer.bindingConfig,
+        originHost: host,
+        originPort: port,
+        originAddress: `127.0.0.1:${port}`,
+        originCaPem: root,
+        path: url.pathname,
+      }),
+      { mode: 0o600, flag: "wx" },
+    );
+    const child = spawn(runner, [], {
+      env: {
+        ...process.env,
+        OPENSHELL_TEST_BROKER_REQUEST: file,
+        SSL_CERT_FILE: peer.brokerCaPath,
+      },
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+    const pending = new Map<string, ReturnType<typeof Promise.withResolvers<boolean>>>();
+    const fail = () => {
+      for (const request of pending.values()) {
+        request.reject(new Error("The stock OpenShell test sender stopped before its response."));
+      }
+    };
+    child.on("error", fail);
+    child.once("close", fail);
+    child.stdin.on("error", fail);
+    t.after(() => {
+      child.stdin.end();
+      child.kill();
+    });
+    createInterface({ input: child.stdout }).on("line", (line: string) => {
+      const result = /(?:^|\s)OPENSHELL_TEST_HTTP_STATUS=([0-9a-f-]+) (\d{3})$/.exec(line);
+      if (result) {
+        pending.get(result[1]!)?.resolve(result[2] === "200");
+      }
+    });
+    return async (body: Record<string, unknown>) => {
+      const id = randomUUID();
+      const completion = Promise.withResolvers<boolean>();
+      pending.set(id, completion);
+      const timer = setTimeout(
+        () => completion.reject(new Error("The stock OpenShell test request timed out.")),
+        45_000,
+      );
+      try {
+        child.stdin.write(JSON.stringify({ id, body }) + "\n");
+        return await completion.promise;
+      } finally {
+        clearTimeout(timer);
+        pending.delete(id);
+      }
+    };
+  }
+  const native = new Map<SavedAccountPeer, ReturnType<typeof startSender>>();
 
   return {
     url: url.href,
@@ -92,53 +163,17 @@ export async function createSavedAccountOrigin(t: TestContext, issuer: string) {
     async dispatch(peer: SavedAccountPeer, body: Record<string, unknown>): Promise<boolean> {
       const runner = process.env.OCC_TEST_OPENSHELL_CREDENTIAL_SENDER;
       if (runner) {
-        // The native supervisor relay needs the test identity. Keep it off argv and out of test output.
-        const file = join(directory, randomUUID() + ".json");
-        await writeFile(
-          file,
-          JSON.stringify({
-            brokerUrl: peer.brokerUrl,
-            brokerCaPem: peer.brokerCaPem,
-            audience: peer.audience,
-            supervisorToken: peer.supervisorToken,
-            sandboxId: peer.sandboxId,
-            sandboxName: peer.sandboxName,
-            workspace: peer.workspace,
-            middlewareName: peer.middlewareName,
-            bindingConfig: peer.bindingConfig,
-            originHost: host,
-            originPort: address.port,
-            originAddress: `127.0.0.1:${address.port}`,
-            originCaPem: root,
-            method: "POST",
-            path: url.pathname,
-            body,
-          }),
-          { mode: 0o600, flag: "wx" },
-        );
-        let stdout: string;
-        try {
-          ({ stdout } = await execute(runner, [], {
-            env: { ...process.env, OPENSHELL_TEST_BROKER_REQUEST: file },
-            timeout: 45_000,
-            maxBuffer: 256 * 1024,
-          }));
-        } catch {
-          throw new Error("The native OpenShell credential sender did not complete.");
-        } finally {
-          await unlink(file);
+        let sender = native.get(peer);
+        if (!sender) {
+          sender = startSender(runner, peer);
+          native.set(peer, sender);
         }
-        const matches = [...stdout.matchAll(/^OPENSHELL_TEST_HTTP_STATUS=(\d{3})$/gm)];
-        assert.equal(
-          matches.length,
-          1,
-          "the native sender reports the downstream HTTP status once",
-        );
-        return matches[0]![1] === "200";
+        return (await sender)(body);
       }
 
-      // The standard lane exercises the production gRPC authority with a controlled sender.
-      const bearer = await peer.resolve(url, body);
+      // Use the production middleware and token endpoint, with CI issuing the Sandbox identity.
+      const id = await peer.authorize(url, body);
+      const bearer = id && (await peer.redeem(id));
       if (!bearer) {
         return false;
       }

@@ -95,13 +95,23 @@ version-worker tests and therefore require prepared ownership.
 
 Run the [Keycloak lane](kubernetes.md#run-the-keycloak-lane) to exercise consent, rotation and detach through the OCC API. Its saved-account test sends two Agents’ requests to an HTTPS resource that calls the issuer’s userinfo endpoint. It compares bearer digests before and after rotation. It also detaches one Agent while token resolution is pending and checks that only its sibling can still reach the resource.
 
-By default a controlled client calls the real Credential Proxy over TLS. For a native sender run, set `OCC_TEST_OPENSHELL_CREDENTIAL_SENDER` to an executable that runs the compiled `openshell-supervisor-network` test binary with these arguments:
+The default test client calls the production gRPC middleware and HTTPS token endpoint using a Gateway-signed Sandbox identity and a test-issued SPIFFE JWT-SVID. Two OCC instances share PostgreSQL. The test exercises one-use redemption across instances, rotation, an in-flight detach and the next request from each Agent.
 
-```text
---ignored --exact l7::relay::request_credential_tests::external_request_credential_dispatch --nocapture
+To include the native relay, build the [stock sender probe](../../tests/fixtures/openshell-saved-account-sender.rs) in a disposable OpenShell v0.1.7 source checkout. From the OCE repository root, set `STOCK_SOURCE` to that checkout and run:
+
+```sh
+cp tests/fixtures/openshell-saved-account-sender.rs \
+  "$STOCK_SOURCE/crates/openshell-supervisor-network/src/l7/relay/occ_saved_account.rs"
+printf '\n#[cfg(test)]\nmod occ_saved_account;\n' >> \
+  "$STOCK_SOURCE/crates/openshell-supervisor-network/src/l7/relay.rs"
+(cd "$STOCK_SOURCE" && \
+  cargo add -p openshell-supervisor-network --dev --path crates/openshell-extension-core && \
+  cargo test --locked -p openshell-supervisor-network --lib external_stock_sender --no-run)
 ```
 
-Build the binary with `cargo test --locked -p openshell-supervisor-network --lib --no-run` from a version containing the terminal sender. The test passes a private fixture file through `OPENSHELL_TEST_BROKER_REQUEST` and reads the downstream HTTP status. The probe uses the production relay, verified upstream TLS and an authenticated gRPC authority. Both modes use a test-owned gateway inventory and signing key. The test never needs a personal provider account.
+Copy the [test launcher](../../tests/fixtures/openshell-saved-account-sender.sh) to a private directory and set `OCC_TEST_OPENSHELL_CREDENTIAL_SENDER` to its absolute path. Place the compiled binary next to it as `supervisor-network-tests` and the public SPIFFE trust bundle as `jwt-bundle.json`. In that directory, link `<sandboxId>.sock` to each supervisor's Workload API socket. Use the fixture IDs `00000000-0000-4000-8000-000000000001` and `00000000-0000-4000-8000-000000000002`. Each socket must issue the distinct identity `spiffe://test.example/openshell/sandbox/<sandboxId>` for the requested token endpoint audience. The launcher uses `jq` to select the socket.
+
+The test starts one sender per Sandbox and uses it across rotation and detach. The relay uses a zero-TTL token grant and sends to a TLS resource that checks the bearer against Keycloak. Gateway inventory, provider metadata and revision activation are fixtures. The test runs outside a deployed OpenShell Sandbox.
 
 ## GitHub human sign-in
 

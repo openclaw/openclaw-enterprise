@@ -146,7 +146,7 @@ and the API/worker filter `apps/controller/src/logging.ts:configurationLogDetail
 diagnostics, without submitted values, except
 `apps/controller/src/composition/installation-fields.ts:requireChartListener`:
 `CHART_LISTENER_MISMATCH` names ports, hosts or paths refused when
-`OCC_EGRESS_AUTHORITY_PORT`/`OCC_OPENSHELL_GIT_PORT` is set.
+the corresponding chart listener port is set.
 
 For chart-managed routing, `openclaw.listenerEnv` passes `OCC_CHART_GATEWAY_ROUTING`
 to the hook, API and worker. `requireChartGatewayRouting` compares the Kubernetes
