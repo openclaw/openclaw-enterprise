@@ -78,6 +78,11 @@ Set `OCC_TEST_BROWSER_EXECUTABLE` to use an approved existing browser. The test
 fails if no browser is available; it does not install one. Do not change managed
 browser policies. Set `OCC_TEST_CONSOLE_ARTIFACT_DIR` to retain screenshots.
 
+Run the native Agent admin cases on Linux with the Go version in `go.mod` and
+`certutil` (`libnss3-tools` on Ubuntu). The existing Console Browser CI lane
+runs these cases for contributors on other platforms. The development issuer
+and a temporary Chromium trust store handle certificate setup and cleanup.
+
 The browser fixture uses real controller routes with in-memory state and test
 Drivers. It does not prove persistence, routing through a deployed gateway, or
 Agent runtime behavior. The API checks can run without a browser:

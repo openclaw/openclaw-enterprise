@@ -165,7 +165,7 @@ runs:
       shell: bash
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell' || inputs.lane == 'k3d-fixture-configuration'
+      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell' || inputs.lane == 'k3d-fixture-configuration' || (inputs.lane == 'checks-browser' && (inputs.test-file == '' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.mjs' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.ts'))
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
@@ -270,7 +270,7 @@ runs:
         LOGGING_SETUP_OUTCOME: skipped
       run: node scripts/ci/logging-setup-timing.ts finish image-pulls
     - name: Install trusted browser certificate tooling
-      if: inputs.lane == 'qa-matrix' || inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell'
+      if: inputs.lane == 'qa-matrix' || inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell' || (inputs.lane == 'checks-browser' && (inputs.test-file == '' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.mjs' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.ts'))
       shell: bash
       run: |
         if ! command -v certutil >/dev/null 2>&1; then
