@@ -56,7 +56,7 @@ Use the separate issuer service, OCC and the OpenShell supervisor proxy. Observe
 2. Read a known private ref in B. Then try to push to B. The push fails and the remote SHA stays the same.
 3. Try to read C from Agent 1. Access fails while the independent reader still reads C.
 4. With TTL zero, keep an HTTPS client open and record its connection ID. Withdraw all Git grants from Agent 1 while the material is valid. Repeat a previously allowed request over that connection. Observe the withdrawal denial and zero GitHub requests for the attempt. Get a fresh model reply in the same execution and chat and a fresh private read of A from Agent 2.
-5. In a separate run with an active grant and a positive TTL, prime only Agent 1’s A-read entry. Isolate its proxy from OCC and withdraw the grant. A matching read may still succeed before the recorded expiry. An A-write must miss and fail. After expiry, repeat the read: the proxy must deny it with zero new GitHub requests. Restore connectivity and verify that OCC still denies it.
+5. Run this case only for a profile that explicitly enables a positive authorization TTL. Start with an active grant and prime only Agent 1’s A-read entry. Isolate its proxy from OCC and withdraw the grant. A matching read may still succeed before the recorded expiry. An A-write must miss and fail. After expiry, repeat the read: the proxy must deny it with zero new GitHub requests. Restore connectivity and verify that OCC still denies it.
 
 Keep the chat running when the operator can verify Git-only detachment and independent model access. Retire the execution if Git access cannot be isolated.
 

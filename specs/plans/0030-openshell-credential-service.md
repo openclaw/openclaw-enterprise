@@ -15,7 +15,7 @@ Migrate each OCE-managed outbound provider credential through its real caller, i
 
 Keep OCE’s Token Service registration and resolution contract. Implement the OpenShell call in the issuer adapter for the registered family. The adapter maps OCE’s source identity to the remote grant, output reference and generation. The remote service serializes scheduled and request-triggered renewal for each migrated grant. [Existing registration and resolution](https://github.com/openclaw/openclaw-enterprise/pull/4853)
 
-Start with one approved repository, an issuer-enrolled App key and an empty token cache. Prove a private Git request through the installed sender, a denial before minting, and recovery after a lost mint reply. Qualify mixed repository permissions separately. [GitHub implementation and installed acceptance](../rfcs/0030-openshell-credential-service/github-integration.md)
+Start with one approved repository, an issuer-enrolled App key and an empty token cache. Prove a private Git request through the installed sender and a denial before minting. If OCC loses the issuer’s reply, recover the original committed output under current authorization. If the issuer loses GitHub’s reply after a possible mint, deliver nothing and verify that the issuer sends no second mint. Qualify mixed repository permissions separately. [GitHub implementation and installed acceptance](../rfcs/0030-openshell-credential-service/github-integration.md)
 
 ## Enroll and renew a saved OAuth connection
 
