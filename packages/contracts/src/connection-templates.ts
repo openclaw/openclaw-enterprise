@@ -272,7 +272,7 @@ export interface ConnectionAttachmentIntent {
   readonly pluginId: string;
   readonly slotId: string;
   readonly releaseSha256: string;
-  readonly expectedCredentialSourceId: string | null;
+  readonly expectedCredentialSourceIds: readonly string[];
   readonly connectionTemplateId: string;
   readonly connectionTemplateVersion: number;
 }

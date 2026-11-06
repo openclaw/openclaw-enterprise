@@ -8,10 +8,10 @@ type Wire = Record<string, unknown>;
 
 export const savedAccountCapability = "openshell.supervisor-middleware.http-request-credential.v1";
 
-/** Authoritative source and token are looked up from this installed slot, never from the request headers. */
+/** These binding IDs come from the operator-installed terminal middleware for the slot. */
 export function savedAccountBinding(
   config: unknown,
-): Pick<SavedAccountRequest, "binding" | "bindingId"> | undefined {
+): { binding: SavedAccountRequest["binding"]; bindingIds: string[] } | undefined {
   const fields = asRecord(asRecord(config)?.fields);
   if (!fields || Object.keys(fields).length !== 6) {
     return undefined;
@@ -27,16 +27,29 @@ export function savedAccountBinding(
       ? value
       : undefined;
   };
-  const bindingId = field("binding_id");
+  const pinned = field("binding_id");
+  const listed = asRecord(asRecord(fields.binding_ids)?.listValue)?.values;
+  const bindingIds = pinned
+    ? [pinned]
+    : Array.isArray(listed)
+      ? listed.map((row) => asRecord(row)?.stringValue)
+      : [];
+  if (
+    !bindingIds.length ||
+    !bindingIds.every((id): id is string => typeof id === "string" && /^[0-9a-f]{64}$/.test(id)) ||
+    new Set(bindingIds).size !== bindingIds.length
+  ) {
+    return undefined;
+  }
   const namespaceId = field("namespace_id");
   const agentId = field("agent_id");
   const revisionId = field("revision_id");
   const pluginId = field("plugin_id");
   const slotId = field("slot_id");
-  if (!bindingId || !namespaceId || !agentId || !revisionId || !pluginId || !slotId) {
+  if (!namespaceId || !agentId || !revisionId || !pluginId || !slotId) {
     return undefined;
   }
-  return { bindingId, binding: { namespaceId, agentId, revisionId, pluginId, slotId } };
+  return { bindingIds, binding: { namespaceId, agentId, revisionId, pluginId, slotId } };
 }
 
 /** OpenShell freezes this request before calling and consumes the bearer once before expires_at. */
@@ -62,6 +75,19 @@ export function savedAccountHandler(
       callback(denied, null);
       return;
     }
+    // OpenShell removes origin Authorization. The worker selects only among the binding
+    // IDs pinned to this slot; OCC rechecks that specific account and grant on every call.
+    const selectors = view.headers.filter(([key]) => key === "x-oce-account-binding");
+    const bindingId =
+      selectors.length === 1
+        ? selectors[0]![1]
+        : selectors.length === 0 && binding.bindingIds.length === 1
+          ? binding.bindingIds[0]
+          : undefined;
+    if (!bindingId || !binding.bindingIds.includes(bindingId)) {
+      callback(denied, null);
+      return;
+    }
     const deadline = Math.min(Number(call.getDeadline()), peer.expiresAt, Date.now() + 30_000);
     if (!Number.isFinite(deadline) || deadline <= Date.now() || call.cancelled) {
       callback(denied, null);
@@ -74,12 +100,17 @@ export function savedAccountHandler(
     try {
       const result = await resolve(
         {
-          ...binding,
+          binding: binding.binding,
+          bindingId,
           sandboxId: peer.sandboxId,
           requestId: view.requestId,
           workspace: view.workspace,
           deadlineAt: new Date(deadline).toISOString(),
-          http: { target: view.target, headers: view.headers, body: view.body },
+          http: {
+            target: view.target,
+            headers: view.headers.filter(([key]) => key !== "x-oce-account-binding"),
+            body: view.body,
+          },
         },
         controller.signal,
       );

@@ -194,7 +194,7 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
     ...dedicated,
     harness: { ...dedicated.harness, id: "openclaw" },
   });
-  assert.equal(google.id, "occ-plugin:google@1.0.0");
+  assert.equal(google.id, "occ-plugin:google@1.1.0");
   assert.equal(slack.id, "occ-plugin:slack@1.0.0");
   assert.equal(driver.policyCapabilities.policyScopeByPlugin[slack.id], "enablement_only");
   assert.deepEqual((await driver.discoverCatalog({ q: "SLACK" })).plugins, [slack]);
@@ -257,6 +257,33 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
     { id: source.id, name: source.name },
   ]);
   driver.credentials.validate(selections, [source]);
+  // A slot has one terminal sender. Mixing its saved-account authority with a native
+  // provider on the same host would discard the native provider's Authorization header.
+  const saved = {
+    ...source,
+    id: "cs_browser",
+    ownerCapability: "token_service",
+    type: "oauth2-refresh-token",
+    config: {},
+    secrets: {},
+  };
+  assert.throws(
+    () =>
+      driver.credentials.validate(
+        {
+          [slack.id]: {
+            enabled: true,
+            driverPolicy: {
+              ...slackPolicy,
+              credentials: { [managedMcpInstalls[0].slotId]: [source.id, saved.id] },
+            },
+          },
+        },
+        [source, saved],
+      ),
+    /same credential delivery/,
+  );
+
   assert.throws(
     () => driver.credentials.validate(selections, [{ ...broaderRestSource, id: source.id }]),
     /Select a ready Slack account/,
@@ -315,14 +342,14 @@ test("managed MCP bindings preserve both servers' credentials and require unambi
     [second.id]: select(second, "cs_second", "write"),
   };
   assert.deepEqual(
-    managedMcpCredentialBindings(selections, installs).map(({ install, sourceId, toolNames }) => [
+    managedMcpCredentialBindings(selections, installs).map(({ install, sourceIds, toolNames }) => [
       install.id,
-      sourceId,
+      sourceIds,
       toolNames,
     ]),
     [
-      [first.id, "cs_first", ["team_read"]],
-      [second.id, "cs_second", ["write"]],
+      [first.id, ["cs_first"], ["team_read"]],
+      [second.id, ["cs_second"], ["write"]],
     ],
   );
   assert.throws(
@@ -351,7 +378,7 @@ test("managed MCP bindings preserve both servers' credentials and require unambi
 
 test("managed plugin slots match saved accounts by issuer and reviewed API or MCP recipient", () => {
   const { credentials } = new OCCPluginDriver();
-  const googleId = "occ-plugin:google@1.0.0";
+  const googleId = "occ-plugin:google@1.1.0";
   const slot = credentials.connectionSlot({}, googleId, "account");
   const gmail = { host: "gmail.googleapis.com", port: 443, path: "/**" };
   const target = {
@@ -375,10 +402,13 @@ test("managed plugin slots match saved accounts by issuer and reviewed API or MC
     assert.equal(slot.acceptsRecipient({ ...target, ...changes }), false);
   }
   const saved = { [googleId]: slot.bind("cs_personal") };
-  assert.equal(
-    credentials.connectionSlot(saved, googleId, "account").credentialSourceId,
-    "cs_personal",
+  const first = credentials.connectionSlot(saved, googleId, "account");
+  const both = credentials.connectionSlot(
+    { [googleId]: first.bind("cs_work") },
+    googleId,
+    "account",
   );
+  assert.deepEqual(both.credentialSourceIds, ["cs_personal", "cs_work"]);
   assert.equal(credentials.connectionSlot(saved, googleId, "unknown-slot"), undefined);
 
   const [install] = managedMcpInstalls;

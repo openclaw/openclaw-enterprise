@@ -6055,7 +6055,7 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
   );
   const driver = new OCCPluginDriver();
   controller.fixture.controller.installPluginDrivers([driver, new CodexPluginDriver()]);
-  const packageId = "occ-plugin:google@1.0.0";
+  const packageId = "occ-plugin:google@1.1.0";
   const plugins = { [packageId]: { enabled: true } };
   const agentsPath = `/namespaces/${namespace.id}/agents`;
   const created = await controller.request("POST", agentsPath, {
@@ -11460,6 +11460,19 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     },
   });
   assert.equal(source.status, 201, JSON.stringify(source.body));
+  const secondSecret = await controller.request("POST", `${base}/secrets`, {
+    body: { name: "Other Slack token", value: "fixture-second-slack-token" },
+  });
+  assert.equal(secondSecret.status, 201, JSON.stringify(secondSecret.body));
+  const second = await controller.request("POST", `${base}/credential-sources`, {
+    body: {
+      name: "Other Slack account",
+      type: "bearer-token",
+      config: sourceConfig,
+      secrets: { token: { kind: "secret", id: secondSecret.data.id, namespaceId: namespace.id } },
+    },
+  });
+  assert.equal(second.status, 201, JSON.stringify(second.body));
   tokenReads = 0;
   const model = await controller.request("POST", `${base}/credential-sources`, {
     body: { name: "Model account", type: "openai" },
@@ -11470,7 +11483,11 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     namespace.id,
     createHarnessConfiguration("openclaw", "gpt-5.1"),
   );
-  const credentialSources = [{ sourceId: model.data.id }, { sourceId: source.data.id }];
+  const credentialSources = [
+    { sourceId: model.data.id },
+    { sourceId: second.data.id },
+    { sourceId: source.data.id },
+  ];
   const created = await controller.request("POST", `${base}/agents`, {
     body: {
       name: "Slack Agent",
@@ -11648,16 +11665,22 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   const capabilities = await controller.request("GET", `${agentPath}/plugins/capabilities`);
   assert.equal(capabilities.status, 200, JSON.stringify(capabilities.body));
   const slot = capabilities.data.credentialSlots.find((entry) => entry.pluginId === pluginId);
-  assert.deepEqual(slot.sources, [{ id: source.data.id, name: "Slack account" }]);
+  assert.deepEqual(
+    new Map(slot.sources.map(({ id, name }) => [id, name])),
+    new Map([
+      [source.data.id, "Slack account"],
+      [second.data.id, "Other Slack account"],
+    ]),
+  );
   assert.equal(slot.toolDiscovery, true);
-  const google = { "occ-plugin:google@1.0.0": { enabled: true } };
-  const pluginsFor = (toolNames) => ({
+  const google = { "occ-plugin:google@1.1.0": { enabled: true } };
+  const pluginsFor = (toolNames, account = source.data.id) => ({
     ...google,
     [pluginId]: {
       enabled: true,
       driverPolicy: {
         releaseSha256: slot.releaseSha256,
-        credentials: { account: source.data.id },
+        credentials: { account },
         toolNames,
       },
     },
@@ -11669,8 +11692,19 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   const refused = await save(pluginsFor(["slack_*"]));
   assertApiError(refused, 400, "INVALID_REQUEST");
   assert.match(refused.body.error.message, /Select distinct literal Slack tool names/);
-  // Discovery offers both tools. The operator selects one, and deployment freezes that subset.
-  const approved = pluginsFor(["slack_send_message"]);
+  // An existing single-account selection can add another attached source. Both use one tool policy.
+  assert.equal((await save(pluginsFor(["slack_send_message"]))).status, 200);
+  assertApiError(
+    await save(pluginsFor([], [source.data.id, source.data.id])),
+    400,
+    "INVALID_REQUEST",
+  );
+  assertApiError(
+    await save(pluginsFor([], [source.data.id, model.data.id])),
+    400,
+    "INVALID_REQUEST",
+  );
+  const approved = pluginsFor(["slack_send_message"], [source.data.id, second.data.id]);
   // Binding this known, attached Gateway source requires operate even when its metadata is private.
   state.restrictions.push({
     id: "private-slack-source",
@@ -11687,8 +11721,20 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   const deployed = await controller.request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
   assert.deepEqual(deployed.data.plugins.plugins, approved);
+  const revisions = await controller.fixture.platformState.read((view) =>
+    view.revisions.listRevisions(namespace.id, created.data.id),
+  );
+  const frozen = revisions.find(({ id }) => id === deployed.data.id);
+  assert.deepEqual(frozen?.plugins.accountNames, {
+    [source.data.id]: "Slack account",
+    [second.data.id]: "Other Slack account",
+  });
   assert.deepEqual(deployed.data.credentialSources, credentialSources);
 
+  const one = pluginsFor(["slack_send_message"], [second.data.id]);
+  const remaining = await save(one);
+  assert.equal(remaining.status, 200, JSON.stringify(remaining.body));
+  assert.deepEqual(remaining.data.plugins, one);
   const cleared = await save(google);
   assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
   assert.deepEqual(cleared.data.plugins, google);
@@ -11752,7 +11798,7 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
   assert.equal(offered.catalog.status, 200);
   assert.deepEqual(
     offered.catalog.data.plugins.map((entry) => entry.id),
-    ["occ-plugin:google@1.0.0", packageId],
+    ["occ-plugin:google@1.1.0", packageId],
   );
   assert.equal(offered.details.status, 200, JSON.stringify(offered.details.body));
   assert.equal(offered.details.data.id, packageId);
@@ -11760,7 +11806,8 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
   // Finding 2790: an ID the catalog does not offer is the caller's error, not a catalog
   // failure to retry. The unversioned package ID names its versioned one.
   for (const [pluginId, advice] of [
-    ["occ-plugin:google", "Use occ-plugin:google@1.0.0."],
+    ["occ-plugin:google", "Use occ-plugin:google@1.1.0."],
+    ["occ-plugin:google@1.0.0", "Use occ-plugin:google@1.1.0."],
     [
       "occ-plugin:nope@1.0.0",
       "Check each plugin ID and its Driver prefix against the catalog for the Agent's Harness.",
@@ -11786,6 +11833,16 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
     body: { configurationId: configuration.id, plugins: {} },
   });
   assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+
+  // A saved selection for the retired worker must not authorize the new binary.
+  const retired = await controller.request("PATCH", path, {
+    body: {
+      configurationId: configuration.id,
+      plugins: { "occ-plugin:google@1.0.0": { enabled: true } },
+    },
+  });
+  assertApiError(retired, 400, "INVALID_REQUEST");
+  assert.match(retired.body.error.message, /Use occ-plugin:google@1\.1\.0\./);
 
   // The same Agent on the Codex Harness: save refuses the package, so discovery hides it.
   const codex = await controller.request(

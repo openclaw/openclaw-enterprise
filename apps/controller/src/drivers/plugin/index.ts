@@ -339,6 +339,15 @@ function notImplemented(operation: string, message: string): NotImplementedError
   return new NotImplementedError(operation, message);
 }
 
+/** Point an omitted or retired managed package version at its only current replacement. */
+function offeredManagedPackageId(pluginId: string | undefined): string | undefined {
+  const versions = managedInstalls.filter(({ id }) => {
+    const name = id.slice(0, id.lastIndexOf("@"));
+    return pluginId === name || pluginId?.startsWith(name + "@");
+  });
+  return versions.length === 1 ? versions[0]!.id : undefined;
+}
+
 class BundledPluginDriverBase {
   readonly capability = "plugin" as const;
   readonly id: string;
@@ -367,7 +376,12 @@ class BundledPluginDriverBase {
           error instanceof Error && "pluginId" in error && typeof error.pluginId === "string"
             ? error.pluginId
             : undefined;
-        throw new PluginPolicyValidationError("unknownPlugin", this.id, pluginId);
+        throw new PluginPolicyValidationError(
+          "unknownPlugin",
+          this.id,
+          pluginId,
+          kind === "openclaw" ? offeredManagedPackageId(pluginId) : undefined,
+        );
       }
       throw new PluginPolicyValidationError(
         field === "toolDefaults.reviewer" ||
@@ -471,14 +485,11 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
   async getCatalogPlugin(input: { readonly pluginId: string }): Promise<PluginCatalogEntry> {
     const pkg = managedInstalls.find(({ id }) => id === input.pluginId);
     if (!pkg) {
-      // An unknown ID is the caller's error (finding 2790); name the versioned package ID
-      // when the caller left out the version and exactly one package matches.
-      const versioned = managedInstalls.filter(({ id }) => id.startsWith(`${input.pluginId}@`));
       throw new PluginPolicyValidationError(
         "unknownPlugin",
         this.id,
         input.pluginId,
-        versioned.length === 1 ? versioned[0]!.id : undefined,
+        offeredManagedPackageId(input.pluginId),
       );
     }
     return this.catalog([pkg.entry])[0]!;

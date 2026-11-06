@@ -236,16 +236,7 @@ clawhub inspect "$(jq -r .clawhub.skill "$manifest")" \
     'any(.version.files[]; .path == "SKILL.md" and .sha256 == $sha)'
 ```
 
-The build verifies the upstream skill pin, the packaged `oce-google` instructions, the
-[gog CLI archive](https://github.com/openclaw/gogcli/releases/tag/v0.46.0) for the
-image architecture, and the executable’s checksum and reported version. The binary
-lives under `/usr/local/lib/oce/plugins/google/bin`, outside the image’s default PATH.
-
-A selected dedicated OpenClaw worker verifies the bundled release and binary before
-enrollment, then adds that directory to its PATH. The Gateway verifies the bundled
-skill and adds it to native skill discovery. OpenClaw’s usual precedence applies if
-the workspace contains another skill with the same name. Run `gog --version` in the
-worker to check the installation.
+The image verifies the [gog v0.46.0 source](https://github.com/openclaw/gogcli/tree/e0e3cb9c80eb4f1fb8051766e52841b8cd7ab965), OCE account-binding patch, skills and target binary. The worker checks the release and binary at startup. For saved accounts, `gog` sends the chosen binding ID to Credential Proxy. For native accounts, it presents the selected OpenShell placeholder. Check the installed version with `/usr/local/lib/oce/plugins/google/bin/gog --version`.
 
 For account selection and deployment, see [Configure Agent plugins](../../docs/guides/topics/plugins-configure.md#use-the-console).
 

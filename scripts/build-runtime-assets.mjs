@@ -44,7 +44,11 @@ const appliedPatches = [
   },
   {
     file: "openclaw-google-worker-placeholder.patch",
-    sha256: "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
+    sha256: "b8c08aaf58b0e4a0dfb1df98c881d3d88b9ae7c51d1f50c2fda847135ff1d1db",
+  },
+  {
+    file: "openclaw-node-mcp-accounts.patch",
+    sha256: "f596f514b56c1786ca83db8fec8116043203b4e8554410bca0d4fc92353e9f42",
   },
   {
     file: "openclaw-node-setup-renewal.patch",

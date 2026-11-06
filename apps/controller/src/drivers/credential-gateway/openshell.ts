@@ -27,7 +27,11 @@ import {
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
 import { managedMcpProviderEndpoint } from "../sandbox/openshell-managed-mcp-policy.ts";
-import { managedMcpInstallForSourceConfig } from "../plugin/managed-catalog.ts";
+import {
+  managedMcpInstallForSourceConfig,
+  managedProviderConfig,
+  managedProviderKeyProblem,
+} from "../plugin/managed-catalog.ts";
 
 import {
   modelProviderBaseUrl,
@@ -423,7 +427,7 @@ function oauth2SourceType(
             ],
           },
         },
-        refresh.credentialKey(config),
+        refresh.credentialKey(managedProviderConfig(type, sourceId, config)),
       );
     },
   };
@@ -656,6 +660,7 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
         {
           name: "token",
         },
+        managedProviderConfig("bearer-token", sourceId, config).env_var,
       );
       if (config.protocol === undefined) {
         return profile;
@@ -953,13 +958,18 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     }
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
-    const credentials = providerCredentials(type, input);
+    const credentials = providerCredentials(type, input, context.source.id);
     const name = openShellProviderName(context.source.id);
     const existing = await client.getProvider(workspace, name, context.signal);
     if (existing !== undefined && !openShellOwnedBy(existing, context.source.id)) {
       throw new ScopeViolationError(
         "An OpenShell provider with this source's name is not owned by the source.",
       );
+    }
+    const keyProblem =
+      existing && managedProviderKeyProblem(context.source, existing.credentialKeys);
+    if (keyProblem) {
+      throw new ScopeViolationError(keyProblem);
     }
     // Reject known collisions before changing the profile. These are separate RPCs:
     // orphan profiles and provider replacement after this read remain outside this check.
@@ -1029,6 +1039,10 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         "An OpenShell provider with this source's name is not owned by the source.",
       );
     }
+    const keyProblem = managedProviderKeyProblem(context.source, existing.credentialKeys);
+    if (keyProblem) {
+      throw new ScopeViolationError(keyProblem);
+    }
     // The profile follows the current configuration, so a narrowed binary list applies here.
     // Narrow first: if the credential update then fails, the old token is only less reachable.
     await this.ensureProfile(
@@ -1043,7 +1057,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     await client.updateProviderCredentials(
       workspace,
       name,
-      providerCredentials(type, input),
+      providerCredentials(type, input, context.source.id),
       context.signal,
     );
     return { state: "ready" };
@@ -1061,6 +1075,10 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     }
     if (!openShellOwnedBy(provider, context.source.id)) {
       return { state: "failed", reason: "The OpenShell provider is not owned by this source." };
+    }
+    const keyProblem = managedProviderKeyProblem(context.source, provider.credentialKeys);
+    if (keyProblem) {
+      return { state: "failed", reason: keyProblem };
     }
     if (context.source.type === CODEX_OAUTH_TYPE && !provider.config[CODEX_ACCOUNT_CONFIG]) {
       return { state: "pending" };
@@ -1132,13 +1150,16 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
 function providerCredentials(
   type: OpenShellSourceType,
   input: CredentialSourceInput,
+  sourceId: string,
 ): Record<string, string> {
   // OpenShell mints a refresh type's token; its secrets are refresh material, not credentials.
   if (type.catalog.rotation === "refresh") {
     return {};
   }
   return Object.fromEntries(
-    Object.entries(type.credentials(input.config)).map(([field, key]) => {
+    Object.entries(
+      type.credentials(managedProviderConfig(type.catalog.type, sourceId, input.config)),
+    ).map(([field, key]) => {
       const value = input.secrets[field];
       if (!isNonEmptyString(value)) {
         throw new ScopeViolationError(`The credential source secret ${field} is required.`);

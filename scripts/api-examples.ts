@@ -245,7 +245,7 @@ const savedAccount = {
 
 export const parameterExamples = {
   oauthClientId,
-  pluginId: "occ-plugin:google@1.0.0",
+  pluginId: "occ-plugin:google@1.1.0",
   slotId: "account",
   connectionTemplateId,
   key: "review-1",
@@ -293,9 +293,10 @@ export const requestExamples = {
   startAgentPluginConnection: {
     connectionTemplateId,
     connectionTemplateVersion: 1,
-    pluginId: "occ-plugin:google@1.0.0",
+    pluginId: "occ-plugin:google@1.1.0",
     slotId: "account",
-    expectedCredentialSourceId: null,
+    expectedCredentialSourceIds: [],
+    accountName: "Support",
     releaseSha256: "a".repeat(64),
   },
   startNamespaceConnection: { connectionTemplateId },

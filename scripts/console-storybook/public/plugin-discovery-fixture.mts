@@ -1,8 +1,15 @@
-import type { PluginCatalogEntry, PluginCatalogPage } from "@openclaw-enterprise/contracts";
+import type {
+  PluginCatalogEntry,
+  PluginCatalogPage,
+  PluginToolCatalogEntry,
+} from "@openclaw-enterprise/contracts";
 
 interface PluginDiscoveryFixture {
   pages: Readonly<Record<string, PluginCatalogPage>> & { initial: PluginCatalogPage };
   details: Readonly<Record<string, PluginCatalogEntry>>;
+  toolsByAccount?: Readonly<
+    Record<string, Readonly<Record<string, readonly PluginToolCatalogEntry[]>>>
+  >;
 }
 
 type DiscoveryError =
@@ -29,6 +36,17 @@ export function servePluginDiscovery(
       return error(400, "INVALID_REQUEST");
     }
     const entry = ownValue(fixture.details, body.pluginId);
+    const accounts = fixture.toolsByAccount && ownValue(fixture.toolsByAccount, body.pluginId);
+    if (entry && accounts) {
+      const connection = "managedConnection" in body ? body.managedConnection : undefined;
+      const id =
+        connection &&
+        typeof connection === "object" &&
+        "sourceId" in connection &&
+        connection.sourceId;
+      const tools = typeof id === "string" && ownValue(accounts, id);
+      return tools ? response({ ...entry, tools }) : error(400, "INVALID_REQUEST");
+    }
     return entry ? response(entry) : error(503, "PLUGIN_DISCOVERY_UNAVAILABLE");
   }
 

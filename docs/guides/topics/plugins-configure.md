@@ -16,18 +16,19 @@ whose selections belonged to the Codex Driver.
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
 Use **Configure plugins** to edit saved selections and tool policy. On a dedicated
 OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, choose
-**Google Workspace** and add it. Leave **Install without an account** selected
-to verify the installation with `gog --version`. To make Google API calls, choose a ready
-**Google account**, save the selection and deploy. The worker receives an
-OpenShell placeholder for that account. The Gateway loads the skill. The worker can use mapped operations within the account’s configured host, path and OAuth scopes. A command that calls multiple Google services may need more destinations than the selected source permits.
+**Google Workspace** and add it. Select the saved Google accounts the Agent should
+use, or leave every box clear to install the CLI without a credential.
+Use distinct account names such as “Work mail” and “Personal mail”. Save and deploy. If your Agent still selects `occ-plugin:google@1.0.0`, remove that selection, add Google Workspace 1.1.0 and select its accounts before deploying.
 
-Each account field names a plugin slot. Choose a saved account that you can read and use in this Namespace, then select **Save plugin selections**. OCC binds the selected account and grants this Agent access. If a plugin declares two slots, you can choose a different account for each one.
+Under **Accounts**, each slot lists compatible saved accounts. Select the accounts you want the Agent to use, then select **Save plugin selections**. OCC grants the Agent access to each selected OAuth account. To add an account, save the enabled plugin and select **Connect new account** in the intended slot. In the dialog, choose a connection template, enter an optional account name, review the permissions and select **Connect and attach**. The provider asks which account to authorize. When consent completes, OCC adds the account to the slot.
 
-The picker shows accounts from issuers accepted by the slot. If the account needs consent for this server, select **Authorize for this server**. To connect a new account, save the enabled plugin, choose a compatible connection template, then review the permissions before selecting **Connect and attach**. Required MCP scopes are already selected. On a template with no scope limit, you can enter additional scopes or use provider defaults if the server requires none. The provider asks which account to authorize. After consent, the Console returns to the Agent draft. You can replace an existing binding this way.
+For an account marked **authorization required for this server**, use the same dialog to authorize it with the provider. Required scopes are already selected. If the slot or your permission to update the Agent changes during consent, the account stays saved in the Namespace. Select it later and deploy to apply the change.
 
-If the slot or your permission to update the Agent changes during consent, the account stays saved in the Namespace. You can attach it later. You can use **Load tools** with a saved MCP account. To deploy the saved selection, the Installation needs a [Credential Proxy and OpenShell sender that support saved accounts](../../reference/drivers/credential-proxy.md#saved-oauth-accounts). Clearing a slot keeps the separate [Agent grant](../../reference/connection-templates.md#use-a-saved-account-in-an-agent-plugin).
+With one Google account, run `gog` as usual. With several, use the account ID in the `oce-plugin-accounts` skill and run `gog --oce-account <source-id> ...`. The worker identifies the selected account on each request. OCE checks its grant, destination and Google operation before the sender presents its bearer. [Enable the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
 
-The Google request guard limits operations at the approved destination. Enable it before deploying a credentialed Google plugin. [Configure the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+For browser-connected accounts, deploy a [Credential Proxy and OpenShell sender that support saved accounts](../../reference/drivers/credential-proxy.md#saved-oauth-accounts). Use browser-connected accounts together or manually registered OpenShell credentials together in a slot. OpenShell uses different senders for these credentials and cannot combine them at one destination. Clearing a slot keeps the separate [Agent grant](../../reference/connection-templates.md#use-a-saved-account-in-an-agent-plugin).
+
+If a manually registered provider lacks its account-specific placeholder, register a replacement source with the same Secret. Clearing a slot takes effect on the next deployment. To stop a running revision from using an account, [withdraw the source](../../reference/credential-sources/withdrawal.md).
 
 Dedicated Codex Agents with a supported login can browse their app catalog.
 For other Agents, use **Plugin selections JSON** to enter a known plugin ID.
@@ -65,10 +66,7 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
 ## Configure a hosted MCP plugin
 
 A hosted MCP package pins its server endpoint and declares a credential slot.
-OCE discovers available tools using the selected account. On a dedicated OpenClaw
-Agent, choose an authorized account for that slot and the upstream tool names
-the Agent may call. The worker advertises those tools; the Sandbox enforces the
-selection for both worker and script calls.
+On a dedicated OpenClaw Agent, choose the accounts for the slot and the upstream tools the Agent may call. The Sandbox enforces one enablement choice per upstream name for worker and script calls.
 [Managed MCP plugins](../../reference/agent-plugins.md#current-support)
 
 The bundled credentialed path uses the OpenShell Sandbox and Credential Gateway
@@ -85,17 +83,26 @@ set Helm `api.pluginDiscoveryCidrs` to the endpoint's IPv4 `/32` hosts and refre
 them when DNS changes. Other ports need the Installation's managed egress policy.
 This setting is separate from model discovery. Worker calls use the Sandbox policy.
 
-Open **Plugins**, add the plugin, choose the account, and choose **Load tools**.
-Choose the tools to enable, then save and deploy. Loading tools again refreshes
-the inventory. Additional tools require selection and deployment before the Agent
+Open **Plugins** and add the plugin. Select
+each account the Agent should use. Give the saved accounts distinct names that
+the model can match to a request, such as “Engineering” and “Customer support”.
+Choose **Load tools** to discover tools with each selected account. The list
+combines the results and identifies accounts that offer a tool. If one account
+fails, retry discovery for a complete list. A refresh preserves your selections.
+Choose the tools to enable, then save and deploy. Each account can use the
+selected tools its server offers. Additional tools require selection and deployment before the Agent
 can use them. An empty selection leaves the worker server disabled.
+With one account, call the tool with its native arguments. With several, match the account name in the `oce-plugin-accounts` skill to an ID allowed by the tool’s `account` field. If the choice is ambiguous, ask the user. For example, the two-account worker fixture calls `fixture_shared` with `{"account":"cs_a_west","arguments":{"account":"native-account"}}`. The upstream `shared` tool receives only `{"account":"native-account"}`.
+
+Accounts with identical tool definitions share one tool. If any field differs, even when the descriptions look the same, choose the tool whose description fits the request and whose eligible IDs include the intended account. A mismatched ID fails before the worker sends a call.
+
 Removing the plugin keeps its independently attached
 credential; [withdraw the source](../../reference/credential-sources/withdrawal.md)
 to revoke a running version's credential access.
 
 For example, Slack uses `host: mcp.slack.com`, `port: "443"`, `path: /mcp` and
 `env_var: SLACK_MCP_TOKEN`. Select `slack_search_public` if the account advertises
-it. Inspect its worker server and tool filter:
+it. Inspect the worker server and tool filter:
 
 ```sh
 OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.oce_mcp_slack --json

@@ -21,7 +21,7 @@ import {
   validateFields,
 } from "../dom.mjs";
 import { type PluginDiscoveryContext, createPluginDiscovery } from "./plugin-discovery.mjs";
-import { isPluginSelections } from "./plugin-fields.mjs";
+import { isPluginSelections, selectedSourceIds } from "./plugin-fields.mjs";
 import { type SlotTemplate } from "./plugin-connection.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import {
@@ -249,7 +249,7 @@ export function renderAgentPlugins(
           `${path}/plugins/${encodeURIComponent(slot.pluginId)}/credentials/${encodeURIComponent(slot.id)}/connection-templates`,
         )) as readonly SlotTemplate[];
       },
-      async start(slot, template, selectedScopes) {
+      async start(slot, template, selectedScopes, accountName) {
         pending = true;
         updateState();
         try {
@@ -262,11 +262,11 @@ export function renderAgentPlugins(
               pluginId: slot.pluginId,
               slotId: slot.id,
               releaseSha256: slot.releaseSha256,
-              expectedCredentialSourceId:
-                typeof originalSource === "string" ? originalSource : null,
+              expectedCredentialSourceIds: selectedSourceIds(originalSource),
               connectionTemplateId: template.id,
               connectionTemplateVersion: template.version,
               ...(selectedScopes && { selectedScopes }),
+              ...(accountName && { accountName }),
             },
           })) as { authorizationUrl: string };
           const provider = new URL(result.authorizationUrl);

@@ -2667,6 +2667,7 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .sandbox-policy input[type="search"],
 .sandbox-policy select,
 .repository-discovery input[type="search"],
+.plugin-control input[type="text"],
 .plugin-control select,
 .plugin-json textarea,
 .revision-selector select,
@@ -4221,6 +4222,33 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 .plugin-actions-trigger {
   margin-inline-start: auto;
+}
+.plugin-accounts {
+  display: grid;
+  gap: var(--space-3);
+  margin-block: var(--space-5);
+}
+.plugin-accounts > h4,
+.plugin-accounts > p,
+.plugin-accounts > fieldset {
+  margin: 0;
+}
+.plugin-account-action {
+  margin-block-start: var(--space-2);
+}
+.plugin-account-action > :empty {
+  display: none;
+}
+.plugin-connection-fields {
+  display: grid;
+  gap: var(--space-4);
+}
+.plugin-connection-fields .plugin-tool {
+  margin: 0;
+}
+.plugin-accounts .plugin-toggle,
+.plugin-connection-fields .plugin-toggle {
+  padding-block: var(--space-1);
 }
 .plugin-actions {
   inset: auto;

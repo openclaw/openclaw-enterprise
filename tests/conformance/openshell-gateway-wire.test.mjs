@@ -1364,7 +1364,8 @@ test("OpenShell client serializes v0.1.5 credential providers, profiles, and att
       requests.providers[0].provider.metadata.labels["openclaw.dev/credential-source-id"],
       "cs_example",
     );
-    // The client never copies credential material out of a gateway response.
+    // The driver can verify the stored keys without receiving credential values.
+    assert.deepEqual(provider.credentialKeys, ["OPENAI_API_KEY"]);
     assert.equal(JSON.stringify(provider).includes("wire-test-value"), false);
     assert.deepEqual(requests.sandboxes[0].spec.providers, ["oce-cs-000000000000000000000000"]);
     assert.equal(requests.statuses[0].sandbox, "sandbox-wire");

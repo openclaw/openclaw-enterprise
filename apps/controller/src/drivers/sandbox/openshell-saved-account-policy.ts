@@ -5,8 +5,8 @@ import { SandboxRevisionUnsupportedError } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
 import {
   managedInstalls,
-  managedCredentialBinding,
-  managedMcpCredentialBinding,
+  managedCredentialEnvironment,
+  managedSlotBinding,
 } from "../plugin/managed-catalog.ts";
 import {
   googleWorkspaceDestinations,
@@ -14,7 +14,6 @@ import {
   publicGoogleDiscoveryRequests,
 } from "../plugin/google-workspace/operations.ts";
 import { managedMcpNetwork } from "./openshell-managed-mcp-policy.ts";
-import { managedCredentialEnvironment } from "./openshell-plugin-runtime.ts";
 import { sameOpenShellPolicy } from "./openshell-policy.ts";
 
 // GetSandboxConfig uses sandbox.proto's SupervisorMiddlewareBinding enum.
@@ -41,6 +40,7 @@ function unsupported(message: string): never {
 export function openShellSavedAccountPolicy(
   revision: Readonly<AgentRevision>,
   registrationName?: string,
+  installs: readonly (typeof managedInstalls)[number][] = managedInstalls,
 ) {
   const saved = revision.plugins?.savedAccounts;
   if (!saved) {
@@ -63,15 +63,17 @@ export function openShellSavedAccountPolicy(
   const environment: Record<string, string> = {};
   const sources = new Set<string>();
   const hosts = new Set<string>();
-  for (const install of managedInstalls) {
-    const mcp =
-      install.kind === "mcp" ? managedMcpCredentialBinding(selections, install) : undefined;
-    const cli = install.kind === "cli" ? managedCredentialBinding(selections, install) : undefined;
-    const sourceId = mcp?.sourceId ?? cli?.sourceId;
-    if (!sourceId || !saved.sourceIds.includes(sourceId)) {
+  for (const install of installs) {
+    const binding = managedSlotBinding(selections, install);
+    if (!binding || !binding.sourceIds.some((id) => saved.sourceIds.includes(id))) {
       continue;
     }
-    const slotId = install.kind === "mcp" ? install.slotId : cli!.slot;
+    if (binding.sourceIds.some((id) => !saved.sourceIds.includes(id))) {
+      unsupported(
+        "A terminal OAuth route cannot also attach an OpenShell credential provider to its destination.",
+      );
+    }
+    const slotId = install.slotId;
     const destinationHosts = install.kind === "mcp" ? [install.endpoint.host] : googleHosts;
     if (destinationHosts.some((host) => hosts.has(host))) {
       unsupported(
@@ -81,15 +83,15 @@ export function openShellSavedAccountPolicy(
     for (const host of destinationHosts) {
       hosts.add(host);
     }
-    sources.add(sourceId);
-    const env = install.credentials[slotId]!.delivery.env;
-    environment[env] = "oce:saved-account:" + env;
-    if (cli) {
-      environment[managedCredentialEnvironment] = env;
-    }
+    const bindingIds = binding.sourceIds.map((id) => {
+      sources.add(id);
+      const env = managedCredentialEnvironment(install, id);
+      const bindingId = savedAccountBindingId(revision.id, install.id, slotId, id);
+      environment[env] = "oce:saved-account:" + env + ":" + bindingId;
+      return bindingId;
+    });
     const name = "oce-oauth-" + install.runtimeName;
     const fields = {
-      binding_id: savedAccountBindingId(revision.id, install.id, slotId, sourceId),
       namespace_id: revision.namespaceId,
       agent_id: revision.agentId,
       revision_id: revision.id,
@@ -100,16 +102,25 @@ export function openShellSavedAccountPolicy(
       name,
       middleware: registrationName,
       config: {
-        fields: Object.fromEntries(
-          Object.entries(fields).map(([key, value]) => [key, { stringValue: value }]),
-        ),
+        fields: {
+          ...Object.fromEntries(
+            Object.entries(fields).map(([key, value]) => [key, { stringValue: value }]),
+          ),
+          ...(bindingIds.length === 1
+            ? { binding_id: { stringValue: bindingIds[0] } }
+            : {
+                binding_ids: {
+                  listValue: { values: bindingIds.map((stringValue) => ({ stringValue })) },
+                },
+              }),
+        },
       },
       on_error: "fail_closed",
       endpoints: { include: destinationHosts },
       order: 2_147_483_640 - Object.keys(middlewares).length,
     };
     if (install.kind === "mcp") {
-      const rule = managedMcpNetwork(install, mcp!.toolNames);
+      const rule = managedMcpNetwork(install, binding.toolNames);
       networks[rule.name] = rule;
     } else {
       // OCC checks the current template rows and actual Google operation on each request.

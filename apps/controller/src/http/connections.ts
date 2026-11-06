@@ -61,13 +61,14 @@ export function namespaceConnectionHandlers(redirectUri: string | undefined): Re
           agentId: params.agentId!,
           sessionId,
           redirectUri,
+          ...(body!.accountName !== undefined && { accountName: body!.accountName as string }),
           ...(body!.selectedScopes !== undefined && {
             selectedScopes: body!.selectedScopes as string[],
           }),
           pluginId: body!.pluginId as string,
           slotId: body!.slotId as string,
           releaseSha256: body!.releaseSha256 as string,
-          expectedCredentialSourceId: body!.expectedCredentialSourceId as string | null,
+          expectedCredentialSourceIds: body!.expectedCredentialSourceIds as string[],
           connectionTemplateId: body!.connectionTemplateId as string,
           connectionTemplateVersion: body!.connectionTemplateVersion as number,
         },
@@ -156,6 +157,7 @@ export function namespaceConnectionHandlers(redirectUri: string | undefined): Re
         {
           namespaceId,
           connectionTemplateId: body!.connectionTemplateId as string,
+          ...(body!.accountName !== undefined && { accountName: body!.accountName as string }),
           ...(body!.selectedScopes === undefined
             ? {}
             : { selectedScopes: body!.selectedScopes as string[] }),

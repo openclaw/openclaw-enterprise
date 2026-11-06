@@ -215,12 +215,75 @@ export function eligibleGoogleOperations(scope: GoogleRequestScope) {
   });
 }
 
-export function googleScopeFromString(raw: unknown): GoogleRequestScope | undefined {
-  if (typeof raw !== "string" || raw.length > 16384 || !raw) {
+const releasedScopes = new Set(
+  Object.values(googleCatalog.operations).flatMap((operation) => operation.scopes),
+);
+
+export function googleAccountScopeConfig(
+  accounts: Readonly<Record<string, GoogleRequestScope>>,
+): string {
+  // Store each reviewed OAuth scope once. Independent sources often share the same long URLs;
+  // scopes outside the release cannot authorize any of its operations.
+  const grants = [
+    ...new Set(
+      Object.values(accounts).flatMap((account) =>
+        account.scopes.filter((grant) => releasedScopes.has(grant)),
+      ),
+    ),
+  ];
+  const indices = new Map(grants.map((grant, index) => [grant, index]));
+  return JSON.stringify({
+    grants,
+    accounts: Object.fromEntries(
+      Object.entries(accounts).map(([id, account]) => [
+        id,
+        {
+          ...account,
+          scopes: account.scopes
+            .filter((grant) => indices.has(grant))
+            .map((grant) => indices.get(grant)),
+        },
+      ]),
+    ),
+  });
+}
+
+export function googleAccountScopes(raw: unknown): Record<string, GoogleRequestScope> | undefined {
+  if (typeof raw !== "string" || !raw) {
     return undefined;
   }
   try {
-    return googleRequestScope(JSON.parse(raw));
+    const config = asRecord(JSON.parse(raw));
+    const accounts = asRecord(config?.accounts);
+    const grants = config?.grants;
+    if (
+      !accounts ||
+      !Object.keys(accounts).length ||
+      !Array.isArray(grants) ||
+      !grants.every((grant) => typeof grant === "string" && releasedScopes.has(grant))
+    ) {
+      return undefined;
+    }
+    const entries: [string, GoogleRequestScope][] = [];
+    for (const [id, value] of Object.entries(accounts)) {
+      const account = asRecord(value);
+      if (
+        !id ||
+        !Array.isArray(account?.scopes) ||
+        !account.scopes.every((i) => Number.isInteger(i) && i >= 0 && i < grants.length)
+      ) {
+        return undefined;
+      }
+      const scope = googleRequestScope({
+        ...account,
+        scopes: account.scopes.map((i) => grants[i]),
+      });
+      if (!scope) {
+        return undefined;
+      }
+      entries.push([id, scope]);
+    }
+    return Object.fromEntries(entries);
   } catch {
     return undefined;
   }

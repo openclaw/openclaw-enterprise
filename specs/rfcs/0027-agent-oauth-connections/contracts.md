@@ -160,6 +160,8 @@ connection template needs these additions:
 A Driver without these methods cannot grant `use` to anyone except Installation
 administrators, who hold every action through the built-in administrator role.
 
+The [Plugin Driver account contract](plugin-accounts.md) covers repeatable slots, account selection, and dispatch.
+
 ## Update a running sender
 
 At the next credentialed request, OCC checks the Agent’s grant and the current

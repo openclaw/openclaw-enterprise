@@ -34,8 +34,12 @@ export interface SavedAccountPeer {
   readonly sandboxName: string;
   readonly workspace: string;
   readonly middlewareName: string;
-  readonly bindingConfig: Record<string, string>;
-  resolve(target: URL, body: Record<string, unknown>): Promise<string | undefined>;
+  readonly bindingConfig: Record<string, string | string[]>;
+  resolve(
+    target: URL,
+    body: Record<string, unknown>,
+    selectors?: readonly string[],
+  ): Promise<string | undefined>;
 }
 
 /** Real OCC, request authority, Plugin Driver and OAuth issuer; the test owns the Gateway inventory. */
@@ -155,7 +159,7 @@ export async function installSavedAccountProxy(t: TestContext, controller: OpenC
       revision: Readonly<AgentRevision>,
       pluginId: string,
       slotId: string,
-      sourceId: string,
+      sourceId: string | readonly string[],
     ): SavedAccountPeer {
       const workspace = kubernetesNamespaceName(namespace.id);
       const { resourceName: sandboxName } = sandbox.harnessResource({
@@ -178,7 +182,13 @@ export async function installSavedAccountProxy(t: TestContext, controller: OpenC
         revision_id: revision.id,
         plugin_id: pluginId,
         slot_id: slotId,
-        binding_id: savedAccountBindingId(revision.id, pluginId, slotId, sourceId),
+        ...(typeof sourceId === "string"
+          ? { binding_id: savedAccountBindingId(revision.id, pluginId, slotId, sourceId) }
+          : {
+              binding_ids: sourceId.map((id) =>
+                savedAccountBindingId(revision.id, pluginId, slotId, id),
+              ),
+            }),
       };
       return {
         brokerUrl: `https://localhost:${reservation.port}`,
@@ -190,7 +200,7 @@ export async function installSavedAccountProxy(t: TestContext, controller: OpenC
         workspace,
         middlewareName,
         bindingConfig,
-        async resolve(target, body) {
+        async resolve(target, body, selectors = []) {
           const request_id = randomUUID();
           try {
             const response = await invoke(
@@ -204,7 +214,9 @@ export async function installSavedAccountProxy(t: TestContext, controller: OpenC
                   fields: Object.fromEntries(
                     Object.entries(bindingConfig).map(([name, value]) => [
                       name,
-                      { stringValue: value },
+                      typeof value === "string"
+                        ? { stringValue: value }
+                        : { listValue: { values: value.map((stringValue) => ({ stringValue })) } },
                     ]),
                   ),
                 },
@@ -216,7 +228,10 @@ export async function installSavedAccountProxy(t: TestContext, controller: OpenC
                   path: target.pathname,
                   query: target.search.slice(1),
                 },
-                headers: [{ name: "content-type", value: "application/json" }],
+                headers: [
+                  { name: "content-type", value: "application/json" },
+                  ...selectors.map((value) => ({ name: "x-oce-account-binding", value })),
+                ],
                 body: Buffer.from(JSON.stringify(body)),
               },
               bearer,

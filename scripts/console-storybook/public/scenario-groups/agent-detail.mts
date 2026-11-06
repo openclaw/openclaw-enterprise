@@ -203,6 +203,28 @@ export function createAgentDetailScenarios({
   const slackPluginId = "occ-plugin:slack@1.0.0";
 
   const slackSourceId = "cs_00000000-0000-4000-8000-000000000001";
+  const secondSlackSourceId = "cs_00000000-0000-4000-8000-000000000002";
+
+  const googleEntry = { id: "occ-plugin:google@1.1.0", name: "Google Workspace", tools: [] };
+  const googleAccounts = [
+    { id: "cs_00000000-0000-4000-8000-000000000003", name: "Work mail" },
+    { id: "cs_00000000-0000-4000-8000-000000000004", name: "Personal mail" },
+  ];
+  const managedPluginPicker = {
+    group: "Pages/Agent detail",
+    path: `${draft}&tab=plugins`,
+    harnessId: "openclaw",
+    deployed: true,
+    pluginDiscoveryCredential: "none",
+    actions: [click("Configure plugins")],
+  } satisfies Partial<AgentDetailScenario>;
+  const managedCapabilities = {
+    driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+    approvers: { agent: false, plugin: false, tools: false },
+    toolDefaults: { enabled: false, approval: [], reviewer: [] },
+    tools: { enabled: false, approval: [], reviewer: [] },
+    driverPolicySchema: { type: "object", properties: {} },
+  } satisfies Partial<AgentDetailScenario["pluginCapabilities"]>;
 
   const slackEntry = { id: slackPluginId, name: "Slack", tools: [] };
 
@@ -1123,36 +1145,72 @@ export function createAgentDetailScenarios({
         ],
         gap: "Catalog responses and the saved Agent are simulated. This verifies Console recovery, not plugin installation or a live runtime.",
       },
-      slackMcpTools: {
-        group: "Pages/Agent detail",
-        name: "Choose tools for a connected Slack account",
-        path: `${draft}&tab=plugins`,
-        harnessId: "openclaw",
-        deployed: true,
-        agentPlugins: { [slackPluginId]: { enabled: true } },
-        credentialSources: [{ sourceId: slackSourceId }],
-        pluginDiscoveryCredential: "none",
+      googleAccounts: {
+        ...managedPluginPicker,
+        name: "Choose accounts for Google Workspace",
+        agentPlugins: { [googleEntry.id]: { enabled: true } },
+        credentialSources: googleAccounts.map(({ id }) => ({ sourceId: id })),
         pluginCapabilities: {
-          driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-          approvers: { agent: false, plugin: false, tools: false },
-          toolDefaults: { enabled: false, approval: [], reviewer: [] },
-          tools: { enabled: false, approval: [], reviewer: [] },
-          driverPolicySchema: { type: "object", properties: {} },
+          ...managedCapabilities,
+          policyScopeByPlugin: { [googleEntry.id]: "enablement_only" },
+          credentialSlots: [
+            {
+              pluginId: googleEntry.id,
+              releaseSha256: "b".repeat(64),
+              id: "account",
+              label: "Google account",
+              sources: googleAccounts,
+            },
+          ],
+        },
+        pluginDiscovery: {
+          pages: { initial: { plugins: [googleEntry], nextCursor: null } },
+          details: { [googleEntry.id]: googleEntry },
+        },
+        description: "Choose which saved Google accounts the Agent can use.",
+        steps: [
+          "Open Google Workspace. Select Work mail and Personal mail, then choose Done and Save plugin selections.",
+          "Reopen Google Workspace. Both accounts are selected. Clear either account to keep one, or both to install without a credential.",
+        ],
+        gap: "Account records and saves are simulated. This preview verifies the Console picker.",
+      },
+      slackMcpTools: {
+        ...managedPluginPicker,
+        name: "Choose accounts and tools for Slack",
+        agentPlugins: { [slackPluginId]: { enabled: true } },
+        credentialSources: [{ sourceId: slackSourceId }, { sourceId: secondSlackSourceId }],
+        pluginCapabilities: {
+          ...managedCapabilities,
           policyScopeByPlugin: { [slackPluginId]: "enablement_only" },
           credentialSlots: [
             {
               pluginId: slackPluginId,
               releaseSha256: "a".repeat(64),
               id: "account",
-              label: "Slack account",
+              label: "Slack user account",
               toolDiscovery: true,
-              sources: [{ id: slackSourceId, name: "Slack search connection (simulated)" }],
+              sources: [
+                { id: slackSourceId, name: "Design workspace" },
+                { id: secondSlackSourceId, name: "Support workspace" },
+              ],
             },
           ],
         },
         pluginDiscovery: {
           pages: { initial: { plugins: [slackEntry], nextCursor: null } },
-          details: { [slackPluginId]: { ...slackEntry, tools: [slackTool] } },
+          details: { [slackPluginId]: slackEntry },
+          toolsByAccount: {
+            [slackPluginId]: {
+              [slackSourceId]: [
+                slackTool,
+                { id: "slack_list_files", name: "slack_list_files", ownerId: slackPluginId },
+              ],
+              [secondSlackSourceId]: [
+                slackTool,
+                { id: "slack_read_thread", name: "slack_read_thread", ownerId: slackPluginId },
+              ],
+            },
+          },
         },
         rules: [
           {
@@ -1164,13 +1222,12 @@ export function createAgentDetailScenarios({
             code: "FORBIDDEN",
           },
         ],
-        actions: [click("Configure plugins")],
         description:
-          "The Tools picker loads available tools from the selected Slack account. Select the tools the next deployment may call.",
+          "Attach two Slack accounts and choose the tools the Agent can use with either account.",
         steps: [
-          "Open Slack. Before selecting an account, no tools can be loaded. Select Slack search connection (simulated).",
-          "Choose Load tools. The first request shows a loading state, then a permission error. Choose Load tools again to recover.",
-          "Check slack_search_public. Choose Done and Save plugin selections. Open the picker and load tools again to confirm the saved choice.",
+          "Open Slack, then select Design workspace and Support workspace. One Load tools action checks both accounts.",
+          "Choose Load tools. Support returns its tools while Design shows a permission error. Choose Load tools again to see the shared search tool and each workspace’s other tool.",
+          "Check slack_search_public. Choose Done and Save plugin selections. Reopen the picker, load tools, and confirm both accounts and the shared tool selection. Remove one account and confirm the tool stays selected.",
         ],
         gap: "The account and MCP response are simulated. This verifies Console selection and readback.",
       },

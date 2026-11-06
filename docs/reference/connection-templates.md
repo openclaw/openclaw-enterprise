@@ -73,10 +73,10 @@ and the worker can finish an interrupted disconnect.
 
 ## Use a saved account in an Agent plugin
 
-In the Agent's plugin settings, select an account for each named slot. The picker shows accounts you can use from an issuer that the slot accepts. **Authorize for this server** starts consent for the required protected resource and destination. For an MCP template you select the scopes for this consent. The provider and the plugin's request policy enforce operations.
+The **Accounts** section in the Agent's plugin settings lists saved accounts from an issuer that each slot accepts. **Connect new account** opens that slot’s dialog for the connection template, optional account name and permissions. **Connect and attach** starts browser consent for the required protected resource and destination. For an MCP template you select the scopes for this consent. The provider and the plugin's request policy enforce operations.
 
-Saving the selection requires permission to update the Agent and operate the saved credential. A completed connection from a plugin can replace that slot when its release and previous selection still match. The account remains available to its owner when the slot changes during consent. See [configure plugins](../guides/topics/plugins-configure.md#use-the-console).
+Saving the selection requires permission to update the Agent and operate the saved credential. A completed connection from a plugin adds the new account when the release and previously selected account IDs still match. The account remains available to its owner when the slot changes during consent. See [configure plugins](../guides/topics/plugins-configure.md#use-the-console).
 
-To detach a saved account, clear the plugin slots that use it on that Agent. Then call `DELETE /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`. OCC removes that Agent’s grant. Other Agents can still use their own grants.
+To detach a saved account, uncheck that account in each plugin slot that uses it on the Agent and save your selections. Then call `DELETE /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`. OCC removes that Agent’s grant. Other Agents can still use their own grants.
 
 Use **Load tools** to discover an MCP server’s tools before deployment. To use a saved account from a dedicated OpenClaw worker, select an OpenShell Credential Proxy and a supervisor that supports the [saved-account request contract](drivers/credential-proxy.md#saved-oauth-accounts). OCC checks the deployed slot and the Agent’s current grant on each request. The Token Service supplies the current access token, and the supervisor injects it for that send. OpenShell releases 0.1.6 and 0.1.7 lack this capability.

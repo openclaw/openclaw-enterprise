@@ -140,7 +140,7 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
     }),
   );
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  const id = "occ-plugin:google@1.0.0";
+  const id = "occ-plugin:google@1.1.0";
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
@@ -161,10 +161,12 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
   }
   await dialog.getByRole("button", { name: "Google Workspace", exact: true }).click();
   await dialog.getByRole("button", { name: "Add Google Workspace", exact: true }).click();
-  assert.equal(await dialog.getByLabel("Google account", { exact: true }).inputValue(), "");
-  await dialog
-    .getByRole("option", { name: "Install without an account" })
-    .waitFor({ state: "attached" });
+  const accounts = dialog.getByRole("group", { name: "Google account", exact: true });
+  await accounts.waitFor();
+  assert.equal(await accounts.getByRole("checkbox").count(), 0);
+  await accounts
+    .getByText("No compatible saved accounts are available for this slot.", { exact: true })
+    .waitFor();
   await checkPolicySupport("Google Workspace");
   async function save(enabled: boolean) {
     await dialog.getByRole("button", { name: "Done", exact: true }).click();
@@ -195,6 +197,95 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
   await enabled.uncheck();
   await save(false);
   catalog.release();
+});
+
+test("Slack tool selection combines account inventories and survives a partial refresh", async (t) => {
+  const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
+    await createReadyConsoleNamespace(t, "Slack tool discovery");
+  const namespace = entity(namespaceValue);
+  for (const driver of [
+    new OCCPluginDriver(),
+    createTestKubernetesComputeDriver("compute-slack-tools"),
+  ]) {
+    controller(fixture).registerDriver(driver);
+    controller(fixture).selectDriver(driver.capability, driver.id);
+  }
+  const agent = agentEntity(
+    await fixture.createAgent(namespace.id, "Slack Agent", nativeValues("package"), {
+      executionMode: "dedicated",
+      harnessAuth: null,
+    }),
+  );
+  const { page } = await newPage(t, fixture, { browser });
+  const design = "cs_00000000-0000-4000-8000-000000000001";
+  const support = "cs_00000000-0000-4000-8000-000000000002";
+  // Supply two eligible accounts and their provider inventories at the Console HTTP boundary.
+  // Agent admission and authorization of these requests are covered by the API integration.
+  await page.route("**/plugins/capabilities", async (route) => {
+    const upstream = await route.fetch();
+    const json = record(await upstream.json());
+    const slots = record(json.data).credentialSlots;
+    assert.ok(Array.isArray(slots));
+    const slack = slots.map(record).find((slot) => slot.pluginId === "occ-plugin:slack@1.0.0");
+    assert.ok(slack);
+    slack.sources = [
+      { id: design, name: "Design" },
+      { id: support, name: "Support" },
+    ];
+    await route.fulfill({ response: upstream, json });
+  });
+  let supportNames: string[] | undefined = ["search", "read_thread"];
+  await page.route("**/plugins/details", async (route) => {
+    const body = record(route.request().postDataJSON());
+    const source = record(body.managedConnection).sourceId;
+    assert.ok(source === design || source === support);
+    const names = source === design ? ["search", "list_files"] : supportNames;
+    if (!names) {
+      await route.fulfill({
+        status: 403,
+        json: {
+          error: { code: "FORBIDDEN", message: "Account access denied." },
+          meta: { requestId: "req_fixture" },
+        },
+      });
+      return;
+    }
+    await route.fulfill({
+      json: {
+        data: {
+          id: body.pluginId,
+          name: "Slack",
+          tools: names.map((name) => ({ id: name, name, ownerId: body.pluginId })),
+        },
+        meta: { requestId: "req_fixture" },
+      },
+    });
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.getByRole("button", { name: "Configure plugins" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Slack", exact: true }).click();
+  await dialog.getByRole("button", { name: "Add Slack" }).click();
+  await dialog.getByRole("checkbox", { name: "Design", exact: true }).check();
+  await dialog.getByRole("checkbox", { name: "Support", exact: true }).check();
+  const load = dialog.getByRole("button", { name: "Load tools for Slack" });
+  await load.click();
+  const tool = (name: string) => dialog.getByRole("checkbox", { name, exact: true });
+  await tool("read_thread").check();
+  assert.equal(await tool("search").count(), 1);
+  assert.match(await tool("search").locator("..").innerText(), /Design, Support/);
+  assert.match(await tool("list_files").locator("..").innerText(), /Design/);
+  assert.match(await tool("read_thread").locator("..").innerText(), /Support/);
+  supportNames = undefined;
+  await load.click();
+  await dialog.getByText(/Support: Tool discovery requires/).waitFor();
+  assert.equal(await tool("list_files").isVisible(), true);
+  assert.equal(await tool("read_thread").isChecked(), true);
+  assert.match(await tool("read_thread").locator("..").innerText(), /Availability unconfirmed/);
+  supportNames = ["search"];
+  await load.click();
+  await dialog.getByText("No selected account lists this tool").waitFor();
+  assert.equal(await tool("read_thread").isChecked(), true);
 });
 
 test("Plugin details refresh preserves the user's current keyboard focus", async (t) => {
@@ -1194,7 +1285,7 @@ test("plugin prefetch remains usable after leaving during its debounce", async (
     }),
   );
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  const initialSelections = { "occ-plugin:google@1.0.0": { enabled: false } };
+  const initialSelections = { "occ-plugin:google@1.1.0": { enabled: false } };
   const saved = record(
     await fixture.request("PATCH", agentPath, {
       body: { configurationId: agent.configurationId, plugins: initialSelections },
@@ -1678,7 +1769,7 @@ test("driver policy controls distinguish saved types, empty strings, and inherit
   }
 });
 
-test("plugin account replacement and new OAuth consent follow the selected source and requested scopes", async (t) => {
+test("plugin account selection and additional OAuth consent retain the other accounts and requested scopes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture, { browser });
@@ -1704,12 +1795,17 @@ test("plugin account replacement and new OAuth consent follow the selected sourc
     const releaseSha256 = "0".repeat(64);
     const source = { id: "cs_00000000-0000-4000-8000-000000000001", name: "Service desk" };
     const input = document.createElement("textarea");
-    input.value = JSON.stringify({
-      [pluginId]: {
-        enabled: true,
-        driverPolicy: { releaseSha256, credentials: { support: source.id } },
+    const savedPluginSelections = JSON.stringify(
+      {
+        [pluginId]: {
+          enabled: true,
+          driverPolicy: { releaseSha256, credentials: { support: [source.id] } },
+        },
       },
-    });
+      null,
+      2,
+    );
+    input.value = savedPluginSelections;
     const picker = createPluginFields({
       input,
       capabilities: {
@@ -1725,6 +1821,7 @@ test("plugin account replacement and new OAuth consent follow the selected sourc
             toolDiscovery: true,
             sources: [
               source,
+              { id: "cs_00000000-0000-4000-8000-000000000003", name: "On-call" },
               {
                 id: "cs_00000000-0000-4000-8000-000000000002",
                 name: "Reporting",
@@ -1742,16 +1839,21 @@ test("plugin account replacement and new OAuth consent follow the selected sourc
             name: "Support",
             selectableWithoutTools: true,
             tools: [],
-            managedTools: {
-              connection: { slot: "support", sourceId: source.id },
-              status: "loaded",
-              tools: [{ id: "ticket_get", ownerId: pluginId, name: "ticket_get" }],
-            },
+            managedTools: [
+              {
+                connection: { slot: "support", sourceId: source.id },
+                status: "loaded",
+                tools: [{ id: "ticket_get", ownerId: pluginId, name: "ticket_get" }],
+              },
+            ],
           },
         ],
       },
       slotConnection: {
-        unavailable: () => undefined,
+        unavailable: () =>
+          canConnect && input.value !== savedPluginSelections
+            ? "Save your plugin selections before connecting an account."
+            : undefined,
         async list() {
           return [
             {
@@ -1772,10 +1874,24 @@ test("plugin account replacement and new OAuth consent follow the selected sourc
               offeredScopes: [],
               requiredScopes: [],
             },
+            {
+              id: "fixed",
+              displayName: "Support read only",
+              version: 1,
+              mode: "manual",
+              scopes: ["tickets.read", "messages.read"],
+              offeredScopes: [],
+              requiredScopes: [],
+            },
           ];
         },
-        async start(_slot, _template, selected) {
-          output.value = JSON.stringify(selected);
+        async start(slot, template, selected, accountName) {
+          output.value = JSON.stringify({
+            slot: slot.id,
+            template: template.id,
+            selected,
+            accountName,
+          });
         },
       },
     });
@@ -1793,14 +1909,14 @@ test("plugin account replacement and new OAuth consent follow the selected sourc
 
   // A member who can use the saved account only needs help with consent after clearing it.
   await openEditor(false);
-  const supportAccount = editor.getByLabel("Support account", { exact: true });
+  const supportAccount = editor.getByRole("checkbox", { name: "Service desk", exact: true });
   const permissionHint = editor.getByText(
     "This slot needs a connection template and permission to start consent for this server.",
     { exact: true },
   );
-  assert.equal(await supportAccount.locator("option:checked").textContent(), "Service desk");
+  assert.equal(await supportAccount.isChecked(), true);
   assert.equal(await permissionHint.count(), 0);
-  await supportAccount.selectOption("");
+  await supportAccount.uncheck();
   await permissionHint.waitFor();
 
   await openEditor(true);
@@ -1809,28 +1925,76 @@ test("plugin account replacement and new OAuth consent follow the selected sourc
     await editor.getByText("No tools listed for this plugin.", { exact: true }).count(),
     0,
   );
-  await editor.getByRole("button", { name: "Connect a different account", exact: true }).click();
-  await editor
-    .getByRole("button", { name: "Authorize and replace account", exact: true })
-    .waitFor();
-  await editor.getByText(/replace Service desk in the Support account slot/).waitFor();
-
-  // Clearing the selected account restores the authorization action before a new connection.
-  await editor.getByLabel("Support account", { exact: true }).selectOption("");
-  await editor.getByRole("button", { name: "Authorize for this server", exact: true }).click();
-  const template = page.getByRole("combobox", { name: "Connection template for Support account" });
+  const accounts = editor.getByRole("region", { name: "Accounts" });
+  const slot = accounts.getByRole("group", { name: "Support account", exact: true });
+  const connectNew = slot.getByRole("button", { name: "Connect new account", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Connect new account", exact: true });
+  const template = dialog.getByRole("combobox", {
+    name: "Connection template for Support account",
+  });
+  const accountName = dialog.getByLabel("Account name (optional)");
+  const connect = dialog.getByRole("button", { name: "Connect and attach", exact: true });
+  assert.equal(
+    await editor.getByRole("combobox", { name: "Connection template for Support account" }).count(),
+    0,
+  );
+  // A saved Agent must use its persisted account selection before provider consent can start.
+  const onCall = slot.getByRole("checkbox", { name: "On-call" });
+  await onCall.check();
+  assert.equal(await connectNew.isDisabled(), true);
+  await slot.getByText("Save your plugin selections before connecting an account.").waitFor();
+  await onCall.uncheck();
+  assert.equal(await connectNew.isEnabled(), true);
+  await connectNew.click();
+  await dialog.getByText("Support · Support account", { exact: true }).waitFor();
   await template.selectOption("mcp");
-  const required = page.getByRole("checkbox", { name: "read (required)" });
+  await accountName.fill("Discard this name");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await dialog.waitFor({ state: "hidden" });
+  assert.equal(await slot.getByRole("checkbox", { name: "Service desk" }).isChecked(), true);
+  assert.equal(await onCall.isChecked(), false);
+  assert.equal(await page.locator("#chosen-scopes").textContent(), "");
+
+  await connectNew.click();
+  await template.selectOption("mcp");
+  assert.equal(await accountName.inputValue(), "");
+  const required = dialog.getByRole("checkbox", { name: "read (required)" });
   assert.ok((await required.isDisabled()) && (await required.isChecked()));
-  assert.equal(await page.getByRole("checkbox", { name: "write" }).isChecked(), false);
-  const extra = page.getByLabel("Additional scopes");
-  const connect = page.getByRole("button", { name: "Connect and attach" });
+  assert.equal(await dialog.getByRole("checkbox", { name: "write" }).isChecked(), false);
+  const extra = dialog.getByLabel("Additional scopes");
+  await accountName.fill("Work");
   await extra.fill('bad"scope');
   assert.equal(await connect.isEnabled(), false);
   await extra.fill("archive read archive");
   await connect.click();
-  assert.equal(await page.locator("#chosen-scopes").textContent(), '["read","archive"]');
+  await dialog.waitFor({ state: "hidden" });
+  assert.deepEqual(JSON.parse((await page.locator("#chosen-scopes").textContent())!), {
+    slot: "support",
+    template: "mcp",
+    selected: ["read", "archive"],
+    accountName: "Work",
+  });
+  await connectNew.click();
   await template.selectOption("manual");
   await connect.click();
-  assert.equal(await page.locator("#chosen-scopes").textContent(), "[]");
+  await dialog.waitFor({ state: "hidden" });
+  assert.deepEqual(JSON.parse((await page.locator("#chosen-scopes").textContent())!), {
+    slot: "support",
+    template: "manual",
+    selected: [],
+  });
+
+  // Fixed template permissions are disclosed but the server owns their exact scopes.
+  await connectNew.click();
+  await template.selectOption("fixed");
+  const fixed = dialog.getByRole("group", { name: "Permissions set by this template" });
+  await fixed.getByText("tickets.read", { exact: true }).waitFor();
+  await fixed.getByText("messages.read", { exact: true }).waitFor();
+  assert.equal(await fixed.getByRole("checkbox").count(), 0);
+  await connect.click();
+  await dialog.waitFor({ state: "hidden" });
+  assert.deepEqual(JSON.parse((await page.locator("#chosen-scopes").textContent())!), {
+    slot: "support",
+    template: "fixed",
+  });
 });

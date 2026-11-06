@@ -232,6 +232,8 @@ export interface OpenShellProviderCreateRequest {
 }
 
 export interface OpenShellProviderResponse {
+  /** Names only, from the gateway's redacted credential map. */
+  readonly credentialKeys?: readonly string[];
   /** Update selection, not an exclusive-recipient precondition. */
   readonly targetReceipts?: readonly Record<string, unknown>[];
   readonly mutationId?: string;
@@ -869,6 +871,7 @@ function providerResponse(value: unknown, operation: string): OpenShellProviderR
     throw new OpenShellGatewayFailure(`OpenShell ${operation} returned no stable provider.`);
   }
   // Credential values are never copied out of gateway responses.
+  const credentialKeys = Object.keys(asRecord(provider.credentials) ?? {});
   return Object.freeze({
     name,
     ...(typeof metadata?.id === "string" ? { id: metadata.id } : {}),
@@ -879,6 +882,7 @@ function providerResponse(value: unknown, operation: string): OpenShellProviderR
     type: provider.type,
     labels: stringMap(metadata?.labels, "provider labels"),
     config: stringMap(provider?.config, "provider config"),
+    ...(credentialKeys.length > 0 && { credentialKeys }),
     resourceVersion,
   });
 }

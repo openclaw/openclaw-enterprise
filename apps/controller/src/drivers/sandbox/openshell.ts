@@ -3,7 +3,7 @@ import {
   openShellSavedAccountPolicy,
   verifySavedAccountPolicy,
 } from "./openshell-saved-account-policy.ts";
-import { managedCredentialEnvironment } from "./openshell-plugin-runtime.ts";
+import { MANAGED_PLUGIN_CREDENTIAL_HELPER } from "./openshell-plugin-runtime.ts";
 import {
   openShellRepositoryAccess,
   type OpenShellGitPolicyOverlap,
@@ -41,8 +41,10 @@ import {
   verifyManagedMcpPolicy,
 } from "./openshell-managed-mcp-policy.ts";
 import {
-  managedCredentialBinding,
-  managedMcpCredentialBinding,
+  managedSlotBinding,
+  managedCliCredentialBindings,
+  managedMcpCredentialBindings,
+  managedCredentialEnvironment,
   managedMcpInstalls,
   managedInstalls,
 } from "../plugin/managed-catalog.ts";
@@ -604,9 +606,9 @@ function environment(
         `OpenShell v0.1.5 cannot receive secretKeyRef environment ${entry.name}; upstream Secret projection support is required.`,
       );
     }
-    // Account claims are opaque data, not paths inside the Harness filesystem.
+    // Preserve account labels and claims when translating Harness filesystem paths.
     result[nonempty(entry.name, "Environment variable name")] =
-      entry.name === "OCE_CODEX_CHATGPT_ACCOUNT"
+      entry.name === "OCE_CODEX_CHATGPT_ACCOUNT" || entry.name === "OPENCLAW_MANAGED_PLUGIN_JSON"
         ? entry.value
         : (workspaceMountPaths.get(entry.value) ??
           entry.value.replaceAll(/\/home\/node(\/|$)/g, `${OPENSHELL_HOME}$1`));
@@ -1310,6 +1312,7 @@ function sandboxCommand(
   native: boolean,
   loginMode: HarnessWorkloadRequirements["loginMode"],
   workspaceSetup: HarnessWorkloadRequirements["workspaceSetup"],
+  independentGoogleKeys: readonly string[],
 ): readonly string[] {
   const loaderIndex = RUNTIME_WRAPPER_COMMAND.length;
   const loader = nodeProgramArguments("")[0]!;
@@ -1326,7 +1329,22 @@ function sandboxCommand(
   const bootstrap = `{\nconst fs = require("node:fs");\nconst path = require("node:path");\nfor (const [link, target] of ${JSON.stringify(
     links.map(({ path, target }) => [path, target]),
   )}) {\n  fs.mkdirSync(path.dirname(link), { recursive: true });\n  try {\n    const existing = fs.lstatSync(link);\n    if (!existing.isSymbolicLink() || fs.readlinkSync(link) !== target) {\n      throw new Error("OpenShell workspace link conflicts with existing runtime state: " + link);\n    }\n  } catch (error) {\n    if (error?.code !== "ENOENT") {\n      throw error;\n    }\n    fs.symlinkSync(target, link);\n  }\n}\n}\n`;
-  const prelude = `${bootstrap}${native ? 'process.env.TMPDIR = require("node:path").join(process.env.HOME, "tmp");\n' : ""}${workspaceSetup === undefined ? "" : WORKSPACE_SETUP_WAIT}${loginMode === "chatgptAuthTokens" ? OPENSHELL_CHATGPT_AUTH_BOOTSTRAP : ""}`;
+  // A standalone OAuth source retains its declared consumer variable. Only the supervisor
+  // supplies the identity-bound alias, and a plugin with a selected slot chooses its own account.
+  const googleAlias = independentGoogleKeys.length
+    ? `{
+    ${MANAGED_PLUGIN_CREDENTIAL_HELPER}
+    const markers = ${JSON.stringify(independentGoogleKeys)}.flatMap((key) => {
+      const value = process.env[key];
+      return isManagedPluginPlaceholder(key, value, "cli") ? [value] : [];
+    });
+    const declared = ${JSON.stringify(managedGoogleInstall.credentialEnvironment)};
+    if (markers.length === 1 && !process.env[declared]) {
+      process.env[declared] = markers[0];
+    }
+  }\n`
+    : "";
+  const prelude = `${bootstrap}${googleAlias}${native ? 'process.env.TMPDIR = require("node:path").join(process.env.HOME, "tmp");\n' : ""}${workspaceSetup === undefined ? "" : WORKSPACE_SETUP_WAIT}${loginMode === "chatgptAuthTokens" ? OPENSHELL_CHATGPT_AUTH_BOOTSTRAP : ""}`;
   const composed = [
     ...command.slice(0, loaderIndex),
     prelude + loader,
@@ -2190,6 +2208,11 @@ function sandboxSpec(
   mcpPolicies: ReturnType<typeof openShellManagedMcpPolicies> = [],
   savedAccounts?: ReturnType<typeof openShellSavedAccountPolicy>,
 ) {
+  const independentGoogleKeys = managedSlotBinding(revision.plugins?.plugins, managedGoogleInstall)
+    ? []
+    : (revision.credentialSources ?? [])
+        .filter(({ sourceType }) => sourceType === "oauth2-refresh-token")
+        .map(({ sourceId }) => managedCredentialEnvironment(managedGoogleInstall, sourceId));
   const defaults = revision.sandboxPolicy?.defaults ?? networkPolicies(options);
   const additions = openShellAgentNetworkRules(revision.sandboxPolicy?.additions ?? []);
   if (plugin) {
@@ -2247,11 +2270,10 @@ function sandboxSpec(
     environment: {
       ...environment(
         requirements,
-        providerEnvironment,
+        new Set([...providerEnvironment, ...independentGoogleKeys]),
         dataMount.mount_path,
         workspace.workspaceMountPaths,
       ),
-      ...(plugin && { [managedCredentialEnvironment]: plugin.environment }),
       ...savedAccounts?.environment,
     },
     template: {
@@ -2294,6 +2316,7 @@ function sandboxSpec(
       revision.harness.id === "openclaw",
       requirements.loginMode,
       requirements.workspaceSetup,
+      independentGoogleKeys,
     ),
     restart_policy: SANDBOX_RESTART_POLICY,
   };
@@ -3323,16 +3346,16 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OpenShell Git cannot share the protected execution proxy profile.",
       );
     }
-    const checkEffectivePolicy = async () => {
+    const checkEffectivePolicy = async (google = plugin) => {
       const config =
-        plugin || mcpPolicies.length || savedAccounts
+        google || mcpPolicies.length || savedAccounts
           ? await client.getSandboxConfig?.(workspace, sandbox.resourceName, context.signal)
           : undefined;
       if (savedAccounts) {
         verifySavedAccountPolicy(config, savedAccounts, workspace);
       }
-      if (plugin) {
-        verifyPluginRequestGuard(config, plugin, workspace, savedAccounts?.middlewares);
+      if (google) {
+        verifyPluginRequestGuard(config, google, workspace, savedAccounts?.middlewares);
       }
       for (const policy of mcpPolicies) {
         verifyManagedMcpPolicy(config, policy, workspace);
@@ -3386,12 +3409,18 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         new Set([
           WORKSPACE_NODE_SETUP_ENVIRONMENT,
           WORKSPACE_NODE_CA_ENVIRONMENT,
-          managedCredentialEnvironment,
           ...(!codex
             ? managedInstalls.flatMap(({ credentials }) =>
                 Object.values(credentials).map((slot) => slot.delivery.env),
               )
             : []),
+          ...mcpPolicies.flatMap(({ credentialEnvironments }) => credentialEnvironments),
+          ...[
+            ...managedCliCredentialBindings(context.revision.plugins?.plugins),
+            ...managedMcpCredentialBindings(context.revision.plugins?.plugins),
+          ].flatMap(({ install, sourceIds }) =>
+            sourceIds.map((id) => managedCredentialEnvironment(install, id)),
+          ),
           // Only the attached provider supplies its identity-bound credential alias.
           // A static placeholder would survive withdrawal and shadow its absence.
           ...(context.requirements.loginMode === "chatgptAuthTokens" ? ["CODEX_ACCESS_TOKEN"] : []),
@@ -3568,21 +3597,32 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     // DetachSandboxProvider removes the provider, but keeps the Sandbox's original launch
     // environment and policy. A replacement is created above without either plugin setting.
     let expectedSpec = create.spec;
-    if (
-      !plugin &&
-      managedCredentialBinding(context.revision.plugins?.plugins, managedGoogleInstall)
-    ) {
+    let existingGoogle = plugin;
+    const googleBinding = managedSlotBinding(
+      context.revision.plugins?.plugins,
+      managedGoogleInstall,
+    );
+    if (googleBinding) {
       const previous = googleRequestPolicyFromSandbox(
         existing.spec?.policy,
         savedAccounts?.middlewares,
       );
       if (previous) {
+        if (
+          Object.keys(previous.accounts).some((id) => !googleBinding.sourceIds.includes(id)) ||
+          Object.entries(plugin?.accounts ?? {}).some(
+            ([id, scope]) => !isDeepStrictEqual(previous.accounts[id], scope),
+          )
+        ) {
+          throw new OpenShellSandboxConfigurationFailure(
+            "The existing Google request policy differs from the selected accounts.",
+          );
+        }
+        if (plugin) {
+          existingGoogle = { ...plugin, ...previous };
+        }
         expectedSpec = {
           ...expectedSpec,
-          environment: {
-            ...expectedSpec.environment,
-            [managedCredentialEnvironment]: previous.environment,
-          },
           policy: {
             ...expectedSpec.policy,
             network_middlewares: { ...previous.middlewares, ...savedAccounts?.middlewares },
@@ -3594,7 +3634,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const previousMcpRules = asRecord(asRecord(existing.spec?.policy)?.network_policies);
     for (const install of managedMcpInstalls) {
       // Native detach preserves the original launch policy. Reconstruct it from the revision.
-      const binding = managedMcpCredentialBinding(context.revision.plugins?.plugins, install);
+      const binding = managedSlotBinding(context.revision.plugins?.plugins, install);
       const network = managedMcpNetwork(install, binding?.toolNames ?? []);
       if (
         !mcpPolicies.some((policy) => policy.install.id === install.id) &&
@@ -3645,7 +3685,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
       validateHarnessServiceUrl(service.url);
     }
-    await checkEffectivePolicy();
+    await checkEffectivePolicy(existingGoogle);
     await this.initializeWorkspace(context, sandbox, client);
     return result;
   }
@@ -4557,14 +4597,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (plugin) {
       assertPluginRequestPolicy(candidate, plugin, savedAccounts?.middlewares);
     } else {
-      const binding = managedCredentialBinding(
-        context.revision.plugins?.plugins,
-        managedGoogleInstall,
-      );
+      const binding = managedSlotBinding(context.revision.plugins?.plugins, managedGoogleInstall);
       if (
         binding &&
         Array.isArray(sandbox.spec?.providers) &&
-        sandbox.spec.providers.includes(openShellProviderName(binding.sourceId))
+        binding.sourceIds.some((id) =>
+          (sandbox.spec?.providers as readonly string[]).includes(openShellProviderName(id)),
+        )
       ) {
         throw new SandboxNetworkPolicyConflictError(
           "The attached Google account requires its admitted request guard.",
@@ -4573,14 +4612,16 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     const baselineRules = asRecord(baseline.network_policies);
     for (const install of managedMcpInstalls) {
-      const binding = managedMcpCredentialBinding(context.revision.plugins?.plugins, install);
+      const binding = managedSlotBinding(context.revision.plugins?.plugins, install);
       const expected = managedMcpNetwork(install, binding?.toolNames ?? []);
       if (sameOpenShellPolicy(baselineRules?.[expected.name], expected)) {
         assertNoManagedMcpRouteOverlap(candidate.network_policies, install, [expected.name]);
       } else if (
         binding &&
         Array.isArray(sandbox.spec?.providers) &&
-        sandbox.spec.providers.includes(openShellProviderName(binding.sourceId))
+        binding.sourceIds.some((id) =>
+          (sandbox.spec?.providers as readonly string[]).includes(openShellProviderName(id)),
+        )
       ) {
         throw new SandboxNetworkPolicyConflictError(
           "The managed MCP route differs from the admitted revision.",

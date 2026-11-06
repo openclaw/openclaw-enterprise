@@ -7,7 +7,7 @@ import {
   googleDiscoveryRequests,
   googleRouteCandidates,
   googleReleaseSha256,
-  googleScopeFromString,
+  googleAccountScopes,
   googleSourcePathMatches,
   type GoogleOperation,
   type GoogleParameter,
@@ -315,10 +315,22 @@ export function classifyGoogleAccountRequest(
 export const googleWorkspaceRequestPolicy = {
   releaseSha256: googleReleaseSha256,
   acceptsScope(raw: string): boolean {
-    return googleScopeFromString(raw) !== undefined;
+    return googleAccountScopes(raw) !== undefined;
   },
   allows(request: OpenShellOnlineHttpRequest): boolean {
-    const scope = googleScopeFromString(request.bindingConfig);
-    return scope !== undefined && validGoogleRequest(scope, request, "provider");
+    const accounts = googleAccountScopes(request.bindingConfig);
+    if (!accounts) {
+      return false;
+    }
+    const scopes = Object.values(accounts);
+    const credentialed = scopes.filter(
+      ({ host, port, path }) =>
+        request.target.host === host &&
+        request.target.port === port &&
+        googleSourcePathMatches(path, request.target.path),
+    );
+    return (credentialed.length ? credentialed : scopes).some((scope) =>
+      validGoogleRequest(scope, request, "provider"),
+    );
   },
 };

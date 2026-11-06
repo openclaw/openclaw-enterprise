@@ -48,7 +48,7 @@ export type ConnectionPreview =
   "choose" | "bound" | "empty" | "denied" | "loading" | "named" | "unrestricted";
 
 function googleSlotStory(preview: ConnectionPreview) {
-  const pluginId = "occ-plugin:google@1.0.0";
+  const pluginId = "occ-plugin:google@1.1.0";
   const releaseSha256 = "a".repeat(64);
   const boundId = "cs_00000000-0000-4000-8000-000000000010";
   return {
@@ -90,7 +90,7 @@ function googleSlotStory(preview: ConnectionPreview) {
     actions: [
       click("Configure plugins"),
       { selector: 'button[aria-label="Google Workspace"]', click: true },
-      ...(["choose", "bound"].includes(preview) ? [] : [click("Choose a connection template")]),
+      ...(["choose", "bound"].includes(preview) ? [] : [click("Connect new account")]),
     ],
   };
 }
@@ -137,6 +137,7 @@ const savedSupportAccount = {
   id: "cs_00000000-0000-4000-8000-000000000011",
   name: "Support account",
 };
+const savedOnCallAccount = { id: "cs_00000000-0000-4000-8000-000000000013", name: "On-call" };
 const savedReportingAccount = {
   id: "cs_00000000-0000-4000-8000-000000000012",
   name: "Reporting account",
@@ -161,7 +162,11 @@ const namedSlotScenario = {
         id: "support",
         label: "Support account",
         connectAccount: true,
-        sources: [savedSupportAccount, { ...savedReportingAccount, authorization: "required" }],
+        sources: [
+          savedSupportAccount,
+          savedOnCallAccount,
+          { ...savedReportingAccount, authorization: "required" },
+        ],
       },
       {
         pluginId: namedPlugin,
@@ -186,33 +191,43 @@ const namedSlotScenario = {
 export const pluginsScenarios = {
   namedSlotAccounts: {
     ...namedSlotScenario,
-    pluginSelections: JSON.stringify({
-      [namedPlugin]: {
-        enabled: true,
-        driverPolicy: {
-          releaseSha256: namedRelease,
-          credentials: { support: savedSupportAccount.id },
+    pluginSelections: JSON.stringify(
+      {
+        [namedPlugin]: {
+          enabled: true,
+          driverPolicy: {
+            releaseSha256: namedRelease,
+            credentials: { support: [savedSupportAccount.id, savedOnCallAccount.id] },
+          },
         },
       },
-    }),
+      null,
+      2,
+    ),
     description:
-      "The Support slot already has its approved account. Another saved account needs provider consent for this server.",
+      "Support and On-call are saved on this Agent. Change its accounts here or start a separate connection for this slot.",
     steps: [
-      "Open Connect a different account to see which saved account it will replace. The separate Reports slot keeps its own account selection.",
+      "Clear On-call to see why changes must be saved before connecting. Select it again to restore the saved selection, open Connect new account, and choose Cancel. Both saved accounts remain selected.",
     ],
   },
   namedSlotAuthorize: {
     ...namedSlotScenario,
-    name: "Authorize a saved account for this server",
-    actions: [...namedSlotScenario.actions, click("Authorize for this server")],
+    name: "Connect a new account to a slot",
+    actions: [
+      ...namedSlotScenario.actions,
+      { selector: 'button[data-connect-slot="support"]', click: true },
+    ],
   },
   unrestrictedSlotScopes: {
     ...namedSlotScenario,
     name: "Choose OAuth scopes without a template limit",
     connectionPreview: "unrestricted",
-    actions: [...namedSlotScenario.actions, click("Authorize for this server")],
+    actions: [
+      ...namedSlotScenario.actions,
+      { selector: 'button[data-connect-slot="support"]', click: true },
+    ],
     description:
-      "Review required and suggested permissions for the Support account. An unrestricted template also accepts additional scope names.",
+      "The connection dialog shows the template, account name and permission choices for the Support account. An unrestricted template also accepts additional scope names.",
     steps: [
       "Select Support MCP. Keep the required read permission, leave the optional write permission unchecked, and enter another scope. Connect and attach shows the selected scopes at the simulated provider handoff.",
       "Reset and choose Support OAuth. Connect with the Additional scopes field empty to request provider defaults.",
@@ -418,13 +433,13 @@ export const pluginsScenarios = {
     pluginCapabilities: {
       ...pluginCapabilities,
       driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-      policyScopeByPlugin: { "occ-plugin:google@1.0.0": "enablement_only" },
+      policyScopeByPlugin: { "occ-plugin:google@1.1.0": "enablement_only" },
     },
     pluginCatalog: {
       status: "ready",
       entries: [
         {
-          id: "occ-plugin:google@1.0.0",
+          id: "occ-plugin:google@1.1.0",
           name: "Google Workspace",
           description:
             "Install the pinned gog Google Workspace CLI on a dedicated OpenClaw worker using Kubernetes Compute.",

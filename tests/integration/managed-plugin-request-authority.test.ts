@@ -1,3 +1,5 @@
+import { googleAccountScopeConfig } from "../../apps/controller/src/drivers/plugin/google-workspace/operations.ts";
+import { managedPluginGuardVersion } from "../../apps/controller/src/drivers/plugin/managed-request-policies.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
@@ -64,7 +66,9 @@ test("the signed OpenShell request guard intersects the source envelope with the
   const scopeConfig = (host: string, path: string, scope: string, port = 443) => ({
     fields: {
       binding_id: { stringValue: managedGoogleInstall.releaseSha256 },
-      request_scope: { stringValue: JSON.stringify({ host, port, path, scopes: [scope] }) },
+      request_scope: {
+        stringValue: googleAccountScopeConfig({ account: { host, port, path, scopes: [scope] } }),
+      },
     },
   });
   const config = scopeConfig("gmail.googleapis.com", "/gmail/v1/users/me/messages", gmail);
@@ -94,7 +98,7 @@ test("the signed OpenShell request guard intersects the source envelope with the
   );
   // GetGatewayInfo exposes these negotiated fields before a Sandbox receives its provider.
   assert.equal(manifest.extension.implementation_name, managedPluginMiddlewareImplementation);
-  assert.equal(manifest.extension.implementation_version, managedGoogleInstall.releaseSha256);
+  assert.equal(manifest.extension.implementation_version, managedPluginGuardVersion);
   assert.deepEqual(manifest.extension.required_capabilities, [contract]);
   assert.deepEqual(manifest.extension.supported_capabilities, [contract]);
   assert.deepEqual(
@@ -202,6 +206,32 @@ test("the signed OpenShell request guard intersects the source envelope with the
     body: Buffer.from(JSON.stringify(value)),
     headers: [{ name: "content-type", value: "application/json" }],
   });
+  // Native OpenShell resolves the chosen bearer after this guard. An attached
+  // metadata-only grant must not disable Gmail search for the read-only account.
+  const twoGoogleAccounts = {
+    fields: {
+      ...subtree.fields,
+      request_scope: {
+        stringValue: googleAccountScopeConfig({
+          work: {
+            host: target.host,
+            port: target.port,
+            path: "/gmail/v1/users/me/**",
+            scopes: [gmail],
+          },
+          personal: {
+            host: target.host,
+            port: target.port,
+            path: "/gmail/v1/users/me/**",
+            scopes: ["https://www.googleapis.com/auth/gmail.metadata"],
+          },
+        }),
+      },
+    },
+  };
+  const search = { ...target, query: "q=subject%3Ameeting" };
+  assert.equal(await evaluate({ ...request, config: twoGoogleAccounts, target: search }), 1);
+  assert.equal(await evaluate({ ...request, config: metadataScope, target: search }), 2);
   const calendarRead = "https://www.googleapis.com/auth/calendar.readonly";
   const calendar = {
     ...request,

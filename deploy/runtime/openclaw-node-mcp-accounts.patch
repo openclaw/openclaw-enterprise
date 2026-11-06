@@ -1,0 +1,1198 @@
+diff --git a/packages/gateway-protocol/src/schema/worker-gateway-tool.ts b/packages/gateway-protocol/src/schema/worker-gateway-tool.ts
+index 0b29e05..1822464 100644
+--- a/packages/gateway-protocol/src/schema/worker-gateway-tool.ts
++++ b/packages/gateway-protocol/src/schema/worker-gateway-tool.ts
+@@ -90,6 +90,7 @@ export const WorkerToolSurfaceSchema = closedObject({
+                 closedObject({
+                   id: WorkerIdentifierSchema,
+                   displayName: Type.Optional(Type.String()),
++                  policyName: Type.Optional(WorkerIdentifierSchema),
+                 }),
+               ),
+             }),
+diff --git a/src/agents/gateway-tool-policy.ts b/src/agents/gateway-tool-policy.ts
+index 69f6a52..882d19d 100644
+--- a/src/agents/gateway-tool-policy.ts
++++ b/src/agents/gateway-tool-policy.ts
+@@ -3,6 +3,7 @@ import type { TSchema } from "typebox";
+ import { getRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
+ import type { OpenClawConfig } from "../config/types.openclaw.js";
+ import type { GatewayToolPolicyConfig } from "../config/types.tools.js";
++import { getAgentToolPolicyName } from "../plugins/tool-metadata.js";
+ import { copyAgentToolMetadata, isGatewayToolPolicyControl } from "./agent-tool-metadata.js";
+ import type { AnyAgentTool } from "./agent-tools.types.js";
+ import { isCodeModeControlTool } from "./code-mode-control-tools.js";
+@@ -88,11 +89,13 @@ function toolAllowed(policy: GatewayToolPolicyConfig, name: string): boolean {
+
+ /** Query the execution contract for tools such as exec that have no action argument. */
+ export function isGatewayToolAllowedWithoutAction(
+-  toolName: string,
++  tool: string | { name: string },
+   config: OpenClawConfig | undefined = getRuntimeConfigSnapshot() ?? undefined,
+ ): boolean {
+   const policy = config?.tools?.gatewayPolicy;
+-  const name = normalizeToolPolicyName(toolName);
++  const name = normalizeToolPolicyName(
++    typeof tool === "string" ? tool : getAgentToolPolicyName(tool),
++  );
+   return !policy || (toolAllowed(policy, name) && policyActions(policy, name) === undefined);
+ }
+
+@@ -110,7 +113,7 @@ export function createGatewayToolPolicyAssertion(
+     if (!policy || isGatewayToolPolicyControl(tool) || isCodeModeControlTool(tool)) {
+       return;
+     }
+-    const name = normalizeToolPolicyName(tool.name);
++    const name = normalizeToolPolicyName(getAgentToolPolicyName(tool));
+     if (!toolAllowed(policy, name)) {
+       throw gatewayPolicyDenial(`Gateway tool policy denies tool "${name}".`);
+     }
+@@ -141,7 +144,7 @@ export function applyGatewayToolPolicy<T extends GatewayToolPolicyTarget>(
+     if (isGatewayToolPolicyControl(tool) || isCodeModeControlTool(tool)) {
+       return [tool];
+     }
+-    const name = normalizeToolPolicyName(tool.name);
++    const name = normalizeToolPolicyName(getAgentToolPolicyName(tool));
+     if (!toolAllowed(policy, name)) {
+       return [];
+     }
+diff --git a/src/agents/mcp-catalog-listing.ts b/src/agents/mcp-catalog-listing.ts
+index 9d6a62d..8712f88 100644
+--- a/src/agents/mcp-catalog-listing.ts
++++ b/src/agents/mcp-catalog-listing.ts
+@@ -1,4 +1,11 @@
+-import type { Client, Prompt, Resource, Tool } from "@modelcontextprotocol/client";
++import type {
++  Client,
++  ListToolsResult,
++  Prompt,
++  Resource,
++  StandardSchemaV1,
++  Tool,
++} from "@modelcontextprotocol/client";
+ import {
+   asPositiveFiniteNumber,
+   clampPositiveTimerTimeoutMs,
+@@ -120,6 +127,7 @@ export async function listAllMcpTools(
+   client: Client,
+   timeoutMs: number,
+   signal: AbortSignal,
++  resultSchema?: StandardSchemaV1<unknown, ListToolsResult>,
+ ): Promise<Tool[]> {
+   return await collectMcpPaginatedItems({
+     label: "MCP tool listing",
+@@ -127,14 +135,18 @@ export async function listAllMcpTools(
+     timeoutMs,
+     signal,
+     loadPage: async ({ cursor, requestTimeoutMs, signal: requestSignal }) => {
+-      const page = await client.request(
+-        { method: "tools/list", params: cursor === undefined ? undefined : { cursor } },
+-        {
+-          timeout: requestTimeoutMs,
+-          maxTotalTimeout: requestTimeoutMs,
+-          signal: requestSignal,
+-        },
+-      );
++      const request = {
++        method: "tools/list" as const,
++        params: cursor === undefined ? undefined : { cursor },
++      };
++      const options = {
++        timeout: requestTimeoutMs,
++        maxTotalTimeout: requestTimeoutMs,
++        signal: requestSignal,
++      };
++      const page = resultSchema
++        ? await client.request(request, resultSchema, options)
++        : await client.request(request, options);
+       return { items: page.tools, nextCursor: page.nextCursor, serializedValue: page };
+     },
+   });
+diff --git a/src/agents/openclaw-plugin-tools.ts b/src/agents/openclaw-plugin-tools.ts
+index 7ae87b8..7554777 100644
+--- a/src/agents/openclaw-plugin-tools.ts
++++ b/src/agents/openclaw-plugin-tools.ts
+@@ -35,6 +35,7 @@ import type { OpenClawPluginToolDelivery } from "../plugins/tool-types.js";
+ import { resolvePluginTools, resolvePluginToolsSteps } from "../plugins/tools.js";
+ import type { OpenClawPluginToolContext } from "../plugins/types.js";
+ import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
++import { nodeMcpToolPolicyName } from "../shared/node-mcp-tool-names.js";
+ import { sanitizeNodeIdFragment, sanitizeServerName } from "./agent-bundle-mcp-names.js";
+ import { bindAgentToolExecutionLocation } from "./agent-tool-metadata.js";
+ import { resolveApiKeyForProfile, resolveAuthProfileOrder } from "./auth-profiles.js";
+@@ -562,10 +563,26 @@ function* resolveOpenClawPluginToolSteps(
+     }
+     const pluginId = normalizeToolPolicyName(descriptor.pluginId);
+     const exposedToolName = normalizeToolPolicyName(toolName);
++    const accountPolicyName =
++      descriptor.pluginId === NODE_MCP_PLUGIN_ID &&
++      descriptor.command === NODE_MCP_TOOLS_CALL_COMMAND &&
++      descriptor.mcp
++        ? nodeMcpToolPolicyName(descriptor.mcp.server, descriptor.mcp.tool, descriptor.name)
++        : undefined;
++    // A conflicting core or plugin tool keeps its own grants, just as it does
++    // for ordinary node descriptors that are renamed on collision.
++    const policyName =
++      accountPolicyName &&
++      toolName === descriptor.name &&
++      !existingNormalized.has(normalizeToolPolicyName(accountPolicyName)) &&
++      !nameCounts.has(normalizeToolPolicyName(accountPolicyName))
++        ? accountPolicyName
++        : undefined;
+     if (
+       matchesAnyGlobPattern(pluginId, denylist) ||
+       matchesAnyGlobPattern(entry.normalizedName, denylist) ||
+       matchesAnyGlobPattern(exposedToolName, denylist) ||
++      (policyName && matchesAnyGlobPattern(normalizeToolPolicyName(policyName), denylist)) ||
+       matchesAnyGlobPattern("group:plugins", denylist)
+     ) {
+       continue;
+@@ -578,7 +595,8 @@ function* resolveOpenClawPluginToolSteps(
+       !(
+         (pluginIdTrusted && allowlist.allowsPlugin(pluginId)) ||
+         allowlist.allowsToolName(entry.normalizedName) ||
+-        allowlist.allowsToolName(exposedToolName)
++        allowlist.allowsToolName(exposedToolName) ||
++        (policyName && allowlist.allowsToolName(policyName))
+       )
+     ) {
+       continue;
+@@ -661,6 +679,7 @@ function* resolveOpenClawPluginToolSteps(
+                 ? {
+                     node: {
+                       id: entry.nodeId,
++                      ...(policyName && { policyName }),
+                       ...(entry.displayName?.trim()
+                         ? { displayName: entry.displayName.trim() }
+                         : {}),
+diff --git a/src/agents/tool-policy-match.ts b/src/agents/tool-policy-match.ts
+index 44f28c1..24c7c3c 100644
+--- a/src/agents/tool-policy-match.ts
++++ b/src/agents/tool-policy-match.ts
+@@ -1,3 +1,4 @@
++import { getAgentToolPolicyName } from "../plugins/tool-metadata.js";
+ /**
+  * Runtime matcher for sandbox tool policies. Deny patterns always win, then
+  * an empty allow list means "allow everything not denied".
+@@ -127,7 +128,7 @@ export function filterToolsByPolicy<TTool extends { name: string }>(
+     return [];
+   }
+   const matches = createToolPolicyMatcher(policy);
+-  return tools.filter((tool) => matches(tool.name));
++  return tools.filter((tool) => matches(getAgentToolPolicyName(tool)));
+ }
+
+ export function isToolAllowedByPolicies(
+diff --git a/src/agents/tool-policy.ts b/src/agents/tool-policy.ts
+index 127895c..a701e0e 100644
+--- a/src/agents/tool-policy.ts
++++ b/src/agents/tool-policy.ts
+@@ -3,6 +3,7 @@ import {
+   normalizeTrimmedStringList,
+   uniqueStrings,
+ } from "@openclaw/normalization-core/string-normalization";
++import { getAgentToolPolicyName } from "../plugins/tool-metadata.js";
+ import { sanitizeServerName, TOOL_NAME_SEPARATOR } from "./agent-bundle-mcp-names.js";
+ import { IMPLICIT_ALLOW_ALL_FROM_ALSO_ALLOW } from "./sandbox-tool-policy.js";
+ import {
+@@ -167,7 +168,7 @@ export function buildPluginToolGroups<T extends { name: string }>(params: {
+     if (!meta) {
+       continue;
+     }
+-    const name = normalizeToolPolicyName(tool.name);
++    const name = normalizeToolPolicyName(getAgentToolPolicyName(tool));
+     all.push(name);
+     const pluginId = normalizeOptionalLowercaseString(meta.pluginId);
+     if (!pluginId) {
+diff --git a/src/config/types.node-host.ts b/src/config/types.node-host.ts
+index 519020d..6166ae2 100644
+--- a/src/config/types.node-host.ts
++++ b/src/config/types.node-host.ts
+@@ -1,11 +1,11 @@
+ import type { z } from "zod";
+-import type { McpServerConfig } from "./types.mcp.js";
++import type { NodeHostMcpServerConfig } from "./zod-schema.mcp-server.js";
+ import type { NodeHostSchema } from "./zod-schema.root-support.js";
+
+ type NodeHostSchemaInput = NonNullable<z.input<typeof NodeHostSchema>>;
+
+ export type NodeHostConfig = Omit<NodeHostSchemaInput, "mcp"> & {
+   mcp?: {
+-    servers?: Record<string, McpServerConfig>;
++    servers?: Record<string, NodeHostMcpServerConfig>;
+   };
+ };
+diff --git a/src/config/zod-schema.mcp-server.ts b/src/config/zod-schema.mcp-server.ts
+index 66d914f..f05fb00 100644
+--- a/src/config/zod-schema.mcp-server.ts
++++ b/src/config/zod-schema.mcp-server.ts
+@@ -156,4 +156,35 @@ export const McpServerSchema = z
+   })
+   .catchall(z.unknown());
+
++/** A node can keep independent HTTP sessions for the accounts on one server. */
++export const NodeHostMcpServerSchema = McpServerSchema.safeExtend({
++  accounts: z
++    .record(
++      z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/),
++      z.strictObject({
++        headers: z
++          .record(z.string().min(1), z.string().min(1).register(sensitive))
++          .refine(
++            (headers) => Object.keys(headers).length > 0,
++            "An account requires its own headers",
++          ),
++      }),
++    )
++    .optional(),
++}).refine(
++  (server) =>
++    server.accounts === undefined ||
++    (server.transport === "streamable-http" &&
++      server.url !== undefined &&
++      server.command === undefined &&
++      server.auth === undefined &&
++      server.oauth === undefined &&
++      server.headers === undefined),
++  {
++    message: "Account sessions require a streamable HTTP server URL and account-specific headers",
++    path: ["accounts"],
++  },
++);
++
++export type NodeHostMcpServerConfig = z.input<typeof NodeHostMcpServerSchema>;
+ export type McpServerConfigInput = z.input<typeof McpServerSchema>;
+diff --git a/src/config/zod-schema.root-support.ts b/src/config/zod-schema.root-support.ts
+index 177ddcf..6476671 100644
+--- a/src/config/zod-schema.root-support.ts
++++ b/src/config/zod-schema.root-support.ts
+@@ -3,7 +3,7 @@ import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/st
+ import { z } from "zod";
+ import { ALL_THINKING_LEVELS } from "../auto-reply/thinking.shared.js";
+ import { findEdgeAuthIssue } from "../shared/gateway-edge-auth-headers.js";
+-import { McpServerSchema } from "./zod-schema.mcp-server.js";
++import { McpServerSchema, NodeHostMcpServerSchema } from "./zod-schema.mcp-server.js";
+ import { MemorySearchSchema } from "./zod-schema.memory-search.js";
+ import { NodeHostAgentRunsSchema, NodeHostWorkerRunsSchema } from "./zod-schema.node-host.js";
+ import { SecretInputSchema } from "./zod-schema.secret-input.js";
+@@ -273,7 +273,10 @@ export const NodeHostMcpServerNameSchema = McpServerNameSchema.refine(
+   "MCP server name must be non-empty and must not have surrounding whitespace",
+ );
+
+-function createMcpServersSchema(serverNameSchema: z.ZodType<string>) {
++function createMcpServersSchema<T extends z.ZodType>(
++  serverNameSchema: z.ZodType<string>,
++  serverSchema: T,
++) {
+   return z.preprocess(
+     (value, ctx) => {
+       // Plain assignment treats "__proto__" as a setter, so one unhardened map builder
+@@ -293,7 +296,7 @@ function createMcpServersSchema(serverNameSchema: z.ZodType<string>) {
+       }
+       return value;
+     },
+-    z.record(serverNameSchema, McpServerSchema),
++    z.record(serverNameSchema, serverSchema),
+   );
+ }
+
+@@ -313,7 +316,7 @@ export function validateHttpOrigin(value: string): boolean {
+ export const McpConfigSchema = z
+   .strictObject({
+     sessionIdleTtlMs: z.number().finite().min(0).optional(),
+-    servers: createMcpServersSchema(McpServerNameSchema).optional(),
++    servers: createMcpServersSchema(McpServerNameSchema, McpServerSchema).optional(),
+     apps: z
+       .strictObject({
+         enabled: z.boolean().optional(),
+@@ -348,7 +351,10 @@ export const NodeHostSchema = z
+       .optional(),
+     mcp: z
+       .strictObject({
+-        servers: createMcpServersSchema(NodeHostMcpServerNameSchema).optional(),
++        servers: createMcpServersSchema(
++          NodeHostMcpServerNameSchema,
++          NodeHostMcpServerSchema,
++        ).optional(),
+       })
+       .optional(),
+     skills: z
+diff --git a/src/gateway/worker-environments/worker-turn-tool-surface.ts b/src/gateway/worker-environments/worker-turn-tool-surface.ts
+index 7252dc5..5b11340 100644
+--- a/src/gateway/worker-environments/worker-turn-tool-surface.ts
++++ b/src/gateway/worker-environments/worker-turn-tool-surface.ts
+@@ -64,7 +64,7 @@ export function retainWorkerTurnTools(
+       canPlace &&
+       mcp?.operation === "tool" &&
+       mcp.node?.id === options.localMcpNodeId &&
+-      isGatewayToolAllowedWithoutAction(tool.name, options.config)
++      isGatewayToolAllowedWithoutAction(tool, options.config)
+     ) {
+       bindAgentToolExecutionLocation(retained, { kind: "placement" });
+     }
+diff --git a/src/node-host/mcp-server-config.ts b/src/node-host/mcp-server-config.ts
+index c5c97ab..c54fcd9 100644
+--- a/src/node-host/mcp-server-config.ts
++++ b/src/node-host/mcp-server-config.ts
+@@ -1,8 +1,8 @@
+-import type { McpServerConfig } from "../config/types.mcp.js";
++import type { NodeHostMcpServerConfig } from "../config/zod-schema.mcp-server.js";
+
+ export function listEnabledNodeHostMcpServers(
+-  servers: Record<string, McpServerConfig> | undefined,
+-): ReadonlyArray<readonly [string, McpServerConfig]> {
++  servers: Record<string, NodeHostMcpServerConfig> | undefined,
++): ReadonlyArray<readonly [string, NodeHostMcpServerConfig]> {
+   return Object.entries(servers ?? {})
+     .filter(
+       ([serverName, config]) =>
+diff --git a/src/node-host/mcp.ts b/src/node-host/mcp.ts
+index 12cfdc5..889be5d 100644
+--- a/src/node-host/mcp.ts
++++ b/src/node-host/mcp.ts
+@@ -1,12 +1,21 @@
+ /** Process-lifetime MCP clients owned by the headless node host. */
++import { createHash } from "node:crypto";
+ import { isDeepStrictEqual } from "node:util";
+-import { Client, SdkErrorCode, type Tool } from "@modelcontextprotocol/client";
++import {
++  Client,
++  SdkErrorCode,
++  type ListToolsResult,
++  type StandardSchemaV1,
++  type Tool,
++} from "@modelcontextprotocol/client";
+ import { formatErrorMessage } from "@openclaw/normalization-core/error-coercion";
+ import { clampPositiveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
+ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
++import { stableStringify } from "@openclaw/normalization-core/stable-stringify";
+ import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+ import pLimit from "p-limit";
++import { Value } from "typebox/value";
+ import type { NodePluginToolDescriptor } from "../../packages/gateway-protocol/src/schema/nodes.js";
+ import { assignSafeServerNames } from "../agents/agent-bundle-mcp-names.js";
+ import { listAllMcpTools } from "../agents/mcp-catalog-listing.js";
+@@ -27,11 +36,16 @@ import {
+ } from "../agents/mcp-tool-metadata.js";
+ import { resolveMcpRequestTimeoutMs } from "../agents/mcp-transport-config.js";
+ import type { resolveMcpTransport } from "../agents/mcp-transport.js";
+-import type { McpServerConfig } from "../config/types.mcp.js";
++import type { NodeHostMcpServerConfig } from "../config/zod-schema.mcp-server.js";
+ import {
+   NODE_MCP_TOOL_CALL_TIMEOUT_MS,
+   NODE_MCP_TOOLS_CALL_COMMAND,
+ } from "../infra/node-commands.js";
++import {
++  buildDescriptorBaseName,
++  qualifiedNodeMcpToolName,
++  NODE_MCP_NAME_MAX_CHARS,
++} from "../shared/node-mcp-tool-names.js";
+ import { VERSION } from "../version.js";
+ import type { NodeHostClient } from "./client.js";
+ import { bindNodeMcpElicitation } from "./mcp-elicitation.js";
+@@ -39,8 +53,6 @@ import { listEnabledNodeHostMcpServers } from "./mcp-server-config.js";
+
+ const NODE_MCP_PLUGIN_ID = "node-mcp";
+ const NODE_MCP_DESCRIPTION_MAX_CHARS = 1_024;
+-const NODE_MCP_NAME_MAX_CHARS = 64;
+-const NODE_MCP_SERVER_FRAGMENT_MAX_CHARS = 31;
+ export const NODE_MCP_ERROR_MAX_CHARS = 1_024;
+ const NODE_MCP_MAX_DESCRIPTORS = 128;
+ const NODE_MCP_MAX_DESCRIPTOR_BYTES = 1024 * 1024;
+@@ -54,8 +66,27 @@ type NodeHostMcpTransport = Pick<
+   "transport" | "transportType" | "connectionTimeoutMs" | "requestTimeoutMs" | "detachStderr"
+ >;
+
++// The SDK validates each negotiated protocol version with its own codec. Its
++// parsed tool objects omit extension fields, so retain the original validated JSON.
++class NodeHostMcpClient extends Client {
++  readonly fullToolListSchema: StandardSchemaV1<unknown, ListToolsResult> = {
++    "~standard": {
++      version: 1,
++      vendor: "openclaw",
++      validate: (wire) => {
++        const result = this._wireCodec().validateResult("tools/list", wire);
++        if (result.ok) {
++          return { value: wire as ListToolsResult };
++        }
++        const message = result.reason === "invalid" ? result.message : "tools/list is unsupported";
++        return { issues: [{ message }] };
++      },
++    },
++  };
++}
++
+ type NodeHostMcpSession = NodeHostMcpTransport & {
+-  client: Client;
++  client: NodeHostMcpClient;
+   withElicitation?: ReturnType<typeof bindNodeMcpElicitation>;
+   connected: boolean;
+   toolCallTimeoutMs: number;
+@@ -65,7 +96,9 @@ type NodeHostMcpSession = NodeHostMcpTransport & {
+
+ type NodeHostMcpServerState = {
+   serverName: string;
+-  config: McpServerConfig;
++  key: string;
++  account?: string;
++  config: NodeHostMcpServerConfig;
+   current?: NodeHostMcpSession;
+   listedTools: Tool[];
+   work: Promise<void>;
+@@ -99,25 +132,6 @@ type NodeHostMcpManagerDeps = {
+   signal?: AbortSignal;
+ };
+
+-function sanitizeDescriptorFragment(raw: string, fallback: string): string {
+-  const cleaned = raw
+-    .trim()
+-    .replace(/[^A-Za-z0-9_-]+/g, "_")
+-    .replace(/^[_-]+|[_-]+$/g, "");
+-  const normalized = cleaned || fallback;
+-  return /^[A-Za-z]/.test(normalized) ? normalized : `${fallback}_${normalized}`;
+-}
+-
+-function buildDescriptorBaseName(serverName: string, toolName: string): string {
+-  const server = sanitizeDescriptorFragment(serverName, "mcp").slice(
+-    0,
+-    NODE_MCP_SERVER_FRAGMENT_MAX_CHARS,
+-  );
+-  const toolBudget = Math.max(1, NODE_MCP_NAME_MAX_CHARS - server.length - 1);
+-  const tool = sanitizeDescriptorFragment(toolName, "tool").slice(0, toolBudget);
+-  return `${server}_${tool}`;
+-}
+-
+ function reserveDescriptorName(baseName: string, usedNames: Set<string>): string {
+   let index = 1;
+   while (true) {
+@@ -132,35 +146,102 @@ function reserveDescriptorName(baseName: string, usedNames: Set<string>): string
+   }
+ }
+
++type ListedNodeMcpTool = {
++  serverName: string;
++  tool: Tool;
++  route: string;
++  qualified?: boolean;
++  accounts?: string[];
++};
++
++// Account catalogs can use different wire definitions for the same operation.
++// Pin the dispatch route to the definition so a stale turn cannot silently invoke a new one.
++function listNodeMcpTools(states: Iterable<NodeHostMcpServerState>): ListedNodeMcpTool[] {
++  const listed: ListedNodeMcpTool[] = [];
++  type AccountTool = ListedNodeMcpTool & { accounts: string[] };
++  const byTool = new Map<string, Map<string, AccountTool>>();
++  for (const { serverName, account, listedTools } of states) {
++    for (const tool of listedTools) {
++      if (account === undefined) {
++        listed.push({ serverName, tool, route: tool.name });
++        continue;
++      }
++      const toolName = tool.name.trim();
++      const key = JSON.stringify([serverName, toolName]);
++      const definitions = byTool.get(key) ?? new Map<string, AccountTool>();
++      byTool.set(key, definitions);
++      const digest = createHash("sha256")
++        .update(stableStringify([serverName, tool]))
++        .digest("hex");
++      let variant = definitions.get(digest);
++      if (!variant) {
++        variant = { serverName, tool, route: toolName + "__" + digest, accounts: [] };
++        definitions.set(digest, variant);
++      }
++      variant.accounts.push(account);
++    }
++  }
++  for (const definitions of byTool.values()) {
++    for (const variant of definitions.values()) {
++      variant.qualified = definitions.size > 1;
++      listed.push(variant);
++    }
++  }
++  return listed;
++}
++
+ /** Builds provider-safe MCP descriptors in stable server/tool order. */
+ function buildNodeMcpToolDescriptors(
+-  listedTools: ReadonlyArray<{ serverName: string; tool: Tool }>,
++  listedTools: readonly ListedNodeMcpTool[],
+ ): NodePluginToolDescriptor[] {
+   const usedNames = new Set<string>();
+   const descriptors: NodePluginToolDescriptor[] = [];
+   let catalogBytes = 0;
+-  for (const { serverName, tool } of listedTools.toSorted(
++  for (const { serverName, tool, accounts, qualified, route } of listedTools.toSorted(
+     (left, right) =>
+       left.serverName.localeCompare(right.serverName) ||
+-      left.tool.name.localeCompare(right.tool.name),
++      left.tool.name.localeCompare(right.tool.name) ||
++      left.route.localeCompare(right.route),
+   )) {
+     const toolName = tool.name.trim();
++    const base = buildDescriptorBaseName(serverName, toolName);
++    const name = qualified ? qualifiedNodeMcpToolName(base, route) : base;
++    // Give a nested upstream schema its own resource so local refs still resolve
++    // relative to native arguments, including an argument itself named "account".
++    const parameters = accounts
++      ? {
++          type: "object",
++          additionalProperties: false,
++          required: ["account", "arguments"],
++          properties: {
++            account: {
++              type: "string",
++              enum: accounts,
++              description: "Account handle from the oce-plugin-accounts skill.",
++            },
++            arguments: {
++              ...tool.inputSchema,
++              $id: tool.inputSchema.$id ?? "urn:openclaw:node-mcp:" + encodeURIComponent(route),
++            },
++          },
++        }
++      : tool.inputSchema;
+     const descriptor: NodePluginToolDescriptor = {
+       pluginId: NODE_MCP_PLUGIN_ID,
+-      name: reserveDescriptorName(buildDescriptorBaseName(serverName, toolName), usedNames),
++      name: reserveDescriptorName(name, usedNames),
+       description: truncateUtf16Safe(
+         sanitizeMcpMetadataText(tool.description) ||
+           sanitizeMcpMetadataText(toolName) ||
+           "MCP tool",
+         NODE_MCP_DESCRIPTION_MAX_CHARS,
+       ),
+-      parameters: asOptionalRecord(tool.inputSchema) ?? {
++      parameters: asOptionalRecord(parameters) ?? {
+         type: "object",
+         properties: {},
+         additionalProperties: true,
+       },
+       command: NODE_MCP_TOOLS_CALL_COMMAND,
+-      mcp: { server: serverName, tool: toolName },
++      mcp: { server: serverName, tool: route },
+     };
+     const descriptorBytes = Buffer.byteLength(JSON.stringify(descriptor));
+     if (
+@@ -193,7 +274,7 @@ async function disposeNodeHostMcpSession(
+
+ /** Starts process-lifetime MCP server state for the node host. */
+ export async function startNodeHostMcpManager(
+-  servers: Record<string, McpServerConfig> | undefined,
++  servers: Record<string, NodeHostMcpServerConfig> | undefined,
+   deps: NodeHostMcpManagerDeps = {},
+ ) {
+   const [
+@@ -216,39 +297,52 @@ export async function startNodeHostMcpManager(
+   const lifecycleSignal = deps.signal
+     ? AbortSignal.any([deps.signal, lifecycleAbortController.signal])
+     : lifecycleAbortController.signal;
+-  const states = new Map<string, NodeHostMcpServerState>(
+-    listEnabledNodeHostMcpServers(servers).map(([serverName, config]) => [
+-      serverName,
+-      {
++  const enabledServers = listEnabledNodeHostMcpServers(servers);
++  const safeServerNames = assignSafeServerNames(enabledServers.map(([name]) => name));
++  const accountServers = new Set<string>();
++  const states = new Map<string, NodeHostMcpServerState>();
++  for (const [serverName, { accounts, ...config }] of enabledServers) {
++    function addState(account?: string, headers = config.headers) {
++      const key = JSON.stringify([serverName, account]);
++      states.set(key, {
++        key,
+         serverName,
+-        config,
++        account,
++        config: { ...config, headers },
+         listedTools: [],
+         work: Promise.resolve(),
+         catalogWork: Promise.resolve(),
+         refreshQueued: false,
+         retryDelayMs: NODE_MCP_RETRY_INITIAL_MS,
+-      },
+-    ]),
+-  );
+-  const safeServerNames = assignSafeServerNames(
+-    Object.keys(servers ?? {}).filter((name) => states.has(name)),
+-  );
++      });
++    }
++    if (accounts === undefined) {
++      addState();
++    } else {
++      accountServers.add(serverName);
++      for (const [account, connection] of Object.entries(accounts).toSorted(([left], [right]) =>
++        left.localeCompare(right),
++      )) {
++        addState(account, connection.headers);
++      }
++    }
++  }
+   let closed = false;
+   let startupComplete = false;
+
++  let routes: ListedNodeMcpTool[] = [];
+   const rebuildDescriptors = () => {
+     if (closed) {
+       return;
+     }
+-    const listedTools = Array.from(states.values()).flatMap((state) =>
+-      state.listedTools.map((tool) => ({ serverName: state.serverName, tool })),
+-    );
++    const listedTools = listNodeMcpTools(states.values());
+     const next = buildNodeMcpToolDescriptors(listedTools);
+     if (next.length < listedTools.length) {
+       console.warn(
+         `node host MCP catalog bounded: published ${next.length} of ${listedTools.length} tools`,
+       );
+     }
++    routes = listedTools;
+     if (isDeepStrictEqual(descriptors, next)) {
+       return;
+     }
+@@ -304,7 +398,12 @@ export async function startNodeHostMcpManager(
+     signal: AbortSignal,
+     resetRetryDelay = false,
+   ) => {
+-    const tools = await listAllMcpTools(session.client, session.requestTimeoutMs, signal);
++    const tools = await listAllMcpTools(
++      session.client,
++      session.requestTimeoutMs,
++      signal,
++      state.account === undefined ? undefined : session.client.fullToolListSchema,
++    );
+     if (closed || state.current !== session) {
+       return;
+     }
+@@ -318,9 +417,16 @@ export async function startNodeHostMcpManager(
+       isToolAllowed(name) ? "include" : "exclude",
+     );
+     session.toolMetadata = normalized.metadata;
+-    state.listedTools = normalized.tools.filter(
++    const visibleTools = normalized.tools.filter(
+       (tool) => !isAppOnlyMcpTool(readMcpToolUiMetadata(tool)),
+     );
++    if (state.account === undefined) {
++      state.listedTools = visibleTools;
++    } else {
++      // Authorization uses canonical names. Fingerprint and dispatch the admitted wire definition.
++      const visibleNames = new Set(visibleTools.map(({ name }) => name));
++      state.listedTools = tools.filter((tool) => visibleNames.has(tool.name.trim()));
++    }
+     if (resetRetryDelay) {
+       state.retryDelayMs = NODE_MCP_RETRY_INITIAL_MS;
+     }
+@@ -339,11 +445,11 @@ export async function startNodeHostMcpManager(
+       try {
+         resolved = resolveMcpTransport(state.serverName, state.config);
+         if (!resolved) {
+-          states.delete(state.serverName);
++          states.delete(state.key);
+           throw new Error("invalid or unsupported transport");
+         }
+         let onToolsChanged = () => {};
+-        const client = new Client(
++        const client = new NodeHostMcpClient(
+           { name: "openclaw-node-host", version: VERSION },
+           {
+             ...(deps.elicitationClient
+@@ -480,7 +586,7 @@ export async function startNodeHostMcpManager(
+
+   const tasks = Array.from(states.values(), (state) => async () => {
+     if (state.config.auth === "oauth" || state.config.oauth) {
+-      states.delete(state.serverName);
++      states.delete(state.key);
+       console.warn(`node host MCP server "${state.serverName}" skipped: OAuth is not supported`);
+       return;
+     }
+@@ -513,7 +619,20 @@ export async function startNodeHostMcpManager(
+         signal?: AbortSignal;
+       },
+     ) {
+-      const state = states.get(params.server);
++      let args = params.arguments ?? {};
++      let account: string | undefined;
++      if (accountServers.has(params.server)) {
++        const inner = asOptionalRecord(args.arguments);
++        if (typeof args.account !== "string" || !inner || Object.keys(args).length !== 2) {
++          throw new NodeHostMcpError(
++            "MCP_TOOL_ERROR",
++            "Provide an account handle and tool arguments.",
++          );
++        }
++        account = args.account;
++        args = inner;
++      }
++      const state = states.get(JSON.stringify([params.server, account]));
+       const session = state?.current;
+       if (!state || !session?.connected) {
+         throw new NodeHostMcpError(
+@@ -531,16 +650,35 @@ export async function startNodeHostMcpManager(
+           `MCP tool "${params.tool}" is unavailable on server "${params.server}"`,
+         );
+       }
++      let upstreamName = params.tool;
++      if (account !== undefined) {
++        const selected = routes.find(
++          ({ serverName, route }) => serverName === params.server && route === params.tool,
++        );
++        if (!selected?.accounts?.includes(account)) {
++          throw new NodeHostMcpError(
++            "MCP_TOOL_UNAVAILABLE",
++            "The selected account does not provide this tool.",
++          );
++        }
++        upstreamName = selected.tool.name;
++        if (!Value.Check(selected.tool.inputSchema, args)) {
++          throw new NodeHostMcpError(
++            "MCP_TOOL_ERROR",
++            "Invalid tool arguments for the selected account.",
++          );
++        }
++      }
+       const requestedTimeoutMs =
+         clampPositiveTimerTimeoutMs(params.timeoutMs) ?? NODE_MCP_TOOL_CALL_TIMEOUT_MS;
+-      const validateResult = session.toolMetadata?.validatorForCall(params.tool);
++      const validateResult = session.toolMetadata?.validatorForCall(upstreamName.trim());
+       try {
+         const timeout = Math.min(requestedTimeoutMs, session.toolCallTimeoutMs);
+         const call = (options: { timeout: number; signal?: AbortSignal }) =>
+           session.client.request(
+             {
+               method: "tools/call",
+-              params: { name: params.tool, arguments: params.arguments ?? {} },
++              params: { name: upstreamName, arguments: args },
+             },
+             mcpCallToolResultSchema,
+             options,
+diff --git a/src/node-host/node-worker-mcp-accounts.integration.test.ts b/src/node-host/node-worker-mcp-accounts.integration.test.ts
+new file mode 100644
+index 0000000..22409b9
+--- /dev/null
++++ b/src/node-host/node-worker-mcp-accounts.integration.test.ts
+@@ -0,0 +1,353 @@
++import assert from "node:assert/strict";
++import { randomUUID } from "node:crypto";
++import { mkdtemp, rm } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { Value } from "typebox/value";
++import { expect, it } from "vitest";
++import {
++  readMcpFixtureMessage,
++  replyMcpFixtureResult,
++  startMcpHttpFixture,
++} from "../agents/agent-bundle-mcp-lifecycle.test-support.js";
++import {
++  applyGatewayToolPolicy,
++  createGatewayToolPolicyAssertion,
++  isGatewayToolAllowedWithoutAction,
++} from "../agents/gateway-tool-policy.js";
++import { resolveOpenClawPluginToolsForOptionsAsync } from "../agents/openclaw-plugin-tools.js";
++import { filterToolsByPolicy } from "../agents/tool-policy-match.js";
++import { createToolSurfacePresentationForTest } from "../agents/tool-surface-plan.test-support.js";
++import { NodeHostMcpServerSchema } from "../config/zod-schema.mcp-server.js";
++import {
++  publishNodeSessionPluginTools,
++  removeConnectedNodePluginTools,
++} from "../gateway/node-plugin-tool-snapshot.js";
++import { makeNodeSession } from "../gateway/node-registry.test-helpers.js";
++import { createWorkerConnectionIdentity } from "../gateway/worker-environments/connection-identity.test-support.js";
++import { createWorkerGatewayToolRuntime } from "../gateway/worker-environments/worker-gateway-tool-runtime.js";
++import { NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND } from "../infra/node-commands.js";
++import { createWorkerGatewayToolProxies } from "../worker/worker-gateway-tools.js";
++import { startNodeHostMcpManager } from "./mcp.js";
++import { createNodeWorkerMcpTurn, NodeWorkerMcpPolicy } from "./node-worker-mcp.js";
++import {
++  TEST_WORKER_ENDPOINT,
++  testWorkerLaunchInput,
++} from "./node-worker-supervisor.test-support.js";
++
++// A cold arm64 image also compiles the worker before its first MCP call.
++it(
++  "publishes each distinct account tool definition and dispatches only to eligible accounts",
++  { timeout: 300_000 },
++  async ({ onTestFinished, annotate }) => {
++    const differingTools = [
++      "by_input",
++      "by_output",
++      "by_hint",
++      "by_title",
++      "by_icon",
++      "by_meta",
++      "by_extension",
++      "by_nested_extension",
++      "by_wire_name",
++    ];
++    const enabledNames = ["probe", "shared", "east_only", "app_only", ...differingTools];
++    const credentials = { cs_a_west: randomUUID(), cs_b_east: randomUUID() };
++    const identities = new Map(
++      Object.entries(credentials).map(([name, token]) => ["Bearer " + token, name]),
++    );
++    const calls: Array<{ identity: string; name?: string; arguments: unknown }> = [];
++    const server = await startMcpHttpFixture(async (request, response) => {
++      const identity = identities.get(request.headers.authorization ?? "");
++      if (!identity || request.method !== "POST") {
++        response.writeHead(405).end();
++        return;
++      }
++      const message = await readMcpFixtureMessage<{
++        protocolVersion?: string;
++        name?: string;
++        arguments?: unknown;
++      }>(request);
++      if (message.method === "initialize") {
++        replyMcpFixtureResult(response, message, {
++          protocolVersion: message.params?.protocolVersion,
++          capabilities: { tools: {} },
++          serverInfo: { name: "account-probe", version: "1" },
++        });
++      } else if (message.method === "tools/list") {
++        const inputSchema = {
++          type: "object",
++          $id: "https://schemas.example/probe",
++          $defs: { target: { type: "string" } },
++          properties: { account: { $ref: "#/$defs/target" } },
++          required: ["account"],
++        };
++        const probe = {
++          name: "probe",
++          inputSchema,
++          description: identity === "cs_b_east" ? "Look up east invoices." : "Look up west orders.",
++        };
++        const east = identity === "cs_b_east";
++        const region = east ? "east" : "west";
++        // Reordering fields, including fields inside unknown extension data, keeps one shared tool.
++        const limits = east ? { max: 9, min: 3 } : { min: 3, max: 9 };
++        const shared = {
++          name: "shared",
++          inputSchema,
++          description: "Look up the current user.",
++          "example/limits": limits,
++        };
++        const scalar = { type: identity === "cs_b_east" ? "integer" : "string" };
++        const schema = { type: "object", properties: { value: scalar } };
++        const tools = [
++          probe,
++          shared,
++          { ...shared, name: "disabled" },
++          { ...shared, name: "app_only", _meta: { ui: { visibility: ["app"] } } },
++          { ...shared, name: "by_input", inputSchema: schema },
++          { ...shared, name: "by_output", outputSchema: schema },
++          { ...shared, name: "by_hint", annotations: { readOnlyHint: east } },
++          { ...shared, name: "by_title", title: region },
++          { ...shared, name: "by_icon", icons: [{ src: "https://icons.example/" + region }] },
++          { ...shared, name: "by_meta", _meta: { "example/region": region } },
++          { ...shared, name: "by_extension", "example/region": region },
++          {
++            ...shared,
++            name: "by_nested_extension",
++            annotations: { readOnlyHint: true, "example/region": region },
++          },
++          { ...shared, name: east ? " by_wire_name " : "by_wire_name" },
++        ];
++        if (identity === "cs_b_east") {
++          tools.push({ ...shared, name: "east_only" });
++        }
++        // This legacy server negotiated an object-only outputSchema. One invalid
++        // declaration rejects its page, even when the other definitions are valid.
++        const invalid = {
++          ...shared,
++          name: "invalid",
++          outputSchema: { type: "array", items: { type: "string" } },
++        };
++        replyMcpFixtureResult(response, message, {
++          tools: identity === "cs_bad" ? [...tools, invalid] : tools,
++        });
++      } else if (message.method === "tools/call") {
++        calls.push({ identity, name: message.params?.name, arguments: message.params?.arguments });
++        replyMcpFixtureResult(response, message, { content: [{ type: "text", text: identity }] });
++      } else {
++        response.writeHead(202).end();
++      }
++    });
++    onTestFinished(() => server.close());
++
++    async function start(accounts: Record<string, string>) {
++      const fixture = NodeHostMcpServerSchema.parse({
++        transport: "streamable-http",
++        url: server.url,
++        toolFilter: {
++          include: enabledNames,
++        },
++        accounts: Object.fromEntries(
++          Object.entries(accounts).map(([id, value]) => [
++            id,
++            { headers: { Authorization: "Bearer " + value } },
++          ]),
++        ),
++      });
++      const manager = await startNodeHostMcpManager({ fixture });
++      onTestFinished(() => manager.close());
++      const descriptor = testWorkerLaunchInput("/synthetic/workspace", "accounts-turn").descriptor;
++      descriptor.assignment.toolAuthority.mcpTools = manager.descriptors.map(({ mcp, name }) => ({
++        id: name,
++        ...mcp!,
++      }));
++      const policy = new NodeWorkerMcpPolicy();
++      policy.setAllowed(true);
++      const turn = createNodeWorkerMcpTurn(
++        { ...descriptor, connectionEndpoint: TEST_WORKER_ENDPOINT },
++        policy.sessionForCommand(NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND, manager),
++      );
++      assert(turn);
++      onTestFinished(() => turn.close());
++      return {
++        manager,
++        async invoke(toolId: string, args: Record<string, unknown>) {
++          const reply = Promise.withResolvers<unknown>();
++          await turn.invoke(
++            {
++              type: "mcp-call",
++              requestId: randomUUID(),
++              turnId: descriptor.assignment.turnId,
++              toolId,
++              arguments: args,
++            },
++            async (frame) => reply.resolve(frame),
++          );
++          return reply.promise;
++        },
++      };
++    }
++
++    const both = await start(credentials);
++    // Use the Gateway's model-tool materialization, not a second interpretation of tools/list.
++    const node = makeNodeSession("account-fixture", {
++      commands: ["mcp.tools.call.v1"],
++      declaredNodePluginTools: both.manager.descriptors,
++    });
++    publishNodeSessionPluginTools(node, true, []);
++    onTestFinished(() => removeConnectedNodePluginTools(node.nodeId));
++    const workspaceDir = await mkdtemp(join(tmpdir(), "worker-account-tools-"));
++    onTestFinished(() => rm(workspaceDir, { recursive: true, force: true }));
++    const enabledTools = enabledNames.map((tool) => "fixture_" + tool);
++    const config = {
++      plugins: { enabled: false },
++      tools: { gatewayPolicy: { allow: enabledTools } },
++    };
++    const tools = await resolveOpenClawPluginToolsForOptionsAsync({
++      resolvedConfig: config,
++      options: { workspaceDir, senderIsOwner: true, config, pluginToolAllowlist: enabledTools },
++    });
++    const westTool = tools.find((tool) => tool.description.startsWith("Look up west orders."));
++    const eastTool = tools.find((tool) => tool.description.startsWith("Look up east invoices."));
++    assert(westTool && eastTool);
++    await annotate(westTool.name + " — " + westTool.description);
++    await annotate(eastTool.name + " — " + eastTool.description);
++    expect([westTool.name, eastTool.name]).toEqual([
++      "acct_fixture_probe_b6aa8d3fdaa0",
++      "acct_fixture_probe_ce42a1770fc3",
++    ]);
++    for (const difference of differingTools) {
++      expect(
++        tools.filter(({ name }) => name.startsWith("acct_fixture_" + difference + "_")),
++      ).toHaveLength(2);
++    }
++    // The ordinary native and Gateway policies both apply one upstream grant to
++    // every variant, including on same-node worker admission and execution.
++    const variants = [westTool, eastTool];
++    const workerCatalog = createWorkerGatewayToolRuntime({
++      assertCurrent() {},
++      signal: new AbortController().signal,
++      prepare: async () => ({
++        tools: variants,
++        presentation: createToolSurfacePresentationForTest(),
++        policy: {
++          workspaceOnly: true,
++          readOnly: false,
++          applyPatchEnabled: true,
++          applyPatchWorkspaceOnly: true,
++          imageSanitization: {},
++        },
++      }),
++    });
++    onTestFinished(() => workerCatalog.close());
++    const identity = createWorkerConnectionIdentity();
++    const surface = await workerCatalog.getSurface(identity);
++    const projection = await workerCatalog.getPromptProjection(identity);
++    expect(projection.tools).toEqual(
++      variants.map(({ name, description, parameters }) => ({ name, description, parameters })),
++    );
++    // The serialized worker tools must retain the same upstream policy grant.
++    const unused = async () => {
++      throw new Error("This check only reads proxy definitions");
++    };
++    const workerTools = createWorkerGatewayToolProxies(surface, {
++      invokeGatewayTool: unused,
++      cancelGatewayTool: unused,
++    });
++    expect(workerTools.map(({ name }) => name)).toEqual(variants.map(({ name }) => name));
++    expect(applyGatewayToolPolicy(workerTools, config)).toEqual(workerTools);
++    expect(filterToolsByPolicy(variants, { allow: ["fixture_probe"] })).toEqual(variants);
++    expect(filterToolsByPolicy(variants, { deny: ["fixture_probe"] })).toEqual([]);
++    expect(applyGatewayToolPolicy(variants, config)).toEqual(variants);
++    const denied = { tools: { gatewayPolicy: { allow: ["fixture_shared"] } } };
++    expect(applyGatewayToolPolicy(variants, denied)).toEqual([]);
++    expect(isGatewayToolAllowedWithoutAction(westTool, config)).toBe(true);
++    expect(() => createGatewayToolPolicyAssertion(eastTool, denied)({})).toThrow("denies tool");
++    function expectHandles(tool: { parameters: unknown }, handles: string[]) {
++      expect(tool.parameters).toMatchObject({ properties: { account: { enum: handles } } });
++    }
++    expectHandles(westTool, ["cs_a_west"]);
++    expectHandles(eastTool, ["cs_b_east"]);
++    const shared = tools.filter((tool) => tool.name === "fixture_shared");
++    expect(shared).toHaveLength(1);
++    expectHandles(shared[0]!, ["cs_a_west", "cs_b_east"]);
++    expect(tools.some((tool) => tool.name === "fixture_disabled")).toBe(false);
++    expect(tools.some((tool) => tool.name === "fixture_app_only")).toBe(false);
++
++    const result = (identity: string) => ({
++      result: { content: [{ type: "text", text: identity }] },
++    });
++    const west = { account: "cs_a_west", arguments: { account: "native-account" } };
++    const east = { account: "cs_b_east", arguments: { account: "second-native-account" } };
++    expect(await both.invoke(westTool.name, west)).toMatchObject(result(west.account));
++    expect(await both.invoke(eastTool.name, east)).toMatchObject(result(east.account));
++    expect(await both.invoke("fixture_shared", west)).toMatchObject(result(west.account));
++    expect(await both.invoke("fixture_shared", east)).toMatchObject(result(east.account));
++    expect(await both.invoke("fixture_east_only", east)).toMatchObject(result(east.account));
++
++    // Only extension metadata differs. Each published variant admits exactly its own account.
++    const extensions = tools.filter(({ name }) => name.startsWith("acct_fixture_by_extension_"));
++    for (const [selected, other] of [
++      [west, east],
++      [east, west],
++    ] as const) {
++      const tool = extensions.find(({ parameters }) => Value.Check(parameters, selected));
++      assert(tool);
++      expectHandles(tool, [selected.account]);
++      expect(await both.invoke(tool.name, selected)).toMatchObject(result(selected.account));
++      expect(await both.invoke(tool.name, other)).toHaveProperty("error");
++    }
++    const wireName = tools.find(
++      ({ name, parameters }) =>
++        name.startsWith("acct_fixture_by_wire_name_") && Value.Check(parameters, east),
++    );
++    assert(wireName);
++    expect(await both.invoke(wireName.name, east)).toMatchObject(result(east.account));
++
++    // Check the dispatcher used by Gateway calls as well as the worker turn wrapper.
++    const westRoute = both.manager.descriptors.find(({ name }) => name === westTool.name)!.mcp!;
++    await expect(both.manager.callMcpTool({ ...westRoute, arguments: east })).rejects.toThrow(
++      "does not provide this tool",
++    );
++    expect(await both.invoke(westTool.name, east)).toHaveProperty("error");
++    expect(await both.invoke(eastTool.name, west)).toHaveProperty("error");
++    expect(
++      await both.invoke("fixture_shared", { ...west, arguments: { account: 17 } }),
++    ).toHaveProperty("error");
++    expect(await both.invoke("fixture_east_only", west)).toHaveProperty("error");
++    expect(await both.invoke("fixture_shared", { arguments: west.arguments })).toHaveProperty(
++      "error",
++    );
++    expect(await both.invoke("fixture_shared", { ...west, account: "cs_unknown" })).toHaveProperty(
++      "error",
++    );
++    await both.manager.close();
++
++    // Adding a lexically earlier account to the west definition keeps both names.
++    const extra = randomUUID();
++    identities.set("Bearer " + extra, "cs_0_west");
++    const invalid = randomUUID();
++    identities.set("Bearer " + invalid, "cs_bad");
++    const extended = await start({ cs_0_west: extra, cs_bad: invalid, ...credentials });
++    const westDefinition = extended.manager.descriptors.find(({ name }) => name === westTool.name);
++    assert(westDefinition?.parameters);
++    expectHandles({ parameters: westDefinition.parameters }, ["cs_0_west", "cs_a_west"]);
++    expect(extended.manager.descriptors.some(({ name }) => name === eastTool.name)).toBe(true);
++    await extended.manager.close();
++
++    const remaining = await start({ cs_b_east: credentials.cs_b_east });
++    expect(await remaining.invoke("fixture_probe", west)).toHaveProperty("error");
++    expect(await remaining.invoke("fixture_probe", east)).toMatchObject(result(east.account));
++    expect(calls).toEqual([
++      { identity: west.account, name: "probe", arguments: west.arguments },
++      { identity: east.account, name: "probe", arguments: east.arguments },
++      { identity: west.account, name: "shared", arguments: west.arguments },
++      { identity: east.account, name: "shared", arguments: east.arguments },
++      { identity: east.account, name: "east_only", arguments: east.arguments },
++      { identity: west.account, name: "by_extension", arguments: west.arguments },
++      { identity: east.account, name: "by_extension", arguments: east.arguments },
++      { identity: east.account, name: " by_wire_name ", arguments: east.arguments },
++      { identity: east.account, name: "probe", arguments: east.arguments },
++    ]);
++  },
++);
+diff --git a/src/plugins/tool-metadata.ts b/src/plugins/tool-metadata.ts
+index e09aca4..9ed3486 100644
+--- a/src/plugins/tool-metadata.ts
++++ b/src/plugins/tool-metadata.ts
+@@ -24,6 +24,8 @@ export type PluginToolMcpMeta = {
+   };
+   node?: {
+     id: string;
++    /** A definition-specific node MCP tool shares the original operation grant. */
++    policyName?: string;
+     displayName?: string;
+   };
+ };
+@@ -42,6 +44,11 @@ type PluginToolMeta = {
+
+ const pluginToolMeta = new WeakMap<object, PluginToolMeta>();
+
++/** Account variants of a node-hosted operation share its tool policy. */
++export function getAgentToolPolicyName(tool: { name: string }): string {
++  return pluginToolMeta.get(tool)?.mcp?.node?.policyName ?? tool.name;
++}
++
+ /** Attaches plugin ownership metadata to a concrete agent tool instance. */
+ export function setPluginToolMeta(tool: AnyAgentTool, meta: PluginToolMeta): void {
+   pluginToolMeta.set(tool, meta);
+diff --git a/src/shared/node-mcp-tool-names.ts b/src/shared/node-mcp-tool-names.ts
+new file mode 100644
+index 0000000..e69deff
+--- /dev/null
++++ b/src/shared/node-mcp-tool-names.ts
+@@ -0,0 +1,40 @@
++/** Stable model and policy names for a node-hosted MCP operation. */
++export const NODE_MCP_NAME_MAX_CHARS = 64;
++const NODE_MCP_SERVER_FRAGMENT_MAX_CHARS = 31;
++
++function sanitizeDescriptorFragment(raw: string, fallback: string): string {
++  const cleaned = raw
++    .trim()
++    .replace(/[^A-Za-z0-9_-]+/g, "_")
++    .replace(/^[_-]+|[_-]+$/g, "");
++  const normalized = cleaned || fallback;
++  return /^[A-Za-z]/.test(normalized) ? normalized : `${fallback}_${normalized}`;
++}
++
++export function buildDescriptorBaseName(serverName: string, toolName: string): string {
++  const server = sanitizeDescriptorFragment(serverName, "mcp").slice(
++    0,
++    NODE_MCP_SERVER_FRAGMENT_MAX_CHARS,
++  );
++  const toolBudget = Math.max(1, NODE_MCP_NAME_MAX_CHARS - server.length - 1);
++  const tool = sanitizeDescriptorFragment(toolName, "tool").slice(0, toolBudget);
++  return `${server}_${tool}`;
++}
++
++export function qualifiedNodeMcpToolName(baseName: string, route: string): string {
++  const suffix = "_" + route.slice(-12);
++  return ("acct_" + baseName).slice(0, NODE_MCP_NAME_MAX_CHARS - suffix.length) + suffix;
++}
++
++// Only a paired node's descriptor for this server and exact definition has the
++// qualified alias. Never interpret an arbitrary model or plugin tool name as a policy grant.
++export function nodeMcpToolPolicyName(
++  server: string,
++  route: string,
++  name: string,
++): string | undefined {
++  const match = /^(.*)__[a-f0-9]{64}$/u.exec(route);
++  if (!match) return undefined;
++  const base = buildDescriptorBaseName(server, match[1]!);
++  return name === qualifiedNodeMcpToolName(base, route) ? base : undefined;
++}

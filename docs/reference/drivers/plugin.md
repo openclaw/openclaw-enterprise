@@ -47,7 +47,9 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
   capabilities. `validate(selections, sources, modelSourceId)` refuses a
   binding that names no matching attached source, or the source that
   authenticates the model. OCC calls it at Agent create, update, provisioning,
-  and deployment.
+  and deployment. The Driver can return saved display names keyed by the bound
+  source IDs. At deployment, OCC freezes these names with the selections so the
+  model can distinguish accounts in the same slot.
 - `validateAgentConfiguration(selections, configuration)` (optional): check
   selections against the Agent's Configuration values at Agent create and
   update, provisioning, and deployment, which checks again because a

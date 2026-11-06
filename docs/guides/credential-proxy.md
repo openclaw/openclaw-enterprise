@@ -110,12 +110,9 @@ to use an ambient token.
 
 ## Enable Google Workspace requests from a dedicated worker
 
-OCE binds the selected Google source to its host, path, OAuth scopes and plugin
-release when deploying the Agent. For each request, the OpenShell supervisor
-sends the HTTP details and deployed binding to a shared guard in the execution
-cluster. The guard checks the release’s operation map locally. OpenShell
-substitutes the bearer after approval. Redeploy to apply a new plugin selection.
-Public Discovery uses no credential.
+For browser-connected Google accounts, select a [Credential Proxy and terminal sender](../reference/drivers/credential-proxy.md#saved-oauth-accounts). Each call identifies one account bound to the deployed plugin slot. Credential Proxy checks that account's grant, the exact destination and the reviewed Google operation before resolving a bearer. A metadata-only Gmail account can coexist with a second account that grants search. Select the second account when searching. Reviewed public discovery requests use no credential.
+
+For a manually registered OpenShell provider, the request guard below checks the reviewed operation and approved destination before OpenShell substitutes its bearer. Google enforces the selected account’s OAuth grant.
 
 Set the source’s `config.binary` to `/usr/local/lib/oce/plugins/google/bin/gog`
 when the installation allows other executables. The checks also cover `gog` helpers.

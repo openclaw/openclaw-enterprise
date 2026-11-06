@@ -2396,9 +2396,10 @@ Connect an account and attach it to a saved Agent plugin slot
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
+| `accountName` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
-| `expectedCredentialSourceId` | `string or null` | Yes | — |
+| `expectedCredentialSourceIds` | `array<string>` | Yes | max items: 64 |
 | `pluginId` | `string` | Yes | min length: 1; max length: 256 |
 | `releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
 | `selectedScopes` | `array<string>` | No | — |
@@ -2407,10 +2408,11 @@ Connect an account and attach it to a saved Agent plugin slot
 Example request
 ```json
 {
+  "accountName": "Support",
   "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
   "connectionTemplateVersion": 1,
-  "expectedCredentialSourceId": null,
-  "pluginId": "occ-plugin:google@1.0.0",
+  "expectedCredentialSourceIds": [],
+  "pluginId": "occ-plugin:google@1.1.0",
   "releaseSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "slotId": "account"
 }
@@ -2549,7 +2551,7 @@ List compatible OAuth templates for a saved Agent plugin slot
 | --- | --- | --- | --- | --- | --- |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
-| `pluginId` | path | `string` | Yes | min length: 1; max length: 256 | "occ-plugin:google@1.0.0" |
+| `pluginId` | path | `string` | Yes | min length: 1; max length: 256 | "occ-plugin:google@1.1.0" |
 | `slotId` | path | `string` | Yes | min length: 1; max length: 128 | "account" |
 
 ##### Responses
@@ -2868,6 +2870,7 @@ Start consent for a reusable account in this Namespace
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
+| `accountName` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `selectedScopes` | `array<string>` | No | — |
 

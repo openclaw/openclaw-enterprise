@@ -1,12 +1,12 @@
 import type { CredentialSource } from "@openclaw-enterprise/contracts";
-import type { ManagedCliInstall, ManagedCredentialSlot } from "../managed-catalog.ts";
+import type { ManagedCliInstall } from "../managed-catalog.ts";
 import {
   eligibleGoogleOperations,
   googleDiscoveryRequests,
   googleRequestScope,
 } from "./operations.ts";
 
-function sourceScope(source: CredentialSource) {
+function sourceScope(source: Pick<CredentialSource, "config">) {
   const config = source.config;
   return googleRequestScope({
     host: config.host,
@@ -19,23 +19,24 @@ function sourceScope(source: CredentialSource) {
 /** Google scopes and routes are connector semantics, independent of catalog presentation. */
 export const googleWorkspaceCredentialPolicy = {
   packageName: "oce-google-workspace",
-  accepts(
-    install: ManagedCliInstall,
-    slot: ManagedCredentialSlot,
-    source: CredentialSource,
-  ): boolean {
-    const config = source.config;
-    const scope = sourceScope(source);
+  acceptsConfig(install: ManagedCliInstall, config: CredentialSource["config"]): boolean {
+    const slot = install.credentials[install.slotId]!;
+    const scope = sourceScope({ config });
     return (
-      source.state === "ready" &&
-      source.ownerCapability === "credential_gateway" &&
-      source.egress === undefined &&
-      source.type === "oauth2-refresh-token" &&
       config.token_url === slot.tokenEndpoint &&
       config.env_var === slot.delivery.env &&
       (config.binary === undefined || config.binary === install.binaryPath) &&
       scope !== undefined &&
       eligibleGoogleOperations(scope).length > 0
+    );
+  },
+  accepts(install: ManagedCliInstall, source: CredentialSource): boolean {
+    return (
+      source.state === "ready" &&
+      source.ownerCapability === "credential_gateway" &&
+      source.egress === undefined &&
+      source.type === "oauth2-refresh-token" &&
+      this.acceptsConfig(install, source.config)
     );
   },
   conflict(selected: CredentialSource, sources: readonly CredentialSource[]) {

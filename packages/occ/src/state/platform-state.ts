@@ -2382,7 +2382,11 @@ function repositories(
           !intent.agentId ||
           !intent.pluginId ||
           !intent.slotId ||
-          intent.expectedCredentialSourceId === "")
+          !Array.isArray(intent.expectedCredentialSourceIds) ||
+          intent.expectedCredentialSourceIds.length > 64 ||
+          new Set(intent.expectedCredentialSourceIds).size !==
+            intent.expectedCredentialSourceIds.length ||
+          intent.expectedCredentialSourceIds.some((id) => !id))
       ) {
         throw new ResourceConflictError(
           "The plugin attachment intent does not match this consent attempt.",

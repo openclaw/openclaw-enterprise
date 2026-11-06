@@ -121,14 +121,18 @@ if (scenario.component === "plugins") {
   input.id = "agent-plugins";
   input.rows = 6;
   input.spellcheck = false;
-  input.value = scenario.pluginSelections ?? "{}";
+  const savedPluginSelections = scenario.pluginSelections ?? "{}";
+  input.value = savedPluginSelections;
   const fields = createPluginFields({
     input,
     catalog: scenario.pluginCatalog ?? null,
     ...(scenario.connectionPreview && {
       saveHint: "Changes are saved when you choose Save plugin selections.",
       slotConnection: {
-        unavailable: () => undefined,
+        unavailable: () =>
+          input.value === savedPluginSelections
+            ? undefined
+            : "Save your plugin selections before connecting an account.",
         async list() {
           if (scenario.connectionPreview === "denied") {
             throw Object.assign(new Error("Access denied"), { status: 403 });
@@ -195,7 +199,7 @@ if (scenario.component === "plugins") {
             },
           ];
         },
-        async start(_slot, template, selectedScopes) {
+        async start(_slot, template, selectedScopes, accountName) {
           document.querySelector<HTMLDialogElement>("dialog[open]")?.close();
           const receipt = document.createElement("section");
           receipt.className = "agent-card agent-form";
@@ -203,6 +207,11 @@ if (scenario.component === "plugins") {
           output.setAttribute("role", "status");
           output.textContent = `Simulated provider handoff for ${template.displayName}. No account has been connected.`;
           receipt.append(output);
+          if (accountName) {
+            const label = document.createElement("p");
+            label.textContent = `Account name: ${accountName}`;
+            receipt.append(label);
+          }
           if (selectedScopes) {
             const permissions = document.createElement("p");
             permissions.textContent = selectedScopes.length

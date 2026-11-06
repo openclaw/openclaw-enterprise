@@ -1101,6 +1101,7 @@ export interface AgentCredentialSourceInput {
 }
 
 export interface StartNamespaceConnectionInput {
+  readonly accountName?: string;
   readonly selectedScopes?: readonly string[];
   readonly sessionId: string;
   readonly namespaceId: string;
@@ -1985,7 +1986,7 @@ const PLUGIN_ID_SHAPE = /^[A-Za-z0-9._~:@-]{1,253}$/u;
 
 /**
  * Discovery's refusal for a plugin ID the selected Driver does not offer. It names the IDs only
- * in the selection-key shape, and the offered ID only as the versioned form of the rejected one.
+ * in the selection-key shape, and the offered ID only for the same package.
  * The request body has no `/plugins` member, so the refusal has no request path.
  */
 function undiscoveredPlugin(
@@ -1996,11 +1997,13 @@ function undiscoveredPlugin(
     error.pluginId !== undefined && PLUGIN_ID_SHAPE.test(error.pluginId)
       ? error.pluginId
       : undefined;
+  const offeredName = error.offeredId?.replace(/@[^@]+$/, "");
   const offeredId =
     pluginId !== undefined &&
     error.offeredId !== undefined &&
     PLUGIN_ID_SHAPE.test(error.offeredId) &&
-    error.offeredId.startsWith(`${pluginId}@`)
+    offeredName !== error.offeredId &&
+    (offeredName === pluginId || offeredName === pluginId.replace(/@[^@]+$/, ""))
       ? error.offeredId
       : undefined;
   return new PluginPolicyValidationError(
@@ -4670,12 +4673,13 @@ export class OpenClawController {
     return credentials.choices(eligibleSources ?? []).flatMap(({ pluginId, id, sources }) => {
       const slot =
         plugins[pluginId]?.enabled && credentials.connectionSlot?.(plugins, pluginId, id);
-      if (eligibleSources && slot && !sources.some(({ id }) => id === slot.credentialSourceId)) {
+      if (!slot) {
         return [];
       }
-      return slot && slot.credentialSourceId
-        ? [{ pluginId, id, sourceId: slot.credentialSourceId, slot }]
-        : [];
+      const sourceIds = eligibleSources
+        ? slot.credentialSourceIds.filter((sourceId) => sources.some(({ id }) => id === sourceId))
+        : slot.credentialSourceIds;
+      return sourceIds.map((sourceId) => ({ pluginId, id, sourceId, slot }));
     });
   }
 
@@ -4781,7 +4785,7 @@ export class OpenClawController {
       pluginId,
       slotId,
       releaseSha256,
-      expectedCredentialSourceId,
+      expectedCredentialSourceIds,
       connectionTemplateId,
       connectionTemplateVersion,
     } = input;
@@ -4790,7 +4794,7 @@ export class OpenClawController {
       pluginId,
       slotId,
       releaseSha256,
-      expectedCredentialSourceId,
+      expectedCredentialSourceIds,
       connectionTemplateId,
       connectionTemplateVersion,
     });
@@ -4836,6 +4840,9 @@ export class OpenClawController {
   }> {
     const { namespaceId } = input;
     await this.authorizeConnectionCreation(principalId, namespaceId);
+    if (input.accountName !== undefined && !isName(input.accountName)) {
+      throw new ScopeViolationError("The credential source name is invalid.");
+    }
     const selected = intent
       ? await this.withSavedPluginTarget(
           principalId,
@@ -4873,7 +4880,10 @@ export class OpenClawController {
         if (
           !slot ||
           slot.releaseSha256 !== intent.releaseSha256 ||
-          slot.credentialSourceId !== intent.expectedCredentialSourceId ||
+          !isDeepStrictEqual(
+            new Set(slot.credentialSourceIds),
+            new Set(intent.expectedCredentialSourceIds),
+          ) ||
           version.version !== intent.connectionTemplateVersion ||
           !slot.issuers.includes(version.issuer) ||
           !slot.acceptsRecipient(version)
@@ -4891,7 +4901,7 @@ export class OpenClawController {
       const source = await state.credentialSources.createCredentialSource({
         id: this.nextIdentifier("credential_source"),
         namespaceId,
-        name: `Connection ${crypto.randomUUID()}`,
+        name: input.accountName ?? `Connection ${crypto.randomUUID()}`,
         type: "oauth2-refresh-token",
         config: {
           connection_template_id: template.id,
@@ -5154,7 +5164,10 @@ export class OpenClawController {
         if (
           !slot ||
           slot.releaseSha256 !== intent.releaseSha256 ||
-          slot.credentialSourceId !== intent.expectedCredentialSourceId
+          !isDeepStrictEqual(
+            new Set(slot.credentialSourceIds),
+            new Set(intent.expectedCredentialSourceIds),
+          )
         ) {
           throw new ResourceStateConflictError("The selected plugin slot changed during consent.");
         }
@@ -7567,12 +7580,13 @@ export class OpenClawController {
     }
     const driver = this.ownedPluginDriver(plugins.driver, revision.harness.id);
     const slot = driver?.credentials?.connectionSlot?.(plugins.plugins, pluginId, slotId);
-    const sourceId = slot?.credentialSourceId;
+    const sourceId = slot?.credentialSourceIds.find(
+      (id) => savedAccountBindingId(revisionId, pluginId, slotId, id) === request.bindingId,
+    );
     if (
       !slot?.authorizeRequest ||
       !sourceId ||
       !saved.sourceIds.includes(sourceId) ||
-      savedAccountBindingId(revisionId, pluginId, slotId, sourceId) !== request.bindingId ||
       signal.aborted ||
       !(await middleware.verifySandbox(
         await this.credentialNamespace(namespace),
@@ -13344,19 +13358,18 @@ export class OpenClawController {
         lockedAgent.plugins && Object.keys(lockedAgent.plugins).length
           ? this.pluginDriver(revisionHarness.id, true)
           : undefined;
-      const { snapshots: credentialSources, savedAccounts } = await this.admitCredentialSources(
-        state,
-        principalId,
-        lockedAgent,
-        sandbox,
-        driver,
-      );
+      const {
+        snapshots: credentialSources,
+        savedAccounts,
+        accountNames,
+      } = await this.admitCredentialSources(state, principalId, lockedAgent, sandbox, driver);
       const pluginState =
         driver && lockedAgent.plugins
           ? immutableCopy({
               driver: this.pluginOwner(driver, lockedAgent),
               plugins: lockedAgent.plugins,
               ...(savedAccounts && { savedAccounts }),
+              ...(accountNames && { accountNames }),
             } satisfies PluginRevisionState)
           : undefined;
       const secretBindings = this.bindings(metadata.secretBindings);
@@ -15139,7 +15152,7 @@ export class OpenClawController {
     plugins: PluginDesiredState | undefined,
     sources: readonly CredentialSource[],
     harnessAuth?: HarnessAuthBinding | null,
-  ): Promise<void> {
+  ): Promise<PluginRevisionState["accountNames"]> {
     if (!driver?.credentials || !plugins || Object.keys(plugins).length === 0) {
       return;
     }
@@ -15163,10 +15176,12 @@ export class OpenClawController {
         );
       }
     }
-    driver.credentials.validate(
-      plugins,
-      sources,
-      harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined,
+    return (
+      driver.credentials.validate(
+        plugins,
+        sources,
+        harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined,
+      ) ?? undefined
     );
   }
 
@@ -15182,6 +15197,7 @@ export class OpenClawController {
     driver: PluginDriver | undefined,
   ): Promise<{
     snapshots: readonly CredentialSourceSnapshot[];
+    accountNames?: PluginRevisionState["accountNames"];
     savedAccounts?: PluginRevisionState["savedAccounts"];
   }> {
     const bindings = agent.credentialSources ?? [];
@@ -15214,7 +15230,7 @@ export class OpenClawController {
       agent.harnessAuth,
       attachedAccounts,
     );
-    await this.validatePluginCredentialSources(
+    const accountNames = await this.validatePluginCredentialSources(
       state,
       driver,
       agent.plugins,
@@ -15255,7 +15271,7 @@ export class OpenClawController {
       }
     }
     if (!savedSourceIds.length) {
-      return { snapshots: immutableCopy(snapshots) };
+      return { snapshots: immutableCopy(snapshots), accountNames };
     }
     const proxy = this.selections.has("credential_proxy")
       ? this.selectedProxyOwner().require("credential_proxy")
@@ -15269,6 +15285,7 @@ export class OpenClawController {
     await middleware.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
     return immutableCopy({
       snapshots,
+      ...(accountNames && { accountNames }),
       savedAccounts: {
         credentialProxyId: proxy.id,
         registrationName: middleware.registrationName,
@@ -16511,7 +16528,7 @@ export class OpenClawController {
         )
       ) {
         throw new ResourceStateConflictError(
-          "Clear the plugin slot that uses this account before detaching it.",
+          "Remove this account from its plugin slots before detaching it.",
         );
       }
     }

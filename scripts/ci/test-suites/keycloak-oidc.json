@@ -10,7 +10,11 @@
     "NODE_EXTRA_CA_CERTS",
     "OCC_TEST_KEYCLOAK_TOKEN_ORIGIN"
   ],
-  "optionalEnv": ["OCC_TEST_OPENSHELL_CREDENTIAL_SENDER"],
+  "optionalEnv": [
+    "OCC_TEST_OPENSHELL_CREDENTIAL_SENDER",
+    "OCC_TEST_BROWSER_ACCOUNT_WORKER",
+    "OCC_TEST_OPENSHELL_BROWSER_ACCOUNT_RELAY"
+  ],
   "prepare": {
     "postgres": true,
     "keycloak": true,

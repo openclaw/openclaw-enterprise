@@ -192,7 +192,11 @@ import {
 } from "../workspace-setup-runtime.ts";
 import { requireHarnessAuthMethod } from "../harness-auth-method.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
-import { managedInstalls, managedMcpCredentialBinding } from "../../plugin/managed-catalog.ts";
+import {
+  managedInstalls,
+  managedSlotAcceptsSource,
+  managedSlotBinding,
+} from "../../plugin/managed-catalog.ts";
 import { requireManagedCredentialRuntime } from "../../plugin/managed-runtime.ts";
 import {
   validatePlaintextNativeGateway,
@@ -252,6 +256,7 @@ import {
   PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT,
   PLUGIN_RUNTIME_MANIFEST,
   PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT,
+  managedPluginPackages,
   PLUGIN_RUNTIME_READY_MARKER,
   PLUGIN_RUNTIME_READY_MARKER_ENVIRONMENT,
   type CodexRepositoryBrokerNetworkPolicy,
@@ -608,6 +613,7 @@ const PROTECTED_CODEX_NO_CONNECTION_RETRY = "protected-codex-no-connection-retry
 interface PluginRuntimeSnapshot {
   readonly name: string;
   readonly runtime: PluginRuntimeSpec;
+  readonly accountNames?: Readonly<Record<string, string>>;
   readonly entrypoint: string;
   readonly workspaceEntrypoint: string;
 }
@@ -14603,6 +14609,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return {
       name: `plugin-runtime-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       runtime,
+      ...(revision.plugins?.accountNames && { accountNames: revision.plugins.accountNames }),
       entrypoint: protectedCodex ? entrypoints.protected : entrypoints.agent,
       workspaceEntrypoint: protectedCodex ? entrypoints.protectedWorkspace : entrypoints.workspace,
     };
@@ -15564,7 +15571,26 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       }
       seen.add(source.id);
     }
-    return resolved;
+    const plugins = revision.plugins;
+    if (plugins?.driver.implementation !== "occ/openclaw-plugin") {
+      return resolved;
+    }
+    // Only the accounts selected for an enabled slot may share its request policy.
+    const slots = managedInstalls.flatMap((install) => {
+      if (!plugins.plugins[install.id]?.enabled) {
+        return [];
+      }
+      const binding = managedSlotBinding(plugins.plugins, install);
+      // CLI credentials attached independently retain their own routes until the owner binds the slot.
+      return binding || install.kind === "mcp"
+        ? [{ install, selected: new Set(binding?.sourceIds) }]
+        : [];
+    });
+    return resolved.filter(
+      (source) =>
+        slots.some(({ selected }) => selected.has(source.id)) ||
+        !slots.some(({ install }) => managedSlotAcceptsSource(install, source)),
+    );
   }
 
   private harnessAuthForRevision(
@@ -16343,26 +16369,16 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     // The image supplies the releases. Both processes receive only package identities and
     // reviewed tool selections, never account credentials.
     if (dedicated && pluginRuntime?.runtime.kind === "openclaw") {
-      const { selections } = pluginRuntime.runtime;
-      const packages = [];
-      for (const install of managedInstalls) {
-        const selection = selections[install.id];
-        if (!selection || (!selection.enabled && role !== "gateway")) {
-          continue;
-        }
-        const binding =
-          install.kind === "mcp" ? managedMcpCredentialBinding(selections, install) : undefined;
-        packages.push({
-          kind: install.kind,
-          packageName: install.packageName,
-          slotId: Object.keys(install.credentials)[0],
-          ...(role === "gateway" && { id: install.id }),
-          ...(selection.enabled && { releaseSha256: install.releaseSha256 }),
-          ...(binding?.toolNames.length && { toolNames: binding.toolNames }),
-        });
-      }
+      const packages = managedPluginPackages(
+        managedInstalls,
+        pluginRuntime.runtime.selections,
+        pluginRuntime.accountNames,
+        role,
+      );
       if (packages.length > 0) {
-        variables.push({ name: MANAGED_PLUGIN_ENVIRONMENT, value: JSON.stringify(packages) });
+        // Kubelet expands $(VAR) and $$ in literal env values, including inside account names.
+        const value = JSON.stringify(packages).replaceAll("$", "\\u0024");
+        variables.push({ name: MANAGED_PLUGIN_ENVIRONMENT, value });
       }
     }
     const needsPluginRuntime =

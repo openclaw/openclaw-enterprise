@@ -17,9 +17,6 @@ test("Google packaging refuses substituted ClawHub skill bytes before installing
     await readFile(new URL("ai.openclaw.oce/release.json", google), "utf8"),
   );
   manifest.clawhub.sourceUrl = pathToFileURL(upstream).href;
-  manifest.artifacts["linux-amd64"].url = pathToFileURL(
-    join(directory, "unreachable-archive"),
-  ).href;
   await writeFile(join(directory, "release.json"), JSON.stringify(manifest));
   const result = spawnSync(
     process.execPath,
@@ -29,6 +26,7 @@ test("Google packaging refuses substituted ClawHub skill bytes before installing
       "linux-amd64",
       directory,
       fileURLToPath(new URL("../../scripts/ci/download-pinned.sh", import.meta.url)),
+      join(directory, "uninstalled-gog"),
     ],
     { encoding: "utf8" },
   );

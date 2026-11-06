@@ -2614,13 +2614,12 @@ export const connectionSessions = occSchema.table(
       sql`${table.attachmentIntent} IS NULL OR (
       jsonb_typeof(${table.attachmentIntent}) = 'object'
       AND ${table.attachmentIntent} ?& ARRAY['agentId', 'pluginId', 'slotId', 'releaseSha256',
-        'expectedCredentialSourceId', 'connectionTemplateId', 'connectionTemplateVersion']
+        'expectedCredentialSourceIds', 'connectionTemplateId', 'connectionTemplateVersion']
       AND jsonb_typeof(${table.attachmentIntent}->'agentId') = 'string' AND ${table.attachmentIntent}->>'agentId' <> ''
       AND jsonb_typeof(${table.attachmentIntent}->'pluginId') = 'string' AND ${table.attachmentIntent}->>'pluginId' <> ''
       AND jsonb_typeof(${table.attachmentIntent}->'slotId') = 'string' AND ${table.attachmentIntent}->>'slotId' <> ''
       AND jsonb_typeof(${table.attachmentIntent}->'releaseSha256') = 'string' AND ${table.attachmentIntent}->>'releaseSha256' ~ '^[a-f0-9]{64}$'
-      AND (${table.attachmentIntent}->'expectedCredentialSourceId' = 'null'::jsonb
-        OR (jsonb_typeof(${table.attachmentIntent}->'expectedCredentialSourceId') = 'string' AND ${table.attachmentIntent}->>'expectedCredentialSourceId' <> ''))
+      AND occ.connection_intent_account_ids_are_valid(${table.attachmentIntent}->'expectedCredentialSourceIds')
       AND ${table.attachmentIntent}->'connectionTemplateId' = to_jsonb(${table.connectionTemplateId})
       AND ${table.attachmentIntent}->'connectionTemplateVersion' = to_jsonb(${table.connectionTemplateVersion})
     )`,

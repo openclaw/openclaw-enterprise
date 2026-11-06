@@ -7,15 +7,19 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { createSecureContext } from "node:tls";
 import { promisify } from "node:util";
+import { reservePort } from "./available-port.mjs";
 import { certificateAuthority, signedLeaf } from "./certificates.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import type { SavedAccountPeer } from "./saved-account-proxy.ts";
 
 const execute = promisify(execFile);
-const host = "reports.example.test";
 
 /** The HTTPS origin validates the presented bearer with the issuer and retains only its digest. */
 export async function createSavedAccountOrigin(t: TestContext, issuer: string) {
+  // The lane resolves the issuer hostname to loopback. A distinct port is the MCP service.
+  const host = new URL(issuer).hostname;
+  const workerPort = await reservePort();
+  t.after(workerPort.release);
   const directory = await temporaryDirectory(t, "oce-account-origin-");
   const ca = await certificateAuthority(directory, {
     caName: "Reports test CA",
@@ -41,6 +45,11 @@ export async function createSavedAccountOrigin(t: TestContext, issuer: string) {
       tool: "",
     };
     requests.push(observed);
+    if (req.method === "GET" || req.method === "DELETE") {
+      observed.tool = req.method;
+      res.writeHead(405, { Allow: "POST" }).end();
+      return;
+    }
     try {
       assert.equal(req.method, "POST");
       assert.equal(req.url, "/mcp");
@@ -49,7 +58,7 @@ export async function createSavedAccountOrigin(t: TestContext, issuer: string) {
         bytes += chunk.toString();
       }
       const body = JSON.parse(bytes);
-      observed.tool = body.params?.name ?? "";
+      observed.tool = body.method === "tools/call" ? body.params?.name : body.method;
       const user =
         token &&
         (await fetch(`${issuer}/protocol/openid-connect/userinfo`, {
@@ -61,13 +70,48 @@ export async function createSavedAccountOrigin(t: TestContext, issuer: string) {
         return;
       }
       observed.subject = (await user.json()).sub;
-      res.writeHead(200, { "content-type": "application/json" }).end(
-        JSON.stringify({
-          jsonrpc: "2.0",
-          id: body.id,
-          result: { content: [{ type: "text", text: "report retrieved" }] },
-        }),
-      );
+      if (body.method === "notifications/initialized") {
+        res.writeHead(202, { "content-type": "application/json" }).end();
+        return;
+      }
+      let result;
+      switch (body.method) {
+        case "initialize":
+          result = {
+            protocolVersion: body.params.protocolVersion,
+            capabilities: { tools: {} },
+            serverInfo: { name: "Reports", version: "1" },
+          };
+          break;
+        case "tools/list":
+          result = {
+            tools: [
+              {
+                name: "whoami",
+                description: "Return the signed-in account.",
+                inputSchema: { type: "object", properties: {}, additionalProperties: false },
+              },
+            ],
+          };
+          break;
+        case "tools/call":
+          assert.deepEqual(body.params.arguments, {});
+          result = {
+            content: [
+              {
+                type: "text",
+                text: observed.tool === "whoami" ? observed.subject : "report retrieved",
+              },
+            ],
+          };
+          break;
+        default:
+          res.writeHead(400).end();
+          return;
+      }
+      res
+        .writeHead(200, { "content-type": "application/json" })
+        .end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }));
     } catch {
       res.writeHead(400).end();
     }
@@ -84,11 +128,14 @@ export async function createSavedAccountOrigin(t: TestContext, issuer: string) {
   );
   const address = server.address();
   assert.ok(address && typeof address !== "string");
-  const url = new URL(`https://${host}:${address.port}/mcp`);
+  const url = new URL(`https://${host}:${workerPort.port}/mcp`);
 
   return {
     url: url.href,
     requests,
+    workerPort,
+    tls: { caPem: root, caPath: ca.caPath, certificatePem: leaf.cert, privateKeyPem: leaf.key },
+    originAddress: `127.0.0.1:${address.port}`,
     async dispatch(peer: SavedAccountPeer, body: Record<string, unknown>): Promise<boolean> {
       const runner = process.env.OCC_TEST_OPENSHELL_CREDENTIAL_SENDER;
       if (runner) {
@@ -107,7 +154,7 @@ export async function createSavedAccountOrigin(t: TestContext, issuer: string) {
             middlewareName: peer.middlewareName,
             bindingConfig: peer.bindingConfig,
             originHost: host,
-            originPort: address.port,
+            originPort: workerPort.port,
             originAddress: `127.0.0.1:${address.port}`,
             originCaPem: root,
             method: "POST",

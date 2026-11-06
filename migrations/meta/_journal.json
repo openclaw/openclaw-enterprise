@@ -498,6 +498,13 @@
       "when": 1787000000071,
       "tag": "0071_connection_attachment_intent",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1787000000072,
+      "tag": "0072_connection_intent_accounts",
+      "breakpoints": true
     }
   ]
 }

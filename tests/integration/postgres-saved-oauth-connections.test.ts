@@ -2,15 +2,20 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
+import { chromium, type Browser } from "playwright";
+import { chromiumTrustArg } from "../helpers/console-app.mjs";
+import { tlsPeerCertificate } from "../helpers/tls-peer-certificate.mjs";
 import type { AgentPluginCredentialSlot, PluginDriver } from "@openclaw-enterprise/contracts";
 import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { managedPluginPackages } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import {
   managedCliInstalls,
   managedMcpInstalls,
   managedPluginAccountSlot,
+  managedSlotBinding,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { createSavedAccountOrigin } from "../helpers/saved-account-origin.ts";
 import {
@@ -32,6 +37,8 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
+import { keycloakAccountMcpPackage } from "../fixtures/keycloak-account-mcp-package.mjs";
+import { verifyNativeBrowserAccountTools } from "../helpers/native-browser-account-tools.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { createBackendFixture } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
@@ -46,25 +53,46 @@ const secretsFile = process.env.OCC_TEST_KEYCLOAK_SECRETS_FILE;
 const publicOrigin = "https://occ-connections.test";
 const redirectUri = `${publicOrigin}/oauth/callback`;
 
-async function consentRedirect(authorizationUrl: string, username: string, password: string) {
-  const login = await fetch(authorizationUrl, { redirect: "manual" });
-  assert.equal(login.status, 200);
-  const form = (await login.text()).match(/<form[^>]*id="kc-form-login"[^>]*action="([^"]+)"/);
-  assert.ok(form?.[1], "Keycloak shows its login form");
-  const cookie = login.headers
-    .getSetCookie()
-    .map((value) => value.split(";")[0])
-    .join("; ");
-  const accepted = await fetch(form[1].replaceAll("&amp;", "&"), {
-    method: "POST",
-    redirect: "manual",
-    headers: { cookie },
-    body: new URLSearchParams({ username, password, credentialId: "" }),
+/** Follow the issuer's real browser login. The test submits the returned URL through the owner's OCC session. */
+// Each of the two MCP sessions can issue an event-stream GET and a discovery POST together.
+const sandboxOperationShare = 4;
+
+async function consentRedirect(
+  browser: Browser,
+  authorizationUrl: string,
+  username: string,
+  password: string,
+) {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    await page.goto(authorizationUrl);
+    await page.locator("#username").fill(username);
+    await page.locator("#password").fill(password);
+    // Read the issuer's redirect before delivering it to OCC in the test's chosen
+    // session. That lets the same workflow exercise logout and consent races.
+    const [authorized] = await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.status() === 302 &&
+          response.headers().location?.startsWith(redirectUri + "?") === true,
+      ),
+      page.locator("#kc-login").click({ noWaitAfter: true }),
+    ]);
+    const callback = new URL(authorized.headers().location!);
+    assert.ok(callback.searchParams.has("code"), "provider completed authorization");
+    return callback.pathname + callback.search;
+  } finally {
+    await context.close();
+  }
+}
+
+async function keycloakSubject(bearer: string): Promise<string> {
+  const result = await fetch(`${issuer}/protocol/openid-connect/userinfo`, {
+    headers: { authorization: `Bearer ${bearer}` },
   });
-  assert.equal(accepted.status, 302);
-  const callback = new URL(accepted.headers.get("location")!);
-  assert.equal(callback.origin + callback.pathname, redirectUri);
-  return callback.pathname + callback.search;
+  assert.equal(result.status, 200, "Keycloak accepts the Token Service's prepared access token");
+  return (await result.json()).sub;
 }
 
 async function accountSession(
@@ -96,6 +124,7 @@ const lane = {
     requiresPostgres.skip ||
     (!(issuer && tokenOrigin && secretsFile) && "Prepare the keycloak-oidc CI lane."),
 };
+const slackInstall = managedMcpInstalls.find(({ packageName }) => packageName === "oce-slack")!;
 
 async function oauthAccounts(
   t: TestContext,
@@ -106,6 +135,23 @@ async function oauthAccounts(
 ) {
   const pluginWorkflow = reports !== undefined;
   assert.ok(issuer && tokenOrigin && secretsFile);
+  const issuerLeaf = await tlsPeerCertificate({
+    host: "127.0.0.1",
+    port: 443,
+    servername: new URL(issuer).hostname,
+    ca: await readFile(process.env.OCC_TEST_KEYCLOAK_CA_CERT!),
+  });
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      chromiumTrustArg([issuerLeaf]),
+      "--host-resolver-rules=MAP occ-connections.test 127.0.0.1",
+    ],
+    ...(process.env.OCC_TEST_BROWSER_EXECUTABLE && {
+      executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE,
+    }),
+  });
+  t.after(() => browser.close());
   const secrets = JSON.parse(await readFile(secretsFile, "utf8"));
   const clientId = `oce-saved-${randomUUID()}`;
   let clientSecret = randomUUID();
@@ -115,7 +161,8 @@ async function oauthAccounts(
     enabled: true,
     publicClient: false,
     standardFlowEnabled: true,
-    defaultClientScopes: [],
+    // Keycloak's built-in basic scope places the user's sub claim in the signed access token.
+    defaultClientScopes: pluginWorkflow ? ["basic"] : [],
     directAccessGrantsEnabled: false,
     redirectUris: [redirectUri],
     attributes: {
@@ -155,7 +202,7 @@ async function oauthAccounts(
         preparedTokens,
         ...(pluginWorkflow && {
           nativeWorkerSupport: "custom-image",
-          credentialProxyCapacity: { sandboxOperations: 1 },
+          credentialProxyCapacity: { sandboxOperations: sandboxOperationShare },
           driverConfigurations: [savedAccountSandboxRegistration],
         }),
       },
@@ -357,7 +404,7 @@ async function oauthAccounts(
     assert.equal(new URL(defaultsUrl).searchParams.has("scope"), false);
     const defaultCallback = await owner(
       "GET",
-      await consentRedirect(defaultsUrl, "alice", secrets.users.alice.password),
+      await consentRedirect(browser, defaultsUrl, "alice", secrets.users.alice.password),
     );
     assert.match(String(defaultCallback.headers.location), /connection=connected/);
     const defaultsId = defaults.json().data.credentialSourceId;
@@ -474,6 +521,7 @@ async function oauthAccounts(
     return {
       id: response.json().data.credentialSourceId as string,
       callback: await consentRedirect(
+        browser,
         response.json().data.authorizationUrl,
         username,
         secrets.users[username].password,
@@ -758,19 +806,8 @@ test(
       assert.ok(token);
       return token.accessToken;
     }
-    const subject = async (bearer: string) => {
-      const result = await fetch(`${issuer}/protocol/openid-connect/userinfo`, {
-        headers: { authorization: `Bearer ${bearer}` },
-      });
-      assert.equal(
-        result.status,
-        200,
-        "Keycloak accepts the Token Service's prepared access token",
-      );
-      return (await result.json()).sub;
-    };
     const original = await prepared();
-    const alice = await subject(original);
+    const alice = await keycloakSubject(original);
     assert.ok(alice);
     async function setIssuedLifetime(seconds: number) {
       const [client] = await keycloakRealmAdmin(
@@ -789,7 +826,7 @@ test(
     const [resolved, joined] = await Promise.all([prepared(120_000), prepared(120_000)]);
     assert.equal(joined, resolved);
     assert.notEqual(resolved, original);
-    assert.equal(await subject(resolved), alice);
+    assert.equal(await keycloakSubject(resolved), alice);
 
     // Lose access to the operator's registration before dispatch. The scheduler must back off
     // without losing the user's grant, and the owner can retry as soon as access returns.
@@ -809,7 +846,7 @@ test(
     );
     assert.equal(deferred.rows[0].deferred, true);
     assert.equal((await owner("POST", source + "/rotate")).statusCode, 200);
-    assert.equal(await subject(await prepared()), alice);
+    assert.equal(await keycloakSubject(await prepared()), alice);
     // A new default registration is for future consent, even when its credentials are unusable.
     const mcp = await inject("GET", "/connection-templates/" + input.connectionTemplateId);
     assert.equal(mcp.statusCode, 200, mcp.body);
@@ -866,7 +903,7 @@ test(
     assert.equal(rotated.statusCode, 200, rotated.body);
     const renewed = await prepared();
     assert.equal(renewed !== original, true);
-    assert.equal(await subject(renewed), alice);
+    assert.equal(await keycloakSubject(renewed), alice);
     // Let this short-lived token actually expire before any worker starts. A normal resolve
     // must obtain its replacement with the current client secret and the original user's grant.
     await setIssuedLifetime(300);
@@ -883,7 +920,7 @@ test(
     );
     const afterExpiry = await prepared();
     assert.notEqual(afterExpiry, renewed);
-    assert.equal(await subject(afterExpiry), alice);
+    assert.equal(await keycloakSubject(afterExpiry), alice);
     const afterRotation = await owner("GET", connections);
     assert.equal(afterRotation.statusCode, 200, afterRotation.body);
     assert.deepEqual(
@@ -927,7 +964,7 @@ test(
     });
     const background = await prepared();
     assert.notEqual(background, afterExpiry);
-    assert.equal(await subject(background), alice);
+    assert.equal(await keycloakSubject(background), alice);
     await worker.stop();
     const observed = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
@@ -1111,6 +1148,11 @@ test(
     const cliAccount = cli.credentials.account!;
     const mcp = managedMcpInstalls[0]!;
     const reportAccount = mcp.credentials[mcp.slotId]!;
+    const { install: reportsInstall, files: releaseFiles } = keycloakAccountMcpPackage(
+      slackInstall,
+      issuer,
+      origin.url,
+    );
     const primary = {
       ...cli,
       id: pluginId,
@@ -1149,17 +1191,20 @@ test(
     };
     // A pluggable release declares a receiver per named slot. The production dispatcher supplies
     // issuer, recipient and binding checks for each slot.
-    const plugin: PluginDriver = {
-      id: "keycloak-plugin-driver",
-      harnessId: "openclaw",
-      capability: "plugin",
-      implementation: "keycloak-fixture",
-      policyCapabilities: new OCCPluginDriver().policyCapabilities,
+    // The OpenClaw Driver owns the actual revision. Supply only this test catalog's
+    // entries and policies, including its checksum-backed release for the native worker.
+    const fixtureCatalog: Pick<
+      PluginDriver,
+      "validatePolicies" | "listCatalog" | "getCatalogPlugin" | "credentials"
+    > = {
       validatePolicies() {},
       async listCatalog() {
         return [];
       },
       async getCatalogPlugin({ pluginId: requested }) {
+        if (requested === reportsInstall.id) {
+          return { id: reportsInstall.id, name: "Reports", tools: [] };
+        }
         assert.equal(requested, pluginId);
         return { id: pluginId, name: "Reports and mail", tools: [] };
       },
@@ -1169,10 +1214,33 @@ test(
             { id: slotId, label: "Mail" },
             { id: "reports", label: "Reports" },
             { id: "unrelated", label: "Unrelated service" },
-          ].map((slot) => ({ ...slot, pluginId, releaseSha256, sources: [] }));
+          ]
+            .map((slot) => ({ ...slot, pluginId, releaseSha256, sources: [] }))
+            .concat([
+              {
+                id: reportsInstall.slotId,
+                label: "Reports",
+                pluginId: reportsInstall.id,
+                releaseSha256: reportsInstall.releaseSha256,
+                sources: [],
+              },
+            ]);
         },
-        validate() {},
+        validate(selections, sources) {
+          const binding = managedSlotBinding(selections, reportsInstall);
+          return (
+            binding &&
+            Object.fromEntries(
+              sources
+                .filter(({ id }) => binding.sourceIds.includes(id))
+                .map(({ id, name }) => [id, name]),
+            )
+          );
+        },
         connectionSlot(selections, requestedPlugin, requestedSlot) {
+          if (requestedPlugin === reportsInstall.id) {
+            return managedPluginAccountSlot(reportsInstall, selections, requestedSlot);
+          }
           if (requestedPlugin !== pluginId) {
             return undefined;
           }
@@ -1184,6 +1252,7 @@ test(
         },
       },
     };
+    const plugin = Object.assign(new OCCPluginDriver(), fixtureCatalog);
     const codexCatalog = new CodexPluginDriver({ catalogSource: "openai-curated" });
     // Register Codex first: saved OpenClaw slots must never depend on catalog order.
     controller.installPluginDrivers([codexCatalog, plugin]);
@@ -1218,13 +1287,13 @@ test(
     });
     assert.equal(harnessSecret.statusCode, 201, harnessSecret.body);
     const harnessRef = harnessSecret.json().data.ref;
-    const agent = async (name: string) => {
+    const agent = async (name: string, selectedPlugin = pluginId) => {
       const created = await owner("POST", agents, {
         name,
         executionMode: "dedicated",
         configurationId: config.json().data.id,
         harnessAuth: { method: "api_key", source: harnessRef },
-        plugins: { [pluginId]: { enabled: true } },
+        plugins: { [selectedPlugin]: { enabled: true } },
       });
       assert.equal(created.statusCode, 201, created.body);
       return created.json().data.id as string;
@@ -1271,7 +1340,7 @@ test(
         pluginId,
         slotId,
         releaseSha256,
-        expectedCredentialSourceId: expected,
+        expectedCredentialSourceIds: expected ? [expected] : [],
       });
     const first = await pluginConsent(null);
     const competing = await pluginConsent(null);
@@ -1287,7 +1356,9 @@ test(
     assert.equal(await canUse(a, first.id), true);
     await finish(competing.callback, "saved");
     assert.equal(await canUse(a, competing.id), false);
-    assert.equal((await draft(a)).plugins[pluginId].driverPolicy.credentials.account, first.id);
+    assert.deepEqual((await draft(a)).plugins[pluginId].driverPolicy.credentials.account, [
+      first.id,
+    ]);
     assert.deepEqual(await attached(a), [first.id]);
     // The native IAM authority adds an exact Agent restriction while Keycloak consent is open.
     // The valid account remains the user's even though changing this Agent now fails.
@@ -1302,7 +1373,9 @@ test(
     await finish(denied.callback, "saved");
     assert.equal(await canUse(a, denied.id), false);
     assert.deepEqual(await attached(a), [first.id]);
-    assert.equal((await draft(a)).plugins[pluginId].driverPolicy.credentials.account, first.id);
+    assert.deepEqual((await draft(a)).plugins[pluginId].driverPolicy.credentials.account, [
+      first.id,
+    ]);
     const accounts = await owner("GET", connections);
     assert.equal(accounts.statusCode, 200, accounts.body);
     assert.deepEqual(
@@ -1333,7 +1406,7 @@ test(
       pluginId,
       slotId,
       releaseSha256,
-      expectedCredentialSourceId: null,
+      expectedCredentialSourceIds: [],
     });
     const changedConfig = await owner(
       "PATCH",
@@ -1370,10 +1443,22 @@ test(
       connectionTemplateId: reportTemplate.json().data.id,
       selectedScopes: ["openid"],
     };
-    const report = await begin(connections, reportInput, "carol");
+    const reportsAgent = await agent("Two browser accounts", reportsInstall.id);
+    const reportConsent = {
+      ...reportInput,
+      connectionTemplateVersion: 1,
+      pluginId: reportsInstall.id,
+      slotId: reportsInstall.slotId,
+      releaseSha256: reportsInstall.releaseSha256,
+    };
+    const report = await begin(
+      `${path(reportsAgent)}/connections`,
+      { ...reportConsent, expectedCredentialSourceIds: [], accountName: "Work reports" },
+      "carol",
+    );
     assert.match(
       String((await owner("GET", report.callback)).headers.location),
-      /connection=connected/,
+      /connection=attached/,
     );
     const slotAgent = await agent("Slot assignments");
     const discover = (sourceId: string) =>
@@ -1441,24 +1526,21 @@ test(
     assert.equal(await canUse(slotAgent, grant.id), true);
     assert.equal(await canUse(slotAgent, report.id), true);
 
-    // Replacing an already-saved slot requires the previous ID and fresh consent. Other
-    // bindings and previously delegated usage survive the replacement.
-    const replacement = await begin(`${path(slotAgent)}/connections`, {
-      ...reportInput,
-      connectionTemplateVersion: 1,
-      pluginId,
-      slotId: "reports",
-      releaseSha256,
-      expectedCredentialSourceId: report.id,
+    // Carol already owns the first grant. Connecting Alice from the occupied Reports slot
+    // must preserve Carol, so the same Agent can use either provider identity.
+    const secondReport = await begin(`${path(reportsAgent)}/connections`, {
+      ...reportConsent,
+      expectedCredentialSourceIds: [report.id],
+      accountName: "Personal reports",
     });
-    const replaced = await owner("GET", replacement.callback);
-    assert.match(String(replaced.headers.location), /connection=attached/);
-    assert.deepEqual((await draft(slotAgent)).plugins[pluginId].driverPolicy.credentials, {
-      account: grant.id,
-      reports: replacement.id,
-    });
-    assert.equal(await canUse(slotAgent, report.id), true);
-    assert.equal(await canUse(slotAgent, replacement.id), true);
+    const added = await owner("GET", secondReport.callback);
+    assert.match(String(added.headers.location), /connection=attached/);
+    assert.deepEqual(
+      (await draft(reportsAgent)).plugins[reportsInstall.id].driverPolicy.credentials,
+      { [reportsInstall.slotId]: [report.id, secondReport.id] },
+    );
+    assert.equal(await canUse(reportsAgent, report.id), true);
+    assert.equal(await canUse(reportsAgent, secondReport.id), true);
     // The restriction on A stays in force. Two independently authorized Agents share the
     // standalone account. Detaching from C leaves B's operate decision and the account intact.
     const c = await agent("Third");
@@ -1651,18 +1733,23 @@ test(
     const observed = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const read = secretDriver.withValue.bind(secretDriver);
+    let heldReads = 0;
     const pendingRead = t.mock.method(
       secretDriver,
       "withValue",
       async (...args: Parameters<typeof read>) => {
         const selected = await read(...args);
-        observed.resolve();
+        if (++heldReads === sandboxOperationShare) {
+          observed.resolve();
+        }
         await release.promise;
         return selected;
       },
-      { times: 1 },
+      { times: sandboxOperationShare },
     );
-    const inFlight = call(agentA.peer);
+    const inFlight = Promise.all(
+      Array.from({ length: sandboxOperationShare }, () => call(agentA.peer)),
+    );
     try {
       await Promise.race([
         observed.promise,
@@ -1673,7 +1760,7 @@ test(
       assert.equal(
         await call(agentA.peer),
         false,
-        "one held request fills this Sandbox’s configured operation share",
+        "held requests fill this Sandbox’s configured operation share",
       );
       const clear = await owner("PATCH", path(agentA.id), {
         configurationId: config.json().data.id,
@@ -1686,7 +1773,7 @@ test(
       release.resolve();
       pendingRead.mock.restore();
     }
-    assert.equal(await inFlight, false);
+    assert.deepEqual(await inFlight, Array(sandboxOperationShare).fill(false));
     const beforeDenied = secretDriver.calls.length;
     assert.equal(await call(agentA.peer), false);
     assert.equal(
@@ -1701,10 +1788,176 @@ test(
       tokenHash: after,
       tool: "list_reports",
     });
+    // Both browser consents belong to the same revision. The named native case adds the
+    // actual worker and upstream relay to the OCC, PostgreSQL and issuer exercised above.
+    {
+      const ids = [report.id, secondReport.id];
+      const selected = {
+        [reportsInstall.id]: {
+          enabled: true,
+          driverPolicy: {
+            releaseSha256: reportsInstall.releaseSha256,
+            credentials: { [reportsInstall.slotId]: ids },
+            toolNames: ["whoami"],
+          },
+        },
+      };
+      const saved = await owner("PATCH", path(reportsAgent), {
+        configurationId: config.json().data.id,
+        plugins: selected,
+        harnessAuth: { method: "credential_source", sourceId: modelSource },
+        credentialSources: [modelSource, ...ids].map((sourceId) => ({ sourceId })),
+      });
+      assert.equal(saved.statusCode, 200, saved.body);
+      const principal = await state.read((v) => v.agents.findAgent(namespaceId, reportsAgent));
+      assert.ok(principal);
+      const grantModel = await owner("POST", base + "/iam/access-bindings", {
+        roleId: modelRole.json().data.id,
+        subjectKind: "identity",
+        subjectId: principal.servicePrincipalId,
+        resourceKind: "credential_source",
+        resourceId: modelSource,
+      });
+      assert.equal(grantModel.statusCode, 201, grantModel.body);
+      const deployed = await owner("POST", path(reportsAgent) + "/deploy");
+      assert.equal(deployed.statusCode, 202, deployed.body);
+      const revision = await state.read((v) =>
+        v.revisions.findRevision(namespaceId, reportsAgent, deployed.json().data.id),
+      );
+      const admittedPlugins = revision?.plugins;
+      assert.ok(revision && admittedPlugins?.savedAccounts);
+      assert.deepEqual(new Set(admittedPlugins.savedAccounts.sourceIds), new Set(ids));
+      assert.deepEqual(admittedPlugins.plugins, selected);
+      assert.ok(
+        await state.transact((unit) =>
+          unit.agents.compareAndSetActiveRevision(
+            namespaceId,
+            reportsAgent,
+            undefined,
+            revision.id,
+          ),
+        ),
+      );
+      const [alice] = await keycloakRealmAdmin(
+        issuer,
+        issuerAdmin,
+        "GET",
+        "/users?username=alice&exact=true",
+      );
+      const accounts = [
+        { handle: report.id, label: "Work reports", expectedSubject: carol.id },
+        { handle: secondReport.id, label: "Personal reports", expectedSubject: alice.id },
+      ];
+      assert.deepEqual(
+        admittedPlugins.accountNames,
+        Object.fromEntries(accounts.map(({ handle, label }) => [handle, label])),
+      );
+      const peer = runtime.peer(ns, revision, reportsInstall.id, reportsInstall.slotId, ids);
+      const selectors = peer.bindingConfig.binding_ids;
+      assert.ok(Array.isArray(selectors));
+      const request = { ...allowed, params: { name: "whoami", arguments: {} } };
+      const readsBefore = secretDriver.calls.length;
+      for (const markers of [
+        [],
+        ["0".repeat(64)],
+        [selectors[0]!, selectors[0]!],
+        [selectors[0]!, selectors[1]!],
+      ]) {
+        assert.equal(await peer.resolve(new URL(origin.url), request, markers), undefined);
+      }
+      assert.equal(
+        secretDriver.calls.length,
+        readsBefore,
+        "Missing or ambiguous account selection must fail before a token read.",
+      );
+      for (const [index, selector] of selectors.entries()) {
+        const token = await peer.resolve(new URL(origin.url), request, [selector]);
+        assert.ok(token);
+        assert.equal(await keycloakSubject(token), accounts[index]!.expectedSubject);
+      }
+      assert.equal(
+        Boolean(process.env.OCC_TEST_BROWSER_ACCOUNT_WORKER),
+        Boolean(process.env.OCC_TEST_OPENSHELL_BROWSER_ACCOUNT_RELAY),
+        "Select the browser-account worker and OpenShell relay together.",
+      );
+      if (process.env.OCC_TEST_BROWSER_ACCOUNT_WORKER) {
+        await t.test(
+          "the same native worker tool resolves two browser grants per request",
+          async () => {
+            const start = origin.requests.length;
+            await verifyNativeBrowserAccountTools({
+              install: reportsInstall,
+              revision,
+              origin,
+              peer,
+              accounts,
+              releaseFiles,
+              workerConfig: managedPluginPackages(
+                [reportsInstall],
+                admittedPlugins.plugins,
+                admittedPlugins.accountNames,
+                "agent",
+              ),
+              withdraw: async () => {
+                assert.deepEqual(
+                  origin.requests
+                    .slice(start)
+                    .filter((r) => r.tool === "whoami")
+                    .map((r) => r.subject),
+                  [carol.id, alice.id],
+                );
+                const save = await owner("PATCH", path(reportsAgent), {
+                  configurationId: config.json().data.id,
+                  plugins: {
+                    [reportsInstall.id]: {
+                      enabled: true,
+                      driverPolicy: {
+                        ...selected[reportsInstall.id]!.driverPolicy,
+                        credentials: { [reportsInstall.slotId]: [secondReport.id] },
+                      },
+                    },
+                  },
+                });
+                assert.equal(save.statusCode, 200, save.body);
+                const detach = await owner(
+                  "DELETE",
+                  path(reportsAgent) + "/connections/" + report.id,
+                );
+                assert.equal(detach.statusCode, 204, detach.body);
+              },
+            });
+            assert.deepEqual(
+              origin.requests
+                .slice(start)
+                .filter((r) => r.tool === "whoami")
+                .map((r) => r.subject),
+              [carol.id, alice.id, alice.id],
+              "Withdrawal reached OCC before forwarding. The sibling's original session still succeeds.",
+            );
+            assert.deepEqual(
+              new Set(
+                origin.requests
+                  .slice(start)
+                  .filter((r) => r.tool === "tools/list")
+                  .map((r) => r.subject),
+              ),
+              new Set([carol.id, alice.id]),
+            );
+            t.diagnostic(
+              "The same whoami reached the HTTPS recipient as Work reports (Carol) and Personal reports (Alice). Withdrawing Carol prevented another recipient request and Alice succeeded again.",
+            );
+          },
+        );
+      } else {
+        t.diagnostic(
+          "Two-browser consent and signed gRPC account selection verified. Set both native qualification variables to exercise the OpenClaw worker and OpenShell relay.",
+        );
+      }
+    }
     t.diagnostic(
       process.env.OCC_TEST_OPENSHELL_CREDENTIAL_SENDER
-        ? "Native OpenShell relay sent four accepted requests and withheld four denied requests."
-        : "Signed gRPC test sender sent four accepted requests and withheld four denied requests.",
+        ? "Native OpenShell relay verified rotation, admission and in-flight withdrawal."
+        : "Signed gRPC test sender verified rotation, admission and in-flight withdrawal.",
     );
   },
 );

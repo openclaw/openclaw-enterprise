@@ -10,6 +10,12 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { codexApprovalPolicy } from "@openclaw-enterprise/occ";
 import {
+  managedCredentialEnvironment,
+  managedSlotBinding,
+  type ManagedCliInstall,
+  type ManagedMcpInstall,
+} from "../plugin/managed-catalog.ts";
+import {
   type CodexPublicGithubRead,
   PUBLIC_GITHUB_READ_SKILL,
   publicGithubReadSkill,
@@ -56,6 +62,39 @@ export interface CodexModelEndpoint {
   readonly baseUrl: string;
   readonly modelProvider: "openai-compatible";
   readonly supportsStandaloneWebSearch?: true;
+}
+
+/** The release identity, selected tools, and account placeholders consumed by the dedicated runtime. */
+export function managedPluginPackages(
+  installs: readonly (ManagedCliInstall | ManagedMcpInstall)[],
+  selections: PluginDesiredState,
+  accountNames: Readonly<Record<string, string>> | undefined,
+  role: "agent" | "gateway",
+) {
+  const packages = [];
+  for (const install of installs) {
+    const selection = selections[install.id];
+    if (!selection || (!selection.enabled && role !== "gateway")) {
+      continue;
+    }
+    const binding = managedSlotBinding(selections, install);
+    packages.push({
+      kind: install.kind,
+      packageName: install.packageName,
+      slotId: install.slotId,
+      ...(role === "gateway" && { id: install.id }),
+      ...(selection.enabled && { releaseSha256: install.releaseSha256 }),
+      ...(binding && {
+        accounts: binding.sourceIds.map((id) => ({
+          id,
+          env: managedCredentialEnvironment(install, id),
+          ...(accountNames?.[id] && { name: accountNames[id] }),
+        })),
+        ...(install.kind === "mcp" && { toolNames: binding.toolNames }),
+      }),
+    });
+  }
+  return packages;
 }
 
 export type PluginRuntimeSpec =

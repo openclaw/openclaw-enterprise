@@ -974,7 +974,7 @@ export async function prepareQaPluginCatalogs(f) {
   );
   assert.deepEqual(catalogs, { openclaw: "occ-plugin", codex: "codex-plugin" });
   for (const [harnessId, q, expectedId] of [
-    ["openclaw", "Google Workspace", "occ-plugin:google@1.0.0"],
+    ["openclaw", "Google Workspace", "occ-plugin:google@1.1.0"],
     ["codex", "Linear", "codex-plugin:linear@openai-curated-remote"],
   ]) {
     const { plugins } = await f.api("POST", `/namespaces/${f.namespace.id}/agents/plugins`, {

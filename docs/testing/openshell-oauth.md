@@ -171,6 +171,38 @@ the same source. Select `codex-plugin` with `catalogSource: hosted` to verify
 directory discovery. Selected runtime plugins remain unsupported; discovery
 does not prove plugin execution. The remaining qualification boundaries are below.
 
+## Call one tool with two browser accounts
+
+Prepare the [Keycloak OIDC lane](kubernetes.md#keycloak-oidc-tests) and keep its
+state file. Build the worker from the patched OpenClaw checkout with its
+installed dependencies. The second command builds a test entry point for the
+[native OpenShell credential sender](https://github.com/stevenlee-oai/OpenShell/commit/0b094797c38883ce68424cdcc2b109ff1ac5ab62)
+in a temporary checkout. It uses the Rust toolchain specified by that checkout.
+Set `run_dir` to a private temporary directory.
+
+```sh
+export OCC_TEST_BROWSER_ACCOUNT_WORKER="$run_dir/browser-account-worker.tgz"
+export OCC_TEST_OPENSHELL_BROWSER_ACCOUNT_RELAY="$run_dir/browser-account-relay"
+node scripts/ci/build-browser-account-worker.mjs "$patched_openclaw" "$OCC_TEST_BROWSER_ACCOUNT_WORKER"
+bash scripts/ci/build-browser-account-relay.sh "$openshell_source" "$OCC_TEST_OPENSHELL_BROWSER_ACCOUNT_RELAY"
+node scripts/ci/run-tests.mjs run keycloak-oidc --state "$state" \
+  --results "$run_dir/browser-account-results.json" \
+  --file tests/integration/postgres-saved-oauth-connections.test.ts
+```
+
+Two Chromium sessions authorize different Keycloak users for one slot on one
+Agent. The test admits the revision through OCC. The worker loads its release
+and account selectors from the normal Compute projection, discovers the shared
+`whoami` tool, and calls it through each session. OpenShell inspects the actual
+worker TLS stream, calls Credential Proxy and injects the authorized access
+token into the request to the HTTPS recipient. The recipient checks the token
+with Keycloak and returns the user's subject.
+
+The test then detaches one grant and repeats both calls on the same running
+worker. Only the remaining account reaches the recipient. The test owns the
+loopback placement, Gateway inventory and signed supervisor identity. Kubernetes
+cutover and model turns have separate suites.
+
 ## Receiver fixtures and full-stack qualification
 
 `tests/integration/device-authorization-api.test.mjs` exercises real Fastify,

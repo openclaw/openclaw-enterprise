@@ -22014,10 +22014,11 @@
                 "example": {
                   "summary": "Example request",
                   "value": {
+                    "accountName": "Support",
                     "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                     "connectionTemplateVersion": 1,
-                    "expectedCredentialSourceId": null,
-                    "pluginId": "occ-plugin:google@1.0.0",
+                    "expectedCredentialSourceIds": [],
+                    "pluginId": "occ-plugin:google@1.1.0",
                     "releaseSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "slotId": "account"
                   }
@@ -22026,19 +22027,25 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "accountName": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                    "type": "string"
+                  },
                   "connectionTemplateId": {
                     "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                     "type": "string"
                   },
                   "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
-                  "expectedCredentialSourceId": {
-                    "anyOf": [
-                      {
-                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                        "type": "string"
-                      },
-                      { "type": "null" }
-                    ]
+                  "expectedCredentialSourceIds": {
+                    "items": {
+                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "type": "string"
+                    },
+                    "maxItems": 64,
+                    "type": "array",
+                    "uniqueItems": true
                   },
                   "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" },
                   "releaseSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
@@ -22060,7 +22067,7 @@
                   "pluginId",
                   "slotId",
                   "releaseSha256",
-                  "expectedCredentialSourceId"
+                  "expectedCredentialSourceIds"
                 ],
                 "type": "object"
               }
@@ -28700,7 +28707,7 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "occ-plugin:google@1.0.0"
+                "value": "occ-plugin:google@1.1.0"
               }
             },
             "in": "path",
@@ -36070,6 +36077,12 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "accountName": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                    "type": "string"
+                  },
                   "connectionTemplateId": {
                     "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                     "type": "string"

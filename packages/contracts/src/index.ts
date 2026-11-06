@@ -844,6 +844,7 @@ export function savedAccountBindingId(
 }
 
 export interface PluginRevisionState {
+  readonly accountNames?: Readonly<Record<string, string>>;
   /** Saved OAuth selections are authorized at send time by this admitted Credential Proxy. */
   readonly savedAccounts?: {
     readonly credentialProxyId: string;
@@ -909,11 +910,14 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
     return true;
   }
   const record = asRecord(value);
+  const accountNames = asRecord(record?.accountNames);
   if (
     record === undefined ||
     Object.keys(record).some(
-      (key) => key !== "driver" && key !== "plugins" && key !== "savedAccounts",
-    )
+      (key) => !["driver", "plugins", "accountNames", "savedAccounts"].includes(key),
+    ) ||
+    (record.accountNames !== undefined &&
+      (!accountNames || !Object.values(accountNames).every(isNonEmptyString)))
   ) {
     return false;
   }

@@ -10,6 +10,27 @@ FROM ${NODE_BASE_IMAGE} AS node-build-base
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
+# Compile the managed Google CLI for each target with the same toolchain and source.
+FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm@sha256:dc0963f32053e4bc451d24d87e3892d42d01021b61f093e98eb95c0352bb84b0 AS gog-build
+ARG TARGETARCH
+WORKDIR /build/gog
+COPY deploy/runtime/google/gog-account-binding.patch /tmp/gog-account-binding.patch
+RUN --mount=type=secret,id=build-ca,required=false \
+    --mount=type=bind,source=scripts/ci/download-pinned.sh,target=/tmp/download-pinned.sh \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
+    bash /tmp/download-pinned.sh https://codeload.github.com/openclaw/gogcli/tar.gz/e0e3cb9c80eb4f1fb8051766e52841b8cd7ab965 /tmp/gog-source.tar.gz ec6ca5507407fde889c9c44bb2c64005aaa7ebe4319f08913dd726dc5528c2b2; \
+    tar -xzf /tmp/gog-source.tar.gz --strip-components=1; \
+    echo '1b4d719b23dbdc6c4ad61edc18852fac1141c7464b3aa94a532c13e174938293  /tmp/gog-account-binding.patch' | sha256sum --check --strict; \
+    git apply --unidiff-zero /tmp/gog-account-binding.patch
+RUN --mount=type=secret,id=build-ca,required=false \
+    --mount=type=bind,source=deploy/runtime/google/build-gog.sh,target=/tmp/build-gog.sh \
+    --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export SSL_CERT_FILE=/run/secrets/build-ca; fi; \
+    bash /tmp/build-gog.sh "$TARGETARCH" /build/gog-cli
+
 FROM node-build-base AS curl-packages
 COPY deploy/runtime/curl /tmp/curl
 RUN --mount=type=secret,id=build-ca,required=false \
@@ -207,10 +228,15 @@ COPY deploy/runtime/openclaw-terminated-gateway-namespace.patch /tmp/openclaw-te
 RUN echo '1ed77577d53d43619f7c8fb33dbcdcf6a728351821abfe1b0beee947bd6eb456  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-terminated-gateway-namespace.patch
 
-# Forward the scoped Google placeholder and the OpenShell TLS root to native worker children.
+# Forward admitted CLI account placeholders and the OpenShell TLS root to native worker children.
 COPY deploy/runtime/openclaw-google-worker-placeholder.patch /tmp/openclaw-google-worker-placeholder.patch
-RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp/openclaw-google-worker-placeholder.patch' | sha256sum --check --strict \
+RUN echo 'b8c08aaf58b0e4a0dfb1df98c881d3d88b9ae7c51d1f50c2fda847135ff1d1db  /tmp/openclaw-google-worker-placeholder.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-google-worker-placeholder.patch
+
+# TODO: Drop this bridge when the pinned node host can present one tool for several accounts.
+COPY deploy/runtime/openclaw-node-mcp-accounts.patch /tmp/openclaw-node-mcp-accounts.patch
+RUN echo 'f596f514b56c1786ca83db8fec8116043203b4e8554410bca0d4fc92353e9f42  /tmp/openclaw-node-mcp-accounts.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-node-mcp-accounts.patch
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
 COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-renewal.patch
@@ -229,6 +255,7 @@ RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
     OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
+    src/node-host/node-worker-mcp-accounts.integration.test.ts \
     src/infra/private-store-file.test.ts \
     src/node-host/runner.test.ts \
     src/node-host/gateway-candidate-connection.test.ts \
@@ -421,14 +448,31 @@ COPY apps/controller/plugins/oce-google-workspace/skills/ /usr/local/lib/oce/plu
 COPY apps/controller/plugins/oce-google-workspace/ai.openclaw.oce/release.json /usr/local/lib/oce/plugins/google/release.json
 
 RUN --mount=type=secret,id=build-ca,required=false \
+    --mount=type=bind,from=gog-build,source=/build/gog-cli,target=/tmp/managed-gog \
     --mount=type=bind,source=deploy/runtime/google/install-gog.mts,target=/tmp/install-gog.mts \
     --mount=type=bind,source=scripts/ci/download-pinned.sh,target=/tmp/download-pinned.sh \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
     mkdir -p /usr/local/lib/oce/plugins/google/bin; \
-    node /tmp/install-gog.mts /usr/local/lib/oce/plugins/google "linux-${TARGETARCH:-amd64}" /usr/local/lib/oce/plugins/google/bin /tmp/download-pinned.sh
+    node /tmp/install-gog.mts /usr/local/lib/oce/plugins/google "linux-${TARGETARCH:-amd64}" /usr/local/lib/oce/plugins/google/bin /tmp/download-pinned.sh /tmp/managed-gog
 
 COPY apps/controller/plugins/ /usr/local/lib/oce/plugin-catalog/
+# Give each reviewed CLI its own command on PATH when an Agent binds accounts.
+RUN --mount=type=bind,source=deploy/runtime/managed-plugin-cli.mjs,target=/tmp/managed-plugin-cli.mjs node --input-type=module - <<'NODE'
+import { chmodSync, copyFileSync, mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+const catalog = "/usr/local/lib/oce/plugin-catalog";
+const { plugins } = JSON.parse(readFileSync(join(catalog, "marketplace.json")));
+for (const { name } of plugins) {
+  const release = JSON.parse(readFileSync(join(catalog, name, "ai.openclaw.oce/release.json")));
+  if (!release.capabilities.harness.includes("cli")) continue;
+  const directory = join(release.runtimeDirectory, "account-bin");
+  const command = join(directory, release.executable);
+  mkdirSync(directory, { recursive: true });
+  copyFileSync("/tmp/managed-plugin-cli.mjs", command);
+  chmodSync(command, 0o555);
+}
+NODE
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/

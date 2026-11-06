@@ -1,6 +1,6 @@
 {
   "operationsSha256": "2e4880fc8849ec65217da4591fb7345cb7f7089986a0e8fc950101f25aef177f",
-  "release": "google-install-v1",
+  "release": "google-install-v2",
   "placement": {
     "harnessId": "openclaw",
     "mode": "dedicated",
@@ -36,12 +36,14 @@
     "linux-amd64": {
       "url": "https://github.com/openclaw/gogcli/releases/download/v0.46.0/gogcli_0.46.0_linux_amd64.tar.gz",
       "archiveSha256": "d53cf89f0c2a2338211212e380b3efcacadd4e27e500cb8e7ed2cd82a739da2e",
-      "binarySha256": "36551bb5725a7c7f22413826109ed455ce9de9a1aecaa81e918a5d461072787a"
+      "binarySha256": "36551bb5725a7c7f22413826109ed455ce9de9a1aecaa81e918a5d461072787a",
+      "managedBinarySha256": "7247bcc2e51c048d60c80a599fb9c48b59a62830ca92f714fba745c1999fb766"
     },
     "linux-arm64": {
       "url": "https://github.com/openclaw/gogcli/releases/download/v0.46.0/gogcli_0.46.0_linux_arm64.tar.gz",
       "archiveSha256": "9ae69d117cef895aa1c50b5859d7d3def45c5580886b25dc1c7f3cfe128ed0dd",
-      "binarySha256": "ad84f12b8efd889f65bd7c45c4eb6152fa963f623394fdf50938b14c57b9b694"
+      "binarySha256": "ad84f12b8efd889f65bd7c45c4eb6152fa963f623394fdf50938b14c57b9b694",
+      "managedBinarySha256": "d6282c485af4d745324eeee02d702fc1cc8fc93e1ea87db82d810ffdc45a359f"
     }
   },
   "runtimeDirectory": "/usr/local/lib/oce/plugins/google"

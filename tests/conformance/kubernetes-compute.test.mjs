@@ -75,7 +75,10 @@ import {
   withYieldingGatewayDrain,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { normalizeSecretBindings } from "../../packages/contracts/src/index.ts";
-import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import {
+  managedCredentialEnvironment,
+  managedMcpInstalls,
+} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { managedGatewayConfiguration } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
@@ -1952,8 +1955,23 @@ async function verifyManagedRelease({
       });
     }
   }
+  const accountNames = {
+    cs_test_account: "Work $(OPENCLAW_CONFIG_PATH)",
+    cs_second_account: "Personal $$",
+  };
+  selectionCases.push({
+    enabled: true,
+    driverPolicy: {
+      releaseSha256,
+      credentials: { [slotId]: Object.keys(accountNames) },
+      ...(kind === "mcp" && { toolNames }),
+    },
+  });
+
   for (const selection of selectionCases) {
     const { enabled, driverPolicy } = selection;
+    const selected = driverPolicy?.credentials[slotId];
+    const selectedAccounts = Array.isArray(selected) ? selected : selected ? [selected] : [];
     const selections = {
       ...(kind === "mcp" && { [managedGoogleInstall.id]: { enabled: true } }),
       [id]: selection,
@@ -1992,6 +2010,7 @@ async function verifyManagedRelease({
         plugins: {
           driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
           plugins: selections,
+          ...(selectedAccounts.length > 1 && { accountNames }),
         },
       },
     });
@@ -2017,7 +2036,19 @@ async function verifyManagedRelease({
         packageName,
         slotId,
         ...(enabled && { releaseSha256 }),
-        ...(driverPolicy?.toolNames?.length && { toolNames: driverPolicy.toolNames }),
+        ...(driverPolicy && {
+          accounts: selectedAccounts.map((sourceId) => ({
+            id: sourceId,
+            env: managedCredentialEnvironment(
+              kind === "cli"
+                ? managedGoogleInstall
+                : managedMcpInstalls.find((install) => install.id === id),
+              sourceId,
+            ),
+            ...(selectedAccounts.length > 1 && { name: accountNames[sourceId] }),
+          })),
+          ...(kind === "mcp" && { toolNames: driverPolicy.toolNames ?? [] }),
+        }),
       },
     ];
     const workerSettings = variable(worker.environment, "OPENCLAW_MANAGED_PLUGIN_JSON");
@@ -2025,7 +2056,11 @@ async function verifyManagedRelease({
       JSON.parse(workerSettings ?? "[]"),
       expected.filter((pkg) => pkg.releaseSha256).map(({ id, ...pkg }) => pkg),
     );
-    assert.deepEqual(JSON.parse(variable(gatewayEnv, "OPENCLAW_MANAGED_PLUGIN_JSON")), expected);
+    const gatewaySettings = variable(gatewayEnv, "OPENCLAW_MANAGED_PLUGIN_JSON");
+    assert.deepEqual(JSON.parse(gatewaySettings), expected);
+    // The kubelet expands dollar signs before the runtime parses the account labels.
+    assert.doesNotMatch(gatewaySettings, /\$/u);
+    assert.doesNotMatch(workerSettings ?? "", /\$/u);
     // An Agent editor cannot replace deployment inputs with Secret bindings.
     for (const { name } of gatewayEnv.filter(({ name }) => name.startsWith("OPENCLAW_MANAGED_"))) {
       assert.throws(
@@ -11344,8 +11379,47 @@ test("non-model credential sources resolved at dispatch must match the revision'
     );
   }
 
-  // Plugin selection references an Agent credential. Compute always passes every
-  // active source to its owner, including when a selected source has been withdrawn.
+  // Selecting one of two attached MCP accounts grants the shared tool policy to that account alone.
+  const [slack] = managedMcpInstalls;
+  const mcpSources = [first, second].map((source) => ({
+    ...source,
+    config: {
+      protocol: "mcp",
+      host: slack.endpoint.host,
+      path: slack.endpoint.path,
+      env_var: slack.credentialEnvironment,
+    },
+    secrets: { token: { namespaceId: tenant.id, id: "secret" } },
+  }));
+  for (const [selected, expected] of [
+    [first.id, [mcpSources[0]]],
+    [undefined, []],
+  ]) {
+    const plugins = {
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      plugins: {
+        [slack.id]: {
+          enabled: true,
+          ...(selected && {
+            driverPolicy: {
+              releaseSha256: slack.releaseSha256,
+              credentials: { [slack.slotId]: selected },
+              toolNames: ["search"],
+            },
+          }),
+        },
+      },
+    };
+    assert.deepEqual(
+      driver.credentialSourcesForRevision(
+        { ...revision, plugins },
+        { credentialSources: mcpSources },
+      ),
+      expected,
+    );
+  }
+
+  // Binding the Google slot limits delivery to the selected accounts, including after withdrawal.
   const accounts = [first, second].map((tool) => ({
     ...tool,
     type: "oauth2-refresh-token",
@@ -11380,11 +11454,11 @@ test("non-model credential sources resolved at dispatch must match the revision'
       },
     },
   };
-  assert.deepEqual(driver.credentialSourcesForRevision(bound, context), accounts);
+  assert.deepEqual(driver.credentialSourcesForRevision(bound, context), [accounts[1]]);
   assert.deepEqual(driver.credentialSourcesForRevision(native, context), accounts);
   assert.deepEqual(
     driver.credentialSourcesForRevision(bound, { credentialSources: [accounts[0]] }),
-    [accounts[0]],
+    [],
   );
 });
 

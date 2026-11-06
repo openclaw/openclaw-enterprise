@@ -37,7 +37,10 @@ import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
 import { googleWorkspaceCredentialPolicy } from "../plugin/google-workspace/credential-policy.ts";
 import { managedGoogleInstall } from "../plugin/google-workspace/install.ts";
 import {
-  managedCredentialBinding,
+  managedSlotBinding,
+  managedProviderConfig,
+  managedProviderKeyProblem,
+  managedSlotAcceptsSource,
   managedMcpCredentialBindings,
   managedMcpInstallForSourceConfig,
   managedMcpSlotAcceptsSource,
@@ -90,15 +93,15 @@ export class OpenShellCredentialAttachments {
   ): Promise<readonly CredentialSourceAttachment[]> {
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
-    const binding = managedCredentialBinding(
-      context.revision.plugins?.plugins,
-      managedGoogleInstall,
-    );
-    for (const { install, sourceId } of managedMcpCredentialBindings(
-      context.revision.plugins?.plugins,
-    )) {
-      const source = context.sources.find(({ id }) => id === sourceId);
-      if (source && !managedMcpSlotAcceptsSource(install, source)) {
+    const binding = managedSlotBinding(context.revision.plugins?.plugins, managedGoogleInstall);
+    const mcpBindings = managedMcpCredentialBindings(context.revision.plugins?.plugins);
+    for (const { install, sourceIds } of mcpBindings) {
+      if (
+        context.sources.some(
+          (source) =>
+            sourceIds.includes(source.id) && !managedMcpSlotAcceptsSource(install, source),
+        )
+      ) {
         throw new ScopeViolationError(
           "The attached MCP account does not match the reviewed credential slot.",
         );
@@ -111,15 +114,24 @@ export class OpenShellCredentialAttachments {
           "The attached credential does not match a reviewed MCP slot.",
         );
       }
+      const bound = mcpBindings.find((binding) => binding.install === install);
+      if (bound && !bound.sourceIds.includes(source.id)) {
+        throw new ScopeViolationError(
+          "An unselected credential cannot share the bound managed MCP endpoint.",
+        );
+      }
       const conflict = context.sources.some((other) => {
+        const independent = !bound && managedMcpSlotAcceptsSource(install, other);
+        if (other.id === source.id || bound?.sourceIds.includes(other.id) || independent) {
+          return false;
+        }
         const host =
           other.type === "openai"
             ? new URL(modelProviderBaseUrl(this.modelProvider)).hostname
             : (other.config.host ?? "");
         return (
-          other.id !== source.id &&
-          (host.toLowerCase().replace(/\.$/, "") === install.endpoint.host ||
-            other.config.env_var === install.credentialEnvironment)
+          host.toLowerCase().replace(/\.$/, "") === install.endpoint.host ||
+          (other.config.env_var && other.config.env_var === source.config.env_var)
         );
       });
       if (conflict) {
@@ -128,25 +140,26 @@ export class OpenShellCredentialAttachments {
         );
       }
     }
-    const selected = context.sources.find(({ id }) => id === binding?.sourceId);
-    if (binding && selected) {
-      if (
-        !googleWorkspaceCredentialPolicy.accepts(managedGoogleInstall, binding.credential, selected)
-      ) {
+    const googleAccounts = context.sources.filter(({ id }) => binding?.sourceIds.includes(id));
+    const otherSources = context.sources.filter(({ id }) => !binding?.sourceIds.includes(id));
+    for (const selected of googleAccounts) {
+      if (!managedSlotAcceptsSource(managedGoogleInstall, selected)) {
         throw new ScopeViolationError(
           "The attached Google account does not match the reviewed credential slot.",
         );
       }
-      const conflict = googleWorkspaceCredentialPolicy.conflict(selected, context.sources);
+      const conflict = googleWorkspaceCredentialPolicy.conflict(selected, otherSources);
       if (conflict) {
         throw new ScopeViolationError(conflict);
       }
       const binaries = this.sources.requiredToolBinaries(selected.config.binary);
-      if (binaries.length !== 1 || binaries[0] !== managedGoogleInstall.binaryPath) {
+      if (!binaries.includes(managedGoogleInstall.binaryPath) || binaries.length !== 1) {
         throw new ScopeViolationError(
-          "The bound Google account must grant only the pinned Google executable. Set binary on this OAuth2 source when its installation allows other tools.",
+          "A Google OAuth source must grant only the pinned Google executable.",
         );
       }
+    }
+    if (googleAccounts.length) {
       await verifyManagedPluginRegistration(client, context.signal);
     }
     const attachments: CredentialSourceAttachment[] = [];
@@ -178,7 +191,9 @@ export class OpenShellCredentialAttachments {
         }
       }
       // Two sources cannot place their placeholders in the same Sandbox variable.
-      for (const name of Object.values(type.credentials(source.config))) {
+      for (const name of Object.values(
+        type.credentials(managedProviderConfig(source.type, source.id, source.config)),
+      )) {
         if (environment.has(name)) {
           throw new CredentialSourceRevisionError(
             "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT",
@@ -196,6 +211,10 @@ export class OpenShellCredentialAttachments {
       }
       // Each deployment applies the current binary lists to the profiles it attaches. OpenShell
       // composes Sandbox policy from the stored profile, so attached Sandboxes narrow too.
+      const keyProblem = managedProviderKeyProblem(source, provider.credentialKeys);
+      if (keyProblem) {
+        throw new ScopeViolationError(keyProblem);
+      }
       const profile = type.profile(source.id, source.config, () =>
         this.backend.client.placement(context.namespace.name),
       );
@@ -204,7 +223,7 @@ export class OpenShellCredentialAttachments {
         Object.freeze({
           sourceId: source.id,
           ref: name,
-          ...((source.id === binding?.sourceId || source.config.protocol === "mcp") && {
+          ...((binding?.sourceIds.includes(source.id) || source.config.protocol === "mcp") && {
             requestScope: {
               ...bearerTokenEndpoint(source.config),
               scopes: (source.config.scope ?? "").split(/\s+/).filter(Boolean),

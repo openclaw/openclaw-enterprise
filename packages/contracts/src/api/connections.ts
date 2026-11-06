@@ -1,5 +1,5 @@
 import { Type } from "typebox";
-import { AgentId, CredentialSourceId, Meta, NamespaceId } from "./common.ts";
+import { AgentId, CredentialSourceId, Meta, Name, NamespaceId } from "./common.ts";
 import {
   ConnectionDestinationsSchema,
   ConnectionTemplateId,
@@ -16,6 +16,7 @@ export const UsableConnectionTemplatesResponse = Type.Object(
 export const StartNamespaceConnectionBody = Type.Object(
   {
     connectionTemplateId: ConnectionTemplateId,
+    accountName: Type.Optional(Name),
     selectedScopes: Type.Optional(Type.Array(OAuthScope, { uniqueItems: true })),
   },
   { additionalProperties: false },
@@ -84,8 +85,12 @@ export const StartPluginConnectionBody = Type.Object(
     pluginId: PluginId,
     slotId: SlotId,
     releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    accountName: Type.Optional(Name),
     selectedScopes: Type.Optional(Type.Array(OAuthScope, { uniqueItems: true })),
-    expectedCredentialSourceId: Type.Union([CredentialSourceId, Type.Null()]),
+    expectedCredentialSourceIds: Type.Array(CredentialSourceId, {
+      uniqueItems: true,
+      maxItems: 64,
+    }),
   },
   { additionalProperties: false },
 );
