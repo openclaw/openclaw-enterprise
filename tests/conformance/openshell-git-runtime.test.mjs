@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import { setTimeout as delay } from "node:timers/promises";
 import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
 import {
   OpenShellGitRouteBlockedError,
@@ -588,12 +589,19 @@ test("held-launch Git expiry requires a fresh original predecessor and a revoked
     "generic withholding",
     "failed predecessor",
     "stale predecessor",
+    "predecessor expires during report read",
+    "predecessor expires during Sandbox read",
+    "predecessor evaluation is delayed",
     "changed predecessor",
     "replaced live instance",
     "stopped live instance",
     "expired after detach",
   ]) {
     await t.test(fault, async (t) => {
+      if (fault === "fractional predecessor") {
+        // Isolate wire timestamp precision from scheduling latency within its sub-ms lease.
+        t.mock.method(process.hrtime, "bigint", () => 0n);
+      }
       // Advance only time after the supported held launch; the admitted grant stays immutable.
       t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
       await observedGitRoute(2, {
@@ -622,6 +630,21 @@ test("held-launch Git expiry requires a fresh original predecessor and a revoked
           store.confirmDetached = async (...args) => {
             confirmations.push(args);
             return true;
+          };
+          const delayedWitness = [
+            "predecessor expires during report read",
+            "predecessor expires during Sandbox read",
+            "predecessor evaluation is delayed",
+          ].includes(fault);
+          let delayedReport = false;
+          let delayedSandboxRead = false;
+          const inspectSandbox = client.getSandbox;
+          client.getSandbox = async (...args) => {
+            if (delayedSandboxRead) {
+              delayedSandboxRead = false;
+              await delay(150);
+            }
+            return inspectSandbox(...args);
           };
           const identify = client.getProvider;
           client.getProvider = async (workspace, name, signal) => ({
@@ -656,6 +679,9 @@ test("held-launch Git expiry requires a fresh original predecessor and a revoked
             _signal,
             receiptId,
           ) => {
+            if (fault === "predecessor evaluation is delayed" && !delayedReport) {
+              await delay(150);
+            }
             const removed = !box.spec.providers.includes(git.provider);
             const absent = removed && provider === git.provider;
             let state = "WITHHELD";
@@ -706,8 +732,8 @@ test("held-launch Git expiry requires a fresh original predecessor and a revoked
                 reason: removed ? undefined : "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED",
               },
               networkInstanceId: git.networkInstanceId,
-              // The valid control is immediately inside the 15-second predecessor lease.
-              observedTime: new Date(Date.now() - (removed ? 0 : 14_999)).toISOString(),
+              // Leave scheduling headroom; the fractional case isolates the exact lease boundary.
+              observedTime: new Date(Date.now() - (removed ? 0 : 14_000)).toISOString(),
               evaluatedTime: new Date().toISOString(),
             };
             if (!removed) {
@@ -726,6 +752,16 @@ test("held-launch Git expiry requires a fresh original predecessor and a revoked
               }
               if (fault === "stale predecessor") {
                 result.observedTime = new Date(Date.now() - 15_000).toISOString();
+              }
+              if (delayedWitness && !delayedReport) {
+                delayedReport = true;
+                // The report expires before the caller can use its otherwise valid witness.
+                result.observedTime = new Date(Date.now() - 14_900).toISOString();
+                if (fault === "predecessor expires during report read") {
+                  await delay(150);
+                } else if (fault === "predecessor expires during Sandbox read") {
+                  delayedSandboxRead = true;
+                }
               }
               if (fault === "changed predecessor") {
                 // Internally consistent evidence still cannot substitute another installation.
@@ -795,6 +831,27 @@ test("held-launch Git expiry requires a fresh original predecessor and a revoked
             entry.continuity,
             AbortSignal.timeout(5_000),
           );
+          if (delayedWitness) {
+            assert.equal(outcome, "pending");
+            assert.equal(requests.length, 0, "a depleted read budget cannot authorize detach");
+            assert.equal(confirmations.length, 0);
+            assert.equal(
+              await f.runtime.retireExpiredRepositoryAccess(
+                revision,
+                client,
+                box.workspace,
+                box.name,
+                entry.continuity,
+                AbortSignal.timeout(5_000),
+              ),
+              "withdrawn",
+              "a later fresh witness can complete withdrawal without retiring the runtime",
+            );
+            assert.equal(requests.length, 1);
+            assert.equal(confirmations.length, 1);
+            assert.equal(await f.lookup(), undefined);
+            return;
+          }
           const valid = fault === "valid expired predecessor" || fault === "fractional predecessor";
           const sent = valid || fault === "expired after detach";
           assert.equal(outcome, valid ? "withdrawn" : "retire-runtime");

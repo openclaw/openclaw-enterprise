@@ -278,7 +278,7 @@ A version that is still deploying has no credential yet, so its requests answer
 Each refusal logs `worker.openshell-git-denied`: `reasonCode` is listed above;
 `reason` details the cause, such as
 `ref_not_allowed`, `draft_rejected`, `session_closed`, `material_unavailable`,
-`installation_changed` or `route_blocked`. Sandbox and supervisor request IDs are included. Lost-credential
+`installation_changed` or `route_blocked`. Includes Sandbox ID and supervisor request ID. Lost-credential
 `worker.openshell-git-route-warning` uses the same `reasonCode`, distinguishing
 removed bindings (`access_withdrawn`) from rejected App keys (`credential_unavailable`).
 

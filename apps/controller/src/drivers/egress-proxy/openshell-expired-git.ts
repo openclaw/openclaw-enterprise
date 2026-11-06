@@ -181,7 +181,13 @@ function evidence(
   epoch: string,
   name: string,
   id: string,
-  options?: { old?: boolean; receiptId?: string; resourceVersion?: string; observe?: boolean },
+  options?: {
+    old?: boolean;
+    receiptId?: string;
+    resourceVersion?: string;
+    observe?: boolean;
+    readStartedAt?: bigint;
+  },
 ): Snapshot | undefined {
   const { receipt: r, observed: o, reason, state } = status;
   const desired = r?.desired;
@@ -243,10 +249,18 @@ function evidence(
       evaluated !== undefined &&
       at <= evaluated &&
       // Stock reports expiry before checking its 15-second supervisor observation lease.
-      // An expired credential can identify the predecessor only with a live witness.
       (!expired || evaluated - at < 15_000_000_000n) &&
       Math.abs(Date.now() - Date.parse(status.evaluatedTime ?? "")) < 30_000,
   );
+  // Request time includes transport before evaluation. If that conservative budget
+  // is exhausted, obtain a fresh witness without treating the matching identity as unsafe.
+  if (
+    expired &&
+    (options?.readStartedAt === undefined ||
+      evaluated - at + (process.hrtime.bigint() - options.readStartedAt) >= 15_000_000_000n)
+  ) {
+    return undefined;
+  }
   return desired;
 }
 
@@ -258,6 +272,7 @@ export async function observeOpenShellGitPredecessor(
   signal: AbortSignal,
 ) {
   const { workspace, sandbox, provider, providerId, providerResourceVersion } = git;
+  const readStartedAt = process.hrtime.bigint();
   const status = await client.getSandboxProviderStatus(workspace, sandbox, provider, signal);
   if (
     status.state === "PROVIDER_READINESS_STATE_WITHHELD" &&
@@ -277,6 +292,7 @@ export async function observeOpenShellGitPredecessor(
   return !!evidence(status, git, git.attachmentEpoch, provider, providerId, {
     old: true,
     resourceVersion: providerResourceVersion,
+    readStartedAt,
   });
 }
 
@@ -299,6 +315,7 @@ export async function witnessOpenShellGitLaunch(
 ): Promise<string | undefined> {
   const completedPreviewReceipt = options?.completedPreviewReceipt;
   const id = await modelProvider(client, git, owner.model, signal);
+  const readStartedAt = process.hrtime.bigint();
   const status = await client.getSandboxProviderStatus(
     git.workspace,
     git.sandbox,
@@ -319,7 +336,7 @@ export async function witnessOpenShellGitLaunch(
   ) {
     // Expiry withholds the whole environment. Matching old evidence cannot reconstruct
     // launch authority in a cold process; let the worker supervise and defer instead.
-    evidence(status, git, git.attachmentEpoch, owner.model, id, { old: true });
+    evidence(status, git, git.attachmentEpoch, owner.model, id, { old: true, readStartedAt });
     requireIdentity(
       box.id === git.sandboxId &&
         box.name === git.sandbox &&

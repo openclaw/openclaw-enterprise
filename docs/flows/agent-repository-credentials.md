@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-11-05"
-last_updated_session: authoring-run/3a354167-c2fd-45c5-97ef-b9e0e6dbdd4e
+updated: "2026-11-06"
+last_updated_session: authoring-run/5827ecb1-a6f5-4466-82a4-17f1e5e31257
 ---
 
 # Agent repository credential flow
@@ -9,9 +9,9 @@ last_updated_session: authoring-run/3a354167-c2fd-45c5-97ef-b9e0e6dbdd4e
 ## Overview
 
 Dedicated Codex uses prepared sessions without a Sandbox Driver;
-[OpenShell sandboxes](../reference/repository-credentials/protected-openshell-git.md) receive placeholders.
-See [enrollment hooks](../guides/repository-credentials/openshell-enrollment.md),
-[forwarding and retirement](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
+[OpenShell](../reference/repository-credentials/protected-openshell-git.md) receives placeholders.
+See [enrollment](../guides/repository-credentials/openshell-enrollment.md),
+[forwarding](repository-credentials.md) and [qualification](../testing/repository-credentials.md).
 
 ## Entry Points
 
@@ -99,18 +99,17 @@ Classified discovery failures return `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
 
 `createRepositoryFields` searches up to 1,000 choices with 16 attachments.
 `repositorySettings` requires the bound Installation policy for explicit and
-inherited saves, refusing mismatches. Without that binding it uses the registered
-Repo Driver. The database checks bindings. Only fresh, empty drafts tolerate a
-classified outage. The catalog omits sender metadata, credentials and provider descriptions.
+inherited saves, refusing mismatches. Otherwise it uses the registered Repo Driver. Database constraints check bindings. Only fresh empty drafts tolerate
+classified outages. Catalogs omit sender metadata, credentials and provider descriptions.
 
 Save Configuration first; reuse it after known Agent rejections.
 Repository retries require reload and nonempty reselection. Failed reloads block
 creation; ignore stale results. After unknown outcomes, read stored Agent and Configuration.
 
-Requests carry distinct opaque refs and optional profiles, never tokens or grant IDs.
+Requests carry opaque refs and optional profiles, never tokens or grant IDs.
 Nonempty selections without a configured Repo Driver return `409 RESOURCE_CONFLICT`.
-OCC saves normalized selections in request order. GitHub’s registry defaults legacy profiles to
-`git-write` without GitHub or control-socket calls.
+OCC preserves selection order. GitHub’s registry defaults legacy profiles to
+`git-write` without external calls.
 
 `apps/controller/src/drivers/repo/github/credentials/registry.ts:resolveGitHubRepositoryBinding`
 requires an exact Namespace/ref/profile. The fingerprint binds provider, App,
@@ -340,7 +339,8 @@ stored operations without reapplying.
 
 `apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts:observeOpenShellGitPredecessor`
 guards subtraction and standing succession. Expired predecessors require matching identity/generation,
-the current ready Sandbox instance and an observation under 15 seconds old.
+the ready Sandbox instance and evidence under 15 seconds old at return.
+Defer subtraction if the read budget expires.
 Cold `witnessOpenShellGitLaunch` observation returns unverified identity for matching expired model evidence;
 independent worker supervision durably defers renewal.
 `subtractExpiredOpenShellGit` confirms revoked Git, ready model and
@@ -389,6 +389,8 @@ and continued chat on team installations.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 02:37: Include read latency. (authoring-run/5827ecb1-a6f5-4466-82a4-17f1e5e31257 - 86fc243e09cc3dd9e23cbf6fe8d611890863f2c4)
 
 - 2026-11-05 17:57: Qualify expiry. (authoring-run/3a354167-c2fd-45c5-97ef-b9e0e6dbdd4e - 6cd36f95f8184beb29fd2126543e64761696d5a4)
 
