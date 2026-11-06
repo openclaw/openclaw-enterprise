@@ -66,6 +66,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     agentPermissionSummary?: unknown;
     nativeAdmin?: string;
     nativeAdminUrl?: string;
+    nativeReturnKey?: string;
     harness?: unknown;
     runtimeImages?: unknown;
     runtimePod?: string;
@@ -440,6 +441,12 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     const templateResponse = templates(path, method, body);
     if (templateResponse) {
       return templateResponse;
+    }
+    const nativeReturn = path.match(/^\/native-admin\/return\/([0-9a-f]{32})$/);
+    if (nativeReturn && method === "GET") {
+      return scenario.nativeReturnKey === nativeReturn[1]
+        ? response({ namespaceId, agentId: lifecycle.seedAgent().id })
+        : error(404);
     }
     if (path === "/installation/driver-configurations" && method === "GET") {
       return response(installationDriverConfigurations(scenario));
