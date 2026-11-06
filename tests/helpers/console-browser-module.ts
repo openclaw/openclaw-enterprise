@@ -13,6 +13,7 @@ interface ConsoleModules {
   "agents/detail.mjs": typeof import("../../apps/controller/src/console/agents/detail.mts");
   "agents/gateway-safety.mjs": typeof import("../../apps/controller/src/console/agents/gateway-safety.mts");
   "agents/list.mjs": typeof import("../../apps/controller/src/console/agents/list.mts");
+  "agents/provisioning-job.mjs": typeof import("../../apps/controller/src/console/agents/provisioning-job.mts");
   "agents/secret-picker.mjs": typeof import("../../apps/controller/src/console/agents/secret-picker.mts");
   "agents/workspace.mjs": typeof import("../../apps/controller/src/console/agents/workspace.mts");
   "api-client.mjs": typeof import("../../apps/controller/src/console/api-client.mts");
