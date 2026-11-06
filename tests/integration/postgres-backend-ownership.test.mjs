@@ -24,7 +24,7 @@ import {
   workspaceId,
 } from "../helpers/postgres-backend-state.mjs";
 import { reservePort } from "../helpers/available-port.mjs";
-import { stopProcess } from "../helpers/stop-process.mjs";
+import { stopProcess } from "../helpers/stop-process.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.mjs";
 import { claimIsolatedWork } from "../helpers/postgres-work-claim.mjs";

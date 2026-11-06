@@ -8,7 +8,7 @@ import {
   generatedPreparation,
   scopedPreparationCaller,
 } from "../helpers/codex-preparation-caller.ts";
-import { captureChild } from "../helpers/child-processes.mjs";
+import { captureChild } from "../helpers/child-processes.ts";
 
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),

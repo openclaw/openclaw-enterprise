@@ -22,7 +22,7 @@ import {
   concurrencyLimit,
   eachSettled as all,
   settled,
-} from "../helpers/child-processes.mjs";
+} from "../helpers/child-processes.ts";
 import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.mjs";
 import { fileTemporaryDirectory, temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 import { checkArguments, classify, respond } from "../../scripts/ci/impact.mjs";

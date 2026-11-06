@@ -16,7 +16,7 @@ import {
   nodeBaseImage,
   writeFixtureCommand,
 } from "../helpers/ci-prepare-fixture.mjs";
-import { eachSettled } from "../helpers/child-processes.mjs";
+import { eachSettled } from "../helpers/child-processes.ts";
 import { bashString, startCommandServer } from "../helpers/fixture-command-server.mjs";
 
 test("native container preparation summaries", async (t) => {
