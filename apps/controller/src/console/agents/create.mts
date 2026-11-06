@@ -1962,7 +1962,7 @@ function renderAgentForm(
   const pluginDiscovery = createPluginDiscovery({
     context,
     input: plugins,
-    slotConnection: draftConnection,
+    getSlotConnection: () => (bundledOpenClawCatalog ? draftConnection : undefined),
     canDiscover: () => Boolean(discoveryCredential()),
     canPrefetch: () =>
       bundledOpenClawCatalog ||

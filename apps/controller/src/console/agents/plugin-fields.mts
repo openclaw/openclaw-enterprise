@@ -72,7 +72,7 @@ export interface PluginFieldsOptions {
   onCancelDiscovery?: (() => void) | null;
   onLoadTools?: ((id: string, managedConnection?: ManagedToolConnection) => void) | null;
   saveHint?: string;
-  slotConnection?: SlotConnection;
+  getSlotConnection?(): SlotConnection | undefined;
   createApproverField?: (options: ApproverFieldOptions) => HTMLElement & {
     refreshNames?(): void;
     pauseNames?(): void;
@@ -210,7 +210,7 @@ export function createPluginFields({
   onLoadTools = null,
   saveHint = "Changes are saved when you create the Agent.",
   createApproverField,
-  slotConnection,
+  getSlotConnection,
 }: PluginFieldsOptions) {
   let disabled = false;
   let configuredOnly = false;
@@ -398,6 +398,7 @@ export function createPluginFields({
   }
 
   function showPlugin(entry: CatalogEntry) {
+    const slotConnection = getSlotConnection?.();
     if (tabState().activeId !== entry.id) {
       clearDetails(tabState());
       tabState().activeId = entry.id;
@@ -476,13 +477,7 @@ export function createPluginFields({
       load,
     );
     if (result?.status === "loading") {
-      picker.append(
-        element(
-          "p",
-          { className: "hint", role: "status" },
-          slotConnection?.grantOnCreate ? "Loading plugin details…" : "Loading tools…",
-        ),
-      );
+      picker.append(element("p", { className: "hint", role: "status" }, "Loading tools…"));
     } else if (result?.status === "error") {
       picker.append(
         element(
@@ -806,6 +801,7 @@ export function createPluginFields({
   }
 
   function render() {
+    const slotConnection = getSlotConnection?.();
     rememberExpandedTools();
     const active = document.activeElement;
     const focused = active?.getAttribute("aria-label");

@@ -2004,7 +2004,7 @@ test("plugin account replacement and new OAuth consent follow the selected sourc
           },
         ],
       },
-      slotConnection: {
+      getSlotConnection: () => ({
         unavailable: () => undefined,
         async list() {
           return [
@@ -2031,7 +2031,7 @@ test("plugin account replacement and new OAuth consent follow the selected sourc
         async start(_slot, _template, selected) {
           output.value = JSON.stringify(selected);
         },
-      },
+      }),
     });
     document.body.replaceChildren(picker.section, output);
   }

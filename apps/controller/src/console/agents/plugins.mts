@@ -228,7 +228,7 @@ export function renderAgentPlugins(
     context,
     input,
     catalogPath: `${path}/plugins`,
-    slotConnection: {
+    getSlotConnection: () => ({
       feedback(slot, sourceId) {
         if (
           confirmed?.pluginId === slot.pluginId &&
@@ -386,7 +386,7 @@ export function renderAgentPlugins(
           }
         }
       },
-    },
+    }),
     requestBody: (body) => body,
     canDiscover: () =>
       !updateDenied &&

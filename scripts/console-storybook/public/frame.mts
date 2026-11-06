@@ -127,7 +127,7 @@ if (scenario.component === "plugins") {
     catalog: scenario.pluginCatalog ?? null,
     ...(scenario.connectionPreview && {
       saveHint: "Changes are saved when you choose Save plugin selections.",
-      slotConnection: {
+      getSlotConnection: () => ({
         unavailable: () => undefined,
         async list() {
           if (scenario.connectionPreview === "denied") {
@@ -212,7 +212,7 @@ if (scenario.component === "plugins") {
           }
           document.getElementById("app")?.replaceChildren(receipt);
         },
-      },
+      }),
     }),
     capabilities: scenario.pluginCapabilities ?? null,
   });
