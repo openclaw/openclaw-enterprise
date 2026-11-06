@@ -10356,9 +10356,6 @@ export class OpenClawController {
     if (input.executionMode === undefined) {
       return page;
     }
-    if (!this.pluginCatalogModeAvailable(driver, input.executionMode)) {
-      return { plugins: [], nextCursor: null };
-    }
     return this.pluginCatalogForPlacement(page, driver, {
       id: driver.harnessId,
       mode: input.executionMode,
@@ -10584,11 +10581,6 @@ export class OpenClawController {
       },
     );
     if (input.executionMode !== undefined) {
-      if (!this.pluginCatalogModeAvailable(driver, input.executionMode)) {
-        throw new ConfigurationHarnessError(
-          `This Installation cannot run ${driver.harnessId} in ${input.executionMode} mode.`,
-        );
-      }
       this.validatePluginPlacement(
         driver,
         { [entry.id]: { enabled: true } },
@@ -10601,7 +10593,10 @@ export class OpenClawController {
   private async withNamespacePluginCredential<T>(
     principalId: string,
     namespaceId: string,
-    input: PluginDiscoveryCredential & { readonly harnessId: string },
+    input: PluginDiscoveryCredential & {
+      readonly harnessId: string;
+      readonly executionMode?: HarnessExecutionMode;
+    },
     signal: AbortSignal | undefined,
     prepareDiscovery: (
       driver: PluginDriver,
@@ -10610,7 +10605,22 @@ export class OpenClawController {
     const agentScope = { kind: "agent" as const, id: namespaceId, namespaceId };
     await this.authorize(principalId, "create", agentScope);
     await this.read((state) => this.exactNamespace(state, namespaceId));
-    const getDriver = () => this.pluginDriver(input.harnessId);
+    const getDriver = () => {
+      const driver = this.pluginDriver(input.harnessId);
+      const mode = input.executionMode;
+      if (
+        mode !== undefined &&
+        (pluginRuntimeHarnessRequirement(driver.implementation, { id: driver.harnessId, mode }) !==
+          undefined ||
+          (driver.harnessId === "openclaw" &&
+            !this.openClawExecutionModes().executionModes.includes(mode)))
+      ) {
+        throw new ConfigurationHarnessError(
+          `This Installation cannot run ${driver.harnessId} in ${mode} mode.`,
+        );
+      }
+      return driver;
+    };
     return this.withPluginDiscoveryCredential(
       principalId,
       namespaceId,
@@ -10954,12 +10964,6 @@ export class OpenClawController {
       signal,
     );
     return this.pluginCatalogForPlacement(page, driver, harness);
-  }
-
-  private pluginCatalogModeAvailable(driver: PluginDriver, mode: HarnessExecutionMode): boolean {
-    return (
-      driver.harnessId !== "openclaw" || this.openClawExecutionModes().executionModes.includes(mode)
-    );
   }
 
   private pluginCatalogForPlacement(

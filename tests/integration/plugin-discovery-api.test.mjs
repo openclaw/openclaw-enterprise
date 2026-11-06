@@ -1485,6 +1485,21 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
     });
   });
 
+  // The operator may use this Secret, but an impossible placement needs neither its value nor a provider request.
+  const reads = trackSecretValueReads(fixture.secretDriver);
+  for (const [suffix, extra] of [
+    ["", {}],
+    ["/details", { pluginId: "remote-fixture" }],
+  ]) {
+    const refused = await fixture.request("POST", fixture.path + suffix, {
+      body: { harnessId: "codex", executionMode: "embedded", secretRef: secret.ref, ...extra },
+    });
+    assert.equal(refused.status, 400);
+    assert.match(refused.body.error.message, /cannot run codex in embedded mode/);
+  }
+  assert.equal(reads(), 0);
+  assert.deepEqual(credentials, []);
+
   const list = await fixture.request("POST", fixture.path, {
     body: { harnessId: "codex", secretRef: secret.ref, q: "fixture" },
   });
@@ -1821,8 +1836,8 @@ test("Mixed Installation targets each Harness catalog before reading a discovery
   fixture.controller.selectDriver("compute", compute.id);
   const placement = { harnessId: "openclaw", executionMode: "dedicated" };
   const refused = await fixture.request("POST", path, { body: placement });
-  assert.equal(refused.status, 200);
-  assert.deepEqual(refused.data, { plugins: [], nextCursor: null });
+  assert.equal(refused.status, 400);
+  assert.match(refused.body.error.message, /cannot run openclaw in dedicated mode/);
   const refusedDetails = await fixture.request("POST", `${path}/details`, {
     body: { ...placement, pluginId: "occ-plugin:google@1.0.0" },
   });
