@@ -233,9 +233,8 @@ skipped hooks. The parent runner accounts for failures. Failed resources stay in
 
 `scripts/ci/impact-gate.mjs:main` retains each matrix job's result with its selected
 lanes; Full Integration does likewise. `scripts/ci/run-tests.mjs:aggregateGroup`
-requires one job owner per selected lane, successful jobs, and matching-source
-lane artifacts, evidence and cleanup. Parent failure fails the gate; lane
-artifacts identify failing lanes. Full Integration accounts for
+requires successful jobs, one owner per selected lane, and matching lane/source
+identities before attributing outcomes or validating evidence and cleanup. Full Integration accounts for
 its selected `full` group or lane. `ssh-host` stays outside automatic groups until
 an operator prepares its [disposable host](../testing/ssh.md#ssh-raw-hosts).
 Abrupt runner loss can prevent teardown and loses private `RUNNER_TEMP` state.
@@ -263,7 +262,7 @@ External reconciliation awaits an approved resource ledger.
 
 ## Changelog
 
-- 2026-11-06 08:54: Separate matrix job status from lane artifact outcomes. (authoring-run/acefb857-8e57-4f00-b7f5-ed9224944d88 - 3d59dcb51718a0242962b073089f66c402632e92)
+- 2026-11-06 09:03: Validate lane identity before attributing outcomes from matrix results. (authoring-run/acefb857-8e57-4f00-b7f5-ed9224944d88 - 048b2cd25cc59087bcb2551fce03a39eef023340)
 
 - 2026-11-04 12:10: Isolate the Codex Git proof queue without Slack. (authoring-run/14bcb9d6-2d4c-449d-8bbc-b64e3ef7e632 - aa60a72115e342ec020d1083fb5e30c139202c84)
 

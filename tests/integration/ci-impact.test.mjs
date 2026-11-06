@@ -1849,6 +1849,37 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
           .filter((entry) => entry.lane !== lane)
           .every((entry) => entry.status === "passed"),
       );
+      if (lane === "postgres") {
+        // Keep the runner-produced failure intact: an old revision's receipt
+        // cannot attribute an outcome to the revision being aggregated.
+        await command(root, "git", ["checkout", "-q", "--detach", f.head]);
+        const stale = await aggregate({ sha: f.head });
+        assert.notEqual(stale.status, 0);
+        assert.ok(hasIssue(stale, "source-sha-mismatch", lane));
+        assert.equal(hasIssue(stale, "lane-failed"), false);
+        assert.deepEqual(JSON.parse(stale.stdout).lanes, []);
+        await command(root, "git", ["checkout", "-q", "--detach", f.tested]);
+
+        // A misplaced real receipt likewise cannot fail its passing sibling.
+        const sibling = join(root, "results/checks-baseline-1.json");
+        const siblingOriginal = readFileSync(sibling);
+        cpSync(artifact, sibling);
+        const misfiled = await aggregate();
+        assert.notEqual(misfiled.status, 0);
+        assert.ok(hasIssue(misfiled, "lane-output-mismatch", "checks-baseline-1"));
+        const misplaced = JSON.parse(misfiled.stdout);
+        assert.deepEqual(
+          misplaced.issues
+            .filter((entry) => entry.code === "lane-failed")
+            .map((entry) => entry.lane),
+          [lane],
+        );
+        assert.deepEqual(
+          misplaced.lanes.map((entry) => entry.lane),
+          ["checks-baseline-2", lane],
+        );
+        writeFileSync(sibling, siblingOriginal);
+      }
       needs["pr-safe"].result = "success";
       assert.equal((await runGate(root, needs, mode)).status, 0);
       writeFileSync(artifact, original);

@@ -1843,25 +1843,11 @@ async function aggregateGroup(
     try {
       const summary = await readJson(resultPath);
       const lane = manifest.lanes.get(laneName);
-      lanes.push({
-        lane: summary.lane,
-        status: summary.status,
-        exitCode: summary.exitCode,
-        sourceSha: summary.sourceSha,
-      });
       if (summary.lane !== laneName) {
         issues.push(
           issue("lane-output-mismatch", `result file for ${laneName} reports ${summary.lane}`, {
             lane: laneName,
             reportedLane: summary.lane,
-          }),
-        );
-      }
-      if (summary.status !== "passed") {
-        issues.push(
-          issue("lane-failed", `lane ${laneName} did not pass`, {
-            lane: laneName,
-            status: summary.status,
           }),
         );
       }
@@ -1871,6 +1857,23 @@ async function aggregateGroup(
             lane: laneName,
             expectedSourceSha: currentSha,
             observedSourceSha: summary.sourceSha,
+          }),
+        );
+      }
+      if (summary.lane !== laneName || summary.sourceSha !== currentSha) {
+        continue;
+      }
+      lanes.push({
+        lane: summary.lane,
+        status: summary.status,
+        exitCode: summary.exitCode,
+        sourceSha: summary.sourceSha,
+      });
+      if (summary.status !== "passed") {
+        issues.push(
+          issue("lane-failed", `lane ${laneName} did not pass`, {
+            lane: laneName,
+            status: summary.status,
           }),
         );
       }

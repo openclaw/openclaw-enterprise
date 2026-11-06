@@ -4989,12 +4989,16 @@ test("aggregate requires fixed lane outputs, successful needs, and matching sour
   assert.equal(result.status, 1);
   const summary = JSON.parse(result.stdout);
   assert.deepEqual(summary.issues.map((entry) => entry.code).sort(), [
-    "lane-failed",
     "missing-lane-output",
     "missing-need",
     "need-not-success",
     "source-sha-mismatch",
   ]);
+  // A different revision's failure cannot describe this revision's runtime lane.
+  assert.deepEqual(
+    summary.lanes.map((lane) => lane.lane),
+    ["baseline"],
+  );
 });
 
 test("aggregate accepts a lane as a singleton target and rejects tampered result evidence", async (t) => {
