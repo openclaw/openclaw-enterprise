@@ -72,12 +72,12 @@ The commands below also use `jq`.
 
 ## Choose a Harness destination
 
-Read the proposed destination in the Console's deployment checklist. Open
-**Harness destination** to choose the Installation default, retain the previous
-requested overrides, or enter a provider override. Select **Preview destination**
-before **Deploy new version**. A failed preview keeps
-deployment unavailable; correct the source or settings, then retry the preview.
-Saved version details show requested and resolved settings.
+Open **Harness destination** to choose the Installation default, retain the previous
+requested overrides, or enter a provider override. The checklist shows the
+requested URL or an inherited-default label. Select **Deploy new version** to
+validate and admit the request. If admission refuses it, correct the settings or
+source permissions and retry. The admitted version shows the actual resolved
+settings; the default is selected at admission.
 
 For the CLI, write the override object to `harness-overrides.json`:
 
@@ -97,9 +97,8 @@ occ agent deploy "$AGENT_ID" --retain-harness-overrides REVISION_ID
 ```
 
 The flags are mutually exclusive. With neither flag, deployment uses current
-Installation defaults. The CLI prints the resolved preview to stderr before
-submitting. Defaults can change between preview and admission; inspect the
-returned revision's settings. Explicit provider overrides require an authorized
+Installation defaults. The CLI sends one deployment request; inspect the
+returned revision's settings for the resolved destination. Explicit provider overrides require an authorized
 API-key Credential Source. The [provider reference](../../reference/drivers/kubernetes-compute/model-provider.md)
 defines replacement semantics and authentication and network limits.
 

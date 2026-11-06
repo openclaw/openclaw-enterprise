@@ -681,7 +681,6 @@ export async function renderAgentDetail(
   // A missing summary leaves each control on its usual path, except failed-version
   // recovery, which waits for a positive answer before offering a draft link.
   let callerPermissions: Permissions | null = null;
-  let harnessPreviewPending: Promise<void> | null = null;
   let callerPermissionsSettled = false;
   const callerPermissionsRead = readPermissions()
     .then(
@@ -1782,19 +1781,6 @@ export async function renderAgentDetail(
       deployButton.focus({ preventScroll: true });
     } else {
       tabControls.get(selectedTab)?.focus({ preventScroll: true });
-      if (deployButton && harnessPreviewPending) {
-        const tab = selectedTab;
-        void harnessPreviewPending.then(() => {
-          if (
-            context.isCurrent() &&
-            !deleting &&
-            selectedTab === tab &&
-            document.activeElement === tabControls.get(tab)
-          ) {
-            openVersionDetail({ ...options, deploy: true });
-          }
-        });
-      }
     }
     scrollToVersionDetail(options, actions ?? detailPane);
   }
@@ -3625,12 +3611,6 @@ export async function renderAgentDetail(
       updateDeployControls();
     }
     function updateDeployControls() {
-      if (harnessPreviewInputs !== undefined && harnessPreviewInputs !== currentHarnessInputs()) {
-        harnessReady = false;
-        harnessPreviewAttempt++;
-        harnessPreviewInputs = currentHarnessInputs();
-        queueMicrotask(startHarnessPreview);
-      }
       harnessControls.hidden = callerPermissions?.deploy !== true;
       harnessControls.toggleAttribute("inert", deployPending);
       authenticationForm?.toggleAttribute("inert", Boolean(credentials?.mutationPending()));
@@ -3646,7 +3626,7 @@ export async function renderAgentDetail(
           Boolean(credentials?.mutationPending());
       }
       const draftBlocksDeploy = deployIsDisabled();
-      const deployUnavailable = draftBlocksDeploy || !harnessReady;
+      const deployUnavailable = draftBlocksDeploy;
       const rejectedAccess =
         !runtimeAuth && credentialRejected()
           ? credentialFixAccess(agent.harnessAuth, callerPermissions)
@@ -3761,11 +3741,7 @@ export async function renderAgentDetail(
       // An unavailable Deploy is described by the line that says why, or by a refused
       // deployment's alert when that line defers to it (finding D749), and stays in the Tab order
       // while one of them shows (finding 2878).
-      let deployReason = deployStatus.textContent ? deployStatus : deployFeedback;
-      if (!draftBlocksDeploy && !harnessReady) {
-        deployStatus.textContent = "Preview the Harness destination before deploying.";
-        deployReason = providerPreview;
-      }
+      const deployReason = deployStatus.textContent ? deployStatus : deployFeedback;
       setUnavailable(deploy, deployUnavailable, deployReason);
       updateChecklist();
     }
@@ -3871,26 +3847,13 @@ export async function renderAgentDetail(
                     ? CHECKING_CREDENTIAL_ACCESS_STEP
                     : "Finish in Credentials",
       );
-      setStep(checklistSteps[2], false, harnessSummary);
+      setStep(checklistSteps[2], false, requestedDestination());
     }
     refreshDeployControls = updateDeployControls;
-    let harnessReady = false;
-    let harnessSummary = "Preview the destination before deploying.";
-    let harnessPreviewInputs: string | undefined;
-    function currentHarnessInputs() {
-      return JSON.stringify([
-        snapshot.id,
-        snapshot.generation,
-        "harnessAuth" in currentAgent ? currentAgent.harnessAuth : null,
-        currentAgent.executionMode,
-        deploySecretsDenied.names,
-        deploySecretsDenied.unreadable,
-      ]);
-    }
-    let harnessOverrides: Record<string, unknown> = {};
-    let harnessPreviewAttempt = 0;
-    const retainedHarnessRevision =
+    const previousRevision =
       visibleRevisions.find((revision) => revision.id === currentRevisionId) ?? visibleRevisions[0];
+    const retainedHarnessRevision =
+      previousRevision?.harness?.overrides === undefined ? undefined : previousRevision;
     const harnessChoice = element(
       "select",
       {},
@@ -3930,122 +3893,45 @@ export async function renderAgentDetail(
         "Overrides require an API-key Credential Source authorized for this destination. Existing network restrictions apply.",
       ),
     );
-    const providerPreview = element(
-      "p",
-      { className: "hint", role: "status" },
-      "Preview the destination before deploying.",
-    );
-    async function previewHarness() {
-      const attempt = ++harnessPreviewAttempt;
-      const inputs = currentHarnessInputs();
-      harnessPreviewInputs = inputs;
-      harnessReady = false;
-      harnessSummary = "Resolving destination…";
-      providerPreview.textContent = harnessSummary;
-      updateDeployControls();
-      try {
-        let permissionRead = latestPermissionsRead;
-        let permissions = await permissionRead;
-        while (context.isCurrent() && permissionRead !== latestPermissionsRead) {
-          permissionRead = latestPermissionsRead;
-          permissions = await permissionRead;
+    function requestedHarnessOverrides(): Record<string, unknown> {
+      if (harnessChoice.value === "retain") {
+        const overrides = retainedHarnessRevision?.harness.overrides;
+        if (overrides === undefined) {
+          throw new Error(
+            "The previous version's requested overrides are unavailable. Choose the Installation default or enter an override.",
+          );
         }
-        if (
-          attempt !== harnessPreviewAttempt ||
-          !context.isCurrent() ||
-          permissions?.deploy !== true
-        ) {
-          return;
-        }
-        if (deploySecretsDenied.names.length > 0 || deploySecretsDenied.unreadable > 0) {
-          harnessSummary = "Credential permission required.";
-          providerPreview.textContent =
-            "Review the credential permissions in the deployment checklist.";
-          updateDeployControls();
-          return;
-        }
-        let overrides: Record<string, unknown> = {};
-        if (harnessChoice.value === "retain") {
-          const previous = retainedHarnessRevision;
-          if (!previous || previous.harness.overrides === undefined) {
-            throw new Error(
-              "The previous version's requested overrides are unavailable. Choose the Installation default or enter an override.",
-            );
-          }
-          overrides = previous.harness.overrides;
-        } else if (harnessChoice.value === "custom") {
-          overrides = {
-            modelProvider: {
-              protocol: providerProtocol.value,
-              baseUrl: providerUrl.value,
-              supportsStandaloneWebSearch: providerSearch.checked,
-            },
-          };
-        }
-        const preview = (await request(`${path}/deploy-preview`, {
-          method: "POST",
-          readOnly: true,
-          body: { harnessOverrides: overrides },
-        })) as {
-          harness: {
-            overrides: Record<string, unknown>;
-            configuration: {
-              modelProvider?: {
-                baseUrl: string;
-                protocol: string;
-                supportsStandaloneWebSearch: boolean;
-              };
-            };
-          };
-        };
-        if (attempt !== harnessPreviewAttempt || !context.isCurrent()) {
-          return;
-        }
-        const provider = preview.harness.configuration.modelProvider;
-        harnessSummary = provider
-          ? `Destination: ${provider.baseUrl}`
-          : "Native provider destination";
-        providerPreview.textContent = provider
-          ? `Destination: ${provider.baseUrl} · ${provider.protocol} · Standalone web search: ${provider.supportsStandaloneWebSearch ? "supported" : "not supported"}. Defaults are resolved again at deployment.`
-          : "The selected authentication uses its native provider destination.";
-        harnessOverrides = preview.harness.overrides;
-        harnessPreviewInputs = inputs;
-        harnessReady = true;
-      } catch (error) {
-        if (attempt !== harnessPreviewAttempt || !context.isCurrent()) {
-          return;
-        }
-        harnessSummary = "Destination preview unavailable.";
-        if (requestFailure(error).status === 403) {
-          void readDeploySecretsDenied({ fresh: true });
-        }
-        harnessControls.open = true;
-        providerPreview.textContent =
-          requestFailure(error).serverMessage ??
-          (error instanceof Error
-            ? error.message
-            : "Destination preview is unavailable. Retry the preview.");
+        return overrides;
       }
-      updateDeployControls();
+      if (harnessChoice.value === "custom") {
+        return {
+          modelProvider: {
+            protocol: providerProtocol.value,
+            baseUrl: providerUrl.value,
+            supportsStandaloneWebSearch: providerSearch.checked,
+          },
+        };
+      }
+      return {};
     }
-    function startHarnessPreview() {
-      const pending = previewHarness();
-      harnessPreviewPending = pending;
-      void pending.then(() => {
-        if (harnessPreviewPending === pending) {
-          harnessPreviewPending = null;
-        }
-      });
+    function requestedDestination(): string {
+      if (harnessChoice.value === "custom") {
+        return providerUrl.value
+          ? `Requested destination: ${providerUrl.value}`
+          : "Enter a provider URL in Harness destination.";
+      }
+      const retained = retainedHarnessRevision?.harness.overrides.modelProvider;
+      return harnessChoice.value === "retain" &&
+        typeof retained === "object" &&
+        retained !== null &&
+        "baseUrl" in retained
+        ? `Requested destination: ${String(retained.baseUrl)}`
+        : "Use the Installation default at deployment.";
     }
-    const previewProvider = button("Preview destination", startHarnessPreview);
     for (const control of [harnessChoice, providerUrl, providerProtocol, providerSearch]) {
       control.addEventListener("input", () => {
-        harnessPreviewAttempt++;
-        harnessReady = false;
         providerFields.hidden = harnessChoice.value !== "custom";
-        harnessSummary = "Preview the changed destination.";
-        providerPreview.textContent = "Preview the changed destination before deploying.";
-        updateDeployControls();
+        updateChecklist();
       });
     }
     const harnessControls = element(
@@ -4054,8 +3940,11 @@ export async function renderAgentDetail(
       element("summary", {}, "Harness destination"),
       field({ label: "Harness settings", control: harnessChoice }),
       providerFields,
-      previewProvider,
-      providerPreview,
+      element(
+        "p",
+        { className: "hint" },
+        "Deployment validates the request and saves the resolved settings in the new version.",
+      ),
     );
     const deployStatus = element("p", { className: "muted", role: "status" });
     const deployFeedback = statusBlock("danger", null, null);
@@ -4076,6 +3965,7 @@ export async function renderAgentDetail(
         focusSaveOutcome(draftActions, [], deployStatus);
         let submitted = false;
         try {
+          const harnessOverrides = requestedHarnessOverrides();
           const freshAgent = await readAgent();
           if (!context.isCurrent()) {
             return;
@@ -4332,7 +4222,6 @@ export async function renderAgentDetail(
     } else {
       draftActions.insertAdjacentElement("afterend", harnessControls);
     }
-    startHarnessPreview();
     renderDetailHeading();
     return {
       get snapshot() {

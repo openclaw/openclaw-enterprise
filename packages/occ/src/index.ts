@@ -1,4 +1,3 @@
-import { match } from "ts-pattern";
 import { exchangeAuthorizationCode, startBrowserAuthorization } from "./browser-authorization.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import { isReducedCredentialPlan } from "./credential-policy-reduction.ts";
@@ -12227,90 +12226,6 @@ export class OpenClawController {
     });
   }
 
-  async previewAgentDeployment(
-    principalId: string,
-    input: DeployAgentInput,
-    resolveHarness: HarnessResolver,
-  ) {
-    return this.mutate(async (state) => {
-      await this.authorize(principalId, "deploy", {
-        kind: "agent",
-        id: input.agentId,
-        namespaceId: input.namespaceId,
-      });
-      const agent = await state.agents.findAgent(input.namespaceId, input.agentId);
-      if (!agent) {
-        throw new ScopeViolationError("The Agent is unavailable.");
-      }
-      await this.authorize(principalId, "read", {
-        kind: "configuration",
-        id: agent.configurationId,
-        namespaceId: agent.namespaceId,
-      });
-      const metadata = await state.configurations.findConfiguration(
-        agent.namespaceId,
-        agent.configurationId,
-      );
-      if (!metadata) {
-        throw new ScopeViolationError("The Configuration is unavailable.");
-      }
-      const configuration = this.exactConfiguration(
-        await this.configurationDriver().read(metadata),
-        metadata,
-      );
-      const id = resolveConfiguredHarnessId(
-        configuration.values,
-        this.modelPolicyAgent(agent.executionMode, resolveHarness),
-      );
-      const approved = resolveAgentHarness(resolveHarness, id, agent.executionMode);
-      if (!approved || approved.id !== id) {
-        throw new DependencyUnavailableError("The selected Harness runtime is not approved.");
-      }
-      const compute = this.selectedDriver("compute");
-      const binding = this.harnessAuthBinding(agent.harnessAuth);
-      if (binding === null) {
-        throw new ResourceStateConflictError(
-          "Deployment requires an explicit Harness authentication binding.",
-        );
-      }
-      await this.authorizeHarnessAuthSource(state, principalId, agent.namespaceId, binding);
-      // Preview reads routing metadata only. Agent grants and Secret backend resolution
-      // stay in admission, after the Console has completed its grant workflow.
-      const auth = await match(binding)
-        .with({ method: "runtime" }, async (value) => value)
-        .with(
-          { method: "credential_source" },
-          async (value) =>
-            (await this.credentialSourceHarnessAuthSnapshot(state, agent.namespaceId, value))[0],
-        )
-        .otherwise(async (value) =>
-          isSecretHarnessAuth(value)
-            ? this.secretHarnessAuthSnapshot(value)
-            : this.serviceAccountHarnessAuthSnapshot(
-                state,
-                agent.namespaceId,
-                agent.backendId,
-                value,
-              ),
-        );
-      const requested = {
-        ...approved,
-        mode: agent.executionMode,
-        overrides: this.normalizedHarnessOverrides(input.harnessOverrides),
-      };
-      const harness = {
-        ...requested,
-        configuration:
-          compute.resolveHarnessConfiguration?.(requested, auth, configuration.values) ?? {},
-      };
-      return immutableCopy({
-        harness,
-        configurationId: configuration.id,
-        configurationGeneration: configuration.generation,
-      });
-    });
-  }
-
   async deployAgent(
     principalId: string,
     input: DeployAgentInput,
@@ -12494,20 +12409,20 @@ export class OpenClawController {
 
   private async admitAgentDeployment(
     principalId: string,
-    input: DeployAgentInput,
+    input: DeployAgentInput & { harnessOverrides: Readonly<Record<string, unknown>> },
     resolveHarness: HarnessResolver,
     auditEvent?: (result: Readonly<AuthorizedAgentDeployment>) => AuditEvent,
   ): Promise<Readonly<AuthorizedAgentDeployment>>;
   private async admitAgentDeployment(
     principalId: string,
-    input: DeployAgentInput,
+    input: DeployAgentInput & { harnessOverrides: Readonly<Record<string, unknown>> },
     resolveHarness: HarnessResolver,
     auditEvent: ((result: Readonly<AuthorizedAgentDeployment>) => AuditEvent) | undefined,
     first: FirstDeploymentGuard,
   ): Promise<Readonly<AuthorizedAgentDeployment> | Readonly<FirstDeploymentReceipt>>;
   private async admitAgentDeployment(
     principalId: string,
-    input: DeployAgentInput,
+    input: DeployAgentInput & { harnessOverrides: Readonly<Record<string, unknown>> },
     resolveHarness: HarnessResolver,
     auditEvent?: (result: Readonly<AuthorizedAgentDeployment>) => AuditEvent,
     first?: FirstDeploymentGuard,
@@ -12673,7 +12588,7 @@ export class OpenClawController {
       const requestedHarness = Object.freeze({
         ...approvedHarness,
         mode: lockedAgent.executionMode,
-        overrides: this.normalizedHarnessOverrides(input.harnessOverrides),
+        overrides: input.harnessOverrides,
       });
       // Capability refusals precede Agent principal grants: a grant cannot make an unsupported
       // topology deployable, so the refusal the operator can act on must surface first. A

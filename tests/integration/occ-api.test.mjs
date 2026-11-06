@@ -1343,6 +1343,7 @@ test("direct first-deployment captures scalars once for fresh admission and reco
           const pending = deploy(actor, input, body, ...rest);
           if (change !== "stateful key") {
             input.agentId = missingAgentId;
+            input.harnessOverrides = { unsupported: true };
             body.expectedGeneration = 2;
           }
           return pending;
@@ -1808,10 +1809,7 @@ test("first-deployment CLI recovers a lost committed response with the original 
         assert.ok(committed, "the uncertain response must follow a real committed admission");
         assert.deepEqual(
           forwarded,
-          [
-            { method: "POST", path: `${path}/deploy-preview` },
-            { method: "POST", path: `${path}/deploy-first` },
-          ],
+          [{ method: "POST", path: `${path}/deploy-first` }],
           "the CLI must not automatically replay an uncertain mutation",
         );
         const revisions = await fixture.platformState.read((unit) =>
@@ -1868,7 +1866,6 @@ test("first-deployment CLI recovers a lost committed response with the original 
         assert.deepEqual(recovered, committed);
         assert.ok(recovery.stdout.includes(committed.revisionId));
         assert.deepEqual(forwarded, [
-          { method: "POST", path: `${path}/deploy-preview` },
           { method: "POST", path: `${path}/deploy-first` },
           {
             method: "GET",

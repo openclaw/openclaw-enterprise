@@ -121,7 +121,6 @@
 - [`lookupChannelDirectory`](../api.md#post-namespacesnamespaceidchanneldirectorylookup): Search a channel directory using an authorized Namespace Secret.
 - [`pollAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsdeviceauthorizationssecretidpoll): Experimental: Complete device login without returning credential material.
 - [`pollSavedAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsagentiddeviceauthorizationssecretidpoll): Experimental: Complete device login without returning credential material.
-- [`previewAgentDeployment`](../api.md#post-namespacesnamespaceidagentsagentiddeploypreview): Preview resolved Harness settings without deploying; defaults can change before admission.
 - [`removeAgentStandingApproval`](../api.md#post-namespacesnamespaceidagentsagentidrepositoryapprovalsapprovalidremove): Remove repository approval independently of configuration or runtime cleanup.
 - [`retryAgentProvisioning`](../api.md#post-namespacesnamespaceidagentsprovisionworkidretry): Retry failed first-time provisioning for one exact work item.
 - [`startAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsdeviceauthorizations): Experimental: Start a private device login for Agent configuration.

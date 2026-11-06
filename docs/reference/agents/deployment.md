@@ -277,7 +277,7 @@ are defined by the [API reference](../api.md).
 
 Revisions save `harnessOverrides` and resolved settings.
 See the [provider contract](../drivers/kubernetes-compute/model-provider.md) and
-[preview, deployment, and recovery workflow](../../guides/topics/agent-revisions.md#choose-a-harness-destination).
+[deployment and recovery workflow](../../guides/topics/agent-revisions.md#choose-a-harness-destination).
 
 ## Guarded first deployment
 

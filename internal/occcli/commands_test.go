@@ -1334,9 +1334,6 @@ func TestFirstDeploymentCommandsUseExplicitRoutes(t *testing.T) {
 		t.Run(command, func(t *testing.T) {
 			calls := 0
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if serveDeploymentPreview(w, r) {
-					return
-				}
 				calls++
 				expectedPath := path
 				if command == "recover-first-deployment" {
@@ -1395,9 +1392,6 @@ func TestFirstDeploymentCommandsUseExplicitRoutes(t *testing.T) {
 func TestFirstDeploymentLostResponsePrintsExactRecoveryCommand(t *testing.T) {
 	calls := 0
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if serveDeploymentPreview(w, r) {
-			return
-		}
 		calls++
 		// Simulate a missing HTTP reply, not server admission. The API integration
 		// test drops a real accepted reply after the regular workflow commits.
@@ -1433,9 +1427,6 @@ func TestFirstDeploymentLostResponsePrintsExactRecoveryCommand(t *testing.T) {
 		t.Fatalf("missing caller reminder or leaked credential: %s", notices.String())
 	}
 	lines := strings.Split(strings.TrimSpace(notices.String()), "\n")
-	if len(lines) > 0 && strings.HasPrefix(lines[0], "Proposed Harness settings:") {
-		lines = lines[1:]
-	}
 	if len(lines) != 2 || !strings.Contains(lines[0], "outcome is unconfirmed") {
 		t.Fatalf("missing recovery guidance: %s", notices.String())
 	}
@@ -1470,9 +1461,6 @@ func TestFirstDeploymentRecoveryGuidanceDistinguishesRefusals(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if serveDeploymentPreview(w, r) {
-					return
-				}
 				calls++
 				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(tc.body))
@@ -1496,7 +1484,7 @@ func TestFirstDeploymentDoesNotFallBackOnOlderServer(t *testing.T) {
 	if err == nil {
 		t.Fatal("older server must fail closed")
 	}
-	if len(requests) != 1 || !strings.HasSuffix(requests[0], "/deploy-preview") {
+	if len(requests) != 1 || !strings.HasSuffix(requests[0], "/deploy-first") {
 		t.Fatalf("unexpected fallback: %v", requests)
 	}
 }
@@ -1526,9 +1514,6 @@ func TestFirstDeploymentRejectsUnusableReceipts(t *testing.T) {
 				}
 				calls := 0
 				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if serveDeploymentPreview(w, r) {
-						return
-					}
 					calls++
 					if command == "deploy-first" {
 						w.WriteHeader(http.StatusAccepted)
@@ -1555,9 +1540,6 @@ func TestFirstDeploymentRejectsUnusableReceipts(t *testing.T) {
 func TestFirstDeploymentClientRejectsDotSegmentsBeforeRequest(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if serveDeploymentPreview(w, r) {
-			return
-		}
 		calls++
 		w.WriteHeader(404)
 	}))
@@ -1590,9 +1572,6 @@ func TestFirstDeploymentNullResponse(t *testing.T) {
 			t.Run(command+"/"+format, func(t *testing.T) {
 				calls := 0
 				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if serveDeploymentPreview(w, r) {
-						return
-					}
 					calls++
 					if command == "recover-first-deployment" && r.Method != http.MethodGet {
 						t.Errorf("recovery used %s", r.Method)
@@ -1658,9 +1637,6 @@ func TestFirstDeploymentIntentValidationBeforeClientConstruction(t *testing.T) {
 func TestFirstDeploymentClientGenerationBoundary(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if serveDeploymentPreview(w, r) {
-			return
-		}
 		calls++
 		if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/9007199254740991") || r.ContentLength > 0 {
 			t.Errorf("unexpected recovery: %s %s", r.Method, r.URL.Path)
@@ -1696,9 +1672,6 @@ func TestFirstDeploymentCLICanonicalDecimal(t *testing.T) {
 			t.Run(command+"/"+generation, func(t *testing.T) {
 				calls := 0
 				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if serveDeploymentPreview(w, r) {
-						return
-					}
 					calls++
 					if command == "deploy-first" {
 						var body occclient.FirstDeploymentIntent
@@ -1730,18 +1703,6 @@ func TestFirstDeploymentCLICanonicalDecimal(t *testing.T) {
 	}
 }
 
-// First-deployment receipt tests count admissions separately from this read-only preview.
-const deploymentPreviewFixture = `{"harness":{"id":"codex","version":"fixture","mode":"dedicated","overrides":{},"configuration":{"modelProvider":{"protocol":"openai-responses","baseUrl":"https://api.openai.com/v1","supportsStandaloneWebSearch":false}}},"configurationId":"cfg_55555555-5555-4555-8555-555555555555","configurationGeneration":3}`
-
-func serveDeploymentPreview(w http.ResponseWriter, r *http.Request) bool {
-	if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/deploy-preview") {
-		return false
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"data":` + deploymentPreviewFixture + `,"meta":{"requestId":"test"}}`))
-	return true
-}
-
 func TestDeployRetainsRequestedOverridesInsteadOfResolvedDefaults(t *testing.T) {
 	base := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
 	var calls []string
@@ -1764,7 +1725,7 @@ func TestDeployRetainsRequestedOverridesInsteadOfResolvedDefaults(t *testing.T) 
 				"harnessAuth": map[string]any{"method": "api_key", "source": map[string]any{"kind": "secret", "namespaceId": testNamespaceID, "id": "sec_44444444-4444-4444-8444-444444444444"}},
 				"createdAt":   "2026-11-06T00:00:00.000Z",
 			}
-		case "POST " + base + "/deploy-preview", "POST " + base + "/deploy":
+		case "POST " + base + "/deploy":
 			var body map[string]any
 			if err := json.UnmarshalRead(r.Body, &body); err != nil {
 				t.Fatal(err)
@@ -1773,14 +1734,8 @@ func TestDeployRetainsRequestedOverridesInsteadOfResolvedDefaults(t *testing.T) 
 			if !ok || len(overrides) != 0 {
 				t.Errorf("expected retained empty overrides, got %#v", body)
 			}
-			if strings.HasSuffix(r.URL.Path, "/deploy-preview") {
-				if err := json.Unmarshal([]byte(deploymentPreviewFixture), &data); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				w.WriteHeader(http.StatusAccepted)
-				data = map[string]any{"id": testRevision2ID, "revision": 2, "agentId": testAgentID, "configurationId": "cfg_55555555-5555-4555-8555-555555555555"}
-			}
+			w.WriteHeader(http.StatusAccepted)
+			data = map[string]any{"id": testRevision2ID, "revision": 2, "agentId": testAgentID, "configurationId": "cfg_55555555-5555-4555-8555-555555555555"}
 		case "GET " + base + "/deployments/" + testRevision2ID:
 			data = map[string]any{"deploymentId": testRevision2ID, "namespaceId": testNamespaceID, "agentId": testAgentID, "status": "queued"}
 		default:
@@ -1796,10 +1751,10 @@ func TestDeployRetainsRequestedOverridesInsteadOfResolvedDefaults(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, testRevision2ID) || !strings.Contains(notices, "https://api.openai.com/v1") || strings.Contains(notices, "https://previous.example.com/v1") {
-		t.Fatalf("wrong destination preview or receipt: %s %s", notices, out)
+	if !strings.Contains(out, testRevision2ID) || notices != "" {
+		t.Fatalf("wrong deployment receipt: %s %s", notices, out)
 	}
-	want := []string{"GET " + base + "/revisions/" + testRevision1ID, "POST " + base + "/deploy-preview", "POST " + base + "/deploy", "GET " + base + "/deployments/" + testRevision2ID}
+	want := []string{"GET " + base + "/revisions/" + testRevision1ID, "POST " + base + "/deploy", "GET " + base + "/deployments/" + testRevision2ID}
 	if !slices.Equal(calls, want) {
 		t.Fatalf("operations = %v", calls)
 	}

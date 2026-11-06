@@ -372,32 +372,6 @@ func (client *Client) DeployAgent(namespaceID, agentID string, overrides map[str
 	)
 }
 
-// PreviewAgentDeployment resolves nonsecret Harness settings without admitting a revision.
-func (client *Client) PreviewAgentDeployment(namespaceID, agentID string, overrides map[string]any) (any, error) {
-	if overrides == nil {
-		overrides = map[string]any{}
-	}
-	result, err := client.send(http.MethodPost, []string{"namespaces", namespaceID, "agents", agentID, "deploy-preview"}, map[string]any{"harnessOverrides": overrides})
-	if err != nil {
-		return nil, err
-	}
-	record, ok := result.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("OCC returned an invalid deployment preview")
-	}
-	harness, ok := record["harness"].(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("OCC returned an invalid deployment preview")
-	}
-	if _, ok := harness["configuration"].(map[string]any); !ok {
-		return nil, fmt.Errorf("OCC returned an invalid deployment preview")
-	}
-	if _, ok := harness["overrides"].(map[string]any); !ok {
-		return nil, fmt.Errorf("OCC returned an invalid deployment preview")
-	}
-	return result, nil
-}
-
 // FirstDeploymentIntent identifies the reviewed saved Configuration and one caller intent.
 // Key is nonsecret and must be reused unchanged for exact recovery.
 type FirstDeploymentIntent struct {

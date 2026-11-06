@@ -4274,7 +4274,7 @@ for (const viewport of [
     assert.deepEqual(steps, [
       ["done", "Done: ", `Saved · Configuration ${agent.configurationId} · generation 1`],
       ["done", "Done: ", "Saved · API key · Secret configured"],
-      ["pending", "Not done: ", "Destination: https://api.openai.com/v1"],
+      ["pending", "Not done: ", "Use the Installation default at deployment."],
     ]);
 
     // Deploy is the page's one primary.

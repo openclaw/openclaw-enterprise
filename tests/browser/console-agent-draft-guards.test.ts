@@ -1953,8 +1953,8 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
     assert.deepEqual(pathRequests(requests, "POST", `${path}/deploy`), []);
   }
 
-  // The permission summary is unavailable, but the read-only preview still checks source
-  // permission. Its 403 stops deployment and refreshes the summary to name the missing grant.
+  // An unavailable permission summary leaves the decision to actual deployment admission.
+  // Its 403 refreshes the summary and names the missing grant without creating a revision.
   {
     const { page } = await newPage(t, fixture);
     let failed = false;
@@ -1969,16 +1969,17 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
     const requests = apiRequests(page, fixture.origin);
     const refused = page.waitForResponse(
       (response) =>
-        response.url() === `${fixture.origin}${path}/deploy-preview` &&
+        response.url() === `${fixture.origin}${path}/deploy` &&
         response.request().method() === "POST",
     );
     await login(page, fixture, url, operator.credentials);
     await page.getByRole("heading", { name: "Operator Secret Agent" }).waitFor();
     const deploy = page.getByRole("button", { name: "Deploy new version" });
+    await waitForEnabled(deploy);
+    await deploy.click();
     const response = await refused;
     assert.equal(response.status(), 403);
-    assert.equal(await deploy.isDisabled(), true);
-    assert.deepEqual(pathRequests(requests, "POST", `${path}/deploy`), []);
+    assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 1);
     assert.equal(
       record(record(await response.json()).error).message,
       callerDenied("Secret operate", `Secret ${modelSecret.id}`),

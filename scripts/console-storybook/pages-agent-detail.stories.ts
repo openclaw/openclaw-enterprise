@@ -310,6 +310,6 @@ export const ConfigurationSaveReadDenied = {
 };
 
 export const HarnessOverrides = story("harnessOverrides");
-export const HarnessPreviewLoading = story("harnessPreviewLoading");
-export const HarnessPreviewDenied = story("harnessPreviewDenied");
-export const HarnessPreviewUnavailable = story("harnessPreviewUnavailable");
+
+export const HarnessDeploymentPending = story("harnessDeploymentPending");
+export const HarnessDeploymentDenied = story("harnessDeploymentDenied");

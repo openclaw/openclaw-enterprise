@@ -317,7 +317,6 @@ export const requestExamples = {
   },
   rotateOAuthClientSecret: { clientSecret: "replacement-example-client-secret" },
   deployAgent: {},
-  previewAgentDeployment: {},
   deployAgentFirst: {
     key: "review-1",
     expectedConfigurationId: configurationId,
@@ -485,11 +484,6 @@ export const responseExamples = {
     configurationId,
     configurationGeneration: 1,
     createdAt: time,
-  },
-  previewAgentDeployment: {
-    harness: revision.harness,
-    configurationId,
-    configurationGeneration: 1,
   },
   deployAgent: revision,
   getAgentRevision: revision,

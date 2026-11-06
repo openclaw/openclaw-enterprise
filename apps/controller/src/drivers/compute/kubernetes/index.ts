@@ -14402,16 +14402,17 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         : (native?.api ??
           nativeOpenAiModelSelections(configuration)?.[0]?.matches[0]?.entry.api ??
           "openai-responses");
-    const settings = normalizeHarnessSettings({
-      modelProvider: overrides.modelProvider ??
-        this.options.runtime?.modelProvider ?? {
+    const provider =
+      overrides.modelProvider ??
+      normalizeHarnessSettings({
+        modelProvider: this.options.runtime?.modelProvider ?? {
           protocol,
           baseUrl: DEFAULT_MODEL_BASE_URL,
           supportsStandaloneWebSearch: false,
         },
-    });
-    modelProviderConfiguration(configuration, harness, savedModelProvider(settings));
-    return settings;
+      }).modelProvider!;
+    modelProviderConfiguration(configuration, harness, provider);
+    return { modelProvider: provider };
   }
 
   validateHarnessCredentialSources(

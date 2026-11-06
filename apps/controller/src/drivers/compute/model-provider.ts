@@ -53,7 +53,9 @@ export interface ModelProviderConfiguration {
 export const DEFAULT_MODEL_BASE_URL = "https://api.openai.com/v1";
 
 /** Kubernetes owns this closed, nonsecret Harness settings contract. */
-export function normalizeHarnessSettings(value: unknown): Readonly<Record<string, unknown>> {
+export function normalizeHarnessSettings(
+  value: unknown,
+): Readonly<{ modelProvider?: ModelProviderConfiguration }> {
   const settings = asRecord(value);
   if (!settings || Object.keys(settings).some((key) => key !== "modelProvider")) {
     throw new ConfigurationHarnessError("Harness settings contain unsupported fields.");
@@ -62,6 +64,8 @@ export function normalizeHarnessSettings(value: unknown): Readonly<Record<string
     return {};
   }
   const provider = asRecord(settings.modelProvider);
+  const baseUrl =
+    typeof provider?.baseUrl === "string" ? normalizeOpenAiBaseUrl(provider.baseUrl) : undefined;
   if (
     !provider ||
     Object.keys(provider).some(
@@ -71,7 +75,7 @@ export function normalizeHarnessSettings(value: unknown): Readonly<Record<string
     typeof provider.baseUrl !== "string" ||
     (provider.supportsStandaloneWebSearch !== undefined &&
       typeof provider.supportsStandaloneWebSearch !== "boolean") ||
-    normalizeOpenAiBaseUrl(provider.baseUrl) === undefined ||
+    baseUrl === undefined ||
     openAiBaseUrlRewritesIpv4(provider.baseUrl)
   ) {
     throw new ConfigurationHarnessError(
@@ -81,7 +85,7 @@ export function normalizeHarnessSettings(value: unknown): Readonly<Record<string
   return {
     modelProvider: {
       protocol: provider.protocol,
-      baseUrl: normalizeOpenAiBaseUrl(provider.baseUrl)!,
+      baseUrl,
       supportsStandaloneWebSearch: provider.supportsStandaloneWebSearch === true,
     },
   };
@@ -99,7 +103,7 @@ export function savedModelProvider(settings: unknown): ModelProviderConfiguratio
   ) {
     throw new ConfigurationHarnessError("Saved Harness settings are not normalized.");
   }
-  return normalized.modelProvider as ModelProviderConfiguration | undefined;
+  return normalized.modelProvider;
 }
 
 export function modelProviderBaseUrl(provider?: ModelProviderConfiguration): string {

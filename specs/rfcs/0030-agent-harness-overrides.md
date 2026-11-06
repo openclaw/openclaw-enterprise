@@ -104,9 +104,11 @@ resolve OpenAI's default endpoint and the selected Harness's existing native
 protocol and capability defaults. Reject `null`.
 
 A new ordinary deployment with omitted overrides uses current defaults; it does
-not implicitly reuse the previous revision's overrides. Console and CLI must
-show the proposed destination before deployment and explicitly submit retained
-overrides when redeploying. Automated image upgrades must carry the selected
+not implicitly reuse the previous revision's overrides. Console shows a requested
+URL or an inherited-default label and captures the controls at submission. Console
+and CLI submit directly to deployment admission and explicitly submit retained
+overrides when redeploying. There is no separate resolution endpoint or provisional
+CLI output: the admitted revision is the source of resolved settings. Automated image upgrades must carry the selected
 revision's requested overrides into the new deployment. Retrying or recovering
 an already admitted revision uses that revision's resolved settings.
 
@@ -197,7 +199,7 @@ Extend integration coverage at the normal Agent deployment boundary:
   upgrades, and failure without fallback when an endpoint is unavailable.
 - Prove protected refresh and dispatch isolation, source withdrawal, and cleanup
   with concurrent Agents using different endpoints. Preserve unrelated-provider
-  and ChatGPT behavior. Inspect Console destination preview and revision details
+  and ChatGPT behavior. Inspect Console requested destinations, admission refusals, and revision details
   with the required Storybook screenshots and interaction recording.
 
 Use real supported dependencies for integration proof. Distinguish HTTP fixture,

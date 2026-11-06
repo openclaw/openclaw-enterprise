@@ -198,17 +198,16 @@ func TestDeployNamesANewRevisionTheDeployerCannotRead(t *testing.T) {
 		{"readable", `{"id":"` + testRevision1ID + `","status":"pending"}`, ""},
 	} {
 		out, errOut, requested, err := runOCCWithNotices(t, map[string]string{
-			"POST " + agentPath + "/deploy-preview":                deploymentPreviewFixture,
 			"POST " + agentPath + "/deploy":                        revision,
 			"GET " + agentPath + "/deployments/" + testRevision1ID: test.status,
 		}, "--namespace", testNamespaceID, "agent", "deploy", testAgentID)
 		if err != nil || !strings.Contains(out, testRevision1ID) {
 			t.Fatalf("%s: deploy = %q, %v", test.name, out, err)
 		}
-		if !strings.HasPrefix(errOut, "Proposed Harness settings:") || !strings.HasSuffix(errOut, test.want) {
+		if errOut != test.want {
 			t.Errorf("%s: stderr = %q, want %q", test.name, errOut, test.want)
 		}
-		if want := []string{"POST " + agentPath + "/deploy-preview", "POST " + agentPath + "/deploy", "GET " + agentPath + "/deployments/" + testRevision1ID}; !slices.Equal(requested, want) {
+		if want := []string{"POST " + agentPath + "/deploy", "GET " + agentPath + "/deployments/" + testRevision1ID}; !slices.Equal(requested, want) {
 			t.Errorf("%s: requests = %v, want %v", test.name, requested, want)
 		}
 	}

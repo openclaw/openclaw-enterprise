@@ -157,11 +157,6 @@ export async function verifyQaHarnessOverrides(context, artifacts, presets) {
         }),
       );
       const inherited = agents[2].agent;
-      const preview = await f.api("POST", `${root}/agents/${inherited.id}/deploy-preview`, {});
-      assert.equal(
-        preview.harness.configuration.modelProvider.baseUrl,
-        next?.baseUrl ?? "https://api.openai.com/v1",
-      );
       const count = (await f.api("GET", `${root}/agents/${inherited.id}/revisions`)).length;
       if ((next?.baseUrl ?? "https://api.openai.com/v1") !== endpoints[0]) {
         await assert.rejects(f.api("POST", `${root}/agents/${inherited.id}/deploy`, {}), {

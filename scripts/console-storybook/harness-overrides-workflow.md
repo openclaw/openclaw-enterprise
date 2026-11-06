@@ -1,19 +1,22 @@
-# Preview and deploy a Harness override
+# Deploy a Harness override
 
 Open **Pages/Agent detail → Harness destination override** at desktop width.
 The story uses real Console modules and simulated API responses. It does not prove
 source authorization, persistence, deployment, or inference routing.
 
-1. Read the retained evaluation destination in **Prepare this version**.
-2. Open **Harness destination** and select **Override model provider**. Enter an HTTPS endpoint ending in `/v1`,
-   select Responses, and leave standalone web search off.
-3. Select **Preview destination**. Confirm the endpoint and protocol shown.
-4. Select **Deploy new version**. Open the version details and confirm requested
-   overrides and resolved settings identify the selected destination.
-5. Open the loading, permission-denied, and unavailable stories. Deployment must
-   stay unavailable until preview succeeds. Retry the unavailable story.
+1. Read the requested destination in **Prepare this version**.
+2. Open **Harness destination**. Select **Use Installation default** and confirm
+   the checklist labels inheritance without claiming a resolved URL. Select
+   **Retain v1 requested overrides** to restore the saved request.
+3. Select **Override model provider**. Enter an HTTPS endpoint ending in `/v1`,
+   select Responses, and leave standalone web search off. Change the URL again;
+   the requested destination must follow the field.
+4. Select **Deploy new version** directly. Inspect the admitted version's requested
+   and resolved settings and confirm they contain the submitted destination.
+5. Open **Harness deployment denied** and submit. Confirm the refusal is visible
+   and no new version appears. In **Harness deployment pending**, submit and
+   confirm repeat deployment is unavailable while the actual request is held.
 
-Use the first-version and missing-authentication stories to check empty settings
-and missing credentials. Check keyboard focus on the selector, provider fields,
-preview action, and deployment action. Capture screenshots and a walkthrough
-outside the checkout, then upload the final media for review.
+Check the default and missing-authentication stories, keyboard focus, and the
+phone layout. Reset scroll before full-page screenshots. Capture screenshots and
+a short walkthrough outside the checkout, then upload native GitHub attachments.

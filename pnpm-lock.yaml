@@ -182,9 +182,6 @@ importers:
       pg-connection-string:
         specifier: 2.14.1
         version: 2.14.1
-      ts-pattern:
-        specifier: 5.9.2
-        version: 5.9.2
 
   packages/utils: {}
 
@@ -2279,9 +2276,6 @@ packages:
     peerDependencies:
       typescript: '>=4.8.4'
 
-  ts-pattern@5.9.2:
-    resolution: {integrity: sha512-qAf+7M7Jjk7uebZeIo9uEzyintfuRtgHdzM9dqxRKcMi2dt76Ec+FH2wW3bnU9TuGLkZIJLoLs7cCQnU7Tu8ig==}
-
   tslib@2.8.1:
     resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
 
@@ -4222,8 +4216,6 @@ snapshots:
   ts-api-utils@2.5.0(@typescript/typescript6@6.0.2):
     dependencies:
       typescript: '@typescript/typescript6@6.0.2'
-
-  ts-pattern@5.9.2: {}
 
   tslib@2.8.1: {}
 

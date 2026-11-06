@@ -546,18 +546,6 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       );
       reply.status(200).send({ data: receipt, meta: { requestId: request.id } });
     },
-    async previewAgentDeployment({ controller, context, request, reply, params, namespaceId }) {
-      const preview = await controller.previewAgentDeployment(
-        context.actorId,
-        {
-          namespaceId,
-          agentId: params.agentId!,
-          harnessOverrides: (request.body as DeployAgentInput).harnessOverrides,
-        },
-        options.resolveHarness,
-      );
-      reply.send({ data: preview, meta: { requestId: request.id } });
-    },
     async deployAgent({ controller, context, request, reply, params, namespaceId, mutationEvent }) {
       const agentId = params.agentId!;
       try {

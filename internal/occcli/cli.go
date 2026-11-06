@@ -824,15 +824,6 @@ func (app *application) agentCommand() *cobra.Command {
 					return fmt.Errorf("the selected revision has no requested Harness overrides")
 				}
 			}
-			preview, err := client.PreviewAgentDeployment(namespace, args[0], overrides)
-			if err != nil {
-				return err
-			}
-			encoded, err := json.Marshal(preview)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(command.ErrOrStderr(), "Proposed Harness settings: %s\n", encoded)
 			revision, err := client.DeployAgent(namespace, args[0], overrides)
 			if err != nil {
 				return err
@@ -895,15 +886,6 @@ func (app *application) agentCommand() *cobra.Command {
 				if recoverOnly {
 					receipt, err = client.RecoverAgentFirstDeployment(namespace, args[0], intent)
 				} else {
-					preview, previewErr := client.PreviewAgentDeployment(namespace, args[0], intent.HarnessOverrides)
-					if previewErr != nil {
-						return previewErr
-					}
-					encoded, previewErr := json.Marshal(preview)
-					if previewErr != nil {
-						return previewErr
-					}
-					fmt.Fprintf(command.ErrOrStderr(), "Proposed Harness settings: %s\n", encoded)
 					receipt, err = client.DeployAgentFirst(namespace, args[0], intent)
 				}
 				if err != nil {

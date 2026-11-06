@@ -544,14 +544,7 @@ async function loginForm(
 // The console's CSP limits fetches to its own origin, so apiRequests sees every API write.
 
 export function writeRequests(requests: RequestRecord[]) {
-  return requests.filter(
-    (request) =>
-      request.method !== "GET" &&
-      !(
-        request.method === "POST" &&
-        /^\/namespaces\/[^/]+\/agents\/[^/]+\/deploy-preview$/.test(request.path)
-      ),
-  );
+  return requests.filter((request) => request.method !== "GET");
 }
 
 // writeRequests without the sign-in and sign-out requests (/api/auth/sign-*).

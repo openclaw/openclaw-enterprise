@@ -559,25 +559,6 @@ function operationTarget(
 }
 
 function requiredPermissions(operation: OccApiRoute): readonly RequiredPermission[] {
-  if (operation.operationId === "previewAgentDeployment") {
-    return [
-      { action: "deploy", resourceKind: "agent", scope: "requested" },
-      { action: "read", resourceKind: "configuration", scope: "requested" },
-      {
-        action: "read",
-        resourceKind: "service_account",
-        scope: "requested",
-        condition: "associated_service_account",
-      },
-      { action: "operate", resourceKind: "secret", scope: "requested", condition: "bound_secret" },
-      {
-        action: "operate",
-        resourceKind: "credential_source",
-        scope: "requested",
-        condition: "bound_credential_source",
-      },
-    ];
-  }
   if (operation.operationId === "recoverAgentFirstDeployment") {
     return [
       { action: "deploy", resourceKind: "agent", scope: "requested" },
@@ -1062,9 +1043,6 @@ function permissionDescription(
   permissions: readonly RequiredPermission[],
   operation?: OccApiRoute,
 ): string {
-  if (operation?.operationId === "previewAgentDeployment") {
-    return "Requires deploy on the exact Agent and read on its Configuration. The caller also needs operate on its Harness Secret or Credential Source, or read on its associated ServiceAccount. The Agent service principal needs operate on its Harness Secret or Credential Source. This preview creates no revision, reserves no defaults, and does not validate other deployment prerequisites.";
-  }
   if (operation?.operationId === "recoverAgentFirstDeployment") {
     return "Requires deploy permission on the exact Agent and read permission on the reviewed Configuration named in the request path. These current permissions are checked for both receipts and misses. Recovery performs no admission or credential preparation.";
   }

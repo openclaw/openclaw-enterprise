@@ -253,32 +253,26 @@ export function createAgentDetailScenarios({
           },
         },
         description:
-          "Preview a destination, retain requested overrides, and inspect the saved settings after deployment.",
+          "Submit requested overrides and inspect the resolved settings after deployment.",
         steps: [
-          "Read the retained evaluation destination beside the deployment checklist. Open Harness destination, then choose Override model provider and enter the authorized evaluation HTTPS /v1 endpoint. Preview it, then deploy and inspect requested and resolved settings.",
+          "Read the requested destination beside the deployment checklist. Open Harness destination, choose Override model provider, enter an authorized HTTPS /v1 endpoint, then deploy and inspect requested and resolved settings.",
         ],
         gap: "Simulated UI proof only; source consent, persistence and inference routing require integration checks.",
       },
-      harnessPreviewLoading: {
+      harnessDeploymentPending: {
         group: "Pages/Agent detail",
-        name: "Harness destination loading",
+        name: "Harness deployment pending",
         path: draft,
-        description: "Deployment waits for the destination preview.",
-        rules: [{ method: "POST", suffix: "/deploy-preview", hold: true }],
+        description:
+          "The actual deployment request is pending; duplicate submission is unavailable.",
+        rules: [{ method: "POST", suffix: "/deploy", hold: true }],
       },
-      harnessPreviewDenied: {
+      harnessDeploymentDenied: {
         group: "Pages/Agent detail",
-        name: "Harness destination permission denied",
+        name: "Harness deployment denied",
         path: draft,
-        description: "A refused preview keeps deployment unavailable.",
-        rules: [{ method: "POST", suffix: "/deploy-preview", status: 403 }],
-      },
-      harnessPreviewUnavailable: {
-        group: "Pages/Agent detail",
-        name: "Harness destination unavailable",
-        path: draft,
-        description: "Retry the preview after the dependency recovers.",
-        rules: [{ method: "POST", suffix: "/deploy-preview", status: 503, once: true }],
+        description: "Admission refuses the requested settings without creating a version.",
+        rules: [{ method: "POST", suffix: "/deploy", status: 403 }],
       },
       draft: {
         group: "Pages/Agent detail",

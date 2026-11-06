@@ -597,24 +597,6 @@ export function createAgentLifecycle(
       }
       return response(saved, 202);
     }
-    if (suffix === "/deploy-preview" && method === "POST") {
-      const preview = snapshot(saved, "preview", 1);
-      preview.harness.overrides = spreadProperties(
-        optionalProperty(body, "harnessOverrides") ?? {},
-      );
-      preview.harness.configuration = {
-        modelProvider: preview.harness.overrides.modelProvider ?? {
-          baseUrl: "https://api.openai.com/v1",
-          protocol: "openai-responses",
-          supportsStandaloneWebSearch: false,
-        },
-      };
-      return response({
-        harness: preview.harness,
-        configurationId: preview.configurationId,
-        configurationGeneration: preview.configurationGeneration,
-      });
-    }
     if (suffix === "/deploy" && method === "POST") {
       const lastRevision = Math.max(
         0,

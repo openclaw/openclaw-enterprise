@@ -75,8 +75,9 @@ and unrelated providers do not accept this override. Existing topology limits
 still apply: the bundled OpenShell source path requires a dedicated Harness.
 
 An ordinary deployment without overrides uses current defaults. Console and CLI
-preview the proposed destination; retaining previous requested overrides submits
-them explicitly. Automated image upgrades submit the selected baseline revision's
+submit overrides directly to admission; retaining previous requested overrides
+submits them explicitly. Console labels the requested URL or inherited default;
+the admitted revision records the resolved destination. Automated image upgrades submit the selected baseline revision's
 requested overrides. First-deployment identity includes normalized overrides;
 receipt recovery must include the same values. See [Agent revisions](../../../guides/topics/agent-revisions.md).
 

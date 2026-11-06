@@ -30,7 +30,7 @@ replacement semantics, source consent, supported authentication, and network lim
 - `apps/controller/src/drivers/credential-gateway/` and `egress-proxy/`:
   separate source authorization from route selection; recheck consent on delivery.
 - HTTP route schemas, Console deployment controls, and `internal/occcli/`:
-  accept overrides, preview destinations, and explicitly retain selected overrides.
+  accept overrides at deployment and explicitly retain selected overrides.
 
 ## Implementation
 
@@ -44,6 +44,18 @@ replacement semantics, source consent, supported authentication, and network lim
    Console and CLI. Update Storybook scenarios and inspect rebuilt interactions.
 5. Update current provider reference, deployment guides, runtime flows, and
    generated API documentation. Complete validation and independent review.
+
+## Approved simplification
+
+The user approved direct deployment after reviewing `55160c9e1`. Remove the
+preview endpoint, orchestration, client calls, provisional output, and UI state.
+Console captures default, retained, or custom overrides at submission, displays
+requested values, and reads resolved settings only from an admitted revision.
+Admission remains responsible for source consent, exact grants, and immutable
+settings. Normalize external requests before awaits; reuse that owned request
+inside admission and typed provider settings inside Compute. Keep persisted-state
+validation fail-closed. Earlier preview and media evidence below is historical;
+current verification and direct-deployment media are recorded in the PR.
 
 ## Initial implementation verification
 
@@ -71,7 +83,7 @@ Implementation is in [PR #4866](https://github.com/openclaw/openclaw-enterprise/
 The RFC remains Proposed: implementation does not establish acceptance or release
 readiness. Current behavior is owned by the
 [provider reference](../../docs/reference/drivers/kubernetes-compute/model-provider.md).
-The implementation includes deployment preview, normalized first-intent identity,
+The implementation includes direct deployment admission, normalized first-intent identity,
 resolved Compute settings, source consent checks, Proxy route revalidation, CLI
 and Console controls, and baseline override retention in image upgrades.
 
@@ -130,7 +142,7 @@ the merged contracts without changing the immutable Harness snapshots.
 The independent-review authentication gap and live model prerequisites remain
 open. The earlier RFC-only review does not qualify this implementation.
 
-## CI repair verification
+## Pre-simplification CI repair verification
 
 The implementation preserves the current revision contract in worker, PostgreSQL,
 Kubernetes, and upgrade fixtures; none use a production compatibility fallback.
