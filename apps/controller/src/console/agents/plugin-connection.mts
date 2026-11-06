@@ -12,14 +12,113 @@ export interface SlotTemplate {
   offeredScopes: readonly string[];
 }
 
+const pluginConsentKey = "oce.pluginAccountConsent";
+
+type ConsentOutcome = "attached" | "saved" | "unconfirmed" | "failed" | "expired" | "cancelled";
+type ConsentStart = { authorizationUrl: string; credentialSourceId: string; expiresAt: string };
+
+/** Only the separately opened tab holds this channel name. The server has already consumed the OAuth callback. */
+export function finishPluginConsentTab() {
+  const url = new URL(location.href);
+  const outcome = url.searchParams.get("connection");
+  if (!["attached", "saved", "unconfirmed", "failed"].includes(outcome ?? "")) {
+    return false;
+  }
+  let name: string | null;
+  try {
+    name = sessionStorage.getItem(pluginConsentKey);
+    sessionStorage.removeItem(pluginConsentKey);
+  } catch {
+    return false;
+  }
+  if (!name) {
+    return false;
+  }
+  const channel = new BroadcastChannel(name);
+  channel.postMessage(outcome);
+  channel.close();
+  document.body.replaceChildren(
+    element("p", { role: "status" }, "Return to the Agent tab to check your connection."),
+  );
+  window.close();
+  return true;
+}
+
+/** Open synchronously on the user's click and sever the opener before navigating to the provider. */
+export async function authorizePluginInNewTab(
+  begin: () => Promise<ConsentStart>,
+  signal: AbortSignal,
+  waiting: (sourceId: string, confirmed: () => void) => void,
+) {
+  const tab = window.open("about:blank", "_blank");
+  if (!tab) {
+    return { message: "Allow pop-ups for this Console, then try again." } as const;
+  }
+  let channel: BroadcastChannel | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const finished = new AbortController();
+  try {
+    tab.opener = null;
+    const name = pluginConsentKey + "." + crypto.randomUUID();
+    channel = new BroadcastChannel(name);
+    tab.sessionStorage.setItem(pluginConsentKey, name);
+    tab.document.title = "Account sign-in";
+    tab.document.body.textContent = "Opening your provider…";
+    const start = await begin();
+    const provider = new URL(start.authorizationUrl);
+    const deadline = Date.parse(start.expiresAt);
+    if (
+      provider.protocol !== "https:" ||
+      provider.username ||
+      provider.password ||
+      !start.credentialSourceId ||
+      !Number.isFinite(deadline)
+    ) {
+      throw new Error("Invalid provider response.");
+    }
+    if (tab.closed || signal.aborted) {
+      return { message: "Sign-in was closed. Try again to connect an account." } as const;
+    }
+    const outcome = await new Promise<ConsentOutcome>((resolve) => {
+      channel!.onmessage = ({ data }) => {
+        if (
+          data === "attached" ||
+          data === "saved" ||
+          data === "unconfirmed" ||
+          data === "failed"
+        ) {
+          resolve(data);
+        }
+      };
+      signal.addEventListener("abort", () => resolve("cancelled"), {
+        once: true,
+        signal: finished.signal,
+      });
+      timeout = setTimeout(() => resolve("expired"), Math.max(0, deadline - Date.now()));
+      tab.location.replace(provider.href);
+      // COOP can sever the WindowProxy while consent is still in progress. Keep listening
+      // for the callback and let the user check or retry from the original editor.
+      waiting(start.credentialSourceId, () => resolve("attached"));
+    });
+    return { outcome, sourceId: start.credentialSourceId } as const;
+  } finally {
+    finished.abort();
+    clearTimeout(timeout);
+    channel?.close();
+    tab.close();
+  }
+}
+
 export interface SlotConnection {
   unavailable(slot: AgentPluginCredentialSlot): string | undefined;
+  confirmed?(slot: AgentPluginCredentialSlot, sourceId: string): boolean;
   list(slot: AgentPluginCredentialSlot): Promise<readonly SlotTemplate[]>;
   start(
     slot: AgentPluginCredentialSlot,
     template: SlotTemplate,
-    selectedScopes?: readonly string[],
-  ): Promise<void>;
+    selectedScopes: readonly string[] | undefined,
+    waiting: (check: () => Promise<string | undefined>) => void,
+  ): Promise<string | void>;
 }
 
 function consentScopes(template: SlotTemplate, setSelection: (scopes: string[] | null) => void) {
@@ -109,8 +208,13 @@ export function pluginConnectionControl(
       : null;
   }
   const notice = element("p", { className: "hint", role: "status" });
+  if (currentSourceId && connections.confirmed?.(slot, currentSourceId)) {
+    notice.textContent = "Account attached.";
+  }
   const panel = element("div");
   let busy = false;
+  let attempt = 0;
+  let checkButton: HTMLButtonElement | undefined;
   const open = button(
     needsConsent
       ? "Authorize for this server"
@@ -219,18 +323,56 @@ export function pluginConnectionControl(
     action: HTMLButtonElement,
     selectedScopes?: readonly string[],
   ) {
+    const current = ++attempt;
+    checkButton?.remove();
     busy = true;
     action.disabled = true;
     open.disabled = true;
     notice.textContent = "Opening the provider for your consent…";
     try {
-      await connections.start(slot, template, selectedScopes);
+      const message = await connections.start(slot, template, selectedScopes, (check) => {
+        busy = false;
+        action.disabled = false;
+        action.textContent = "Try again";
+        notice.textContent = "Finish sign-in in the new tab. If you closed it, you can try again.";
+        const checkNow = button(
+          "Check connection",
+          async () => {
+            checkNow.disabled = true;
+            try {
+              const message = await check();
+              if (current === attempt && checkNow.isConnected && message) {
+                notice.textContent = message;
+              }
+            } catch (error) {
+              if (current === attempt && checkNow.isConnected) {
+                showError(error);
+              }
+            } finally {
+              checkNow.disabled = false;
+            }
+          },
+          { tone: "secondary" },
+        );
+        checkButton = checkNow;
+        action.after(checkNow);
+      });
+      if (current === attempt && message) {
+        notice.textContent = message;
+        action.textContent = "Try again";
+      }
     } catch (error) {
-      showError(error);
+      if (current === attempt) {
+        action.textContent = "Try again";
+        showError(error);
+      }
     } finally {
-      busy = false;
-      action.disabled = false;
-      open.disabled = false;
+      if (current === attempt) {
+        busy = false;
+        action.disabled = false;
+        open.disabled = false;
+        checkButton?.remove();
+      }
     }
   }
   return root;

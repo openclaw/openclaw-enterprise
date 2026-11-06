@@ -22,7 +22,7 @@ import {
 } from "../dom.mjs";
 import { type PluginDiscoveryContext, createPluginDiscovery } from "./plugin-discovery.mjs";
 import { isPluginSelections } from "./plugin-fields.mjs";
-import { type SlotTemplate } from "./plugin-connection.mjs";
+import { authorizePluginInNewTab, type SlotTemplate } from "./plugin-connection.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import {
   SAVE_REFUSALS,
@@ -184,7 +184,7 @@ export function renderAgentPlugins(
 
   // This in-memory key is written only by the capture below.
   const retained = context.drafts.get("plugins") as PluginDraft | undefined;
-  const initialText = retained?.initialText ?? JSON.stringify(agent.plugins ?? {}, null, 2);
+  let initialText = retained?.initialText ?? JSON.stringify(agent.plugins ?? {}, null, 2);
   const initialApprovers = retained ? retained.initialApprovers : agent.pluginApprovers;
   let pluginApprovers = retained ? retained.pluginApprovers : structuredClone(initialApprovers);
   const baseline = retained?.baseline ?? {
@@ -193,6 +193,8 @@ export function renderAgentPlugins(
     pluginApprovers: agent.pluginApprovers,
   };
   let pending = false;
+  let consentAttempt: AbortController | undefined;
+  let confirmed: { pluginId: string; slotId: string; sourceId: string } | undefined;
   let outcomeUnknown = retained?.outcomeUnknown ?? false;
   let reloadRequired = retained?.reloadRequired ?? false;
   // Set when the caller's permission answer denies Agent update (finding 1530).
@@ -228,6 +230,13 @@ export function renderAgentPlugins(
     input,
     catalogPath: `${path}/plugins`,
     slotConnection: {
+      confirmed(slot, sourceId) {
+        return (
+          confirmed?.pluginId === slot.pluginId &&
+          confirmed.slotId === slot.id &&
+          confirmed.sourceId === sourceId
+        );
+      },
       unavailable(slot) {
         if (updateDenied) {
           return "You need permission to update this Agent to attach an account.";
@@ -235,10 +244,11 @@ export function renderAgentPlugins(
         if (pending || outcomeUnknown || reloadRequired) {
           return "Reload the saved Agent before connecting an account.";
         }
+        const draft = jsonObjectDiagnostic(input.value);
         if (
           !agent.plugins?.[slot.pluginId]?.enabled ||
-          input.value !== initialText ||
-          JSON.stringify(pluginApprovers) !== JSON.stringify(initialApprovers)
+          draft.kind !== "valid" ||
+          !sameValue(draft.value[slot.pluginId], agent.plugins[slot.pluginId])
         ) {
           return "Save your plugin selections before connecting an account.";
         }
@@ -249,37 +259,128 @@ export function renderAgentPlugins(
           `${path}/plugins/${encodeURIComponent(slot.pluginId)}/credentials/${encodeURIComponent(slot.id)}/connection-templates`,
         )) as readonly SlotTemplate[];
       },
-      async start(slot, template, selectedScopes) {
+      async start(slot, template, selectedScopes, waiting) {
+        consentAttempt?.abort();
+        const attempt = new AbortController();
+        consentAttempt = attempt;
+        confirmed = undefined;
+        let starting = true;
         pending = true;
         updateState();
         try {
           const originalSource = responseFields(
             agent.plugins?.[slot.pluginId]?.driverPolicy?.credentials,
           )[slot.id];
-          const result = (await context.request(`${path}/connections`, {
-            method: "POST",
-            body: {
-              pluginId: slot.pluginId,
-              slotId: slot.id,
-              releaseSha256: slot.releaseSha256,
-              expectedCredentialSourceId:
-                typeof originalSource === "string" ? originalSource : null,
-              connectionTemplateId: template.id,
-              connectionTemplateVersion: template.version,
-              ...(selectedScopes && { selectedScopes }),
+          const readSlot = async () => {
+            const current = responseFields(await context.request(path));
+            const plugins = current.plugins;
+            if (
+              current.id !== agent.id ||
+              current.namespaceId !== context.namespaceId ||
+              !isPluginSelections(plugins)
+            ) {
+              throw new Error("Could not read this Agent's saved plugin selections.");
+            }
+            const selection = plugins[slot.pluginId];
+            const bound =
+              selection?.enabled && selection.driverPolicy?.releaseSha256 === slot.releaseSha256
+                ? responseFields(selection.driverPolicy.credentials)[slot.id]
+                : undefined;
+            return { current, plugins, selection, bound };
+          };
+          const unconfirmed =
+            "The account binding could not be confirmed. Finish sign-in or try again.";
+          const result = await authorizePluginInNewTab(
+            async () => {
+              return (await context.request(`${path}/connections`, {
+                method: "POST",
+                body: {
+                  pluginId: slot.pluginId,
+                  slotId: slot.id,
+                  releaseSha256: slot.releaseSha256,
+                  expectedCredentialSourceId:
+                    typeof originalSource === "string" ? originalSource : null,
+                  connectionTemplateId: template.id,
+                  connectionTemplateVersion: template.version,
+                  ...(selectedScopes && { selectedScopes }),
+                },
+              })) as { authorizationUrl: string; credentialSourceId: string; expiresAt: string };
             },
-          })) as { authorizationUrl: string };
-          const provider = new URL(result.authorizationUrl);
-          if (provider.protocol !== "https:" || provider.username || provider.password) {
-            throw new Error("Invalid provider URL.");
+            attempt.signal,
+            (sourceId, complete) => {
+              starting = false;
+              pending = false;
+              updateState();
+              waiting(async () => {
+                if ((await readSlot()).bound !== sourceId) {
+                  return unconfirmed;
+                }
+                complete();
+                return undefined;
+              });
+            },
+          );
+          if (attempt.signal.aborted || !context.isCurrent()) {
+            return;
           }
-          if (context.isCurrent()) {
-            window.location.assign(provider.href);
+          if ("message" in result) {
+            return result.message;
           }
+          // The redirect can race returning from the provider. Trust only the saved Agent and its exact slot.
+          const { current, plugins, selection, bound } = await readSlot();
+          if (attempt.signal.aborted || !context.isCurrent()) {
+            return;
+          }
+          if (
+            current.configurationId !== baseline.configurationId ||
+            !sameValue(current.pluginApprovers, baseline.pluginApprovers)
+          ) {
+            reloadRequired = true;
+            return "The saved Agent changed. Reload the plugin selections to check the account.";
+          }
+          if (!selection || bound !== result.sourceId) {
+            if (result.outcome === "failed") {
+              return "Authorization did not finish. Try again to connect the account.";
+            }
+            if (result.outcome === "saved" || result.outcome === "unconfirmed") {
+              showConsentReturn(result.outcome, result.sourceId);
+              return "The account was saved. Close the plugin picker to check its attachment.";
+            }
+            return unconfirmed;
+          }
+          // Rebase only the confirmed plugin onto unrelated local edits. Keep a conflicting
+          // draft intact and let the existing reload control reconcile concurrent changes.
+          const dirty = input.value !== initialText;
+          const draft = jsonObjectDiagnostic(input.value);
+          if (
+            dirty &&
+            (draft.kind !== "valid" ||
+              !sameValue(draft.value[slot.pluginId], baseline.plugins?.[slot.pluginId]) ||
+              !sameValue(plugins, { ...baseline.plugins, [slot.pluginId]: selection }))
+          ) {
+            reloadRequired = true;
+            return "Account attached. Your plugin draft has conflicting edits. Reload to see the saved selection.";
+          }
+          confirmed = { pluginId: slot.pluginId, slotId: slot.id, sourceId: result.sourceId };
+          agent = { ...agent, plugins };
+          baseline.plugins = plugins;
+          initialText = JSON.stringify(plugins, null, 2);
+          input.value =
+            dirty && draft.kind === "valid"
+              ? JSON.stringify({ ...draft.value, [slot.pluginId]: selection }, null, 2)
+              : initialText;
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          readCapabilities();
+          return;
         } finally {
-          pending = false;
-          if (context.isCurrent()) {
-            updateState();
+          if (consentAttempt === attempt) {
+            consentAttempt = undefined;
+            if (starting) {
+              pending = false;
+            }
+            if (context.isCurrent()) {
+              updateState();
+            }
           }
         }
       },
@@ -590,18 +691,27 @@ export function renderAgentPlugins(
   const consentReturn = new URL(window.location.href);
   const outcome = consentReturn.searchParams.get("connection");
   if (outcome === "attached" || outcome === "saved" || outcome === "unconfirmed") {
-    const consentNotice = element("p", { className: "hint", role: "status" });
-    discovery.fields.section.before(consentNotice);
-    const sourceId = consentReturn.searchParams.get("sourceId");
+    showConsentReturn(outcome, consentReturn.searchParams.get("sourceId"));
     consentReturn.searchParams.delete("connection");
     consentReturn.searchParams.delete("sourceId");
     window.history.replaceState(window.history.state, "", consentReturn.href);
+  } else if (savedNotice) {
+    feedback.textContent = savedNotice;
+    describeControls();
+  }
+
+  function showConsentReturn(
+    outcome: "attached" | "saved" | "unconfirmed",
+    sourceId: string | null,
+  ) {
+    const consentNotice = element("p", { className: "hint", role: "status" });
+    discovery.fields.section.before(consentNotice);
     if (outcome === "unconfirmed") {
       consentNotice.textContent =
         "Account saved. Check the current plugin selection to see whether the account was attached.";
     } else if (outcome === "attached") {
       consentNotice.textContent =
-        "Account saved and attached. The plugin’s account selection now shows the connected account.";
+        "Sign-in returned. Check the saved account in the plugin’s account selection.";
     } else {
       consentNotice.textContent = "Account saved. The plugin attachment could not finish.";
       if (sourceId) {
@@ -660,9 +770,6 @@ export function renderAgentPlugins(
           });
       }
     }
-  } else if (savedNotice) {
-    feedback.textContent = savedNotice;
-    describeControls();
   }
   function readCapabilities() {
     void context.request(`${path}/plugins/capabilities`).then(

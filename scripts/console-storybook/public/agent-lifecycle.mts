@@ -87,6 +87,7 @@ type UnreadableRevision = Pick<
 type StoredRevision = CreatedRevision | UnreadableRevision;
 type LifecycleScenario = Parameters<typeof createAgentRoutes>[0] & {
   savedPluginAccount?: { id: string; name: string };
+  pluginConsentPopup?: boolean;
   candidateSuperseded?: boolean;
   candidateSelected?: boolean;
   agentId?: string;
@@ -473,6 +474,7 @@ export function createAgentLifecycle(
       stagedWorkspaceFiles,
     },
   });
+  let consentAttempt: string | undefined;
   async function serve(
     resource: string,
     method: string,
@@ -512,6 +514,58 @@ export function createAgentLifecycle(
       return error(404);
     }
     const savedAccount = scenario.savedPluginAccount;
+    if (scenario.pluginConsentPopup && savedAccount) {
+      const pluginId = "occ-plugin:google@1.0.0";
+      if (
+        method === "GET" &&
+        decodeURIComponent(suffix) ===
+          `/plugins/${pluginId}/credentials/account/connection-templates`
+      ) {
+        return response([
+          {
+            id: "workspace-oauth",
+            displayName: "Workspace OAuth",
+            version: 1,
+            mode: "manual",
+            scopes: ["gmail.readonly"],
+            requiredScopes: [],
+            offeredScopes: ["gmail.readonly"],
+          },
+        ]);
+      }
+      if (method === "POST" && suffix === "/connections") {
+        if (location.protocol !== "https:") {
+          return error(400, "Open this Storybook over HTTPS to use the simulated provider.");
+        }
+        consentAttempt = "storybook.pluginConsent." + crypto.randomUUID();
+        const url = new URL("/storybook-fixtures/consent-provider.html", location.origin);
+        url.searchParams.set("attempt", consentAttempt);
+        return response({
+          authorizationUrl: url.href,
+          credentialSourceId: savedAccount.id,
+          expiresAt: new Date(Date.now() + 120_000).toISOString(),
+        });
+      }
+      if (
+        method === "GET" &&
+        suffix === "" &&
+        consentAttempt &&
+        localStorage.getItem(consentAttempt) === "attached"
+      ) {
+        localStorage.removeItem(consentAttempt);
+        consentAttempt = undefined;
+        saved.plugins = {
+          [pluginId]: {
+            enabled: true,
+            driverPolicy: {
+              releaseSha256: "a".repeat(64),
+              credentials: { account: savedAccount.id },
+            },
+          },
+        };
+        saved.credentialSources = [{ sourceId: savedAccount.id }];
+      }
+    }
     if (savedAccount && suffix === `/connections/${savedAccount.id}` && method === "POST") {
       const attached = Array.isArray(saved.credentialSources) ? saved.credentialSources : [];
       if (!attached.some((item) => item?.sourceId === savedAccount.id)) {

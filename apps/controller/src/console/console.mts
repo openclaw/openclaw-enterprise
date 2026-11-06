@@ -11,6 +11,7 @@ import type {
   TabNavigation,
 } from "./page-context.mjs";
 import { renderOAuthClients } from "./oauth-clients.mjs";
+import { finishPluginConsentTab } from "./agents/plugin-connection.mjs";
 import { renderConnectionTemplates } from "./connection-templates.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
@@ -3514,4 +3515,6 @@ window.addEventListener("pageshow", (event) => {
     void loadPage();
   }
 });
-void loadPage();
+if (!finishPluginConsentTab()) {
+  void loadPage();
+}

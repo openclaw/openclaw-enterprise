@@ -926,6 +926,17 @@ const authoredScenarios = {
   ...createAgentFormScenarios,
   ...pluginsScenarios,
   ...createAgentProvisioningScenarios,
+  pluginConsentPopup: {
+    ...pluginConnectionReturn(draft, "unconfirmed"),
+    name: "Connect and attach in a provider tab",
+    path: `${draft}&tab=plugins`,
+    pluginConsentPopup: true,
+    description:
+      "Connect a Google Workspace test account while its plugin editor stays open. The provider and saved Agent are simulated.",
+    steps: [
+      "On an HTTPS preview, open Configure plugins → Google Workspace → Choose a connection template. Select Workspace OAuth and choose Connect and attach. Approve the test account in the provider tab. The original editor verifies the saved slot and selects the attached account.",
+    ],
+  },
   pluginConsentAttached: pluginConnectionReturn(draft, "attached"),
   pluginConsentSaved: pluginConnectionReturn(draft, "saved"),
   pluginConsentUnconfirmed: pluginConnectionReturn(draft, "unconfirmed"),

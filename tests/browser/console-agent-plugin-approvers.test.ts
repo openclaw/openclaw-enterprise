@@ -1834,3 +1834,196 @@ test("plugin account replacement and new OAuth consent follow the selected sourc
   await connect.click();
   assert.equal(await page.locator("#chosen-scopes").textContent(), "[]");
 });
+
+test("Agent plugin editor preserves its tab and draft when external consent completes, is cancelled or blocked", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth popup");
+  for (const driver of [
+    new OCCPluginDriver(),
+    createTestKubernetesComputeDriver("popup-compute"),
+  ]) {
+    controller(fixture).registerDriver(driver);
+    controller(fixture).selectDriver(driver.capability, driver.id);
+  }
+  const agent = agentEntity(
+    await fixture.createAgent(namespace.id, "OAuth popup", nativeValues("popup"), {
+      executionMode: "dedicated",
+      harnessAuth: null,
+    }),
+  );
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const pluginId = "occ-plugin:google@1.0.0";
+  const plugins = { [pluginId]: { enabled: true } };
+  const saved = await fixture.request("PATCH", path, {
+    body: { configurationId: agent.configurationId, plugins },
+  });
+  assert.equal(saved.status, 200);
+  const { page } = await newPage(t, fixture, { browser });
+  const original = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
+  const origin = original.origin;
+  const originalPath = original.pathname + original.search;
+  const context = page.context();
+  const sourceId = "cs_00000000-0000-4000-8000-000000000003";
+  let digest: string;
+  let selected = false;
+  let begins = 0;
+  // The real Agent page and driver expose the saved plugin slot. Control the external consent
+  // result separately from its redirect so a success URL alone cannot pass the readback test.
+  await page.route(`**${path}/plugins/capabilities`, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const slot = body.data.credentialSlots.find(
+      (entry: { pluginId: string }) => entry.pluginId === pluginId,
+    );
+    digest = slot.releaseSha256;
+    if (selected) {
+      slot.sources = [
+        { id: sourceId, name: "Connected fixture account", authorization: "authorized" },
+      ];
+    }
+    await route.fulfill({ response, json: body });
+  });
+  await page.route(`**${path}/plugins/*/credentials/account/connection-templates`, (route) =>
+    route.fulfill({
+      json: {
+        data: [
+          {
+            id: "template",
+            displayName: "Fixture OAuth",
+            version: 1,
+            mode: "manual",
+            scopes: ["read"],
+            offeredScopes: [],
+            requiredScopes: [],
+          },
+        ],
+      },
+    }),
+  );
+  await page.route(`**${path}/connections`, (route) => {
+    begins++;
+    return route.fulfill({
+      status: 201,
+      json: {
+        data: {
+          authorizationUrl: "https://consent.example.test/authorize",
+          credentialSourceId: sourceId,
+          expiresAt: new Date(Date.now() + 120_000).toISOString(),
+        },
+      },
+    });
+  });
+  await page.route(`**${path}`, async (route) => {
+    if (!selected) {
+      return route.continue();
+    }
+    const response = await route.fetch();
+    const body = await response.json();
+    body.data.plugins[pluginId].driverPolicy = {
+      releaseSha256: digest,
+      credentials: { account: sourceId },
+    };
+    await route.fulfill({ response, json: body });
+  });
+  await context.route("https://consent.example.test/**", async (route) => {
+    if (new URL(route.request().url()).pathname === "/allow") {
+      selected = true;
+    }
+    const outcome = new URL(route.request().url()).pathname === "/deny" ? "failed" : "attached";
+    await route.fulfill(
+      new URL(route.request().url()).pathname === "/authorize"
+        ? {
+            headers: { "Cross-Origin-Opener-Policy": "same-origin" },
+            contentType: "text/html",
+            body: '<a href="/allow">Approve</a> <a href="/deny">Decline</a> <a href="/unconfirmed">Return without binding</a>',
+          }
+        : {
+            status: 303,
+            headers: {
+              location:
+                origin +
+                (outcome === "failed"
+                  ? "/console/?connection=failed"
+                  : originalPath + "&connection=attached"),
+            },
+          },
+    );
+  });
+  await login(page, fixture, original);
+  await page.getByText("Plugin selections JSON", { exact: true }).click();
+  await page
+    .locator("#agent-plugins")
+    .fill(JSON.stringify({ ...plugins, localDraft: { enabled: true } }));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await editor.getByRole("button", { name: "Google Workspace", exact: true }).click();
+  await editor.getByRole("button", { name: "Choose a connection template", exact: true }).click();
+  await editor.getByLabel("Connection template for Google account").selectOption("template");
+  const action = page.getByRole("button", { name: /^(Connect and attach|Try again)$/ });
+  const sameDraft = async () => {
+    assert.equal(page.url(), origin + originalPath);
+    assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()).localDraft, {
+      enabled: true,
+    });
+    assert.ok(
+      await page.getByRole("dialog", { name: "Configure plugins", exact: true }).isVisible(),
+    );
+  };
+  await page.evaluate(() => {
+    const open = window.open;
+    window.open = () => {
+      window.open = open;
+      return null;
+    };
+  });
+  await action.click();
+  await page.getByText(/Allow pop-ups for this Console/).waitFor();
+  assert.equal(begins, 0);
+  await sameDraft();
+  for (const mode of ["close", "denied", "unconfirmed", "success"] as const) {
+    const next = context.waitForEvent("page");
+    await action.click();
+    const provider = await next;
+    await provider.getByRole("link", { name: "Approve" }).waitFor();
+    assert.ok(await provider.evaluate(() => window.opener === null));
+    if (mode === "close") {
+      await provider.close();
+      await page.getByRole("button", { name: "Check connection" }).click();
+      await page.getByText(/binding could not be confirmed/).waitFor();
+    } else {
+      if (mode === "success") {
+        // A read during sign-in cannot cancel the outstanding callback, even if COOP severed the opener.
+        await page.getByRole("button", { name: "Check connection" }).click();
+        await page.getByText(/binding could not be confirmed/).waitFor();
+        assert.equal(provider.isClosed(), false);
+      }
+      const ended = provider.waitForEvent("close");
+      await provider
+        .getByRole("link", {
+          name: { success: "Approve", unconfirmed: "Return without binding", denied: "Decline" }[
+            mode
+          ],
+        })
+        .click();
+      await ended;
+      if (mode === "denied") {
+        await page.getByText(/Authorization did not finish/).waitFor();
+      } else if (mode === "unconfirmed") {
+        await page.getByText(/binding could not be confirmed/).waitFor();
+        assert.equal(await page.getByText("Account attached.", { exact: true }).count(), 0);
+      } else {
+        await page.getByText("Account attached.", { exact: true }).waitFor();
+        await page
+          .getByText("Connected fixture account", { exact: true })
+          .first()
+          .waitFor({ state: "attached" });
+      }
+    }
+    await sameDraft();
+  }
+  assert.equal(begins, 4);
+  assert.equal(
+    JSON.parse(await page.locator("#agent-plugins").inputValue())[pluginId].driverPolicy.credentials
+      .account,
+    sourceId,
+  );
+});
