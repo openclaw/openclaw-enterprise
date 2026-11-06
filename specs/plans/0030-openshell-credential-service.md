@@ -35,6 +35,55 @@ OCE already claims the private OAuth custody record with compare-and-swap across
 
 ### Move one existing grant during a maintenance window
 
+```mermaid
+---
+config:
+  theme: base
+  themeVariables:
+    actorBkg: '#eef3f8'
+    actorBorder: '#8294aa'
+    actorTextColor: '#223549'
+    noteBkgColor: '#e7f2ec'
+    noteBorderColor: '#83a291'
+    noteTextColor: '#223f30'
+    signalColor: '#536982'
+    signalTextColor: '#233649'
+  sequence:
+    actorMargin: 38
+    height: 44
+    messageMargin: 22
+    mirrorActors: false
+---
+sequenceDiagram
+    accTitle: Proposed OAuth grant transfer during maintenance
+    accDescr: OCC closes delivery and fences the old issuer. OpenShell becomes the sole refresher when it accepts the import. OCC recovers a lost reply by transfer ID before reopening the route or retiring an obsolete grant.
+    participant O as OCC
+    participant E as Trusted enrollment
+    participant I as OpenShell issuer
+    Note over O: Save transfer ID and pause delivery
+    Note over O,E: Fence old OCE writers across restart.<br/>Proceed only once the last refresh is settled.
+    O->>E: Start transfer under the saved ID
+    E->>I: Import under the saved transfer ID
+    Note over I: Durable acceptance makes<br/>OpenShell the sole refresher
+    opt Import reply lost
+        E->>I: Look up the same transfer ID
+    end
+    break Acceptance still unknown
+        Note over O,I: Keep delivery closed and the old writers fenced
+    end
+    I-->>E: Accepted grant and current version
+    E-->>O: Confirmed grant reference and version
+    O->>O: Switch route if the old generation still matches
+    Note over O: If the reply is lost, read the committed route.<br/>Keep delivery closed until the outcome is known.
+    alt Authorized route confirmed
+        Note over O: Open delivery
+    else Disconnect or replacement confirmed
+        O->>I: Stop renewal and retire the obsolete grant
+        I-->>O: Retirement confirmed
+    end
+    Note over O,E: Erase the old local copy and retain the writer fence
+```
+
 1. Persist a transfer ID and the expected old owner, grant reference and generation. Close delivery for the connection. Fence every old writer, including timers, request-triggered renewal, manual rotation, reconfiguration and restarted replicas. Settle any active refresh. If an exchange was interrupted, proceed only when the old owner proves it was unsent or recovers the committed successor.
 2. Verify the last confirmed grant's client registration, issuer, account, resource and scopes. Import it through trusted enrollment under the transfer ID. OpenShell records acceptance durably and may then renew while delivery stays closed. If the reply is lost, look up the transfer ID to recover the accepted grant and its current version. While the outcome is unknown, keep delivery closed and the old writer fenced. Do not start another import.
 3. Verify the destination grant. Use compare-and-swap against the expected old owner, reference and generation to switch OCC's route to the destination and reopen delivery. If OCC loses the result or the comparison fails, read the committed route before acting. OpenShell remains the sole custodian once it accepts the import. Honor a concurrent disconnect or replacement: keep the obsolete route closed, tell OpenShell to stop renewal and retire that accepted grant by transfer ID, and verify retirement before cleanup. Reopen delivery only for a still-authorized route. After confirming the switch, delete the old local credential material and retain the fence across restart. Cleanup must never revoke the transferred grant at the provider.
