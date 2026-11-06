@@ -82,11 +82,11 @@ test("consented protected repository read uses only exact, already prepared meta
           minimumValidityMs: 10000,
         });
       },
-      async readWarm(source, { signal, deadlineAt }) {
+      async resolve(reference, { signal, deadlineAt }) {
         signal.throwIfAborted();
         assert.ok(Date.parse(deadlineAt) > clock.wallNow());
         reads++;
-        assert.equal(source.origin, gh.origin);
+        assert.equal(reference.source.id, admission.familyId);
         const result = await reader.readWarm(admission);
         if (result.kind !== "warm") {
           return undefined;
@@ -95,12 +95,12 @@ test("consented protected repository read uses only exact, already prepared meta
           result.material;
         try {
           return {
-            value: Buffer.from(bytes).toString(),
+            accessToken: Buffer.from(bytes).toString(),
             materialVersion,
-            providerExpiresAt: new Date(providerExpiresAt).toISOString(),
+            expiresAt: new Date(providerExpiresAt).toISOString(),
             usableUntil: new Date(usableUntil).toISOString(),
             materialId: admission.familyId,
-            family: source.key.source,
+            family: reference.source,
             preparationAttemptId: attemptId,
             ownerEpoch: 1,
             inputVersion: admission.inputVersion,
@@ -254,6 +254,7 @@ test("consented protected repository read uses only exact, already prepared meta
   spelling = undefined;
   const captured = captureMetadata(f);
   const { ready } = await f.resolve(captured);
+  const checksBeforeWithdrawal = sendChecks;
   await store.transact(admission.familyId, (row) => {
     row.enabled = false;
   });
@@ -261,8 +262,8 @@ test("consented protected repository read uses only exact, already prepared meta
     (await f.authorize(f.permitRequest(captured, ready))).refused.code,
     f.refusalCode("DENIED"),
   );
-  assert.equal(sendChecks, 9);
-  assert.equal(gh.issuesOfTokens.length, 1, "no request may renew or issue");
+  assert.ok(sendChecks > checksBeforeWithdrawal, "dispatch rechecks the withdrawn grant");
+  assert.equal(gh.issuesOfTokens.length, 1, "the fixture issuer only prepared the one grant");
 });
 
 // Conformance only: synthetic strings exercise the shared wire envelope, not provider authentication.

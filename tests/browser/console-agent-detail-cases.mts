@@ -64,7 +64,7 @@ import {
   agentDeleteRequests,
   agentStopRequests,
   replyWithDifferentAgentId,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   callerDenied,
   GENERIC_DENIAL,

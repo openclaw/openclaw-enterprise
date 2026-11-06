@@ -685,10 +685,14 @@ export const CredentialSourceSchema = Type.Object(
     name: Name,
     type: CredentialSourceType,
     ownerCapability: Type.Union(
-      [Type.Literal("credential_gateway"), Type.Literal("credential_proxy")],
+      [
+        Type.Literal("credential_gateway"),
+        Type.Literal("credential_proxy"),
+        Type.Literal("token_service"),
+      ],
       {
         description:
-          "The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership.",
+          "The Token Service owns saved accounts. Other sources belong to the Driver that admitted them.",
       },
     ),
     config: CredentialSourceConfig,

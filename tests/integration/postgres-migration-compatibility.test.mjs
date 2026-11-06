@@ -1369,6 +1369,7 @@ async function assertCompletedHistory(db, previous = []) {
     WHERE n.nspname='occ' AND p.prosecdef ORDER BY identity`)
     ).rows,
     [
+      ["occ.check_connection_registration_scope()", false, "search_path=pg_catalog, pg_temp"],
       // The app records a standing execution; only the Agent lifecycle trigger can close it.
       ["occ.close_repository_standing_execution()", false],
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
@@ -2003,7 +2004,9 @@ test(
       [65, "preAgentDeployIntent"],
       [66, "preAgentCredentialSourceLimit"],
       [67, "preAgentPluginDriver"],
-      [68, "preRuntimeRoles"],
+      [68, "preConnectionTemplates"],
+      [69, "preSavedConnections"],
+      [70, "preRuntimeRoles"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2035,6 +2038,41 @@ test(
         assert.ok(existingBindings.rows.length > 0);
         assert.ok(existingBindings.rows.every((row) => row.first_deployment_digest === null));
         await assertUpgradedAuthentication(db);
+        if (history === "preConnectionTemplates") {
+          // An Installation-wide template cannot present a Namespace client's credentials,
+          // even when an application-role writer bypasses OCC.
+          const templateId = `ctp_${randomUUID()}`;
+          const registrationId = `ccr_${randomUUID()}`;
+          await db.app.query("BEGIN");
+          try {
+            await db.app.query(
+              `INSERT INTO occ.oauth_clients
+                 (id,namespace_id,display_name,issuer,client_id,token_url,token_endpoint_auth_method,created_at)
+               VALUES ($1,$2,'Namespace client','https://issuer.example.test','shared-client','https://issuer.example.test/token','none',now())`,
+              [registrationId, namespaceId],
+            );
+            await db.app.query(
+              `INSERT INTO occ.connection_templates
+                 (id, namespace_id, display_name, current_version, created_at)
+               VALUES ($1, NULL, 'Installation template', 1, now())`,
+              [templateId],
+            );
+            await assert.rejects(
+              db.app.query(
+                `INSERT INTO occ.oauth_connection_template_versions
+                   (template_id, version, oauth_client_id, issuer, mode, authorization_url,
+                    token_url, scopes, authorization_parameters, destinations, created_at)
+                 VALUES ($1, 1, $2, 'https://issuer.example.test', 'manual',
+                    'https://issuer.example.test/auth', 'https://issuer.example.test/token',
+                    ARRAY['read'], '{}', '[{"host":"api.example.test","port":443,"path":"/"}]', now())`,
+                [templateId, registrationId],
+              ),
+              { code: "23514", message: /registration must belong to the template scope/ },
+            );
+          } finally {
+            await db.app.query("ROLLBACK");
+          }
+        }
         if (history === "preGatewayManagedMode") {
           await db.app.query(
             `INSERT INTO occ.agent_revisions
@@ -2449,7 +2487,7 @@ test(
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
       [65, "preAgentDeployIntent"],
-      [68, "preRuntimeRoles"],
+      [70, "preRuntimeRoles"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2708,7 +2746,7 @@ test(
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
       [65, "preAgentDeployIntent"],
-      [68, "preRuntimeRoles"],
+      [70, "preRuntimeRoles"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3485,7 +3523,7 @@ test(
     let pool;
     context.after(async () => pool?.end());
     const db = await historyDatabase(context, await migrationHistoryFixture(), "runtime_admin", {
-      prefix: 68,
+      prefix: 70,
     });
     const namespaceId = await seedCanonicalData(db, {
       preset: true,
@@ -3625,7 +3663,7 @@ test(
       context,
       await migrationHistoryFixture(),
       "runtime_denied",
-      { prefix: 68 },
+      { prefix: 70 },
     );
     const deniedNamespace = await seedCanonicalData(denied, {
       preset: true,

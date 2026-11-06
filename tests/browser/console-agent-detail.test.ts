@@ -76,7 +76,7 @@ import {
   agentStopRequests,
   replyWithDifferentAgentId,
   configurationPatchRequests,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   AGENT_CREATE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,
@@ -1246,6 +1246,94 @@ test("A refused harness grant read leaves an administrator's Deploy alone", asyn
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
   assert.equal(await page.getByText(HARNESS_GRANT_MISSING, { exact: true }).count(), 0);
 });
+
+for (const focus of ["status", "editor", "navigation"]) {
+  test(`Configuration save conflict preserves ${focus} focus`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Conflict focus", { ready: true });
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Conflict focus Agent",
+      nativeValues("base"),
+    );
+    const { page } = await newPage(t, fixture);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    );
+    await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+    await openAdvancedSettings(page);
+    const editor = page.getByLabel("Configuration JSON", { exact: true });
+    const draft = JSON.stringify(nativeValues("local draft"), null, 2);
+    await editor.fill(draft);
+    const path = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+    const url = new URL(path, fixture.origin).href;
+    const held = await holdRequests(t, page, url, { method: "PATCH", once: true });
+    await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+    await held.requested;
+    assert.equal(await hasFocus(page.getByText("Checking Configuration…", { exact: true })), true);
+    const navigation = page.getByRole("link", { name: "Agents", exact: true });
+    if (focus === "editor") {
+      // Read-only JSON must still support keyboard selection while the write is pending.
+      await editor.click();
+      await editor.press("ControlOrMeta+a");
+    } else if (focus === "navigation") {
+      await navigation.focus();
+    }
+    const selection = () =>
+      editor.evaluate((node) => {
+        if (!(node instanceof HTMLTextAreaElement)) {
+          throw new Error("Configuration JSON must be a textarea");
+        }
+        return [node.selectionStart, node.selectionEnd, node.selectionDirection];
+      });
+    const selected = await selection();
+    if (focus === "editor") {
+      assert.deepEqual(selected.slice(0, 2), [0, draft.length]);
+    }
+    const scroll = await page.evaluate(() => [scrollX, scrollY]);
+    // A real concurrent write wins after preflight, before the held PATCH reaches OCC.
+    await fixture.updateConfiguration(
+      namespace.id,
+      agent.configurationId,
+      nativeValues("concurrent edit"),
+    );
+    const before = await fixture.request("GET", path);
+    assert.equal(before.status, 200);
+    const response = page.waitForResponse(
+      (reply) => reply.request().method() === "PATCH" && reply.url() === url,
+    );
+    held.release();
+    assert.equal((await response).status(), 409);
+    const reload = page.getByRole("button", { name: "Reload draft", exact: true });
+    await reload.waitFor();
+    await page
+      .getByRole("alert")
+      .filter({ hasText: "The saved Configuration changed while you were editing." })
+      .waitFor();
+    assert.equal(await editor.inputValue(), draft);
+    assert.equal(await editor.getAttribute("readonly"), "");
+    assert.equal(
+      await page.getByRole("button", { name: "Save Configuration", exact: true }).isDisabled(),
+      true,
+    );
+    const after = await fixture.request("GET", path);
+    assert.equal(after.status, 200);
+    assert.deepEqual(after.data, before.data);
+    assert.deepEqual(after.data.values, nativeValues("concurrent edit"));
+    if (focus === "status") {
+      assert.equal(await hasFocus(reload), true);
+    } else {
+      assert.equal(await hasFocus(focus === "editor" ? editor : navigation), true);
+      assert.deepEqual(await page.evaluate(() => [scrollX, scrollY]), scroll);
+      if (focus === "editor") {
+        assert.deepEqual(await selection(), selected);
+      }
+    }
+  });
+}
 
 test("Agent detail blocks repeat Configuration saves after an uncertain draft update", async (t) => {
   const fixture = await createConsoleAppFixture(t);

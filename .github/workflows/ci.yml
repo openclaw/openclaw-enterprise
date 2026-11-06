@@ -36,6 +36,9 @@ jobs:
       mode: ${{ steps.select.outputs.mode }}
       lanes: ${{ steps.select.outputs.lanes }}
       matrix: ${{ steps.matrix.outputs.matrix }}
+      image-matrix: ${{ steps.matrix.outputs.image-matrix }}
+      has-matrix: ${{ steps.matrix.outputs.has-matrix }}
+      has-images: ${{ steps.matrix.outputs.has-images }}
       fixture: ${{ steps.matrix.outputs.fixture }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -169,6 +172,7 @@ jobs:
               {"lane": "images-runtime-startup-3", "title": "Image Runtime Startup 3", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-network", "title": "k3d Network Isolation", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
@@ -187,7 +191,9 @@ jobs:
             matrix=$table
             fixture=true
           fi
-          printf 'matrix=%s\nfixture=%s\n' "$matrix" "$fixture" >> "$GITHUB_OUTPUT"
+          images=$(jq -c '[.[] | select(.lane | startswith("images-"))]' <<<"$matrix")
+          matrix=$(jq -c '[.[] | select(.lane | startswith("images-") | not)]' <<<"$matrix")
+          printf 'matrix=%s\nimage-matrix=%s\nfixture=%s\nhas-matrix=%s\nhas-images=%s\n' "$matrix" "$images" "$fixture" "$(jq 'length > 0' <<<"$matrix")" "$(jq 'length > 0' <<<"$images")" >> "$GITHUB_OUTPUT"
 
       - name: Summarize impact selection
         if: ${{ always() }}
@@ -325,7 +331,7 @@ jobs:
         if: ${{ always() }}
         run: |
           # Print to the log too: step summaries are not readable through the API.
-          report=$(node scripts/ci/pnpm-impact.mjs --summary) || report='Affected workspace packages: unavailable.'
+          report=$(node scripts/ci/pnpm-impact.ts --summary) || report='Affected workspace packages: unavailable.'
           printf '%s\n' "$report"
           if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
             printf '%s\n' "$report" >> "$GITHUB_STEP_SUMMARY" || true
@@ -334,7 +340,7 @@ jobs:
   pr-safe:
     name: ${{ matrix.title }}
     needs: impact
-    if: ${{ needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests' }}
+    if: ${{ (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') && needs.impact.outputs.has-matrix == 'true' }}
     # Each CI Impact lane-table row names its runner.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
@@ -364,6 +370,43 @@ jobs:
           path: ${{ runner.temp }}/state/repository-credentials-images.json
           if-no-files-found: error
           retention-days: 7
+
+  runtime-artifact:
+    name: Shared Runtime Image
+    needs: impact
+    if: ${{ needs.impact.outputs.mode == 'full' || (needs.impact.outputs.mode == 'tests' && needs.impact.outputs.has-images == 'true') }}
+    uses: ./.github/workflows/ci-runtime-artifact.yml
+
+  image-lanes:
+    name: ${{ matrix.title }}
+    needs: [impact, runtime-artifact]
+    if: ${{ (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') && needs.impact.outputs.has-images == 'true' }}
+    # Each CI Impact lane-table row names its runner.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Lane rows live in the CI Impact "Build lane matrix" step.
+        include: ${{ fromJSON(needs.impact.outputs.image-matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: ${{ matrix.lane }}
+          profile: ${{ matrix.profile }}
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: ci-results
+          job-timeout-minutes: ${{ matrix.timeout }}
+          # Static Checks runs them in this workflow.
+          static-checks: "false"
+          runtime-artifact-id: ${{ needs.runtime-artifact.outputs.artifact-id }}
+          runtime-artifact-sha256: ${{ needs.runtime-artifact.outputs.archive-sha256 }}
+          runtime-artifact-source-sha: ${{ needs.runtime-artifact.outputs.source-sha }}
+          runtime-artifact-run-id: ${{ needs.runtime-artifact.outputs.run-id }}
+          runtime-artifact-attempt: ${{ needs.runtime-artifact.outputs.producer-attempt }}
 
   runtime-image-fixture:
     name: Runtime Image Fixture
@@ -397,7 +440,7 @@ jobs:
   # provider and no secrets. Deliberately not a CI Required dependency yet.
   first-agent-smoke:
     name: First Agent Smoke
-    needs: impact
+    needs: [impact, runtime-artifact]
     if: ${{ needs.impact.outputs.mode == 'full' }}
     # Local Setup refuses gateway trust unless NetworkPolicies are enforced,
     # which needs the bridge netfilter support of this runner kernel.
@@ -453,8 +496,23 @@ jobs:
             core.setSecret(token);
             core.setOutput('token', token);
             core.setOutput('url', url);
+      - name: Install runtime artifact transport
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install --no-install-recommends -y skopeo
+      - name: Download shared runtime image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          artifact-ids: ${{ needs.runtime-artifact.outputs.artifact-id }}
+          path: ${{ runner.temp }}/runtime-artifact
+          merge-multiple: true
       - name: Build checkout images
         env:
+          OCC_CI_RUNTIME_ARTIFACT_DIRECTORY: ${{ runner.temp }}/runtime-artifact
+          OCC_CI_RUNTIME_ARTIFACT_SHA256: ${{ needs.runtime-artifact.outputs.archive-sha256 }}
+          OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA: ${{ needs.runtime-artifact.outputs.source-sha }}
+          OCC_CI_RUNTIME_ARTIFACT_RUN_ID: ${{ needs.runtime-artifact.outputs.run-id }}
+          OCC_CI_RUNTIME_ARTIFACT_ATTEMPT: ${{ needs.runtime-artifact.outputs.producer-attempt }}
           ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
           ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
         run: node scripts/ci/first-agent-smoke.mjs images
@@ -471,6 +529,8 @@ jobs:
       - impact
       - static-checks
       - pr-safe
+      - image-lanes
+      - runtime-artifact
       - runtime-image-fixture
     # always(): a failed or skipped dependency must still produce a failed
     # CI Required, never a skipped (passing) one.

@@ -68,6 +68,7 @@ export const InvalidConfigurationInvisibleCharacters = story(
 );
 export const InvalidConfigurationCurlyQuotes = story("invalidConfigurationCurlyQuotes");
 export const ConfigurationChangedElsewhereMerged = story("configurationChangedElsewhereMerged");
+export const ConfigurationConflictFocus = story("configurationConflictFocus");
 export const Admitted = story("admitted");
 export const RepositoryDraft = {
   ...story("repositoryDraft"),
@@ -127,7 +128,7 @@ export const DeploymentModelProbeFailedDeployOnlyUnreadable = story(
 export const DeploymentFailedAfterSelection = story("deploymentFailedAfterSelection");
 export const DeploymentStopped = story("deploymentStopped");
 export const DeploymentSuperseded = story("deploymentSuperseded");
-export const DeploymentSucceeded = story("deploymentSucceeded");
+export const DeploymentSucceeded = story("deploymentSucceeded", { openInNewTab: true });
 export const DeploymentUnavailable = story("deploymentUnavailable");
 export const DiagnosticsSuccess = story("diagnosticsSuccess");
 export const DiagnosticsFast = story("diagnosticsFast");

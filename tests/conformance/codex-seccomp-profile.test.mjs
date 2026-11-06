@@ -11,7 +11,7 @@ import {
 } from "../../scripts/lib/codex-seccomp-profile.mjs";
 
 import { prepareCodexSeccompProfile } from "../../scripts/lib/codex-seccomp-k3d.mjs";
-import { writeCommand } from "../helpers/fake-commands.mjs";
+import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));

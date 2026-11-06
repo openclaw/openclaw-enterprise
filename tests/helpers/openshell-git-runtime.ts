@@ -1,4 +1,7 @@
-import type { AgentRevision } from "../../packages/contracts/src/index.ts";
+import type {
+  AgentRevision,
+  ProtectedGitHubInstallationMaterial,
+} from "../../packages/contracts/src/index.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
@@ -47,25 +50,16 @@ type Faults = {
   /** The Sandbox does not exist yet: a first preparation bootstraps the route. */
   sandboxMissing?: boolean;
 };
-type Material = {
-  value: string;
-  expiresAt: string;
-  preparationAttemptId: string;
-  materialVersion: string;
-  repository: string;
-  providerInstanceId: string;
-  repositoryId: string;
-  grantId: string;
-  pushRef: string;
-  apiOrigin: string;
-  sessionId: string;
-};
+type Material = ProtectedGitHubInstallationMaterial;
 type Owner = {
   material: Material;
   readOpenShellMaterial: () => Promise<Material>;
   authorizeOnlineRequest: Parameters<OpenShellGitRuntime["start"]>[0]["authorizeOnlineRequest"];
 };
 interface World {
+  revision: AgentRevision;
+  resolveDelivery: ReturnType<typeof createGitHubRepositoryDeliveryResolver>;
+  runtime: OpenShellGitRuntime;
   sandbox: {
     id: string;
     name: string;
@@ -101,6 +95,10 @@ export const registry = validateGitHubRepositoryRegistry(
     appId: "12345",
     githubInstallationId: "67890",
     maximumDurationSeconds: 86400,
+    installationAccess: {
+      repositoryRef: "installation",
+      namespaces: [{ namespaceId: "namespace-a", accessMode: "installation" }],
+    },
     repositories: [
       {
         repositoryRef: "application",
@@ -121,15 +119,15 @@ export const registry = validateGitHubRepositoryRegistry(
 );
 const admitted = resolveGitHubRepositoryBinding(registry, {
   namespaceId: "namespace-a",
-  repositoryRef: "application",
-  profile: "git-write",
+  repositoryRef: "installation",
+  profile: "github-installation",
 });
 const future = () => new Date(Date.now() + 600_000).toISOString();
 
 export function openShellGitRuntimeFixture({
   store,
   world,
-  resolveDelivery = createGitHubRepositoryDeliveryResolver(registry),
+  resolveDelivery = world?.resolveDelivery ?? createGitHubRepositoryDeliveryResolver(registry),
   onEvent,
 }: {
   store?: ReturnType<typeof routeStore>;
@@ -137,17 +135,26 @@ export function openShellGitRuntimeFixture({
   resolveDelivery?: ReturnType<typeof createGitHubRepositoryDeliveryResolver>;
   onEvent?: (event: Readonly<Record<string, unknown>>) => void;
 } = {}) {
-  const revision = Object.freeze({
-    id: "rev-one",
-    namespaceId: "namespace-a",
-    agentId: "agent-one",
-    harness: { id: "codex", mode: "dedicated" },
-    repositoryCredentials: {
-      driver: { id: "repo-driver", implementation: "github" },
-      deadlineWallMs: Date.now() + 3_600_000,
-      bindings: [admitted],
-    },
-  }) as unknown as AgentRevision;
+  const credentials = {
+    driver: { id: "repo-driver", implementation: "github" },
+    deadlineWallMs: Date.now() + 3_600_000,
+    bindings: [admitted],
+  };
+  const revision = (world?.revision ??
+    Object.freeze({
+      id: "rev-one",
+      namespaceId: "namespace-a",
+      agentId: "agent-one",
+      harness: { id: "codex", mode: "dedicated" },
+      repositoryCredentials: credentials,
+      executionAdmission: { version: 5, mode: "protected" },
+      egressPlan: {
+        driver: { id: "openshell" },
+        execution: { executionId: "binding_0123456789abcdefghijklmn" },
+        repositoryGitAuthorization: "online-request",
+        repositoryGit: credentials,
+      },
+    })) as unknown as AgentRevision;
   // `world` shares the gateway, supervisor, faults and owner of an earlier fixture: the state a
   // restarted worker process finds (finding 2128).
   const sandbox = world?.sandbox ?? {
@@ -174,8 +181,8 @@ export function openShellGitRuntimeFixture({
   };
   const faults: Faults = world?.faults ?? {};
   // The gateway's own prepared Git profiles and providers, which a route's bootstrap writes
-  // (oce-git- plus 32 hex digits). Any other name is the Agent's model provider.
-  const prepared = /^oce-git-[0-9a-f]{32}$/;
+  // (the profile prefix plus 32 hex digits). Any other name is the Agent's model provider.
+  const prepared = /^oce-(?:git|github-installation)-[0-9a-f]{32}$/;
   const profiles = new Map<string, Record<string, unknown>>();
   const providers = new Map<string, Record<string, unknown>>();
   const answer = (method: string, name?: string) => {
@@ -317,16 +324,14 @@ export function openShellGitRuntimeFixture({
       };
     },
   };
-  const material = {
+  const material: Material = {
+    ...admitted.grant,
+    scope: "github-installation",
+    installationId: registry.githubInstallationId,
     value: "synthetic-installation-token",
     expiresAt: future(),
     preparationAttemptId: "attempt-one",
     materialVersion: "version-one",
-    repository: registry.repositories[0]!.repository,
-    providerInstanceId: admitted.grant.providerInstanceId,
-    repositoryId: admitted.grant.repositoryId,
-    grantId: admitted.grant.grantId,
-    pushRef: PUSH_REF,
     apiOrigin: "https://api.github.com",
     sessionId: "session-one",
   };
@@ -345,7 +350,7 @@ export function openShellGitRuntimeFixture({
     revision,
     client: client as unknown as Entry["client"],
     provider: provider as unknown as Entry["provider"],
-    bindingId: "binding_0123456789abcdefghijklmn",
+    bindingId: revision.egressPlan!.execution.executionId,
     authorization: createGitHubRepositoryDeliveryResolver(registry)(revision),
     otherProviders: ["openai"],
     binding: {
@@ -367,7 +372,7 @@ export function openShellGitRuntimeFixture({
   };
   const events: Readonly<Record<string, unknown>>[] = [];
   const runtime = new OpenShellGitRuntime(
-    {
+    world?.runtime.configuration ?? {
       registrationName: "oce-prepared-git",
       authority:
         {} as import("../../apps/controller/src/composition/egress-authority.ts").EgressAuthorityConfiguration,
@@ -440,6 +445,7 @@ export function openShellGitRuntimeFixture({
   const denials = () => events.filter((event) => event.event === "worker.openshell-git-denied");
   return Object.assign(f, {
     runtime,
+    resolveDelivery,
     client,
     provider,
     store,

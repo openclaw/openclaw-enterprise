@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-04
-last_updated_session: authoring-run/5cb8a94e-e57d-47d0-b87e-890ea5b3f40e
+updated: 2026-11-05
+last_updated_session: authoring-run/61309ab1-dd2a-4cb0-99b5-e2a9485fe91f
 ---
 
 # Harness Execution Topology Flow
@@ -178,7 +178,11 @@ Sandbox receives projections and login mode through `HarnessWorkloadRequirements
 Compute templates, allow policies and peers require the
 [network profile](../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles); readiness rejects its absence.
 
-For provider-owned Harnesses, `providerHarnessReady` requires exactly one nonterminating `Ready=True` Pod matching the active Service's Agent, Agent revision ID, and role labels. Malformed observations enter cleanup; activation rechecks before routing changes. The [readiness contract](../reference/drivers/kubernetes-compute.md#requirements) owns candidate rules and observation limits.
+`providerHarnessReady` requires one nonterminating `Ready=True` Pod matching the active Service's Agent, revision and role labels. Malformed observations trigger cleanup; activation rechecks before routing. See [candidate rules and observation limits](../reference/drivers/kubernetes-compute.md#requirements).
+
+After authenticated HTTP 101 and accept-key validation,
+`apps/controller/src/drivers/sandbox/openshell-service-transport.ts:serviceWebSocketHandshake`
+sends a masked normal-close frame without a Harness request. Cleanup is bounded.
 
 ### 3. Publish safely and complete activation once
 
@@ -200,20 +204,20 @@ Source authorization cannot override routing.
 `pluginRuntimeConfigMapData` in `apps/controller/src/drivers/compute/plugin-runtime.ts`
 writes Codex's provider and optional standalone-search declaration.
 Protected `providerTools: none` still disables search.
+Nested Codex omits native helpers (`runtime-entrypoints.ts:pluginRuntimeHelpers`).
+OpenShell compresses preludes with `node-program.ts:prependNodeProgramArguments`.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:writeCodexConfigToml`
-writes the generated file into `CODEX_HOME` before native startup. The capability
-belongs to Codex's user configuration, not a workspace override.
-Native CLI launch passes explicit log and metrics exporter overrides for login,
-the authentication probe and the app-server.
+writes the generated file into `CODEX_HOME` before native startup. Codex owns this user
+configuration, outside workspace overrides.
+Login, authentication probes and app-server launch override native log and metrics exporters.
 [Runtime logging](../reference/harness-execution.md#runtime-logging) defines the export defaults.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:probeCodexAuthentication`
 uses CLI overrides because the probe ignores user configuration. Account login and
 other Harnesses keep their endpoints; only the Harness holds model credentials.
 
-For admitted inference, Kubernetes Compute records launch behavior in new protected
-dedicated Codex revisions. The authentication probe and app-server disable unbounded
+Kubernetes Compute records admitted inference launch behavior in new protected Codex revisions. The authentication probe and app-server disable unbounded
 native connection retries, avoiding indefinite reconnects. Stored revisions retain
-original commands.
+original retry settings.
 
 For custom endpoints, `gatewayConfigurationDocument` uses
 `apps/controller/src/drivers/compute/codex-model-configuration.ts:codexGatewayModelConfiguration`
@@ -260,11 +264,10 @@ to report its assigned workspace node: a 20-second budget per version and node a
 activation retries, then one status read per retry. That wait and the pairing wait end
 early when other Work is claimable.
 
-On version stop, the Driver gives the Gateway up to 330 seconds to drain. It
-waits for the Gateway Pod to disappear before stopping the Harness, which can
-finish active work. Idle Gateways and wrappers that have yet to start OpenClaw
-exit promptly. After forced termination, the next Gateway needs proof that the
-previous owner stopped before it can take over retained state.
+On stop, the Driver allows 330 seconds for Gateway drain and waits for Pod
+removal before stopping the Harness, allowing active work to finish. Idle
+Gateways and pre-start wrappers exit promptly. Forced termination requires proof
+the previous owner stopped before retained state can be reused.
 [Embedded recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner)
 describes when an operator must confirm termination.
 
@@ -274,15 +277,17 @@ retain their default workspace; dedicated Harness claims retain node identity. C
 precede Pods for `WaitForFirstConsumer`; [Gateway storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 defines initialization and mounts.
 
-Workspace-file access uses the enrolled Harness node. The Gateway and Harness
-share no workspace, session, skill or image mounts. Codex gets its Harness path
-before startup. Pairing enables file transfer.
+The enrolled Harness node serves workspace files after pairing. Gateway and
+Harness share no workspace, session, skill or image mounts. Codex receives its
+Harness path before startup.
 The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
-covers per-image assets and generated-image return. The node host stores bundles
-in its state and workspaces below `/home/node/workspace`, separate from gateway state,
-`CODEX_HOME` and credentials. Restart republishes image-owned assets and reconnects;
-readiness checks the paired identity. Compile cache and model-probe
-state remain in node state and `TMPDIR`, which a Sandbox Driver can grant.
+covers image assets and return. Node bundles and `/home/node/workspace` stay
+separate from Gateway state, `CODEX_HOME` and credentials. Restart republishes
+assets and reconnects; readiness checks paired identity. Compile cache and model
+probe state use node state and Sandbox-grantable `TMPDIR`.
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts` sets
+`XDG_CACHE_HOME=/tmp` for node and Doctor private SQLite staging, avoiding
+group-writable persistent ancestors without weakening permission checks.
 
 On stop or retirement, the selected Sandbox Driver cleans up after Compute stops an
 ordinary Harness, or removes a provider-owned Harness. Missing Deployments do not
@@ -327,10 +332,6 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
   `node --test tests/integration/harness-topology-k3d-real.test.mjs` (Kubernetes) with the
   inputs in [the real-runtime suite](../testing/kubernetes.md#run-the-real-runtime-suite-directly).
   Docker Compute deploys no Agent: it rejects every Harness authentication binding.
-- Verify provider-backed dedicated Codex with
-  `node --test tests/integration/service-account-driver-real.test.mjs`,
-  `OCC_TEST_CHATGPT_SERVICE_ACCOUNT_REAL=1` and an authorized mounted
-  `OCC_TEST_CHATGPT_ADMIN_KEY_PATH`; it does not use `OPENAI_API_KEY`.
 - Missing credentials, images, access or either model response fail verification;
   readiness probes, handshakes, fixtures and skipped tests are not substitutes.
 - HTTP 401 before worker admission indicates callback fallthrough from node-only
@@ -353,6 +354,12 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 21:24: Trace probe closure. (authoring-run/61309ab1-dd2a-4cb0-99b5-e2a9485fe91f - fdb3fbd93a5295e37ad7814a5197029f2b615346)
+
+- 2026-11-05 14:07: Trace helper specialization. (authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2 - 644b3f9)
+
+- 2026-11-05 13:08: Trace safe temporary SQLite staging before node startup. (authoring-run/5c90599f-4f7f-4ec9-bf5d-2724c7156128 - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
 
 - 2026-11-04 23:04: Require Compute-owned Codex RPC readiness. (authoring-run/5cb8a94e-e57d-47d0-b87e-890ea5b3f40e - 381845c12d3694fc19f836786831bb98cbe2c3e1)
 

@@ -58,7 +58,7 @@ import {
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-fetch-accounting.ts";
-import { withholdPermissionSummary } from "./console-agents-test-support.mjs";
+import { withholdPermissionSummary } from "./console-agents-test-support.ts";
 import { refocus } from "./console-refocus-helpers.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;

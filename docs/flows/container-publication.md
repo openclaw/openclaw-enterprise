@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-04
-last_updated_session: authoring-run/2811a56d-1652-4ba4-bb5f-a5be2e647c16
+updated: 2026-11-05
+last_updated_session: authoring-run/d159cc84-e825-40d4-a8db-8adc7ca9ce42
 ---
 
 # Container publication flow
@@ -127,6 +127,14 @@ new owner-only directory, so native first use can create private SQLite stores
 under the Sandbox workspace. Existing parent permissions and filesystem admission
 checks remain unchanged. The final image records the patch checksums in its
 provenance.
+
+The [Codex profile patch](../../deploy/runtime/openclaw-codex-full-access-profile.patch)
+requires the requested named profile before returning a thread. Refusals for profiles
+other than `:danger-full-access` report fixed request-source, selector-agreement and
+response-comparison categories, without profile names or configuration. Missing metadata
+and a different returned ID remain refusals. The message directs the caller to ask
+the workspace administrator to verify profile availability and runtime compatibility
+before retrying.
 
 The runtime disables npm background update checks. See the
 [runtime defaults](../../deploy/runtime/README.md).
@@ -264,6 +272,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-05 19:00: Categorize named-profile refusals without exposing profile values. (authoring-run/d159cc84-e825-40d4-a8db-8adc7ca9ce42 - 0ecbe50bfe)
 
 - 2026-11-04 22:30: Document the Debian curl CONNECT-authentication backport and package verification. (authoring-run/2811a56d-1652-4ba4-bb5f-a5be2e647c16 - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 

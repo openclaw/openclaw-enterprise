@@ -14,8 +14,8 @@ import {
   isRuntimeImageJob,
   localDockerCli,
   withRuntimeImageFixture,
-} from "../helpers/runtime-image-fixture.mjs";
-import "../helpers/runtime-image-fixture.test.mjs";
+} from "../helpers/runtime-image-fixture.ts";
+import "../helpers/runtime-image-fixture.test.ts";
 
 const execute = promisify(execFile);
 const base = `localhost/oce-runtime-images-${randomUUID()}/runtime:local`;
