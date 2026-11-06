@@ -6900,6 +6900,7 @@ export class OpenClawController {
 
   private staticEgressProvider(type: string, previous?: EgressRef) {
     const driver = this.selectedDriver("credential_proxy");
+    const owner = this.selections.get("credential_proxy")?.owner;
     const control = driver.sourceControl;
     // A new admission uses catalog order. An existing approval names a specific registration.
     const resolve = () => {
@@ -6921,6 +6922,8 @@ export class OpenClawController {
     const assertCurrent = () => {
       if (
         this.selectedDriver("credential_proxy") !== driver ||
+        this.selections.get("credential_proxy")?.owner !== owner ||
+        (owner !== undefined && owner.require("credential_proxy") !== driver) ||
         driver.sourceControl !== control ||
         resolve() !== provider ||
         !isDeepStrictEqual(provider.ref, ref) ||
@@ -6931,6 +6934,7 @@ export class OpenClawController {
           "The selected credential provider changed during admission. Check the Installation's provider configuration before retrying this credential-source request.",
         );
       }
+      owner?.assertNewStaticProviderUse(ref);
     };
     return { provider, ref, inject, normalizeConfig, assertCurrent };
   }
@@ -7155,6 +7159,9 @@ export class OpenClawController {
       );
       if (!provider || !isDeepStrictEqual(driver.sourceControl.backend, admitted.key.backend)) {
         throw new DependencyUnavailableError("The admitted egress composition is unavailable.");
+      }
+      if (admitted.adoption === "live") {
+        owner.assertNewStaticProviderUse(provider.ref);
       }
       const grant = provider.normalizeGrant([modelId], source.config);
       let digestGrant = grant;

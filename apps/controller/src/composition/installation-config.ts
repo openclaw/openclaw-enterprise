@@ -1318,6 +1318,8 @@ export async function loadInstallationConfiguration(options: {
         repositoryDeliveryMode === "protected" ? repositoryRuntime?.authorityIdentity : undefined,
       );
     } else {
+      const { openAiStaticProviderRef } =
+        await import("../drivers/egress-proxy/openai-provider.ts");
       // One configured OpenShell owner, with the original capability IDs retained for v2 revisions.
       const capabilities = createOpenShellCapabilities({
         sandbox,
@@ -1338,6 +1340,7 @@ export async function loadInstallationConfiguration(options: {
       protectedDriver = new InstalledDriver(
         {
           ...sandbox,
+          retiredStaticProviderRefs: [openAiStaticProviderRef],
           configuration: {
             sandbox: sandbox.configuration,
             backend: openShellBackend,
