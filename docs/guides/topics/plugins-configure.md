@@ -91,10 +91,12 @@ set Helm `api.pluginDiscoveryCidrs` to the endpoint's IPv4 `/32` hosts and refre
 them when DNS changes. Other ports need the Installation's managed egress policy.
 This setting is separate from model discovery. Worker calls use the Sandbox policy.
 
-Open **Plugins**, add the plugin, choose the account, and choose **Load tools**.
-Choose the tools to enable, then save and deploy. Loading tools again refreshes
-the inventory. Additional tools require selection and deployment before the Agent
-can use them. An empty selection leaves the worker server disabled.
+In **Configure plugins**, add the plugin, choose the account, and select **Load tools**.
+You can do this on the Create Agent form or on a saved Agent.
+The first load enables all returned tools in the draft. Use **Filter tools** to find
+a tool and turn it off, then save and deploy. **Reload tools** keeps your choices.
+If the server adds a tool later, enable it and deploy to grant the Agent access.
+Turning off every tool disables the worker server.
 Removing the plugin keeps its independently attached
 credential; [withdraw the source](../../reference/credential-sources/withdrawal.md)
 to revoke a running version's credential access.

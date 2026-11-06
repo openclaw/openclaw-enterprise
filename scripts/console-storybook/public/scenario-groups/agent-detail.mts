@@ -206,11 +206,11 @@ export function createAgentDetailScenarios({
 
   const slackEntry = { id: slackPluginId, name: "Slack", tools: [] };
 
-  const slackTool = {
-    id: "slack_search_public",
-    name: "slack_search_public",
+  const slackTools = ["slack_search_public", "slack_send_message"].map((name) => ({
+    id: name,
+    name,
     ownerId: slackPluginId,
-  };
+  }));
 
   const shareExistingPerson = [
     { selector: "#share-principal-id", value: "prn_person-demo" },
@@ -1146,17 +1146,23 @@ export function createAgentDetailScenarios({
               id: "account",
               label: "Slack account",
               toolDiscovery: true,
-              sources: [{ id: slackSourceId, name: "Slack search connection (simulated)" }],
+              sources: [
+                {
+                  id: slackSourceId,
+                  name: "Slack search connection (simulated)",
+                  toolDiscovery: "caller" as const,
+                },
+              ],
             },
           ],
         },
         pluginDiscovery: {
           pages: { initial: { plugins: [slackEntry], nextCursor: null } },
-          details: { [slackPluginId]: { ...slackEntry, tools: [slackTool] } },
+          details: { [slackPluginId]: { ...slackEntry, tools: slackTools } },
         },
         rules: [
           {
-            suffix: "/plugins/details",
+            suffix: "/mcp-tools",
             method: "POST",
             delayMs: 650,
             once: true,
@@ -1170,7 +1176,8 @@ export function createAgentDetailScenarios({
         steps: [
           "Open Slack. Before selecting an account, no tools can be loaded. Select Slack search connection (simulated).",
           "Choose Load tools. The first request shows a loading state, then a permission error. Choose Load tools again to recover.",
-          "Check slack_search_public. Choose Done and Save plugin selections. Open the picker and load tools again to confirm the saved choice.",
+          "Both tools start enabled. Filter for send and turn off slack_send_message. Clear the filter and reload to confirm only slack_search_public is enabled.",
+          "Choose Done and Save plugin selections. Reopen Slack and load tools to see the saved choice.",
         ],
         gap: "The account and MCP response are simulated. This verifies Console selection and readback.",
       },

@@ -28,7 +28,8 @@ graph TD
   D0 -->|Saved| E0["Authorize Agent read/update"]
   E0 -->|no credential| D6
   E0 -->|bound| E1["Caller and Agent operate"] --> D6
-  E0 -->|managed MCP| M0["Check credential and discover server tools"] --> D5
+  D0 -->|MCP, caller access| M0["Check credential and list MCP tools"] --> D5
+  E0 -->|MCP, Agent grant| M0
   E0 -->|credentialSource| D2
   D1 -->|stored source| D2["Caller source operate"] --> D6["Select Harness catalog"]
   D1 -->|token or none| D6
@@ -69,16 +70,13 @@ graph TD
 
 ### Credential-scoped discovery
 
-[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires a Harness and Agent `create`. The OpenClaw picker sends its execution mode. OCC checks placement for search and details. Browsing needs no model key.
+[Browsing the catalog](../reference/drivers/plugin.md#selection-and-catalogs) on Create Agent requires Agent `create`. OCC checks the Harness and placement.
 
-Saved discovery requires a dedicated Agent and caller `read`/`update`. Stored sources require caller `operate`, and bound sources also require Agent `operate`. Cross-Namespace references return `400`, missing Secrets or unready bound sources `404`, and unavailable explicit sources `409`.
+Browsing a saved Agent’s catalog requires dedicated placement and caller `read`/`update`. Hosted catalog credentials require caller `operate`. Agent-bound hosted credentials also require Agent `operate`.
 
 OpenShell reads metadata and exports over operator mTLS. External Gateways can use `withSourceToken`. OCC checks the source and Gateway owner, then rechecks authority, attachment and catalog before dispatch. Cancellation discards late credentials. Refresh stays with its owner.
 
-`packages/occ/src/index.ts:OpenClawController.discoverManagedMcpTools`
-
-Managed MCP reads through Secret Driver and rechecks before `tools/list`.
-`driverPolicy.toolNames` pins upstream names across runtimes.
+MCP tool discovery uses the caller’s credential permission or a saved Agent’s existing grant. OCC checks the receiver and authority before sending the credential and returning tool names. Both editors stage the selection in `driverPolicy.toolNames`. [Saved account flow](connection-templates.md)
 
 Closing cancels; account changes clear results; Harness changes clear selections
 and approvers. Hosted reads bound size/time, reject redirects and credential echoes,

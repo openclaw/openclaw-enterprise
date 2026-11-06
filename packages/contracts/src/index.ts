@@ -815,6 +815,8 @@ export interface AgentPluginCredentialSlot {
   readonly sources: readonly {
     readonly id: string;
     readonly name: string;
+    /** The authority OCC can use to list MCP tools for this source and slot. */
+    readonly toolDiscovery?: "caller" | "agent";
     /** Same issuer, but a new grant is needed for this receiver. */
     readonly authorization?: "required";
   }[];

@@ -2686,6 +2686,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    if (operation.operationId === "discoverCredentialSourceMcpTools") {
+      const plugin = await controller.discoverCredentialSourceMcpTools(
+        context.actorId,
+        namespaceId,
+        params.credentialSourceId as string,
+        { pluginId: body?.pluginId as string, slot: body?.slot as string },
+        options.readManagedMcpToolNames ?? listManagedMcpToolNames,
+        pluginDiscoveryRequestSignal(reply),
+      );
+      reply.header("cache-control", "no-store");
+      reply.send({ data: plugin, meta: { requestId: request.id } });
+      return;
+    }
+
     if (operation.operationId === "discoverSavedAgentPluginDetails") {
       const plugin = await controller.discoverSavedAgentPluginDetails(
         context.actorId,

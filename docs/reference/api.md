@@ -83,7 +83,7 @@ the paths.
 | --- | --- |
 | [Authentication](#authentication) | 27 operations |
 | [Backends](#backends) | 1 operation |
-| [Connections](#connections) | 19 operations |
+| [Connections](#connections) | 20 operations |
 | [Installation](#installation) | 5 operations |
 | [Namespaces](#namespaces) | 7 operations |
 | [Agents](#agents) | 50 operations |
@@ -1727,6 +1727,7 @@ Example response
 | [`GET /namespaces/{namespaceId}/connections`](#get-namespacesnamespaceidconnections) | List completed connections the caller can read in this Namespace |
 | [`POST /namespaces/{namespaceId}/connections`](#post-namespacesnamespaceidconnections) | Start consent for a reusable account in this Namespace |
 | [`DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}`](#delete-namespacesnamespaceidconnectionscredentialsourceid) | Disconnect a saved account and retire its OAuth grant |
+| [`POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/mcp-tools`](#post-namespacesnamespaceidcredentialsourcescredentialsourceidmcptools) | List tools at a plugin slot's MCP endpoint using a credential the caller can operate |
 | [`GET /oauth-clients`](#get-oauthclients) | List registered OAuth clients |
 | [`POST /oauth-clients`](#post-oauthclients) | Register an OAuth client from a connection template |
 | [`DELETE /oauth-clients/{oauthClientId}`](#delete-oauthclientsoauthclientid) | Delete an unused OAuth client |
@@ -2952,6 +2953,106 @@ Disconnect a saved account and retire its OAuth grant
 | `409` | The requested operation conflicts with the current resource state. |
 | `500` | The platform request could not be completed. |
 | `503` | A required dependency is unavailable. |
+
+#### `POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/mcp-tools`
+
+<span id="post-namespacesnamespaceidcredentialsourcescredentialsourceidmcptools"></span>
+
+List tools at a plugin slot's MCP endpoint using a credential the caller can operate
+
+**Operation ID:** `discoverCredentialSourceMcpTools`
+
+**Permissions:** Requires operate permission on the requested CredentialSource.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `credential_source` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "cs_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `pluginId` | `string` | Yes | min length: 1; max length: 256 |
+| `slot` | `string` | Yes | min length: 1; max length: 64 |
+
+Example request
+```json
+{
+  "pluginId": "occ-plugin:slack@1.0.0",
+  "slot": "account"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.available` | `boolean` | No | — |
+| `data.description` | `string` | No | — |
+| `data.id` | `string` | Yes | — |
+| `data.logoUrl` | `string` | No | — |
+| `data.name` | `string` | Yes | — |
+| `data.privacyPolicyUrl` | `string` | No | — |
+| `data.remoteId` | `string` | No | — |
+| `data.selectableWithoutTools` | `boolean` | No | — |
+| `data.termsOfServiceUrl` | `string` | No | — |
+| `data.tools` | `null or array<object>` | Yes | — |
+| `data.unavailableHelp` | `object` | No | — |
+| `data.unavailableHelp.label` | `string` | Yes | — |
+| `data.unavailableHelp.url` | `string` | Yes | — |
+| `data.unavailableReason` | `string` | No | — |
+| `data.websiteUrl` | `string` | No | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "occ-plugin:slack@1.0.0",
+    "name": "Slack",
+    "tools": [
+      {
+        "id": "slack_search_public",
+        "name": "slack_search_public",
+        "ownerId": "occ-plugin:slack@1.0.0"
+      }
+    ]
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /oauth-clients`
 
@@ -4264,7 +4365,7 @@ Example response
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/permissions/secrets`](#get-namespacesnamespaceidagentsagentidpermissionssecrets) | Report the readable Secrets that the caller may not bind to a readable Agent, not authorization for a later operation |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins`](#post-namespacesnamespaceidagentsagentidplugins) | List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/plugins/capabilities`](#get-namespacesnamespaceidagentsagentidpluginscapabilities) | Read selected Plugin Driver policy capabilities for an active Agent with caller Agent read/update permission |
-| [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins/details`](#post-namespacesnamespaceidagentsagentidpluginsdetails) | Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins/details`](#post-namespacesnamespaceidagentsagentidpluginsdetails) | Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery requires caller use or the Agent's existing access to its attached credential |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/repository-approval-scopes`](#get-namespacesnamespaceidagentsagentidrepositoryapprovalscopes) | Review resolved repository scope before explicitly approving it |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/repository-approvals`](#get-namespacesnamespaceidagentsagentidrepositoryapprovals) | Read attributable repository approvals and removed generations for one Agent |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/repository-approvals/{approvalId}/remove`](#post-namespacesnamespaceidagentsagentidrepositoryapprovalsapprovalidremove) | Remove repository approval independently of configuration or runtime cleanup |
@@ -5037,6 +5138,7 @@ Example request
 | `data.credentialSlots[].sources[].authorization` | `"required"` | No | — |
 | `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.credentialSlots[].sources[].name` | `string` | Yes | — |
+| `data.credentialSlots[].sources[].toolDiscovery` | `"caller" or "agent"` | No | — |
 | `data.credentialSlots[].templateSetup` | `object` | No | — |
 | `data.credentialSlots[].templateSetup.issuers` | `array<string>` | Yes | — |
 | `data.credentialSlots[].templateSetup.mcpServerUrl` | `string` | No | — |
@@ -7231,6 +7333,7 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 | `data.credentialSlots[].sources[].authorization` | `"required"` | No | — |
 | `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.credentialSlots[].sources[].name` | `string` | Yes | — |
+| `data.credentialSlots[].sources[].toolDiscovery` | `"caller" or "agent"` | No | — |
 | `data.credentialSlots[].templateSetup` | `object` | No | — |
 | `data.credentialSlots[].templateSetup.issuers` | `array<string>` | Yes | — |
 | `data.credentialSlots[].templateSetup.mcpServerUrl` | `string` | No | — |
@@ -7295,7 +7398,7 @@ Example response
 
 <span id="post-namespacesnamespaceidagentsagentidpluginsdetails"></span>
 
-Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential
+Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery requires caller use or the Agent's existing access to its attached credential
 
 **Operation ID:** `discoverSavedAgentPluginDetails`
 

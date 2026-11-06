@@ -373,6 +373,7 @@ export const requestExamples = {
   discoverAgentPluginDetails: { harnessId: "codex", secretRef, pluginId: plugin.id },
   discoverSavedAgentPlugins: {},
   discoverSavedAgentPluginDetails: { pluginId: plugin.id },
+  discoverCredentialSourceMcpTools: { pluginId: "occ-plugin:slack@1.0.0", slot: "account" },
   lookupChannelDirectory: { kind: "channels", secretId: secret.id, query: "engineering" },
   startAgentDeviceAuthorization: { harnessId: "codex" },
   startSavedAgentDeviceAuthorization: { harnessId: "codex" },
@@ -609,6 +610,13 @@ export const responseExamples = {
   discoverSavedAgentPlugins: catalog,
   discoverAgentPluginDetails: plugin,
   discoverSavedAgentPluginDetails: plugin,
+  discoverCredentialSourceMcpTools: {
+    id: "occ-plugin:slack@1.0.0",
+    name: "Slack",
+    tools: [
+      { id: "slack_search_public", name: "slack_search_public", ownerId: "occ-plugin:slack@1.0.0" },
+    ],
+  },
   getSavedAgentPluginPolicyCapabilities: {
     driver: { id: "codex", implementation: "codex" },
     discoveryCredential: "required",

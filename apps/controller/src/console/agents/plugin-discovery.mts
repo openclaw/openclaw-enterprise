@@ -111,7 +111,7 @@ export function createPluginDiscovery({
       }
     },
     onCancelDiscovery: cancel,
-    onLoadTools: (id, connection) => void loadTools(id, connection),
+    onLoadTools: loadTools,
   });
 
   function render() {
@@ -319,14 +319,25 @@ export function createPluginDiscovery({
     };
     render();
     try {
-      const detail = connection
-        ? ((await context.request(`${catalogPath}/details`, {
-            method: "POST",
-            readOnly: true,
-            signal: requests.signal,
-            body: { pluginId: id, managedConnection: connection },
-          })) as CatalogEntry)
-        : await readDetail(id);
+      let detail: CatalogEntry;
+      if (connection) {
+        const { slot, sourceId } = connection;
+        const useCaller = connection.toolDiscovery === "caller";
+        const pluginId = entry.remoteId ?? id;
+        const path = useCaller
+          ? `${namespacePath(context.namespaceId)}/credential-sources/${encodeURIComponent(sourceId)}/mcp-tools`
+          : `${catalogPath}/details`;
+        detail = (await context.request(path, {
+          method: "POST",
+          readOnly: true,
+          signal: requests.signal,
+          body: useCaller
+            ? { pluginId, slot }
+            : { pluginId, managedConnection: { slot, sourceId } },
+        })) as CatalogEntry;
+      } else {
+        detail = await readDetail(id);
+      }
       const current = currentEntry();
       if (!current) {
         return;
@@ -340,6 +351,9 @@ export function createPluginDiscovery({
             }
           : { ...current, ...detail, toolStatus: "loaded", toolError: undefined },
       );
+      if (connection) {
+        return detail.tools ?? undefined;
+      }
     } catch (cause) {
       const current = currentEntry();
       if (!current) {
@@ -350,11 +364,13 @@ export function createPluginDiscovery({
         context.onExpired();
         return;
       }
+      const accountDenied =
+        connection?.toolDiscovery === "caller"
+          ? "You need permission to use the selected account to load its tools."
+          : "You need permission to edit this Agent, and the Agent needs access to the selected credential.";
       const message = discoveryError(
         error,
-        pending
-          ? "Tool discovery requires Agent edit access and permission to use the selected credential."
-          : deniedMessage,
+        pending ? accountDenied : deniedMessage,
         pending
           ? "Authenticated tool discovery is unavailable for this connection."
           : unsupportedMessage,

@@ -118,6 +118,7 @@ operation was not authorized.`
 - [Registering](../api.md#post-namespacesnamespaceidcredentialsources) or
   [updating a credential source](../api.md#patch-namespacesnamespaceidcredentialsourcescredentialsourceid)
   also requires `secret:operate` on each Secret it reads.
+- [Listing MCP tools](../api.md#post-namespacesnamespaceidcredentialsourcescredentialsourceidmcptools) requires `credential_source:operate`. An Agent editor may instead use the Agent’s attachment and operate grant through the saved Agent’s plugin details route.
 - [Withdrawing a credential source](../api.md#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw)
   from an Agent requires `agent:operate`; the worker rechecks it before revoking.
 - [First-deployment receipt recovery](../agents/deployment.md#guarded-first-deployment)

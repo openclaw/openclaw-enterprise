@@ -4287,6 +4287,14 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
 }
+.plugin-tool-choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
 .plugin-tool-row > summary {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

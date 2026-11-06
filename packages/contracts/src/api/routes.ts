@@ -1215,6 +1215,34 @@ export const occApiRoutes = [
     },
   },
   {
+    operationId: "discoverCredentialSourceMcpTools",
+    method: "POST",
+    path: "/namespaces/:namespaceId/credential-sources/:credentialSourceId/mcp-tools",
+    action: "openclaw.credential_sources.discover_mcp_tools",
+    iamAction: "operate",
+    resourceKind: "credential_source",
+    authorizationTarget: "credential_source",
+    summary: "List tools at a plugin slot's MCP endpoint using a credential the caller can operate",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: CredentialSourceParams,
+      body: Type.Object(
+        {
+          pluginId: Type.String({ minLength: 1, maxLength: 256 }),
+          slot: Type.String({ minLength: 1, maxLength: 64 }),
+        },
+        { additionalProperties: false },
+      ),
+      response: {
+        200: AgentPluginDetailsResponse,
+        429: ErrorResponseRef,
+        501: ErrorResponseRef,
+        ...createErrors,
+      },
+    },
+  },
+  {
     operationId: "createCredentialSource",
     method: "POST",
     path: "/namespaces/:namespaceId/credential-sources",
@@ -1584,7 +1612,7 @@ export const occApiRoutes = [
     resourceKind: "agent",
     authorizationTarget: "agent",
     summary:
-      "Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential",
+      "Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery requires caller use or the Agent's existing access to its attached credential",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,

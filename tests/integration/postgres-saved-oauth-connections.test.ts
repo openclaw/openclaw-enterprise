@@ -1129,7 +1129,7 @@ test(
       });
       assert.equal(user.status, 200);
       subjects.push((await user.json()).sub);
-      return new Set(["list_reports"]);
+      return new Set(["list_reports", "publish_report"]);
     });
     const {
       app,
@@ -1217,7 +1217,7 @@ test(
         choices() {
           return [
             { id: slotId, label: "Mail" },
-            { id: "reports", label: "Reports" },
+            { id: "reports", label: "Reports", toolDiscovery: true as const },
             { id: "unrelated", label: "Unrelated service" },
           ].map((slot) => ({ ...slot, pluginId, releaseSha256, sources: [] }));
         },
@@ -1545,9 +1545,15 @@ test(
       String((await owner("GET", report.callback)).headers.location),
       /connection=connected/,
     );
+    const [carol] = await keycloakRealmAdmin(
+      issuer,
+      issuerAdmin,
+      "GET",
+      "/users?username=carol&exact=true",
+    );
     await t.test(
       "standalone consent stages a slot until Agent creation grants access",
-      async () => {
+      async (createTest) => {
         const readAgents = async () => {
           const result = await owner("GET", agents);
           assert.equal(result.statusCode, 200, result.body);
@@ -1568,16 +1574,76 @@ test(
         >;
         const reportsSlot = slots.find((slot) => slot.id === "reports");
         assert.equal(reportsSlot?.releaseSha256, releaseSha256);
-        assert.ok(reportsSlot?.sources.some((source) => source.id === report.id));
+        assert.equal(
+          reportsSlot?.sources.find((source) => source.id === report.id)?.toolDiscovery,
+          "caller",
+        );
         assert.ok(
           reportsSlot.connectionTemplates?.some(
             (template) => template.id === reportInput.connectionTemplateId,
           ),
         );
-        const selection = (sourceId: string) => ({
+        async function enroll(name: string) {
+          const email = `discovery-${randomUUID()}@example.test`;
+          const password = randomUUID();
+          const human = await inject("POST", "/api/auth/accounts", { name, email, password });
+          assert.equal(human.statusCode, 201, human.body);
+          const principalId = human.json().data.principalId;
+          const request = await accountSession(app, email, password);
+          async function grantExact(kind: string, actions: string[], ids: string[]) {
+            const role = await inject("POST", base + "/iam/roles", {
+              name,
+              permissions: actions.map((action) => ({ action, resourceKind: kind })),
+            });
+            assert.equal(role.statusCode, 201, role.body);
+            for (const resourceId of ids) {
+              const binding = await inject("POST", base + "/iam/access-bindings", {
+                roleId: role.json().data.id,
+                subjectKind: "identity",
+                subjectId: principalId,
+                resourceKind: kind,
+                resourceId,
+              });
+              assert.equal(binding.statusCode, 201, binding.body);
+            }
+          }
+          return { principalId, request, grantExact };
+        }
+        const operator = await enroll("Reports account operator");
+        const endpoint = (id: string) => `${base}/credential-sources/${id}/mcp-tools`;
+        const discover = (sourceId: string, slot = "reports", request = operator.request) =>
+          request("POST", endpoint(sourceId), { pluginId: remoteId, slot });
+        const resolve = createTest.mock.method(preparedTokens, "resolve");
+        // Authorization and recipient matching must precede resolving or sending any bearer.
+        const denied = await discover(report.id);
+        assert.equal(denied.statusCode, 403, denied.body);
+        for (const refused of [
+          await discover(grant.id, "reports", owner),
+          await discover(report.id, "unrelated", owner),
+        ]) {
+          assert.ok(refused.statusCode >= 400 && refused.statusCode < 500, refused.body);
+        }
+        assert.equal(resolve.mock.callCount(), 0);
+        assert.equal(readTools.mock.callCount(), 0);
+        // The operator can use this reference but cannot browse its source metadata or create Agents.
+        await operator.grantExact("credential_source", ["operate"], [report.id]);
+        const inventory = await discover(report.id);
+        assert.equal(inventory.statusCode, 200, inventory.body);
+        const tools = ["list_reports", "publish_report"].map((name) => ({
+          id: name,
+          name,
+          ownerId: pluginId,
+        }));
+        assert.deepEqual(inventory.json().data.tools, tools);
+        assert.deepEqual(subjects, [carol.id]);
+        assert.equal(resolve.mock.callCount(), 1);
+        resolve.mock.restore();
+        assert.equal(await canUse(a, report.id), false);
+        assert.deepEqual(await readAgents(), originalAgents);
+        const selection = (sourceId: string, toolNames: string[] = ["list_reports"]) => ({
           [pluginId]: {
             enabled: true,
-            driverPolicy: { releaseSha256, credentials: { reports: sourceId } },
+            driverPolicy: { releaseSha256, credentials: { reports: sourceId }, toolNames },
           },
         });
         const fields = {
@@ -1590,6 +1656,8 @@ test(
           values: createHarnessConfiguration("openclaw", "gpt-5.1"),
         };
         const plan = { ...fields, configuration, plugins: selection(report.id) };
+        const cannotCreate = await operator.request("POST", agents + "/validate", plan);
+        assert.equal(cannotCreate.statusCode, 403, cannotCreate.body);
         const validated = await owner("POST", agents + "/validate", plan);
         assert.equal(validated.statusCode, 204, validated.body);
 
@@ -1607,16 +1675,66 @@ test(
         assert.equal(await canUse(a, report.id), false);
         const created = await create(report.id);
         assert.equal(created.statusCode, 201, created.body);
-        const verifyBinding = async (id: string) => {
-          assert.equal(
-            (await draft(id)).plugins[pluginId].driverPolicy.credentials.reports,
-            report.id,
-          );
+        const verifyBinding = async (id: string, expectedTools: string[]) => {
+          const policy = (await draft(id)).plugins[pluginId].driverPolicy;
+          assert.equal(policy.credentials.reports, report.id);
+          assert.deepEqual(policy.toolNames, expectedTools);
           assert.deepEqual(await attached(id), [report.id]);
           assert.equal(await canUse(id, report.id), true);
           assert.equal(await canUse(id, grant.id), false);
         };
-        await verifyBinding(created.json().data.id);
+        await verifyBinding(created.json().data.id, ["list_reports"]);
+
+        await createTest.test(
+          "an Agent editor discovers through that Agent's grant until it is detached",
+          async () => {
+            const savedAgent = created.json().data.id;
+            const editor = await enroll("Reports Agent editor");
+            await editor.grantExact("agent", ["read", "update"], [savedAgent, b]);
+            const direct = () => discover(report.id, "reports", editor.request);
+            const throughAgent = (id: string) =>
+              editor.request("POST", path(id) + "/plugins/details", {
+                pluginId,
+                managedConnection: { slot: "reports", sourceId: report.id },
+              });
+            const before = readTools.mock.callCount();
+            const noPersonalAccess = await direct();
+            assert.equal(noPersonalAccess.statusCode, 403, noPersonalAccess.body);
+            const wrongAgent = await throughAgent(b);
+            assert.ok(wrongAgent.statusCode >= 400 && wrongAgent.statusCode < 500, wrongAgent.body);
+            assert.equal(readTools.mock.callCount(), before);
+
+            const capabilities = await editor.request(
+              "GET",
+              path(savedAgent) + "/plugins/capabilities",
+            );
+            assert.equal(capabilities.statusCode, 200, capabilities.body);
+            const account = (
+              capabilities.json().data.credentialSlots as AgentPluginCredentialSlot[]
+            )
+              .find((slot) => slot.id === "reports")
+              ?.sources.find((source) => source.id === report.id);
+            assert.equal(account?.name, report.id);
+            assert.equal(account?.toolDiscovery, "agent");
+            const permitted = await throughAgent(savedAgent);
+            assert.equal(permitted.statusCode, 200, permitted.body);
+            assert.deepEqual(
+              permitted.json().data.tools.map((tool: { name: string }) => tool.name),
+              ["list_reports", "publish_report"],
+            );
+            assert.equal(
+              (await direct()).statusCode,
+              403,
+              "discovering with an Agent grant must not give its editor personal use",
+            );
+            const detach = await owner("DELETE", `${path(savedAgent)}/connections/${report.id}`);
+            assert.equal(detach.statusCode, 204, detach.body);
+            assert.equal(await canUse(savedAgent, report.id), false);
+            const after = await throughAgent(savedAgent);
+            assert.ok(after.statusCode >= 400 && after.statusCode < 500, after.body);
+            assert.equal(readTools.mock.callCount(), before + 1);
+          },
+        );
 
         // Dedicated installations can queue Create instead. The queue request and an
         // identical retry precede the worker's Agent row, slot binding and IAM grant.
@@ -1634,6 +1752,7 @@ test(
         try {
           const queuedInput = {
             ...plan,
+            plugins: selection(report.id, []),
             name: "Queued Reports Agent",
             requestId: `req_${randomUUID()}`,
           };
@@ -1659,7 +1778,7 @@ test(
           assert.equal(status.statusCode, 200, status.body);
           const queuedAgent = status.json().data.agentId;
           assert.ok(queuedAgent, status.body);
-          await verifyBinding(queuedAgent);
+          await verifyBinding(queuedAgent, []);
 
           // Withdraw use of a separate saved account after queue admission. Its
           // durable IAM restriction must apply when the worker attempts Agent creation.
@@ -1697,35 +1816,6 @@ test(
       },
     );
     const slotAgent = await agent("Slot assignments");
-    const discover = (sourceId: string) =>
-      owner("POST", path(slotAgent) + "/plugins/details", {
-        pluginId,
-        managedConnection: { slot: "reports", sourceId },
-      });
-    // A matching issuer alone cannot authorize sending the mail account to
-    // Reports. Reject the request before handing a bearer to the MCP reader.
-    const wrongRecipient = await discover(grant.id);
-    assert.equal(wrongRecipient.statusCode, 409, wrongRecipient.body);
-    assert.equal(readTools.mock.callCount(), 0);
-    assert.equal(await canUse(slotAgent, report.id), false);
-    const tools = await discover(report.id);
-    assert.equal(tools.statusCode, 200, tools.body);
-    assert.deepEqual(tools.json().data.tools, [
-      {
-        id: "list_reports",
-        name: "list_reports",
-        ownerId: pluginId,
-      },
-    ]);
-    const [carol] = await keycloakRealmAdmin(
-      issuer,
-      issuerAdmin,
-      "GET",
-      "/users?username=carol&exact=true",
-    );
-    assert.deepEqual(subjects, [carol.id]);
-    assert.equal(await canUse(slotAgent, report.id), false);
-
     const choices = await owner("GET", `${path(slotAgent)}/plugins/capabilities`);
     assert.equal(choices.statusCode, 200, choices.body);
     const choicesFor = (id: string, sourceId: string) =>

@@ -27,6 +27,7 @@ const rateLimitCodes: Record<string, string | undefined> = {
   discoverAgentPluginDetails: "PLUGIN_DISCOVERY_RATE_LIMITED",
   discoverSavedAgentPlugins: "PLUGIN_DISCOVERY_RATE_LIMITED",
   discoverSavedAgentPluginDetails: "PLUGIN_DISCOVERY_RATE_LIMITED",
+  discoverCredentialSourceMcpTools: "PLUGIN_DISCOVERY_RATE_LIMITED",
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {

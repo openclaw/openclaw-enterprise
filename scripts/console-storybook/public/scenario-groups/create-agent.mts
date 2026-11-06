@@ -483,6 +483,11 @@ export const createAgentFormScenarios = {
               }
             : {
                 ...entry,
+                tools: ["slack_search_public", "slack_send_message"].map((name) => ({
+                  id: name,
+                  name,
+                  ownerId: entry.id,
+                })),
                 credentialSlots: [
                   {
                     pluginId: entry.id,
@@ -490,7 +495,14 @@ export const createAgentFormScenarios = {
                     label: "Slack user account",
                     releaseSha256: "b".repeat(64),
                     connectAccount: true,
-                    sources: [],
+                    toolDiscovery: true,
+                    sources: [
+                      {
+                        id: "cs_00000000-0000-4000-8000-000000000097",
+                        name: "Existing Slack account",
+                        toolDiscovery: "caller" as const,
+                      },
+                    ],
                     connectionTemplates: [],
                     templateSetup: {
                       issuers: ["https://slack.com"],
@@ -516,7 +528,8 @@ export const createAgentFormScenarios = {
     steps: [
       "Add Google Workspace and choose a connection template. In Connect an account, select Workspace OAuth, review its fixed gmail.readonly scope, then choose Connect account in an HTTPS preview.",
       "Approve the test account and return to the original form. The new account is selected for Google Workspace. Choose Done to keep editing the unsaved Agent.",
-      "Add Slack and choose a connection template. The Installation admin can open Create connection template for this MCP server or refresh the choices after setup.",
+      "Add Slack, select Existing Slack account, and load tools. Both begin enabled. Filter for send, turn off slack_send_message, and reload to check your choice before creating the Agent.",
+      "Choose a connection template for Slack. The Installation admin can open Create connection template for this MCP server or refresh the choices after setup.",
     ],
     gap: "Storybook simulates provider consent and compatible account discovery. The recording ends before Agent creation or any grant.",
   },

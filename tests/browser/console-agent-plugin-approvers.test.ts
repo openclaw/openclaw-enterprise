@@ -5,6 +5,9 @@ import {
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { Locator } from "playwright";
@@ -44,7 +47,7 @@ import {
   SECRET_CREATE_DENIED,
   SLACK_LOOKUP_DENIED,
 } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { grantRole, restrict } from "../helpers/iam-grants.mjs";
 
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 
@@ -371,7 +374,10 @@ test("Standalone consent selects the returned account in the new Agent draft bef
           offeredScopes,
         },
       ];
-      slot.sources = [{ id: prior, name: "Existing account" }, ...savedAccounts];
+      slot.sources = [
+        { id: prior, name: "Existing account" },
+        ...savedAccounts.map((source) => ({ ...source, toolDiscovery: "caller" })),
+      ];
     }
     await route.fulfill({ response, json: body });
   });
@@ -516,10 +522,38 @@ test("Standalone consent selects the returned account in the new Agent draft bef
   assert.equal(await picker.inputValue(), issued);
   assert.equal(await page.getByLabel("Agent name").inputValue(), "Keep my draft");
   assert.equal(page.url(), url);
+  // The new Agent still has no identity. Only the selected user's account is used
+  // for tool discovery. This inventory is controlled independently of the browser.
+  const inventoryPath = `${base}/credential-sources/${issued}/mcp-tools`;
+  await page.route(`**${inventoryPath}`, (route) => {
+    assert.deepEqual(route.request().postDataJSON(), { pluginId: lookupId, slot: "account" });
+    return route.fulfill({
+      json: {
+        data: {
+          id: slack,
+          remoteId: lookupId,
+          name: "Slack",
+          tools: ["slack_search", "slack_send_message"].map((name) => ({
+            id: name,
+            name,
+            ownerId: slack,
+          })),
+        },
+      },
+    });
+  });
+  await dialog.getByRole("button", { name: "Load tools for Slack" }).click();
+  const searchTool = dialog.getByRole("checkbox", { name: "slack_search", exact: true });
+  const sendTool = dialog.getByRole("checkbox", { name: "slack_send_message", exact: true });
+  await sendTool.waitFor();
+  assert.equal(await searchTool.isChecked(), true);
+  assert.equal(await sendTool.isChecked(), true);
+  await sendTool.uncheck();
   const staged = JSON.parse(await page.locator("#agent-plugins").inputValue());
   assert.deepEqual(staged[slack].driverPolicy, {
     releaseSha256: release!,
     credentials: { account: issued },
+    toolNames: ["slack_search"],
   });
   const requestedScopes = pathRequests(requests, "POST", base + "/connections").map(
     (record) => record.body,
@@ -534,6 +568,144 @@ test("Standalone consent selects the returned account in the new Agent draft bef
   );
   for (const target of [base + "/agents", base + "/agents/provision"]) {
     assert.equal(pathRequests(requests, "POST", target).length, 0);
+  }
+});
+
+test("Slack tool discovery stages all names once and preserves the saved allowlist on reload", async (t) => {
+  const { backend, sandboxDriver: sandbox, driverConfigurations } = openShellSandbox(t);
+  const gateway = new OpenShellCredentialGatewayDriver(
+    { binaries: ["/usr/local/bin/openclaw"] },
+    { id: text(backend.drivers.credential_gateway), backend },
+  );
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Managed tool selection", {
+    provisionedPeople: [],
+    sandboxDriver: sandbox,
+    credentialGatewayDriver: gateway,
+    driverConfigurations,
+  });
+  for (const driver of [
+    gateway,
+    new OCCPluginDriver(),
+    createTestKubernetesComputeDriver("compute-slack", {
+      sandboxDriver: sandbox,
+      credentialGatewayDriver: gateway,
+    }),
+  ]) {
+    controller(fixture).registerDriver(driver);
+    controller(fixture).selectDriver(driver.capability, driver.id);
+  }
+  controller(fixture).selectDriver("sandbox", sandbox.id);
+  // Start with an already registered, compatible bearer. The only remote response
+  // controlled below is its MCP inventory; saving and reading the Agent use OCC.
+  const secret = await fixture.createSecret(namespace.id, "Slack test bearer", randomUUID());
+  const source = await controller(fixture).transact((state) =>
+    state.credentialSources.createCredentialSource({
+      id: `cs_${randomUUID()}`,
+      namespaceId: namespace.id,
+      name: "Managed Slack account",
+      type: "bearer-token",
+      config: {
+        protocol: "mcp",
+        host: "mcp.slack.com",
+        port: "443",
+        path: "/mcp",
+        env_var: "SLACK_MCP_TOKEN",
+      },
+      secrets: { token: secret.ref },
+      ownerCapability: "credential_gateway",
+      driverId: gateway.id,
+      state: "ready",
+      createdAt: new Date().toISOString(),
+    }),
+  );
+  const agent = entity(
+    await fixture.createAgent(namespace.id, "Slack Agent", nativeValues("slack"), {
+      executionMode: "dedicated",
+      harnessAuth: null,
+      credentialSources: [{ sourceId: source.id }],
+    }),
+  );
+  const principalId = text(agent.servicePrincipalId);
+  grantRole(fixture.policy, principalId, {
+    id: "slack-account-use",
+    namespaceId: namespace.id,
+    permissions: { credential_source: ["operate"] },
+    resource: { kind: "credential_source", id: source.id },
+  });
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const pluginId = "occ-plugin:slack@1.0.0";
+  const search = "slack_search";
+  const write = "slack_send_message";
+  const newTool = "slack_delete_message";
+  let advertised = [search, write];
+  const { page } = await newPage(t, fixture, { browser });
+  await page.route(`**${path}/plugins/details`, async (route) => {
+    if (route.request().postDataJSON().managedConnection) {
+      throw new Error("Personal discovery must use the credential-source route");
+    }
+    await route.continue();
+  });
+  await page.route(`**/credential-sources/${source.id}/mcp-tools`, async (route) => {
+    assert.deepEqual(route.request().postDataJSON(), { pluginId, slot: "account" });
+    await route.fulfill({
+      json: {
+        data: {
+          id: pluginId,
+          name: "Slack",
+          tools: advertised.map((name) => ({ id: name, name, ownerId: pluginId })),
+        },
+      },
+    });
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  const dialog = page.getByRole("dialog", { name: "Configure plugins" });
+  async function openSlack() {
+    await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+    await dialog.getByRole("button", { name: "Slack", exact: true }).click();
+  }
+  const tool = (name: string) => dialog.getByRole("checkbox", { name, exact: true });
+  async function loadTools() {
+    await dialog.getByRole("button", { name: /(?:re)?load tools for Slack/i }).click();
+    await tool(advertised.at(-1)!).waitFor();
+  }
+  async function save(expected: string[]) {
+    await dialog.getByRole("button", { name: "Done", exact: true }).click();
+    const saved = responseTo(page, "PATCH", new URL(path, fixture.origin).href);
+    await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+    const response = await saved;
+    assert.equal(response.status(), 200, await response.text());
+    const plugins = record(responseData(await fixture.request("GET", path)).plugins);
+    assert.deepEqual(record(record(plugins[pluginId]).driverPolicy).toolNames, expected);
+    await page.getByText("Plugin selections saved.", { exact: true }).waitFor();
+    await page.reload();
+    await openSlack();
+  }
+  await openSlack();
+  await dialog.getByRole("button", { name: "Add Slack", exact: true }).click();
+  await dialog.getByLabel("Slack user account", { exact: true }).selectOption(source.id);
+  await loadTools();
+  assert.equal(await tool(search).isChecked(), true);
+  assert.equal(await tool(write).isChecked(), true);
+  const filter = dialog.getByRole("searchbox", { name: "Filter tools" });
+  await filter.fill("send");
+  assert.equal(await tool(search).count(), 0);
+  await filter.fill("");
+  await save([search, write]);
+  await loadTools();
+  await tool(write).uncheck();
+  await save([search]);
+
+  // A newly advertised write tool and a previously deselected tool stay off.
+  advertised = [search, write, newTool];
+  await loadTools();
+  assert.equal(await tool(search).isChecked(), true);
+  assert.equal(await tool(write).isChecked(), false);
+  assert.equal(await tool(newTool).isChecked(), false);
+  await tool(search).uncheck();
+  await save([]);
+  await loadTools();
+  for (const name of advertised) {
+    assert.equal(await tool(name).isChecked(), false);
   }
 });
 
@@ -2167,7 +2339,11 @@ test("plugin account replacement and new OAuth consent follow the selected sourc
     output.id = "chosen-scopes";
     const pluginId = "occ-plugin:support@1.0.0";
     const releaseSha256 = "0".repeat(64);
-    const source = { id: "cs_00000000-0000-4000-8000-000000000001", name: "Service desk" };
+    const source = {
+      id: "cs_00000000-0000-4000-8000-000000000001",
+      name: "Service desk",
+      toolDiscovery: "agent" as const,
+    };
     const input = document.createElement("textarea");
     input.value = JSON.stringify({
       [pluginId]: {
@@ -2208,7 +2384,7 @@ test("plugin account replacement and new OAuth consent follow the selected sourc
             selectableWithoutTools: true,
             tools: [],
             managedTools: {
-              connection: { slot: "support", sourceId: source.id },
+              connection: { slot: "support", sourceId: source.id, toolDiscovery: "agent" },
               status: "loaded",
               tools: [{ id: "ticket_get", ownerId: pluginId, name: "ticket_get" }],
             },
@@ -2504,7 +2680,8 @@ test("Agent plugin editor preserves its tab and draft when external consent comp
   await page.getByText(/Allow pop-ups for this Console/).waitFor();
   assert.equal(begins, 0);
   await sameDraft();
-  for (const mode of ["close", "denied", "untrusted", "unconfirmed", "success"] as const) {
+  const outcomes = ["close", "denied", "untrusted", "unconfirmed", "success"] as const;
+  for (const mode of outcomes) {
     const next = context.waitForEvent("page");
     await action.click();
     const provider = await next;
@@ -2554,7 +2731,7 @@ test("Agent plugin editor preserves its tab and draft when external consent comp
     }
     await sameDraft();
   }
-  assert.equal(begins, 6);
+  assert.equal(begins, outcomes.length);
   assert.equal(
     JSON.parse(await page.locator("#agent-plugins").inputValue())[pluginId].driverPolicy.credentials
       .account,

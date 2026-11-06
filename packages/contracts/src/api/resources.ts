@@ -205,6 +205,7 @@ const PluginCredentialSlotSchema = Type.Object(
         {
           id: CredentialSourceId,
           name: Type.String(),
+          toolDiscovery: Type.Optional(Type.Union([Type.Literal("caller"), Type.Literal("agent")])),
           authorization: Type.Optional(Type.Literal("required")),
         },
         { additionalProperties: false },

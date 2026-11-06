@@ -820,6 +820,14 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           return response(saved, 201);
         }
       }
+      if (
+        resource.startsWith("credential-sources/") &&
+        resource.endsWith("/mcp-tools") &&
+        method === "POST" &&
+        scenario.pluginDiscovery
+      ) {
+        return servePluginDiscovery(scenario.pluginDiscovery, "details", body, response, error);
+      }
       if (resource.startsWith("credential-sources/")) {
         const id = resource.split("/")[1] ?? "";
         const source = credentialSources.get(id);

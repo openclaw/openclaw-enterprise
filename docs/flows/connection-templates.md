@@ -91,7 +91,7 @@ OCC reads the Agent’s Configuration and selects the Plugin Driver for its Harn
 
 Saving a selection checks the exact slot, account and Agent permissions together. Starting OAuth from a saved slot also records the release and current binding. The Console opens consent in a separate tab and severs the opener before visiting the provider. The callback signals the original editor, which rereads the Agent and checks the saved release, slot and source ID before showing an attachment. When the browser returns, OCC checks both before replacing that slot. The account stays with its owner if the binding changed during consent.
 
-For **Load tools**, OCC checks the caller’s permission and the saved MCP server and resource before resolving a token. This request originates in the Console.
+Both Agent editors can **Load tools** using the caller’s permission to use a saved account. A saved Agent’s editor can also discover tools through an account already granted to that Agent. OCC verifies the caller can edit the Agent and its service principal can use the attached source. In either case, OCC checks the slot’s issuer and MCP receiver before resolving the token. Discovery stages tool names in the browser. Creating or updating the Agent saves the policy.
 
 OCC records the selected Driver registration and saved source IDs on the Agent revision. The OpenShell Driver installs a mandatory request middleware and a runtime token-grant provider for the selected slot. The worker checks the Driver registration before starting the revision.
 

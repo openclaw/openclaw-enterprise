@@ -1755,6 +1755,13 @@ type PluginDiscoveryCredential = {
 type PluginDiscoveryOutcome<T> =
   { value: T } | { error: PluginDiscoveryError } | { validationError: unknown };
 
+type AttachedPluginCredential = {
+  source: CredentialSource;
+  callerCanBrowse: boolean;
+  agentCanUse: boolean;
+  authority: "caller" | "agent";
+};
+
 type ManagedMcpConnection = {
   readonly slot: string;
   readonly sourceId: string;
@@ -11427,16 +11434,25 @@ export class OpenClawController {
     namespaceId: string,
     credentials: NonNullable<PluginDriver["credentials"]>,
     plugins: PluginDesiredState,
-    sources: readonly CredentialSource[],
+    attached: readonly AttachedPluginCredential[],
     pluginId?: string,
   ) {
+    const gatewaySources = attached.filter(
+      ({ source }) => source.ownerCapability !== "token_service",
+    );
     const choices = credentials
-      .choices(sources)
+      .choices(gatewaySources.map(({ source }) => source))
       .filter((choice) => pluginId === undefined || choice.pluginId === pluginId);
     if (choices.length === 0) {
       return [];
     }
-    const accounts: { account: SavedConnection; target: PluginAccountTarget; name: string }[] = [];
+    const accounts: {
+      account: SavedConnection;
+      target: PluginAccountTarget;
+      name: string;
+      callerCanBrowse: boolean;
+      authority: "caller" | "agent";
+    }[] = [];
     if (credentials.connectionSlot) {
       for (const account of await state.savedConnections.listNamespaceConnections(namespaceId)) {
         const ref = {
@@ -11444,18 +11460,24 @@ export class OpenClawController {
           namespaceId,
           id: account.credentialSourceId,
         };
+        const granted = attached.find(({ source }) => source.id === ref.id);
         if (
-          !(await this.canRead(principalId, ref)) ||
-          !(await this.authorizationDecision(principalId, "operate", ref)).decision.allowed
+          !granted &&
+          (!(await this.canRead(principalId, ref)) ||
+            !(await this.authorizationDecision(principalId, "operate", ref)).decision.allowed)
         ) {
           continue;
         }
-        const source = await state.credentialSources.findCredentialSource(namespaceId, ref.id);
-        if (source?.state === "ready") {
+        const source =
+          granted?.source ??
+          (await state.credentialSources.findCredentialSource(namespaceId, ref.id));
+        if (source?.state === "ready" && !account.revocationRequestedBy) {
           accounts.push({
             account,
             target: await this.accountTarget(state, account),
             name: source.name,
+            callerCanBrowse: granted?.callerCanBrowse ?? true,
+            authority: granted?.authority ?? "caller",
           });
         }
       }
@@ -11491,20 +11513,50 @@ export class OpenClawController {
         label: choice.label,
         releaseSha256: choice.releaseSha256,
         ...(choice.toolDiscovery && { toolDiscovery: choice.toolDiscovery }),
-        sources: pluginId === undefined ? choice.sources : [],
+        sources: choice.sources.flatMap(({ id, name, authorization }) => {
+          const granted = gatewaySources.find(({ source }) => source.id === id);
+          if (
+            !granted ||
+            (!choice.toolDiscovery && !(granted.callerCanBrowse && granted.agentCanUse))
+          ) {
+            return [];
+          }
+          return [
+            {
+              id,
+              name: granted.callerCanBrowse ? name : granted.source.name,
+              ...(authorization && { authorization }),
+              ...(choice.toolDiscovery && { toolDiscovery: granted.authority }),
+            },
+          ];
+        }),
       };
       if (!slot || slot.releaseSha256 !== choice.releaseSha256) {
         return metadata;
       }
-      const candidates = accounts
-        .filter(({ account }) => slot.issuers.includes(account.issuer))
-        .map(({ account, target, name }) => ({
-          id: account.credentialSourceId,
-          name,
-          ...(!slot.acceptsRecipient(target) && {
-            authorization: "required" as const,
-          }),
-        }));
+      const candidates = accounts.flatMap(
+        ({ account, target, name, callerCanBrowse, authority }) => {
+          if (!slot.issuers.includes(account.issuer)) {
+            return [];
+          }
+          const accepted = slot.acceptsRecipient(target);
+          const mcp =
+            accepted &&
+            slot.mcpServerUrl !== undefined &&
+            slot.mcpServerUrl === account.mcpServerUrl;
+          if (!callerCanBrowse && !mcp) {
+            return [];
+          }
+          return [
+            {
+              id: account.credentialSourceId,
+              name,
+              ...(mcp && { toolDiscovery: authority }),
+              ...(!accepted && { authorization: "required" as const }),
+            },
+          ];
+        },
+      );
       const compatible = plugins[choice.pluginId]?.enabled
         ? this.compatiblePluginTemplates(templates, namespaceId, slot)
         : [];
@@ -11545,24 +11597,41 @@ export class OpenClawController {
       agentId,
       async ({ state, agent, driver }) => {
         const credentials = agent.executionMode === "dedicated" ? driver.credentials : undefined;
-        const sources: CredentialSource[] = [];
+        const sources: AttachedPluginCredential[] = [];
         if (credentials) {
+          const grants = new Set(
+            (await state.savedConnections.listAgentConnections(namespaceId, agent.id)).map(
+              ({ credentialSourceId }) => credentialSourceId,
+            ),
+          );
           for (const { sourceId } of agent.credentialSources ?? []) {
             const ref = { kind: "credential_source" as const, namespaceId, id: sourceId };
-            if (
-              (await this.canRead(principalId, ref)) &&
-              (await this.authorizationDecision(principalId, "operate", ref)).decision.allowed &&
-              (await this.authorizationDecision(agent.servicePrincipalId, "operate", ref)).decision
-                .allowed
-            ) {
-              const source = await state.credentialSources.findCredentialSource(
-                namespaceId,
-                sourceId,
-              );
-              if (source?.state === "ready" && source.ownerCapability !== "token_service") {
-                sources.push(source);
-              }
+            const callerCanUse = (await this.authorizationDecision(principalId, "operate", ref))
+              .decision.allowed;
+            const agentCanUse = (
+              await this.authorizationDecision(agent.servicePrincipalId, "operate", ref)
+            ).decision.allowed;
+            if (!callerCanUse && !agentCanUse) {
+              continue;
             }
+            const source = await state.credentialSources.findCredentialSource(
+              namespaceId,
+              sourceId,
+            );
+            if (
+              source?.state !== "ready" ||
+              (source.ownerCapability === "token_service" && !grants.has(sourceId))
+            ) {
+              continue;
+            }
+            const callerCanRead = await this.canRead(principalId, ref);
+            sources.push({
+              // Agent read permission already exposes attached IDs. Only source readers see names.
+              source: callerCanRead ? source : { ...source, name: source.id },
+              callerCanBrowse: callerCanRead && callerCanUse,
+              agentCanUse,
+              authority: callerCanUse ? "caller" : "agent",
+            });
           }
         }
         const credentialSlots =
@@ -11670,14 +11739,14 @@ export class OpenClawController {
           "Managed MCP discovery is unavailable.",
         );
       }
-      return this.discoverManagedMcpTools(
+      return this.discoverCredentialSourceMcpTools(
         principalId,
         namespaceId,
-        agentId,
-        input.pluginId,
-        input.managedConnection,
+        input.managedConnection.sourceId,
+        { pluginId: input.pluginId, slot: input.managedConnection.slot },
         readMcpTools,
         signal,
+        agentId,
       );
     }
     const {
@@ -11770,118 +11839,136 @@ export class OpenClawController {
     });
   }
 
-  private async discoverManagedMcpTools(
+  async discoverCredentialSourceMcpTools(
     principalId: string,
     namespaceId: string,
-    agentId: string,
-    pluginId: string,
-    connection: ManagedMcpConnection,
+    sourceId: string,
+    { pluginId, slot: slotId }: { readonly pluginId: string; readonly slot: string },
     readTools: ManagedMcpToolReader,
     signal?: AbortSignal,
+    agentId?: string,
   ): Promise<PluginCatalogEntry> {
-    const sourceRef = { kind: "credential_source" as const, id: connection.sourceId, namespaceId };
-    const currentTarget = async () => {
-      await this.authorize(principalId, "operate", sourceRef);
-      const target = await this.withSavedPluginTarget(
-        principalId,
-        namespaceId,
-        agentId,
-        async ({ state, namespace, agent, driver, harness }) => {
-          const source = await state.credentialSources.findCredentialSource(
-            namespace.id,
-            sourceRef.id,
+    const sourceRef = { kind: "credential_source" as const, id: sourceId, namespaceId };
+    const agentAuthority =
+      agentId !== undefined &&
+      !(await this.authorizationDecision(principalId, "operate", sourceRef)).decision.allowed;
+    const withContext = async <T>(
+      use: (context: {
+        state: PlatformReadView;
+        namespace: Readonly<Namespace>;
+        driver: PluginDriver;
+        agent?: Readonly<Agent>;
+        harness?: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>;
+      }) => Promise<T>,
+    ): Promise<T> => {
+      if (agentId !== undefined) {
+        return this.withSavedPluginTarget(principalId, namespaceId, agentId, async (context) => {
+          if (
+            agentAuthority &&
+            !context.agent.credentialSources?.some((ref) => ref.sourceId === sourceId)
+          ) {
+            throw new ScopeViolationError("Choose a credential attached to this Agent.");
+          }
+          await this.authorize(
+            agentAuthority ? context.agent.servicePrincipalId : principalId,
+            "operate",
+            sourceRef,
           );
-          if (source?.ownerCapability === "token_service") {
-            // The person configuring this slot can discover tools before saving an Agent grant.
-            // Use only the reviewed receiver; the caller never supplies the discovery endpoint.
-            await this.authorize(principalId, "read", sourceRef);
-            const slot = driver.credentials?.connectionSlot?.(
-              agent.plugins ?? {},
-              pluginId,
-              connection.slot,
-            );
-            const account = await state.savedConnections.findSavedConnection(
-              namespace.id,
-              source.id,
-            );
-            const target = account ? await this.accountTarget(state, account) : undefined;
-            if (
-              namespace.status !== "ready" ||
-              source.state !== "ready" ||
-              !slot ||
-              !account ||
-              !target ||
-              account.revocationRequestedBy ||
-              !slot.issuers.includes(account.issuer) ||
-              !slot.acceptsRecipient(target)
-            ) {
-              throw new ResourceStateConflictError(
-                "Authorize the account for this MCP server first.",
-              );
-            }
-            if (!slot.mcpServerUrl || slot.mcpServerUrl !== account.mcpServerUrl) {
-              throw new ResourceStateConflictError(
-                "The account does not authorize this MCP receiver.",
-              );
-            }
-            return {
-              driver,
-              harness,
-              credential: "account" as const,
-              sourceId: source.id,
-              endpoint: slot.mcpServerUrl,
-            };
-          }
-
-          const target =
-            namespace.status === "ready" &&
-            source?.state === "ready" &&
-            agent.credentialSources?.some(({ sourceId }) => sourceId === sourceRef.id)
-              ? driver.credentials?.mcpToolDiscovery?.(pluginId, connection.slot, source)
-              : undefined;
-          const secretRef = source?.secrets.token;
-          if (!target || !secretRef) {
-            throw new ResourceStateConflictError(
-              "Choose a ready, compatible credential source from this Agent's saved credentials.",
-            );
-          }
-          return {
-            driver,
-            harness,
-            credential: "secret" as const,
-            source,
-            secretRef,
-            servicePrincipalId: agent.servicePrincipalId,
-            ...target,
-          };
-        },
-      );
-      await this.authorize(principalId, "operate", sourceRef);
-      if (target.credential === "secret") {
-        await this.authorize(target.servicePrincipalId, "operate", sourceRef);
+          return use(context);
+        });
       }
-      return target;
+      await this.authorize(principalId, "operate", sourceRef);
+      return this.read(async (state) =>
+        use({
+          state,
+          namespace: await this.exactNamespace(state, namespaceId),
+          driver: this.pluginDriver("openclaw"),
+        }),
+      );
     };
 
-    const target = await currentTarget();
-    const entry = await target.driver.getCatalogPlugin?.({ pluginId }, signal);
-    if (!entry || entry.id !== pluginId) {
+    const driver = await withContext(async ({ driver }) => driver);
+    const entry = await driver.getCatalogPlugin?.({ pluginId }, signal);
+    if (!entry || (entry.id !== pluginId && entry.remoteId !== pluginId)) {
       throw new PluginDiscoveryError("invalid_response");
     }
     const selection = { [entry.id]: { enabled: true } };
-    this.validatePluginPlacement(target.driver, selection, target.harness);
-    await this.authorize(principalId, "operate", sourceRef);
+    const currentTarget = () =>
+      withContext(async ({ state, namespace, agent, driver: currentDriver, harness }) => {
+        if (currentDriver !== driver) {
+          throw new ResourceStateConflictError("The plugin catalog changed. Refresh and retry.");
+        }
+        if (harness) {
+          this.validatePluginPlacement(driver, selection, harness);
+        }
+        const source = await state.credentialSources.findCredentialSource(namespaceId, sourceId);
+        if (namespace.status !== "ready" || source?.state !== "ready") {
+          throw new ResourceStateConflictError("Choose a ready credential for this MCP server.");
+        }
+        const authority = agentAuthority ? agent!.servicePrincipalId : principalId;
+        if (source.ownerCapability === "token_service") {
+          const account = await state.savedConnections.findSavedConnection(namespaceId, sourceId);
+          const slot = driver.credentials?.connectionSlot?.(
+            agent?.plugins ?? selection,
+            entry.id,
+            slotId,
+          );
+          if (
+            !account ||
+            account.revocationRequestedBy ||
+            !slot?.mcpServerUrl ||
+            account.mcpServerUrl !== slot.mcpServerUrl ||
+            !slot.issuers.includes(account.issuer) ||
+            !slot.acceptsRecipient(await this.accountTarget(state, account))
+          ) {
+            throw new ResourceStateConflictError(
+              "Authorize the account for this MCP server first.",
+            );
+          }
+          if (
+            agentAuthority &&
+            !(await state.savedConnections.listAgentConnections(namespaceId, agentId!)).some(
+              (ref) => ref.credentialSourceId === sourceId,
+            )
+          ) {
+            throw new ResourceStateConflictError(
+              "The account is no longer attached to this Agent.",
+            );
+          }
+          return {
+            credential: "account" as const,
+            authority,
+            endpoint: slot.mcpServerUrl,
+            releaseSha256: slot.releaseSha256,
+          };
+        }
+        const target =
+          source.ownerCapability === "credential_gateway" &&
+          driver.credentials?.mcpToolDiscovery?.(entry.id, slotId, source);
+        const secretRef = source.secrets.token;
+        if (!target || !secretRef) {
+          throw new ResourceStateConflictError(
+            "Choose a ready, compatible credential for this MCP server.",
+          );
+        }
+        return {
+          credential: "secret" as const,
+          authority,
+          source,
+          secretRef,
+          endpoint: target.endpoint,
+        };
+      });
+    const target = await currentTarget();
     const validateCurrent = async () => {
-      const current = await currentTarget();
-      if (current.driver !== target.driver || !isDeepStrictEqual(current, target)) {
+      if (!isDeepStrictEqual(target, await currentTarget())) {
         throw new ResourceStateConflictError(
-          "The Agent's plugin credential or catalog changed. Refresh and retry.",
+          "The plugin credential or MCP receiver changed. Refresh and retry.",
         );
       }
-      this.validatePluginPlacement(current.driver, selection, current.harness);
     };
     const result = await this.invokePluginDiscovery(
-      target.driver,
+      driver,
       async ({ accessToken }) => {
         if (!accessToken) {
           throw new PluginDiscoveryError("credentials_rejected");
@@ -11889,11 +11976,7 @@ export class OpenClawController {
         const names = await readTools(target.endpoint, accessToken, signal);
         return {
           ...entry,
-          tools: [...names].map((name) => ({
-            id: name,
-            name,
-            ownerId: entry.id,
-          })),
+          tools: [...names].map((name) => ({ id: name, name, ownerId: entry.id })),
         };
       },
       async (invoke) => {
@@ -11902,7 +11985,7 @@ export class OpenClawController {
         }
         const token = await this.resolveAccountToken(
           namespaceId,
-          target.sourceId,
+          sourceId,
           signal ?? AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
         );
         if (!token) {
