@@ -72,7 +72,11 @@ authorization store checks its owner label and rows against the frozen identity.
 The `public-github-read:v2`
 admission digest selects a distinct launcher; rebuilding an older revision does
 not implicitly enable it. Existing `v1` ordinary API-reader revisions retain
-their earlier admission and ownership checks.
+their earlier admission and ownership checks. When an API-key Harness selects
+an Installation model provider, `admitRevision` wraps that runtime fact in the
+provider digest. Execution refuses a changed provider before credential delivery;
+`runtimeAdmission` extracts the saved inner fact for reader checks and cleanup.
+The public service does not bypass provider admission.
 
 The chart mounts operator-created TLS and authorization resources into a
 reader without a service-account token. Helm owns public policy and trust files;
@@ -246,6 +250,11 @@ After runtime shutdown and reader acknowledgement, permanent retirement removes
 the exact owned capability Secret; temporary stop retains it.
 An expired or unreadable row denies future reads even if maintenance is unavailable.
 
+For service-access revisions, `shutdownRevisionRuntime` deletes the owned reader
+NetworkPolicy after Compute or Sandbox shutdown and Pod termination. Retirement
+cleanup uses the saved descriptor despite peer/registry loss. Exact ownership
+checks protect foreign policies; failed shutdown prevents withdrawal completion.
+
 For legacy `v1` reader revisions, `revokeUnavailablePublicGithubRead` removes the
 revision policy, foreground-deletes the owned Compute Deployment and waits for
 its Pods before reporting withdrawal. Policy deletion alone does not close
@@ -279,6 +288,7 @@ that the owning runtime has stopped.
 - 2026-11-05 18:03: Compact retired grants, maintain independent leases and close transfer and diagnostic leaks (accompanying corrections; authoring-run/dce55ffb-40ba-44e5-8165-4ceb2605cbba - ed566e82a68f58ce1d5d1755bc01ef1fc2f2744f)
 
 - 2026-11-05 17:08: Retire service-owned reader policies after Harness shutdown (accompanying correction; authoring-run/f37e6ffb-bbb0-4112-ad9b-6066fa0e261b - 3dadfff895a2c4b4145f47670d6d113ff0e79a0c)
+
 - 2026-11-05 15:19: Resolve bare native Node through a fixed child-only executable path and report closed spawn errors (authoring-run/01a19cef-6046-7960-88eb-e30de1c96e9e - 9567489ec7121311b9fc938afc31f22bb777ed54)
 
 - 2026-11-05 14:10: Verify projected transport source before launch and preserve upstream workspace/provider composition (accompanying integration; authoring-run/147833b4-6d46-4ba7-8b0f-bd7df3bd09da - 35d51ed96a505420fa7e7d7c141be5223e5794c9)

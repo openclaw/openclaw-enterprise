@@ -2415,15 +2415,20 @@ for (const protectedExecution of [false, true]) {
     } else {
       assert.equal(revision.sandboxPolicy, undefined);
     }
+    // OCC admission uses the fixture's cluster-free Compute. Rendering also
+    // needs the selected Sandbox, as in the production constructor composition.
+    const runtimeCompute = protectedExecution
+      ? new compute.constructor(compute.options, { nodeEnrollment: {}, sandboxDriver: f.sandbox })
+      : compute;
     assert.equal(
-      compute.pluginRuntimeSnapshot(revision).runtime.publicGithubRead.endpoint,
+      runtimeCompute.pluginRuntimeSnapshot(revision).runtime.publicGithubRead.endpoint,
       "https://10.96.0.55:8080",
     );
     // Persisted identity is covered by the exact admission fingerprint even without a Sandbox.
     const changed = structuredClone(revision);
     changed.compute.serviceAccess[0].configuration.installationId = "ins_other";
     assert.throws(
-      () => compute.pluginRuntimeSnapshot(changed),
+      () => runtimeCompute.pluginRuntimeSnapshot(changed),
       /exact Compute admission|not acknowledged/,
     );
     delete changed.compute.serviceAccess[0].configuration.installationId;

@@ -83,11 +83,11 @@ async function fixture(
     persistedIam = false,
     gateway = { endpoint: "http://127.0.0.1:1" },
     modelProvider,
-    placement,
     selectGateway = true,
     driverConfigurations = [],
     filesystemConfiguration = false,
     runtimeCredentials = false,
+    placement,
   } = {},
 ) {
   const providers = new Map();
@@ -516,7 +516,7 @@ test("Installation discovery serializes OpenShell model authentication and refre
 
 // Real API/Core/IAM/source admission for the regular QA caller. Only external
 // provider storage and Compute transport are fixture boundaries, not auth rules.
-test("regular QA Agent follows selected Gateway authentication and preserves Secret/provision paths", async (t) => {
+test("regular QA Agent follows selected Gateway authentication on Compose and Kubernetes", async (t) => {
   const { createQaAgent } = await import("../helpers/qa-installation.mjs");
   const { OpenShellSandboxDriver } =
     await import("../../apps/controller/src/drivers/sandbox/openshell.ts");
@@ -533,15 +533,13 @@ test("regular QA Agent follows selected Gateway authentication and preserves Sec
     "no-gateway-account",
     "source-grant-revoked",
     "endpoint-mismatch",
-    "native-provision-source",
-    "native-provision-secret",
+    "kubernetes-source",
+    "kubernetes-secret",
   ]) {
     await t.test(outcome, async (t) => {
-      const gateway = !["no-gateway", "no-gateway-account", "native-provision-secret"].includes(
-        outcome,
-      );
+      const gateway = !["no-gateway", "no-gateway-account", "kubernetes-secret"].includes(outcome);
       const account = ["gateway-account", "no-gateway-account"].includes(outcome);
-      const provision = outcome.startsWith("native-provision-");
+      const kubernetes = outcome.startsWith("kubernetes-");
       const endpoint = "https://models.example.test/custom/v1";
       const modelProvider = account
         ? undefined
@@ -593,15 +591,7 @@ test("regular QA Agent follows selected Gateway authentication and preserves Sec
         f.controller.registerDriver(sandbox);
         f.controller.selectDriver("sandbox", sandbox.id);
       }
-      const stopped = new Error("stop at native provisioning boundary");
-      const calls = [];
-      let provisionBody;
       const api = async (method, path, body) => {
-        calls.push({ method, path });
-        if (provision && path.endsWith("/agents/provision")) {
-          provisionBody = body;
-          throw stopped;
-        }
         const response = await f.request(method, path, { ...(body === undefined ? {} : { body }) });
         assert.ok(
           response.status >= 200 && response.status < 300,
@@ -639,11 +629,14 @@ test("regular QA Agent follows selected Gateway authentication and preserves Sec
         presets: [created],
         agents: [],
         suffix: "source-test",
-        controlPlane: provision ? "kubernetes" : "compose",
+        controlPlane: kubernetes ? "kubernetes" : "compose",
+        installation: await api("GET", "/installation"),
+        consoleUrl: "https://console.qa-source.oce.localhost",
+        cluster: "qa-source",
         api,
         configuration: {
           drivers: {
-            plugin: { id: "codex-plugin" },
+            plugin: [{ id: "codex-plugin" }],
             ...(gateway ? { credential_gateway: { id: f.driver.id } } : {}),
             compute: {
               configuration: {
@@ -678,7 +671,7 @@ test("regular QA Agent follows selected Gateway authentication and preserves Sec
         },
       };
       const create = () =>
-        createQaAgent(qa, "Codex", undefined, provision ? "-model-ui" : "-public-git-all", {
+        createQaAgent(qa, "Codex", undefined, "-public-git-all", {
           apiKeyAuth: !account,
         });
       if (outcome === "endpoint-mismatch") {
@@ -700,25 +693,6 @@ test("regular QA Agent follows selected Gateway authentication and preserves Sec
           (await api("GET", `/namespaces/${f.namespace.id}/agents/${qa.agents[0].id}/revisions`))
             .length,
           0,
-        );
-        return;
-      }
-      if (provision) {
-        await assert.rejects(create(), (error) => error === stopped);
-        assert.equal(provisionBody.nativeAdmin, true);
-        assert.equal(provisionBody.configuration.kind, "agent");
-        assert.equal(provisionBody.harnessAuth.method, gateway ? "credential_source" : "api_key");
-        if (gateway) {
-          const [source] = await api("GET", `/namespaces/${f.namespace.id}/credential-sources`);
-          assert.equal(provisionBody.harnessAuth.sourceId, source.id);
-        } else {
-          assert.equal(provisionBody.harnessAuth.source.kind, "secret");
-        }
-        assert.equal(qa.agents.length, 0);
-        assert.equal(
-          calls.some((x) => x.path.endsWith("/iam/roles")),
-          false,
-          "provisioning retains ownership of Agent grant creation",
         );
         return;
       }
@@ -754,10 +728,7 @@ test("regular QA Agent follows selected Gateway authentication and preserves Sec
         assert.equal(bindings[0].resourceKind, "secret");
         assert.equal(bindings[0].resourceId, agent.harnessAuth.source.id);
         assert.deepEqual(role.permissions, [{ action: "operate", resourceKind: "secret" }]);
-        assert.equal(
-          calls.some((x) => x.path.endsWith("/credential-sources")),
-          false,
-        );
+        assert.deepEqual(await api("GET", `/namespaces/${f.namespace.id}/credential-sources`), []);
       }
     });
   }

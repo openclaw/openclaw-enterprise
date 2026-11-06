@@ -77,6 +77,11 @@ const reviewedImports = {
     "node:fs/promises": ["open"],
   },
   "drivers/repo/github/public-read/git.ts": { "node:https": ["request"] },
+  // Fixed public runtime artifact, projected with a command-bound digest; no credentials.
+  "drivers/repo/github/public-read/runtime-source.ts": {
+    "node:fs": ["readFileSync"],
+    "node:crypto": ["createHash"],
+  },
   "drivers/repo/github/public-read/transport.mjs": {
     "node:child_process": ["spawn", "spawnSync"],
     // Fixed isolated API child: built-in proxy transport and in-memory CA only.

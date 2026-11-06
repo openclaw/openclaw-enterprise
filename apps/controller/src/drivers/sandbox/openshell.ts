@@ -1,3 +1,8 @@
+import {
+  PUBLIC_GITHUB_READ_TRANSPORT_FILE,
+  PUBLIC_GITHUB_READ_TRANSPORT_ENV,
+  PUBLIC_GITHUB_READ_TRANSPORT_SOURCE,
+} from "../repo/github/public-read/runtime-source.ts";
 import { managedCredentialEnvironment } from "./openshell-plugin-runtime.ts";
 import {
   openShellRepositoryAccess,
@@ -826,6 +831,7 @@ function harnessRuntimeFiles(
   );
   if (service !== undefined) {
     expected.set("public-github-read.json", "OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE");
+    expected.set(PUBLIC_GITHUB_READ_TRANSPORT_FILE, PUBLIC_GITHUB_READ_TRANSPORT_ENV);
     expected.set("public-github-read.md", "OCE_PUBLIC_GITHUB_READ_SKILL_FILE");
   }
   const files = requirements.files ?? [];
@@ -882,6 +888,8 @@ function harnessRuntimeFiles(
       }
       if (
         metadata?.endpoint !== service.endpoint ||
+        files.find((file) => file.name === PUBLIC_GITHUB_READ_TRANSPORT_FILE)?.content !==
+          PUBLIC_GITHUB_READ_TRANSPORT_SOURCE ||
         !material ||
         !isDeepStrictEqual(Object.keys(material).sort(), [
           "authenticatedRepositories",

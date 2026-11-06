@@ -1,3 +1,4 @@
+import { PUBLIC_GITHUB_READ_TRANSPORT_FILE } from "../../apps/controller/src/drivers/repo/github/public-read/runtime-source.ts";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -22,7 +23,7 @@ import {
 } from "../helpers/runtime-image-startup.mjs";
 
 // Exercise the exact setup inserted by the admitted production launcher, including
-// its embedded helper bytes. No fixture-created helper path or permission grant.
+// its hash-bound projected helper bytes. No extra native permission grant.
 const insertion = 'const pluginRuntime = readPluginRuntime("codex");';
 const setupOffset = AGENT_RUNTIME_ENTRYPOINT.indexOf(insertion) + insertion.length;
 const materialSetup = PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT.slice(
@@ -480,6 +481,8 @@ test(
       await writeFile(skill, projection[PUBLIC_GITHUB_READ_SKILL]);
       const material = join(directory, "public-material.json");
       await writeFile(material, projection["public-github-read.json"]);
+      const transport = join(directory, PUBLIC_GITHUB_READ_TRANSPORT_FILE);
+      await writeFile(transport, projection[PUBLIC_GITHUB_READ_TRANSPORT_FILE]);
       const proof = await runDocker([
         "run",
         "--rm",
@@ -500,6 +503,10 @@ test(
         skill + ":" + skillPath + ":ro",
         "-v",
         material + ":/tmp/public-material.json:ro",
+        "-v",
+        transport + ":/tmp/public-transport.mjs:ro",
+        "--env",
+        "OCE_PUBLIC_GITHUB_READ_TRANSPORT_FILE=/tmp/public-transport.mjs",
         "--env",
         "OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE=/tmp/public-material.json",
         "--env",

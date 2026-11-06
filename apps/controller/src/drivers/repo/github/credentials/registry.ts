@@ -558,7 +558,7 @@ export function createGitHubRepositoryDeliveryResolver(
     if (state?.bindings.length && state.bindings.every((b) => b.profile === "github-repository")) {
       const scope = resolveSelectedRepositoryScope(registry, revision.namespaceId, state.bindings);
       return Object.freeze({
-        ...dispatch(grant.repositories.map((repository) => repository.repository)),
+        ...dispatch(scope.repositories.map((repository) => repository.repository)),
         binding: state.bindings[0]!,
         delivery: Object.freeze({
           scope: "github-repository" as const,

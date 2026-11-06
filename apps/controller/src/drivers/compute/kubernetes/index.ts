@@ -1,3 +1,7 @@
+import {
+  PUBLIC_GITHUB_READ_TRANSPORT_FILE,
+  PUBLIC_GITHUB_READ_TRANSPORT_ENV,
+} from "../../repo/github/public-read/runtime-source.ts";
 import { KubernetesPublicGithubReadAuthorizationStore } from "./public-github-read-authorizations.ts";
 import { get as publicReadHttpsGet } from "node:https";
 import { publicGithubReadPolicy } from "../../repo/github/public-read/access.ts";
@@ -284,6 +288,10 @@ import {
   PUBLIC_GITHUB_READ_PROTECTED_AGENT_ENTRYPOINT,
   PUBLIC_GITHUB_READ_WITH_NODE_ENTRYPOINT,
   PUBLIC_GITHUB_READ_PROTECTED_WITH_NODE_ENTRYPOINT,
+  COMPUTE_PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT,
+  COMPUTE_PUBLIC_GITHUB_READ_PROTECTED_AGENT_ENTRYPOINT,
+  COMPUTE_PUBLIC_GITHUB_READ_WITH_NODE_ENTRYPOINT,
+  COMPUTE_PUBLIC_GITHUB_READ_PROTECTED_WITH_NODE_ENTRYPOINT,
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   GATEWAY_STOP_TIMEOUT_MS,
@@ -8774,6 +8782,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (!admittedReader && !computeOwnsWorkload) {
       await this.waitForRevisionPodsToTerminate(revision, namespace, "agent");
     }
+    if (revision.compute.serviceAccess?.some(({ id }) => id === "public-github-read")) {
+      // The saved service descriptor owns this policy even after its peer or
+      // registry disappears. Remove it only after the owning Harness is stopped.
+      await this.deleteOwnedNamespacedResource(
+        "NetworkPolicy",
+        this.publicGithubReadNetworkPolicyName(revision),
+        this.pluginRuntimeOwnership(revision),
+        namespace,
+      );
+    }
   }
 
   /** Deletes the revision's Gateway and, unless `waitForPods` is false, waits for its Pods. */
@@ -9015,7 +9033,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     unknownPredecessor = false,
   ): Promise<void> {
     const gatewayNamespace = this.gatewayNamespace(revision, namespace);
-    if (unknownPredecessor || this.hasPublicGithubReadAdmission(revision)) {
+    if (
+      unknownPredecessor ||
+      this.hasPublicGithubReadAdmission(revision) ||
+      revision.compute.serviceAccess?.some(({ id }) => id === "public-github-read")
+    ) {
       await this.deleteOwnedNamespacedResource(
         "NetworkPolicy",
         this.publicGithubReadNetworkPolicyName(revision),
@@ -11633,6 +11655,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       [PLUGIN_RUNTIME_MANIFEST, PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT],
       [PLUGIN_RUNTIME_CODEX_CONFIG, PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT],
       ["public-github-read.json", "OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE"],
+      [PUBLIC_GITHUB_READ_TRANSPORT_FILE, PUBLIC_GITHUB_READ_TRANSPORT_ENV],
       [PUBLIC_GITHUB_READ_SKILL, "OCE_PUBLIC_GITHUB_READ_SKILL_FILE"],
     ]);
     return Object.freeze(
@@ -14975,12 +14998,20 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           protected: PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
           workspace: AGENT_WITH_NODE_ENTRYPOINT,
           protectedWorkspace: PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+          public: PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT,
+          publicProtected: PUBLIC_GITHUB_READ_PROTECTED_AGENT_ENTRYPOINT,
+          publicWorkspace: PUBLIC_GITHUB_READ_WITH_NODE_ENTRYPOINT,
+          publicProtectedWorkspace: PUBLIC_GITHUB_READ_PROTECTED_WITH_NODE_ENTRYPOINT,
         }
       : {
           agent: COMPUTE_AGENT_RUNTIME_ENTRYPOINT,
           protected: COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
           workspace: COMPUTE_AGENT_WITH_NODE_ENTRYPOINT,
           protectedWorkspace: COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+          public: COMPUTE_PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT,
+          publicProtected: COMPUTE_PUBLIC_GITHUB_READ_PROTECTED_AGENT_ENTRYPOINT,
+          publicWorkspace: COMPUTE_PUBLIC_GITHUB_READ_WITH_NODE_ENTRYPOINT,
+          publicProtectedWorkspace: COMPUTE_PUBLIC_GITHUB_READ_PROTECTED_WITH_NODE_ENTRYPOINT,
         };
     return {
       name: `plugin-runtime-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
@@ -14988,16 +15019,16 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       entrypoint:
         runtime.kind === "codex" && runtime.publicGithubRead?.endpoint
           ? revision.executionAdmission.mode === "protected"
-            ? PUBLIC_GITHUB_READ_PROTECTED_AGENT_ENTRYPOINT
-            : PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT
+            ? entrypoints.publicProtected
+            : entrypoints.public
           : protectedCodex
             ? entrypoints.protected
             : entrypoints.agent,
       workspaceEntrypoint:
         runtime.kind === "codex" && runtime.publicGithubRead?.endpoint
           ? revision.executionAdmission.mode === "protected"
-            ? PUBLIC_GITHUB_READ_PROTECTED_WITH_NODE_ENTRYPOINT
-            : PUBLIC_GITHUB_READ_WITH_NODE_ENTRYPOINT
+            ? entrypoints.publicProtectedWorkspace
+            : entrypoints.publicWorkspace
           : protectedCodex
             ? entrypoints.protectedWorkspace
             : entrypoints.workspace,
@@ -16633,11 +16664,17 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         ? pluginRuntime.runtime.publicGithubRead
         : undefined;
     if (publicGithubRead?.endpoint && role === "agent") {
-      variables.push({
-        name: "OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE",
-        value: `${PLUGIN_RUNTIME_DIRECTORY}/public-github-read.json`,
-      });
-      if (!useRuntimeWorkspace) {
+      variables.push(
+        {
+          name: "OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE",
+          value: `${PLUGIN_RUNTIME_DIRECTORY}/public-github-read.json`,
+        },
+        {
+          name: PUBLIC_GITHUB_READ_TRANSPORT_ENV,
+          value: `${PLUGIN_RUNTIME_DIRECTORY}/${PUBLIC_GITHUB_READ_TRANSPORT_FILE}`,
+        },
+      );
+      if (!providerOwnsHarness) {
         if (!ownership.revisionId) {
           throw new ConfigurationFailure("Public reader material requires revision ownership.");
         }
@@ -16833,7 +16870,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               : [
                   { key: PUBLIC_GITHUB_READ_SKILL, path: PUBLIC_GITHUB_READ_SKILL },
                   ...(publicGithubRead.endpoint
-                    ? [{ key: "public-github-read.json", path: "public-github-read.json" }]
+                    ? [
+                        { key: "public-github-read.json", path: "public-github-read.json" },
+                        {
+                          key: PUBLIC_GITHUB_READ_TRANSPORT_FILE,
+                          path: PUBLIC_GITHUB_READ_TRANSPORT_FILE,
+                        },
+                      ]
                     : []),
                 ]),
             ...(pluginRuntime.runtime.kind === "codex" && role === "agent"

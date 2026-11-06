@@ -41,7 +41,7 @@ const helper = fileURLToPath(
 );
 
 // Execute the production launcher's inserted setup with real files and children.
-// This also audits the embedded source copy, not just the standalone installer.
+// The launcher verifies the delivered source bytes before running the installer.
 const insertion = 'const pluginRuntime = readPluginRuntime("codex");';
 const setupOffset = AGENT_RUNTIME_ENTRYPOINT.indexOf(insertion) + insertion.length;
 const materialSetup = PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT.slice(
@@ -49,8 +49,7 @@ const materialSetup = PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT.slice(
   PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT.length - (AGENT_RUNTIME_ENTRYPOINT.length - setupOffset),
 );
 const materialProgram = `const {spawnSync} = require("node:child_process");
-const material = JSON.parse(require("node:fs").readFileSync(process.env.OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE, "utf8"));
-const pluginRuntime = {manifest:{publicGithubRead:material}};
+const pluginRuntime = {manifest:{publicGithubRead:JSON.parse(process.argv[1])}};
 ${materialSetup}
 console.log(JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([key]) =>
   key.startsWith("OCE_PUBLIC_GITHUB_") || key === "CODEX_CA_CERTIFICATE" || key === "GIT_EXEC_PATH" || key === "PATH"))));`;
@@ -277,14 +276,19 @@ async function materialFixture(t) {
     }
   }
   const install = async (overrides = {}) => {
-    const result = await execute(process.execPath, ["-e", materialProgram], {
-      env: {
-        ...baseEnv,
-        OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE: materialPath,
-        OCE_PUBLIC_GITHUB_READ_CAPABILITY_FILE: capabilityPath,
-        ...overrides,
+    const result = await execute(
+      process.execPath,
+      ["-e", materialProgram, JSON.stringify({ endpoint })],
+      {
+        env: {
+          ...baseEnv,
+          OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE: materialPath,
+          OCE_PUBLIC_GITHUB_READ_TRANSPORT_FILE: helper,
+          OCE_PUBLIC_GITHUB_READ_CAPABILITY_FILE: capabilityPath,
+          ...overrides,
+        },
       },
-    });
+    );
     return { ...baseEnv, ...overrides, ...JSON.parse(result.stdout) };
   };
   const git = (env, ...args) =>
@@ -306,6 +310,33 @@ async function materialFixture(t) {
     git,
   };
 }
+
+test("public launcher refuses missing, stale, oversized or nonregular runtime source before execution", async (t) => {
+  const fixture = await materialFixture(t);
+  const stale = path.join(fixture.directory, "stale.mjs");
+  const hostile = path.join(fixture.directory, "hostile.mjs");
+  const oversized = path.join(fixture.directory, "oversized.mjs");
+  await writeFile(stale, (await readFile(helper, "utf8")) + "\n");
+  await writeFile(hostile, "throw new Error('untrusted source executed');");
+  await writeFile(oversized, "x".repeat(65_537));
+  for (const source of [
+    path.join(fixture.directory, "missing.mjs"),
+    stale,
+    hostile,
+    oversized,
+    fixture.directory,
+  ]) {
+    await assert.rejects(
+      fixture.install({ OCE_PUBLIC_GITHUB_READ_TRANSPORT_FILE: source }),
+      (error) => {
+        assert.match(error.stderr, /Public Git runtime source is missing or does not match/);
+        assert.doesNotMatch(error.stderr, /untrusted source executed/);
+        return true;
+      },
+    );
+  }
+  assert.equal(fixture.requests.length, 0);
+});
 
 test("launcher material installs real capabilities, inherited trust, and protected placeholders without materializing credentials", async (t) => {
   const fixture = await materialFixture(t);
@@ -986,6 +1017,13 @@ test("managed API uses verified HTTP and HTTPS proxies without bypass or startup
     assert.equal(connected, 1);
     await assert.rejects(readFile(poisonedNode + ".called"), { code: "ENOENT" });
     assert.ok(!result.stderr.includes(fixture.token));
+    // Startup proxy configuration contains reversible Basic authorization even
+    // when its displayed URL has had userinfo removed.
+    assert.ok(
+      !result.stderr.includes(
+        Buffer.from("fixture-proxy:private-proxy-sentinel").toString("base64"),
+      ),
+    );
     assert.doesNotMatch(result.stderr, /private-proxy-sentinel|unavailable-private-sentinel/);
     assert.equal(fixture.requests.at(-1).headers["proxy-authorization"], undefined);
     if (secure) {
@@ -1665,7 +1703,10 @@ test("launcher accepts the supported CA bundle and routing-list sizes while boun
   await fixture.git(env, "ls-remote", "https://github.com/example/project.git");
   const before = fixture.requests.length;
   await writeFile(fixture.materialPath, Buffer.alloc(1024 * 1024 + 1, 32));
-  await assert.rejects(fixture.install(), /refused/);
+  await assert.rejects(fixture.install(), (error) => {
+    assert.match(error.stderr, /Public Git transport initialization failed/);
+    return true;
+  });
   assert.equal(fixture.requests.length, before);
 });
 

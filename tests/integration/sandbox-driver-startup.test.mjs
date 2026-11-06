@@ -1,3 +1,8 @@
+import {
+  PUBLIC_GITHUB_READ_TRANSPORT_FILE,
+  PUBLIC_GITHUB_READ_TRANSPORT_ENV,
+  PUBLIC_GITHUB_READ_TRANSPORT_SOURCE,
+} from "../../apps/controller/src/drivers/repo/github/public-read/runtime-source.ts";
 import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.mjs";
 import { runDocker, image, imageTestOptions } from "../helpers/runtime-image-startup.mjs";
 import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
@@ -33,6 +38,10 @@ import {
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
+  PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT,
+  PUBLIC_GITHUB_READ_PROTECTED_AGENT_ENTRYPOINT,
+  PUBLIC_GITHUB_READ_WITH_NODE_ENTRYPOINT,
+  PUBLIC_GITHUB_READ_PROTECTED_WITH_NODE_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
@@ -641,6 +650,31 @@ test("startup constructs the bundled OpenShell SandboxDriver before constructing
   assert.doesNotThrow(() =>
     createControllerWorker({ pool, mode: "production", drivers: createdDriver, emit: () => {} }),
   );
+});
+
+test("OpenShell startup can opt into bundled Presets through the real Namespace API", async (t) => {
+  const configuration = sandboxInstallation();
+  configuration.presets = { includeDefaults: true };
+  const runtime = await loadInstallationFile(t, configuration);
+  const fixture = await createConsoleAppFixture(t, {
+    defaultPresets: runtime.defaultPresets,
+    sandboxDriver: runtime.sandboxDriver,
+    backends: runtime.installation.backend,
+    driverConfigurations: installationDriverConfigurations(runtime.installation),
+  });
+  const bootstrapped = await fixture.request("POST", "/installation/bootstrap", {
+    body: { name: "OpenShell QA" },
+  });
+  assert.equal(bootstrapped.status, 201, JSON.stringify(bootstrapped.body));
+  const namespace = await fixture.createNamespace("Public Git QA", { ready: true });
+  const list = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
+  assert.equal(list.status, 200);
+  const codex = list.data.find(({ name }) => name === "Standard Codex");
+  assert.equal(codex?.namespaceId, namespace.id);
+  const selected = await fixture.request("GET", `/namespaces/${namespace.id}/presets/${codex.id}`);
+  assert.equal(selected.status, 200);
+  assert.equal(selected.data.template.agent.executionMode, "dedicated");
+  assert.equal(selected.data.template.agent.harnessAuth.method, "api_key");
 });
 
 test("startup composes both OpenShell members from one Backend", async (t) => {
@@ -8614,6 +8648,16 @@ async function publicReaderMaterialDelivery(t, protectedReader, workspaceNode) {
   revision.sandboxPolicy = protectedReader
     ? driver.admitProtectedNetworkPolicy(1, [descriptor]).snapshot
     : driver.admitNetworkPolicy([], 1, undefined, { serviceAccess: [descriptor] });
+  // Exercise the final prelude with multiple approved long workspace paths,
+  // not only the short single-mount fixture used by unrelated tests.
+  requirements.workspaceMounts.push(
+    ...["knowledge", "artifacts", "repositories", "shared"].map((name) => ({
+      claimName: "agent-workspace-31b4e0f2-6c88-4633-8cc4-b5cdd4995402",
+      subPath: name + "-31b4e0f2-6c88-4633-8cc4-b5cdd4995402",
+      mountPath: "/home/node/" + name + "-31b4e0f2-6c88-4633-8cc4-b5cdd4995402",
+      readOnly: name === "knowledge",
+    })),
+  );
   const runtime = JSON.parse(requirements.files[0].content);
   if (protectedReader) {
     revision.executionAdmission = { version: 3, mode: "protected" };
@@ -8664,12 +8708,31 @@ async function publicReaderMaterialDelivery(t, protectedReader, workspaceNode) {
       content: "Use the authenticated public-reader for public GitHub reads.",
     },
   );
+  requirements.files.push({
+    name: PUBLIC_GITHUB_READ_TRANSPORT_FILE,
+    environmentVariable: PUBLIC_GITHUB_READ_TRANSPORT_ENV,
+    content: PUBLIC_GITHUB_READ_TRANSPORT_SOURCE,
+  });
   requirements.serviceAccessMaterials = [
     { serviceId: "public-github-read", values: { capability: "synthetic-reader-capability" } },
   ];
+  const entrypoint = workspaceNode
+    ? protectedReader
+      ? PUBLIC_GITHUB_READ_PROTECTED_WITH_NODE_ENTRYPOINT
+      : PUBLIC_GITHUB_READ_WITH_NODE_ENTRYPOINT
+    : protectedReader
+      ? PUBLIC_GITHUB_READ_PROTECTED_AGENT_ENTRYPOINT
+      : PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT;
+  requirements.command = harnessRuntimeCommand(entrypoint);
   const provision = () => driver.provisionHarness({ ...context, revision, requirements });
   await driver.ensureNamespace(context);
   await provision();
+  const commandBytes = Buffer.byteLength(JSON.stringify(created.spec.command));
+  assert.ok(commandBytes <= 65_536, `final public OpenShell command is ${commandBytes} bytes`);
+  assert.ok(created.spec.command.every((argument) => Buffer.byteLength(argument) < 131072));
+  t.diagnostic(
+    `Public ${protectedReader ? "protected" : "ordinary"} ${workspaceNode ? "workspace" : "standalone"} command: ${commandBytes} bytes`,
+  );
   const providerCreate = gateway.calls.find(([operation]) => operation === "createProvider")[1];
   // OpenShell v0.1.6 validates CreateProvider config separately from profile files:
   // each config value is limited to 8 KiB; a rendered provider file allows 64 KiB.
@@ -8756,6 +8819,24 @@ async function publicReaderMaterialDelivery(t, protectedReader, workspaceNode) {
       .slice(2),
     [{ OCE_PUBLIC_GITHUB_READ_CAPABILITY: "renewed-reader-capability" }],
   );
+  const sourceFile = requirements.files.find(
+    ({ name }) => name === PUBLIC_GITHUB_READ_TRANSPORT_FILE,
+  );
+  const files = requirements.files;
+  for (const source of [
+    undefined,
+    PUBLIC_GITHUB_READ_TRANSPORT_SOURCE + "\n",
+    "throw new Error('untrusted source executed');",
+  ]) {
+    requirements.files =
+      source === undefined
+        ? files.filter((file) => file !== sourceFile)
+        : files.map((file) => (file === sourceFile ? { ...file, content: source } : file));
+    const before = gateway.calls.length;
+    await assert.rejects(provision, /runtime files/);
+    assert.equal(gateway.calls.length, before, "invalid source must fail before provider mutation");
+  }
+  requirements.files = files;
   const writes = gateway.calls.length;
   requirements.serviceAccessMaterials[0].values.extra = "must-refuse";
   await assert.rejects(provision, /public-reader service material/);
@@ -8770,6 +8851,11 @@ async function publicReaderMaterialDelivery(t, protectedReader, workspaceNode) {
 }
 
 for (const protectedReader of [false, true]) {
-  test(`OpenShell public-reader material stays in endpoint-bound provider credentials across renewal and rejects ambient delivery (${protectedReader ? "protected service only" : "ordinary"})`, (t) =>
-    publicReaderMaterialDelivery(t, protectedReader));
+  test(`OpenShell public-reader material stays in endpoint-bound provider credentials across renewal and rejects ambient delivery (${protectedReader ? "protected service only" : "ordinary"})`, async (t) => {
+    for (const workspaceNode of [false, true]) {
+      await t.test(workspaceNode ? "workspace" : "standalone", (t) =>
+        publicReaderMaterialDelivery(t, protectedReader, workspaceNode),
+      );
+    }
+  });
 }

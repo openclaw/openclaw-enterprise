@@ -2390,6 +2390,7 @@ async function observedGitRoute(
     removeBinding = false,
     changedStartup = false,
     narrowRepository,
+    publicReader = false,
     probeFailure,
   } = {},
 ) {
@@ -2439,6 +2440,7 @@ async function observedGitRoute(
   const revision = {
     ...f.revision,
     repositoryCredentials: credentials,
+    ...(publicReader && { compute: { serviceAccess: [{ id: "public-github-read" }] } }),
     executionAdmission: { version: mandatoryPolicy ? 5 : 6, mode: "protected" },
     egressPlan: {
       driver: { id: "openshell" },
@@ -2573,6 +2575,28 @@ async function observedGitRoute(
     };
     assert.equal(f.entry.authorization.binding.profile, "git-write");
     assert.equal("scope" in f.owner.material, false, "this control requires narrow material");
+  }
+  if (publicReader) {
+    // Reuse the admitted mandatory recipient fixture: selected Git authority stays exact
+    // when the independent public reader receives its authenticated-name dispatch material.
+    assert.equal(binding.profile, "github-repository");
+    const prepared = await f.runtime.prepare(
+      revision,
+      f.client,
+      f.sandbox.workspace,
+      f.sandbox.name,
+      AbortSignal.timeout(2_000),
+      "/sandbox/enterprise",
+      ["openai"],
+    );
+    assert.deepEqual(
+      JSON.parse(
+        prepared.environment.find(
+          (entry) => entry.name === "OCE_PUBLIC_GITHUB_AUTHENTICATED_REPOSITORIES",
+        )?.value ?? "null",
+      ),
+      ["example/application"],
+    );
   }
   {
     const config = f.client.getSandboxConfig;
@@ -2940,6 +2964,9 @@ for (const policy of [undefined, 2, 3]) {
       await observedGitRoute(policy, { legacy: true });
     }
     await observedGitRoute(policy);
+    if (policy === 2) {
+      await observedGitRoute(policy, { publicReader: true });
+    }
     if (policy) {
       await observedGitRoute(policy, { narrowRepository: "healthy" });
     }
@@ -2947,48 +2974,6 @@ for (const policy of [undefined, 2, 3]) {
     await observedGitRoute(policy, { changedStartup: true });
   });
 }
-
-test("held Git probe failures reach worker diagnostics without response content or retries", async () => {
-  for (const probeFailure of [
-    { error: "probe_process_failed", code: 56, stdout: "private-output", stderr: "private-error" },
-    { error: "probe_process_failed", code: "private-code" },
-    { error: "probe_process_failed", code: 100 },
-    { error: "probe_response_invalid", code: 56, response: "private-body" },
-    { error: "private-unrecognized-error", code: 56 },
-  ]) {
-    await observedGitRoute(2, { probeFailure });
-  }
-});
-
-test("the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access", async () => {
-  for (const narrowRepository of [
-    "material-push-ref",
-    "delivery-push-ref",
-    "foreign-repository-id",
-  ]) {
-    await observedGitRoute(2, { narrowRepository });
-  }
-});
-
-test("Git preparation refuses broad or noncanonical workspace trust before provider writes", async () => {
-  for (const path of [
-    "*",
-    "/",
-    "/sandbox",
-    "/sandbox/",
-    "/sandbox/enterprise/",
-    "/sandbox/*",
-    "/sandbox/enterprise/*",
-    "/sandbox/../etc",
-    "/sandbox/enterprise/../other",
-    "/sandbox//enterprise",
-    "/sandbox/enterprise\0",
-  ]) {
-    const f = bootstrapping();
-    await assert.rejects(f.prepare(path), /exact Sandbox workspace path/);
-    assert.equal(f.calls.providerWrites, 0);
-  }
-});
 
 test("public-reader dispatch preserves Repo-resolved authenticated names without broadening Git authority", async () => {
   const resolve = createGitHubRepositoryDeliveryResolver(registry);
@@ -3067,3 +3052,44 @@ test("public-reader dispatch preserves Repo-resolved authenticated names without
   assert.equal(empty.calls.providerWrites, 0);
 });
 
+test("held Git probe failures reach worker diagnostics without response content or retries", async () => {
+  for (const probeFailure of [
+    { error: "probe_process_failed", code: 56, stdout: "private-output", stderr: "private-error" },
+    { error: "probe_process_failed", code: "private-code" },
+    { error: "probe_process_failed", code: 100 },
+    { error: "probe_response_invalid", code: 56, response: "private-body" },
+    { error: "private-unrecognized-error", code: 56 },
+  ]) {
+    await observedGitRoute(2, { probeFailure });
+  }
+});
+
+test("the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access", async () => {
+  for (const narrowRepository of [
+    "material-push-ref",
+    "delivery-push-ref",
+    "foreign-repository-id",
+  ]) {
+    await observedGitRoute(2, { narrowRepository });
+  }
+});
+
+test("Git preparation refuses broad or noncanonical workspace trust before provider writes", async () => {
+  for (const path of [
+    "*",
+    "/",
+    "/sandbox",
+    "/sandbox/",
+    "/sandbox/enterprise/",
+    "/sandbox/*",
+    "/sandbox/enterprise/*",
+    "/sandbox/../etc",
+    "/sandbox/enterprise/../other",
+    "/sandbox//enterprise",
+    "/sandbox/enterprise\0",
+  ]) {
+    const f = bootstrapping();
+    await assert.rejects(f.prepare(path), /exact Sandbox workspace path/);
+    assert.equal(f.calls.providerWrites, 0);
+  }
+});

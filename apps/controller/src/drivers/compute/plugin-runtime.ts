@@ -1,4 +1,8 @@
 import {
+  PUBLIC_GITHUB_READ_TRANSPORT_FILE,
+  PUBLIC_GITHUB_READ_TRANSPORT_SOURCE,
+} from "../repo/github/public-read/runtime-source.ts";
+import {
   type AgentRevision,
   assertExecutionAdmission,
   CODEX_PLUGIN_DRIVER_IMPLEMENTATION,
@@ -285,6 +289,7 @@ function configMapData(
           ...(runtime.publicGithubRead.endpoint === undefined
             ? {}
             : {
+                [PUBLIC_GITHUB_READ_TRANSPORT_FILE]: PUBLIC_GITHUB_READ_TRANSPORT_SOURCE,
                 "public-github-read.json": JSON.stringify({
                   endpoint: runtime.publicGithubRead.endpoint,
                   caBundle: runtime.publicGithubRead.caBundle,

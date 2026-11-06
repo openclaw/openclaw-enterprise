@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 // A relative import, like the others here: CI image builds and the in-image supervisor proof
 // load this file from a checkout or copy with no workspace packages installed.
 import {
@@ -6,7 +7,10 @@ import {
   RUNTIME_FAILURE_CHECKS,
 } from "../../../../../../packages/contracts/src/runtime-failure.mjs";
 
-import { readFileSync } from "node:fs";
+import {
+  PUBLIC_GITHUB_READ_TRANSPORT_ENV,
+  PUBLIC_GITHUB_READ_TRANSPORT_SHA256,
+} from "../../repo/github/public-read/runtime-source.ts";
 import {
   MANAGED_PLUGIN_CREDENTIAL_HELPER,
   managedCredentialEnvironment,
@@ -5592,10 +5596,6 @@ if (
 
 // New admitted launches get the public transport; preserve legacy command bytes.
 function publicGithubReadEntrypoint(entrypoint: string): string {
-  const helper = readFileSync(
-    new URL("../../repo/github/public-read/transport.mjs", import.meta.url),
-    "utf8",
-  );
   const setup = `
 if (pluginRuntime?.manifest?.publicGithubRead?.endpoint) {
   const publicFs = require("node:fs");
@@ -5611,8 +5611,28 @@ if (pluginRuntime?.manifest?.publicGithubRead?.endpoint) {
   const publicDirectory = publicFs.mkdtempSync(publicPath.join(publicRoot, "bootstrap-"));
   publicFs.chmodSync(publicDirectory, 0o700);
   const publicHelper = publicDirectory + "/transport.mjs";
-  publicFs.writeFileSync(publicHelper, ${JSON.stringify(helper)}, {mode:0o400});
   try {
+    let descriptor;
+    let source;
+    try {
+      descriptor = publicFs.openSync(process.env[${JSON.stringify(PUBLIC_GITHUB_READ_TRANSPORT_ENV)}], publicFs.constants.O_RDONLY | publicFs.constants.O_NONBLOCK);
+      const stat = publicFs.fstatSync(descriptor);
+      if (!stat.isFile() || stat.size > 65_536) throw new Error();
+      const buffer = Buffer.alloc(65_537);
+      let length = 0;
+      while (length < buffer.length) {
+        const count = publicFs.readSync(descriptor, buffer, length, buffer.length - length, null);
+        if (count === 0) break;
+        length += count;
+      }
+      source = buffer.subarray(0, length);
+      if (length > 65_536 || require("node:crypto").createHash("sha256").update(source).digest("hex") !== ${JSON.stringify(PUBLIC_GITHUB_READ_TRANSPORT_SHA256)}) throw new Error();
+    } catch {
+      throw new Error("Public Git runtime source is missing or does not match its launch command.");
+    } finally {
+      if (descriptor !== undefined) publicFs.closeSync(descriptor);
+    }
+    publicFs.writeFileSync(publicHelper, source, {mode:0o400});
     const publicSetup = spawnSync(process.execPath, [publicHelper, "--install-material", process.env.OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE], {encoding:"utf8"});
     if (publicSetup.status !== 0) throw new Error("Public Git transport initialization failed.");
     Object.assign(process.env, JSON.parse(publicSetup.stdout));
@@ -5632,8 +5652,21 @@ export const PUBLIC_GITHUB_READ_PROTECTED_AGENT_ENTRYPOINT = publicGithubReadEnt
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
 );
 export const PUBLIC_GITHUB_READ_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT,
+  publicGithubReadEntrypoint(agentRuntimeEntrypoint(false, false, false)),
 );
 export const PUBLIC_GITHUB_READ_PROTECTED_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  PUBLIC_GITHUB_READ_PROTECTED_AGENT_ENTRYPOINT,
+  publicGithubReadEntrypoint(agentRuntimeEntrypoint(true, false, false)),
+);
+
+export const COMPUTE_PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT = publicGithubReadEntrypoint(
+  COMPUTE_AGENT_RUNTIME_ENTRYPOINT,
+);
+export const COMPUTE_PUBLIC_GITHUB_READ_PROTECTED_AGENT_ENTRYPOINT = publicGithubReadEntrypoint(
+  COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+);
+export const COMPUTE_PUBLIC_GITHUB_READ_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  publicGithubReadEntrypoint(agentRuntimeEntrypoint(false, true, false)),
+);
+export const COMPUTE_PUBLIC_GITHUB_READ_PROTECTED_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  publicGithubReadEntrypoint(agentRuntimeEntrypoint(true, true, false)),
 );

@@ -15,8 +15,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { Agent, request } from "node:https";
-import { getCACertificates, setDefaultCACertificates } from "node:tls";
+import { getCACertificates } from "node:tls";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -219,9 +218,10 @@ function responseMetadata(status, rawHeaders, route) {
   return { status, link };
 }
 
-// Serialized into a fixed, isolated Node child. Only bounded stdin carries
-// authorization and public trust; no path-based CA carrier or protocol shim.
-async function apiClient() {
+// Serialized into a fixed, isolated Node child. Import HTTPS only there: its
+// global Agent can log ambient proxy credentials before parent code runs.
+// Only bounded stdin carries authorization and public trust.
+async function apiClient({ Agent, request, setDefaultCACertificates }) {
   const input = [];
   let inputSize = 0;
   for await (const chunk of process.stdin) {
@@ -477,7 +477,7 @@ import { setDefaultCACertificates } from "node:tls";
 let refusalPhase;
 ${validateApiRoute.toString()}
 ${responseMetadata.toString()}
-(${apiClient.toString()})().catch(error => {
+(${apiClient.toString()})({ Agent, request, setDefaultCACertificates }).catch(error => {
   const tls = ["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "CERT_HAS_EXPIRED", "CERT_NOT_YET_VALID", "ERR_TLS_CERT_ALTNAME_INVALID"].includes(error?.code);
   process.exitCode = tls ? 60 : error?.exitCode === 22 ? 22 : 1;
 });`;

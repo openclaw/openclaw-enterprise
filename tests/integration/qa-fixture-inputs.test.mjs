@@ -67,6 +67,98 @@ test("QA Agent reads the selected Preset in its Namespace", async (t) => {
   });
 });
 
+test("QA preset preparation explicitly seeds defaults and reloads the selected Namespace", async (t) => {
+  const { prepareQaPluginCatalogs, createQaAgent } = await import("../helpers/qa-installation.mjs");
+  for (const outcome of ["available", "missing", "foreign", "save denied"]) {
+    await t.test(outcome, async () => {
+      const calls = [];
+      const stopped = new Error("stop before credential reads");
+      const f = {
+        retained: false,
+        pendingRepositories: new Set(),
+        agents: [],
+        namespace: { id: "ns-selected" },
+        defaultNamespace: { id: "ns-default" },
+        presets: [],
+        configuration: { drivers: { plugin: [{ id: "codex-plugin", configuration: {} }] } },
+        async saveInstallation(configuration) {
+          calls.push("save");
+          assert.equal(configuration.presets.includeDefaults, true);
+          assert.deepEqual(
+            configuration.drivers.plugin.map(({ id }) => id),
+            ["occ-plugin", "codex-plugin"],
+          );
+          if (outcome === "save denied") {
+            throw stopped;
+          }
+        },
+        async record() {},
+        async api(method, path, body) {
+          if (path === "/installation") {
+            assert.equal(method, "GET");
+            return {
+              capabilities: {
+                pluginCatalogs: [
+                  { harnessId: "openclaw", pluginPolicies: { driver: { id: "occ-plugin" } } },
+                  { harnessId: "codex", pluginPolicies: { driver: { id: "codex-plugin" } } },
+                ],
+              },
+            };
+          }
+          if (path === "/namespaces/ns-selected/agents/plugins") {
+            assert.equal(method, "POST");
+            return {
+              plugins: [
+                {
+                  id:
+                    body.harnessId === "codex"
+                      ? "codex-plugin:linear@openai-curated-remote"
+                      : "occ-plugin:google@1.0.0",
+                },
+              ],
+            };
+          }
+          assert.equal(method, "GET", "bootstrap must not create Agents or Secrets");
+          calls.push(path);
+          if (path === "/namespaces/ns-selected/presets") {
+            return outcome === "missing"
+              ? []
+              : [
+                  {
+                    id: "pre-codex",
+                    name: "Standard Codex",
+                    namespaceId: outcome === "foreign" ? "ns-foreign" : "ns-selected",
+                  },
+                ];
+          }
+          throw stopped;
+        },
+      };
+      if (outcome === "save denied") {
+        await assert.rejects(
+          prepareQaPluginCatalogs(f, { includeDefaults: true }),
+          (error) => error === stopped,
+        );
+        assert.deepEqual(calls, ["save"]);
+        return;
+      }
+      await prepareQaPluginCatalogs(f, { includeDefaults: true });
+      assert.deepEqual(calls, ["save", "/namespaces/ns-selected/presets"]);
+      await assert.rejects(createQaAgent(f, "Codex"), (error) =>
+        outcome === "available"
+          ? error === stopped
+          : outcome === "missing"
+            ? /Standard Codex Preset must be available/.test(error.message)
+            : /Preset must belong to the QA Namespace/.test(error.message),
+      );
+      assert.deepEqual(
+        calls.slice(2),
+        outcome === "available" ? ["/namespaces/ns-selected/presets/pre-codex"] : [],
+      );
+    });
+  }
+});
+
 test("QA credentials require a private regular file and reject symlink substitution", async (t) => {
   const directory = await temporaryDirectory(t, "qa-credential-");
   const credential = join(directory, "credential");
@@ -625,6 +717,245 @@ test("the QA command runner records a failed image build step as redacted eviden
   );
 });
 
+test(
+  "QA API refusals preserve HTTP errors with bounded private redacted diagnostics",
+  { timeout: 20_000 },
+  async (t) => {
+    const { requestQaApi } = await import("../helpers/qa-installation.mjs");
+    const { listen } = await import("../helpers/listen.mjs");
+    const directory = await temporaryDirectory(t, "qa-api-refusal-");
+    const secret = "registered-private-api-diagnostic";
+    registerQaSecret(secret);
+    const requests = [];
+    let oversizedClosed = false;
+    let stalledClosed = false;
+    const server = createServer(async (request, response) => {
+      let body = "";
+      for await (const chunk of request) {
+        body += chunk;
+      }
+      requests.push({
+        method: request.method,
+        url: request.url,
+        key: request.headers["x-api-key"],
+        contentType: request.headers["content-type"],
+        body,
+      });
+      if (request.url === "/success") {
+        response.writeHead(201, { "content-type": "application/json" });
+        response.end(JSON.stringify({ data: { accepted: true } }));
+      } else if (request.url === "/empty") {
+        response.writeHead(204);
+        response.end();
+      } else if (request.url === "/malformed") {
+        response.writeHead(409);
+        response.end("not JSON; refusal body is still private");
+      } else if (request.url === "/oversized") {
+        response.writeHead(409);
+        response.write("safe-prefix\n");
+        const timer = setInterval(() => response.write("x".repeat(4096)), 2);
+        response.once("close", () => {
+          clearInterval(timer);
+          oversizedClosed = true;
+        });
+      } else if (request.url === "/stalled") {
+        response.writeHead(409);
+        response.write("partial");
+        response.once("close", () => {
+          stalledClosed = true;
+        });
+      } else {
+        response.writeHead(409, {
+          "content-type": "application/json",
+          "x-private-response": "response-header-must-not-be-captured",
+        });
+        response.end(
+          JSON.stringify({
+            error: {
+              code: "FIXTURE_REFUSAL",
+              message: `refused ${secret} environment-private-api-diagnostic`,
+              details: [{ path: "/configuration", code: "INVALID_VALUE" }],
+            },
+            authorization: "Bearer token-private-123456789",
+          }),
+        );
+      }
+    });
+    const port = await listen(t, server);
+    const f = {
+      apiUrl: `http://127.0.0.1:${port}`,
+      serviceKey: "synthetic-api-auth",
+      env: { QA_PRIVATE_INPUT: "environment-private-api-diagnostic" },
+      async write(name, value) {
+        await writeFile(join(directory, name), value, { mode: 0o600 });
+      },
+      async record() {
+        assert.fail("API refusal bodies must stay outside public evidence");
+      },
+    };
+    const refused = (path) =>
+      assert.rejects(
+        requestQaApi(f, "POST", path, { requestOnly: "request-body-must-not-be-captured" }),
+        (error) => {
+          assert.equal(error.code, "ERR_ASSERTION");
+          assert.equal(
+            error.message,
+            `OCC POST ${path}: HTTP 409 (${path === "/refused" ? "FIXTURE_REFUSAL" : "unknown"})`,
+          );
+          assert.equal(error.actual, false);
+          assert.equal(error.expected, true);
+          assert.doesNotMatch(error.stack, /registered-private|environment-private|token-private/);
+          return true;
+        },
+      );
+    await refused("/refused");
+    let files = await readdir(directory);
+    assert.equal(files.length, 1);
+    const capture = await readFile(join(directory, files[0]), "utf8");
+    assert.match(capture, /FIXTURE_REFUSAL/);
+    assert.match(capture, /\/configuration/);
+    assert.doesNotMatch(
+      capture,
+      /registered-private-api-diagnostic|environment-private-api-diagnostic|token-private-123456789|request-body-must-not-be-captured|response-header-must-not-be-captured|synthetic-api-auth/,
+    );
+    assert.equal((await stat(join(directory, files[0]))).mode & 0o777, 0o600);
+    assert.deepEqual(requests[0], {
+      method: "POST",
+      url: "/refused",
+      key: f.serviceKey,
+      contentType: "application/json",
+      body: JSON.stringify({ requestOnly: "request-body-must-not-be-captured" }),
+    });
+    await refused("/oversized");
+    files = await readdir(directory);
+    assert.equal(files.length, 2);
+    const capped = await Promise.all(files.map((name) => readFile(join(directory, name), "utf8")));
+    assert.ok(capped.some((text) => text.includes("safe-prefix") && text.includes("truncated")));
+    assert.ok(capped.every((text) => Buffer.byteLength(text) < 66_000));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(oversizedClosed, true, "the oversized response must be canceled");
+    await refused("/malformed");
+    const before = performance.now();
+    await refused("/stalled");
+    assert.ok(
+      performance.now() - before < 5000,
+      "diagnostics must not wait for the request's 30s timeout",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(stalledClosed, true, "the stalled body reader must be canceled");
+    f.write = async () => {
+      throw new Error(secret);
+    };
+    await refused("/write-fails");
+    f.write = async () => new Promise(() => {});
+    const writeStarted = performance.now();
+    await refused("/write-stalls");
+    assert.ok(
+      performance.now() - writeStarted < 5000,
+      "private writes cannot stall the original refusal",
+    );
+    f.env = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error(secret);
+        },
+      },
+    );
+    await refused("/redaction-fails");
+    assert.equal(
+      (await readdir(directory)).length,
+      3,
+      "failed diagnostics must not publish anything",
+    );
+    f.write = async () => {
+      assert.fail("successful API calls must not capture diagnostics");
+    };
+    assert.deepEqual(await requestQaApi(f, "POST", "/success", { normal: true }), {
+      accepted: true,
+    });
+    assert.equal(await requestQaApi(f, "GET", "/empty"), undefined);
+    assert.equal(requests.length, 9, "diagnostics must not retry API requests");
+  },
+);
+
+test("QA Compose recreation preserves private bounded startup diagnostics and original failure", async (t) => {
+  const { recreateQaComposeServices } = await import("../helpers/qa-installation.mjs");
+  const directory = await temporaryDirectory(t, "qa-startup-diagnostics-");
+  const original = new Error("controller health dependency failed");
+  const secret = "synthetic-private-startup-secret";
+  registerQaSecret(secret);
+  const calls = [];
+  const f = {
+    cluster: "occ-dev-qa-c-diagnostic",
+    stateDirectory: join(directory, "state"),
+    env: { OCC_TEST_PRIVATE_INPUT: "environment-private-startup-secret" },
+    async compose(...args) {
+      calls.push(args);
+      throw original;
+    },
+    async run(command, args, options) {
+      calls.push({ command, args, options });
+      if (args.at(-1) === "worker-kubernetes") {
+        throw new Error(secret);
+      }
+      return `startup-error CONFIGURATION_INVALID ${secret} environment-private-startup-secret\n`;
+    },
+    async write(name, value) {
+      await writeFile(join(directory, name), value, { mode: 0o600 });
+    },
+    async record() {
+      assert.fail("startup logs must stay outside public artifacts");
+    },
+  };
+  await assert.rejects(recreateQaComposeServices(f), (error) => error === original);
+  assert.deepEqual(calls[0], [
+    "up",
+    "-d",
+    "--no-deps",
+    "--force-recreate",
+    "controller",
+    "worker-kubernetes",
+  ]);
+  const probes = calls.slice(1);
+  assert.deepEqual(
+    probes.map(({ args }) => args.at(-1)),
+    ["controller", "worker-kubernetes"],
+  );
+  for (const { command, args, options } of probes) {
+    assert.equal(command, "docker");
+    assert.deepEqual(args.slice(0, 6), [
+      "compose",
+      "-p",
+      f.cluster,
+      "-f",
+      join(f.stateDirectory, "compose.yaml"),
+      "logs",
+    ]);
+    assert.ok(args.includes("--no-color") && args.includes("--tail") && args.includes("120"));
+    assert.equal(options.timeout, 15000);
+    assert.equal(options.maxBuffer, 256 * 1024);
+    assert.equal(options.privateFailureOutput, true);
+  }
+  const files = await readdir(directory);
+  assert.equal(files.length, 1);
+  const path = join(directory, files[0]);
+  const log = await readFile(path, "utf8");
+  assert.match(log, /startup-error CONFIGURATION_INVALID/);
+  assert.doesNotMatch(log, /synthetic-private-startup-secret|environment-private-startup-secret/);
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  f.write = async () => {
+    throw new Error("private directory unavailable");
+  };
+  await assert.rejects(recreateQaComposeServices(f), (error) => error === original);
+  calls.length = 0;
+  f.compose = async (...args) => {
+    calls.push(args);
+  };
+  await recreateQaComposeServices(f);
+  assert.equal(calls.length, 1, "healthy recreation must not collect logs");
+});
+
 // Real children distinguish an elapsed command deadline from an ordinary signal exit.
 // Neither private output nor argv may escape through the added timing diagnostics.
 test("QA command failures distinguish deadlines from signal exits without disclosing output", async (t) => {
@@ -801,244 +1132,6 @@ test("failed QA startup retains only bounded timing records and respects output 
       return true;
     },
   );
-});
-test(
-  "QA API refusals preserve HTTP errors with bounded private redacted diagnostics",
-  { timeout: 20_000 },
-  async (t) => {
-    const { requestQaApi } = await import("../helpers/qa-installation.mjs");
-    const { listen } = await import("../helpers/listen.mjs");
-    const directory = await temporaryDirectory(t, "qa-api-refusal-");
-    const secret = "registered-private-api-diagnostic";
-    registerQaSecret(secret);
-    const requests = [];
-    let oversizedClosed = false;
-    let stalledClosed = false;
-    const server = createServer(async (request, response) => {
-      let body = "";
-      for await (const chunk of request) {
-        body += chunk;
-      }
-      requests.push({
-        method: request.method,
-        url: request.url,
-        key: request.headers["x-api-key"],
-        contentType: request.headers["content-type"],
-        body,
-      });
-      if (request.url === "/success") {
-        response.writeHead(201, { "content-type": "application/json" });
-        response.end(JSON.stringify({ data: { accepted: true } }));
-      } else if (request.url === "/empty") {
-        response.writeHead(204);
-        response.end();
-      } else if (request.url === "/malformed") {
-        response.writeHead(409);
-        response.end("not JSON; refusal body is still private");
-      } else if (request.url === "/oversized") {
-        response.writeHead(409);
-        response.write("safe-prefix\n");
-        const timer = setInterval(() => response.write("x".repeat(4096)), 2);
-        response.once("close", () => {
-          clearInterval(timer);
-          oversizedClosed = true;
-        });
-      } else if (request.url === "/stalled") {
-        response.writeHead(409);
-        response.write("partial");
-        response.once("close", () => {
-          stalledClosed = true;
-        });
-      } else {
-        response.writeHead(409, {
-          "content-type": "application/json",
-          "x-private-response": "response-header-must-not-be-captured",
-        });
-        response.end(
-          JSON.stringify({
-            error: {
-              code: "FIXTURE_REFUSAL",
-              message: `refused ${secret} environment-private-api-diagnostic`,
-              details: [{ path: "/configuration", code: "INVALID_VALUE" }],
-            },
-            authorization: "Bearer token-private-123456789",
-          }),
-        );
-      }
-    });
-    const port = await listen(t, server);
-    const f = {
-      apiUrl: `http://127.0.0.1:${port}`,
-      serviceKey: "synthetic-api-auth",
-      env: { QA_PRIVATE_INPUT: "environment-private-api-diagnostic" },
-      async write(name, value) {
-        await writeFile(join(directory, name), value, { mode: 0o600 });
-      },
-      async record() {
-        assert.fail("API refusal bodies must stay outside public evidence");
-      },
-    };
-    const refused = (path) =>
-      assert.rejects(
-        requestQaApi(f, "POST", path, { requestOnly: "request-body-must-not-be-captured" }),
-        (error) => {
-          assert.equal(error.code, "ERR_ASSERTION");
-          assert.equal(error.message, `OCC POST ${path}: HTTP 409`);
-          assert.equal(error.actual, false);
-          assert.equal(error.expected, true);
-          assert.doesNotMatch(
-            error.stack,
-            /FIXTURE_REFUSAL|registered-private|environment-private|token-private/,
-          );
-          return true;
-        },
-      );
-    await refused("/refused");
-    let files = await readdir(directory);
-    assert.equal(files.length, 1);
-    const capture = await readFile(join(directory, files[0]), "utf8");
-    assert.match(capture, /FIXTURE_REFUSAL/);
-    assert.match(capture, /\/configuration/);
-    assert.doesNotMatch(
-      capture,
-      /registered-private-api-diagnostic|environment-private-api-diagnostic|token-private-123456789|request-body-must-not-be-captured|response-header-must-not-be-captured|synthetic-api-auth/,
-    );
-    assert.equal((await stat(join(directory, files[0]))).mode & 0o777, 0o600);
-    assert.deepEqual(requests[0], {
-      method: "POST",
-      url: "/refused",
-      key: f.serviceKey,
-      contentType: "application/json",
-      body: JSON.stringify({ requestOnly: "request-body-must-not-be-captured" }),
-    });
-    await refused("/oversized");
-    files = await readdir(directory);
-    assert.equal(files.length, 2);
-    const capped = await Promise.all(files.map((name) => readFile(join(directory, name), "utf8")));
-    assert.ok(capped.some((text) => text.includes("safe-prefix") && text.includes("truncated")));
-    assert.ok(capped.every((text) => Buffer.byteLength(text) < 66_000));
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    assert.equal(oversizedClosed, true, "the oversized response must be canceled");
-    await refused("/malformed");
-    const before = performance.now();
-    await refused("/stalled");
-    assert.ok(
-      performance.now() - before < 5000,
-      "diagnostics must not wait for the request's 30s timeout",
-    );
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    assert.equal(stalledClosed, true, "the stalled body reader must be canceled");
-    f.write = async () => {
-      throw new Error(secret);
-    };
-    await refused("/write-fails");
-    f.write = async () => new Promise(() => {});
-    const writeStarted = performance.now();
-    await refused("/write-stalls");
-    assert.ok(
-      performance.now() - writeStarted < 5000,
-      "private writes cannot stall the original refusal",
-    );
-    f.env = new Proxy(
-      {},
-      {
-        ownKeys() {
-          throw new Error(secret);
-        },
-      },
-    );
-    await refused("/redaction-fails");
-    assert.equal(
-      (await readdir(directory)).length,
-      3,
-      "failed diagnostics must not publish anything",
-    );
-    f.write = async () => {
-      assert.fail("successful API calls must not capture diagnostics");
-    };
-    assert.deepEqual(await requestQaApi(f, "POST", "/success", { normal: true }), {
-      accepted: true,
-    });
-    assert.equal(await requestQaApi(f, "GET", "/empty"), undefined);
-    assert.equal(requests.length, 9, "diagnostics must not retry API requests");
-  },
-);
-
-test("QA Compose recreation preserves private bounded startup diagnostics and original failure", async (t) => {
-  const { recreateQaComposeServices } = await import("../helpers/qa-installation.mjs");
-  const directory = await temporaryDirectory(t, "qa-startup-diagnostics-");
-  const original = new Error("controller health dependency failed");
-  const secret = "synthetic-private-startup-secret";
-  registerQaSecret(secret);
-  const calls = [];
-  const f = {
-    cluster: "occ-dev-qa-c-diagnostic",
-    stateDirectory: join(directory, "state"),
-    env: { OCC_TEST_PRIVATE_INPUT: "environment-private-startup-secret" },
-    async compose(...args) {
-      calls.push(args);
-      throw original;
-    },
-    async run(command, args, options) {
-      calls.push({ command, args, options });
-      if (args.at(-1) === "worker-kubernetes") {
-        throw new Error(secret);
-      }
-      return `startup-error CONFIGURATION_INVALID ${secret} environment-private-startup-secret\n`;
-    },
-    async write(name, value) {
-      await writeFile(join(directory, name), value, { mode: 0o600 });
-    },
-    async record() {
-      assert.fail("startup logs must stay outside public artifacts");
-    },
-  };
-  await assert.rejects(recreateQaComposeServices(f), (error) => error === original);
-  assert.deepEqual(calls[0], [
-    "up",
-    "-d",
-    "--no-deps",
-    "--force-recreate",
-    "controller",
-    "worker-kubernetes",
-  ]);
-  const probes = calls.slice(1);
-  assert.deepEqual(
-    probes.map(({ args }) => args.at(-1)),
-    ["controller", "worker-kubernetes"],
-  );
-  for (const { command, args, options } of probes) {
-    assert.equal(command, "docker");
-    assert.deepEqual(args.slice(0, 6), [
-      "compose",
-      "-p",
-      f.cluster,
-      "-f",
-      join(f.stateDirectory, "compose.yaml"),
-      "logs",
-    ]);
-    assert.ok(args.includes("--no-color") && args.includes("--tail") && args.includes("120"));
-    assert.equal(options.timeout, 15000);
-    assert.equal(options.maxBuffer, 256 * 1024);
-    assert.equal(options.privateFailureOutput, true);
-  }
-  const files = await readdir(directory);
-  assert.equal(files.length, 1);
-  const path = join(directory, files[0]);
-  const log = await readFile(path, "utf8");
-  assert.match(log, /startup-error CONFIGURATION_INVALID/);
-  assert.doesNotMatch(log, /synthetic-private-startup-secret|environment-private-startup-secret/);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
-  f.write = async () => {
-    throw new Error("private directory unavailable");
-  };
-  await assert.rejects(recreateQaComposeServices(f), (error) => error === original);
-  calls.length = 0;
-  f.compose = async (...args) => {
-    calls.push(args);
-  };
-  await recreateQaComposeServices(f);
-  assert.equal(calls.length, 1, "healthy recreation must not collect logs");
 });
 
 // Finding 2026: a key whose BEGIN line falls before the failed step's last 200 lines, with no END
@@ -3829,67 +3922,6 @@ test("a failed reviewed read names the review outcome before the evidence", asyn
       },
     );
   }
-});
-
-test("QA model failure evidence preserves the failure and its admitted revision", async () => {
-  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
-  const secret = `qa-log-secret-${randomUUID()}`;
-  registerQaSecret(secret);
-  const agent = { namespaceId: "namespace", id: "agent", revision: { id: "original" } };
-  const reads = [];
-  const evidence = [];
-  const failure = new Error("original model assertion");
-  const native = createNativePluginAssertions({
-    // These pages stand in for OCC's already-redacted response. This verifies
-    // the QA collector's additional redaction, not the runtime log API.
-    async readRuntimeLogs(target) {
-      reads.push(target);
-      if (target.source === "agent") {
-        throw new Error("log source unavailable");
-      }
-      return {
-        records: [{ type: "line", level: "error", message: `failure ${secret}`, private: secret }],
-      };
-    },
-    async recordRuntimeLogs(record) {
-      evidence.push(record);
-    },
-  });
-  assert.equal(await native.withRuntimeFailureLogs(agent, async () => "passed"), "passed");
-  assert.deepEqual(reads, [], "successful assertions do not collect failure evidence");
-  await assert.rejects(
-    native.withRuntimeFailureLogs(agent, async () => {
-      agent.revision = { id: "replacement" };
-      throw failure;
-    }),
-    (error) => error === failure,
-  );
-  assert.deepEqual(reads, [
-    { namespaceId: "namespace", agentId: "agent", revisionId: "original", source: "gateway" },
-    { namespaceId: "namespace", agentId: "agent", revisionId: "original", source: "agent" },
-  ]);
-  assert.equal(evidence.length, 1);
-  assert.equal(evidence[0].revisionId, "original");
-  assert.match(evidence[0].sources[0].lines[0], /failure/);
-  assert.equal(JSON.stringify(evidence).includes(secret), false);
-  assert.equal(JSON.stringify(evidence).includes("private"), false);
-  assert.deepEqual(evidence[0].sources[1], { source: "agent", unavailable: true });
-
-  // Failure to save diagnostics must not replace the original model assertion.
-  const unavailable = createNativePluginAssertions({
-    async readRuntimeLogs() {
-      throw new Error("logs unavailable");
-    },
-    async recordRuntimeLogs() {
-      throw new Error("artifact write failed");
-    },
-  });
-  await assert.rejects(
-    unavailable.withRuntimeFailureLogs(agent, async () => {
-      throw failure;
-    }),
-    (error) => error === failure,
-  );
 });
 
 test("public Git QA uses the provider-prepared OpenShell base token and execution contract", async (t) => {

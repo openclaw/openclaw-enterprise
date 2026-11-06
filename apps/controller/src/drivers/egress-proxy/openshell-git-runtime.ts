@@ -623,7 +623,6 @@ export class OpenShellGitRuntime {
       throw new Error("OpenShell prepared Git requires a live admitted GitHub binding.");
     }
     const scope = this.scope(revision);
-    const admittedExecutionId = revision.egressPlan!.execution.executionId;
     const publicReader =
       revision.compute?.serviceAccess?.some((service) => service.id === "public-github-read") ===
       true;
@@ -653,7 +652,7 @@ export class OpenShellGitRuntime {
         },
       ]);
     }
-
+    const admittedExecutionId = revision.egressPlan!.execution.executionId;
     const legacyPreview = revision.executionAdmission?.version === 6;
     const mandatory =
       revision.egressPlan?.repositoryGitAuthorization === "online-request" &&

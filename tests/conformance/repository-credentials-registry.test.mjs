@@ -397,6 +397,24 @@ test("selected repository standing approval binds permissions and rechecks deliv
     repositories: [{ repositoryId: "34567", repository: "example/application" }],
     permissions: scope.apiPermissions,
   });
+  // Public dispatch uses the same exact selected repository scope, including finite sets.
+  const publicRevision = {
+    ...revision,
+    compute: { serviceAccess: [{ id: "public-github-read" }] },
+  };
+  const delivery = createGitHubRepositoryDeliveryResolver(registry);
+  assert.deepEqual(delivery(publicRevision).authenticatedRepositories, ["example/application"]);
+  assert.equal(delivery(revision).authenticatedRepositories, undefined);
+  const second = resolveGitHubRepositoryBinding(registry, {
+    namespaceId: request.namespaceId,
+    repositoryRef: "second",
+    profile: "github-repository",
+  });
+  assert.deepEqual(
+    delivery({ ...publicRevision, repositoryCredentials: { bindings: [second, binding] } })
+      .authenticatedRepositories,
+    ["example/application", "example/second"],
+  );
   const reordered = structuredClone(input);
   reordered.repositories[0].namespaces[0].permissions = {
     contents: "write",

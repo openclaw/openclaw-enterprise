@@ -9,7 +9,16 @@ import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { isDeepStrictEqual } from "node:util";
+import { execFile } from "node:child_process";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { isDeepStrictEqual, promisify } from "node:util";
+import { inflateRawSync } from "node:zlib";
+import { createServer } from "node:http";
+import { listen } from "../helpers/listen.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { publicReaderTls } from "../helpers/public-github-read-fixture.mjs";
 import {
   KubernetesComputeDriver,
   kubernetesNamespaceName,
@@ -3081,6 +3090,10 @@ test("admitted public Git runtime carries only nonsecret configuration and a dis
     caBundle: "public-ca",
   });
   f.revision.configuration.plugins.entries.codex.config.publicGithubRead = { mode: "all" };
+  f.driver.options.runtime.modelProvider = {
+    protocol: "openai-responses",
+    baseUrl: "https://models.example.test/v1",
+  };
   const services = f.driver.admitServiceAccess({
     installationId: "installation-test",
     configuration: f.revision.configuration,
@@ -3088,6 +3101,7 @@ test("admitted public Git runtime carries only nonsecret configuration and a dis
   });
   f.revision.compute.serviceAccess = services;
   f.revision.compute.admission = f.driver.admitRevision(f.revision);
+  assert.match(f.revision.compute.admission, /^model-provider:v1:[a-f0-9]{64}:public-github-read:/);
   const snapshot = f.driver.pluginRuntimeSnapshot(f.revision);
   assert.equal(snapshot.runtime.publicGithubRead.endpoint, `https://${publicReader.address}:8080`);
   assert.notEqual(
@@ -3095,6 +3109,7 @@ test("admitted public Git runtime carries only nonsecret configuration and a dis
     originalLauncher,
     "new service access requires a separately admitted launcher",
   );
+  assert.equal(snapshot.runtime.modelEndpoint.baseUrl, "https://models.example.test/v1");
   const files = f.driver.sandboxWorkloadFiles(snapshot);
   const config = JSON.parse(files.find(({ name }) => name === "public-github-read.json").content);
   assert.deepEqual(config, {
@@ -3112,10 +3127,14 @@ test("admitted public Git runtime carries only nonsecret configuration and a dis
   const paths = native.plugins.entries.codex.config.appServer.networkProxy.readOnlyPaths;
   assert.ok(paths.includes("/home/node/.oce-public-git"));
   assert.ok(!paths.includes("/tmp") && !paths.includes("/home/node"));
+  const source = files.find(({ name }) => name === PUBLIC_GITHUB_READ_TRANSPORT_FILE);
+  assert.equal(source.content, PUBLIC_GITHUB_READ_TRANSPORT_SOURCE);
+  // The static helper names its capability input; only its exact reviewed source
+  // is allowed alongside the data projections, which carry no credential.
   assert.equal(
-    JSON.stringify(files).includes("capability"),
+    JSON.stringify(files.filter((file) => file !== source)).includes("capability"),
     false,
-    "the public runtime projection must contain no service credential",
+    "the public runtime data projection must contain no service credential",
   );
   // Persisted JSON documents preserve values, not object property insertion order.
   const rehydrated = JSON.parse(JSON.stringify(f.revision), (_key, value) =>
@@ -3124,13 +3143,32 @@ test("admitted public Git runtime carries only nonsecret configuration and a dis
       : value,
   );
   assert.deepEqual(f.driver.pluginRuntimeSnapshot(rehydrated), snapshot);
+  // Provider and public-service facts have separate authority. A preserved provider
+  // cannot authorize altered service scope; a preserved service cannot authorize a
+  // changed provider. Both refusals precede credential delivery or workload writes.
+  const alteredService = structuredClone(f.revision);
+  alteredService.compute.serviceAccess[0].configuration.policy = {
+    mode: "repositories",
+    repositories: ["example/other"],
+  };
+  assert.throws(() => f.driver.pluginRuntimeSnapshot(alteredService), /no exact Compute admission/);
+  const before = structuredClone(f.calls);
+  f.driver.options.runtime.modelProvider.baseUrl = "https://changed.example.test/v1";
+  await assert.rejects(f.driver.prepareRevision(f.revision, f.context()), /model provider changed/);
+  assert.deepEqual(f.calls, before);
 });
 
 for (const operation of ["stopRevision", "retireRevision"]) {
   test(`${operation} fences the owned runtime even when the public authorization registry is unavailable`, async () => {
     const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
     delete f.revision.repositoryCredentials;
+    f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+      enabled: true,
+      domains: { [publicReader.address]: "allow" },
+    };
+    f.revision.compute.admission = f.driver.admitRevision(f.revision);
     await f.driver.prepareRevision(f.revision, f.context());
+    assert.equal(publicReaderPolicies(f).length, 1);
     assert.ok(f.deployments().some((deployment) => deployment.metadata.name.startsWith("agent-")));
     // Resume the owned runtime with its service admission, after its external
     // authorization registry has disappeared. Shutdown must still fence it.
@@ -3150,13 +3188,24 @@ for (const operation of ["stopRevision", "retireRevision"]) {
       f.deployments().filter((deployment) => deployment.metadata.name.startsWith("agent-")).length,
       0,
     );
+    assert.equal(
+      publicReaderPolicies(f).length,
+      0,
+      "fenced service must retire its owned reader policy",
+    );
   });
 }
 
 test("service maintenance fences the owned runtime when its admitted reader peer changes", async () => {
   const f = await fixture("dedicated", undefined, { publicGithubRead: { ...publicReader } });
   delete f.revision.repositoryCredentials;
+  f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+    enabled: true,
+    domains: { [publicReader.address]: "allow" },
+  };
+  f.revision.compute.admission = f.driver.admitRevision(f.revision);
   await f.driver.prepareRevision(f.revision, f.context());
+  assert.equal(publicReaderPolicies(f).length, 1);
   Object.assign(f.driver.options.network.publicGithubRead, {
     authorizationConfigMapName: "unavailable-authorizations",
     caBundle: "public-ca",
@@ -3176,6 +3225,11 @@ test("service maintenance fences the owned runtime when its admitted reader peer
   assert.equal(
     f.deployments().filter((deployment) => deployment.metadata.name.startsWith("agent-")).length,
     0,
+  );
+  assert.equal(
+    publicReaderPolicies(f).length,
+    0,
+    "withdrawn peer must retire its owned reader policy",
   );
 });
 

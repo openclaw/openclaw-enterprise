@@ -177,6 +177,7 @@ jobs:
     environment: integration-qa-pr
     env:
       CI: "1"
+      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
       OCC_TEST_QA_INSTALLATION: compose
       OCC_TEST_QA_PRESET: Codex
       OCC_TEST_QA_SCENARIOS: public-github-git
@@ -196,6 +197,7 @@ jobs:
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: qa-matrix
+          test-file: tests/integration/qa-matrix-real.test.mjs
           profile: full
           node-version: "24.22.1"
           artifact-prefix: qa-advisory-public-git

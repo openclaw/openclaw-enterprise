@@ -276,11 +276,17 @@ async function captureQaApiRefusal(f, response) {
       return;
     }
     let text = Buffer.concat(chunks).toString("utf8");
+    let code = "unknown";
     if (!truncated) {
       try {
         // Separate envelope fields before line redaction so a credential on
         // one compact JSON line cannot hide an unrelated refusal code/path.
-        text = JSON.stringify(JSON.parse(text), null, 2);
+        const envelope = JSON.parse(text);
+        const candidate = envelope.error?.code;
+        if (typeof candidate === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(candidate)) {
+          code = redactedQaTail(candidate, f.env, { lines: 1, lineChars: 80 }).join("");
+        }
+        text = JSON.stringify(envelope, null, 2);
       } catch {
         // Plain text and malformed JSON still receive the same redaction.
       }
@@ -302,9 +308,10 @@ async function captureQaApiRefusal(f, response) {
         `HTTP ${response.status}\n${truncated ? "[response truncated at 64 KiB]\n" : ""}${redacted}\n`,
       );
     }
+    return code;
   };
   try {
-    await Promise.race([
+    return await Promise.race([
       capture().catch(() => {}),
       new Promise((resolve) => {
         timer = setTimeout(() => {
@@ -330,11 +337,9 @@ export async function requestQaApi(f, method, path, body) {
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     signal: AbortSignal.timeout(30_000),
   });
-  try {
-    assert.ok(response.ok, `OCC ${method} ${path}: HTTP ${response.status}`);
-  } catch (error) {
-    await captureQaApiRefusal(f, response).catch(() => {});
-    throw error;
+  if (!response.ok) {
+    const code = (await captureQaApiRefusal(f, response).catch(() => {})) ?? "unknown";
+    assert.ok(response.ok, `OCC ${method} ${path}: HTTP ${response.status} (${code})`);
   }
   const text = await response.text();
   return text ? JSON.parse(text).data : undefined;
@@ -1089,7 +1094,8 @@ export async function createQaInstallation(
     launchArgs.push("--", "-f", f.composePeerInput);
   }
   const started = await f.run(join(repository, "scripts/dev-up"), launchArgs, {
-    timeout: 1_100_000, captureStartupTimings: true,
+    timeout: 1_100_000,
+    captureStartupTimings: true,
   });
   assert.match(
     started,
@@ -1224,12 +1230,27 @@ export async function prepareQaConsoleTheme(f) {
   });
 }
 
-export async function prepareQaPluginCatalogs(f) {
+export async function prepareQaPluginCatalogs(f, { includeDefaults = false } = {}) {
+  assert.ok(
+    !f.retained && f.pendingRepositories.size === 0,
+    "blocked by unresolved repository cleanup",
+  );
+  assert.ok(
+    f.agents.every((agent) => agent.stopped),
+    "stop the prior Agent before changing the installation runtime configuration",
+  );
   f.configuration.drivers.plugin = [
     { id: "occ-plugin", configuration: {} },
     { id: "codex-plugin", configuration: { catalogSource: "openai-curated" } },
   ];
+  if (includeDefaults) {
+    f.configuration.presets = { ...f.configuration.presets, includeDefaults: true };
+  }
   await f.saveInstallation(f.configuration);
+  if (includeDefaults) {
+    // Startup seeds the selected Namespace; use its actual post-save catalog.
+    f.presets = await f.api("GET", `/namespaces/${f.namespace.id}/presets`);
+  }
   const { capabilities } = await f.api("GET", "/installation");
   const catalogs = Object.fromEntries(
     capabilities.pluginCatalogs.map(({ harnessId, pluginPolicies }) => [
