@@ -60,7 +60,7 @@ import type {
   CredentialFreeEgressSource,
   PreparedTokenSource,
   PreparedTokenIssuer,
-  PreparedTokenService,
+  TokenService,
   EgressRef,
   ProtectedEgressSource,
 } from "@openclaw-enterprise/contracts";
@@ -789,7 +789,7 @@ export interface ControllerOptions {
     readonly gateway: CredentialGatewayDriver;
     readonly withSourceToken: NonNullable<CredentialGatewayDriver["withSourceToken"]>;
   };
-  readonly preparedTokens?: PreparedTokenService | undefined;
+  readonly preparedTokens?: TokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   readonly authorize?: (
@@ -2119,7 +2119,7 @@ export class OpenClawController {
   private readonly credentialProxyCapacity: CredentialProxyCapacity;
   private readonly registry = new Map<string, RegisteredDriver>();
   private readonly pluginSourceReader: ControllerOptions["pluginSourceReader"];
-  private readonly preparedTokens: PreparedTokenService | undefined;
+  private readonly preparedTokens: TokenService | undefined;
   private readonly selections = new Map<DriverCapability, RegisteredDriver>();
   private pluginRegistrations: readonly RegisteredDriver[] = [];
   private readonly backends: readonly BackendDefinition[];
@@ -6295,8 +6295,11 @@ export class OpenClawController {
             materialId: secret.backendRef.uid,
           };
         },
-        readPrepared: (source, lifetime) =>
-          this.preparedIssuer(source.key.provider).readWarm(source, lifetime),
+        resolvePrepared: (key, options) =>
+          this.tokenService().resolve(
+            { kind: this.preparedIssuer(key.provider).tokenKind, key },
+            options,
+          ),
         authorizeSend: async (use, source, attempt, mintAuthorization, provider) => {
           if (this.transactionContext.getStore()) {
             return { kind: "unavailable", code: "authority" };
@@ -6776,6 +6779,13 @@ export class OpenClawController {
     return admitted;
   }
 
+  private tokenService(): TokenService {
+    if (!this.preparedTokens) {
+      throw new DependencyUnavailableError("The Token Service is unavailable.");
+    }
+    return this.preparedTokens;
+  }
+
   private preparedIssuer(provider: EgressRef) {
     const lifecycle = this.preparedTokens?.issuer(provider);
     if (!lifecycle) {
@@ -6787,7 +6797,7 @@ export class OpenClawController {
   }
 
   private async admitPreparedTokenSource(
-    lifecycle: PreparedTokenIssuer,
+    lifecycle: Pick<PreparedTokenIssuer, "admission" | "provider">,
     state: PlatformUnitOfWork,
     principalId: string,
     namespaceId: string,
@@ -7325,10 +7335,12 @@ export class OpenClawController {
     let terminal = false;
     try {
       if (source.egress?.adoption === "prepared" && issuer) {
-        // Management authorizes the owner. Only its background worker may issue and renew.
-        await this.preparedIssuer(source.egress.key.provider).configure(
-          source.egress,
-          issuer,
+        await this.tokenService().register(
+          {
+            kind: this.preparedIssuer(source.egress.key.provider).tokenKind,
+            source: source.egress,
+            secret: issuer,
+          },
           AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
         );
       }

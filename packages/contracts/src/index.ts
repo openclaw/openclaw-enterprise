@@ -61,10 +61,15 @@ export type {
   PreparedTokenGrant,
   PreparedTokenSource,
   PreparedTokenSelection,
+  ResolvedToken,
   PreparedTokenEvidence,
   PreparedTokenCurrentProof,
   PreparedTokenIssuer,
-  PreparedTokenService,
+  PreparedTokenKind,
+  PreparedTokenRegistration,
+  PreparedTokenRef,
+  TokenResolveOptions,
+  TokenService,
 } from "./prepared-token.ts";
 export {
   preparedGitHubType,
