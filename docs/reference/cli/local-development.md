@@ -5,6 +5,11 @@ profile. They use local development configuration, not the remote connection or
 output options in the [CLI command reference](../cli.md). Kubernetes is the supported
 local setup for deploying an Agent; follow [Local Setup](../../guides/quickstart.md).
 
+The CLI uses the nearest enclosing checkout identified by its OCE `go.mod` and
+`compose.yaml`. If that `go.mod` contains CRLF line endings, both commands stop
+with a repair error. Convert the file to LF and retry; the CLI does not continue
+to an outer checkout that could own a different stack.
+
 | Command                                         | What it does                                                                                                                                                                   |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `occ dev up`                                    | Starts the profile selected by `OCC_DEVELOPMENT_COMPUTE_DRIVER`: `docker` (default) or `kubernetes`. Docker is a control-plane preview and cannot deploy Agents.               |

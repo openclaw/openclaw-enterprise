@@ -65,26 +65,46 @@ func TestDevelopmentRepository(t *testing.T) {
 	}
 }
 
-func TestDevelopmentRepositoryContinuesPastCRLFCheckout(t *testing.T) {
-	repository := t.TempDir()
-	nested := filepath.Join(repository, "nested")
-	if err := os.Mkdir(nested, 0o700); err != nil {
-		t.Fatal(err)
-	}
+func TestDevRefusesNearestCRLFCheckout(t *testing.T) {
 	const declaration = "module github.com/openclaw/openclaw-enterprise"
-	for directory, lineEnding := range map[string]string{repository: "\n", nested: "\r\n"} {
-		if err := os.WriteFile(filepath.Join(directory, "go.mod"), []byte(declaration+lineEnding), 0o600); err != nil {
-			t.Fatal(err)
+	for _, module := range []struct{ name, content string }{
+		{"CRLF", declaration + "\r\n"},
+		{"mixed endings", declaration + "\n\r\ngo 1.27.3\r\n"},
+	} {
+		for _, args := range [][]string{{"dev", "up"}, {"dev", "down", "--volumes"}} {
+			t.Run(module.name+"/"+args[1], func(t *testing.T) {
+				repository := t.TempDir()
+				nested := filepath.Join(repository, "nested")
+				if err := os.Mkdir(nested, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				// The outer checkout is valid, but must never receive the inner
+				// checkout's startup or destructive cleanup command.
+				for directory, content := range map[string]string{repository: declaration + "\n", nested: module.content} {
+					if err := os.WriteFile(filepath.Join(directory, "go.mod"), []byte(content), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(directory, "compose.yaml"), nil, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				t.Chdir(nested)
+				// Keep an accidental dispatch from reaching host tools. This
+				// does not replace repository discovery or the CLI command tree.
+				t.Setenv("PATH", t.TempDir())
+				t.Setenv("OCC_DEVELOPMENT_COMPUTE_DRIVER", "docker")
+				t.Setenv("OCC_DEVELOPMENT_SANDBOX_DRIVER", "none")
+				t.Setenv("OCC_DEVELOPMENT_CONTROL_PLANE", "")
+				var output bytes.Buffer
+				command := New(&output, &output)
+				command.SetArgs(args)
+				err := command.Execute()
+				want := fmt.Sprintf("%q uses CRLF line endings; convert it to LF before running occ dev", filepath.Join(nested, "go.mod"))
+				if err == nil || err.Error() != want {
+					t.Fatalf("%v: got %v; want nearest-checkout refusal %q", args, err, want)
+				}
+			})
 		}
-		if err := os.WriteFile(filepath.Join(directory, "compose.yaml"), nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Chdir(nested)
-
-	got, err := developmentRepository()
-	if err != nil || got != repository {
-		t.Fatalf("developmentRepository() = %q, %v; want %q", got, err, repository)
 	}
 }
 
