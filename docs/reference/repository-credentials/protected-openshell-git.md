@@ -15,8 +15,7 @@ sender by its configured capabilities and runtime evidence. `git-read` and
 opt-in. Exact-dispatch and v7 reduction guarantees remain unqualified.
 
 Keep Credential Gateway with the bundled OpenShell Backend. The Proxy serves
-repository access, while model access uses a Gateway Harness source. For an
-existing installation, follow the
+repositories; model access uses a Gateway Harness source. Existing installations require the
 [compatibility upgrade](../../guides/deploy/credential-proxy-upgrade.md#check-compatibility-before-interrupting-access).
 
 ## Prerequisites
@@ -64,7 +63,7 @@ never put either key in Agent configuration or Helm values.
 Prepare a separate serving certificate whose DNS SAN covers
 `openclaw-enterprise-openshell-git.openclaw-system.svc`, its private key, and the
 **public** PEM key from the selected OpenShell Gateway JWT signing bundle.
-Create these resources in the OCE namespace with your approved Kubernetes context:
+In OCE's namespace, use your approved context:
 
 ```bash
 kubectl --context "$CONTEXT" -n openclaw-system create secret tls openshell-git-tls \
@@ -104,15 +103,15 @@ The chart exposes a ClusterIP Service on port 8445 and allows that port only fro
 these peers under the chart's default-deny policy. It mounts the serving key,
 certificate and public issuer key at the fragment's `/etc/openclaw/openshell-git`
 paths in the worker. The API, initialization Job and repository sidecar do not
-receive this projection. Keep the worker port equal in Helm and the Installation.
+receive this projection. Match worker ports in Helm and Installation.
 If the OpenShell namespace enforces egress, also permit its Gateway and supervisors
 to reach this Service's selected worker Pods on TCP 8445 and resolve cluster DNS.
 
 Set `authority.issuer` to `openshell-gateway:<gateway_id>` from the actual Gateway
 JWT configuration, `keyId` to the contents of its `kid_path`, and `audience` to the
 registration audience below. The fragment's values are examples, not discovery.
-The Gateway's signing private key stays with the Gateway. Render and inspect the
-combined production values, then use your normal Helm upgrade procedure.
+The Gateway's signing private key stays with the Gateway. Render and inspect
+combined values, then follow your Helm upgrade procedure.
 
 ## Register the request-phase service
 
@@ -272,8 +271,8 @@ A deploying version has no credential; requests answer `route_not_ready` until a
 
 ### Worker log
 
-After held enrollment failure and cleanup, check worker logs.
-`worker.openshell-git-probe-failed` records the HTTP 400 `reason`:
+After cleaning up failed held enrollment, `worker.openshell-git-probe-failed` records
+the HTTP 400 `reason`:
 
 - `probe_process_failed`: curl failed; optional integer `code` is its exit status (1–99).
 - `probe_response_invalid`: the launcher could not read response JSON.
@@ -284,11 +283,11 @@ attributes: `occ.git_probe.reason` and optional `occ.git_probe.exit_code`
 A parsed unexpected denial returns HTTP 409 `preview_not_observed`.
 
 For refused Git requests, `worker.openshell-git-denied` records `reasonCode`
-from the table, the detailed `reason` (such as `ref_not_allowed`, `draft_rejected`,
+from the table, `reason` (such as `ref_not_allowed`, `draft_rejected`,
 `session_closed`, `material_unavailable`, `installation_changed` or `route_blocked`),
 Sandbox ID and supervisor request ID. For lost credentials,
-`worker.openshell-git-route-warning` carries the same `reasonCode` to distinguish
-a removed binding (`access_withdrawn`) from a rejected App key (`credential_unavailable`).
+`worker.openshell-git-route-warning` distinguishes removed bindings (`access_withdrawn`)
+from rejected App keys (`credential_unavailable`) with `reasonCode`.
 
 ## Route state, restarts and recovery
 
