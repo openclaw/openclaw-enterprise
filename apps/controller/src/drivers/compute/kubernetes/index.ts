@@ -16,6 +16,7 @@ import { forwardMethod } from "../../../backends/token-service/forward-method.ts
 import { ProtectedExecutionDriver } from "../protected-execution-driver.ts";
 import type { InstalledDriver } from "@openclaw-enterprise/occ";
 import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
+import { SandboxRevisionUnsupportedError } from "@openclaw-enterprise/occ";
 import { rewrittenIpv4Hostname } from "../../../auth/configuration.ts";
 import { nativeOpenAiModelSelections } from "../../native-openai-catalog.ts";
 import {
@@ -6253,6 +6254,41 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     this.validateRevisionExecution(revision, context);
     return "validated";
+  }
+
+  async validateRevisionReplacement(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation
+    ) {
+      throw new Error("Refusing to validate another Compute Driver's AgentRevision.");
+    }
+    const sandbox = this.sandboxDriverForRevision(revision);
+    if (sandbox?.validatePrivateWorkspaceIdentity === undefined) {
+      if (revision.privateWorkspaceIdentity !== undefined) {
+        throw new SandboxRevisionUnsupportedError(
+          "SANDBOX_HARNESS_UNSUPPORTED",
+          "The selected Sandbox cannot validate this revision's admitted private workspace binding; restore the admitted provider before replacing the serving revision.",
+        );
+      }
+      return;
+    }
+    await withComputeAbortSignal(signal, async () => {
+      const { name, external } = await this.resolveNamespace(revision.namespaceId);
+      const namespace = await this.getNamespace(name);
+      if (!namespace) {
+        throw new Error("Replacement Namespace is missing.");
+      }
+      this.verifyNamespaceOwnership(namespace, { namespaceId: revision.namespaceId }, external);
+      const context = await this.sandboxNamespaceContext(
+        this.sandboxNamespaceForRevision(revision, name),
+        name,
+      );
+      await sandbox.validatePrivateWorkspaceIdentity!({ ...context, revision });
+    });
   }
 
   async verifyRepositoryExecution(revision: Readonly<AgentRevision>, signal: AbortSignal) {

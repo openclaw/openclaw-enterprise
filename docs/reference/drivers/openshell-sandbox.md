@@ -131,9 +131,7 @@ not exceed its limit. The Driver always sets the Agent container's
 `ephemeral-storage` to a `256Mi` request and `1Gi` limit, replacing configured
 values.
 
-The Driver requires `policy.process.runAsUser` and `runAsGroup`, but the pinned
-OpenShell ignores them: every Sandbox process runs as the workload identity,
-default `10001:10001`.
+The required `policy.process.runAsUser` and `runAsGroup` do not select the workload UID or GID. OpenShell defaults to `10001:10001`.
 
 Do not add a policy for the model endpoint: the credential source's provider
 profile allows `api.openai.com` with TLS inspection, and an uninspected rule for
@@ -312,19 +310,16 @@ never the PVC root. Persistent categories use separate subpaths below
 avoid symlinks and permission changes on root-owned mounts. PVC quota limits
 runtime storage; Agent deletion removes it.
 
-Before opening node state, the Codex Harness and dedicated OpenClaw worker set
-their process-owned state root to `0700`, clearing inherited setgid bits. Shared
-workspace directories keep their permissions. OpenClaw prepares its private
-children, including a `control` directory retained after a failed setup.
+Both Harnesses clear inherited setgid on their `0700` state root. OpenClaw retains its private `control` directory after failed setup.
 
 The supervisor probes `/tmp`; native OpenClaw uses private runtime-home
 `tmp`. Codex has a `1Gi` ephemeral-storage limit. With `kubernetes.userNamespaces: false`,
-both Harnesses privatize writable PVC subpaths in a restricted Deployment.
-Ownership checks and foreground deletion drain preparation before Sandbox creation.
-It protects state and captures. Preparation requires at most one
-operator ServiceAccount and the Gateway's default UID/GID; Agent
-admission enforces these requirements. Codex with user namespaces is unchanged;
-capture ancestry remains unqualified. Kubernetes Compute may use
+both Harnesses require Gateway identity resolution and conditional Sandbox creation.
+Admission binds the effective UID, GID and placement before predecessor Stop and
+refuses unverified retained ownership. A restricted preparer uses those IDs and
+at most one operator ServiceAccount. The pinned v0.1.6 Gateway lacks this
+contract. Codex with user namespaces skips preparation; capture ancestry
+remains unqualified. Kubernetes Compute may use
 `/home/node` and `/tmp` `emptyDir` volumes limited to `1Gi` and `64Mi`.
 
 ### Remaining qualification work

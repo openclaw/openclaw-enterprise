@@ -767,6 +767,250 @@ async function firstDeploymentFixture({ ready = true, slackFetch } = {}) {
   };
 }
 
+test("private workspace admission refuses before work and binds ordinary and first deployment", async (t) => {
+  // These are OCC API/Driver integration cases, not provider or filesystem proof.
+  // The provider's read-only refusal must prevent creation of any revision or worker work.
+  for (const failure of ["unsupported", "retained owner", "invalid pair", "provider failure"]) {
+    await t.test(failure, async () => {
+      const { controller, namespace, agent, path, intent, work } = await firstDeploymentFixture();
+      const sandbox = {
+        id: "sandbox-private-admission",
+        implementation: "private-workspace-fixture",
+        capability: "sandbox",
+        facets: ["networking", "filesystem", "process"],
+        async provisionHarness() {},
+        supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+        async cleanup() {
+          assert.fail("Admission must not clean the predecessor");
+        },
+        async resolvePrivateWorkspaceIdentity(context) {
+          assert.equal(context.agentId, agent.id);
+          assert.equal(context.namespace.id, namespace.id);
+          // A store read from inside provider I/O also proves OCC holds no memory-store lock.
+          assert.deepEqual(
+            await controller.fixture.platformState.read((view) =>
+              view.revisions.listRevisions(namespace.id, agent.id),
+            ),
+            [],
+          );
+          if (failure === "invalid pair") {
+            return { uid: 0, gid: 321, placement: "fixture" };
+          }
+          if (failure === "provider failure") {
+            throw new Error("synthetic provider detail must not escape");
+          }
+          throw new ResourceStateConflictError(`Private workspace ${failure} is unavailable.`);
+        },
+      };
+      const dedicated = await controller.request("PATCH", path, {
+        body: { configurationId: agent.configurationId, executionMode: "dedicated" },
+      });
+      assert.equal(dedicated.status, 200, JSON.stringify(dedicated.body));
+      controller.fixture.controller.registerDriver(sandbox);
+      controller.fixture.controller.selectDriver("sandbox", sandbox.id);
+      const result = await controller.request("POST", `${path}/deploy-first`, { body: intent });
+      assert.equal(
+        result.status,
+        ["invalid pair", "provider failure"].includes(failure) ? 503 : 409,
+        JSON.stringify(result.body),
+      );
+      assert.equal(JSON.stringify(result.body).includes("synthetic provider detail"), false);
+      assert.equal(work().length, 0);
+      assert.deepEqual(
+        await controller.fixture.platformState.read((view) =>
+          view.revisions.listRevisions(namespace.id, agent.id),
+        ),
+        [],
+      );
+    });
+  }
+  await t.test("bound pair survives receipt replay and is passed to the successor", async () => {
+    const { controller, namespace, agent, path, intent, work } = await firstDeploymentFixture();
+    const identity = { uid: 123, gid: 456, placement: "fixture-node" };
+    let reads = 0;
+    const sandbox = {
+      id: "sandbox-private-binding",
+      implementation: "private-workspace-fixture",
+      capability: "sandbox",
+      facets: ["networking", "filesystem", "process"],
+      async provisionHarness() {},
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+      async cleanup() {
+        assert.fail("Admission must not clean the predecessor");
+      },
+      async resolvePrivateWorkspaceIdentity(context) {
+        reads++;
+        if (reads === 1) {
+          assert.deepEqual(context.predecessors, []);
+        } else {
+          assert.deepEqual(context.predecessors[0].privateWorkspaceIdentity, identity);
+        }
+        return identity;
+      },
+    };
+    const dedicated = await controller.request("PATCH", path, {
+      body: { configurationId: agent.configurationId, executionMode: "dedicated" },
+    });
+    assert.equal(dedicated.status, 200, JSON.stringify(dedicated.body));
+    controller.fixture.controller.registerDriver(sandbox);
+    controller.fixture.controller.selectDriver("sandbox", sandbox.id);
+    const first = await controller.request("POST", `${path}/deploy-first`, { body: intent });
+    assert.equal(first.status, 202, JSON.stringify(first.body));
+    const replay = await controller.request("POST", `${path}/deploy-first`, { body: intent });
+    assert.equal(replay.status, 202, JSON.stringify(replay.body));
+    assert.deepEqual(replay.data, first.data);
+    assert.equal(reads, 1, "Receipt recovery must not repeat a provider dependency");
+    const successor = await controller.request("POST", `${path}/deploy`);
+    assert.equal(successor.status, 202, JSON.stringify(successor.body));
+    const revisions = await controller.fixture.platformState.read((view) =>
+      view.revisions.listRevisions(namespace.id, agent.id),
+    );
+    assert.equal(revisions.length, 2);
+    for (const revision of revisions) {
+      assert.deepEqual(revision.privateWorkspaceIdentity, identity);
+    }
+    assert.equal(work().length, 2);
+  });
+});
+
+test("private workspace refusal preserves an active predecessor without queuing a successor", async (t) => {
+  const { controller, namespace, agent, path, work } = await firstDeploymentFixture();
+  const dedicated = await controller.request("PATCH", path, {
+    body: { configurationId: agent.configurationId, executionMode: "dedicated" },
+  });
+  assert.equal(dedicated.status, 200, JSON.stringify(dedicated.body));
+  const identity = { uid: 123, gid: 456, placement: "fixture-node" };
+  let refuse = false;
+  const sandbox = {
+    id: "sandbox-private-serving",
+    implementation: "private-workspace-fixture",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    async provisionHarness() {},
+    async cleanup() {
+      assert.fail("Admission must not clean the predecessor");
+    },
+    async resolvePrivateWorkspaceIdentity(context) {
+      if (refuse) {
+        assert.equal(context.predecessors.length, 1);
+        assert.deepEqual(context.predecessors[0].privateWorkspaceIdentity, identity);
+        throw new ResourceStateConflictError(
+          "The retained private workspace owner is incompatible.",
+        );
+      }
+      return identity;
+    },
+  };
+  controller.fixture.controller.registerDriver(sandbox);
+  controller.fixture.controller.selectDriver("sandbox", sandbox.id);
+  const first = await controller.request("POST", `${path}/deploy`);
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  // The in-memory fixture has no durable worker. Publish the ready deterministic
+  // Compute's revision through the same CAS the worker uses; this is API/state proof.
+  const active = await controller.fixture.platformState.transact((unit) =>
+    unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, first.data.id),
+  );
+  assert.equal(active.activeRevisionId, first.data.id);
+  const stop = t.mock.method(controller.fixture.computeDriver, "stopRevision", async () => {
+    assert.fail("A refused successor must not Stop the active predecessor");
+  });
+  const queued = work();
+  refuse = true;
+  const denied = await controller.request("POST", `${path}/deploy`);
+  assert.equal(denied.status, 409, JSON.stringify(denied.body));
+  const saved = await controller.fixture.platformState.read((view) =>
+    view.agents.findAgent(namespace.id, agent.id),
+  );
+  assert.equal(saved.activeRevisionId, first.data.id);
+  assert.equal(saved.desiredRuntimeState, "running");
+  assert.equal(stop.mock.callCount(), 0);
+  assert.deepEqual(work(), queued);
+  assert.equal(
+    (
+      await controller.fixture.platformState.read((view) =>
+        view.revisions.listRevisions(namespace.id, agent.id),
+      )
+    ).length,
+    1,
+  );
+});
+
+test("private workspace admission fences concurrent changes and preserves matching receipts", async (t) => {
+  for (const race of ["agent", "history", "matching receipt"]) {
+    await t.test(race, async () => {
+      const { controller, namespace, agent, path, intent, work } = await firstDeploymentFixture();
+      const dedicated = await controller.request("PATCH", path, {
+        body: { configurationId: agent.configurationId, executionMode: "dedicated" },
+      });
+      assert.equal(dedicated.status, 200, JSON.stringify(dedicated.body));
+      const identity = { uid: 123, gid: 456, placement: "fixture-node" };
+      let observedReceipt;
+      let nested = false;
+      const sandbox = {
+        id: "sandbox-private-race",
+        implementation: "private-workspace-fixture",
+        capability: "sandbox",
+        facets: ["networking", "filesystem", "process"],
+        supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+        async provisionHarness() {},
+        async cleanup() {
+          assert.fail("Admission must not clean the predecessor");
+        },
+        async resolvePrivateWorkspaceIdentity() {
+          if (nested) {
+            return identity;
+          }
+          nested = true;
+          if (race === "agent") {
+            const changed = await controller.request("PATCH", path, {
+              body: { gatewayManagedMode: false },
+            });
+            assert.equal(changed.status, 200, JSON.stringify(changed.body));
+          } else {
+            // A distinct request can admit while the provider is reading. The outer request
+            // must recover its exact receipt, or reject history drift for an ordinary deploy.
+            if (race === "history") {
+              const admitted = await controller.request("POST", `${path}/deploy`);
+              assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+            } else {
+              const admitted = await controller.request("POST", `${path}/deploy-first`, {
+                body: intent,
+              });
+              assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+              observedReceipt = admitted.data;
+              throw new ResourceStateConflictError(
+                "Provider became unavailable after concurrent admission.",
+              );
+            }
+          }
+          return identity;
+        },
+      };
+      controller.fixture.controller.registerDriver(sandbox);
+      controller.fixture.controller.selectDriver("sandbox", sandbox.id);
+      const result = await controller.request(
+        "POST",
+        `${path}/${race === "history" ? "deploy" : "deploy-first"}`,
+        race === "history" ? undefined : { body: intent },
+      );
+      assert.equal(
+        result.status,
+        race === "matching receipt" ? 202 : 409,
+        JSON.stringify(result.body),
+      );
+      const revisions = await controller.fixture.platformState.read((view) =>
+        view.revisions.listRevisions(namespace.id, agent.id),
+      );
+      assert.equal(revisions.length, race === "agent" ? 0 : 1);
+      assert.equal(work().length, revisions.length);
+      if (race === "matching receipt") {
+        assert.deepEqual(result.data, observedReceipt);
+      }
+    });
+  }
+});
+
 test("guarded first deployment returns 409 and audits an unready Namespace without credential or work effects", async () => {
   const { controller, agent, path, intent, work, secretDriver, providerCalls } =
     await firstDeploymentFixture({ ready: false });

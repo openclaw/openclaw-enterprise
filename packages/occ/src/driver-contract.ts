@@ -150,6 +150,10 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
       (candidate.validateWorkspaceSetup === undefined ||
         typeof candidate.validateWorkspaceSetup === "function") &&
       (candidate.configureAgent === undefined || typeof candidate.configureAgent === "function") &&
+      (candidate.resolvePrivateWorkspaceIdentity === undefined ||
+        typeof candidate.resolvePrivateWorkspaceIdentity === "function") &&
+      (candidate.validatePrivateWorkspaceIdentity === undefined ||
+        typeof candidate.validatePrivateWorkspaceIdentity === "function") &&
       (candidate.ensureNamespace === undefined ||
         typeof candidate.ensureNamespace === "function") &&
       (candidate.provisionHarness === undefined ||
@@ -180,6 +184,8 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     typeof candidate.ensureNamespace === "function" &&
     typeof candidate.deleteNamespace === "function" &&
     typeof candidate.prepareRevision === "function" &&
+    (candidate.validateRevisionReplacement === undefined ||
+      typeof candidate.validateRevisionReplacement === "function") &&
     typeof candidate.retireRevision === "function" &&
     (candidate.getRuntimeImages === undefined ||
       typeof candidate.getRuntimeImages === "function") &&

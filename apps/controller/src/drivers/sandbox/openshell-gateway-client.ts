@@ -15,6 +15,10 @@ import {
   openShellErrorReason,
   statusCode,
 } from "./openshell-gateway-errors.ts";
+import {
+  validPrivateWorkspaceIdentity,
+  type PrivateWorkspaceIdentity,
+} from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
   DependencyUnavailableError,
@@ -415,6 +419,10 @@ export interface OpenShellGatewayClient
     readonly chunks: readonly Readonly<Record<string, unknown>>[];
     readonly version: string;
   }>;
+  resolveWorkspaceWorkloadIdentity?(
+    workspace: string,
+    signal: AbortSignal,
+  ): Promise<PrivateWorkspaceIdentity>;
   health(signal: AbortSignal): Promise<void>;
   getGatewayInfo?(signal: AbortSignal): Promise<RecordValue>;
   /** Stock preview reads. The operator independently controls gateway access and every writer. */
@@ -620,6 +628,7 @@ type OpenShellMethod =
   | "GetWorkspace"
   | "CreateWorkspace"
   | "DeleteWorkspace"
+  | "ResolveWorkspaceWorkloadIdentity"
   | "CreateSandbox"
   | "GetSandbox"
   | "GetService"
@@ -1704,6 +1713,39 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         "OpenShell DeleteWorkspace did not confirm Workspace deletion.",
       );
     }
+  }
+
+  async resolveWorkspaceWorkloadIdentity(
+    workspace: string,
+    signal: AbortSignal,
+  ): Promise<PrivateWorkspaceIdentity> {
+    let response: RecordValue;
+    try {
+      response = await this.unary(
+        "ResolveWorkspaceWorkloadIdentity",
+        { workspace_scope: { workspace: nonempty(workspace, "OpenShell Workspace name") } },
+        signal,
+      );
+    } catch (error) {
+      const { grpc } = await this.ensureClient();
+      if (
+        error instanceof OpenShellGatewayRequestFailure &&
+        error.grpcStatus === grpc.status.UNIMPLEMENTED
+      ) {
+        throw new SandboxRevisionUnsupportedError(
+          "SANDBOX_HARNESS_UNSUPPORTED",
+          "OpenShell does not support workspace workload identity resolution; upgrade the Gateway before deploying private storage.",
+        );
+      }
+      throw error;
+    }
+    const identity = asRecord(response.identity);
+    if (!validPrivateWorkspaceIdentity(identity)) {
+      throw new OpenShellGatewayFailure(
+        "OpenShell returned an invalid workspace workload identity.",
+      );
+    }
+    return Object.freeze({ uid: identity.uid, gid: identity.gid, placement: identity.placement });
   }
 
   async createSandbox(

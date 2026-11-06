@@ -938,15 +938,21 @@ test(
     }
 
     const sandboxDriverId = "openshell-sandbox";
+    const privateWorkspaceIdentity = {
+      uid: 24001,
+      gid: 35002,
+      placement: "private-workspace-node-a",
+    };
     const sandboxRevision = await state.transact((unit) =>
       unit.revisions.createRevision({
         ...fixture.revision,
         id: `rev_${randomUUID()}`,
         revision: fixture.revision.revision + 1,
         sandboxDriverId,
+        privateWorkspaceIdentity,
       }),
     );
-    const reloadedSandboxRevision = await state.read((unit) =>
+    const reloadedSandboxRevision = await new PostgresPlatformState(pool).read((unit) =>
       unit.revisions.findRevision(
         sandboxRevision.namespaceId,
         sandboxRevision.agentId,
@@ -955,13 +961,46 @@ test(
     );
     assert.ok(reloadedSandboxRevision);
     assert.equal(reloadedSandboxRevision.sandboxDriverId, sandboxDriverId);
+    assert.deepEqual(reloadedSandboxRevision.privateWorkspaceIdentity, privateWorkspaceIdentity);
+    assert.equal(Object.isFrozen(reloadedSandboxRevision.privateWorkspaceIdentity), true);
     assert.equal(Object.isFrozen(reloadedSandboxRevision), true);
     const durableSandboxRevision = await pool.query(
       "SELECT admitted_spec FROM occ.agent_revisions WHERE id = $1",
       [sandboxRevision.id],
     );
     assert.equal(durableSandboxRevision.rows[0].admitted_spec.sandbox_driver_id, sandboxDriverId);
+    assert.deepEqual(
+      durableSandboxRevision.rows[0].admitted_spec.private_workspace_identity,
+      privateWorkspaceIdentity,
+    );
     assert.equal(Object.hasOwn(durableSandboxRevision.rows[0].admitted_spec, "sandbox"), false);
+
+    // Direct SQL must enforce the same owner/placement contract as revision admission.
+    for (const [offset, invalid] of [
+      null,
+      { ...privateWorkspaceIdentity, uid: 0 },
+      { ...privateWorkspaceIdentity, gid: 1.5 },
+      { ...privateWorkspaceIdentity, placement: " " },
+      { ...privateWorkspaceIdentity, unexpected: true },
+    ].entries()) {
+      await assert.rejects(
+        pool.query(
+          `INSERT INTO occ.agent_revisions
+             (id, namespace_id, agent_id, revision_number, admitted_spec, admitted_at)
+           SELECT $2, namespace_id, agent_id, $3,
+                  jsonb_set(admitted_spec, '{private_workspace_identity}', $1::jsonb, true), admitted_at
+           FROM occ.agent_revisions WHERE id = $4`,
+          [
+            JSON.stringify(invalid),
+            `rev_${randomUUID()}`,
+            sandboxRevision.revision + 200 + offset,
+            sandboxRevision.id,
+          ],
+        ),
+        ({ code, constraint }) =>
+          code === "23514" && constraint === "agent_revisions_private_workspace_identity",
+      );
+    }
 
     // The database accepts only a nonempty SandboxDriver identity, not descriptors or blank values.
     for (const [offset, invalid] of [null, "", " ", 1, { id: sandboxDriverId }].entries()) {

@@ -1997,7 +1997,19 @@ export class ControllerWorker {
           (candidate) => candidate.revision < revision.revision,
         ),
       );
-      await this.stopPredecessors(claim, earlier);
+      const active =
+        earlier.length > 0 && this.compute.validateRevisionReplacement !== undefined
+          ? await this.state.read((view) =>
+              view.agents.findAgent(revision.namespaceId, revision.agentId),
+            )
+          : undefined;
+      await this.stopPredecessors(
+        claim,
+        earlier,
+        "yield",
+        undefined,
+        active?.activeRevisionId === revision.id ? undefined : revision,
+      );
     }
     try {
       return await this.prepareAfterPredecessors(claim, revision, context);
@@ -2029,6 +2041,7 @@ export class ControllerWorker {
       this.state.read((view) =>
         view.revisions.findRevision(listed.namespaceId, listed.agentId, listed.id),
       ),
+    replacement?: Readonly<AgentRevision>,
   ): Promise<void> {
     for (const listed of earlier) {
       const record = this.stoppedPredecessors.get(listed.id);
@@ -2041,6 +2054,11 @@ export class ControllerWorker {
       const previous = await load(listed);
       if (previous === undefined) {
         continue;
+      }
+      if (replacement !== undefined && this.compute.validateRevisionReplacement !== undefined) {
+        await this.withClaimHeartbeat(claim, (signal) =>
+          this.compute.validateRevisionReplacement!(replacement, signal),
+        );
       }
       await this.closeRevisionCredentials(claim, previous);
       if (drain === "wait") {

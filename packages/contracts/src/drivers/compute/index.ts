@@ -415,6 +415,12 @@ export interface ComputeDriver extends Driver {
   ): ComputePrepareRevisionFailureDiagnostic | undefined;
   activateRevision?(revision: AgentRevision, context?: ComputeRevisionContext): Promise<void>;
   deactivateRevision?(revision: AgentRevision): Promise<void>;
+  /** Read-only pending replacement validation before each destructive predecessor Stop.
+   * Not called for active maintenance or completion of an already-started Stop. */
+  validateRevisionReplacement?(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<void>;
   stopRevision(revision: AgentRevision): Promise<void>;
   retireRevision(revision: AgentRevision): Promise<void>;
 }

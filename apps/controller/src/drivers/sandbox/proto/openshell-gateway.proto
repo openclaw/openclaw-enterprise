@@ -30,6 +30,7 @@ service OpenShell {
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
   rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
   rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
+  rpc ResolveWorkspaceWorkloadIdentity(ResolveWorkspaceWorkloadIdentityRequest) returns (ResolveWorkspaceWorkloadIdentityResponse);
   rpc CreateSandbox(CreateSandboxRequest) returns (SandboxResponse);
   // Read-only. Upstream authorization: bearer, scope sandbox:read, workspace role user.
   rpc GetSandbox(GetSandboxRequest) returns (SandboxResponse);
@@ -162,6 +163,7 @@ message SandboxSpec {
   bool tty = 13;
   string provider_attachment_epoch = 14;
   SandboxRestartPolicy restart_policy = 15;
+  WorkspaceWorkloadIdentity expected_workspace_workload_identity = 16;
 }
 
 enum SandboxRestartPolicy {
@@ -636,6 +638,20 @@ enum SandboxPhase {
   SANDBOX_PHASE_STOPPED = 7;
   SANDBOX_PHASE_STARTING = 8;
   SANDBOX_PHASE_COMPLETED = 9;
+}
+
+message WorkspaceWorkloadIdentity {
+  uint32 uid = 1;
+  uint32 gid = 2;
+  string placement = 3;
+}
+
+message ResolveWorkspaceWorkloadIdentityRequest {
+  WorkspaceSelector workspace_scope = 1;
+}
+
+message ResolveWorkspaceWorkloadIdentityResponse {
+  WorkspaceWorkloadIdentity identity = 1;
 }
 
 message CreateSandboxRequest {
