@@ -59,7 +59,7 @@ async function readerWithPrivateProvider() {
   const observe = publicReadReceipts((line) => console.log(line));
   observe(gitProvider.provider, "git-provider");
   const { ca, cert, key } = await publicReaderTls(address, name);
-  await writeFile("/tmp/provider.pem", ca);
+  await writeFile("/tmp/provider.pem", ca, { mode: 0o400, flag: "wx" });
   const provider = https.createServer({ key, cert }, async (req, res) => {
     assert.equal(req.socket.servername, name);
     assert.equal(req.headers.authorization ?? req.headers.cookie, undefined);

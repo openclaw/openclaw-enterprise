@@ -5,6 +5,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import http from "node:http";
 import https from "node:https";
+import { createSecureContext } from "node:tls";
 import { connect as connectTcp, createServer as createTcpServer } from "node:net";
 import test from "node:test";
 import {
@@ -807,7 +808,7 @@ test("verified reader TLS, exact mounted registry bytes and restart preserve wit
             host: "127.0.0.1",
             port,
             path,
-            ca,
+            secureContext: createSecureContext({ ca }),
             agent: false,
             headers: { authorization: `Bearer ${capability}` },
           },

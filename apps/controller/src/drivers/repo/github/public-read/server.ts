@@ -3,6 +3,7 @@ import {
   type IncomingMessage,
   type OutgoingHttpHeaders,
   type ServerOptions,
+  type ServerResponse,
   type RequestListener,
 } from "node:http";
 import { Agent, get, createServer as createSecureServer } from "node:https";
@@ -123,6 +124,16 @@ type Route = NonNullable<ReturnType<typeof readRoute>>;
 type Result = { status: number; body: string | Buffer; headers?: OutgoingHttpHeaders };
 function message(status: number, text: string, headers: OutgoingHttpHeaders = {}): Result {
   return { status, body: JSON.stringify({ message: text }), headers };
+}
+
+function reply(res: ServerResponse, result: Result) {
+  res.writeHead(result.status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+    ...result.headers,
+  });
+  res.end(result.body);
 }
 
 function listPage(body: Buffer, value: string, route: Route): Result {
@@ -414,13 +425,17 @@ export function createPublicGithubReadServer(options: ReaderOptions = {}) {
         return;
       }
       if (req.method !== "GET") {
-        result = message(405, "Only GET is allowed.", { allow: "GET" });
-      } else if (
+        reply(res, message(405, "Only GET is allowed.", { allow: "GET" }));
+        return;
+      }
+      if (
         req.headers["transfer-encoding"] !== undefined ||
         Number(req.headers["content-length"] ?? 0) !== 0
       ) {
-        result = message(400, "GET must have no request body.");
-      } else if (/^\/healthz(?:\?revision=[a-z\d_-]{1,128})?$/i.test(target)) {
+        reply(res, message(400, "GET must have no request body."));
+        return;
+      }
+      if (/^\/healthz(?:\?revision=[a-z\d_-]{1,128})?$/i.test(target)) {
         try {
           const snapshot = await authorizationSnapshot(options);
           result = {
@@ -495,13 +510,7 @@ export function createPublicGithubReadServer(options: ReaderOptions = {}) {
           }
         }
       }
-      res.writeHead(result.status, {
-        "content-type": "application/json; charset=utf-8",
-        "cache-control": "no-store",
-        "x-content-type-options": "nosniff",
-        ...result.headers,
-      });
-      res.end(result.body);
+      reply(res, result);
     },
   );
   server.maxConnections = 48;

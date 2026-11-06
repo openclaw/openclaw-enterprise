@@ -5,6 +5,7 @@ import {
   chmod,
   lstat,
   mkdir,
+  open,
   readFile,
   readdir,
   symlink,
@@ -771,11 +772,16 @@ test("managed trust fails closed on invalid inputs and removes operation files a
   for (const name of directories) {
     const directory = path.join(fixture.directory, name);
     const bundle = path.join(directory, "ca.pem");
-    assert.equal((await lstat(directory)).mode & 0o777, 0o700);
-    assert.equal((await lstat(bundle)).mode & 0o777, 0o400);
-    const contents = await readFile(bundle, "utf8");
-    assert.ok(!contents.includes(fixture.token));
-    assert.doesNotMatch(contents, /PRIVATE KEY/);
+    const file = await open(bundle, "r");
+    try {
+      assert.equal((await lstat(directory)).mode & 0o777, 0o700);
+      assert.equal((await file.stat()).mode & 0o777, 0o400);
+      const contents = await file.readFile("utf8");
+      assert.ok(!contents.includes(fixture.token));
+      assert.doesNotMatch(contents, /PRIVATE KEY/);
+    } finally {
+      await file.close();
+    }
   }
   children[0].kill("SIGTERM");
   assert.equal((await closed[0]).signal, "SIGTERM");
