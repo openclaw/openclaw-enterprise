@@ -46,7 +46,15 @@ try {
     throw new Error(`Invalid repository. ${usage}`);
   }
 
-  const actor = property(gh(["api", "user"], "authenticated user"), "login");
+  let actor: string | undefined;
+  try {
+    const login = property(gh(["api", "user"], "authenticated user"), "login");
+    if (typeof login === "string" && login.length > 0) {
+      actor = login;
+    }
+  } catch {
+    // Identity is optional for this read-only report; do not infer a credential type.
+  }
   const fields = [
     "number",
     "url",
@@ -70,10 +78,9 @@ try {
   if (
     !property(pr, "baseRefName") ||
     !property(pr, "headRefOid") ||
-    !optionalLogin(property(pr, "author")) ||
-    !actor
+    !optionalLogin(property(pr, "author"))
   ) {
-    throw new Error("GitHub did not return the PR identity, branch, head, or authenticated user.");
+    throw new Error("GitHub did not return the PR identity, branch, or head.");
   }
   const base = gh(
     [
@@ -92,9 +99,16 @@ try {
   console.log(`PR #${String(property(pr, "number"))}: ${String(property(pr, "title"))}`);
   console.log(`Repository: ${String(repository)}`);
   console.log(`URL: ${String(property(pr, "url"))}`);
+  let sameAccount = "unknown";
+  if (actor !== undefined) {
+    sameAccount = actor === property(property(pr, "author"), "login") ? "yes" : "no";
+  }
   console.log(
-    `Actor: ${String(actor)}; author: ${String(property(property(pr, "author"), "login"))}; same account: ${actor === property(property(pr, "author"), "login") ? "yes" : "no"}`,
+    `Actor: ${actor ?? "unknown"}; author: ${String(property(property(pr, "author"), "login"))}; same account: ${sameAccount}`,
   );
+  if (actor === undefined) {
+    console.log("Authenticated user unavailable; verify publishing authority separately.");
+  }
   console.log(
     `State: ${String(property(pr, "state"))}${property(pr, "isDraft") ? " (draft)" : ""}; mergeable: ${property(pr, "mergeable") ?? "UNKNOWN"}; merge state: ${property(pr, "mergeStateStatus") ?? "UNKNOWN"}`,
   );
