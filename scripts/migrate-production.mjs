@@ -1,4 +1,4 @@
-import { migrateWithHistory } from "./migration-history.mjs";
+import { migrateWithHistory, UnsupportedPostgresVersionError } from "./migration-history.mjs";
 import { createPostgresPool } from "../packages/occ/src/state/postgres-pool.ts";
 import { createOccLogger, emitOccLogEvent } from "../apps/controller/src/logging.ts";
 // Not installation-config.ts: it loads every Driver, and this command runs once per migrated database.
@@ -37,11 +37,14 @@ try {
   process.stdout.write(`${JSON.stringify({ event, history })}\n`);
   emitOccLogEvent(logger, { event });
 } catch (error) {
-  const code = ["MIGRATION_HISTORY_UNSUPPORTED", "MIGRATION_HISTORY_NOT_EMPTY"].includes(
-    error?.code,
-  )
-    ? error.code
-    : "MIGRATION_FAILED";
+  let code = "MIGRATION_FAILED";
+  if (error instanceof UnsupportedPostgresVersionError) {
+    code = "MIGRATION_SERVER_UNSUPPORTED";
+  } else if (
+    ["MIGRATION_HISTORY_UNSUPPORTED", "MIGRATION_HISTORY_NOT_EMPTY"].includes(error?.code)
+  ) {
+    code = error.code;
+  }
   if (code !== "MIGRATION_FAILED") {
     process.stderr.write(`${error.message}\n`);
   }

@@ -10,7 +10,7 @@ import {
   createTestAuthPrincipal,
   signInToControllerApp,
 } from "./auth-session.mjs";
-import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { createTestConfigurationDriver } from "./configuration-driver.ts";
 
 // Bootstrap allocates the first Namespace ID for the initial default Namespace, so the
 // first Namespace a test creates is tenant A.
@@ -117,6 +117,8 @@ export async function createTenantReaderFixture({
                     agent: "agt",
                     agent_revision: "rev",
                     secret: "sec",
+                    preset: "pre",
+                    service_account: "sa",
                   }[kind];
                   return `${prefix}_00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
                 },

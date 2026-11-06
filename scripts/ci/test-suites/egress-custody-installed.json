@@ -13,7 +13,7 @@
   "prepare": {},
   "files": [
     {
-      "path": "tests/integration/egress-custody-authorized-wire.test.mjs",
+      "path": "tests/integration/egress-custody-authorized-wire.test.ts",
       "expectedTests": [
         "authorized wrong sink presents copied opening first and splices a pending real reply",
         "two live authorized streams cannot cross their resolved dispatch handles"

@@ -10,6 +10,7 @@ import {
   publishWorkflow,
   repository,
   skopeo,
+  skopeoLogin,
   validatePreparedImage,
   verifyCi,
   verifyEnvironment,
@@ -171,18 +172,8 @@ async function promote(path, env) {
   const authDirectory = await mkdtemp(join(tmpdir(), "enterprise-promotion-"));
   const authfile = join(authDirectory, "auth.json");
   try {
-    for (const [registry, username, token] of [
-      ["ghcr.io", env.GITHUB_ACTOR, env.GH_TOKEN],
-      ["docker.io", env.DOCKERHUB_USERNAME, env.DOCKERHUB_TOKEN],
-    ]) {
-      skopeo(
-        ["login", "--authfile", authfile, "--username", username, "--password-stdin", registry],
-        {
-          input: token,
-          stdio: ["pipe", "ignore", "pipe"],
-        },
-      );
-    }
+    skopeoLogin("ghcr.io", authfile, env.GITHUB_ACTOR, env.GH_TOKEN);
+    skopeoLogin("docker.io", authfile, env.DOCKERHUB_USERNAME, env.DOCKERHUB_TOKEN);
     for (const image of targets) {
       assert.equal(await verifyProducer(env), env.ARTIFACT_ID);
       await verifyCi(ci);

@@ -113,7 +113,7 @@ test(
       });
     });
     await page.getByRole("button", { name: "Continue with GitHub" }).click();
-    await page.waitForURL(/\/console\/(agents|namespaces|settings)/);
+    await page.waitForURL(/\/console\/(?:$|agents|namespaces|settings)/);
     const parent = (await context.cookies(origin)).find(
       (cookie) => cookie.name === api.auth.sessionCookieName,
     );
@@ -154,7 +154,7 @@ test(
     });
     const launch = async (tab: Page) => {
       const popup = tab.waitForEvent("popup");
-      await tab.getByRole("link", { name: "Open admin console" }).click();
+      await tab.getByRole("link", { name: "Open Agent UI" }).click();
       return popup;
     };
     const firstWindow = launch(page);

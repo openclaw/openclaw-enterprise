@@ -1244,6 +1244,62 @@ describe("sign-in chart parity", { concurrency: true }, () => {
     );
   });
 
+  test(
+    "the chart tells the API whether a sign-in egress rule opens HTTPS to any address",
+    tooling,
+    async () => {
+      // Production names a missing Slack proxy for an unanswered Slack check only when API
+      // egress is closed; an open sign-in rule can reach Slack directly (finding 2533). The chart
+      // reports open exactly when it renders a login egress rule to 0.0.0.0/0, from any provider.
+      const github = githubUpgradeValues(recoveryUserId);
+      const google = googleUpgradeValues(recoveryUserId);
+      const oidc = oidcUpgradeValues(recoveryUserId);
+      const narrowed = (provider) => ({ [`auth.${provider}.egressCidrs[0]`]: "203.0.113.0/24" });
+      const flag = "OCC_API_HTTPS_EGRESS_OPEN";
+      await settle(
+        [
+          ["password only", {}, "false"],
+          ["null GitHub map", { "auth.github": "null" }, "false"],
+          ["GitHub", github, "true"],
+          ["GitHub narrowed", { ...github, ...narrowed("github") }, "false"],
+          ["Google", google, "true"],
+          ["Google narrowed", { ...google, ...narrowed("google") }, "false"],
+          ["OIDC", oidc, "true"],
+          ["OIDC narrowed", { ...oidc, ...narrowed("oidc") }, "false"],
+          ["GitHub narrowed, Google open", { ...github, ...narrowed("github"), ...google }, "true"],
+        ].map(async ([label, values, open]) => {
+          const objects = await render(values);
+          assert.deepEqual(
+            deploymentEnv(objects, "api").filter(({ name }) => name === flag),
+            [{ name: flag, value: open }],
+            label,
+          );
+          const anyAddress = objects.some(
+            ({ kind, metadata, spec }) =>
+              kind === "NetworkPolicy" &&
+              /-api-(github|google|oidc)-login-egress$/.test(metadata.name) &&
+              spec.egress.some(({ to }) => to.some(({ ipBlock }) => ipBlock?.cidr === "0.0.0.0/0")),
+          );
+          assert.equal(String(anyAddress), open, label);
+          assert.ok(!deploymentEnv(objects, "worker").some(({ name }) => name === flag), label);
+        }),
+      );
+      // The API accepts the rendered value and refuses anything but true or false.
+      const environment = await renders(
+        "GitHub egress flag",
+        github,
+        githubUpgradeSettings(recoveryUserId),
+        ["github"],
+      );
+      const [accepted, refused] = await settle([
+        startupCode({ ...environment, [flag]: "true" }),
+        startupCode({ ...environment, [flag]: "open" }),
+      ]);
+      assert.equal(accepted, "PERSISTENCE_UNAVAILABLE");
+      assert.equal(refused, "STARTUP_FAILED");
+    },
+  );
+
   // With native admin, the API refuses at startup a console origin outside the shared cookie
   // parent, or one without HTTPS (createControllerAuth, before any database read). The chart
   // refuses the same values at render time, and still renders what the API accepts.

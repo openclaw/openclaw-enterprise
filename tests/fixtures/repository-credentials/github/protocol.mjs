@@ -15,6 +15,8 @@ export function createGitHubProtocol({
   clock,
   repository = fixtureRepository,
   repositoryId = fixtureRepositoryId,
+  expectedRepositoryIds = [repositoryId],
+  additionalRepositories = [],
   description = null,
   keyPair = sharedRsaKeyPair("github-app"),
   tokenLifetimeMs = 3600000,
@@ -27,19 +29,31 @@ export function createGitHubProtocol({
   beforeMetadataResponse,
   issueResponse = (response) => response,
   issueResponseGate,
+  /** Awaited after GitHub revokes a token, before its answer is sent. */
+  revokeResponseGate,
   draftResponse = (body) => body,
+  /** Maps the repository metadata body, e.g. to GitHub's own spelling of the name. */
+  metadataResponse = (body) => body,
   revokeStatus = 204,
+  issueStatus = 201,
 }) {
+  /** @type {string | undefined} */
+  let issueBody;
   const { privateKey, publicKey } = keyPair;
   const authority = createTokenAuthority({
     clock,
     publicKey,
     lifetimeMs: tokenLifetimeMs,
     repositoryId,
+    expectedRepositoryIds,
     additionalPermissions,
     installationAccess,
   });
   const resources = createRepositoryResources({ repository, repositoryId, description });
+  const repositoryResources = [
+    resources,
+    ...additionalRepositories.map((entry) => createRepositoryResources(entry)),
+  ];
   const trace = [];
   const errors = [];
   let disconnectMutation;
@@ -86,6 +100,20 @@ export function createGitHubProtocol({
         url.pathname === `/app/installations/${fixtureInstallationId}/access_tokens`
       ) {
         await beforeIssue?.();
+        if (issueBody !== undefined) {
+          // A raw answer in place of minting: malformed or ambiguous provider bodies.
+          if (!disconnect(request, response, url)) {
+            response.writeHead(issueStatus, { "content-type": "application/json" });
+            response.end(issueBody);
+          }
+          return;
+        }
+        if (issueStatus !== 201) {
+          // GitHub refuses before minting: a rejected App key (401), an unknown installation
+          // (404) or a repository outside it (422) answers with no token.
+          json(issueStatus, { message: "Refused", status: String(issueStatus) });
+          return;
+        }
         // The provider owns the token before response gates can delay or lose its delivery.
         const { token, expires, permissions } = authority.issue(
           request.headers.authorization,
@@ -100,7 +128,9 @@ export function createGitHubProtocol({
             expires_at: new Date(expires).toISOString(),
             permissions,
             repository_selection: "selected",
-            repositories: [resources.repo],
+            repositories: repositoryResources
+              .filter((entry) => expectedRepositoryIds.map(String).includes(String(entry.repo.id)))
+              .map((entry) => entry.repo),
           }),
         });
         if (!disconnect(request, response, url)) {
@@ -115,6 +145,7 @@ export function createGitHubProtocol({
           return;
         }
         authority.revoke(request.headers.authorization);
+        await revokeResponseGate?.();
         if (!disconnect(request, response, url)) {
           response.writeHead(204).end();
         }
@@ -135,7 +166,25 @@ export function createGitHubProtocol({
           : "query";
       }
       // Commit provider mutations before injecting a lost response, including DELETE.
-      const result = resources.dispatch({
+      const selectedResources =
+        repositoryResources.find(
+          (entry) =>
+            url.pathname === `/repos/${entry.repo.full_name}` ||
+            url.pathname.startsWith(`/repos/${entry.repo.full_name}/`),
+        ) ??
+        (url.pathname === "/graphql" && body.variables?.owner && body.variables?.name
+          ? repositoryResources.find(
+              (entry) => entry.repo.full_name === `${body.variables.owner}/${body.variables.name}`,
+            )
+          : resources);
+      if (
+        !selectedResources ||
+        !authority.permitsRepository(request.headers.authorization, selectedResources.repo.id)
+      ) {
+        json(404, { message: "Not Found" });
+        return;
+      }
+      const result = selectedResources.dispatch({
         method: request.method,
         url,
         body,
@@ -161,7 +210,16 @@ export function createGitHubProtocol({
           entry.forwardedOperationId = Object.hasOwn(request.headers, "x-oce-operation-id");
           entry.usedBearer = request.headers.authorization.startsWith("Bearer ");
         }
-        json(result.status, createPull ? draftResponse(result.body) : result.body, result.headers);
+        const metadata = request.method === "GET" && url.pathname === `/repos/${repository}`;
+        json(
+          result.status,
+          createPull
+            ? draftResponse(result.body)
+            : metadata
+              ? metadataResponse(result.body)
+              : result.body,
+          result.headers,
+        );
       }
     } catch (error) {
       // Keep failure evidence safe: assertion values may include signing input.
@@ -182,10 +240,19 @@ export function createGitHubProtocol({
     comments: resources.comments,
     errors,
     authorize: authority.authorize,
+    authorizeRepository: authority.authorizeRepository,
     acceptStatic: authority.acceptStatic,
     tokenState: authority.tokenState,
     setRevokeStatus(status) {
       revokeStatus = status;
+    },
+    /**
+     * Answer issue requests with this status and no token (201 issues again), or with this
+     * raw body in place of minting.
+     */
+    setIssueStatus(status, body = undefined) {
+      issueStatus = status;
+      issueBody = body;
     },
     disconnectAfterMutation(method, target) {
       disconnectMutation = `${method} ${target}`;

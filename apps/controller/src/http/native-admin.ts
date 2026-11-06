@@ -9,6 +9,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   NoActiveAgentRevisionError,
+  QualifiedAuthorizationDeniedError,
   ResourceConflictError,
   type AuthorizationDeniedError,
   type OpenClawController,
@@ -49,6 +50,7 @@ import {
   isDependencyUnavailable,
   requestFailure,
 } from "./errors.ts";
+import { GENERIC_DENIAL, NATIVE_ADMIN_DENIAL } from "./caller-denial.ts";
 import { RequestRateLimiter } from "./request-rate-limiter.ts";
 import type { RequestContext } from "./types.ts";
 import { parse as parseDomain } from "tldts";
@@ -106,13 +108,16 @@ interface NativeAdminProxyDenial {
   readonly revisionId?: string;
   readonly host?: string;
   readonly actualAuthorizationDenied?: true;
+  // The signed-in person has no platform identity, so no grant was checked: the JSON refusal
+  // stays generic. It is decided before the host, so it tells nothing about the Agent.
+  readonly unprovisioned?: true;
   readonly evidence?: AuthorizationEvidence;
   readonly authorization?: NonNullable<AuthorizationDeniedError["authorization"]>;
 }
 
 type NativeAdminProxyAdmission = NativeAdminProxyResolution | NativeAdminProxyDenial;
 const NATIVE_ADMIN_PROXY_ADMISSION_TIMEOUT_MS = 5_000;
-const NATIVE_ADMIN_CLOSE_AUDIT_DRAIN_MS = 5_000;
+const NATIVE_ADMIN_WORK_DRAIN_MS = 5_000;
 export const nativeAdminStatusOperation = {
   operationId: "getAgentNativeAdmin",
   method: "GET",
@@ -231,8 +236,62 @@ export function limitNativeAdminReturn(
   }
 }
 
-function acceptsHtml(accept: string | undefined): boolean {
-  return (accept ?? "").split(",").some((entry) => {
+function escapeHtml(value: string): string {
+  return value.replaceAll(/[&<>"']/g, (character) => {
+    switch (character) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&#39;";
+    }
+  });
+}
+
+// A top-level browser page load of the native root or a copied chat link. Link unfurlers and API
+// clients send no Fetch Metadata, so they never qualify. Sec-Fetch-User is checked separately:
+// Safari never sends it, and other browsers omit it on navigations without user activation.
+function browserDocumentNavigation(request: FastifyRequest, pathname: string): boolean {
+  return (
+    request.method === "GET" &&
+    /^\/(?:chat\/main(?:\/[0-9a-f]{32})?\/?)?$/.test(pathname) &&
+    request.headers["sec-fetch-mode"] === "navigate" &&
+    request.headers["sec-fetch-dest"] === "document" &&
+    acceptsHtml(request.headers.accept)
+  );
+}
+
+function userActivated(request: FastifyRequest): boolean {
+  return request.headers["sec-fetch-user"] === "?1";
+}
+
+function sendNativeAdminHtmlRefusal(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  title: string,
+  body: string,
+): void {
+  reply
+    .header("cache-control", "no-store")
+    .header("content-type", "text/html; charset=utf-8")
+    .header("x-content-type-options", "nosniff")
+    .header("referrer-policy", "no-referrer")
+    .header("x-request-id", request.id)
+    .code(403)
+    .type("text/html; charset=utf-8")
+    .send(
+      `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head><body>${body}</body></html>`,
+    );
+}
+
+function acceptsHtml(accept: string | string[] | undefined): boolean {
+  const header = Array.isArray(accept) ? accept.join(",") : accept;
+  return (header ?? "").split(",").some((entry) => {
     const [mediaType, ...parameters] = entry.trim().toLowerCase().split(";");
     if (mediaType?.trim() !== "text/html") {
       return false;
@@ -394,7 +453,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   }
 
   const nativeAdminSockets = new Set<Socket>();
-  const nativeAdminCloseAudits = new Set<Promise<void>>();
+  const nativeAdminPendingWork = new Set<Promise<unknown>>();
   let nativeAdminShuttingDown = false;
   // Status polls, proxied requests and WebSocket lease renewals all re-check ownership, and a
   // Compute-owner mismatch lasts until a new deployment: warn once per revision and owner pair.
@@ -667,16 +726,46 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     }
   }
 
-  async function drainNativeAdminCloseAudits(): Promise<void> {
-    if (nativeAdminCloseAudits.size === 0) {
+  function startNativeAdminAdmission(
+    request: IncomingMessage,
+    hostname: string,
+    kind: "http" | "websocket",
+    expectedRevisionId?: string,
+  ) {
+    const result = nativeAdminProxyContext(request, hostname, expectedRevisionId);
+    // Own the result through its audit attempt, even after the caller stops waiting.
+    // Tracking one chain prevents shutdown from missing admission becoming an append.
+    const audit = result.then(
+      async (admission) => {
+        try {
+          await appendNativeAdminProxyDenialAudit(admission);
+          return true;
+        } catch {
+          if (kind === "http") {
+            app.log.warn({ event: "native_admin.http_denial_audit_failed" });
+          } else {
+            app.log.warn({ event: "native_admin.websocket_denial_audit_failed" });
+          }
+          return false;
+        }
+      },
+      () => true,
+    );
+    nativeAdminPendingWork.add(audit);
+    void audit.then(() => nativeAdminPendingWork.delete(audit));
+    return { result, audit };
+  }
+
+  async function drainNativeAdminWork(): Promise<void> {
+    if (nativeAdminPendingWork.size === 0) {
       return;
     }
     let timeout: NodeJS.Timeout | undefined;
     try {
       await Promise.race([
-        Promise.allSettled([...nativeAdminCloseAudits]),
+        Promise.allSettled([...nativeAdminPendingWork]),
         new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, NATIVE_ADMIN_CLOSE_AUDIT_DRAIN_MS);
+          const timer = setTimeout(resolve, NATIVE_ADMIN_WORK_DRAIN_MS);
           timeout = timer;
           timer.unref();
         }),
@@ -685,6 +774,14 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       if (timeout !== undefined) {
         clearTimeout(timeout);
       }
+    }
+    if (nativeAdminPendingWork.size > 0) {
+      // This bounds shutdown waiting, not producer lifetime or durable delivery.
+      // Keep ownership until settlement so a late denial still gets its attempt.
+      app.log.warn({
+        event: "native_admin.pending_work_unresolved",
+        pending: nativeAdminPendingWork.size,
+      });
     }
   }
 
@@ -846,11 +943,11 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   }) {
     const controller = getController();
     if (!controller) {
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+      throw failure(403, "FORBIDDEN", GENERIC_DENIAL);
     }
     const availability = await resolveNativeAdminAvailability(input);
     if (availability.status === "disabled") {
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+      throw failure(403, "FORBIDDEN", GENERIC_DENIAL);
     }
     if (
       availability.status === "unsupported" &&
@@ -869,7 +966,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       throw failure(409, "RESOURCE_CONFLICT", "The active AgentRevision changed.");
     }
     if (input.expectedHost !== undefined && availability.target.host !== input.expectedHost) {
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+      throw failure(403, "FORBIDDEN", GENERIC_DENIAL);
     }
     return availability;
   }
@@ -964,6 +1061,12 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       actorId: context.actorId,
       namespaceId,
       agentId,
+    }).catch((error: unknown) => {
+      // With native admin off, Agent administer alone would not open it, so the caller's denial
+      // says so (finding D762). The setting is the Installation's, the same for every Agent.
+      throw options.nativeAdmin?.enabled === true
+        ? error
+        : QualifiedAuthorizationDeniedError.qualify(error, "native_admin_off");
     });
     reply.send({
       data: nativeAdminAvailabilityData(availability),
@@ -971,8 +1074,30 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     });
   }
 
+  async function nativeBrowserRequest(
+    request: FastifyRequest,
+    operation: (requireActive: () => void) => Promise<void>,
+  ): Promise<void> {
+    const requireActive = () => {
+      if (nativeAdminShuttingDown || request.raw.socket.destroyed) {
+        throw dependencyUnavailable();
+      }
+    };
+    requireActive();
+    // Keep transaction and audit work owned through settlement. An in-flight
+    // transaction may commit during shutdown, but cannot deliver a browser secret.
+    const work = operation(requireActive);
+    nativeAdminPendingWork.add(work);
+    try {
+      await work;
+    } finally {
+      nativeAdminPendingWork.delete(work);
+    }
+  }
+
   function requireLaunchContext(request: FastifyRequest) {
     if (
+      options.nativeAdmin?.enabled !== true ||
       !exchangeMode ||
       !nativeBrowser ||
       request.headers.origin !== publicOrigin ||
@@ -990,73 +1115,83 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   }
 
   async function launch(request: FastifyRequest, reply: FastifyReply) {
-    bridgeHeaders(reply);
-    const { context, session } = requireLaunchContext(request);
-    const params = request.params as { namespaceId: string; agentId: string };
-    const available = await requireAvailableNativeAdminTarget({
-      actorId: context.actorId,
-      ...params,
-    });
-    const value = await nativeBrowser!.create({
-      id: randomUUID(),
-      parentSessionId: session.id,
-      principalId: context.actorId,
-      namespaceId: available.agent.namespaceId,
-      agentId: available.agent.id,
-      revisionId: available.revision.id,
-      origin: available.target.origin,
-    });
-    reply.send({
-      data: {
-        intentId: value.id,
-        origin: value.origin,
-        landingUrl: `${value.origin}${nativeLandingPath}?intent=${value.id}`,
-      },
-      meta: { requestId: request.id },
+    return nativeBrowserRequest(request, async (requireActive) => {
+      bridgeHeaders(reply);
+      const { context, session } = requireLaunchContext(request);
+      const params = request.params as { namespaceId: string; agentId: string };
+      const available = await requireAvailableNativeAdminTarget({
+        actorId: context.actorId,
+        ...params,
+      });
+      requireActive();
+      const value = await nativeBrowser!.create({
+        id: randomUUID(),
+        parentSessionId: session.id,
+        principalId: context.actorId,
+        namespaceId: available.agent.namespaceId,
+        agentId: available.agent.id,
+        revisionId: available.revision.id,
+        origin: available.target.origin,
+      });
+      requireActive();
+      reply.send({
+        data: {
+          intentId: value.id,
+          origin: value.origin,
+          landingUrl: `${value.origin}${nativeLandingPath}?intent=${value.id}`,
+        },
+        meta: { requestId: request.id },
+      });
     });
   }
 
   async function confirm(request: FastifyRequest, reply: FastifyReply) {
-    bridgeHeaders(reply);
-    const { context, session } = requireLaunchContext(request);
-    const body = request.body as { intentId: string; challenge: string };
-    const params = request.params as { namespaceId: string; agentId: string };
-    const value = await nativeBrowser!.read(body.intentId);
-    if (
-      !value ||
-      value.parentSessionId !== session.id ||
-      value.principalId !== context.actorId ||
-      value.namespaceId !== params.namespaceId ||
-      value.agentId !== params.agentId
-    ) {
-      throw failure(403, "FORBIDDEN", "A fresh launch from the signed-in console is required.");
-    }
-    await requireAvailableNativeAdminTarget({
-      actorId: context.actorId,
-      ...params,
-      expectedHost: new URL(value.origin).hostname,
-      expectedRevisionId: value.revisionId,
-    });
-    const exchange = browserSecret();
-    if (
-      !(await nativeBrowser!.confirm(
-        value.id,
-        session.id,
-        browserSecretHash(body.challenge),
-        browserSecretHash(exchange),
-      ))
-    ) {
-      throw failure(403, "FORBIDDEN", "A fresh launch from the signed-in console is required.");
-    }
-    reply.send({
-      data: { intentId: value.id, exchange, redeemUrl: `${value.origin}${nativeRedemptionPath}` },
-      meta: { requestId: request.id },
+    return nativeBrowserRequest(request, async (requireActive) => {
+      bridgeHeaders(reply);
+      const { context, session } = requireLaunchContext(request);
+      const body = request.body as { intentId: string; challenge: string };
+      const params = request.params as { namespaceId: string; agentId: string };
+      const value = await nativeBrowser!.read(body.intentId);
+      requireActive();
+      if (
+        !value ||
+        value.parentSessionId !== session.id ||
+        value.principalId !== context.actorId ||
+        value.namespaceId !== params.namespaceId ||
+        value.agentId !== params.agentId
+      ) {
+        throw failure(403, "FORBIDDEN", "A fresh launch from the signed-in console is required.");
+      }
+      await requireAvailableNativeAdminTarget({
+        actorId: context.actorId,
+        ...params,
+        expectedHost: new URL(value.origin).hostname,
+        expectedRevisionId: value.revisionId,
+      });
+      requireActive();
+      const exchange = browserSecret();
+      if (
+        !(await nativeBrowser!.confirm(
+          value.id,
+          session.id,
+          browserSecretHash(body.challenge),
+          browserSecretHash(exchange),
+        ))
+      ) {
+        throw failure(403, "FORBIDDEN", "A fresh launch from the signed-in console is required.");
+      }
+      requireActive();
+      reply.send({
+        data: { intentId: value.id, exchange, redeemUrl: `${value.origin}${nativeRedemptionPath}` },
+        meta: { requestId: request.id },
+      });
     });
   }
 
   function bridgeOrigin(request: FastifyRequest): string {
     const authority = nativeAdminAuthority(request.headers.host);
     if (
+      options.nativeAdmin?.enabled !== true ||
       !exchangeMode ||
       !nativeBrowser ||
       !authority ||
@@ -1097,21 +1232,32 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
           },
         },
       },
-      async (request, reply) => {
-        bridgeHeaders(reply);
-        const origin = bridgeOrigin(request);
-        const id = (request.query as { intent: string }).intent;
-        const value = await nativeBrowser!.read(id);
-        if (!value || value.origin !== origin) {
-          throw failure(403, "FORBIDDEN", "A fresh launch from the signed-in console is required.");
-        }
-        const challenge = browserSecret();
-        if (!(await nativeBrowser!.bind(id, origin, browserSecretHash(challenge)))) {
-          throw failure(403, "FORBIDDEN", "A fresh launch from the signed-in console is required.");
-        }
-        reply.header("set-cookie", hostCookie(nativeChallengeCookie(id), challenge, 60));
-        landingPage(reply, publicOrigin!, id, challenge);
-      },
+      async (request, reply) =>
+        nativeBrowserRequest(request, async (requireActive) => {
+          bridgeHeaders(reply);
+          const origin = bridgeOrigin(request);
+          const id = (request.query as { intent: string }).intent;
+          const value = await nativeBrowser!.read(id);
+          if (!value || value.origin !== origin) {
+            throw failure(
+              403,
+              "FORBIDDEN",
+              "A fresh launch from the signed-in console is required.",
+            );
+          }
+          requireActive();
+          const challenge = browserSecret();
+          if (!(await nativeBrowser!.bind(id, origin, browserSecretHash(challenge)))) {
+            throw failure(
+              403,
+              "FORBIDDEN",
+              "A fresh launch from the signed-in console is required.",
+            );
+          }
+          requireActive();
+          reply.header("set-cookie", hostCookie(nativeChallengeCookie(id), challenge, 60));
+          landingPage(reply, publicOrigin!, id, challenge);
+        }),
     );
     bridge.post(
       nativeRedemptionPath,
@@ -1130,77 +1276,102 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
           },
         },
       },
-      async (request, reply) => {
-        bridgeHeaders(reply);
-        const origin = bridgeOrigin(request);
-        const body = request.body as { intentId: string; exchange: string };
-        const challengeName = nativeChallengeCookie(body.intentId);
-        const challenge = browserCookie(request.headers.cookie, challengeName);
-        if (
-          request.headers.origin !== publicOrigin ||
-          !challenge ||
-          !request.headers["content-type"]?.startsWith("application/x-www-form-urlencoded") ||
-          Object.keys(request.query as object).length !== 0
-        ) {
-          throw failure(403, "FORBIDDEN", "A fresh launch from the signed-in console is required.");
-        }
-        const value = await nativeBrowser!.read(body.intentId);
-        if (!value || value.origin !== origin) {
-          throw failure(403, "FORBIDDEN", "A fresh launch from the signed-in console is required.");
-        }
-        try {
-          await requireAvailableNativeAdminTarget({
-            actorId: value.principalId,
-            namespaceId: value.namespaceId,
-            agentId: value.agentId,
-            expectedHost: new URL(origin).hostname,
-            expectedRevisionId: value.revisionId,
-          });
-        } catch (error) {
-          if (!isDependencyUnavailable(error) && isAuthorizationDenied(error)) {
-            await appendNativeAdminProxyDenialAudit(
-              nativeAdminProxyDenial("authorization_denied", {
-                actorId: value.principalId,
-                actorIssuer: options.auth.issuer,
-                actorSubject: value.parent.userId,
-                namespaceId: value.namespaceId,
-                agentId: value.agentId,
-                revisionId: value.revisionId,
-                host: new URL(origin).hostname,
-                actualAuthorizationDenied: true,
-                ...(error.evidence ? { evidence: error.evidence } : {}),
-                ...(error.authorization ? { authorization: error.authorization } : {}),
-              }),
+      async (request, reply) =>
+        nativeBrowserRequest(request, async (requireActive) => {
+          bridgeHeaders(reply);
+          const origin = bridgeOrigin(request);
+          const body = request.body as { intentId: string; exchange: string };
+          const challengeName = nativeChallengeCookie(body.intentId);
+          const challenge = browserCookie(request.headers.cookie, challengeName);
+          if (
+            request.headers.origin !== publicOrigin ||
+            !challenge ||
+            !request.headers["content-type"]?.startsWith("application/x-www-form-urlencoded") ||
+            Object.keys(request.query as object).length !== 0
+          ) {
+            throw failure(
+              403,
+              "FORBIDDEN",
+              "A fresh launch from the signed-in console is required.",
             );
           }
-          throw error;
-        }
-        const handle = browserSecret();
-        const previous = browserCookie(request.headers.cookie, nativeAccessCookie);
-        if (previous === null) {
-          throw failure(403, "FORBIDDEN", "A fresh launch from the signed-in console is required.");
-        }
-        const access = await nativeBrowser!.redeem({
-          id: value.id,
-          origin,
-          challengeHash: browserSecretHash(challenge),
-          exchangeHash: browserSecretHash(body.exchange),
-          handleHash: browserSecretHash(handle),
-          ...(previous ? { previousHandleHash: browserSecretHash(previous) } : {}),
-        });
-        if (!access) {
-          throw failure(403, "FORBIDDEN", "A fresh launch from the signed-in console is required.");
-        }
-        reply.header("set-cookie", [
-          hostCookie(
-            nativeAccessCookie,
-            handle,
-            Math.max(0, Math.floor((access.parent.expiresAt.getTime() - Date.now()) / 1000)),
-          ),
-          hostCookie(challengeName, "", 0),
-        ]);
-        redeemedPage(reply);
-      },
+          const value = await nativeBrowser!.read(body.intentId);
+          requireActive();
+          if (!value || value.origin !== origin) {
+            throw failure(
+              403,
+              "FORBIDDEN",
+              "A fresh launch from the signed-in console is required.",
+            );
+          }
+          try {
+            await requireAvailableNativeAdminTarget({
+              actorId: value.principalId,
+              namespaceId: value.namespaceId,
+              agentId: value.agentId,
+              expectedHost: new URL(origin).hostname,
+              expectedRevisionId: value.revisionId,
+            });
+          } catch (error) {
+            if (!isDependencyUnavailable(error) && isAuthorizationDenied(error)) {
+              await appendNativeAdminProxyDenialAudit(
+                nativeAdminProxyDenial("authorization_denied", {
+                  actorId: value.principalId,
+                  actorIssuer: options.auth.issuer,
+                  actorSubject: value.parent.userId,
+                  namespaceId: value.namespaceId,
+                  agentId: value.agentId,
+                  revisionId: value.revisionId,
+                  host: new URL(origin).hostname,
+                  actualAuthorizationDenied: true,
+                  ...(error.evidence ? { evidence: error.evidence } : {}),
+                  ...(error.authorization ? { authorization: error.authorization } : {}),
+                }),
+                { action: "openclaw.agents.native_admin.redeem.authorize", requestId: request.id },
+              );
+            }
+            throw error;
+          }
+          requireActive();
+          const handle = browserSecret();
+          const previous = browserCookie(request.headers.cookie, nativeAccessCookie);
+          if (previous === null) {
+            throw failure(
+              403,
+              "FORBIDDEN",
+              "A fresh launch from the signed-in console is required.",
+            );
+          }
+          const access = await nativeBrowser!.redeem({
+            id: value.id,
+            origin,
+            challengeHash: browserSecretHash(challenge),
+            exchangeHash: browserSecretHash(body.exchange),
+            handleHash: browserSecretHash(handle),
+            ...(previous ? { previousHandleHash: browserSecretHash(previous) } : {}),
+          });
+          if (!access) {
+            throw failure(
+              403,
+              "FORBIDDEN",
+              "A fresh launch from the signed-in console is required.",
+            );
+          }
+          requireActive();
+          const accessCookie = access.reusedPreviousHandle ? previous : handle;
+          if (!accessCookie) {
+            throw dependencyUnavailable();
+          }
+          reply.header("set-cookie", [
+            hostCookie(
+              nativeAccessCookie,
+              accessCookie,
+              Math.max(0, Math.floor((access.parent.expiresAt.getTime() - Date.now()) / 1000)),
+            ),
+            hostCookie(challengeName, "", 0),
+          ]);
+          redeemedPage(reply);
+        }),
     );
   });
 
@@ -1322,8 +1493,11 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     const actorIssuer = admitted.externalIdentity.issuer;
     const actorSubject = admitted.externalIdentity.subject;
     const currentActor = await resolveNativeAdminActor({ actorIssuer, actorSubject });
-    if (currentActor === undefined || (access && currentActor !== access.parent.principalId)) {
-      return nativeAdminProxyDenial("authorization_denied");
+    if (currentActor === undefined) {
+      return nativeAdminProxyDenial("authorization_denied", { unprovisioned: true });
+    }
+    if (access && currentActor !== access.parent.principalId) {
+      return nativeAdminProxyDenial("session_invalid");
     }
     const agent = await resolveNativeAdminAgentHost(hostname);
     if (
@@ -1332,8 +1506,11 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     ) {
       return nativeAdminProxyDenial("authorization_denied");
     }
+    const requiredRevisionId = access?.revisionId ?? expectedRevisionId;
+    if (access && expectedRevisionId !== undefined && access.revisionId !== expectedRevisionId) {
+      return nativeAdminProxyDenial("revision_changed");
+    }
     try {
-      const requiredRevisionId = access?.revisionId ?? expectedRevisionId;
       const resolved = await requireAvailableNativeAdminTarget({
         actorId: currentActor,
         namespaceId: agent.namespaceId,
@@ -1369,7 +1546,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
           actorSubject,
           namespaceId: agent.namespaceId,
           agentId: agent.id,
-          ...(expectedRevisionId === undefined ? {} : { revisionId: expectedRevisionId }),
+          ...(requiredRevisionId === undefined ? {} : { revisionId: requiredRevisionId }),
           host: hostname,
           actualAuthorizationDenied: true,
           ...(error.evidence === undefined ? {} : { evidence: error.evidence }),
@@ -1391,6 +1568,10 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     if (isNativeAdminReservedPrefix(request.url)) {
       bridgeHeaders(reply);
     }
+    if (nativeAdminShuttingDown) {
+      canonicalFailure(reply, dependencyUnavailable());
+      return true;
+    }
     if (
       exchangeMode &&
       isNativeAdminAgentHost(hostname) &&
@@ -1400,55 +1581,88 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       return false;
     }
     if (isNativeAdminReservedPrefix(request.url) || !isNativeAdminAgentHost(hostname)) {
-      canonicalFailure(
-        reply,
-        failure(403, "FORBIDDEN", "The exact platform operation was not authorized."),
-      );
+      canonicalFailure(reply, failure(403, "FORBIDDEN", GENERIC_DENIAL));
       return true;
     }
-    const admission = await boundedNativeAdminAdmission(
-      nativeAdminProxyContext(request.raw, hostname),
-    );
+    const operation = startNativeAdminAdmission(request.raw, hostname, "http");
+    const admission = await boundedNativeAdminAdmission(operation.result);
     if (!isNativeAdminProxyResolution(admission)) {
-      try {
-        await appendNativeAdminProxyDenialAudit(admission);
-      } catch {
+      if (admission !== undefined && !(await operation.audit)) {
         canonicalFailure(reply, dependencyUnavailable());
         return true;
       }
       const agentKey = /^agent-([0-9a-f]{32})\./.exec(hostname)?.[1];
+      const documentNavigation = browserDocumentNavigation(
+        request,
+        nativeAdminPathname(request.url),
+      );
       if (
         agentKey !== undefined &&
         hostname === `agent-${agentKey}.${nativeAdminDomain}` &&
         admission?.reason === "session_invalid" &&
         options.nativeAdmin?.enabled === true &&
         publicOrigin !== undefined &&
-        request.method === "GET" &&
-        /^\/(?:chat\/main(?:\/[0-9a-f]{32})?)?$/.test(nativeAdminPathname(request.url)) &&
-        request.headers["sec-fetch-mode"] === "navigate" &&
-        request.headers["sec-fetch-dest"] === "document" &&
-        request.headers["sec-fetch-user"] === "?1" &&
-        acceptsHtml(request.headers.accept)
+        documentNavigation
       ) {
         const consoleUrl = new URL("/console/", publicOrigin);
         consoleUrl.hash = `native-agent=${agentKey}`;
-        reply
-          .header("cache-control", "no-store")
-          .header("referrer-policy", "no-referrer")
-          .header("x-request-id", request.id)
-          .redirect(consoleUrl.href, 302);
+        if (userActivated(request)) {
+          reply
+            .header("cache-control", "no-store")
+            .header("referrer-policy", "no-referrer")
+            .header("x-request-id", request.id)
+            .redirect(consoleUrl.href, 302);
+          return true;
+        }
+        // Without user activation, stay 403 and leave sign-in to the person: no automatic redirect.
+        sendNativeAdminHtmlRefusal(
+          request,
+          reply,
+          "Sign in",
+          `<p><a href="${escapeHtml(consoleUrl.href)}">Sign in</a></p>`,
+        );
         return true;
       }
+      // A signed-in person who cannot open this Agent (for example after Back switches
+      // accounts) stays on 403. The page names no Agent and links to their Agents list.
+      // API reads keep the JSON refusal.
+      if (
+        admission?.reason === "authorization_denied" &&
+        publicOrigin !== undefined &&
+        documentNavigation
+      ) {
+        const agentsUrl = escapeHtml(new URL("/console/agents", publicOrigin).href);
+        sendNativeAdminHtmlRefusal(
+          request,
+          reply,
+          "Access denied",
+          `<p>You do not have access to this gateway.</p><p><a href="${agentsUrl}">Go to your Agents</a></p>`,
+        );
+        return true;
+      }
+      // A denial names the grant but not the Agent: the Agent was resolved from the host, not
+      // named by the caller, and an unknown host is denied with the same text. A person with no
+      // platform identity had no grant checked and gets the generic text (finding 2589).
       canonicalFailure(
         reply,
         admission === undefined
           ? dependencyUnavailable()
-          : failure(403, "FORBIDDEN", "The exact platform operation was not authorized."),
+          : failure(
+              403,
+              "FORBIDDEN",
+              admission.reason === "authorization_denied" && admission.unprovisioned !== true
+                ? NATIVE_ADMIN_DENIAL
+                : GENERIC_DENIAL,
+            ),
       );
       return true;
     }
+    if (nativeAdminShuttingDown || request.raw.socket.destroyed) {
+      canonicalFailure(reply, dependencyUnavailable());
+      return true;
+    }
     const context = await boundedNativeAdminAdmission(nativeAdminProxyTransportContext(admission));
-    if (context === undefined) {
+    if (context === undefined || nativeAdminShuttingDown || request.raw.socket.destroyed) {
       canonicalFailure(reply, dependencyUnavailable());
       return true;
     }
@@ -1462,7 +1676,11 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     head: Buffer,
   ): Promise<void> {
     const hostname = nativeAdminHostname(request.headers.host);
-    if (!isNativeAdminAgentHost(hostname) || isNativeAdminReservedPrefix(request.url)) {
+    if (
+      nativeAdminShuttingDown ||
+      !isNativeAdminAgentHost(hostname) ||
+      isNativeAdminReservedPrefix(request.url)
+    ) {
       socket.destroy();
       return;
     }
@@ -1473,21 +1691,19 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     socket.on("error", () => {
       socket.destroy();
     });
-    const admission = await boundedNativeAdminAdmission(nativeAdminProxyContext(request, hostname));
+    const operation = startNativeAdminAdmission(request, hostname, "websocket");
+    const admission = await boundedNativeAdminAdmission(operation.result);
     if (!isNativeAdminProxyResolution(admission)) {
-      try {
-        await appendNativeAdminProxyDenialAudit(admission);
-      } catch {
-        app.log.warn({ event: "native_admin.websocket_denial_audit_failed" });
-      }
       socket.destroy();
       return;
     }
-    if (socket.destroyed) {
+    if (socket.destroyed || nativeAdminShuttingDown) {
+      socket.destroy();
       return;
     }
     const context = await boundedNativeAdminAdmission(nativeAdminProxyTransportContext(admission));
-    if (socket.destroyed) {
+    if (socket.destroyed || nativeAdminShuttingDown) {
+      socket.destroy();
       return;
     }
     if (context === undefined) {
@@ -1505,18 +1721,23 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         ? {}
         : { leaseIntervalMs: options.webSocketLeaseIntervalMs }),
       lease: async () => {
-        const renewed = await boundedNativeAdminAdmission(
-          nativeAdminProxyContext(request, hostname, admission.revisionId),
+        if (nativeAdminShuttingDown) {
+          return "shutdown";
+        }
+        if (socket.destroyed) {
+          return "client_disconnect";
+        }
+        const renewal = startNativeAdminAdmission(
+          request,
+          hostname,
+          "websocket",
+          admission.revisionId,
         );
+        const renewed = await boundedNativeAdminAdmission(renewal.result);
         if (renewed === undefined) {
           return "dependency_timeout";
         }
         if (!isNativeAdminProxyResolution(renewed)) {
-          try {
-            await appendNativeAdminProxyDenialAudit(renewed);
-          } catch {
-            return "dependency_failure";
-          }
           return renewed.reason;
         }
         return undefined;
@@ -1538,8 +1759,8 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
             revisionId: admission.revisionId,
           });
         });
-        nativeAdminCloseAudits.add(closeAudit);
-        closeAudit.finally(() => nativeAdminCloseAudits.delete(closeAudit));
+        nativeAdminPendingWork.add(closeAudit);
+        void closeAudit.then(() => nativeAdminPendingWork.delete(closeAudit));
       },
     });
   }
@@ -1560,7 +1781,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       ),
     );
     nativeAdminSockets.clear();
-    await drainNativeAdminCloseAudits();
+    await drainNativeAdminWork();
   });
   return {
     interceptHttp: interceptNativeAdminHttp,

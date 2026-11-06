@@ -82,6 +82,8 @@ export function createCodexStartup(
     random = 0,
     // How much later than asked a login retry wait wakes (a throttled or stopped process).
     lateWakeMs = 0,
+    // Extra wrapper environment, such as the CA settings the workspace node supervisor passes.
+    environment = {},
   },
 ) {
   const directory = mkdtempSync(join(tmpdir(), "openclaw-plugin-ready-"));
@@ -115,6 +117,7 @@ export function createCodexStartup(
   }
 
   let appServerStarts = 0;
+  const appServerSpawns = [];
   let nativeCalls = 0;
   let clock = 0;
   const absent = (environment, names) => {
@@ -194,6 +197,7 @@ export function createCodexStartup(
           ? { APP_TOKEN_SHA: tokenDigest }
           : { APP_SERVER_TOKEN: transportToken }),
         APP_SERVER_PORT: "4500",
+        ...environment,
       },
       on() {},
       exit() {
@@ -255,6 +259,12 @@ export function createCodexStartup(
                   tokenMode === "verifier" ? tokenDigest : transportToken,
                 );
                 assert.deepEqual(Array.from(args), [
+                  "-c",
+                  'otel.exporter="none"',
+                  "-c",
+                  'otel.metrics_exporter="none"',
+                  "-c",
+                  "otel.log_user_prompt=false",
                   "-c",
                   "cli_auth_credentials_store=file",
                   "login",
@@ -341,6 +351,7 @@ export function createCodexStartup(
               assert.ok(args.includes("cli_auth_credentials_store=file"));
             }
             appServerStarts++;
+            appServerSpawns.push({ args: Array.from(args), env: options.env });
             return { on() {}, kill() {} };
           },
         };
@@ -356,6 +367,7 @@ export function createCodexStartup(
     get appServerStarts() {
       return appServerStarts;
     },
+    appServerSpawns,
     start() {
       vm.runInNewContext(AGENT_RUNTIME_ENTRYPOINT, sandbox);
     },
@@ -512,9 +524,7 @@ function checkStartupDiagnostics(runtime, scenario) {
   const json = runtime.diagnostics.filter((line) => line.startsWith("{")).map(JSON.parse);
   const phases = json.filter(({ event }) => event === "runtime.startup_phase");
   const logins = json.filter(({ event }) => event === "codex.login");
-  const probes = json.filter(
-    ({ event }) => event !== "runtime.startup_phase" && event !== "codex.login",
-  );
+  const probes = json.filter(({ event }) => event === "codex.model_probe");
   // Each failed native login attempt logs its number, exit code and output class only.
   assert.deepEqual(
     logins.map(({ failureClass }) => failureClass),

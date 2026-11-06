@@ -14,11 +14,14 @@ export interface CredentialDeliveryReduction {
 
 export interface CredentialDeliveryReductionProgress {
   readonly requestId?: string;
+  /** The resource version the recorded request is conditional on. */
+  readonly expectedVersion?: string;
   readonly observedGeneration?: string;
 }
 
 /** Use the caller's transaction so authorization withdrawal and its delivery intent
- * commit together. An uncertain send consumes its one opportunity even across restart. */
+ * commit together. An intent records one request identity even across restart: any later
+ * send repeats that exact request, never a new one. */
 export class CredentialDeliveryReductions {
   private readonly client: PostgresClient;
 
@@ -109,7 +112,7 @@ export class CredentialDeliveryReductions {
       values,
     );
     const { rows } = await this.client.query(
-      `SELECT request_id, observed_generation FROM occ.credential_delivery_reductions
+      `SELECT request_id, expected_version, observed_generation FROM occ.credential_delivery_reductions
        WHERE revision_id=$1 AND binding_id=$2 AND fence=$3 AND recipient=$4::jsonb
          AND material_version=$5 AND retained_policy_hash=$6`,
       values,
@@ -117,9 +120,14 @@ export class CredentialDeliveryReductions {
     if (rows.length !== 1) {
       throw new Error("Credential delivery reduction identity changed.");
     }
-    const row = rows[0] as { request_id: string | null; observed_generation: string | null };
+    const row = rows[0] as {
+      request_id: string | null;
+      expected_version: string | null;
+      observed_generation: string | null;
+    };
     return {
       ...(row.request_id && { requestId: row.request_id }),
+      ...(row.request_id && row.expected_version && { expectedVersion: row.expected_version }),
       ...(row.observed_generation && { observedGeneration: row.observed_generation as string }),
     };
   }

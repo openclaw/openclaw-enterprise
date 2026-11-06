@@ -29,6 +29,10 @@ export interface TokenAttempt<A extends TokenAdmission> {
   materialVersion?: string;
   /** Retained only for trusted cleanup, never eligible for warm reads. */
   candidate?: Uint8Array;
+  /** Quarantined on a complete provider answer that refused issuance and carried no token. */
+  notIssued?: true;
+  /** Set by the store once the durable intent is older than its dispatch window: never dispatch. */
+  readonly stale?: true;
 }
 
 /** Private repository fragment. Admission and recovery belong to OCC. */
@@ -39,6 +43,8 @@ export interface TokenFamily<A extends TokenAdmission> {
   enabled: boolean;
   attempts: TokenAttempt<A>[];
   committed?: TokenMaterial<A>;
+  /** The store's own clock (epoch ms) when it read this row; an issuer must agree before dispatch. */
+  readonly observedAt?: number;
 }
 
 export interface TokenReadPort<A extends TokenAdmission> {

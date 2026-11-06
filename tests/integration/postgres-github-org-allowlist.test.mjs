@@ -4,11 +4,11 @@ import {
   assertProviderAttached,
   assertSessionUser,
   authRowCounts,
+  changeAccount,
   consoleOrigin as origin,
   githubSignIn,
   githubUpgradeSettings,
   passwordSignIn,
-  readAccount,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -159,13 +159,7 @@ test(
       "a disabled attached account retains its verified identity in the denial",
       async () => {
         memberships = { [acme]: () => "active" };
-        const account = await readAccount(app, adminHeaders, member.id);
-        const disable = await app.inject({
-          method: "POST",
-          url: `/api/auth/accounts/${member.id}/disable`,
-          headers: adminHeaders,
-          payload: { expectedVersion: account.version },
-        });
+        const disable = await changeAccount(app, adminHeaders, member.id, "disable");
         assert.equal(disable.statusCode, 200, disable.body);
         const { callback, attemptId } = await signIn(memberSubject);
         assert.equal(
@@ -182,13 +176,7 @@ test(
             attemptId,
           },
         ]);
-        const disabled = await readAccount(app, adminHeaders, member.id);
-        const enable = await app.inject({
-          method: "POST",
-          url: `/api/auth/accounts/${member.id}/enable`,
-          headers: adminHeaders,
-          payload: { expectedVersion: disabled.version },
-        });
+        const enable = await changeAccount(app, adminHeaders, member.id, "enable");
         assert.equal(enable.statusCode, 200, enable.body);
       },
     );

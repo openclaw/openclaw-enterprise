@@ -194,6 +194,17 @@ test(
     });
     for (const [name, value, accepted = false] of [
       ["valid identity with zero actual trailers", { body: JSON.stringify(identity) }, true],
+      // GitHub answers with its own spelling; the configured one is released (finding 2239).
+      [
+        "GitHub's spelling of the full name",
+        { body: JSON.stringify({ ...identity, full_name: "Fixture/Repository" }) },
+        true,
+      ],
+      [
+        "GitHub's all-caps spelling of the full name",
+        { body: JSON.stringify({ ...identity, full_name: "FIXTURE/REPOSITORY" }) },
+        true,
+      ],
       ["a declaration alone is not an actual trailer", { declaration: true }, true],
       ["undeclared last actual trailer", { trailer: true, body: JSON.stringify(identity) }],
       [
@@ -204,6 +215,11 @@ test(
       ["wrong repository id", { body: JSON.stringify({ ...identity, id: 74 }) }],
       ["string repository id", { body: JSON.stringify({ ...identity, id: "73" }) }],
       ["wrong full name", { body: JSON.stringify({ ...identity, full_name: "other/repository" }) }],
+      [
+        "full name with a suffix",
+        { body: JSON.stringify({ ...identity, full_name: "Fixture/Repository.git" }) },
+      ],
+      ["non-string full name", { body: JSON.stringify({ ...identity, full_name: null }) }],
       ["malformed JSON", { body: "{" }],
       [
         "response byte overflow",

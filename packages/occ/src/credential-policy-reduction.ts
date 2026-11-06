@@ -122,6 +122,19 @@ export async function reduceCredentialPolicy(
       revision.id,
     );
     const withdrawal = withdrawals.find((item) => item.credentialSourceId === sourceId);
+    // Only the active revision's policy is ever reduced. A recorded source withdrawal on any
+    // other revision (an unretired predecessor, or a later candidate that failed or is still
+    // deploying) cannot settle here, so require runtime retirement instead of an error that
+    // retries on every pass (finding 2235). The withdrawal stays pending, and egress refused,
+    // until that revision is retired or a replay finds it active. A recorded reduction is
+    // neither observed nor repeated here.
+    if (
+      withdrawal &&
+      agent?.activeRevisionId !== undefined &&
+      agent.activeRevisionId !== revision.id
+    ) {
+      return "retire-runtime" as const;
+    }
     // Repository cleanup has already closed authority. Do not turn an arbitrary call into withdrawal.
     const attempts =
       sourceId === undefined
@@ -209,6 +222,9 @@ export async function reduceCredentialPolicy(
   });
   if (!prepared) {
     return "pending";
+  }
+  if (prepared === "retire-runtime") {
+    return prepared;
   }
   const { recorded, dispatch } = prepared;
   const request = recorded.request;

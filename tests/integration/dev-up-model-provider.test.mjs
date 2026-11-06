@@ -9,6 +9,8 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { createDevUpModelProvider } from "../helpers/dev-up-model-provider.mjs";
 import { configureModelProviderDNS } from "../helpers/runtime-model-provider.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { readJsonLines } from "../helpers/json-lines.mjs";
 
 const execute = promisify(execFile);
 const revision = "a".repeat(40);
@@ -27,6 +29,7 @@ async function scenario(
     signal,
     beforeCreate,
     beforeBuild,
+    builder,
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "oce-provider-contract-"));
@@ -40,6 +43,7 @@ async function scenario(
   const environment = {
     OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",
     DOCKER_HOST: "unix:///owned.sock",
+    ...(builder === undefined ? {} : { BUILDX_BUILDER: builder }),
   };
   const events = [{ event: "listening", at: 1 }];
   const faults = { inspectError: undefined };
@@ -231,6 +235,19 @@ test("provider prepares a scoped immutable image pair and requires a completed t
       .filter(({ args }) => args[0] === "image" && args[1] === "rm")
       .every(({ args }) => !args.includes("--force")),
   );
+});
+
+test("provider builds checkout images with the selected installer builder", async (t) => {
+  const { fixture, calls } = await scenario(t, { builder: "owned-installer-builder" });
+  await fixture.prepare();
+  const builds = calls.filter(({ args }) => args[0] === "buildx");
+  assert.equal(builds.length, 3);
+  for (const { args } of builds.slice(0, 2)) {
+    assert.equal(args[args.indexOf("--builder") + 1], "owned-installer-builder");
+  }
+  // The trust layer intentionally consumes the just-loaded base image in the host engine.
+  assert.equal(builds[2].args[builds[2].args.indexOf("--builder") + 1], "default");
+  await fixture.cleanup();
 });
 
 test("provider reconciles a creation whose acknowledgement was lost", async (t) => {
@@ -475,8 +492,7 @@ test("cleanup before prepare permanently closes provider admission", async (t) =
 });
 
 test("Node timeout teardown joins the actual launcher case owner and rejects later work", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "oce-provider-timeout-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-provider-timeout-");
   const trace = join(directory, "trace.jsonl");
   const root = join(directory, "case");
   const child = join(directory, "timeout.test.mjs");
@@ -534,7 +550,7 @@ test("deliberate cancellation", { timeout: 500 }, async (t) => {
       return true;
     },
   );
-  assert.deepEqual((await readFile(trace, "utf8")).trim().split("\n").map(JSON.parse), [
+  assert.deepEqual(await readJsonLines(trace), [
     "command-started",
     "teardown-start",
     "process-settled",
@@ -591,8 +607,7 @@ test("launcher case keeps recovery files after provider cleanup failure and perm
 
 test("launcher case preserves recovery files after forced process termination", async (t) => {
   const { runDevUpModelProviderCase } = await import("../helpers/dev-up-model-provider.mjs");
-  const root = await mkdtemp(join(tmpdir(), "oce-provider-forced-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "oce-provider-forced-");
   let cleanup;
   const scope = {
     signal: new AbortController().signal,

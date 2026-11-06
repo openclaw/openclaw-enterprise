@@ -150,11 +150,11 @@ func TestDevelopmentInstallationSizesAgentsFromMeasuredUse(t *testing.T) {
 				t.Fatal(err)
 			}
 			resources := installation.Drivers.Compute.Configuration.Resources
-			if got := resources.Gateway.Limits["memory"]; got != "3Gi" {
-				t.Fatalf("Gateway memory limit = %q, want 3Gi", got)
+			if got := resources.Gateway.Limits["memory"]; got != "4Gi" {
+				t.Fatalf("Gateway memory limit = %q, want 4Gi", got)
 			}
-			if got := resources.Gateway.Requests["memory"]; got != "1792Mi" {
-				t.Fatalf("Gateway memory request = %q, want 1792Mi", got)
+			if got := resources.Gateway.Requests["memory"]; got != "2560Mi" {
+				t.Fatalf("Gateway memory request = %q, want 2560Mi", got)
 			}
 			if got := resources.Agent.Limits["memory"]; got != "6Gi" {
 				t.Fatalf("Harness memory limit = %q, want 6Gi", got)

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:https";
 import { createConnection, type Socket } from "node:net";
@@ -13,8 +12,6 @@ import type {
   SecretDriver,
 } from "../../packages/contracts/src/index.ts";
 import { once } from "node:events";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
 import pg from "pg";
@@ -25,7 +22,7 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { cookieHeaderFromSetCookie } from "./auth-session.mjs";
 import { injectJson } from "./inject-json.mjs";
@@ -33,7 +30,9 @@ import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
 } from "./bootstrap-installation.mjs";
-import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import { createHarnessConfiguration, withNativeAdminGateway } from "./harness-configuration.mjs";
+import { createReadyComputeDriver } from "./development.mjs";
+import { selfSigned } from "./certificates.mjs";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import { waitUntil } from "./wait-for.mjs";
@@ -65,6 +64,7 @@ interface NativeApiOptions {
   origin?: string;
   exchange?: boolean;
   nativeAdminEnabled?: boolean;
+  auditSink?: (sink: PostgresPlatformState["auditSink"]) => PostgresPlatformState["auditSink"];
 }
 type NativeApi = Awaited<ReturnType<typeof createApi>>;
 type NativeUpstream = Awaited<ReturnType<typeof startNativeHttpsUpstream>>;
@@ -103,92 +103,35 @@ function nativeOriginForAgent(
   return `${publicUrl.protocol}//${publicUrl.host}`;
 }
 
-function nativeAdminHarnessConfiguration(nativeOrigin: string) {
-  const configuration = createHarnessConfiguration("openclaw", "gpt-4.1");
-  return {
-    ...configuration,
-    gateway: {
-      ...configuration.gateway,
-      controlUi: { enabled: true, allowedOrigins: [nativeOrigin] },
-      auth: {
-        mode: "trusted-proxy",
-        trustedProxy: {
-          userHeader: "x-occ-identity",
-          allowUsers: ["occ-workspace-files"],
-          deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
-        },
-        identityScopes: { "occ-workspace-files": ["operator.admin"] },
+function nativeComputeDriver(upstreamPort: number): ComputeDriver {
+  const { supportsGatewayManagedMode: _managedMode, ...driver } = createReadyComputeDriver(
+    "native-admin-postgres-compute",
+    {
+      implementation: "native-admin-postgres-test-upstream",
+      validateHarnessAuth() {},
+      getGatewayEndpoint(
+        revision: Parameters<NonNullable<ComputeDriver["getGatewayEndpoint"]>>[0],
+      ) {
+        return `wss://localhost:${upstreamPort}/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`;
       },
     },
-  };
-}
-
-function nativeComputeDriver(upstreamPort: number): ComputeDriver {
-  return {
-    id: "native-admin-postgres-compute",
-    capability: "compute",
-    implementation: "native-admin-postgres-test-upstream",
-    validateHarnessAuth() {},
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
-    async stopRevision() {
-      throw new Error("This passive native-admin fixture does not stop revisions.");
-    },
-    getGatewayEndpoint(revision) {
-      return `wss://localhost:${upstreamPort}/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`;
-    },
-  };
+  );
+  // The HTTPS upstream is no OC Gateway, so this Compute applies no managed mode.
+  return driver;
 }
 
 export async function startNativeHttpsUpstream(t: TestContext) {
   const directory = await temporaryDirectory(t, "openclaw-native-admin-pg-upstream-");
-  const keyPath = join(directory, "tls.key");
-  const certPath = join(directory, "tls.crt");
-  const generated = spawnSync(
-    "openssl",
-    [
-      "req",
-      "-x509",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
-      "-days",
-      "2",
-      "-keyout",
-      keyPath,
-      "-out",
-      certPath,
-      "-subj",
-      "/CN=localhost",
-      "-addext",
-      `subjectAltName=DNS:localhost,IP:127.0.0.1,DNS:console.example.test,DNS:*.${nativeDomain}`,
-    ],
-    { encoding: "utf8" },
-  );
-  assert.equal(
-    generated.status,
-    0,
-    generated.stderr || generated.error?.message || "openssl failed",
-  );
+  const { key, cert, certPath } = await selfSigned(directory, {
+    days: 2,
+    subjectAltName: `DNS:localhost,IP:127.0.0.1,DNS:console.example.test,DNS:*.${nativeDomain}`,
+  });
 
   const requests: UpstreamRequest[] = [];
   const upgrades: Omit<UpstreamRequest, "method">[] = [];
+  const peers: Duplex[] = [];
   const upgradedSockets = new Set<Duplex>();
-  const cert = await readFile(certPath, "utf8");
-  const server = createServer({ key: await readFile(keyPath), cert }, async (request, response) => {
+  const server = createServer({ key, cert }, async (request, response) => {
     requests.push({
       method: request.method,
       url: request.url,
@@ -202,6 +145,7 @@ export async function startNativeHttpsUpstream(t: TestContext) {
     response.end("native postgres upstream\n");
   });
   server.on("upgrade", (request, socket) => {
+    peers.push(socket);
     upgradedSockets.add(socket);
     socket.once("close", () => upgradedSockets.delete(socket));
     upgrades.push({ url: request.url, headers: { ...request.headers } });
@@ -233,7 +177,8 @@ export async function startNativeHttpsUpstream(t: TestContext) {
     requests,
     upgrades,
     cert,
-    key: await readFile(keyPath),
+    key,
+    peers,
     directory,
     certPath,
   };
@@ -324,7 +269,7 @@ export async function createApi(
     configurationDriver,
     secretDriver,
     resolveHarness: resolveApprovedHarness,
-    auditSink: state.auditSink,
+    auditSink: options.auditSink?.(state.auditSink) ?? state.auditSink,
     auth,
     development: { enabled: false },
     publicOrigin: origin,
@@ -358,15 +303,15 @@ export async function signIn(
   });
   assert.equal(response.statusCode, 200, response.body);
   const setCookie = response.headers["set-cookie"];
-  const session: NativeSession = {
-    origin,
-    sessionKey: response.json().data.sessionKey,
-    cookie: cookieHeaderFromSetCookie(
-      Array.isArray(setCookie) ? setCookie : setCookie === undefined ? [] : [String(setCookie)],
-    ),
-  };
-  assert.match(session.cookie, /(?:__Secure-)?openclaw_occ(?:_shared)?\.session_token=/);
-  return session;
+  const cookie = cookieHeaderFromSetCookie(
+    Array.isArray(setCookie) ? setCookie : setCookie === undefined ? [] : [String(setCookie)],
+  );
+  assert.match(cookie, /(?:__Secure-)?openclaw_occ(?:_shared)?\.session_token=/);
+  const current = await inject(app, "GET", "/api/auth/session", { headers: { cookie } });
+  assert.equal(current.statusCode, 200, current.body);
+  const sessionKey: unknown = current.json().data.sessionKey;
+  assert.equal(typeof sessionKey, "string");
+  return { origin, cookie, sessionKey: sessionKey as string };
 }
 
 export async function createNativeAgent(
@@ -424,6 +369,7 @@ export async function createNativeAgent(
       name: `Native admin Agent ${randomUUID()}`,
       configurationId: configuration.id,
       harnessAuth: { method: "api_key", source: secret.ref },
+      gatewayManagedMode: false,
     },
   });
   assert.equal(agentResponse.statusCode, 201, agentResponse.body);
@@ -440,7 +386,12 @@ export async function createNativeAgent(
     `/namespaces/${namespace.id}/configurations/${configuration.id}`,
     {
       session,
-      body: { values: nativeAdminHarnessConfiguration(nativeOrigin) },
+      body: {
+        values: withNativeAdminGateway(
+          createHarnessConfiguration("openclaw", "gpt-4.1"),
+          nativeOrigin,
+        ),
+      },
     },
   );
   assert.equal(compatibleConfiguration.statusCode, 200, compatibleConfiguration.body);

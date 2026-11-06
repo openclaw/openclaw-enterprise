@@ -86,9 +86,13 @@ linux_amd64_or_manual() {
 require_node() {
   need_command node
   node <<'NODE'
-const [major, minor] = process.versions.node.split(".").map(Number);
-if (major < 24 || (major === 24 && minor < 15)) {
-  throw new Error(`Node >=24.15 is required; found ${process.versions.node}.`);
+const [major, minor, patch] = process.versions.node.split(".").map(Number);
+if (
+  major < 24 ||
+  (major === 24 && (minor < 22 || (minor === 22 && patch < 1))) ||
+  (major === 26 && (minor < 12 || (minor === 12 && patch < 1)))
+) {
+  throw new Error(`Node >=24.22.1 (26.x >=26.12.1) is required; found ${process.versions.node}.`);
 }
 NODE
 }
@@ -213,9 +217,43 @@ install_actionlint() {
 install_browser_dependencies() {
   if [[ -n "${CI:-}" ]]; then
     need_command pnpm
-    # Every test launches Chromium headless, which runs the headless shell, so
-    # skip the full Chrome for Testing download (about 190 MB, 7 s).
-    pnpm exec playwright install --with-deps --only-shell chromium
+    # An explicitly selected, already-installed browser is validated below.
+    # Installing a second Chromium and its dependencies does not prepare that binary.
+    if [[ -z "${OCC_TEST_BROWSER_EXECUTABLE:-}" ]]; then
+      pnpm exec playwright install --with-deps --only-shell chromium
+    fi
+    if [[ -n "${OCC_TEST_BROWSER_EXECUTABLE:-}" ]]; then
+      if [[ ! -x "${OCC_TEST_BROWSER_EXECUTABLE}" ]]; then
+        echo "Selected CI browser executable is unavailable." >&2
+        return 1
+      fi
+      # Verify the selected host browser before building runtime images. Keep job
+      # credentials out of its environment and preserve Chromium's sandbox.
+      node --input-type=module <<'NODE'
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { chromium } from "playwright";
+
+const directory = await mkdtemp(join(tmpdir(), "oce-ci-browser-"));
+let browser;
+try {
+  browser = await chromium.launch({
+    executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE,
+    headless: true,
+    chromiumSandbox: true,
+    env: { HOME: directory, PATH: process.env.PATH, TMPDIR: directory },
+  });
+  const page = await browser.newPage();
+  assert.equal(await page.evaluate(() => 1 + 1), 2);
+  console.log(`Sandboxed CI browser: ${browser.version()}`);
+} finally {
+  await browser?.close();
+  await rm(directory, { recursive: true, force: true });
+}
+NODE
+    fi
   else
     echo "Skipping local browser installation; browser setup is CI-only." >&2
   fi
@@ -234,6 +272,8 @@ case "${profile}" in
     ;;
   postgres)
     require_docker
+    install_yq
+    need_command jq
     ;;
   images)
     require_docker

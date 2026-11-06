@@ -1,5 +1,7 @@
+import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
+import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
-import { installationDriverConfigurations } from "./installation-config.ts";
+import { installationControllerOptions } from "./installation-config.ts";
 import type { AuditEventFactory } from "@openclaw-enterprise/audit";
 import type {
   AuditEvent,
@@ -129,6 +131,9 @@ export async function composePostgresDevelopment(
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
   });
 
+  let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
+  const close = (database: { close(): Promise<void> }) =>
+    closeResources(exchange, drivers?.protectedDriver, drivers?.preparedGitHub, database);
   try {
     const state = new PostgresPlatformState(pool, {
       preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
@@ -249,26 +254,29 @@ export async function composePostgresDevelopment(
     };
 
     const loggingLevel = config.logging?.level ?? drivers?.installation.logging.level;
-    const controller = new OpenClawController(persistedInstallation, {
-      driverConfigurations: installationDriverConfigurations(drivers?.installation),
-      sandboxNetworkPolicyCeiling: drivers?.installation.sandboxNetworkPolicyCeiling ?? [],
-      state,
-      ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
-      recordOperations: true,
-      defaultPresets: drivers?.defaultPresets ?? [],
-      bundledPresetVersions: drivers?.bundledPresetVersions ?? [],
-      refreshBundledDefaultPresets: drivers?.installation.presets?.includeDefaults === true,
-      ...(loggingLevel === undefined ? {} : { loggingLevel }),
-      ...(drivers === undefined ? {} : { backends: drivers.installation.backend }),
-      ...(drivers?.installation.runtime === undefined
-        ? {}
-        : { nativeWorkerSupport: drivers.installation.runtime.nativeWorkerSupport }),
-    });
+    const channelDriver = new SlackChannelDriver();
+    const controller = OpenClawController.forInstallation(
+      persistedInstallation,
+      {
+        ...installationControllerOptions(drivers?.installation),
+        state,
+        ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
+        ...(drivers?.pluginSourceReader === undefined
+          ? {}
+          : { pluginSourceReader: drivers.pluginSourceReader }),
+        recordOperations: true,
+        defaultPresets: drivers?.defaultPresets ?? [],
+        bundledPresetVersions: drivers?.bundledPresetVersions ?? [],
+        refreshBundledDefaultPresets: drivers?.installation.presets?.includeDefaults === true,
+        ...(loggingLevel === undefined ? {} : { loggingLevel }),
+        ...(drivers === undefined ? {} : { backends: drivers.installation.backend }),
+      },
+      drivers?.repositoryAdmission,
+    );
     controller.registerDriver(iamDriver);
     controller.selectDriver("iam", driverId);
     controller.registerDriver(computeDriver);
     controller.selectDriver("compute", computeDriver.id);
-    const channelDriver = new SlackChannelDriver();
     controller.registerDriver(channelDriver);
     controller.selectDriver("channel", channelDriver.id);
     if (protectedDriver !== undefined) {
@@ -290,13 +298,17 @@ export async function composePostgresDevelopment(
       controller.selectDriver("configuration", configurationDriver.id);
     }
     if (drivers?.secretDriver !== undefined) {
+      drivers.tokenService?.registerIssuer(
+        new OAuthAccountTokens(
+          state,
+          drivers.secretDriver,
+          controller.resolveConnectionClient.bind(controller),
+        ),
+      );
       controller.registerDriver(drivers.secretDriver);
       controller.selectDriver("secret", drivers.secretDriver.id);
     }
-    if (drivers?.pluginDriver !== undefined) {
-      controller.registerDriver(drivers.pluginDriver);
-      controller.selectDriver("plugin", drivers.pluginDriver.id);
-    }
+    controller.installPluginDrivers(drivers?.pluginDrivers ?? []);
     if (drivers?.repositoryPolicy !== undefined) {
       const driver = drivers.repositoryPolicy;
       controller.registerDriver(driver);
@@ -375,23 +387,17 @@ export async function composePostgresDevelopment(
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
     await drivers?.preparedGitHub?.connect(pool);
-    const exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
+    exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
     app.get("/readyz", async () => {
       await pool.query("SELECT 1");
       return { status: "ready" };
     });
-    app.addHook("onClose", async () => {
-      await exchange?.close();
-      await drivers?.protectedDriver?.close();
-      await drivers?.preparedGitHub?.close();
-      await state.close();
-    });
+    app.addHook("onClose", () => close(state));
     return app;
   } catch (error) {
-    await drivers?.protectedDriver?.close();
-    await drivers?.preparedGitHub?.close();
-    await pool.end();
+    // Preserve the startup failure after attempting each cleanup.
+    await close({ close: () => pool.end() }).catch(() => undefined);
     throw error;
   }
 }

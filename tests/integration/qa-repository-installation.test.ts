@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { createPrivateKey, randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, open, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { randomBytes } from "node:crypto";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
@@ -18,8 +17,10 @@ import {
   applyQaRepositoryInstallation,
   grantQaRepositoryBranch,
   qaRepositoryServiceConfig,
+  prepareQaRepository,
 } from "../helpers/qa-repository.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // The QA matrix's repository leg (manual Full Integration only) writes these files
 // for Compose and hands the registry to `occ dev up` for k3d. Nothing else loads
@@ -59,8 +60,7 @@ async function generatedInputs(
   installation: unknown,
   serviceConfig: unknown,
 ) {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "qa-repository-")));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await realpath(await temporaryDirectory(t, "qa-repository-"));
   const sockets = await socketDirectory(t, "qa-rc-", { longest: "private/prepared-git-use.sock" });
   await mkdir(join(sockets, "private"), { mode: 0o700 });
   const relocate = (value: unknown) =>
@@ -98,12 +98,45 @@ async function startWorkerOwner(loaded: LoadedInstallation) {
   return startPreparedGitHubGitOwner({
     ...owner,
     ...prepared,
+    repositoryGitCustody: { kind: "unavailable" },
     // Startup validates before it touches the database; maintenance stays off.
     pool: {} as Parameters<typeof startPreparedGitHubGitOwner>[0]["pool"],
     startWorker: false,
     registry: loaded.repositoryRegistry,
   });
 }
+
+test("QA repository rejects malformed egress input before worker or DNS preparation", async (t) => {
+  const input = await temporaryDirectory(t, "qa-repository-egress-");
+  await writeFile(
+    join(input, "registry.json"),
+    JSON.stringify(grantQaRepositoryBranch(operatorRegistry(), suffix)),
+    { mode: 0o600 },
+  );
+  for (const [name, ranges] of [
+    ["missing published ranges", {}],
+    ["empty published ranges", { githubApiAndGit: [] }],
+    ["non-array published ranges", { githubApiAndGit: "140.82.112.0/20" }],
+    ["non-string CIDR", { githubApiAndGit: [123] }],
+    ["invalid address", { githubApiAndGit: ["999.82.112.0/20"] }],
+    ["non-numeric prefix", { githubApiAndGit: ["140.82.112.0/no"] }],
+    ["missing prefix", { githubApiAndGit: ["140.82.112.0/"] }],
+    ["default route", { githubApiAndGit: ["0.0.0.0/0"] }],
+    ["host bits set", { githubApiAndGit: ["140.82.112.1/20"] }],
+    ["IPv6 destination", { githubApiAndGit: ["2606:50c0::/32"] }],
+    ["range in explicit host list", ["140.82.112.0/20"]],
+  ] as const) {
+    await t.test(name, async () => {
+      await writeFile(join(input, "upstream-cidrs.json"), JSON.stringify(ranges), { mode: 0o600 });
+      // No worker/cluster or network fixture is supplied. Invalid local policy
+      // must fail explicitly before preparation can reach those dependencies.
+      await assert.rejects(
+        prepareQaRepository({ repositoryInput: input, suffix }),
+        /repository egress|explicit repository endpoints/,
+      );
+    });
+  }
+});
 
 test("QA repository inputs start the controller, worker owner and repository service", async (t) => {
   const registry = grantQaRepositoryBranch(
@@ -137,6 +170,11 @@ test("QA repository inputs start the controller, worker owner and repository ser
   });
   assert.ok(loaded?.repositoryOwner && loaded.repositoryPolicy && loaded.preparedRepositoryGit);
   assert.equal(loaded.repositoryGitDriver, undefined);
+  assert.equal("authorityIdentity" in loaded ? loaded.authorityIdentity : undefined, undefined);
+  assert.equal(
+    "resolveRepositoryDelivery" in loaded ? loaded.resolveRepositoryDelivery : undefined,
+    undefined,
+  );
   assert.equal(typeof loaded.nativeRepositorySender, "object");
   assert.equal(loaded.repositoryOwner.backendId, "github-qa");
   assert.equal(
@@ -145,20 +183,13 @@ test("QA repository inputs start the controller, worker owner and repository ser
     "git-write",
   );
 
+  // The owner refuses an App key it cannot sign with at startup (finding 2217).
+  assert.equal(
+    loaded.preparedRepositoryGit.privateKeyPath,
+    `${root}${PREPARED_REPOSITORY_DIRECTORY}/private-key.pem`,
+  );
   const owner = await startWorkerOwner(loaded);
   await owner.close();
-  // The owner reads the App key only when it first prepares a token: check the
-  // mounted file the way it will (a private regular file holding one private key).
-  const appKey = loaded.preparedRepositoryGit.privateKeyPath;
-  assert.equal(appKey, `${root}${PREPARED_REPOSITORY_DIRECTORY}/private-key.pem`);
-  const file = await open(appKey);
-  try {
-    const { mode } = await file.stat();
-    assert.ok((mode & 0o170000) === 0o100000 && (mode & 0o027) === 0);
-    createPrivateKey(await file.readFile());
-  } finally {
-    await file.close();
-  }
 
   const service = await loadConfiguration(join(root, "service-config.json"), createSystemClock());
   try {

@@ -59,8 +59,9 @@ There are two supported model-credential paths:
   reaches the runtime.
 
 A dedicated gateway never receives either model credential. Public OCC Agent
-and AgentRevision responses can include the configured provider ID, which is
-persisted on the mutable Agent row and immutable AgentRevision row. Credential
+and AgentRevision responses can include the configured provider ID, which OCC
+stores on the Agent and copies into each Agent revision at deployment. Later
+edits to the Agent leave that copy unchanged. Credential
 bytes stay out of OCC resources, AgentRevision snapshots, ConfigMaps, responses,
 and audit records. Upstream account, credential, and workspace identifiers remain
 private: the internal immutable auth snapshot retains verified Backend/workspace

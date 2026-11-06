@@ -41,11 +41,8 @@ const topologyTeardown = (testContext) =>
   boundedTeardown(testContext, { label: "production topology teardown" });
 
 test(
-  "candidate dedicated Skill source uploads honor default and denied node-write policy",
-  {
-    skip: process.env.OCC_TEST_SKILL_SOURCE_LIFECYCLE !== "1",
-    timeout: 1_200_000,
-  },
+  "production dedicated Skill source uploads honor default and denied node-write policy",
+  { ...requiresProductionCluster, timeout: 1_200_000 },
   async (testContext) => {
     const { context } = topologyTeardown(testContext);
     const topology = await arrangeProductionTopology(context, "dedicated");
@@ -130,7 +127,7 @@ test(
         "--version",
       )
     ).trim();
-    const expectedCodexVersion = process.env.OCC_TEST_KUBERNETES_CODEX_VERSION ?? "0.163.0-alpha.2";
+    const expectedCodexVersion = process.env.OCC_TEST_KUBERNETES_CODEX_VERSION ?? "0.164.0";
     assert.ok(codexVersion.includes(expectedCodexVersion));
     context.diagnostic(`dedicated: ${codexVersion}`);
     await assertUnauthorizedCodexSocket(topology);
@@ -150,7 +147,9 @@ test(
     await assertActualModelTurn(topology);
     process.stderr.write("k3d dedicated: model turn passed; testing normal workspace flows.\n");
     await assertDedicatedAgentsInstructionsInFreshSession(topology);
-    await assertDedicatedNativeChildRelay(topology);
+    await context.test("native child returns its own exact answer", async () => {
+      await assertDedicatedNativeChildRelay(topology);
+    });
     await assertDedicatedWorkspaceRuntime(context, topology, harnessWorkspaceClaim, privateClaim);
     await assertGatewayPodContinuity(context, topology, privateClaim);
     process.stderr.write("k3d dedicated: storage flows passed; testing credential recovery.\n");
@@ -175,7 +174,8 @@ test(
     assert.equal(topology.harnessPod, undefined, "embedded execution must not create a Codex Pod");
     assert.equal(topology.gatewayPod.spec.serviceAccountName, topology.agentServiceName);
     assert.equal((await resources("deployments", topology.placement)).length, 1);
-    assertPrivateStateInitContainer(topology.gatewayPod);
+    // This Agent binds no Secret into its environment, so the gateway records its owner key.
+    assertPrivateStateInitContainer(topology.gatewayPod, { embeddedGatewayOwner: true });
     await assertEmbeddedCreatesNoHarnessWorkspaceClaim(topology);
     const privateClaim = await assertGatewayPrivateResources(topology);
 

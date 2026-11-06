@@ -4,17 +4,10 @@ import { RepositoryMaterialStore } from "../../apps/controller/src/drivers/compu
 import { repositoryMaterialSpec } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material.ts";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
 import { repositoryCleanupFailureCode } from "../../apps/controller/src/worker/repository-credentials.ts";
+import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
 
 const now = 1800000000000;
-const origin = "https://credentials.example.test";
-const client = {
-  gatewayOrigin: origin,
-  gitRemote: `${origin}/example/project.git`,
-  gitUsername: "gateway-session",
-  canonicalApiHost: "github.com",
-  apiHost: "credentials.example.test",
-  repository: "example/project",
-};
+const client = repositoryClientData();
 const revision = (refs, deadline) => ({
   id: "rev-material-expiry",
   namespaceId: "namespace-material-expiry",

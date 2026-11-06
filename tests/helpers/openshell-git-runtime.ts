@@ -1,11 +1,37 @@
-import type { AgentRevision } from "../../packages/contracts/src/index.ts";
+import type {
+  AgentRevision,
+  ProtectedGitHubInstallationMaterial,
+} from "../../packages/contracts/src/index.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import {
+  openShellProfileEndpoint,
+  type OpenShellProviderCreateRequest,
+  type OpenShellProviderProfile,
+} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type { routeStore } from "../fixtures/openshell-git-route-store.mjs";
+import { unloggedFields } from "./occ-log-line.ts";
+
+// The worker logs the runtime's events through the production logger (worker.mjs), which keeps
+// only allowlisted fields. Every event a fixture emits is logged the same way here, and a field
+// the logger drops or changes is recorded (finding 2244).
+const unloggedRuntimeFields: { readonly event: unknown; readonly fields: readonly string[] }[] = [];
+
+function logRuntimeEvent(event: Readonly<Record<string, unknown>>): void {
+  const fields = unloggedFields(event);
+  if (fields.length > 0) {
+    unloggedRuntimeFields.push({ event: event.event, fields });
+  }
+}
+
+/** The runtime event fields the production logger dropped since the last call. */
+export function takeUnloggedRuntimeFields() {
+  return unloggedRuntimeFields.splice(0);
+}
 
 type Entry = NonNullable<Awaited<ReturnType<OpenShellGitRuntime["entries"]["get"]>>>;
 type Faults = {
@@ -17,26 +43,23 @@ type Faults = {
   observeAfterRotate?: boolean;
   environmentLag?: boolean;
   duringObserve?: () => void;
+  /** The error a named gateway call throws instead of answering, if any. */
+  gatewayCall?: (method: string, name?: string) => unknown;
+  /** Runs while the provider write is in flight, before it answers; given the caller's signal. */
+  duringWrite?: (signal: AbortSignal) => unknown;
+  /** The Sandbox does not exist yet: a first preparation bootstraps the route. */
+  sandboxMissing?: boolean;
 };
-type Material = {
-  value: string;
-  expiresAt: string;
-  preparationAttemptId: string;
-  materialVersion: string;
-  repository: string;
-  providerInstanceId: string;
-  repositoryId: string;
-  grantId: string;
-  pushRef: string;
-  apiOrigin: string;
-  sessionId: string;
-};
+type Material = ProtectedGitHubInstallationMaterial;
 type Owner = {
   material: Material;
   readOpenShellMaterial: () => Promise<Material>;
-  authorizeOpenShellRequest: () => Promise<boolean>;
+  authorizeOnlineRequest: Parameters<OpenShellGitRuntime["start"]>[0]["authorizeOnlineRequest"];
 };
 interface World {
+  revision: AgentRevision;
+  resolveDelivery: ReturnType<typeof createGitHubRepositoryDeliveryResolver>;
+  runtime: OpenShellGitRuntime;
   sandbox: {
     id: string;
     name: string;
@@ -56,6 +79,7 @@ interface World {
     observe: number;
     rotate: number;
     material: number;
+    providerWrites: number;
     observedWith: (Entry["installed"] | undefined)[];
   };
   faults: Faults;
@@ -71,6 +95,10 @@ export const registry = validateGitHubRepositoryRegistry(
     appId: "12345",
     githubInstallationId: "67890",
     maximumDurationSeconds: 86400,
+    installationAccess: {
+      repositoryRef: "installation",
+      namespaces: [{ namespaceId: "namespace-a", accessMode: "installation" }],
+    },
     repositories: [
       {
         repositoryRef: "application",
@@ -91,31 +119,42 @@ export const registry = validateGitHubRepositoryRegistry(
 );
 const admitted = resolveGitHubRepositoryBinding(registry, {
   namespaceId: "namespace-a",
-  repositoryRef: "application",
-  profile: "git-write",
+  repositoryRef: "installation",
+  profile: "github-installation",
 });
 const future = () => new Date(Date.now() + 600_000).toISOString();
 
 export function openShellGitRuntimeFixture({
   store,
   world,
-  resolveDelivery = createGitHubRepositoryDeliveryResolver(registry),
+  resolveDelivery = world?.resolveDelivery ?? createGitHubRepositoryDeliveryResolver(registry),
+  onEvent,
 }: {
   store?: ReturnType<typeof routeStore>;
   world?: World;
   resolveDelivery?: ReturnType<typeof createGitHubRepositoryDeliveryResolver>;
+  onEvent?: (event: Readonly<Record<string, unknown>>) => void;
 } = {}) {
-  const revision = Object.freeze({
-    id: "rev-one",
-    namespaceId: "namespace-a",
-    agentId: "agent-one",
-    harness: { id: "codex", mode: "dedicated" },
-    repositoryCredentials: {
-      driver: { id: "repo-driver", implementation: "github" },
-      deadlineWallMs: Date.now() + 3_600_000,
-      bindings: [admitted],
-    },
-  }) as unknown as AgentRevision;
+  const credentials = {
+    driver: { id: "repo-driver", implementation: "github" },
+    deadlineWallMs: Date.now() + 3_600_000,
+    bindings: [admitted],
+  };
+  const revision = (world?.revision ??
+    Object.freeze({
+      id: "rev-one",
+      namespaceId: "namespace-a",
+      agentId: "agent-one",
+      harness: { id: "codex", mode: "dedicated" },
+      repositoryCredentials: credentials,
+      executionAdmission: { version: 5, mode: "protected" },
+      egressPlan: {
+        driver: { id: "openshell" },
+        execution: { executionId: "binding_0123456789abcdefghijklmn" },
+        repositoryGitAuthorization: "online-request",
+        repositoryGit: credentials,
+      },
+    })) as unknown as AgentRevision;
   // `world` shares the gateway, supervisor, faults and owner of an earlier fixture: the state a
   // restarted worker process finds (finding 2128).
   const sandbox = world?.sandbox ?? {
@@ -137,23 +176,80 @@ export function openShellGitRuntimeFixture({
     observe: 0,
     rotate: 0,
     material: 0,
+    providerWrites: 0,
     observedWith: [] as (Entry["installed"] | undefined)[],
   };
   const faults: Faults = world?.faults ?? {};
+  // The gateway's own prepared Git profiles and providers, which a route's bootstrap writes
+  // (the profile prefix plus 32 hex digits). Any other name is the Agent's model provider.
+  const prepared = /^oce-(?:git|github-installation)-[0-9a-f]{32}$/;
+  const profiles = new Map<string, Record<string, unknown>>();
+  const providers = new Map<string, Record<string, unknown>>();
+  const answer = (method: string, name?: string) => {
+    const error = faults.gatewayCall?.(method, name);
+    if (error) {
+      throw error;
+    }
+  };
   const client = {
-    getProvider: async () => ({ type: "openai", profileWorkspace: "" }),
-    getProviderProfile: async () => ({
-      definition: { endpoints: [{ host: "api.openai.com" }], credentials: [] },
-    }),
+    getProvider: async (_workspace: string, name: string) => {
+      answer("getProvider", name);
+      return prepared.test(name) ? providers.get(name) : { type: "openai", profileWorkspace: "" };
+    },
+    getProviderProfile: async (_workspace: string | null, id: string) => {
+      answer("getProviderProfile", id);
+      return prepared.test(id)
+        ? profiles.get(id)
+        : { definition: { endpoints: [{ host: "api.openai.com" }], credentials: [] } };
+    },
+    importProviderProfile: async (_workspace: string, profile: OpenShellProviderProfile) => {
+      calls.providerWrites += 1;
+      answer("importProviderProfile");
+      profiles.set(profile.id, {
+        id: profile.id,
+        resourceVersion: "1",
+        annotations: profile.annotations,
+        definition: {
+          credentials: profile.credentials.map((credential) => ({
+            name: credential.name,
+            env_vars: credential.envVars,
+            required: credential.required,
+            auth_style: credential.authStyle,
+            header_name: credential.headerName,
+            stable_placeholder: credential.stablePlaceholder,
+          })),
+          binaries: profile.binaries.map((path) => ({ path })),
+          endpoints: profile.endpoints.map(openShellProfileEndpoint),
+        },
+      });
+    },
+    createProvider: async (request: OpenShellProviderCreateRequest) => {
+      calls.providerWrites += 1;
+      answer("createProvider");
+      const provider = {
+        id: `${request.name}-id`,
+        name: request.name,
+        type: request.type,
+        workspace: request.workspace,
+        profileWorkspace: request.workspace,
+        labels: request.labels,
+        config: {},
+        resourceVersion: "1",
+      };
+      providers.set(request.name, provider);
+      return provider;
+    },
     getSandbox: async () => {
       calls.getSandbox += 1;
       faults.onRead?.();
+      answer("getSandbox");
       if (faults.gateway) {
         throw faults.gateway;
       }
-      return { ...sandbox };
+      return faults.sandboxMissing ? undefined : { ...sandbox };
     },
     getGatewayInfo: async () => {
+      answer("getGatewayInfo");
       if (faults.gateway) {
         throw faults.gateway;
       }
@@ -167,7 +263,10 @@ export function openShellGitRuntimeFixture({
         ],
       };
     },
-    getWorkspace: async () => ({ id: "workspace-id-one", name: sandbox.workspace }),
+    getWorkspace: async () => {
+      answer("getWorkspace");
+      return { id: "workspace-id-one", name: sandbox.workspace };
+    },
   };
   const provider = {
     observe: async (
@@ -196,12 +295,19 @@ export function openShellGitRuntimeFixture({
         ...supervisor,
       });
     },
-    rotate: async (binding: Entry["binding"], release: () => Promise<Material | undefined>) => {
+    rotate: async (
+      binding: Entry["binding"],
+      release: () => Promise<Material | undefined>,
+      signal: AbortSignal,
+    ) => {
       const token = await release();
-      if (!token) {
+      // Like the real rotate(): a caller out of time sends nothing; once sent, the write is
+      // not tied to the caller's signal.
+      if (!token || signal.aborted) {
         return;
       }
       calls.rotate += 1;
+      await faults.duringWrite?.(signal);
       if (faults.rotate) {
         throw faults.rotate;
       }
@@ -218,16 +324,14 @@ export function openShellGitRuntimeFixture({
       };
     },
   };
-  const material = {
+  const material: Material = {
+    ...admitted.grant,
+    scope: "github-installation",
+    installationId: registry.githubInstallationId,
     value: "synthetic-installation-token",
     expiresAt: future(),
     preparationAttemptId: "attempt-one",
     materialVersion: "version-one",
-    repository: registry.repositories[0]!.repository,
-    providerInstanceId: admitted.grant.providerInstanceId,
-    repositoryId: admitted.grant.repositoryId,
-    grantId: admitted.grant.grantId,
-    pushRef: PUSH_REF,
     apiOrigin: "https://api.github.com",
     sessionId: "session-one",
   };
@@ -240,13 +344,13 @@ export function openShellGitRuntimeFixture({
       return owner.material;
     },
     material,
-    authorizeOpenShellRequest: async () => true,
+    authorizeOnlineRequest: async () => ({ kind: "denied", reason: "unavailable" }),
   };
   const entry: Entry = {
     revision,
     client: client as unknown as Entry["client"],
     provider: provider as unknown as Entry["provider"],
-    bindingId: "binding_0123456789abcdefghijklmn",
+    bindingId: revision.egressPlan!.execution.executionId,
     authorization: createGitHubRepositoryDeliveryResolver(registry)(revision),
     otherProviders: ["openai"],
     binding: {
@@ -268,7 +372,7 @@ export function openShellGitRuntimeFixture({
   };
   const events: Readonly<Record<string, unknown>>[] = [];
   const runtime = new OpenShellGitRuntime(
-    {
+    world?.runtime.configuration ?? {
       registrationName: "oce-prepared-git",
       authority:
         {} as import("../../apps/controller/src/composition/egress-authority.ts").EgressAuthorityConfiguration,
@@ -276,7 +380,11 @@ export function openShellGitRuntimeFixture({
     resolveDelivery,
   );
   runtime["owner"] = owner;
-  runtime["emit"] = (event: Readonly<Record<string, unknown>>) => events.push(event);
+  runtime["emit"] = (event: Readonly<Record<string, unknown>>) => {
+    events.push(event);
+    logRuntimeEvent(event);
+    onEvent?.(event);
+  };
   runtime["routes"] = store as unknown as OpenShellGitRuntime["routes"];
   if (store !== undefined && !store.rows.has(revision.id)) {
     // The row this worker's own bootstrap left: fence 1, the bootstrap generation written.
@@ -317,22 +425,27 @@ export function openShellGitRuntimeFixture({
     // Force the refresh and backoff clocks so each call observes now.
     f.entry.nextRefreshAt = 0;
     f.entry.nextObserveAt = 0;
+    if (f.entry.release !== undefined) {
+      f.entry.release.at = 0;
+    }
     await runtime["reconcile"](f.entry);
   };
   const lookup = () => runtime["lookup"](identity, AbortSignal.timeout(2_000));
-  const prepare = () =>
+  const prepare = (workspaceRoot = "/sandbox/enterprise") =>
     runtime.prepare(
       revision,
       client as unknown as Entry["client"],
       sandbox.workspace,
       sandbox.name,
       AbortSignal.timeout(2_000),
+      workspaceRoot,
       ["openai"],
     );
   const errors = () => events.filter((event) => event.event === "worker.error");
   const denials = () => events.filter((event) => event.event === "worker.openshell-git-denied");
   return Object.assign(f, {
     runtime,
+    resolveDelivery,
     client,
     provider,
     store,
@@ -357,6 +470,22 @@ export async function reconciledOpenShellGitRuntimeFixture(
 ) {
   const fixture = openShellGitRuntimeFixture(options);
   await fixture.reconcile();
+  return fixture;
+}
+
+/**
+ * A worker about to bootstrap the route of a revision whose Sandbox does not exist yet: no
+ * local entry, no persisted route, and the gateway's prepared provider written for real by the
+ * runtime's own provider (finding 2210).
+ */
+export function bootstrappingOpenShellGitRuntimeFixture(
+  options?: Parameters<typeof openShellGitRuntimeFixture>[0],
+) {
+  const fixture = openShellGitRuntimeFixture(options);
+  fixture.runtime["entries"].clear();
+  fixture.runtime["states"].clear();
+  fixture.store?.rows.delete(fixture.revision.id);
+  fixture.faults.sandboxMissing = true;
   return fixture;
 }
 

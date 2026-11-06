@@ -22,7 +22,7 @@ import type {
   AcceptedEgressAssociation,
   CapturedEgressUse,
   RepositoryGitMaterialVersion,
-} from "../../../../packages/contracts/src/index.ts";
+} from "@openclaw-enterprise/contracts";
 
 // This external adapter supports one credential-free metadata operation beside Git.
 // Its platform grant is still admitted and authorized by OCC; the peer enforces exact routes.

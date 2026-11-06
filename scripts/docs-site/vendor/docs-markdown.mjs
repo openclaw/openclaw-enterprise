@@ -234,11 +234,12 @@ function prepareDocument(input, { sourceFile, root, seen = new Set() }, firstLin
   }
   const placeholder = new RegExp(`${prefix}(\\d+)END`, "g");
   const restore = (text) => text.replace(placeholder, (_, index) => saved[Number(index)]);
-  const hold = (value) => {
+  const stash = (value) => {
     const key = `${prefix}${saved.length}END`;
-    saved.push(restore(value));
+    saved.push(value);
     return key;
   };
+  const hold = (value) => stash(restore(value));
   const jsxComments = new Set();
   let text = new DocsSource(input, firstLine).replace(
     /<!--[^]*?-->|\{\/\*[^]*?\*\/\}|<(pre|code|script|style|textarea)\b[^>]*>[^]*?<\/\1\s*>/g,
@@ -326,7 +327,27 @@ function prepareDocument(input, { sourceFile, root, seen = new Set() }, firstLin
           seen.has(target) ||
           !fs.existsSync(target)
         ) {
+          if (attrs.lang !== undefined) {
+            throw new Error(`Missing or out-of-scope code snippet in ${sourceFile}: ${ref}`);
+          }
           return "";
+        }
+        if (attrs.lang !== undefined) {
+          const actual = path.relative(fs.realpathSync(root), fs.realpathSync(target));
+          if (actual.startsWith("..") || path.isAbsolute(actual)) {
+            throw new Error(`Code snippet outside the documentation root in ${sourceFile}: ${ref}`);
+          }
+          if (!/^[a-z0-9_+-]+$/i.test(attrs.lang)) {
+            throw new Error(`Invalid snippet language in ${sourceFile}: ${attrs.lang}`);
+          }
+          const raw = fs.readFileSync(target, "utf8");
+          // Keep source code literal, including imports, component tags and embedded fences.
+          let fence = "```";
+          while (raw.includes(fence)) {
+            fence += "`";
+          }
+          const newline = raw.endsWith("\n") ? "" : "\n";
+          return `\n${stash(`${fence}${attrs.lang}\n${raw}${newline}${fence}`)}\n`;
         }
         const content = parseFrontmatter(fs.readFileSync(target, "utf8")).content;
         return `\n${prepareDocument(content, { sourceFile: target, root, seen: new Set([...seen, target]) }).text.trim()}\n`;

@@ -13,6 +13,7 @@ import { grantQaRepositoryBranch } from "./qa-repository.mjs";
 import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
 import {
   protectedText,
+  protectedModelApiKey,
   registerQaSecret,
   grantQaSecret,
   qaCommandFailureDetail,
@@ -22,15 +23,54 @@ import { createResourceScope } from "../fixtures/repository-credentials/resource
 import { maskPrivateKeyLines } from "../../scripts/ci/failure-redaction.mjs";
 
 function execute(command, args, options) {
-  const { input, allowExitCodes = [0], ...rest } = options;
+  const { input, allowExitCodes = [0], timeout = 0, ...rest } = options;
+  assert.ok(Number.isInteger(timeout) && timeout >= 0, "command timeout must be non-negative");
+  const started = performance.now();
   return new Promise((accept, reject) => {
+    let timedOut = false;
+    let timer;
+    const fail = (error, stdout = "", stderr = "") =>
+      reject(
+        Object.assign(error, {
+          stdout,
+          stderr,
+          timedOut,
+          elapsedMs: Math.round(performance.now() - started),
+          timeoutMs: timeout,
+        }),
+      );
     const child = execFile(command, args, rest, (error, stdout, stderr) => {
-      if (error && !allowExitCodes.includes(error.code)) {
-        reject(Object.assign(error, { stdout, stderr }));
+      clearTimeout(timer);
+      if (timedOut) {
+        fail(
+          error ??
+            Object.assign(new Error("command deadline exceeded"), {
+              code: child.exitCode,
+              signal: child.signalCode,
+            }),
+          stdout,
+          stderr,
+        );
+      } else if (error && !allowExitCodes.includes(error.code)) {
+        fail(error, stdout, stderr);
       } else {
         accept({ stdout, stderr });
       }
     });
+    if (timeout > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        // Match execFile's timeout teardown, but retain the deadline as the primary
+        // cause even if writing to a closed pipe ends the child with SIGPIPE.
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        try {
+          child.kill(rest.killSignal ?? "SIGTERM");
+        } catch (error) {
+          fail(error);
+        }
+      }, timeout);
+    }
     child.stdin.end(input);
   });
 }
@@ -100,11 +140,35 @@ export async function recordImageBuildFailure(record, stderr, env) {
   });
 }
 
+function startupCommandTimings(stdout) {
+  // Only the fixed records emitted by internal/occdev/timing.go are public.
+  // Do not retain free-form stdout, including unknown or malformed stage records.
+  const pattern =
+    /(?:^|\n)\[occ-dev-timing\] stage=(runtime-build|controller-build|compose-build-and-start|compose-build|image-pull|image-export|image-import|node-image-pull|cluster-create|k3d-image-import|kubernetes-readiness|helm-install) elapsed_ms=(0|[1-9][0-9]{0,15}) failed=(true|false)(?=\n|$)/g;
+  const records = [];
+  let omittedRecords = 0;
+  for (const match of String(stdout ?? "").matchAll(pattern)) {
+    if (!Number.isSafeInteger(Number(match[2]))) {
+      continue;
+    }
+    records.push({ stage: match[1], elapsedMs: Number(match[2]), failed: match[3] === "true" });
+    if (records.length > 64) {
+      records.shift();
+      omittedRecords++;
+    }
+  }
+  return { records, omittedRecords };
+}
+
 // Runs one command of a QA installation `f` (its env, private directories, and evidence
 // `record`). A failure writes the command's output to the private directory and throws with
-// only redacted stderr; a failed image build's step output becomes redacted QA evidence.
+// redacted stderr; failed image builds and selected startup timings become bounded evidence.
 export async function runQaCommand(f, command, args, options = {}) {
-  const { privateFailureOutput = false, ...executeOptions } = options;
+  const {
+    privateFailureOutput = false,
+    captureStartupTimings = false,
+    ...executeOptions
+  } = options;
   try {
     const result = await execute(command, args, {
       cwd: repository,
@@ -133,9 +197,24 @@ export async function runQaCommand(f, command, args, options = {}) {
       : await recordImageBuildFailure(f.record, error.stderr, executeOptions.env ?? f.env).catch(
           (recordError) => `not recorded (${recordError?.message ?? recordError})`,
         );
+    let startupTimings;
+    if (captureStartupTimings && !privateFailureOutput) {
+      const timings = startupCommandTimings(error.stdout);
+      if (timings.records.length > 0) {
+        try {
+          startupTimings = await f.record(`startup-timings-${Date.now()}`, timings);
+        } catch {
+          // A failed artifact write must not replace the command failure or expose its path.
+          startupTimings = "unavailable";
+        }
+      }
+    }
     // execFile errors embed argv and output, potentially containing tokens.
-    // Keep arguments/stdout private; include only redacted stderr for diagnosis.
-    error.message = `${command.split("/").at(-1)} failed (exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}); private state: ${f.stateDirectory}${buildOutput ? `; failed image build step output: ${buildOutput}` : ""}${detail ? `; stderr: ${detail}` : ""}`;
+    // Keep arguments and raw stdout private; include redacted stderr and evidence filenames.
+    const timing = Number.isInteger(error.elapsedMs)
+      ? ` after ${error.elapsedMs} ms (limit ${error.timeoutMs} ms)`
+      : "";
+    error.message = `${command.split("/").at(-1)} ${error.timedOut ? "timed out" : "failed"}${timing} (exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}); private state: ${f.stateDirectory}${buildOutput ? `; failed image build step output: ${buildOutput}` : ""}${startupTimings ? `; startup timings: ${startupTimings}` : ""}${detail ? `; stderr: ${detail}` : ""}`;
     delete error.cmd;
     delete error.stdout;
     delete error.stderr;
@@ -372,9 +451,10 @@ export async function createQaInstallation(
   context,
   controlPlane,
   artifacts,
-  { repositoryInputs = true } = {},
+  { repositoryInputs = true, sandboxDriver = "none", sandboxNetworkPolicyFile = undefined } = {},
 ) {
   assert.ok(["compose", "kubernetes"].includes(controlPlane));
+  assert.ok(["none", "openshell"].includes(sandboxDriver));
   const suffix = randomUUID().slice(0, 8);
   const cluster = `occ-dev-qa-${controlPlane === "compose" ? "c" : "k"}-${suffix}`;
   const directory = await mkdtemp(join(tmpdir(), `${cluster}-`));
@@ -391,7 +471,7 @@ export async function createQaInstallation(
     OCC_DEVELOPMENT_BROWSER_PORT: String(browserPort),
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
     OCC_DEVELOPMENT_CONTROL_PLANE: controlPlane,
-    OCC_DEVELOPMENT_SANDBOX_DRIVER: "none",
+    OCC_DEVELOPMENT_SANDBOX_DRIVER: sandboxDriver,
     OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",
     OCC_DEVELOPMENT_COMPOSE_PROJECT: cluster,
     OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,
@@ -498,8 +578,19 @@ export async function createQaInstallation(
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: AbortSignal.timeout(30_000),
       });
-      assert.ok(response.ok, `OCC ${method} ${path}: HTTP ${response.status}`);
       const text = await response.text();
+      let code = "unknown";
+      if (!response.ok) {
+        try {
+          const candidate = JSON.parse(text).error?.code;
+          if (typeof candidate === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(candidate)) {
+            code = redactedQaTail(candidate, f.env, { lines: 1, lineChars: 80 });
+          }
+        } catch {
+          // Do not print an unstructured error body or provider response.
+        }
+      }
+      assert.ok(response.ok, `OCC ${method} ${path}: HTTP ${response.status} (${code})`);
       return text ? JSON.parse(text).data : undefined;
     },
     async compose(...args) {
@@ -655,19 +746,6 @@ export async function createQaInstallation(
     async deployAndWait(agent) {
       return deployQaAgentAndWait(f, agent);
     },
-    async selectPlugin(agentId, policy) {
-      const agent = f.agents.find((value) => value.id === agentId);
-      const { pluginId, ...selection } = policy;
-      const current = await f.api("GET", `/namespaces/${agent.namespaceId}/agents/${agentId}`);
-      const updated = await f.api("PATCH", `/namespaces/${agent.namespaceId}/agents/${agentId}`, {
-        configurationId: current.configurationId,
-        plugins: { ...current.plugins, [pluginId]: selection },
-      });
-      return updated.plugins[pluginId];
-    },
-    async updatePluginPolicy(agentId, pluginId, changes) {
-      return f.selectPlugin(agentId, { pluginId, enabled: true, ...changes });
-    },
   };
   // One resource scope attempts every cleanup, even when the installation
   // must be retained. Later-acquired browsers, trust entries, and relays close first.
@@ -708,6 +786,7 @@ export async function createQaInstallation(
       throw error;
     }
     await f.run(join(repository, "scripts/dev-down"), [], { timeout: 300_000 });
+    await f.cleanupRepositoryInputs?.();
   });
   await f.record("ownership", {
     cluster,
@@ -753,14 +832,18 @@ export async function createQaInstallation(
     env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR = subnet;
     await f.record("compose-network", { subnet });
   }
-  const started = await f.run(join(repository, "scripts/dev-up"), [], { timeout: 1_100_000 });
+  const started = await f.run(
+    join(repository, "scripts/dev-up"),
+    sandboxNetworkPolicyFile ? ["--sandbox-network-policy-file", sandboxNetworkPolicyFile] : [],
+    { timeout: 1_100_000, captureStartupTimings: true },
+  );
   assert.match(
     started,
     controlPlane === "compose" ? /Control plane: Compose/ : /Deployment: Kubernetes only/,
   );
   f.state = JSON.parse(await readFile(join(stateDirectory, "state.json"), "utf8"));
   assert.equal(f.state.cluster, cluster);
-  assert.equal(f.state.sandboxDriver, "none");
+  assert.equal(f.state.sandboxDriver, sandboxDriver);
   f.serviceKey = JSON.parse(
     await protectedText(join(stateDirectory, "initial-admin-service-key.json"), "bootstrap key"),
   ).data.key;
@@ -771,11 +854,13 @@ export async function createQaInstallation(
     return namespace?.status === "ready" && namespace;
   });
   f.presets = await f.api("GET", `/namespaces/${f.defaultNamespace.id}/presets`);
-  assert.deepEqual(f.presets.map((p) => p.name).sort(), [
-    "Standard Codex",
-    "Standard OpenClaw",
-    "default-codex",
-  ]);
+  if (sandboxDriver === "none") {
+    assert.deepEqual(f.presets.map((p) => p.name).sort(), [
+      "Standard Codex",
+      "Standard OpenClaw",
+      "default-codex",
+    ]);
+  }
   f.configuration = loadYaml(await readFile(join(stateDirectory, "installation.yaml"), "utf8"));
   f.namespace = f.defaultNamespace;
   if (controlPlane === "compose") {
@@ -797,7 +882,7 @@ export async function createQaInstallation(
     defaultNamespaceId: f.defaultNamespace.id,
     namespaceId: f.namespace.id,
     presets: f.presets.map(({ id, name }) => ({ id, name })),
-    sandboxDriver: "none",
+    sandboxDriver,
   });
   return f;
 }
@@ -874,34 +959,43 @@ export async function prepareQaConsoleTheme(f) {
   });
 }
 
-export async function prepareQaPreset(f, presetName) {
-  assert.ok(
-    !f.retained && f.pendingRepositories.size === 0,
-    "blocked by unresolved repository cleanup",
+export async function prepareQaPluginCatalogs(f) {
+  f.configuration.drivers.plugin = [
+    { id: "occ-plugin", configuration: {} },
+    { id: "codex-plugin", configuration: { catalogSource: "openai-curated" } },
+  ];
+  await f.saveInstallation(f.configuration);
+  const { capabilities } = await f.api("GET", "/installation");
+  const catalogs = Object.fromEntries(
+    capabilities.pluginCatalogs.map(({ harnessId, pluginPolicies }) => [
+      harnessId,
+      pluginPolicies.driver.id,
+    ]),
   );
-  const codex = presetName === "Codex";
-  const desiredPlugin = codex ? "codex-plugin" : "occ-plugin";
-  const gatewayResources = f.configuration.drivers.compute.configuration.resources.gateway;
-  // The full native repository workload exceeded the launcher's 2 GiB default.
-  // Keep both installation variants on the same explicit acceptance-test budget.
-  if (
-    f.configuration.drivers.plugin?.id !== desiredPlugin ||
-    gatewayResources.limits.memory !== "4Gi"
-  ) {
-    gatewayResources.limits.memory = "4Gi";
+  assert.deepEqual(catalogs, { openclaw: "occ-plugin", codex: "codex-plugin" });
+  for (const [harnessId, q, expectedId] of [
+    ["openclaw", "Google Workspace", "occ-plugin:google@1.0.0"],
+    ["codex", "Linear", "codex-plugin:linear@openai-curated-remote"],
+  ]) {
+    const { plugins } = await f.api("POST", `/namespaces/${f.namespace.id}/agents/plugins`, {
+      harnessId,
+      q,
+    });
     assert.ok(
-      f.agents.every((agent) => agent.stopped),
-      "stop the prior Agent before changing the installation runtime configuration",
+      plugins.some(({ id }) => id === expectedId),
+      `missing ${expectedId} in the ${harnessId} catalog`,
     );
-    f.configuration.drivers.plugin = {
-      id: desiredPlugin,
-      configuration: codex ? { catalogSource: "openai-curated" } : {},
-    };
-    await f.saveInstallation(f.configuration);
   }
+  await f.record("plugin-catalogs", catalogs);
 }
 
-export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "") {
+export async function createQaAgent(
+  f,
+  presetName,
+  browserOrigin,
+  nameSuffix = "",
+  { apiKeyAuth = false } = {},
+) {
   assert.ok(!f.retained, "unresolved repository cleanup prevents new Agent work");
   // The Preset list returns summaries; the exact Preset carries the template.
   const selected = f.presets.find((value) => value.name === `Standard ${presetName}`);
@@ -909,10 +1003,15 @@ export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "
   assert.equal(selected.namespaceId, f.namespace.id, "Preset must belong to the QA Namespace");
   const preset = await f.api("GET", `/namespaces/${selected.namespaceId}/presets/${selected.id}`);
   const codex = presetName === "Codex";
-  const credential = await protectedText(
-    process.env[codex ? "OCC_TEST_QA_CODEX_TOKEN_FILE" : "OCC_TEST_QA_OPENAI_KEY_FILE"],
-    "model credential",
-  );
+  const codexAccountLogin = codex && !apiKeyAuth;
+  const credential = apiKeyAuth
+    ? await protectedModelApiKey()
+    : await protectedText(
+        process.env[
+          codexAccountLogin ? "OCC_TEST_QA_CODEX_TOKEN_FILE" : "OCC_TEST_QA_OPENAI_KEY_FILE"
+        ],
+        "model credential",
+      );
   const model =
     process.env[codex ? "OCC_TEST_QA_CODEX_MODEL" : "OCC_TEST_QA_OPENAI_MODEL"] || "gpt-6-luna";
   const rendered = renderPresetTemplate(preset.template, {
@@ -921,9 +1020,9 @@ export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "
     modelSecret: "provided-through-secret-api",
   });
   const values = rendered.configuration.values;
-  assert.equal(
-    f.configuration.drivers.plugin?.id,
-    codex ? "codex-plugin" : "occ-plugin",
+  const pluginDriverId = codex ? "codex-plugin" : "occ-plugin";
+  assert.ok(
+    f.configuration.drivers.plugin?.some(({ id }) => id === pluginDriverId),
     "prepare the preset before starting parallel Agent scenarios",
   );
   values.gateway.http = { endpoints: { chatCompletions: { enabled: true } } };
@@ -932,28 +1031,28 @@ export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "
     ...(browserOrigin ? { allowedOrigins: [browserOrigin] } : {}),
   };
   values.agents.defaults.skipBootstrap = true;
-  const configuration = await f.api("POST", `/namespaces/${f.namespace.id}/configurations`, {
-    ...rendered.configuration,
-    kind: "agent",
-  });
   const secret = await f.api("POST", `/namespaces/${f.namespace.id}/secrets`, {
     name: `${rendered.agent.name}-model`,
     value: credential,
   });
   const auth = {
-    method: codex ? "codex_pat" : "api_key",
+    method: codexAccountLogin ? "codex_pat" : "api_key",
     source: { kind: "secret", namespaceId: f.namespace.id, id: secret.id },
   };
+  const configuration = await f.api("POST", `/namespaces/${f.namespace.id}/configurations`, {
+    ...rendered.configuration,
+    kind: "agent",
+  });
   const agent = await f.api("POST", `/namespaces/${f.namespace.id}/agents`, {
     ...rendered.agent,
     configurationId: configuration.id,
     harnessAuth: auth,
   });
+  f.agents.push(agent);
   agent.preset = presetName;
   agent.qaScenario = nameSuffix;
   agent.configuration = configuration;
   agent.harnessAuth = auth;
-  f.agents.push(agent);
   if (f.controlPlane === "kubernetes") {
     const target = nativeAdminTarget({
       publicOrigin: f.consoleUrl,
@@ -979,9 +1078,12 @@ export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "
         deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
       },
     };
-    await f.api("PATCH", `/namespaces/${f.namespace.id}/configurations/${configuration.id}`, {
-      values,
-    });
+    // Later provider changes must start from the admitted native-admin configuration.
+    agent.configuration = await f.api(
+      "PATCH",
+      `/namespaces/${f.namespace.id}/configurations/${configuration.id}`,
+      { values },
+    );
   }
   await grantQaSecret(f, agent, secret.id, `${agent.name}-model`);
   await f.api("POST", `/namespaces/${f.namespace.id}/agents/${agent.id}/runtime-credentials`, {});

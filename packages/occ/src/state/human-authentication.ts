@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PostgresNativeBrowserAccess } from "./native-browser-access.ts";
 import {
-  AuthorizationDeniedError,
+  CallerStateDeniedError,
   ResourceConflictError,
   ResourceStateConflictError,
   ScopeViolationError,
@@ -950,7 +950,7 @@ export class PostgresHumanAuthentication {
       ],
     );
     if (current === undefined) {
-      throw new AuthorizationDeniedError("The human administrator session is no longer current.");
+      throw new CallerStateDeniedError("The human administrator session is no longer current.");
     }
   }
 

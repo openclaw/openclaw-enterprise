@@ -4,6 +4,7 @@
     "OCC_TEST_CODEX_SECCOMP_PROFILE",
     "OCC_TEST_WORKSPACE_ENVOY_IMAGE"
   ],
+  "optionalEnv": ["OCC_TEST_STAGING_CODEX_VERSION", "OCC_TEST_PRODUCTION_IMAGE"],
   "prepare": {
     "requiresPreparedStateForFile": true,
     "codexSeccomp": true,
@@ -14,6 +15,7 @@
   },
   "fileConcurrency": 3,
   "parallelFiles": [
+    "tests/integration/runtime-image-gateway-retained-state.test.mjs",
     "tests/integration/runtime-image-startup.test.mjs",
     "tests/integration/runtime-image-gateway-workspace.test.mjs",
     "tests/integration/runtime-image-public-github-read.test.mjs",
@@ -21,6 +23,13 @@
     "tests/integration/workspace-files-native.test.mjs"
   ],
   "files": [
+    {
+      "path": "tests/integration/runtime-image-gateway-retained-state.test.mjs",
+      "expectedTests": [
+        "runtime image embedded Gateway serves its first turn after operator-confirmed recovery from an unclean stop",
+        "runtime image Docker Compute replaces a Gateway on retained state after a controller restart and on redeploy"
+      ]
+    },
     {
       "path": "tests/integration/runtime-image-public-github-read.test.mjs",
       "expectedTests": [
@@ -30,7 +39,8 @@
     {
       "path": "tests/integration/runtime-image-startup.test.mjs",
       "expectedTests": [
-        "runtime image shares Codex 0.163.0-alpha.2 between the plugin and Dedicated command",
+        "runtime image applies the repository profile to a native thread shell turn",
+        "runtime image shares the reviewed Codex version between the plugin and Dedicated command",
         "runtime image gateway ignores inherited OPENCLAW_LOG_LEVEL in favor of native configuration",
         "runtime image starts an embedded OpenClaw gateway with the Docker driver entrypoint",
         "runtime image discovers the bundled Codex plugin from a fresh gateway home",
@@ -43,20 +53,29 @@
       "path": "tests/integration/runtime-image-gateway-workspace.test.mjs",
       "expectedTests": [
         "runtime image Gateway hot-loads its workspace node binding without restarting OpenClaw",
-        "runtime image spawns custom-provider subagents with intact native model IDs in the remote workspace"
+        "runtime image spawns custom-provider subagents with intact native model IDs in the remote workspace",
+        "runtime image delivers a write-scoped run's Codex command approval to the reviewer and returns the verdict"
       ]
     },
     {
       "path": "tests/integration/runtime-image-managed-files.test.mjs",
       "expectedTests": [
         "runtime image initializes the Harness workspace without replacing owner edits",
-        "runtime image tells OpenClaw that a read-only Kubernetes configuration is externally managed"
+        "runtime image starts the Kubernetes Gateway with its externally managed marker and Node options",
+        "runtime image holds an embedded Kubernetes Gateway whose plugin configuration fails its schema",
+        "runtime image holds a dedicated Codex Kubernetes Gateway whose plugin configuration fails its schema"
       ]
     },
     {
       "path": "tests/integration/workspace-files-native.test.mjs",
       "expectedTests": [
         "native workspace files follow a sole roster through OCC and preserve explicit targets and grants"
+      ]
+    },
+    {
+      "path": "tests/integration/codex-plugin-stdio-real.test.ts",
+      "expectedTests": [
+        "native stdio plugin preparation survives WebSocket replacement and drains failed installation"
       ]
     }
   ]

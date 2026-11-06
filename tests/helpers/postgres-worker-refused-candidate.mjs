@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import {
+  RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   SandboxRevisionUnsupportedError,
 } from "../../packages/occ/src/index.ts";
+import { waitForWorkStateDue } from "./postgres-worker-revision-support.mjs";
 import { waitFor } from "./wait-for.mjs";
 
 // Refused-candidate fakes shared by the worker revision -replacement, -refused-stop,
@@ -67,8 +69,9 @@ export function denyDeploy(fixture, owner) {
  * Starts the refused-candidate scenario: an exclusive Agent whose first revision activated and
  * whose replacement's first pass started its runtime but is not ready. `refuse` decides how later
  * passes fail: "revoked" denies `deploy` (the next pass refuses it), "unsupported" is refused
- * by Compute, and "unqualified" by its Credential Proxy (an upgraded worker refusing a revision
- * admitted with an unqualified Git sender). The self-failures "held" (a held model-probe
+ * by Compute, "unqualified" by its Credential Proxy (an upgraded worker refusing a revision
+ * admitted with an unqualified Git sender), and "undeliverable" by it too (a Git plan with no
+ * delivery profile, such as git-read). The self-failures "held" (a held model-probe
  * failure) and "retried" (an ordinary error) are not refusals. Any other value, such as
  * "late", only leaves the candidate unready. `stopRevision(revision)` returns undefined to use
  * the counting driver's stop or a promise that replaces it, for example a failing stop.
@@ -120,6 +123,9 @@ export async function startRefusedCandidate(
       }
       if (refuse === "unqualified" && candidatePasses > 1 && refusing()) {
         throw new RepositoryGitSenderUnqualifiedError();
+      }
+      if (refuse === "undeliverable" && candidatePasses > 1 && refusing()) {
+        throw new RepositoryGitProfileUnsupportedError(1);
       }
       if (refuse === "retried" && candidatePasses > 1) {
         throw new Error("Kubernetes API temporarily unavailable");
@@ -197,9 +203,13 @@ export function waitForRefusedStopWaits(events, candidate, count, timeoutMs) {
   );
 }
 
-/** Waits for the work to reach `state` and checks the reason code it recorded. */
-export async function assertWorkEnds(fixture, work, state, code) {
-  await fixture.work(work, state, 30_000);
+/**
+ * Waits for the work to reach `state` and checks the reason code it recorded. With `due`, each
+ * miss makes the work's queued retry due, for a test that waits on its refused stop's retries
+ * but not on their backoff.
+ */
+export async function assertWorkEnds(fixture, work, state, code, { due = false } = {}) {
+  await (due ? waitForWorkStateDue(fixture, work, state) : fixture.work(work, state, 30_000));
   const result = await fixture.workResult(work);
   assert.equal(result.rows[0].reason_code, code);
 }
@@ -228,4 +238,5 @@ export const refusals = {
   revoked: "AUTHORIZATION_DENIED",
   unsupported: "SANDBOX_HARNESS_UNSUPPORTED",
   unqualified: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
+  undeliverable: "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
 };

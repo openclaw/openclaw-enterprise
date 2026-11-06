@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
-import { commandPath } from "../helpers/fake-commands.mjs";
+import { commandPath } from "../helpers/fake-commands.ts";
+import { readJsonLinesSync } from "../helpers/json-lines.mjs";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 
-const script = resolve("scripts/pr-status.mjs");
+const script = resolve("scripts/pr-status.ts");
 
 function setup(t) {
-  const directory = mkdtempSync(join(tmpdir(), "pr-status-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const directory = temporaryDirectorySync(t, "pr-status-");
   const log = join(directory, "calls");
   // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
   writeFileSync(
@@ -19,6 +19,10 @@ function setup(t) {
 const fs = process.getBuiltinModule("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.PR_STATUS_CALLS, JSON.stringify(args) + "\\n");
+if (process.env.PR_STATUS_RESPONSE && args[0] === "pr") {
+  process.stdout.write(process.env.PR_STATUS_RESPONSE);
+  process.exit(0);
+}
 if (process.env.PR_STATUS_FAIL && args[0] === "pr") {
   console.error("private-token-example");
   process.exit(1);
@@ -59,7 +63,7 @@ test("reports observed PR and target separately without asserting merge readines
   assert.match(result.stdout, /PR-reported base: old-base/);
   assert.match(result.stdout, /Native: SKIPPED/);
   assert.match(result.stdout, /does not decide merge readiness/);
-  const calls = readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+  const calls = readJsonLinesSync(log);
   assert.deepEqual(
     calls.map((call) => call[0]),
     ["api", "pr", "api"],
@@ -84,7 +88,37 @@ test("rejects a malformed PR number before invoking gh", (t) => {
     encoding: "utf8",
   });
   assert.equal(result.status, 2);
-  assert.equal(result.stderr, "Usage: node scripts/pr-status.mjs PR_NUMBER [OWNER/REPOSITORY]\n");
+  assert.equal(result.stderr, "Usage: node scripts/pr-status.ts PR_NUMBER [OWNER/REPOSITORY]\n");
   // gh was never invoked, so its call log was never created.
   assert.throws(() => readFileSync(log), { code: "ENOENT" });
+});
+
+test("sanitizes malformed gh JSON like a failed command", (t) => {
+  const { env } = setup(t);
+  const result = spawnSync(process.execPath, [script, "12", "example/project"], {
+    env: { ...env, PR_STATUS_RESPONSE: "private-token-example{" },
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Could not read pull request/);
+  assert.doesNotMatch(result.stderr, /private-token-example/);
+});
+
+test("preserves partial check output before a malformed check", (t) => {
+  const { env } = setup(t);
+  const payload = {
+    author: { login: "alice" },
+    baseRefName: "main",
+    headRefOid: "head",
+    statusCheckRollup: [{ name: "first", conclusion: "SUCCESS" }, null],
+  };
+  const result = spawnSync(process.execPath, [script, "12", "example/project"], {
+    env: { ...env, PR_STATUS_RESPONSE: JSON.stringify(payload) },
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /first: SUCCESS/);
+  assert.match(result.stderr, /Cannot read properties of null/);
 });

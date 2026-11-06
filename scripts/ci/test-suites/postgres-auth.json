@@ -41,7 +41,9 @@
         "PostgreSQL native admin WebSocket lease closes as a dependency failure during an IAM outage",
         "PostgreSQL native admin WebSocket lease closes at the next renewal after Agent stop",
         "PostgreSQL native admin WebSocket lease closes at the next renewal after active revision replacement",
-        "PostgreSQL native admin WebSocket closes on API shutdown and disabled redeploy denies reuse"
+        "PostgreSQL native admin WebSocket closes on API shutdown and disabled redeploy denies reuse",
+        "PostgreSQL native browser shutdown drains an in-flight launch without returning access",
+        "PostgreSQL host-only relaunch preserves an existing socket only for the same parent and revision"
       ]
     },
     {

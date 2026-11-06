@@ -127,7 +127,12 @@ Driver; admitted Agents must use a supported
 
 ### OpenShell gateway
 
-The OpenShell Backend holds the connection to one OpenShell gateway deployment:
+The OpenShell Backend holds the connection to one OpenShell gateway deployment.
+These paths are the files Helm `backend.openshell.clientSecretName` projects
+(`ca.crt`, `tls.crt`, `tls.key` under `/etc/openclaw/openshell`). The chart
+mounts no bearer token file or separate `operatorTls` pair, so chart installs
+cannot retrieve Codex OAuth access tokens; other packaging must mount those files
+itself.
 
 ```yaml
 backend:
@@ -136,12 +141,10 @@ backend:
     configuration:
       endpoint: https://openshell-gateway.openshell-system.svc:8080
       auth:
-        mode: bearerTokenFile
-        path: /etc/openclaw/openshell/token
+        mode: mtls
+        certificatePath: /etc/openclaw/openshell/tls.crt
+        privateKeyPath: /etc/openclaw/openshell/tls.key
       rootCertificatePath: /etc/openclaw/openshell/ca.crt
-      operatorTls:
-        certificatePath: /etc/openclaw/openshell/operator.crt
-        privateKeyPath: /etc/openclaw/openshell/operator.key
     drivers:
       sandbox: openshell-sandbox
       credential_gateway: openshell-credentials
@@ -256,9 +259,8 @@ acquisition, and forwarding engine.
 PATCH still requires `configurationId`. Malformed/empty IDs return
 `400 INVALID_REQUEST`; unknown nonempty IDs return `404 NOT_FOUND`.
 No Backend is inferred from model configuration or an account, and saving an
-Agent makes no upstream call. Deployment copies `backendId` into an immutable
-AgentRevision; later draft edits cannot change that snapshot. PostgreSQL stores
-the snapshot in the immutable Agent revision row's `backend_id` column.
+Agent makes no upstream call. At deployment, OCC writes the chosen Backend ID to the Agent revision.
+PostgreSQL stores it in the `backend_id` column. Later draft edits leave that value unchanged.
 
 A GitHub Backend ID is invalid in this field; the general `/backends` inventory
 includes both types. Configure this association through the Agent API or a Preset.
@@ -345,8 +347,7 @@ request. Successful issuance does not prove that an Agent can reach its model.
 The [lifecycle flow](../flows/service-account-driver-credential-delivery.md) names code and proof
 boundaries. Local API, PostgreSQL, Driver, and packaging tests do not prove live
 provider calls or model execution. See
-[service-account testing](../testing/slack.md#chatgpt-service-accounts) for real provider
-verification requirements.
+[service-account testing](../testing/slack.md#service-account-coverage) for the remaining coverage and its limits.
 
 ## Deferred behavior
 

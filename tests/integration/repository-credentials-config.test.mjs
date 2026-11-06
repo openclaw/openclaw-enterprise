@@ -1,31 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  chmod,
-  mkdir,
-  mkdtemp,
-  readdir,
-  readFile,
-  rename,
-  rm,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import fs from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readProtectedFile } from "../../apps/controller/src/composition/repository-credentials/protected-file.ts";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 test("prepared startup accepts TLS without an App key or provider calls and rejects unsafe material", async (t) => {
   const { checkConfiguration } =
     await import("../../apps/controller/src/composition/repository-credentials/check-config.ts");
-  const directory = await mkdtemp(join(tmpdir(), "repository-configuration-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "repository-configuration-");
   const tls = await createTlsMaterial(t);
-  const controlDirectory = await socketDirectory(t, "rcs-config-");
+  const controlDirectory = await socketDirectory(t, "rcs-config-", {
+    longest: "prepared-git-use.sock",
+  });
   const key = join(directory, "app.pem");
   const tlsKey = join(directory, "tls.key");
   const cert = join(directory, "tls.crt");
@@ -113,7 +104,17 @@ test("prepared startup accepts TLS without an App key or provider calls and reje
   const loaded = await loadConfiguration(file, createSystemClock());
   try {
     assert.equal(loaded.repositoryDescriptions, undefined);
-    assert.throws(() => loaded.factory.resolve("git-write"), /BOUND_SESSION_REQUIRED/);
+    assert.equal("resolve" in loaded.factory, false);
+    const { createCredentialService } =
+      await import("../fixtures/repository-credentials/service.ts");
+    const service = createCredentialService({
+      config: loaded.config,
+      factory: loaded.factory,
+      clock: createSystemClock(),
+    });
+    assert.throws(() => service.open({ durationSeconds: 30, profile: "git-write" }), {
+      message: "INVALID_BINDING",
+    });
   } finally {
     loaded.close();
   }
@@ -229,8 +230,7 @@ test("prepared startup accepts TLS without an App key or provider calls and reje
 test("development token authority loads only with both opt-ins and never reaches production inputs", async (t) => {
   const { checkConfiguration } =
     await import("../../apps/controller/src/composition/repository-credentials/check-config.ts");
-  const directory = await mkdtemp(join(tmpdir(), "repository-token-configuration-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "repository-token-configuration-");
   const tls = await createTlsMaterial(t);
   const controlDirectory = await socketDirectory(t, "rcs-config-");
   const tokenFile = join(directory, "token");
@@ -450,8 +450,7 @@ test("service admission bounds are finite and retain an explicit long-task polic
 });
 
 test("protected file transfers its candidate only after descriptor cleanup", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "protected-file-transfer-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "protected-file-transfer-");
   const path = join(directory, "input");
   const contents = "protected file fixture";
   await writeFile(path, contents, { mode: 0o600 });

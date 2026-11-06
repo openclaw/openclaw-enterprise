@@ -78,6 +78,7 @@ const revision = (configuration, number = 1) => ({
   agentId: `agt_${uuid}`,
   revision: number,
   backendId: null,
+  gatewayManagedMode: false,
   configurationId: `cfg_${uuid}`,
   configurationKind: "agent",
   configurationGeneration: 1,

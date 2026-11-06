@@ -11,6 +11,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import { isDeepStrictEqual } from "node:util";
+import { isSameGitHubRepository } from "../repo/credentials/client-contracts.ts";
 import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
 import { isGitHubWireCredential } from "../repo/github/credentials/wire-credential.ts";
 
@@ -141,7 +142,11 @@ export const githubMetadataProvider: CredentialProviderDefinition =
         const { id, full_name } = parseUnambiguousJson(
           new TextDecoder("utf8", { fatal: true }).decode(response.body),
         ) as Record<string, unknown>;
-        if (id !== Number(operation.repositoryId) || full_name !== operation.repository) {
+        // GitHub answers with the repository's own spelling; release the admitted one (finding 2239).
+        if (
+          id !== Number(operation.repositoryId) ||
+          !isSameGitHubRepository(full_name, operation.repository)
+        ) {
           return undefined;
         }
         return {
@@ -150,7 +155,7 @@ export const githubMetadataProvider: CredentialProviderDefinition =
             ["content-type", "application/json"],
             ["cache-control", "no-store"],
           ],
-          body: Buffer.from(JSON.stringify({ id, full_name })),
+          body: Buffer.from(JSON.stringify({ id, full_name: operation.repository })),
           trailers: [],
         };
       } catch {

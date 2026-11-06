@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { after } from "node:test";
@@ -11,6 +12,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { occLogLine } from "../helpers/occ-log-line.ts";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import {
   CREDENTIAL_GATEWAY_FIXTURE_ID,
@@ -19,14 +21,23 @@ import {
 import {
   advanceCleanupRetries,
   completion,
+  deferWork,
+  makeWorkDue,
   removeAccessBindings,
   repositoryAttempts,
   repositoryBoundary,
+  withUnavailableIAM,
 } from "../helpers/postgres-worker-revision-support.mjs";
 import { gitCommandBodies, gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
-import { openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
+import { onlineGitAllow, openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
 import { invoke, token } from "../helpers/openshell-online-wire.mjs";
-import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
+import {
+  OpenShellGitRuntime,
+  openShellRepositoryAccess,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
+import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
@@ -49,6 +60,7 @@ function withCredentialGateway(drivers) {
     id: "sandbox-worker-fixture",
     capability: "sandbox",
     implementation: "sandbox-worker-fixture",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     async cleanup() {},
   };
@@ -239,11 +251,10 @@ function assertRetryDelay(series, expectedMs) {
 
 // Lets a scheduled retry run now instead of waiting out its delay. The worker still claims it.
 async function runScheduledRetryNow(fixture, series) {
-  const updated = await fixture.observerPool.query(
-    `UPDATE occ.controller_work SET available_at = clock_timestamp()
-     WHERE idempotency_key = $1 AND state = 'queued'`,
-    [series.idempotencyKey],
-  );
+  const updated = await makeWorkDue(fixture.observerPool, {
+    key: series.idempotencyKey,
+    state: "queued",
+  });
   assert.equal(updated.rowCount, 1);
 }
 
@@ -890,11 +901,14 @@ test(
     const revoked = await withdrawal.read(fixture.actor.id);
     assert.equal(revoked.state, "revoked");
     assert.equal(revoked.lastReason, "CREDENTIALS_WITHDRAWN");
-    const completed = events.filter(
-      ({ event, code }) => event === "worker.completed" && code === "SANDBOX_GATEWAY_UNAUTHORIZED",
-    );
+    const completed = events
+      .filter(
+        ({ event, code }) =>
+          event === "worker.completed" && code === "SANDBOX_GATEWAY_UNAUTHORIZED",
+      )
+      .map(occLogLine);
     assert.deepEqual(
-      completed.map(({ outcome, hint }) => [outcome, hint]),
+      completed.map(({ outcome, hintCode }) => [outcome, hintCode]),
       [["retry", undefined]],
     );
 
@@ -924,14 +938,17 @@ test(
     const recovery = await queuedWithdrawal(fixture, other.candidate);
     assert.equal(recovery.idempotencyKey, `${persistent.idempotencyKey}:recovery:1`);
     assertRetryDelay(recovery, 30_000);
-    const terminal = events.filter(
-      ({ event, code, hint }) =>
-        event === "worker.completed" &&
-        code === "SANDBOX_GATEWAY_UNAUTHORIZED" &&
-        hint !== undefined,
-    );
+    // The lines the worker log keeps (finding 2245).
+    const terminal = events
+      .map(occLogLine)
+      .filter(
+        ({ event, code, hintCode }) =>
+          event === "worker.completed" &&
+          code === "SANDBOX_GATEWAY_UNAUTHORIZED" &&
+          hintCode !== undefined,
+      );
     assert.equal(terminal.length, 1);
-    assert.match(terminal[0].hint, /restore that identity's Workspace role/);
+    assert.equal(terminal[0].hintCode, "sandbox-gateway-identity");
     // The Driver's retry, the queue's permanent failure (with the recovery series queued).
     assert.deepEqual(
       [terminal[0].attempt, terminal[0].result, terminal[0].outcome],
@@ -1375,11 +1392,7 @@ revisionTest(
 // Admits `number` for `owner` with its deployment held back, as one that has not run yet.
 async function admitHeldRevision(fixture, owner, number) {
   const revision = await fixture.revision(owner, number);
-  await fixture.observerPool.query(
-    `UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 day'
-     WHERE idempotency_key = $1`,
-    [revision.idempotencyKey],
-  );
+  await deferWork(fixture.observerPool, revision.idempotencyKey, "1 day");
   return revision;
 }
 
@@ -1646,6 +1659,140 @@ for (const harness of [false, true]) {
   );
 }
 
+revisionTest(
+  "a candidate's withdrawal refused until it is active settles when its deployment activates it, without a replay",
+  async (fixture) => {
+    const owners = [];
+    for (const label of ["activates", "other-refusal", "outstanding", "active-retirement"]) {
+      owners.push(await agentWithHarnessAndToolSources(fixture, `withdraw-activation-${label}`, 1));
+    }
+    const firsts = [];
+    for (const owner of owners) {
+      firsts.push(await fixture.revision(owner, 1));
+    }
+    // Revisions whose withdrawal Compute refuses for another cause, whichever is active.
+    const refusals = new Map();
+    const withdrawn = [];
+    const compute = {
+      ...fixture.compute,
+      maintenanceIntervalMs: 3_600_000,
+      // Like reduceCredentialPolicy, reduce only the Agent's active revision (finding 2235).
+      async withdrawCredentialSource(revision, source) {
+        withdrawn.push(revision.id);
+        const agent = await fixture.state.read((view) =>
+          view.agents.findAgent(revision.namespaceId, revision.agentId),
+        );
+        const code =
+          refusals.get(revision.id) ??
+          (agent?.activeRevisionId === revision.id
+            ? undefined
+            : "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT");
+        if (code !== undefined) {
+          throw new CredentialWithdrawalRefusedError(code, "Compute refused the withdrawal.");
+        }
+        return { sourceId: source.id, state: "revoked" };
+      },
+    };
+    const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway };
+    await fixture.start(compute, options);
+    for (const first of firsts) {
+      await fixture.work(first, "succeeded");
+    }
+    await fixture.stop();
+
+    // The first three Agents have a later candidate still deploying when the withdrawal is
+    // requested. The last one has none; its active revision refuses retirement itself.
+    const seconds = [];
+    for (const owner of owners.slice(0, 3)) {
+      seconds.push(await admitHeldRevision(fixture, owner, 2));
+    }
+    refusals.set(seconds[1].id, "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT");
+    refusals.set(firsts[3].id, "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT");
+    // Another operator requests the first Agent's withdrawal; its attempts run as that operator.
+    const requester = `withdraw-activation-requester-${randomUUID()}`;
+    await fixture.copyActorGrants(requester);
+    const withdrawals = [];
+    for (const [index, owner] of owners.entries()) {
+      const sourceId = toolSources(owner)[0].sourceId;
+      withdrawals.push(
+        await requestWithdrawal(
+          fixture,
+          owner,
+          sourceId,
+          index === 0 ? requester : fixture.actor.id,
+        ),
+      );
+    }
+    await fixture.start(compute, options);
+    for (const [index, second] of seconds.entries()) {
+      await fixture.work((await withdrawalAttempts(fixture, second))[0], "failed_permanent");
+      await fixture.work((await withdrawalAttempts(fixture, firsts[index]))[0], "succeeded");
+    }
+    await fixture.work((await withdrawalAttempts(fixture, firsts[3]))[0], "failed_permanent");
+    await fixture.stop();
+    const refused = await withdrawals[0].read(fixture.actor.id);
+    assert.equal(refused.revisionId, seconds[0].id);
+    assert.equal(refused.state, "pending");
+    assert.equal(refused.lastReason, "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT");
+    assert.equal(refused.withdrawalInProgress, false, "the refusal awaits a replay or activation");
+
+    // The third Agent's operator replays while its candidate still deploys. That attempt would
+    // fail the same way; hold it, so it is still queued when the candidate activates.
+    await withdrawals[2].replay(fixture.actor.id);
+    const replay = (await withdrawalAttempts(fixture, seconds[2]))[1];
+    assert.equal(replay.state, "queued");
+    const hold = (work, at) =>
+      fixture.observerPool.query(
+        `UPDATE occ.controller_work SET available_at = ${at} WHERE idempotency_key = $1`,
+        [work.idempotencyKey],
+      );
+    await hold(replay, "clock_timestamp() + interval '1 day'");
+    for (const second of seconds) {
+      await hold(second, "clock_timestamp()");
+    }
+    await fixture.start(compute, options);
+    for (const second of seconds) {
+      await fixture.work(second, "succeeded", 30_000);
+    }
+
+    // Activation queues one attempt for the refused withdrawal, as its requester, and that
+    // attempt reduces the now-active revision. Nobody replayed it.
+    const activated = await withdrawalAttempts(fixture, seconds[0]);
+    assert.equal(activated.length, 2, "activation queues exactly one attempt");
+    const activation = activated[1];
+    assert.equal(
+      activation?.idempotencyKey,
+      `agent_revision:${seconds[0].id}:reconcile:credentials_withdrawn:activation`,
+    );
+    assert.equal(activation.actorId, requester);
+    await fixture.work(activation, "succeeded");
+    const settled = await withdrawals[0].read(fixture.actor.id);
+    assert.equal(settled.revisionId, seconds[0].id);
+    assert.equal(settled.state, "revoked");
+    assert.equal(withdrawn.filter((id) => id === seconds[0].id).length, 2);
+
+    // Activation queues nothing for a refusal it does not change, nor beside an attempt that
+    // is still queued; that attempt then settles the withdrawal.
+    assert.equal((await withdrawalAttempts(fixture, seconds[1])).length, 1);
+    const other = await withdrawals[1].read(fixture.actor.id);
+    assert.equal(other.state, "pending");
+    assert.equal(other.lastReason, "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT");
+    assert.equal((await withdrawalAttempts(fixture, seconds[2])).length, 2);
+    await hold(replay, "clock_timestamp()");
+    await fixture.work(replay, "succeeded");
+    assert.equal((await withdrawals[2].read(fixture.actor.id)).state, "revoked");
+
+    // An active revision's own retirement refusal still waits for a replay: its maintenance
+    // passes, which complete the activated revision too, queue no attempt.
+    await runMaintenancePass(fixture, firsts[3]);
+    await fixture.stop();
+    assert.equal((await withdrawalAttempts(fixture, firsts[3])).length, 1);
+    const retirement = await withdrawals[3].read(fixture.actor.id);
+    assert.equal(retirement.state, "pending");
+    assert.equal(retirement.withdrawalInProgress, false);
+  },
+);
+
 for (const successor of [false, true]) {
   test(
     `maintenance stops re-queuing ${successor ? "an admitted successor's Harness" : "a tool"} source withdrawal denied to its requester until an authorized replay`,
@@ -1670,28 +1817,8 @@ for (const successor of [false, true]) {
       };
       const options = {
         convergenceTimeoutMs: 50,
-        transformDrivers: (drivers) => {
-          const withGateway = withCredentialGateway(drivers);
-          const createIAMDriver = withGateway.createIAMDriver;
-          return {
-            ...withGateway,
-            createIAMDriver(state) {
-              const iam = createIAMDriver(state);
-              return {
-                id: iam.id,
-                implementation: iam.implementation,
-                capability: iam.capability,
-                lookupIdentity: iam.lookupIdentity.bind(iam),
-                async authorize(request) {
-                  if (iamUnavailable) {
-                    throw new Error("IAM is temporarily unavailable");
-                  }
-                  return iam.authorize(request);
-                },
-              };
-            },
-          };
-        },
+        transformDrivers: (drivers) =>
+          withUnavailableIAM(() => iamUnavailable)(withCredentialGateway(drivers)),
       };
       const first = await fixture.revision(owner, 1);
       await fixture.start(compute, options);
@@ -2355,12 +2482,7 @@ test(
     );
     await removeAccessBindings(fixture, requester);
     const [held] = await withdrawalAttempts(fixture, active);
-    const holdUntil = (interval) =>
-      fixture.observerPool.query(
-        `UPDATE occ.controller_work SET available_at = clock_timestamp() + $2::interval
-         WHERE idempotency_key = $1`,
-        [held.idempotencyKey, interval],
-      );
+    const holdUntil = (interval) => deferWork(fixture.observerPool, held.idempotencyKey, interval);
     await holdUntil("1 day");
     await fixture.controller.withdrawAgentCredentialSource(
       fixture.actor.id,
@@ -2848,7 +2970,30 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
   return async (t) => {
     const backendId = "github-primary";
     const repository = repositoryBoundary({ backendId });
-    const f = await setup(t, { repoDriver: repository.driver });
+    // This registered controlled sender qualifies finite v5 installation access. Stock
+    // OpenShell does not offer nonpreview installation-wide admission; this is not that claim.
+    const protectedGit = protectedRepositoryGitRelease(
+      () => openShellRepositoryAccess(runtime, () => ({ client, continuity, workspace, sandbox })),
+      async () => ({ close: async () => {} }),
+    );
+    const f = await setup(t, {
+      repoDriver: repository.driver,
+      driverSelections: { sandbox: protectedGit.sandboxConfiguration },
+    });
+    const gateway = new OpenShellCredentialGatewayDriver(
+      { binaries: ["/usr/bin/codex"] },
+      {
+        id: CREDENTIAL_GATEWAY_FIXTURE_ID,
+        backend: {
+          id: "finite-expiry-gateway",
+          drivers: { credential_gateway: CREDENTIAL_GATEWAY_FIXTURE_ID },
+          client: { placement: () => undefined, clientForNamespace: () => client },
+        },
+      },
+    );
+    f.controller.installDriver(protectedGit.owner, ["sandbox", "credential_proxy"]);
+    f.controller.registerDriver(gateway);
+    f.controller.selectDriver("credential_gateway", gateway.id);
     const routes = new PostgresOpenShellGitRouteStore(f.observerPool);
     const namespaceId = f.namespace.id;
     const pushRef = "refs/heads/review/task";
@@ -2861,28 +3006,18 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
         appId: "12345",
         githubInstallationId: "67890",
         maximumDurationSeconds: 86400,
-        repositories: [
-          {
-            repositoryRef: "application",
-            repositoryId: "34567",
-            repository: project,
-            namespaces: [
-              {
-                namespaceId,
-                profiles: ["git-write"],
-                pushRefAllowlist: [pushRef],
-                transport: "git-only",
-              },
-            ],
-          },
-        ],
+        installationAccess: {
+          repositoryRef: "installation",
+          namespaces: [{ namespaceId, accessMode: "installation" }],
+        },
+        repositories: [],
       },
       backendId,
     );
     const binding = resolveGitHubRepositoryBinding(registry, {
       namespaceId,
-      repositoryRef: "application",
-      profile: "git-write",
+      repositoryRef: "installation",
+      profile: "github-installation",
     });
     // Repository and Compute must resolve the same registry grant throughout this test.
     repository.driver.resolve = (input) => ({
@@ -2913,10 +3048,17 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
         });
         return found ?? (refused && { refused });
       },
-      async approve(request) {
+      async authorizeOnlineRequest(request, installed) {
         assert.equal(request.sessionId, sessionId);
+        assert.equal(request.scope, "github-installation");
         approved.push(request.operation);
-        return true;
+        assert.equal(installed.route.revisionId, revision.id);
+        return {
+          ...onlineGitAllow(request, installed),
+          scope: request.scope,
+          revisionId: installed.route.revisionId,
+          fence: installed.route.fence,
+        };
       },
     });
     // Allocate the Agent and independent model grant before starting the short Git clock.
@@ -2924,13 +3066,25 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       auth: "credential_source",
       executionMode: "dedicated",
     });
+    await f.observerPool.query("UPDATE occ.agents SET repository_bindings=$1 WHERE id=$2", [
+      JSON.stringify([{ repositoryRef: binding.repositoryRef, profile: binding.profile }]),
+      agent.id,
+    ]);
+    // The preinstalled model provider and its retained profile remain the original expiry
+    // fixture's. Enrollment must not replace that profile and erase its overlap controls.
     const model = agent.harnessAuth.sourceId;
     const continuity = { model, workload: async () => "original-workload-and-supervisor" };
     const deadlineWallMs = Date.now() + 6_000;
     const revision = await f.revision(agent, 1, {
-      sandboxDriverId: "sandbox-worker-fixture",
+      protectedRepositoryDriver: protectedGit.owner,
       repositoryCredentials: { ...repository.snapshot, deadlineWallMs, bindings: [binding] },
     });
+    assert.deepEqual(revision.executionAdmission, { version: 5, mode: "protected" });
+    assert.equal(revision.egressPlan.repositoryGitAuthorization, "online-request");
+    assert.deepEqual(revision.egressPlan.repositoryGit, revision.repositoryCredentials);
+    assert.equal(revision.repositoryCredentials.standingApprovalId, undefined);
+    assert.equal(revision.repositoryCredentials.deadlineWallMs, deadlineWallMs);
+    assert.deepEqual(revision.egressPlan.harnessCredentialSource, revision.harnessAuth);
     const { client, world } = await gitExpiryGateway(t, {
       model,
       workspace,
@@ -2943,8 +3097,8 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       ...binding.grant,
       value: "synthetic-installation-token",
       expiresAt: new Date(deadlineWallMs + 600_000).toISOString(),
-      repository: project,
-      pushRef,
+      scope: "github-installation",
+      installationId: registry.githubInstallationId,
       preparationAttemptId: randomUUID(),
       materialVersion: randomUUID(),
       apiOrigin: "https://api.github.com",
@@ -2954,22 +3108,44 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
         { registrationName, authority: {} },
         createGitHubRepositoryDeliveryResolver(registry),
       );
-      // The authority has a real TLS socket; only custody and the external installation are doubles.
+      // Keep the original controlled supplier and TLS authority. Enrollment and route custody
+      // are real; this material is released only after the worker has committed activation.
       git.routes = routes;
-      git.owner = { readOpenShellMaterial: async () => ({ ...material, sessionId }) };
+      git.owner = {
+        async readOpenShellMaterial(_revisionId, _signal, route, scope) {
+          assert.equal(_revisionId, revision.id);
+          assert.equal(route.revisionId, revision.id);
+          assert.equal(scope, "github-installation");
+          if ((await f.currentAgent(agent)).activeRevisionId !== revision.id) {
+            return { absent: "unprepared" };
+          }
+          return { ...material, sessionId };
+        },
+      };
       git.emit = (e) => events.push(e);
       return git;
     }
     senderRuntime = runtime = releaseRuntime();
+    const kube = createTestKubernetesComputeDriver(f.compute.id, {
+      repositoryCredentials: true,
+      protectedDriver: protectedGit.owner,
+      credentialGatewayDriver: gateway,
+    });
     const compute = {
       ...f.compute,
+      validateExecutionAdmission: kube.validateExecutionAdmission.bind(kube),
       validateRepositoryCredentials(harness, selected) {
         assert.equal(harness.id, "codex");
         assert.equal(harness.mode, "dedicated");
-        assert.equal(selected, "sandbox-worker-fixture");
+        assert.equal(selected, protectedGit.owner.ref.id);
+        kube.validateRepositoryCredentials(harness, selected);
       },
       async prepareRevision(r, context) {
+        assert.equal(r.id, revision.id);
+        assert.equal(r.agentId, agent.id);
         assert.equal(r.harnessAuth.sourceId, model);
+        assert.equal(context.harnessAuth.method, "credential_source");
+        assert.equal(context.harnessAuth.source.id, model);
         assert.equal(
           world.id,
           undefined,
@@ -2985,13 +3161,23 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
           workspace,
           sandbox,
           signal,
+          "/sandbox/enterprise",
           world.retainedProviders,
         );
         world.id = sandboxId;
         identity = git.middlewares[registrationName].config;
+        assert.equal(identity.fields.binding_id.stringValue, r.egressPlan.execution.executionId);
         await runtime.bind(r.id, (box) => assert.equal(box.id, sandboxId), continuity);
         const entry = await runtime.entries.get(r.id);
         await runtime.reconcile(entry);
+        await protectedGit.enroll(
+          r,
+          context,
+          git.middlewares,
+          workspace,
+          sandboxId,
+          world.repositoryGitRecipient,
+        );
         return f.compute.prepareRevision(r, context);
       },
       retireExpiredRepositoryAccess: (r, signal) =>
@@ -3002,7 +3188,10 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       },
     };
     const start = () =>
-      f.start(compute, { emit: (e) => events.push(e), transformDrivers: withCredentialGateway });
+      f.start(compute, {
+        emit: (e) => events.push(e),
+        transformDrivers: (drivers) => protectedGit.selectDrivers(drivers, gateway),
+      });
     let originRequests = 0;
     let originBytes = 0;
     async function fetchFromPrivateOrigin() {
@@ -3044,6 +3233,17 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       } = await f.workResult(revision);
       throw Error("Git-enabled revision did not activate: " + work?.reason_code, { cause });
     });
+    const { rows: installations } = await f.observerPool.query(
+      "SELECT installation FROM occ.egress_installations WHERE revision_id=$1",
+      [revision.id],
+    );
+    assert.equal(installations.length, 1);
+    assert.deepEqual(installations[0].installation.plan, revision.egressPlan);
+    assert.equal(installations[0].installation.sandboxId, sandboxId);
+    const entry = await runtime.entries.get(revision.id);
+    entry.nextObserveAt = 0;
+    entry.nextRefreshAt = 0;
+    await runtime.reconcile(entry);
     assert.deepEqual(await fetchFromPrivateOrigin(), { decision: 1 });
     assert.deepEqual(approved, ["upload-pack"]);
     const remaining = deadlineWallMs - Date.now();
@@ -3082,6 +3282,20 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       attempts.map((a) => [a.phase, a.sessionId]),
       [["disposed", sessionId]],
     );
+    const originalAdmission = attempts[0].admissionId;
+    assert.ok(originalAdmission);
+    const assertOriginalSession = async () => {
+      assert.deepEqual(
+        (await repositoryAttempts(f, revision)).map(({ admissionId, sessionId, phase }) => [
+          admissionId,
+          sessionId,
+          phase,
+        ]),
+        [[originalAdmission, sessionId, "disposed"]],
+        "settlement never creates a second durable admission",
+      );
+      assert.equal(repository.calls.filter((c) => c.operation === "open").length, 0);
+    };
     await advanceCleanupRetries(f, revision);
     await nextExpiry("REPOSITORY_CLEANUP_PENDING");
     assert.equal(
@@ -3113,6 +3327,7 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
         [1, bodies.fetch.length, ["upload-pack"]],
       );
       assert.deepEqual([world.detaches.length, world.writes], [1, 1], "no replay or replacement");
+      await assertOriginalSession();
       return;
     }
     await nextExpiry("REPOSITORY_ACCESS_WITHDRAWN");
@@ -3140,7 +3355,7 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
     assert.equal((await fetchFromPrivateOrigin()).decision, 2);
     assert.equal(originBytes, bodies.fetch.length, "neither late fetch reached the Git origin");
     assert.deepEqual(approved, ["upload-pack"]);
-    assert.equal(repository.calls.filter((c) => c.operation === "open").length, 1);
+    await assertOriginalSession();
     assert.deepEqual(
       [world.detaches.length, world.writes],
       [1, 1],

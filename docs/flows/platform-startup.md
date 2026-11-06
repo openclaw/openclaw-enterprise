@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-10-21
-last_updated_session: authoring-run/2173f820-1bb2-47dd-8d1a-8649183da29f
+updated: 2026-11-04
+last_updated_session: authoring-run/390095eb-01a9-4e24-b609-791b49f19f81
 ---
 
 # Platform Startup Flow
@@ -16,7 +16,7 @@ its Backend client and Driver. PostgreSQL-backed development uses the
 Docker Compute Driver by default, while the development filesystem
 Configuration Driver is API-only. The singleton invariant is the selected Driver
 identity, not JavaScript object identity. This trace ends when the API accepts
-requests and the worker begins polling durable work.
+requests and the worker starts polling PostgreSQL for queued operations.
 
 ## Entry Points
 
@@ -48,7 +48,7 @@ graph TD
   subgraph API["OCC API process"]
     A["startApi validates API settings"] --> B["Load shared Drivers and optional API-only ServiceAccount Driver"]
     B --> C["Compose authorized OCC and Fastify"]
-    C --> E["Listen for requests and enqueue durable work"]
+    C --> E["Accept requests and queue controller operations"]
   end
 
   subgraph Worker["Controller worker process"]
@@ -68,7 +68,7 @@ graph TD
   D --> C
   D --> H
   E -->|persist lifecycle work| D
-  D -->|claim durable work| I
+  D -->|claim queued operations| I
   I -->|provision Namespace infrastructure| N
   I -->|prepare each deployed Agent's gateway| J
   I -->|development or production AgentRevision work| K
@@ -162,6 +162,13 @@ also runs optional Compute preflight before initializing authentication or
 registering routes. The default unconfigured development API retains its existing
 startup path. The [production startup flow](production-startup.md#4-start-private-api-and-worker-deployments)
 owns the Kubernetes version decision and warning details.
+Both compositions pass the loader's resolved `drivers.credential_proxy.requestCapacity`
+to the `OpenClawController` constructor, which validates it again;
+`packages/occ/src/index.ts:createCredentialProxy` then builds the exchange registry
+with those bounds when `installEgressAuthority` binds the selected transport. The worker
+validates the block but builds no registry. The
+[Credential Proxy reference](../reference/drivers/credential-proxy.md#request-time-capacity)
+owns the limits.
 It registers IAM, Compute, Configuration, and any selected API-only
 ServiceAccount Driver with OCC before
 [`createFastifyApp`](../../apps/controller/src/index.ts) installs authenticated,
@@ -248,8 +255,8 @@ execution begins in the adjacent
   required to prove gateway or Agent workload execution; startup tests alone do
   not establish that outcome.
 - With a selected ServiceAccount Driver, verify the admin key and ChatGPT client
-  exist only in the API process; provider-issued access tokens require the
-  genuine scenario in `tests/integration/service-account-driver-real.test.mjs`.
+  exist only in the API process. See [service-account coverage](../testing/slack.md#service-account-coverage)
+  for the checks and their limits.
 
 ## Related docs
 
@@ -271,6 +278,9 @@ execution begins in the adjacent
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 09:42: Remove the retired hosted Provider Account test from verification instructions; retain service-account implementation coverage. (authoring-run/390095eb-01a9-4e24-b609-791b49f19f81 - e2311f4d2250874d622ab12c2fe8588a076bd19b)
+- 2026-10-23: Pass the Installation's Credential Proxy request capacity from startup to the exchange registry.
 
 - 2026-10-21: Load the route validators and serializers the image build precompiled.
 

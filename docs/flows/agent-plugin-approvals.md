@@ -53,7 +53,7 @@ and `[]` denies Slack approvers at that scope. The selected PluginDriver
 validates supported identities before OCC saves the Agent. The Codex
 PluginDriver rejects plugin and tool approvers because Codex approval requests
 carry no plugin or tool identity; it accepts only the Agent default. Deploying the Agent
-records the current default and selection map in an immutable Agent revision.
+records the current default and selection map in an Agent revision.
 Later edits do not change the saved version.
 An Agent update sends `pluginApprovers: null` to remove a previously saved
 default and return to omitted-policy behavior.

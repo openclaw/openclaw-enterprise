@@ -1,29 +1,40 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { randomUUID } from "node:crypto";
+import test, { afterEach } from "node:test";
+import { createHash, randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
 import {
   OpenShellGitRouteBlockedError,
   OpenShellGitRuntime,
   openShellGitRouteReadiness,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
-import { OpenShellPreparedGitProviderError } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
+import {
+  OpenShellPreparedGitProvider,
+  OpenShellPreparedGitProviderError,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import {
+  bootstrappingOpenShellGitRuntimeFixture as bootstrapping,
   openShellGitRuntimeFixture as fixture,
   openShellGitRuntimeWorkerAfterRestart as workerAfterRestart,
   reconciledOpenShellGitRuntimeFixture as reconciledFixture,
   registry,
+  takeUnloggedRuntimeFields,
 } from "../helpers/openshell-git-runtime.ts";
 import {
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
 } from "../../packages/occ/src/errors.ts";
+import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
+
+// Every field the runtime emits reaches the worker log: the production logger drops what it
+// does not allowlist, so an event asserted only before the logger can be lost (finding 2244).
+afterEach(() => assert.deepEqual(takeUnloggedRuntimeFields(), []));
 
 // The worker-local runtime's reconcile and lookup, driven at the class boundary with a fake
 // gateway client, provider and material owner: no OpenShell wire, no database. The provider's
@@ -47,12 +58,80 @@ const restorations = (f) =>
   );
 const warnings = (f) =>
   f.events.filter((event) => event.event === "worker.openshell-git-route-warning");
+const retained = (f) => warnings(f).filter((event) => event.status === "retained");
+// Each Git expiry pass logs the revision identity, its outcome and step, and for a pending
+// pass one constant failure. Nothing else: no error text, Sandbox name or gateway detail.
+const expiries = (f) => {
+  const events = f.events.filter((event) => event.event === "worker.openshell-git-expiry");
+  const identity = ["event", "namespaceId", "agentId", "revisionId", "repositoryRef"];
+  for (const event of events) {
+    const fields = ["outcome", "check", ...(event.outcome === "pending" ? ["failure"] : [])];
+    assert.deepEqual(Object.keys(event).sort(), [...identity, ...fields].sort());
+  }
+  return events;
+};
 
 async function expectDenied(f, reason, message) {
   assert.equal(await f.lookup(), undefined, message);
   assert.equal(f.denials().at(-1).reason, reason, message);
 }
 
+test("Git preparation refuses missing admission or plan identity before gateway calls", async () => {
+  const narrow = resolveGitHubRepositoryBinding(registry, {
+    namespaceId: "namespace-a",
+    repositoryRef: "application",
+    profile: "git-write",
+  });
+  for (const invalid of ["no-plan", "no-admission", "no-execution", "empty-id", "snapshot"]) {
+    const f = bootstrapping({ store: routeStore() });
+    const credentials = { ...f.revision.repositoryCredentials, bindings: [narrow] };
+    const revision = {
+      ...f.revision,
+      repositoryCredentials: credentials,
+      executionAdmission:
+        invalid === "no-plan" || invalid === "no-admission"
+          ? undefined
+          : f.revision.executionAdmission,
+      egressPlan:
+        invalid === "no-plan"
+          ? undefined
+          : {
+              ...f.revision.egressPlan,
+              repositoryGit:
+                invalid === "snapshot" ? f.revision.repositoryCredentials : credentials,
+              execution:
+                invalid === "no-execution"
+                  ? undefined
+                  : { executionId: invalid === "empty-id" ? "" : "admitted-execution" },
+            },
+    };
+    let gatewayCalls = 0;
+    f.faults.gatewayCall = () => {
+      gatewayCalls += 1;
+    };
+    await assert.rejects(
+      f.runtime.prepare(
+        revision,
+        f.client,
+        f.sandbox.workspace,
+        f.sandbox.name,
+        AbortSignal.timeout(2_000),
+        "/sandbox/enterprise",
+        ["openai"],
+      ),
+      /requires one explicitly admitted GitHub binding/,
+      invalid,
+    );
+    assert.equal(gatewayCalls, 0, invalid);
+    assert.equal(f.calls.material, 0, invalid);
+    assert.equal(f.calls.providerWrites, 0, invalid);
+    assert.equal(f.calls.rotate, 0, invalid);
+    assert.equal(f.store.rows.size, 0, invalid);
+  }
+});
+
+// Ordinary routes use admitted v5 installation access. Mandatory exact-ref and
+// selected scopes and observed-preview paths have separate controls below.
 test("a gateway that does not answer closes the Git route and restores it without a tombstone", async () => {
   const f = await reconciledFixture();
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
@@ -78,7 +157,7 @@ test("a gateway that does not answer closes the Git route and restores it withou
       namespaceId: "namespace-a",
       agentId: "agent-one",
       revisionId: "rev-one",
-      repositoryRef: "application",
+      repositoryRef: "installation",
     },
   ]);
   // Closed: a request is denied, and the denial says why.
@@ -251,7 +330,7 @@ test("the same supervisor process reconnecting with a new session re-adopts the 
   assert.equal(restorations(f)[0].reason, "supervisor_reconnected");
   assert.ok(Number.isFinite(restorations(f)[0].durationMs) && restorations(f)[0].durationMs >= 0);
   assert.equal(restorations(f)[0].revisionId, "rev-one");
-  assert.equal(restorations(f)[0].repositoryRef, "application");
+  assert.equal(restorations(f)[0].repositoryRef, "installation");
   // The adopted session is the reference from here on: a later read reports nothing more.
   await f.reconcile();
   assert.equal((await f.lookup())?.executionId, f.revision.id);
@@ -476,7 +555,7 @@ test("an open Git route that loses its material says so once and names it in eac
       namespaceId: "namespace-a",
       agentId: "agent-one",
       revisionId: "rev-one",
-      repositoryRef: "application",
+      repositoryRef: "installation",
     },
   ]);
   assert.equal(f.denials().at(-1).reason, "material_unavailable");
@@ -560,7 +639,7 @@ test("the Git route tombstone stays for a replaced execution, an unknown write a
         namespaceId: "namespace-a",
         agentId: "agent-one",
         revisionId: "rev-one",
-        repositoryRef: "application",
+        repositoryRef: "installation",
       },
     ]);
     // A gateway that answers again never reopens a tombstone.
@@ -591,6 +670,54 @@ test("the Git route tombstone stays for a replaced execution, an unknown write a
   f.sandbox.restartCount = 1;
   await f.reconcile();
   await expectBlocked(f, "execution_replaced");
+  assert.deepEqual(
+    f.events
+      .filter((e) => e.event === "worker.openshell-git-continuity-refused")
+      .map(({ check, result }) => ({ check, result })),
+    [
+      { check: "sandbox-restart-count", result: 1 },
+      { check: "sandbox-restart-policy-never", result: true },
+      { check: "sandbox-id-changed", result: false },
+    ],
+  );
+  // A failed diagnostic sink must leave the same terminal refusal and deny further use.
+  f = fixture({
+    onEvent(event) {
+      if (event.event === "worker.openshell-git-continuity-refused") {
+        throw new Error("sentinel-private-diagnostic-sink");
+      }
+    },
+  });
+  await f.reconcile();
+  f.sandbox.restartCount = 1;
+  await f.reconcile();
+  await expectBlocked(f, "execution_replaced");
+  assert.equal(JSON.stringify(f.events).includes("sentinel-private-diagnostic-sink"), false);
+  for (const [change, expected] of [
+    [
+      (sandbox) => {
+        sandbox.spec.restart_policy = "SANDBOX_RESTART_POLICY_ON_FAILURE";
+      },
+      [0, false, false],
+    ],
+    [
+      (sandbox) => {
+        sandbox.id = "replacement-sandbox";
+      },
+      [0, true, true],
+    ],
+  ]) {
+    f = await reconciledFixture();
+    change(f.sandbox);
+    await f.reconcile();
+    await expectBlocked(f, "execution_replaced");
+    assert.deepEqual(
+      f.events
+        .filter((e) => e.event === "worker.openshell-git-continuity-refused")
+        .map((e) => e.result),
+      expected,
+    );
+  }
 
   for (const supervisorChange of [
     // A new session with a different process or network instance.
@@ -655,7 +782,7 @@ test("the Git route tombstone stays for a replaced execution, an unknown write a
 
   // Material that no longer matches the admitted grant.
   f = await reconciledFixture();
-  f.owner.material = { ...f.owner.material, pushRef: "refs/heads/main" };
+  f.owner.material = { ...f.owner.material, installationId: "other-installation" };
   await f.reconcile();
   await expectBlocked(f, "material_mismatch");
 
@@ -811,11 +938,570 @@ test("a restarted worker names why it cannot adopt a revision's Sandbox, once pe
       namespaceId: "namespace-a",
       agentId: "agent-one",
       revisionId: "rev-one",
-      repositoryRef: "application",
+      repositoryRef: "installation",
     },
   ]);
   assert.equal(f.calls.getSandbox, 1, "the retained failure is not re-observed");
   assert.equal(openShellGitRouteReadiness(f.runtime.route(f.revision.id)), "blocked");
+});
+
+test("a fresh Git route uses the execution ID admitted before gateway reads", async () => {
+  const store = routeStore();
+  const f = bootstrapping({ store });
+  const execution = f.revision.egressPlan.execution;
+  const admittedId = execution.executionId;
+  f.faults.gatewayCall = (method) => {
+    if (method === "getSandbox") {
+      execution.executionId = "changed-during-gateway-read";
+    }
+  };
+
+  await f.prepare();
+  assert.notEqual(execution.executionId, admittedId, "the gateway read changed the input");
+  assert.equal(store.rows.get(f.revision.id).bindingId, admittedId);
+});
+
+test("a failed read while the Git route bootstraps is read again; a refused identity still closes it", async () => {
+  // Finding 2210: one gateway read that failed during the bootstrap closed the route for good.
+  const preparedName = (name) => /^oce-(?:git|github-installation)-[0-9a-f]{32}$/.test(name ?? "");
+  const observationFailure = (failure) => (error) =>
+    error.name === "OpenShellGitObservationError" && error.failure === failure;
+  const store = routeStore();
+  let f = bootstrapping({ store });
+  // Before the route is on record: nothing is written, and the next pass starts over.
+  for (const [method, fault, failure] of [
+    [
+      "getProvider",
+      new DependencyUnavailableError("OpenShell GetProvider failed."),
+      "gateway_request_failed",
+    ],
+    [
+      "getSandbox",
+      new SandboxGatewayUnavailableError("OpenShell GetSandbox failed."),
+      "gateway_unavailable",
+    ],
+    ["getWorkspace", Object.assign(new Error("timed out"), { name: "TimeoutError" }), "timeout"],
+  ]) {
+    f.faults.gatewayCall = (called) => (called === method ? fault : undefined);
+    await assert.rejects(f.prepare(), observationFailure(failure), method);
+    assert.deepEqual(f.runtime.route(f.revision.id), { state: "none" }, method);
+    assert.equal(store.rows.has(f.revision.id), false, method);
+  }
+  // A read inside the provider's bootstrap, after the route is on record with its write
+  // pending: the write was never sent. Should the store not answer as the reservation is
+  // cleared, the next pass clears it first; nothing is tombstoned.
+  f.faults.gatewayCall = (called, name) =>
+    called === "getProvider" && preparedName(name)
+      ? new DependencyUnavailableError("OpenShell GetProvider failed.")
+      : undefined;
+  const cancel = store.cancelWriting;
+  store.cancelWriting = async () => {
+    throw new Error("connection terminated");
+  };
+  await assert.rejects(f.prepare(), observationFailure("gateway_request_failed"));
+  const row = () => store.rows.get(f.revision.id);
+  assert.deepEqual([row().fence, row().writePending, row().blocked], [1, "bootstrap", undefined]);
+  store.cancelWriting = cancel;
+  await assert.rejects(f.prepare(), observationFailure("gateway_request_failed"));
+  // Cleared at fence 1, adopted at 2, reserved again at 3 and cleared.
+  assert.deepEqual(
+    [row().fence, row().writePending, row().blocked, row().generation],
+    [3, undefined, undefined, undefined],
+  );
+  assert.equal(f.calls.providerWrites, 0);
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "none" });
+  assert.deepEqual(f.errors(), []);
+  // The gateway answers again: the same route bootstraps.
+  f.faults.gatewayCall = undefined;
+  const { bindingId } = row();
+  assert.equal(bindingId, f.revision.egressPlan.execution.executionId);
+  f.revision.egressPlan.execution.executionId = "later-admitted-execution";
+  const prepared = await f.prepare();
+  assert.equal(
+    prepared.middlewares["oce-prepared-git"].config.fields.binding_id.stringValue,
+    bindingId,
+  );
+  assert.deepEqual(
+    [row().fence, row().writePending, row().blocked, row().generation?.credentialState],
+    [5, undefined, undefined, "bootstrap"],
+  );
+  assert.equal(f.calls.providerWrites, 2);
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "pending", reason: "unverified" });
+  assert.deepEqual(f.errors(), []);
+
+  // A worker that restarts after such a failure bootstraps the recorded route too.
+  f = bootstrapping({ store: routeStore() });
+  f.faults.gatewayCall = (called, name) =>
+    called === "getProviderProfile" && preparedName(name)
+      ? Object.assign(new Error("timed out"), { name: "TimeoutError" })
+      : undefined;
+  await assert.rejects(f.prepare(), observationFailure("timeout"));
+  f.faults.gatewayCall = undefined;
+  const replacement = workerAfterRestart(f);
+  await replacement.prepare();
+  assert.equal(f.store.rows.get(f.revision.id).generation?.credentialState, "bootstrap");
+  assert.deepEqual(replacement.errors(), []);
+
+  // A bootstrap write whose answer was lost may have been sent: never written again. A
+  // replacement worker finds it pending and closes the route.
+  f = bootstrapping({ store: routeStore() });
+  f.faults.gatewayCall = (called) =>
+    called === "createProvider"
+      ? new DependencyUnavailableError("OpenShell CreateProvider failed.")
+      : undefined;
+  await assert.rejects(f.prepare(), (error) => error.outcome === "unknown");
+  assert.equal(f.store.rows.get(f.revision.id).writePending, "bootstrap");
+  f.faults.gatewayCall = undefined;
+  const writes = f.calls.providerWrites;
+  await assert.rejects(
+    workerAfterRestart(f).prepare(),
+    (error) => error instanceof OpenShellGitRouteBlockedError && error.reason === "write_unknown",
+  );
+  assert.equal(f.store.rows.get(f.revision.id).blocked, "write_unknown");
+  assert.equal(f.calls.providerWrites, writes);
+
+  // The gateway refuses the worker's identity: closed, never read again.
+  const denied = () => Object.assign(new Error("7 PERMISSION_DENIED: workspace"), { code: 7 });
+  f = bootstrapping({ store: routeStore() });
+  f.faults.gatewayCall = (called) => (called === "getWorkspace" ? denied() : undefined);
+  await assert.rejects(f.prepare(), /refused the worker's identity/);
+  f.faults.gatewayCall = undefined;
+  const reads = f.calls.getSandbox;
+  await assert.rejects(f.prepare(), /refused the worker's identity/);
+  assert.equal(f.calls.getSandbox, reads, "the refusal is retained, not read again");
+  assert.deepEqual(f.runtime.route(f.revision.id), {
+    state: "blocked",
+    reason: "bootstrap_failed",
+  });
+  // Refused while bootstrapping a route already on record: closed in the store too.
+  f = bootstrapping({ store: routeStore() });
+  f.faults.gatewayCall = (called, name) =>
+    called === "getProvider" && preparedName(name)
+      ? new DependencyUnavailableError("OpenShell GetProvider failed.")
+      : undefined;
+  await assert.rejects(f.prepare(), observationFailure("gateway_request_failed"));
+  f.faults.gatewayCall = (called) => (called === "getGatewayInfo" ? denied() : undefined);
+  await assert.rejects(
+    f.prepare(),
+    (error) =>
+      error instanceof OpenShellGitRouteBlockedError && error.reason === "gateway_unauthorized",
+  );
+  assert.equal(f.store.rows.get(f.revision.id).blocked, "gateway_unauthorized");
+  assert.deepEqual(
+    f.errors().map(({ reason }) => reason),
+    ["gateway_unauthorized"],
+  );
+  // Refused inside the provider's bootstrap: the route is a tombstone, in the store too.
+  f = bootstrapping({ store: routeStore() });
+  f.faults.gatewayCall = (called, name) =>
+    called === "getProvider" && preparedName(name) ? denied() : undefined;
+  await assert.rejects(f.prepare(), (error) => error instanceof OpenShellPreparedGitProviderError);
+  assert.equal(f.store.rows.get(f.revision.id).blocked, "bootstrap_failed");
+  f.faults.gatewayCall = undefined;
+  await assert.rejects(
+    workerAfterRestart(f).prepare(),
+    (error) =>
+      error instanceof OpenShellGitRouteBlockedError && error.reason === "bootstrap_failed",
+  );
+});
+
+test("a reconcile pass that runs out of time before the provider write sends nothing", async () => {
+  // Finding 2211: one budget covers the whole pass. Run out before the write, and the pass
+  // writes nothing, clears its reservation and is observed again; it is not an unknown write.
+  const store = routeStore();
+  const f = fixture({ store });
+  f.runtime.observeTimeoutMs = 1_000;
+  const readMaterial = f.owner.readOpenShellMaterial;
+  let reads = 0;
+  f.owner.readOpenShellMaterial = async (revisionId, signal, ...rest) => {
+    reads += 1;
+    if (reads === 2 && !signal.aborted) {
+      // The last read before the write, inside the release, answers once the budget is spent.
+      await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+    }
+    return readMaterial(revisionId, signal, ...rest);
+  };
+  await f.reconcile();
+  assert.deepEqual(f.runtime.route(f.revision.id), {
+    state: "pending",
+    reason: "unobserved",
+    failure: "timeout",
+  });
+  assert.equal(f.calls.rotate, 0);
+  const row = store.rows.get(f.revision.id);
+  assert.deepEqual([row.writePending, row.blocked], [undefined, undefined]);
+  assert.deepEqual(f.errors(), []);
+  await f.reconcile();
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
+  assert.equal(f.calls.rotate, 1);
+  assert.equal(store.rows.get(f.revision.id).material?.materialVersion, "version-one");
+});
+
+test("a rotation the store did not confirm clearing is cleared on the next pass, never unknown", async () => {
+  // The writer sent nothing (the material went away during the release), but the store did not
+  // answer as the reservation was cleared: the next pass clears it before anything else.
+  const pass = async (cancelWriting, between = () => {}) => {
+    const store = routeStore();
+    const f = fixture({ store });
+    const material = f.owner.material;
+    let reads = 0;
+    const readMaterial = f.owner.readOpenShellMaterial;
+    f.owner.readOpenShellMaterial = async (...args) => {
+      reads += 1;
+      return reads === 2 ? undefined : readMaterial(...args);
+    };
+    const cancel = store.cancelWriting;
+    store.cancelWriting = (...args) => cancelWriting(cancel, ...args);
+    await f.reconcile();
+    assert.deepEqual(f.runtime.route(f.revision.id), {
+      state: "pending",
+      reason: "unobserved",
+      failure: "read_failed",
+    });
+    store.cancelWriting = cancel;
+    f.owner.readOpenShellMaterial = readMaterial;
+    f.owner.material = material;
+    between(f);
+    await f.reconcile();
+    return f;
+  };
+  const lost = () => {
+    throw new Error("connection terminated");
+  };
+  // The store committed the clear and only its answer was lost.
+  let f = await pass(async (cancel, ...args) => (await cancel(...args), lost()));
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
+  assert.equal(f.calls.rotate, 1);
+  assert.deepEqual(f.errors(), []);
+  // The store never cleared it: the reservation is still there until the next pass.
+  f = await pass(async () => lost());
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
+  assert.equal(f.calls.rotate, 1);
+  assert.deepEqual(f.errors(), []);
+  // Another worker adopted the route meanwhile: this one stops, without writing.
+  f = await pass(
+    async () => lost(),
+    (f) => f.store.adopt(f.revision.id, "worker-two"),
+  );
+  assert.equal(f.calls.rotate, 0);
+  assert.equal(f.store.rows.get(f.revision.id).writePending, "rotate");
+  assert.equal(warnings(f).at(-1).reason, "worker_replaced");
+});
+
+test("a provider write that answers after withdrawal or replacement opens nothing", async () => {
+  // A write, once sent, runs to its own deadline (finding 2211). Whatever happened while it was
+  // in flight decides: a withdrawn, adopted or replaced route never opens, and every request is
+  // denied before it reaches GitHub.
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  let f = fixture({ store: routeStore() });
+  f.faults.duringWrite = async () => {
+    f.runtime.withdraw(f.revision.id);
+    await settle();
+  };
+  await f.reconcile();
+  assert.equal(f.calls.rotate, 1);
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "blocked", reason: "withdrawn" });
+  assert.equal(f.store.rows.get(f.revision.id).blocked, "withdrawn");
+  await expectDenied(f, "route_blocked");
+  assert.equal(f.denials().at(-1).reasonCode, "access_withdrawn");
+
+  // Withdrawn by another worker, in the store only: the write's result is not recorded, and
+  // the route closes with the store's reason, so the Agent is told its access was withdrawn
+  // rather than given a generic denial (finding 2218).
+  f = fixture({ store: routeStore() });
+  f.faults.duringWrite = () => f.store.withdraw({ revisionId: f.revision.id });
+  await f.reconcile();
+  assert.equal(f.calls.rotate, 1);
+  assert.equal(f.store.rows.get(f.revision.id).blocked, "withdrawn");
+  assert.equal(f.store.rows.get(f.revision.id).material, undefined);
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "blocked", reason: "withdrawn" });
+  await expectDenied(f, "route_blocked");
+  assert.equal(f.denials().at(-1).reasonCode, "access_withdrawn");
+  assert.deepEqual(f.errors(), []);
+
+  // Another worker adopted the route: this one drops it, and the pending write stays for the
+  // adopter to read as unknown.
+  f = fixture({ store: routeStore() });
+  f.faults.duringWrite = () => f.store.adopt(f.revision.id, "worker-two");
+  await f.reconcile();
+  assert.equal(f.calls.rotate, 1);
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "none" });
+  assert.equal(f.store.rows.get(f.revision.id).writePending, "rotate");
+  await expectDenied(f, "no_binding");
+
+  // The Sandbox restarted under the same name.
+  f = fixture({ store: routeStore() });
+  f.faults.duringWrite = () => {
+    f.sandbox.restartCount = 1;
+  };
+  await f.reconcile();
+  assert.deepEqual(f.runtime.route(f.revision.id), {
+    state: "blocked",
+    reason: "execution_replaced",
+  });
+  await expectDenied(f, "route_blocked");
+
+  // Nothing changed meanwhile: the same slow write installs, and a request is allowed.
+  f = fixture({ store: routeStore() });
+  f.faults.duringWrite = settle;
+  await f.reconcile();
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
+  assert.equal((await f.lookup())?.executionId, f.revision.id);
+
+  // The write answers only after the pass's budget is spent: its result is recorded, the
+  // route is verified again by the next pass, and nothing is written twice.
+  f = fixture({ store: routeStore() });
+  f.runtime.observeTimeoutMs = 1_000;
+  f.faults.duringWrite = async (signal) => {
+    if (!signal.aborted) {
+      await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+    }
+  };
+  await f.reconcile();
+  const row = f.store.rows.get(f.revision.id);
+  assert.deepEqual(
+    [row.writePending, row.generation.credentialState, row.material?.materialVersion],
+    [undefined, "active", "version-one"],
+  );
+  // Not installed by a pass out of time, even though this fake gateway still answers.
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "pending", reason: "unverified" });
+  await expectDenied(f, "route_pending");
+  f.faults.duringWrite = undefined;
+  await f.reconcile();
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
+  assert.equal(f.calls.rotate, 1);
+  assert.deepEqual(f.errors(), []);
+});
+
+test("a route another worker withdrew or expired closes with that reason, not as replaced", async () => {
+  // Withdrawal and expiry close the row at the holder's fence without moving it. The holder's
+  // next check reads the reason from the store (finding 2218): the Agent is told access_withdrawn,
+  // and the closure is a warning, not a reconciliation report; this worker writes nothing.
+  for (const [reason, close] of [
+    ["withdrawn", (f) => f.store.withdraw({ revisionId: f.revision.id })],
+    // As the store's expire() does for a deadline another worker reached first.
+    ["repository_expired", (f) => (f.store.rows.get(f.revision.id).blocked = "repository_expired")],
+  ]) {
+    // Seen by a request's lookup.
+    let f = await reconciledFixture({ store: routeStore() });
+    assert.equal((await f.lookup())?.executionId, f.revision.id);
+    await close(f);
+    await expectDenied(f, "route_blocked");
+    assert.equal(f.denials().at(-1).reasonCode, "access_withdrawn");
+    assert.deepEqual(f.runtime.route(f.revision.id), { state: "blocked", reason });
+    assert.deepEqual(f.errors(), []);
+    assert.deepEqual(
+      warnings(f).map(({ status, reason }) => [status, reason]),
+      [["closed", reason]],
+    );
+    assert.equal(f.store.rows.get(f.revision.id).blocked, reason);
+
+    // Seen by the next reconcile pass.
+    f = await reconciledFixture({ store: routeStore() });
+    await close(f);
+    await f.reconcile();
+    assert.deepEqual(f.runtime.route(f.revision.id), { state: "blocked", reason });
+    await expectDenied(f, "route_blocked");
+    assert.equal(f.denials().at(-1).reasonCode, "access_withdrawn");
+    assert.deepEqual(f.errors(), []);
+
+    // Seen when a rotation's write reservation is refused: nothing is written.
+    f = await reconciledFixture({ store: routeStore() });
+    f.owner.material = { ...f.owner.material, materialVersion: "version-two" };
+    const writing = f.store.writing;
+    f.store.writing = async (...args) => (await close(f), writing(...args));
+    await f.reconcile();
+    assert.equal(f.calls.rotate, 1);
+    assert.deepEqual(f.runtime.route(f.revision.id), { state: "blocked", reason });
+    assert.deepEqual(f.errors(), []);
+  }
+
+  // A route another worker adopted is still replaced: dropped here, the row left alone.
+  const f = await reconciledFixture({ store: routeStore() });
+  await f.store.adopt(f.revision.id, "worker-two");
+  await expectDenied(f, "route_blocked");
+  assert.equal(f.denials().at(-1).reasonCode, "route_blocked");
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "none" });
+  assert.equal(f.store.rows.get(f.revision.id).blocked, undefined);
+});
+
+test("a withdrawn route is dropped once its Sandbox is gone and never prepared again", async () => {
+  // withdraw() closes the route; the Sandbox Driver then deletes the Sandbox. Only then is the
+  // entry dropped, so the tick and lookups stop walking it (finding 2218), while the revision
+  // stays refused in this process and, through the store's tombstone, in any other.
+  const f = await reconciledFixture({ store: routeStore() });
+  f.runtime.withdraw(f.revision.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(f.store.rows.get(f.revision.id).blocked, "withdrawn");
+
+  // The Sandbox is still there: the entry stays, and its Agent is told why it is refused.
+  await f.reconcile();
+  assert.ok(f.runtime.entries.has(f.revision.id));
+  await expectDenied(f, "route_blocked");
+  assert.equal(f.denials().at(-1).reasonCode, "access_withdrawn");
+  // The next read waits, backing off while the Sandbox stays: a tick reads nothing meanwhile.
+  const reads = f.calls.getSandbox;
+  await f.runtime.reconcile(f.entry);
+  assert.equal(f.calls.getSandbox, reads);
+  // A failed read keeps it too.
+  f.faults.gateway = new Error("connection reset");
+  await f.reconcile();
+  f.faults.gateway = undefined;
+  assert.ok(f.runtime.entries.has(f.revision.id));
+  assert.deepEqual(retained(f), []);
+  // So does a read the gateway refuses by this worker's identity, which keeps it until that
+  // changes: reported once, with the revision's identity only.
+  f.faults.gateway = Object.assign(new Error("7 PERMISSION_DENIED: workspace"), { code: 7 });
+  await f.reconcile();
+  await f.reconcile();
+  f.faults.gateway = undefined;
+  assert.ok(f.runtime.entries.has(f.revision.id));
+  assert.deepEqual(retained(f), [
+    {
+      event: "worker.openshell-git-route-warning",
+      status: "retained",
+      reason: "gateway_unauthorized",
+      namespaceId: "namespace-a",
+      agentId: "agent-one",
+      revisionId: "rev-one",
+      repositoryRef: "installation",
+    },
+  ]);
+
+  // The Sandbox is gone: the entry is dropped, its reason kept.
+  f.faults.sandboxMissing = true;
+  await f.reconcile();
+  assert.equal(f.runtime.entries.has(f.revision.id), false);
+  assert.deepEqual(f.runtime.states.get(f.revision.id), { blocked: "withdrawn" });
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "blocked", reason: "withdrawn" });
+  await expectDenied(f, "no_binding");
+
+  // Preparing the revision again neither re-adopts nor re-bootstraps it: the store is not asked.
+  f.faults.sandboxMissing = false;
+  const calls = { ...f.store.calls };
+  const fence = f.store.rows.get(f.revision.id).fence;
+  await assert.rejects(f.prepare(), { name: "OpenShellGitRouteBlockedError", reason: "withdrawn" });
+  assert.deepEqual(f.store.calls, calls);
+  assert.equal(f.store.rows.get(f.revision.id).fence, fence);
+  assert.equal(f.calls.rotate, 1);
+  assert.equal(await f.runtime.verifyExecution(f.revision, AbortSignal.timeout(2_000)), undefined);
+  // A restarted worker finds the store's tombstone.
+  await assert.rejects(workerAfterRestart(f).prepare(), {
+    name: "OpenShellGitRouteBlockedError",
+    reason: "withdrawn",
+  });
+  assert.deepEqual(f.errors(), []);
+
+  // A store that does not answer the withdrawal is reported, and still nothing reopens: this
+  // process keeps its own tombstone after the drop.
+  const g = await reconciledFixture({ store: routeStore() });
+  g.store.fault = new Error("connection terminated");
+  g.runtime.withdraw(g.revision.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  g.store.fault = undefined;
+  assert.deepEqual(
+    g.errors().map(({ code, revisionId, cause }) => [code, revisionId, cause]),
+    [["OPENSHELL_GIT_WITHDRAWAL_UNRECORDED", g.revision.id, "Error"]],
+  );
+  assert.equal(g.store.rows.get(g.revision.id).blocked, undefined);
+  g.faults.sandboxMissing = true;
+  await g.reconcile();
+  assert.equal(g.runtime.entries.has(g.revision.id), false);
+  const before = g.store.calls.adopt;
+  await assert.rejects(g.prepare(), { name: "OpenShellGitRouteBlockedError", reason: "withdrawn" });
+  assert.equal(g.store.calls.adopt, before);
+  // Nor is a standing execution verified from the store's unclosed row.
+  let standing = 0;
+  g.store.standing = async () => {
+    standing += 1;
+  };
+  const approved = {
+    ...g.revision,
+    repositoryCredentials: { ...g.revision.repositoryCredentials, standingApprovalId: "approval" },
+  };
+  assert.equal(
+    await g.runtime.verifyExecution(approved, AbortSignal.timeout(2_000), async () => ({
+      client: g.client,
+      workspace: g.sandbox.workspace,
+      sandbox: g.sandbox.name,
+    })),
+    undefined,
+  );
+  assert.equal(standing, 0);
+
+  // Withdrawn before its Sandbox was ever observed: the Sandbox may still be in creation, so
+  // the entry is dropped only after two reads, a refresh interval apart, find none.
+  const u = bootstrapping({ store: routeStore() });
+  await u.prepare();
+  u.entry = await u.runtime.entries.get(u.revision.id);
+  assert.equal(u.entry.sandboxId, undefined);
+  u.runtime.withdraw(u.revision.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  await u.reconcile();
+  assert.ok(u.runtime.entries.has(u.revision.id));
+  await u.reconcile();
+  assert.equal(u.runtime.entries.has(u.revision.id), false);
+  assert.deepEqual(u.runtime.route(u.revision.id), { state: "blocked", reason: "withdrawn" });
+
+  // A Sandbox read that answers after the worker closed drops nothing back into its maps.
+  const c = await reconciledFixture({ store: routeStore() });
+  c.runtime.withdraw(c.revision.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  let answer;
+  c.client.getSandbox = () => new Promise((resolve) => (answer = resolve));
+  const pass = c.runtime.reconcile(c.entry);
+  await c.runtime.close();
+  answer(undefined);
+  await pass;
+  assert.equal(c.runtime.states.size, 0);
+  assert.equal(c.runtime.entries.size, 0);
+
+  // A whole Namespace's withdrawal drops its routes the same way.
+  const h = await reconciledFixture({ store: routeStore() });
+  h.runtime.withdrawNamespace(h.revision.namespaceId);
+  await new Promise((resolve) => setImmediate(resolve));
+  h.faults.sandboxMissing = true;
+  await h.reconcile();
+  assert.deepEqual(h.runtime.route(h.revision.id), { state: "blocked", reason: "withdrawn" });
+  assert.equal(h.runtime.entries.has(h.revision.id), false);
+});
+
+test("a closed preview route is kept until the store confirms its closure, even with its Sandbox gone", async () => {
+  // Only the preview's terminal record can be retried, so the entry that retries it stays until
+  // the store has it, whatever the Sandbox reads (finding 2229).
+  const f = await reconciledFixture({ store: routeStore() });
+  f.store.rows.get(f.revision.id).workerInstance = f.runtime.instance;
+  f.entry.preview = new ObservedHookPreview(f.sandbox.workspace, f.entry.bindingId);
+  f.entry.preview.verifyInstallBy = 0;
+  const confirm = f.store.confirmPreviewBlocked;
+  f.store.confirmPreviewBlocked = async () => {
+    throw new Error("connection terminated");
+  };
+  await f.reconcile();
+  assert.deepEqual(f.runtime.route(f.revision.id), {
+    state: "blocked",
+    reason: "preview_install_unverified",
+  });
+  f.faults.sandboxMissing = true;
+  await f.reconcile();
+  await f.reconcile();
+  assert.ok(f.runtime.entries.has(f.revision.id), "the unconfirmed closure keeps the entry");
+  assert.equal(f.entry.previewClosure.reason, "preview_install_unverified");
+  assert.equal(f.store.rows.get(f.revision.id).blocked, undefined);
+
+  // The store confirms it: the next pass drops the entry, its reason kept.
+  f.store.confirmPreviewBlocked = confirm;
+  await f.reconcile();
+  assert.equal(f.store.rows.get(f.revision.id).blocked, "preview_install_unverified");
+  assert.equal(f.runtime.entries.has(f.revision.id), false);
+  assert.deepEqual(f.runtime.states.get(f.revision.id), { blocked: "preview_install_unverified" });
+  assert.deepEqual(
+    f.events
+      .filter((event) => event.event === "worker.openshell-preview-closure")
+      .map(({ status }) => status),
+    ["pending", "confirmed"],
+  );
+  assert.deepEqual(retained(f), []);
 });
 
 test("the Git route refuses overlapping policies at startup and again at deploy", async () => {
@@ -882,6 +1568,7 @@ test("the Git route refuses overlapping policies at startup and again at deploy"
         f.sandbox.workspace,
         f.sandbox.name,
         AbortSignal.timeout(2_000),
+        "/sandbox/enterprise",
         ["openai"],
         ["api.openai.com", host],
       ),
@@ -941,6 +1628,12 @@ test("a restarted worker re-adopts a persisted Git route without a provider writ
   assert.ok(!store.dump().includes("synthetic-installation-token"), "a token was persisted");
 
   const g = await restarted(f);
+  assert.equal(g.revision, f.revision, "restart retains the admitted revision");
+  assert.equal(g.resolveDelivery, f.resolveDelivery, "restart retains the registry resolver");
+  assert.equal(g.entry.preview, undefined);
+  assert.equal(g.entry.bindingId, f.revision.egressPlan.execution.executionId);
+  assert.equal(g.entry.bindingId, row.bindingId, "adoption retains the original binding");
+  assert.equal(f.calls.providerWrites, 0, "adoption does not bootstrap a provider");
   assert.equal(store.rows.get(f.revision.id).fence, installedFence + 1, "adoption moves the fence");
   assert.deepEqual(
     g.events.filter((event) => event.status === "adopted"),
@@ -953,7 +1646,7 @@ test("a restarted worker re-adopts a persisted Git route without a provider writ
         namespaceId: "namespace-a",
         agentId: "agent-one",
         revisionId: "rev-one",
-        repositoryRef: "application",
+        repositoryRef: "installation",
       },
     ],
   );
@@ -1249,6 +1942,7 @@ test("the periodic Git reader crossing the admitted deadline does not report gra
 
 test("Git expiry observes the original model in the reduced stock installation, including response loss", async (t) => {
   async function exercise(fault, expectedFirst, expectedCold = "withdrawn") {
+    const [firstCold, nextCold = firstCold] = [expectedCold].flat();
     const store = routeStore();
     const f = fixture({ store });
     const { revision: r, sandbox: box, entry, client, supervisor: sv } = f;
@@ -1260,9 +1954,17 @@ test("Git expiry observes the original model in the reduced stock installation, 
     box.resourceVersion = "13";
     let detach;
     let sends = 0;
+    // The gateway's durable request-ID claims (OpenShell 0.1.5 mutation replay): a request ID
+    // it admitted replays its recorded result for the same payload; with no result, or for
+    // another payload, it is refused (FAILED_PRECONDITION). An unseen request runs under its
+    // version precondition: a mismatch is admitted without a result and answers ABORTED.
+    const admitted = new Map();
+    const violations = [];
     let expiry = false;
     let state = "";
     let trace = [];
+    // Each cleanup pass's own signal, so a fault can abort the pass it runs in.
+    let pass;
     const owner = { model, workload: async () => "original-pod-and-container" };
     await f.runtime.bind(r.id, entry.verify, owner);
     const original = f.provider.observe;
@@ -1388,8 +2090,8 @@ test("Git expiry observes the original model in the reduced stock installation, 
     };
     store.beginDetach = async (_r, _h, requestId, version) => {
       assert.equal(version, box.resourceVersion);
-      assert.equal(detach, undefined, "one send opportunity");
-      detach = { requestId };
+      assert.equal(detach, undefined, "one request identity");
+      detach = { requestId, resourceVersion: version };
       return true;
     };
     store.confirmDetached = async (_r, _h, id, epoch) => {
@@ -1403,26 +2105,76 @@ test("Git expiry observes the original model in the reduced stock installation, 
       assert.equal(workspace, box.workspace);
       assert.equal(sandbox, box.name);
       assert.equal(
-        await store.owns(r.id, 1),
-        false,
+        await store.owns(r.id, entry.fence),
+        "repository_expired",
         "even the previous holder is durably fenced before the conditional detach",
       );
-      assert.equal(conditional.requestId, detach.requestId);
-      assert.equal(conditional.expectedResourceVersion, box.resourceVersion);
+      // Every send is the recorded request: same ID, same precondition. (A failed assertion
+      // here would read as a transport failure, so it is collected instead.)
+      if (
+        conditional.requestId !== detach.requestId ||
+        conditional.expectedResourceVersion !== detach.resourceVersion
+      ) {
+        violations.push(conditional);
+      }
       sends++;
       if (fault === "unimplemented detach") {
         throw Object.assign(Error("unsupported withdrawal"), { grpcStatus: 12 });
       }
-      if (fault === "intent without effect") {
-        throw Error("response lost, still attached");
+      const apply = () => {
+        box.spec.providers.pop();
+        box.spec.provider_attachment_epoch = "reduced-epoch";
+        box.resourceVersion = "15";
+      };
+      const claim = admitted.get(conditional.requestId);
+      if (claim) {
+        if (claim.result && claim.version === conditional.expectedResourceVersion) {
+          return claim.result;
+        }
+        if (fault === "first send still applying") {
+          // The first send's admitted work lands while the gateway still holds it unresolved.
+          apply();
+        }
+        throw Object.assign(Error("REQUEST_OUTCOME_UNCERTAIN"), { code: 9 });
       }
-      box.spec.providers.pop();
-      box.spec.provider_attachment_epoch = "reduced-epoch";
-      box.resourceVersion = "15";
+      if (fault === "admission limit" && sends <= 2) {
+        // The caller's durable admissions are all taken: refused before admission, nothing ran.
+        throw new OpenShellAdmissionLimitError(
+          "DetachSandboxProvider",
+          Object.assign(Error("RESOURCE_EXHAUSTED"), { code: 8 }),
+        );
+      }
+      if (
+        sends === 1 &&
+        (fault === "intent without effect" || fault === "Sandbox moved after intent")
+      ) {
+        // The send never reached the gateway: still attached, nothing admitted.
+        throw Object.assign(Error("connection refused"), { grpcStatus: 14 });
+      }
+      if (sends === 1 && fault === "pass ran out of time") {
+        // The pass's deadline fires during the send, which rejects with the signal's reason
+        // before it left: nothing admitted.
+        pass.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+        throw pass.signal.reason;
+      }
+      if (fault === "Sandbox moved before send") {
+        box.resourceVersion = "14";
+      }
+      admitted.set(conditional.requestId, { version: conditional.expectedResourceVersion });
+      if (conditional.expectedResourceVersion !== box.resourceVersion) {
+        throw Object.assign(Error("RESOURCE_VERSION_CONFLICT"), { grpcStatus: 10 });
+      }
+      if (fault === "outcome uncertain at gateway" || fault === "first send still applying") {
+        // Admitted, then the call ran out of time before the gateway recorded a result.
+        throw Object.assign(Error("deadline exceeded"), { grpcStatus: 4 });
+      }
+      apply();
+      const result = { receiptId: "detach-receipt", detached: fault !== "no-op" };
+      admitted.get(conditional.requestId).result = result;
       if (fault === "lost reply") {
         throw Error("lost response after committed mutation");
       }
-      return { receiptId: "detach-receipt", detached: fault !== "no-op" };
+      return result;
     };
     await f.reconcile();
     assert.ok(await f.lookup(), "Git works on witnessed installation");
@@ -1430,27 +2182,54 @@ test("Git expiry observes the original model in the reduced stock installation, 
     f.revision.repositoryCredentials.deadlineWallMs = Date.now() - 1;
     await f.reconcile();
     assert.equal(await f.lookup(), undefined, "Git denied at its own deadline before withdrawal");
-    const cleanup = (runtime, observer = owner) =>
-      runtime.retireExpiredRepositoryAccess(
+    const cleanup = (runtime, observer = owner) => {
+      pass = new AbortController();
+      return runtime.retireExpiredRepositoryAccess(
         r,
         client,
         box.workspace,
         box.name,
         observer,
-        AbortSignal.timeout(5_000),
+        AbortSignal.any([pass.signal, AbortSignal.timeout(5_000)]),
       );
+    };
     const first = await cleanup(
       f.runtime,
       fault === "replacement Pod" ? { ...owner, workload: async () => "other-pod" } : owner,
     );
     assert.equal(first, expectedFirst, fault);
+    // Every pending pass says why, from the fixed set (finding 2230).
+    const failures = () =>
+      expiries(f)
+        .filter((event) => event.outcome === "pending")
+        .map((event) => event.failure);
+    const expectedFailures =
+      {
+        "version churn": ["unconfirmed"],
+        "lost reply": ["failed"],
+        "intent without effect": ["gateway_unavailable"],
+        "outcome uncertain at gateway": ["timeout"],
+        "first send still applying": ["timeout"],
+        "pass ran out of time": ["timeout"],
+        "admission limit": ["admission_limit", "admission_limit"],
+        "Sandbox moved after intent": ["gateway_unavailable"],
+        "profile unavailable": ["gateway_unavailable"],
+        "model rotates during profile check": ["unconfirmed"],
+      }[fault] ?? [];
     if (expectedFirst === "retire-runtime") {
+      assert.deepEqual(failures(), expectedFailures);
       if (["replacement Pod", "Git profile scope changed"].includes(fault)) {
         assert.equal(sends, 0);
       }
+      assert.deepEqual(violations, []);
       return;
     }
     assert.equal(sends, fault === "version churn" ? 0 : 1);
+    if (fault === "Sandbox moved after intent") {
+      // Another change to the Sandbox lands before the next pass: the recorded request's
+      // precondition can never hold again.
+      box.resourceVersion = "14";
+    }
     if (fault === "pending") {
       assert.deepEqual(trace, ["detach-receipt", "detach-receipt"]);
     }
@@ -1460,12 +2239,39 @@ test("Git expiry observes the original model in the reduced stock installation, 
     );
     cold.routes = store;
     cold.owner = f.owner;
-    assert.equal(await cleanup(cold), expectedCold);
+    cold.emit = f.runtime.emit;
+    assert.equal(await cleanup(cold), firstCold);
     if (fault === "lost reply") {
       assert.deepEqual(trace, ["OBSERVE"], "prove current absence without replay");
     }
-    assert.equal(await cleanup(cold), expectedCold);
-    assert.equal(sends, 1, "repeated cold maintenance never resends detach");
+    assert.equal(await cleanup(cold), nextCold);
+    if (fault === "admission limit") {
+      // Refused by the gateway's admission limit, the first send and its resend leave the
+      // detach pending and logged, Git still fenced; the next pass after slots free converges
+      // (finding 2228).
+      assert.deepEqual(
+        expiries(f).map(({ outcome, check, failure }) => [outcome, check, failure]),
+        [
+          ["pending", "conditional-detach", "admission_limit"],
+          ["pending", "repeated-conditional-detach", "admission_limit"],
+          ["withdrawn", "record-reduced-generation", undefined],
+        ],
+      );
+    }
+    // A detach that took effect is observed, never sent again. An intent that left the provider
+    // attached is sent again as the same request until it converges (finding 2219): withdrawn,
+    // or the runtime retired when the gateway cannot tell the outcome or the Sandbox moved.
+    assert.deepEqual(failures(), expectedFailures);
+    const repeated = {
+      "intent without effect": 2,
+      "pass ran out of time": 2,
+      "outcome uncertain at gateway": 3,
+      "first send still applying": 2,
+      "admission limit": 3,
+    };
+    assert.equal(sends, repeated[fault] ?? 1, "a detach that took effect is never sent again");
+    assert.ok(admitted.size <= 1, "the gateway admits at most one request");
+    assert.deepEqual(violations, [], "every send repeats the recorded request");
     assert.equal(f.calls.rotate, 1, "no provider reattachment or renewal");
   }
   for (const [fault, first, cold] of [
@@ -1473,7 +2279,13 @@ test("Git expiry observes the original model in the reduced stock installation, 
     ["version churn", "pending"],
     ["lost reply", "pending"],
     ["pending", "withdrawn"],
-    ["intent without effect", "pending", "pending"],
+    ["intent without effect", "pending", "withdrawn"],
+    ["pass ran out of time", "pending", "withdrawn"],
+    ["outcome uncertain at gateway", "pending", "retire-runtime"],
+    ["first send still applying", "pending", "withdrawn"],
+    ["admission limit", "pending", ["pending", "withdrawn"]],
+    ["Sandbox moved after intent", "pending", "retire-runtime"],
+    ["Sandbox moved before send", "retire-runtime"],
     ["replacement Pod", "retire-runtime"],
     ["Git profile scope changed", "retire-runtime"],
     ["model profile belongs to another workspace", "retire-runtime"],
@@ -1498,13 +2310,13 @@ test("protected material selection is serialized with the reservation fence at t
     ...f.revision,
     executionAdmission: { version: 5, mode: "protected" },
     egressPlan: {
+      ...f.revision.egressPlan,
       driver: { id: "openshell" },
       repositoryGitAuthorization: "online-request",
       repositoryGit: f.revision.repositoryCredentials,
     },
   };
   f.entry.revision = revision;
-  f.runtime.configuration.protectedExecution = true;
   const reads = [];
   const material = f.owner.material;
   f.owner.readOpenShellMaterial = async (_revisionId, _signal, route) => {
@@ -1524,7 +2336,29 @@ test("protected material selection is serialized with the reservation fence at t
   assert.equal(f.runtime.route(revision.id).state, "installed");
 });
 
-test("an admitted preview rotates at its new fence only in the original worker", async () => {
+// Serialized with the released v0.1.5 proto/sandbox.proto SupervisorMiddlewareService.
+// v0.1.6's default dynamic policy deliberately emits the same bytes. Decode with the
+// product schema/options so missing fields are tested as they arrive from the gateway.
+const registrationLoader = createRequire(
+  new URL("../../apps/controller/package.json", import.meta.url),
+)("@grpc/proto-loader");
+const registrationWire = registrationLoader.loadSync(
+  new URL(
+    "../../apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto",
+    import.meta.url,
+  ).pathname,
+  { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+)["openshell.v1.SupervisorMiddlewareService"];
+const legacyRegistrationBytes = Buffer.from(
+  "0a106f63652d70726570617265642d676974121f68747470733a2f2f6d6964646c65776172652e6578616d706c652e7465737418808040320770726576696577c206020805",
+  "hex",
+);
+
+async function observedGitRoute(
+  mandatoryPolicy,
+  { legacy = false, removeBinding = false, changedStartup = false, narrowRepository } = {},
+) {
+  const repositoryOnly = narrowRepository !== undefined;
   const previewRegistry = validateGitHubRepositoryRegistry(
     {
       version: 1,
@@ -1533,7 +2367,17 @@ test("an admitted preview rotates at its new fence only in the original worker",
       appId: registry.appId,
       githubInstallationId: registry.githubInstallationId,
       maximumDurationSeconds: 86400,
-      repositories: registry.repositories,
+      repositories:
+        mandatoryPolicy && !repositoryOnly
+          ? registry.repositories.map((r) => ({
+              ...r,
+              namespaces: r.namespaces.map((n) => ({
+                namespaceId: n.namespaceId,
+                profiles: ["github-repository"],
+                permissions: { metadata: "read", contents: "write" },
+              })),
+            }))
+          : registry.repositories,
       installationAccess: {
         repositoryRef: "installation",
         namespaces: [{ namespaceId: "namespace-a", accessMode: "installation" }],
@@ -1541,40 +2385,61 @@ test("an admitted preview rotates at its new fence only in the original worker",
     },
     registry.backendId,
   );
-  const resolve = createGitHubRepositoryDeliveryResolver(previewRegistry);
+  const resolveDelivery = createGitHubRepositoryDeliveryResolver(previewRegistry);
+  let resolvedPushRef;
+  const resolve = (revision) => {
+    const scope = resolveDelivery(revision);
+    return resolvedPushRef === undefined
+      ? scope
+      : { ...scope, repository: { ...scope.repository, pushRef: resolvedPushRef } };
+  };
   const f = fixture({ store: routeStore(), resolveDelivery: resolve });
+  const repositoryProfile = repositoryOnly ? "git-write" : "github-repository";
   const binding = resolveGitHubRepositoryBinding(previewRegistry, {
     namespaceId: "namespace-a",
-    repositoryRef: "installation",
-    profile: "github-installation",
+    repositoryRef: mandatoryPolicy ? registry.repositories[0].repositoryRef : "installation",
+    profile: mandatoryPolicy ? repositoryProfile : "github-installation",
   });
   const credentials = { ...f.revision.repositoryCredentials, bindings: [binding] };
   const revision = {
     ...f.revision,
     repositoryCredentials: credentials,
-    executionAdmission: { version: 6, mode: "protected" },
+    executionAdmission: { version: mandatoryPolicy ? 5 : 6, mode: "protected" },
     egressPlan: {
       driver: { id: "openshell" },
       execution: { executionId: f.entry.bindingId },
-      repositoryGitAuthorization: "request-hook-observed",
+      repositoryGitAuthorization: mandatoryPolicy ? "online-request" : "request-hook-observed",
       repositoryGit: credentials,
     },
   };
   f.entry.revision = revision;
   f.entry.authorization = resolve(revision);
-  f.runtime.configuration.protectedExecution = true;
   f.runtime.configuration.observedHookPreviewWorkspace = f.sandbox.workspace;
   f.runtime.configuration.authority.audience = "preview";
-  const preview = new ObservedHookPreview(f.sandbox.workspace, f.entry.bindingId);
+  const preview = new ObservedHookPreview(
+    f.sandbox.workspace,
+    f.entry.bindingId,
+    !!mandatoryPolicy,
+  );
   f.entry.preview = preview;
   f.store.rows.get(revision.id).workerInstance = f.runtime.instance;
   f.entry.continuity = { model: "openai", workload: async () => "original-pods" };
   f.entry.binding.provider = "oce-github-installation-" + "a".repeat(32);
   f.entry.binding.executionId = revision.id;
   const runtimeProvider = "oce-runtime-" + "a".repeat(16);
-  const gitRule = { name: "git", endpoints: [{ host: "github.com", port: 443 }] };
+  const gitRule = new OpenShellPreparedGitProvider(f.client, {
+    ...f.entry.authorization.delivery,
+    workspace: f.sandbox.workspace,
+    workspaceId: "workspace-id",
+    sandbox: f.sandbox.name,
+    executionId: revision.id,
+    gitOrigin: "https://github.com",
+    apiOrigin: "https://api.github.com",
+    binaries: ["/usr/bin/git"],
+  }).previewNetworkRule();
   f.provider.previewNetworkRule = () => gitRule;
   f.provider.settlePreviewReceipt = async () => true;
+  let environment;
   const observe = f.provider.observe;
   f.provider.observe = async (...args) => {
     const result = await observe(...args);
@@ -1587,7 +2452,7 @@ test("an admitted preview rotates at its new fence only in the original worker",
         provider: f.entry.binding.provider,
         providerId: f.entry.binding.providerId,
         profileVersion: f.entry.binding.profileVersion,
-        providerEnvRevision: f.entry.binding.resourceVersion,
+        providerEnvRevision: environment ?? f.entry.binding.resourceVersion,
         configRevision: "1",
         policyHash: "original-policy",
       }
@@ -1604,18 +2469,21 @@ test("an admitted preview rotates at its new fence only in the original worker",
     policy_version: "1",
     policy_hash: "original-policy",
     config_revision: "1",
-    provider_env_revision: f.entry.binding.resourceVersion,
+    provider_env_revision: environment ?? f.entry.binding.resourceVersion,
   });
   const sandbox = f.client.getSandbox;
   f.client.getSandbox = async (...args) => ({
     ...(await sandbox(...args)),
     configurationAdmission: admission(),
   });
+  f.client.getGatewayInfo = async () => {
+    assert.fail("recipient proof must not fetch gateway release information");
+  };
   f.client.readExclusivePreviewWorkspace = async () => true;
   f.client.getSandboxConfig = async () => ({
     policy: {
       network_policies: {
-        git: gitRule,
+        [gitRule.name]: gitRule,
         _provider_openai: {
           name: "_provider_openai",
           endpoints: [{ host: "api.openai.com", port: 443 }],
@@ -1635,53 +2503,194 @@ test("an admitted preview rotates at its new fence only in the original worker",
     provider_attachment_epoch: f.supervisor.attachmentEpoch,
     policy_hash: "original-policy",
     config_revision: "1",
-    provider_env_revision: f.entry.binding.resourceVersion,
+    provider_env_revision: environment ?? f.entry.binding.resourceVersion,
     supervisor_middleware_services: [
       {
-        name: "oce-prepared-git",
-        audience: "preview",
-        request_timeout: { seconds: "5" },
-        grpc_endpoint: "https://middleware.example.test",
+        ...registrationWire.deserialize(legacyRegistrationBytes),
+        ...(!legacy && { binding_policy: mandatoryPolicy ?? 2, bindings: [1] }),
       },
     ],
   });
-  f.owner.material = {
-    ...binding.grant,
-    value: "synthetic-installation-token",
-    scope: "github-installation",
-    installationId: registry.githubInstallationId,
-    expiresAt: new Date(Date.now() + 600_000).toISOString(),
-    sessionId: "preview-session",
-    preparationAttemptId: "preview-attempt",
-    materialVersion: "preview-material",
-    apiOrigin: "https://api.github.com",
-  };
+  if (!repositoryOnly) {
+    f.owner.material = {
+      ...binding.grant,
+      value: "synthetic-installation-token",
+      scope: mandatoryPolicy ? "github-repository" : "github-installation",
+      ...(mandatoryPolicy && { repositories: resolve(revision).delivery.repositories }),
+      installationId: registry.githubInstallationId,
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      sessionId: "preview-session",
+      preparationAttemptId: "preview-attempt",
+      materialVersion: "preview-material",
+      apiOrigin: "https://api.github.com",
+    };
+  } else {
+    f.owner.material = {
+      ...binding.grant,
+      repository: registry.repositories[0].repository,
+      pushRef: f.entry.authorization.repository.pushRef,
+      value: "synthetic-installation-token",
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      sessionId: "preview-session",
+      preparationAttemptId: "preview-attempt",
+      materialVersion: "preview-material",
+      apiOrigin: "https://api.github.com",
+    };
+    assert.equal(f.entry.authorization.binding.profile, "git-write");
+    assert.equal("scope" in f.owner.material, false, "this control requires narrow material");
+  }
+  {
+    const config = f.client.getSandboxConfig;
+    for (const fields of [
+      ...(mandatoryPolicy ? [{}] : []),
+      { binding_policy: undefined },
+      { bindings: undefined },
+      { binding_policy: 2 },
+      { bindings: [1] },
+      { binding_policy: null, bindings: [1] },
+      { binding_policy: "2", bindings: [1] },
+      { binding_policy: 0, bindings: [] },
+      { binding_policy: 1, bindings: [1] },
+      { binding_policy: 2, bindings: undefined },
+      { binding_policy: 2, bindings: null },
+      { binding_policy: 2, bindings: "1" },
+      { binding_policy: 2, bindings: ["1"] },
+      { binding_policy: 2, bindings: [2] },
+      { binding_policy: 2, bindings: [1, 2] },
+      { binding_policy: 3, bindings: [1, 2] },
+      { binding_policy: 3, bindings: [] },
+    ]) {
+      f.client.getSandboxConfig = async () => {
+        const value = await config();
+        const service = value.supervisor_middleware_services[0];
+        delete service.binding_policy;
+        delete service.bindings;
+        Object.assign(service, fields);
+        return value;
+      };
+      await f.reconcile();
+      assert.equal(preview.recipient, undefined, "dynamic or response-only must not qualify");
+      assert.equal(f.calls.rotate, 0);
+      assert.equal(f.calls.material, 0, "unqualified binding must not read credential material");
+    }
+    f.client.getSandboxConfig = config;
+  }
   await f.reconcile();
+  assert.equal(f.calls.rotate, 0, "ACCEPTED and effective config cannot release material");
+  assert.equal(preview.hook, undefined);
   assert.ok(preview.recipient, "the original bootstrap observation qualifies the recipient");
   const startupId = randomUUID();
   const signal = AbortSignal.timeout(5000);
-  const probe = async (path) => ({
-    startupId,
-    probePath: path,
-    reasonCode: preview.deny(
-      {
-        ...f.identity,
-        target: {
-          reportedScheme: "https",
-          host: "github.com",
-          port: 443,
-          method: "GET",
-          path,
-          query: "service=git-upload-pack",
+  let probePath;
+  const probe = async (path) => {
+    probePath = path;
+    return {
+      startupId,
+      probePath: path,
+      reasonCode: preview.deny(
+        {
+          ...f.identity,
+          target: {
+            reportedScheme: "https",
+            host: "github.com",
+            port: 443,
+            method: "GET",
+            path,
+            query: "service=git-upload-pack",
+          },
+          headers: [],
+          body: new Uint8Array(),
+          deadlineAt: new Date(Date.now() + 5000).toISOString(),
         },
-        headers: [],
-        body: new Uint8Array(),
-        deadlineAt: new Date(Date.now() + 5000).toISOString(),
-      },
-      f.sandbox.id,
-    ),
-  });
+        f.sandbox.id,
+      ),
+    };
+  };
   assert.equal(await f.runtime.observeHeldPreview(revision.id, startupId, signal, probe), "held");
+  if (repositoryOnly) {
+    // The stock endpoint checks this prefix before invoking the mandatory hook.
+    // A hook callback alone cannot prove that the held request can reach it.
+    const endpointPath = gitRule.endpoints.find((endpoint) => endpoint.host === "github.com").path;
+    assert.ok(
+      probePath.startsWith(endpointPath.slice(0, -2)),
+      "the held probe must stay within the admitted repository endpoint",
+    );
+  }
+  if (changedStartup) {
+    const replacementStartup = randomUUID();
+    const before = { material: f.calls.material, rotate: f.calls.rotate };
+    await f.runtime.observeHeldPreview(revision.id, replacementStartup, signal, () => {
+      assert.fail("a changed startup must not replay the one-use challenge");
+    });
+    assert.deepEqual(f.runtime.route(revision.id), {
+      state: "blocked",
+      reason: "execution_replaced",
+    });
+    assert.deepEqual({ material: f.calls.material, rotate: f.calls.rotate }, before);
+    const checks = f.events.filter((e) => e.event === "worker.openshell-git-continuity-refused");
+    assert.deepEqual(
+      checks.map(({ check, keyHash }) => ({ check, keyHash })),
+      [
+        {
+          check: "held-startup-recorded",
+          keyHash: createHash("sha256").update(startupId).digest("hex"),
+        },
+        {
+          check: "held-startup-observed",
+          keyHash: createHash("sha256").update(replacementStartup).digest("hex"),
+        },
+      ],
+    );
+    assert.equal(JSON.stringify(checks).includes(startupId), false);
+    assert.equal(JSON.stringify(checks).includes(replacementStartup), false);
+    return;
+  }
+  if (removeBinding) {
+    // Losing explicit mandatory fields after qualification changes the recipient fingerprint.
+    // Observed-only mode must not reinterpret this established recipient as a legacy one.
+    const config = f.client.getSandboxConfig;
+    f.client.getSandboxConfig = async () => {
+      const value = await config();
+      delete value.supervisor_middleware_services[0].binding_policy;
+      delete value.supervisor_middleware_services[0].bindings;
+      return value;
+    };
+    await f.reconcile();
+    assert.equal(f.calls.material, 0, "stripped bindings cannot reuse a witnessed recipient");
+    assert.equal(f.calls.rotate, 0);
+    if (!mandatoryPolicy) {
+      assert.equal(f.entry.blocked, "supervisor_replaced");
+    }
+    return;
+  }
+  // Even a witnessed launcher denial cannot authorize material after a binding downgrade.
+  const qualifiedConfig = f.client.getSandboxConfig;
+  f.client.getSandboxConfig = async () => {
+    const value = await qualifiedConfig();
+    value.supervisor_middleware_services[0].binding_policy = 1;
+    return value;
+  };
+  await f.reconcile();
+  assert.equal(f.calls.material, 0, "a post-challenge downgrade must precede material selection");
+  assert.equal(f.calls.rotate, 0);
+  f.client.getSandboxConfig = qualifiedConfig;
+  if (narrowRepository === "foreign-repository-id") {
+    const original = f.owner.material;
+    assert.equal(typeof original.repositoryId, "string");
+    assert.equal(original.repositoryId, binding.grant.repositoryId);
+    assert.notEqual(original.repositoryId, "99999");
+    f.owner.material = { ...original, repositoryId: "99999" };
+    await f.reconcile();
+    await f.entry.previewClosure?.confirming;
+    assert.deepEqual(f.runtime.route(revision.id), {
+      state: "blocked",
+      reason: "material_mismatch",
+    });
+    assert.equal(f.store.rows.get(revision.id).blocked, "material_mismatch");
+    assert.equal(f.calls.rotate, 0, "foreign supplier material never reaches the provider");
+    await expectDenied(f, "route_blocked");
+    return;
+  }
   // The controlled supervisor delays the post-write observation. The production runtime
   // must nevertheless cross its own pre-write observation at the new reservation fence.
   f.faults.observeAfterRotate = true;
@@ -1690,17 +2699,212 @@ test("an admitted preview rotates at its new fence only in the original worker",
   assert.equal(f.entry.fence, 2);
   assert.equal(f.store.rows.get(revision.id).writePending, undefined);
 
+  f.sandbox.annotations = { "openclaw.dev/revision-id": revision.id };
+  f.sandbox.labels = {};
+  f.sandbox.resourceVersion = "1";
+  const getProvider = f.client.getProvider;
+  f.client.getProvider = async (...args) => ({
+    ...(await getProvider(...args)),
+    id: "model-id",
+    name: "openai",
+    workspace: f.sandbox.workspace,
+  });
+  let modelEnvironment;
+  f.client.getSandboxProviderStatus = async () => {
+    const generation = {
+      attachmentEpoch: f.supervisor.attachmentEpoch,
+      providerEnvRevision: modelEnvironment ?? environment ?? f.entry.binding.resourceVersion,
+      configRevision: "1",
+      policyHash: "original-policy",
+    };
+    return {
+      state: "PROVIDER_READINESS_STATE_READY",
+      completedOperationId: "model-observe",
+      receipt: {
+        receiptId: "model-observe",
+        kind: "PROVIDER_MUTATION_KIND_OBSERVE",
+        workspace: f.sandbox.workspace,
+        provider: "openai",
+        desired: {
+          ...generation,
+          sandboxId: f.sandbox.id,
+          sandbox: f.sandbox.name,
+          providerId: "model-id",
+          providerResourceVersion: "1",
+        },
+      },
+      observed: {
+        ...generation,
+        sessionId: f.supervisor.supervisorSessionId,
+        processInstanceId: f.supervisor.processInstanceId,
+        sequence: "1",
+        credentialsInstalled: true,
+        policyActive: true,
+        launchEnvironmentInstalled: true,
+      },
+      networkInstanceId: f.supervisor.networkInstanceId,
+      observedTime: new Date().toISOString(),
+      evaluatedTime: new Date().toISOString(),
+    };
+  };
+  f.faults.observe = false;
+  await f.reconcile();
+  assert.ok(f.entry.installed, "active generation completes its original launch witness");
+  await f.runtime.releasePreview(revision.id, startupId, async () => true);
+  assert.ok(await f.lookup(), "first read after held launch ACK");
+  environment = "1001";
+  f.faults.observe = true;
+  await f.reconcile();
+  assert.equal(await f.lookup(), undefined, "an unverified aggregate environment denies use");
+  assert.equal(f.denials().at(-1).reason, "route_pending");
+  assert.equal(preview.release, "acknowledged", "refresh does not reset held launch ACK");
+  f.faults.observe = false;
+  // Git rotation changes the aggregate provider environment. A stale model observation
+  // cannot reopen the route, even though the original launch was already acknowledged.
+  modelEnvironment = "1000";
+  await f.reconcile();
+  assert.equal(await f.lookup(), undefined, "model observation must catch up with Git rotation");
+  modelEnvironment = "1001";
+  await f.reconcile();
+  assert.ok(await f.lookup(), "later request uses the newly verified environment");
+  assert.equal(f.calls.rotate, 1, "observation recovery does not reinstall credentials");
+
+  const changedMaterial = narrowRepository === "material-push-ref";
+  const changedDelivery = narrowRepository === "delivery-push-ref";
+  if (changedMaterial || changedDelivery) {
+    const original = f.owner.material;
+    const admittedPushRef = f.entry.authorization.repository.pushRef;
+    assert.match(admittedPushRef, /^refs\/heads\//);
+    assert.equal(original.pushRef, admittedPushRef);
+    assert.equal((await f.lookup()).pushRef, admittedPushRef);
+    assert.notEqual(admittedPushRef, "refs/heads/main");
+    const providerWrites = f.calls.providerWrites;
+    const prepare = () =>
+      f.runtime.prepare(
+        revision,
+        f.client,
+        f.sandbox.workspace,
+        f.sandbox.name,
+        signal,
+        "/sandbox/enterprise",
+        f.entry.otherProviders,
+      );
+    if (changedDelivery) {
+      await prepare();
+      assert.equal(f.calls.rotate, 1, "the same admission does not reinstall material");
+      resolvedPushRef = "refs/heads/main";
+      await assert.rejects(prepare(), {
+        message: "OpenShell Git revision binding is unavailable.",
+      });
+    } else {
+      f.owner.material = { ...original, pushRef: "refs/heads/main" };
+    }
+    await f.reconcile();
+    await f.entry.previewClosure?.confirming;
+    const assertBlocked = async () => {
+      assert.deepEqual(f.runtime.route(revision.id), {
+        state: "blocked",
+        reason: "material_mismatch",
+      });
+      await expectDenied(f, "route_blocked");
+      assert.equal(f.calls.rotate, 1, "a mismatched route cannot install more material");
+      assert.equal(
+        f.calls.providerWrites,
+        providerWrites,
+        "a blocked route cannot write a provider",
+      );
+      assert.equal(f.store.rows.get(revision.id).blocked, "material_mismatch");
+    };
+    await assertBlocked();
+    assert.ok(
+      f.events.some(
+        (event) =>
+          event.event === "worker.openshell-preview-closure" &&
+          event.status === "confirmed" &&
+          event.reason === "material_mismatch",
+      ),
+    );
+    await assert.rejects(
+      prepare(),
+      (error) =>
+        error instanceof OpenShellGitRouteBlockedError && error.reason === "material_mismatch",
+    );
+    if (changedMaterial) {
+      f.owner.material = original;
+    } else {
+      resolvedPushRef = undefined;
+    }
+    await f.reconcile();
+    await assertBlocked();
+    assert.deepEqual(
+      f.errors().map(({ reason }) => reason),
+      ["material_mismatch"],
+    );
+  }
+
+  // Cold adoption closes healthy preview custody and preserves an existing terminal reason.
+  const coldReason = changedMaterial || changedDelivery ? "material_mismatch" : "worker_replaced";
   const replacement = new OpenShellGitRuntime(f.runtime.configuration, resolve);
   replacement.owner = f.owner;
   replacement.routes = f.store;
   await assert.rejects(
-    replacement.prepare(revision, f.client, f.sandbox.workspace, f.sandbox.name, signal, [
-      "openai",
-    ]),
-    { reason: "worker_replaced" },
+    replacement.prepare(
+      revision,
+      f.client,
+      f.sandbox.workspace,
+      f.sandbox.name,
+      signal,
+      "/sandbox/enterprise",
+      ["openai"],
+    ),
+    { reason: coldReason },
   );
-  assert.equal(f.store.rows.get(revision.id).blocked, "worker_replaced");
+  assert.equal(f.store.rows.get(revision.id).blocked, coldReason);
   f.faults.observe = false;
   await f.reconcile();
   assert.equal(f.calls.rotate, 1, "neither the replacement nor the fenced original can replay");
+}
+
+for (const policy of [undefined, 2, 3]) {
+  test(`an observed Git route (${policy ?? "preview"}) rotates only after its challenge in the original worker`, async () => {
+    if (policy === undefined) {
+      await observedGitRoute(policy, { legacy: true });
+    }
+    await observedGitRoute(policy);
+    if (policy) {
+      await observedGitRoute(policy, { narrowRepository: "healthy" });
+    }
+    await observedGitRoute(policy, { removeBinding: true });
+    await observedGitRoute(policy, { changedStartup: true });
+  });
+}
+
+test("the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access", async () => {
+  for (const narrowRepository of [
+    "material-push-ref",
+    "delivery-push-ref",
+    "foreign-repository-id",
+  ]) {
+    await observedGitRoute(2, { narrowRepository });
+  }
+});
+
+test("Git preparation refuses broad or noncanonical workspace trust before provider writes", async () => {
+  for (const path of [
+    "*",
+    "/",
+    "/sandbox",
+    "/sandbox/",
+    "/sandbox/enterprise/",
+    "/sandbox/*",
+    "/sandbox/enterprise/*",
+    "/sandbox/../etc",
+    "/sandbox/enterprise/../other",
+    "/sandbox//enterprise",
+    "/sandbox/enterprise\0",
+  ]) {
+    const f = bootstrapping();
+    await assert.rejects(f.prepare(path), /exact Sandbox workspace path/);
+    assert.equal(f.calls.providerWrites, 0);
+  }
 });

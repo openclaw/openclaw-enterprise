@@ -1,95 +1,309 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, get } from "node:https";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import test from "node:test";
 import pg from "pg";
 import { setTimeout as delay } from "node:timers/promises";
-import { captureMetadata, dispatchMetadata } from "../helpers/github-metadata-exchange.mjs";
+import {
+  captureMetadata,
+  dispatchMetadata,
+  raceMaintenance,
+} from "../helpers/github-metadata-exchange.mjs";
 import { postgresEgressSendReceipts } from "../../packages/occ/src/state/egress-send-receipts.ts";
 import { bindRuntimeSource } from "../helpers/postgres-protected-scenarios.mjs";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { staticEgressFixture, wireTime } from "../helpers/static-egress.mjs";
 import {
+  listenOnNewOrigin,
   startGitHubFixture,
   fixtureAppId,
   fixtureInstallationId,
   fixtureRepositoryId,
   fixtureRepository,
 } from "../fixtures/repository-credentials/github.mjs";
-import { listen } from "../fixtures/repository-credentials/process.mjs";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
 import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts";
+import { preparedAttemptSettled } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
+
+test(
+  "authorized GitHub proxy requests mint the registered grant and share one replacement",
+  requiresPostgres,
+  async (t) => {
+    let hold;
+    const fixture = await preparedLifecycleFixture(t, {
+      tokenLifetimeMs: 3 * 60_000,
+      async beforeIssueResponse() {
+        if (hold) {
+          hold.started = true;
+          await hold.release.promise;
+        }
+      },
+    });
+    const { f, gh, tokens, source, createOwner, registerSource, tokenRegistration } = fixture;
+    const { reference } = tokenRegistration;
+    assert.equal(tokenRegistration.kind, "github_app_installation");
+    assert.deepEqual(reference, { kind: "github_app_installation", key: source.key });
+    const readsBeforeRefusal = f.secretReads;
+    const registration = { source, secret: fixture.issuer };
+    for (const [invalid, message] of [
+      [registration, /unknown token registration kind/i],
+      [{ ...registration, kind: "prepared_source" }, /provider does not support this token kind/],
+      [
+        { ...registration, kind: "oauth_refresh_token" },
+        /requires an account, approved template and grant/,
+      ],
+    ]) {
+      await assert.rejects(tokens.register(invalid, t.signal), { message });
+    }
+    assert.equal(
+      f.secretReads,
+      readsBeforeRefusal,
+      "an untagged or mismatched registration cannot open the signing key",
+    );
+
+    const refuseOtherKinds = async () => {
+      const dispatch = t.mock.method(fixture.lifecycle, "resolve");
+      const accountReads = t.mock.method(f.state, "read");
+      try {
+        const options = {
+          signal: t.signal,
+          deadlineAt: new Date(Date.now() + 20_000).toISOString(),
+          minimumValidityMs: 1_000,
+        };
+        for (const invalid of [
+          source.key,
+          { ...reference, kind: "prepared_source" },
+          { ...reference, kind: "oauth_refresh_token" },
+        ]) {
+          assert.equal(await tokens.resolve(invalid, options), undefined);
+        }
+        assert.equal(
+          accountReads.mock.callCount(),
+          0,
+          "a relabeled GitHub handle cannot read an OAuth account",
+        );
+        assert.equal(
+          dispatch.mock.callCount(),
+          0,
+          "mismatched or untagged handles cannot reach the GitHub issuer",
+        );
+      } finally {
+        dispatch.mock.restore();
+        accountReads.mock.restore();
+      }
+    };
+    await refuseOtherKinds();
+    const unrelated = await registerSource("unrelated-due-family");
+    assert.equal(gh.issuesOfTokens.length, 0, "registration alone sends nothing to GitHub");
+
+    const otherTokens = new TokenService();
+    const otherOwner = createOwner(gh.origin, otherTokens);
+    await otherOwner.connect(f.pool);
+    t.after(() => otherOwner.close());
+    // B observes cold before A commits. Its later claim must reuse A's three-minute
+    // token, even though that token is already inside the ten-minute renewal window.
+    const beforeClaim = Promise.withResolvers();
+    const resumeClaim = Promise.withResolvers();
+    const claim = otherOwner.repository.claim.bind(otherOwner.repository);
+    const gatedClaim = t.mock.method(
+      otherOwner.repository,
+      "claim",
+      async (...args) => {
+        beforeClaim.resolve();
+        await resumeClaim.promise;
+        return claim(...args);
+      },
+      { times: 1 },
+    );
+    const lateClaim = otherTokens.resolve(reference, {
+      deadlineAt: new Date(Date.now() + 30_000).toISOString(),
+      minimumValidityMs: 20_000,
+      signal: t.signal,
+    });
+    await Promise.race([
+      beforeClaim.promise,
+      lateClaim.then(() => {
+        throw new Error("peer did not reach its cold claim");
+      }),
+    ]);
+    const request = captureMetadata(f);
+    let resolved;
+    try {
+      resolved = await f.resolve(request);
+    } finally {
+      resumeClaim.resolve();
+      gatedClaim.mock.restore();
+    }
+    const { ready } = resolved;
+    assert.ok(ready, "an authorized cold proxy request gets a token without a maintenance pass");
+    const selected = JSON.parse(ready.evidence.authority_evidence);
+    assert.equal(selected.family.id, source.key.source.id);
+    const resolvedToken = await lateClaim;
+    assert.ok(resolvedToken?.accessToken);
+    assert.equal(resolvedToken.materialVersion, selected.materialVersion);
+    assert.equal(selected.providerExpiresAt, resolvedToken.expiresAt);
+    assert.equal(JSON.stringify(selected).includes(resolvedToken.accessToken), false);
+    assert.deepEqual(
+      gh.issuesOfTokens.map((issue) => ({
+        repositoryIds: issue.repositoryIds.map(String),
+        permissions: issue.permissions,
+      })),
+      [{ repositoryIds: [String(fixtureRepositoryId)], permissions: { metadata: "read" } }],
+    );
+    await dispatchMetadata(f, gh, request, ready);
+    await refuseOtherKinds();
+    const {
+      rows: [receipt],
+    } = await f.pool.query(
+      "SELECT binding, authorized_dispatch FROM occ.egress_send_receipts WHERE use_id=$1",
+      [request.request.context.request_id],
+    );
+    assert.equal(receipt.binding.material.providerExpiresAt, resolvedToken.expiresAt);
+    assert.equal(
+      JSON.stringify(receipt).includes(resolvedToken.accessToken),
+      false,
+      "the durable receipt contains no token bytes",
+    );
+    const warm = captureMetadata(f);
+    const second = await f.resolve(warm);
+    assert.ok(second.ready);
+    assert.equal(
+      JSON.parse(second.ready.evidence.authority_evidence).materialVersion,
+      selected.materialVersion,
+    );
+    await dispatchMetadata(f, gh, warm, second.ready);
+    assert.equal(gh.issuesOfTokens.length, 1);
+
+    // Only the stored material lifetime has advanced. The token is still valid at GitHub.
+    const ageToken = async (version) => {
+      const aged = await f.pool.query(
+        "UPDATE occ.prepared_github_attempts SET usable_until=clock_timestamp()+interval '10 seconds' WHERE source_id=$1 AND material_version=$2",
+        [source.key.source.id, version],
+      );
+      assert.equal(aged.rowCount, 1);
+    };
+    await ageToken(selected.materialVersion);
+    const expired = captureMetadata(f);
+    expired.deadline = wireTime(Date.now() - 1_000);
+    assert.ok((await f.resolve(expired)).refused);
+    assert.equal(gh.issuesOfTokens.length, 1, "an expired request cannot start issuance");
+
+    // A caller with sufficient remaining life gets the current value while renewal runs.
+    // A cancelled longer-lived caller must not cancel that shared issuance.
+    hold = { started: false, release: Promise.withResolvers() };
+    const leaving = new AbortController();
+    const lifetime = {
+      deadlineAt: new Date(Date.now() + 30_000).toISOString(),
+      minimumValidityMs: 20_000,
+    };
+    await f.pool.query(
+      "UPDATE occ.prepared_github_families SET next_check_at=clock_timestamp() WHERE source_id=$1",
+      [source.key.source.id],
+    );
+    const sufficient = await tokens.resolve(reference, {
+      ...lifetime,
+      minimumValidityMs: 1_000,
+      signal: t.signal,
+    });
+    assert.equal(sufficient?.materialVersion, selected.materialVersion);
+    await waitUntil("the due warm grant starts early renewal", () => hold.started);
+    const first = tokens.resolve(reference, { ...lifetime, signal: leaving.signal });
+    const leavingResult = first.catch((error) => {
+      if (error.name !== "AbortError") {
+        throw error;
+      }
+      return undefined;
+    });
+    const other = () => otherTokens.resolve(reference, { ...lifetime, signal: t.signal });
+    let proxyResult;
+    let otherResult;
+    const replacementRequest = captureMetadata(f);
+    try {
+      const peerClaim = t.mock.method(otherOwner.repository, "claim");
+      proxyResult = f.resolve(replacementRequest);
+      otherResult = other();
+      await waitUntil(
+        "the second owner tried to claim the same family",
+        () => peerClaim.mock.callCount() > 0,
+      );
+      assert.equal(await peerClaim.mock.calls[0].result, undefined);
+      peerClaim.mock.restore();
+      leaving.abort();
+      assert.equal(await leavingResult, undefined, "a cancelled caller receives no credential");
+    } finally {
+      hold.release.resolve();
+    }
+    const [{ ready: replacement }, fromPeer] = await Promise.all([proxyResult, otherResult]);
+    assert.ok(replacement);
+    assert.ok(fromPeer);
+    const newVersion = JSON.parse(replacement.evidence.authority_evidence).materialVersion;
+    assert.notEqual(newVersion, selected.materialVersion);
+    assert.equal(fromPeer.materialVersion, newVersion);
+    await dispatchMetadata(f, gh, replacementRequest, replacement);
+    assert.equal(gh.issuesOfTokens.length, 2);
+    const selectedBeforeLoss = captureMetadata(f);
+    const snapshot = await f.resolve(selectedBeforeLoss);
+    assert.ok(snapshot.ready);
+    // The third issuance has already reached GitHub when IAM revokes this Agent's use.
+    // The response to the original signed request must withhold every credential header.
+    const upstreamReads = () =>
+      gh.trace.filter(
+        ({ method, target }) => method === "GET" && target === `/repos/${fixtureRepository}`,
+      ).length;
+    const sent = upstreamReads();
+    await ageToken(newVersion);
+    hold = { started: false, release: Promise.withResolvers() };
+    const inFlight = f.resolve(captureMetadata(f));
+    try {
+      await waitUntil("GitHub accepted the authorized renewal", () => hold.started);
+      await f.revoke();
+    } finally {
+      hold.release.resolve();
+    }
+    const refused = await inFlight;
+    assert.ok(refused.refused);
+    assert.equal(refused.ready, undefined);
+    assert.ok((await f.authorize(f.permitRequest(selectedBeforeLoss, snapshot.ready))).refused);
+    assert.ok((await f.resolve(captureMetadata(f))).refused);
+    assert.equal(upstreamReads(), sent, "the upstream received no request after IAM loss");
+
+    // Withdrawal also fences later direct resolution of the same registration by a peer.
+    await fixture.lifecycle.withdraw(source, t.signal);
+    assert.equal(await other(), undefined);
+    assert.equal(gh.issuesOfTokens.length, 3);
+    assert.equal(
+      (
+        await f.pool.query("SELECT 1 FROM occ.prepared_github_attempts WHERE source_id=$1", [
+          unrelated,
+        ])
+      ).rowCount,
+      0,
+    );
+    const unused = await f.state.read((view) =>
+      view.credentialSources.findCredentialSource(f.namespace.id, unrelated),
+    );
+    await fixture.lifecycle.withdraw(unused.egress, t.signal);
+  },
+);
 
 test(
   "PostgreSQL prepared custody: source consent, proactive renewal, restart, issuer rotation and withdrawal",
   requiresPostgres,
   async (t) => {
-    // Both keys are generated here. Only the dedicated issuer Secret receives the private App key.
-    const dir = await mkdtemp(join(tmpdir(), "occ-prepared-gh-"));
-    t.after(() => rm(dir, { recursive: true, force: true }));
-    const key = join(dir, "custody.key");
-    await writeFile(key, randomBytes(32), { mode: 0o600 });
-    // A nine-minute provider lifetime puts renewal inside the owner's ten-minute lead.
     let invalidScope = false;
-    const gh = await startGitHubFixture(t, {
-      clock: createSystemClock(),
-      tokenLifetimeMs: 9 * 60_000,
+    const prepared = await preparedLifecycleFixture(t, {
+      tokenLifetimeMs: 45 * 60_000,
       tokenResponse: (packet) => (invalidScope ? { ...packet, repositories: [] } : packet),
     });
-    const secretValue = gh.privateKey.export({ format: "pem", type: "pkcs8" });
-    let lifecycle;
-    let secretDriver;
-    let issuer;
-    let source;
-    let registration;
-    const createOwner = (origin = gh.origin, tokenService) =>
-      new PostgresPreparedGitHubLifecycle(key, secretDriver, origin, gh.tls.ca, tokenService);
-    const f = await staticEgressFixture(t, {
-      secretValue,
-      protectedSourceOnly: true,
-      createPreparedGitHub(opts) {
-        secretDriver = opts.secretDriver;
-        lifecycle = createOwner(gh.origin, opts.tokenService);
-        return lifecycle;
-      },
-      async appFactory(t, opts) {
-        const app = await postgresApp(t, {
-          ...opts,
-          poolOptions: { max: 1, connectionTimeoutMillis: 2000 },
-        });
-        await lifecycle.connect(app.pool);
-        t.after(() => lifecycle.close());
-        return app;
-      },
-      async admitSource({ app, agent, namespace, secret, path }) {
-        issuer = secret;
-        const created = await app.request("POST", path, {
-          body: (registration = {
-            type: "github-app-metadata",
-            name: "prepared-repository",
-            config: {
-              authority: "execution",
-              app_id: fixtureAppId,
-              installation_id: fixtureInstallationId,
-              repository_id: fixtureRepositoryId,
-              repository: fixtureRepository,
-              agent_id: agent.id,
-            },
-            secrets: { private_key: secret.ref },
-          }),
-        });
-        assert.equal(created.status, 201);
-        source = created.data;
-        return bindRuntimeSource(app, namespace, agent, source);
-      },
-    });
-    source = (
-      await f.state.read((v) => v.credentialSources.findCredentialSource(f.namespace.id, source.id))
-    ).egress;
+    const { gh, f, lifecycle, issuer, secretValue, createOwner, registerSource } = prepared;
+    let { source } = prepared;
     const signal = new AbortController().signal;
     const readWindow = () => ({ signal, deadlineAt: new Date(Date.now() + 20_000).toISOString() });
     const firstReads = f.secretReads;
@@ -105,9 +319,10 @@ test(
     // Two workers race over a real family. Only the durable claim holder reaches the issuer.
     const competitor = createOwner();
     await competitor.connect(f.pool);
-    const results = await Promise.all([lifecycle.maintain(signal), competitor.maintain(signal)]);
+    // The family is cold, so the loser has nothing to retire.
+    const losers = await raceMaintenance([lifecycle, competitor], signal);
     await competitor.close();
-    assert.deepEqual(results.sort(), ["committed", "idle"]);
+    assert.deepEqual(losers, ["idle"]);
     const old = await lifecycle.readWarm(source, readWindow());
     assert.equal(old.ownerEpoch, 1);
     assert.deepEqual(gh.issuesOfTokens[0].permissions, { metadata: "read" });
@@ -251,15 +466,23 @@ test(
         const open = t.mock.method(repo, "open");
         let deadline;
         let arm;
+        let holdWallBeforeDeadline;
         const pastDeadline = () => delay(Math.max(0, deadline - Date.now() + 100));
         let projected;
         let queryInTime;
+        let completedQuery;
         // Delay real PostgreSQL at three distinct boundaries. Record presence, never the bytes.
         t.mock.method(repo, "transaction", (work) =>
           transaction((client) =>
             work({
               async query(sql, args) {
                 const material = sql.includes("END AS sealed");
+                const delayed =
+                  (material && ["before projection", "after projection"].includes(arm)) ||
+                  (arm === "after metadata" && sql.startsWith("SELECT f.admission,id,"));
+                if (delayed) {
+                  completedQuery = Promise.withResolvers();
+                }
                 if (material) {
                   queryInTime = Date.now() < deadline;
                   if (arm === "before projection") {
@@ -273,7 +496,25 @@ test(
                     await pastDeadline();
                   }
                 } else if (arm === "after metadata" && sql.startsWith("SELECT f.admission,id,")) {
-                  await pastDeadline();
+                  const elapsed = pastDeadline();
+                  if (holdWallBeforeDeadline) {
+                    // Let the relative timer wake while the signed wall-clock deadline is still
+                    // one tick away. That wake must not classify a blocked read as missing material.
+                    const beforeWake = performance.now();
+                    const elapsedClock = t.mock.method(performance, "now", () => beforeWake);
+                    t.mock.timers.enable({ apis: ["Date"], now: deadline - 1 });
+                    try {
+                      await elapsed;
+                    } finally {
+                      elapsedClock.mock.restore();
+                      t.mock.timers.reset();
+                    }
+                  } else {
+                    await elapsed;
+                  }
+                }
+                if (delayed) {
+                  completedQuery.resolve();
                 }
                 return result;
               },
@@ -289,12 +530,13 @@ test(
           ]) {
             await t.test(`${bound}: ${boundary}`, async () => {
               arm = boundary;
+              holdWallBeforeDeadline = bound === "signed deadline";
               const request = captureMetadata(f);
               deadline = Date.now() + 1300;
               request.deadline = wireTime(
                 bound === "signed deadline" ? deadline : Date.now() + 20_000,
               );
-              queryInTime = projected = undefined;
+              queryInTime = projected = completedQuery = undefined;
               open.mock.resetCalls();
               const issues = gh.issuesOfTokens.length;
               const reads = f.secretReads;
@@ -307,19 +549,24 @@ test(
                     [new Date(deadline), old.materialVersion],
                   );
                 }
-                const result = await f.resolve(request);
+                // The proxy requires material to outlive its signed request. Exercise an
+                // earlier material expiry separately at the real custody-read boundary.
+                const signed = bound === "signed deadline";
+                const result = signed ? await f.resolve(request) : undefined;
+                const material = signed
+                  ? result.ready
+                  : await lifecycle.readWarm(source, readWindow());
+                // A deadline can release the sender before an already-started SQL read settles.
+                // Observe the real projection and decryption only after the held query returns.
+                await completedQuery?.promise;
                 if (arm === "control") {
-                  assert.ok(
-                    result.ready && queryInTime && projected,
-                    "ordinary signed access must work",
-                  );
+                  assert.ok(material && queryInTime && projected, "unexpired material is usable");
                   assert.equal(open.mock.callCount(), 1);
                 } else {
-                  assert.equal(
-                    result.refused?.code,
-                    f.refusalCode(bound === "signed deadline" ? "DEADLINE_EXCEEDED" : "NOT_READY"),
-                    arm + ": refusal follows the bound that expired",
-                  );
+                  assert.equal(material, undefined, "no material after expiry");
+                  if (signed) {
+                    assert.equal(result.refused?.code, f.refusalCode("DEADLINE_EXCEEDED"));
+                  }
                   const queried = arm !== "after metadata";
                   assert.deepEqual(
                     { queryInTime, projected, opens: open.mock.callCount() },
@@ -435,7 +682,7 @@ test(
         ).once("error", reject);
       });
     assert.equal(
-      await status(old.value),
+      await status(old.accessToken),
       200,
       "actual token must be accepted for the exact metadata read",
     );
@@ -446,7 +693,7 @@ test(
       [old.materialVersion],
     );
     assert.equal(
-      sealed.includes(Buffer.from(old.value)),
+      sealed.includes(Buffer.from(old.accessToken)),
       false,
       "database stored bearer in plaintext",
     );
@@ -501,7 +748,7 @@ test(
             }),
           ),
         );
-        const pending = f.resolve(captureMetadata(f));
+        const pending = lifecycle.readWarm(source, readWindow());
         try {
           const selection = await Promise.race([
             selected.promise,
@@ -510,35 +757,74 @@ test(
             }),
           ]);
           assert.equal(selection.material_version, old.materialVersion);
-          await due(); // Only advance the periodic scan, not eligibility, owner or any token bytes.
+          // Advance the existing material into its renewal window only now, after the
+          // request selected its metadata. Earlier send checks exercise a stable warm grant.
+          await f.pool.query(
+            "UPDATE occ.prepared_github_attempts SET usable_until=clock_timestamp()+interval '8 minutes' WHERE material_version=$1",
+            [old.materialVersion],
+          );
+          await due();
           const reports = [];
-          fresh.startWorker((code) => reports.push(code));
-          // Observe only the ledger. No request or readiness call drives this proactive renewal.
-          const pollDeadline = Date.now() + 15_000;
-          for (;;) {
-            const {
-              rows: [{ changed }],
-            } = await f.pool.query(
-              "SELECT count(*)=1 AS changed FROM occ.prepared_github_attempts WHERE custody='current' AND source_id=$1 AND material_version <> $2",
-              [source.key.source.id, old.materialVersion],
-            );
-            if (changed) {
-              break;
+          const diagnostics = [];
+          fresh.startWorker((code, context, severity = "error") => {
+            if (severity === "error") {
+              reports.push(code);
+            } else {
+              diagnostics.push({ code, context });
             }
-            assert.ok(Date.now() < pollDeadline, "background loop did not proactively renew");
-            await new Promise((resolve) => setTimeout(resolve, 50));
-          }
+          });
+          // Observe only the ledger. No request or readiness call drives this proactive renewal.
+          await waitUntil(
+            "the background loop to proactively renew",
+            async () => {
+              const {
+                rows: [{ changed }],
+              } = await f.pool.query(
+                "SELECT count(*)=1 AS changed FROM occ.prepared_github_attempts WHERE custody='current' AND source_id=$1 AND material_version <> $2",
+                [source.key.source.id, old.materialVersion],
+              );
+              return changed;
+            },
+            { timeoutMs: 15_000, intervalMs: 50 },
+          );
           await fresh.close();
           fresh = createOwner();
           await fresh.connect(f.pool);
           assert.deepEqual(reports, []);
           renewed = await fresh.readWarm(source, readWindow());
+          // Correlate the background report with actual encrypted PostgreSQL publication.
+          assert.equal(diagnostics.length, 1);
+          assert.equal(diagnostics[0].code, "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC");
+          const diagnostic = diagnostics[0].context;
+          const {
+            rows: [attempt],
+          } = await f.pool.query(
+            "SELECT id FROM occ.prepared_github_attempts WHERE source_id=$1 AND material_version=$2",
+            [source.key.source.id, renewed.materialVersion],
+          );
+          assert.equal(diagnostic.attemptId, attempt.id);
+          assert.equal(diagnostic.httpStatus, 201);
+          assert.equal(diagnostic.responseComplete, true);
+          assert.equal(diagnostic.requestEndCalled, true);
+          assert.equal(diagnostic.candidateIdentified, true);
+          assert.equal(diagnostic.validationKind, "validated");
+          assert.equal(diagnostic.publication, "committed");
+          assert.equal(diagnostic.clockTolerance, true);
+          assert.equal(diagnostic.firstFailureStage, undefined);
+          for (const secret of [
+            old.accessToken,
+            renewed.accessToken,
+            String(secretValue),
+            "PRIVATE KEY",
+          ]) {
+            assert.equal(JSON.stringify(diagnostics).includes(secret), false);
+          }
           assert.notEqual(renewed.materialVersion, old.materialVersion);
           const issues = gh.issuesOfTokens.length;
           const reads = f.secretReads;
           resume.resolve();
           const result = await pending;
-          assert.equal(result.refused?.code, f.refusalCode("NOT_READY"));
+          assert.equal(result, undefined, "the old custody read cannot select a replacement");
           assert.deepEqual(
             { projected, opens: open.mock.callCount() },
             { projected: false, opens: 0 },
@@ -562,8 +848,7 @@ test(
     // B is reachable with the same trusted CA and would falsely acknowledge A's revocation.
     // Record only whether a credential arrived. A client must not rely on B rejecting A's token.
     let credentialRequestsAtB = 0;
-    const originB = await listen(
-      t,
+    const originB = await listenOnNewOrigin(t, () =>
       createServer(gh.tls, (req, res) => {
         if (req.headers.authorization) {
           credentialRequestsAtB++;
@@ -609,7 +894,7 @@ test(
         );
         assert.equal(await restartedAtB.ready(source, signal), false);
         assert.equal(Boolean(await restartedAtB.readWarm(source, readWindow())), false);
-        assert.equal(await status(old.value), 200, "A still accepts the displaced token");
+        assert.equal(await status(old.accessToken), 200, "A still accepts the displaced token");
       },
     );
     await t.test(
@@ -621,8 +906,8 @@ test(
       },
     );
     await fresh.maintain(signal); // Drains the displaced token. GitHub confirms DELETE independently.
-    assert.equal(await status(old.value), 401);
-    assert.equal(await status(renewed.value), 200);
+    assert.equal(await status(old.accessToken), 401);
+    assert.equal(await status(renewed.accessToken), 200);
 
     await t.test("before-send refuses a rejected prepared selection", async () => {
       const selected = await selectSend();
@@ -643,11 +928,15 @@ test(
     const rotated = await fresh.readWarm(source, readWindow());
     assert.equal(rotated.ownerEpoch, 2);
     assert.notEqual(rotated.inputVersion, old.inputVersion);
-    assert.equal(await status(rotated.value), 200);
+    assert.equal(await status(rotated.accessToken), 200);
     // A issued a real token, but its response cannot qualify the token for use. Withdrawal
     // under B must preserve that exceptional cleanup candidate and A's now-displaced current token.
     const withdrawn = await selectSend();
     invalidScope = true;
+    await f.pool.query(
+      "UPDATE occ.prepared_github_attempts SET usable_until=clock_timestamp()+interval '8 minutes' WHERE material_version=$1",
+      [rotated.materialVersion],
+    );
     await due();
     assert.equal(await fresh.maintain(signal), "quarantined");
     invalidScope = false;
@@ -660,7 +949,9 @@ test(
           ["quarantined"],
         );
         const attemptsAtA = gh.trace.length;
-        await assert.rejects(restartedAtB.withdraw(source, signal), /unsettled provider attempt/);
+        await assert.rejects(restartedAtB.withdraw(source, signal), {
+          name: "CredentialTokenUnsettledError",
+        });
         assert.equal(credentialRequestsAtB, 0, "B received A's exceptional pending credential");
         assert.equal(gh.trace.length, attemptsAtA);
         const kept = await pendingRetirements();
@@ -690,18 +981,12 @@ test(
     assert.equal(await fresh.ready(source, signal), false);
     assert.equal(await fresh.readWarm(source, readWindow()), undefined);
     assert.equal(
-      await status(rotated.value),
+      await status(rotated.accessToken),
       401,
       "withdrawal must revoke the actual provider credential",
     );
     // Lose the response *after* the synthetic provider owns the token. A different worker must
     // observe the durable quarantine, never issue again, and never claim remote revocation.
-    const path = `/namespaces/${f.namespace.id}/credential-sources`;
-    const registerSource = async (name) => {
-      const { status, data } = await f.request("POST", path, { body: { ...registration, name } });
-      assert.equal(status, 201);
-      return data.id;
-    };
     const lostSource = await registerSource("prepared-lost-response");
     const lost = (
       await f.state.read((v) =>
@@ -725,7 +1010,9 @@ test(
     );
     assert.equal(gh.issuesOfTokens.length, issuedBefore + 1);
     assert.equal(await lifecycle.readWarm(lost, readWindow()), undefined);
-    await assert.rejects(lifecycle.withdraw(lost, signal), /unsettled provider attempt/);
+    await assert.rejects(lifecycle.withdraw(lost, signal), {
+      name: "CredentialTokenUnsettledError",
+    });
     await t.test("a lost retirement commit receipt clears the unreceived candidate", async (t) => {
       // An out-of-scope issuance leaves a real cleanup candidate for the next worker pass.
       await registerSource("prepared-lost-retirement-commit");
@@ -740,7 +1027,9 @@ test(
       let bytes;
       t.mock.method(client, "query", async (sql, ...args) => {
         const result = await query(sql, ...args);
-        if (sql === "COMMIT") {
+        // The pass first commits its Agent discovery on this connection, which the one-connection
+        // pool hands back to the retirement claim; lose only the claim's acknowledgment.
+        if (sql === "COMMIT" && open.mock.callCount()) {
           bytes = open.mock.calls[0].result;
           assert.ok(
             bytes.some((byte) => byte !== 0),
@@ -825,6 +1114,445 @@ test(
     assert.deepEqual(gh.errors, []);
   },
 );
+
+test(
+  "PostgreSQL prepared custody: deleting a source waits only while a token from it may be valid",
+  requiresPostgres,
+  async (t) => {
+    // Finding 2208: deletion failed with a plain 500 forever once any attempt was not revoked.
+    // A refused issue is terminal at once; a lost issue or revocation settles after GitHub's
+    // maximum token lifetime. Until then deletion answers a coded 409 naming the retry time.
+    let elapsed = 0;
+    const { gh, f, lifecycle, source, registerSource } = await preparedLifecycleFixture(
+      t,
+      {},
+      () => new Date(Date.now() + elapsed),
+    );
+    const signal = new AbortController().signal;
+    // The Agent's bound source is not part of this proof: keep the worker on the new sources.
+    await f.pool.query(
+      "UPDATE occ.prepared_github_families SET next_check_at=now()+interval '1 day' WHERE source_id=$1",
+      [source.key.source.id],
+    );
+    const attempts = async (sourceId) =>
+      (
+        await f.pool.query(
+          "SELECT state, custody FROM occ.prepared_github_attempts WHERE source_id=$1",
+          [sourceId],
+        )
+      ).rows;
+    // A typo'd installation: GitHub answers 404 and mints nothing.
+    gh.setIssueStatus(404);
+    const refused = await registerSource("prepared-refused");
+    assert.equal(await lifecycle.maintain(signal), "quarantined");
+    gh.setIssueStatus(201);
+    assert.deepEqual(await attempts(refused), [{ state: "quarantined", custody: "not_issued" }]);
+    // GitHub mints a token, then its answer is lost.
+    gh.disconnectAfterMutation("POST", `/app/installations/${fixtureInstallationId}/access_tokens`);
+    const lost = await registerSource("prepared-lost-issue");
+    assert.equal(await lifecycle.maintain(signal), "quarantined");
+    assert.deepEqual(await attempts(lost), [{ state: "quarantined", custody: "intent" }]);
+    // A committed token whose revocation GitHub refuses, as once it expired while the worker was down.
+    const expired = await registerSource("prepared-unconfirmed-revocation");
+    assert.equal(await lifecycle.maintain(signal), "committed");
+    gh.setRevokeStatus(401);
+    assert.equal(gh.issuesOfTokens.length, 2);
+
+    // Past the registration fence, which is independent of provider custody.
+    elapsed = 120_000;
+    const remove = (id) =>
+      f.request("DELETE", `/namespaces/${f.namespace.id}/credential-sources/${id}`);
+    const exists = async (id) =>
+      (await f.request("GET", `/namespaces/${f.namespace.id}/credential-sources/${id}`)).status;
+    // The deadline is the attempt start plus a minute to dispatch, ten minutes of App JWT
+    // acceptance, an hour of token life and a minute of skew, or a verified expiry plus skew.
+    const unsettled = async (id) => {
+      const {
+        rows: [{ at }],
+      } = await f.pool.query(
+        `SELECT greatest(started_at + interval '72 minutes', provider_expires_at + interval '1 minute') AS at
+         FROM occ.prepared_github_attempts WHERE source_id=$1`,
+        [id],
+      );
+      const result = await remove(id);
+      assert.equal(result.status, 409);
+      assert.deepEqual(result.body.error, {
+        code: "CREDENTIAL_TOKEN_UNSETTLED",
+        message:
+          "A GitHub token issued for this credential source may still be valid, so it cannot be deleted yet. " +
+          `Retry the deletion after ${at.toISOString()}, when GitHub's maximum token lifetime has passed.`,
+      });
+      assert.equal(await exists(id), 200, "the source stays until its custody settles");
+    };
+    const age = (id, column, minutes) =>
+      f.pool.query(
+        `UPDATE occ.prepared_github_attempts SET ${column}=clock_timestamp()-$2*interval '1 minute' WHERE source_id=$1`,
+        [id, minutes],
+      );
+
+    assert.equal((await remove(refused)).status, 204, "a refusal with no token is settled");
+    assert.equal(await exists(refused), 404);
+
+    await unsettled(lost);
+    await age(lost, "started_at", 73);
+    assert.equal((await remove(lost)).status, 204);
+    assert.equal(await exists(lost), 404);
+
+    const deletes = () => gh.trace.filter((entry) => entry.method === "DELETE").length;
+    await unsettled(expired);
+    assert.deepEqual(await attempts(expired), [{ state: "committed", custody: "unknown" }]);
+    assert.equal(deletes(), 1);
+    // The attempt bound alone is not enough while the verified expiry is still ahead.
+    await age(expired, "started_at", 73);
+    await unsettled(expired);
+    await f.pool.query(
+      `UPDATE occ.prepared_github_attempts SET provider_expires_at=clock_timestamp()-interval '2 minutes',
+       usable_until=clock_timestamp()-interval '3 minutes' WHERE source_id=$1`,
+      [expired],
+    );
+    assert.equal((await remove(expired)).status, 204);
+    assert.equal(deletes(), 1, "an unconfirmed revocation is never replayed");
+    // Settlement never rewrites the recorded outcome.
+    assert.deepEqual(await attempts(expired), [{ state: "committed", custody: "unknown" }]);
+    assert.deepEqual(gh.errors, []);
+  },
+);
+
+test(
+  "PostgreSQL prepared custody: deleting the bound Agent stops renewal and revokes its tokens",
+  requiresPostgres,
+  async (t) => {
+    // Finding 2215: the worker renewed an Agent-bound source forever after its Agent was deleted.
+    // A nine-minute provider lifetime keeps renewal due on every pass of a live family.
+    let onIssue;
+    let onRevoke;
+    const { gh, f, lifecycle, source } = await preparedLifecycleFixture(t, {
+      tokenLifetimeMs: 9 * 60_000,
+      // GitHub has minted or revoked the token; its answer is still on the way.
+      issueResponseGate: () => onIssue?.(),
+      revokeResponseGate: () => onRevoke?.(),
+    });
+    const signal = new AbortController().signal;
+    const readWindow = () => ({ signal, deadlineAt: new Date(Date.now() + 20_000).toISOString() });
+    const due = () =>
+      f.pool.query(
+        "UPDATE occ.prepared_github_families SET next_check_at=now() WHERE source_id=$1",
+        [source.key.source.id],
+      );
+    const custody = async () =>
+      (
+        await f.pool.query(
+          `SELECT f.enabled, a.state, a.custody FROM occ.prepared_github_families f
+           JOIN occ.prepared_github_attempts a USING (source_id) WHERE source_id=$1 ORDER BY a.started_at`,
+          [source.key.source.id],
+        )
+      ).rows;
+    assert.equal(await lifecycle.maintain(signal), "committed");
+    // Before deletion a signed metadata request reaches GitHub. A second one is resolved now
+    // and its selection retained, to be authorized only after the Agent is deleted.
+    const metadataReads = () => gh.trace.filter((entry) => entry.method === "GET").length;
+    const control = captureMetadata(f);
+    const allowed = await f.resolve(control);
+    assert.ok(allowed.ready, "signed resolve must select the prepared family");
+    assert.equal((await dispatchMetadata(f, gh, control, allowed.ready)).status, 200);
+    const reads = metadataReads();
+    const retained = captureMetadata(f);
+    const { ready } = await f.resolve(retained);
+    assert.ok(ready, "signed resolve must select the prepared family");
+    const evidence = JSON.parse(ready.evidence.authority_evidence);
+    const proveCurrent = () =>
+      f.state.transact((unit) =>
+        unit.preparedTokenProof.current(source, evidence, lifecycle.issuerAuthority, readWindow()),
+      );
+    assert.equal(await proveCurrent(), true);
+
+    // The Agent is deleted while a renewal is in flight: the token GitHub minted is never published.
+    onIssue = async () => {
+      onIssue = undefined;
+      const deleted = await f.request(
+        "DELETE",
+        `/namespaces/${f.namespace.id}/agents/${f.agent.id}`,
+      );
+      assert.equal(deleted.status, 202);
+    };
+    await due();
+    assert.equal(await lifecycle.maintain(signal), "quarantined");
+    assert.equal(onIssue, undefined, "the renewal reached GitHub");
+    assert.equal(gh.issuesOfTokens.length, 2);
+    // Use stops as deletion commits, before any worker pass.
+    assert.equal(await lifecycle.ready(source, signal), false);
+    assert.equal(await lifecycle.readWarm(source, readWindow()), undefined);
+    assert.equal(await proveCurrent(), false);
+    // The selection retained from before deletion is refused at send authorization, so its
+    // bytes never reach GitHub, while the token is still awaiting revocation.
+    const refused = await f.authorize(f.permitRequest(retained, ready));
+    assert.equal(refused.allowed, undefined, "a deleted Agent's retained selection was authorized");
+    assert.equal(refused.refused?.code, f.refusalCode("DENIED"));
+    assert.equal(metadataReads(), reads);
+
+    // The next passes withdraw the family and revoke both tokens; nothing is issued again.
+    await due();
+    assert.equal(await lifecycle.maintain(signal), "retired");
+    // Deleting the source while the worker's revocation is in flight waits for its answer,
+    // instead of reporting a token that may stay valid for an hour.
+    let release;
+    const answered = new Promise((resolve) => (release = resolve));
+    const revoking = new Promise((resolve) => {
+      onRevoke = () => {
+        onRevoke = undefined;
+        resolve();
+        return answered;
+      };
+    });
+    const pass = lifecycle.maintain(signal);
+    await revoking;
+    const settlement = t.mock.method(lifecycle.repository, "withdrawalSettlement");
+    const withdrawn = lifecycle.withdraw(source, AbortSignal.timeout(30_000));
+    // Answer only once the deletion has found the revocation unsettled and checked again.
+    await waitUntil("the deletion to recheck settlement", () => settlement.mock.callCount() >= 2);
+    release();
+    assert.equal(await pass, "retired");
+    await withdrawn;
+    await due();
+    assert.equal((await lifecycle.maintain(signal)) ?? "idle", "idle");
+    assert.equal(gh.issuesOfTokens.length, 2, "a deleted Agent's source was renewed");
+    assert.deepEqual(
+      gh.tokenState().map((token) => token.revoked),
+      [true, true],
+    );
+    assert.deepEqual(await custody(), [
+      { enabled: false, state: "committed", custody: "revoked" },
+      { enabled: false, state: "quarantined", custody: "revoked" },
+    ]);
+    assert.deepEqual(gh.errors, []);
+  },
+);
+
+test(
+  "PostgreSQL prepared custody: a malformed refusal stays uncertain; a stale or clock-skewed intent never dispatches",
+  requiresPostgres,
+  async (t) => {
+    const { gh, f, lifecycle, source, registerSource } = await preparedLifecycleFixture(t);
+    const signal = new AbortController().signal;
+    await f.pool.query(
+      "UPDATE occ.prepared_github_families SET next_check_at=now()+interval '1 day' WHERE source_id=$1",
+      [source.key.source.id],
+    );
+    const attempts = async (sourceId) =>
+      (
+        await f.pool.query(
+          `SELECT state, custody, ${preparedAttemptSettled("a")} AS settled
+           FROM occ.prepared_github_attempts a WHERE source_id=$1`,
+          [sourceId],
+        )
+      ).rows;
+    const issues = () => gh.trace.filter((entry) => entry.method === "POST").length;
+    // Keep each pass on the newest source: a quarantined family is never claimed again here.
+    const park = (id) =>
+      f.pool.query(
+        "UPDATE occ.prepared_github_families SET next_check_at=now()+interval '1 day' WHERE source_id=$1",
+        [id],
+      );
+
+    // Anything but a complete refusal with no token member stays uncertain until the bound.
+    const answers = [
+      ["duplicate member", 422, '{"message":"Unprocessable","message":"Entity"}'],
+      ["truncated refusal", 401, '{"message":"Bad cred'],
+      [
+        "success without a token",
+        201,
+        JSON.stringify({ expires_at: new Date(Date.now() + 3_600_000).toISOString() }),
+      ],
+    ];
+    for (const [name, status, body] of answers) {
+      gh.setIssueStatus(status, body);
+      const id = await registerSource(`prepared-${name.replaceAll(" ", "-")}`);
+      const before = issues();
+      assert.equal(await lifecycle.maintain(signal), "quarantined", name);
+      assert.equal(issues(), before + 1, name);
+      assert.deepEqual(
+        await attempts(id),
+        [{ state: "quarantined", custody: "intent", settled: false }],
+        name,
+      );
+      await park(id);
+    }
+    gh.setIssueStatus(201);
+
+    // Live custody never settles by time, even past both bounds.
+    const live = await registerSource("prepared-live");
+    assert.equal(await lifecycle.maintain(signal), "committed");
+    await f.pool.query(
+      `UPDATE occ.prepared_github_attempts SET started_at=clock_timestamp()-interval '1 day',
+       provider_expires_at=clock_timestamp()-interval '2 hours',
+       usable_until=clock_timestamp()-interval '3 hours' WHERE source_id=$1`,
+      [live],
+    );
+    assert.deepEqual(await attempts(live), [
+      { state: "committed", custody: "current", settled: false },
+    ]);
+    await park(live);
+
+    // Settlement assumes no dispatch after the intent's one-minute window. A worker that resumes
+    // later (a suspended host does not advance its monotonic budget) is fenced before sending.
+    // Stand for that pause by recording the durable intent two minutes in the past.
+    const stale = await registerSource("prepared-stale-intent");
+    const intent = "INSERT INTO occ.prepared_github_attempts (id,source_id,admission,state) VALUES";
+    const query = pg.Client.prototype.query;
+    const aged = t.mock.method(pg.Client.prototype, "query", function (sql, ...args) {
+      return typeof sql === "string" && sql.startsWith(intent)
+        ? query.call(
+            this,
+            `INSERT INTO occ.prepared_github_attempts (id,source_id,admission,state,started_at)
+             VALUES ($1,$2,$3,$4,clock_timestamp()-interval '2 minutes')`,
+            ...args,
+          )
+        : query.call(this, sql, ...args);
+    });
+    const before = issues();
+    assert.equal(await lifecycle.maintain(signal), "quarantined");
+    aged.mock.restore();
+    await park(stale);
+    assert.equal(issues(), before, "a stale intent never reaches GitHub");
+    assert.deepEqual(await attempts(stale), [
+      { state: "quarantined", custody: "intent", settled: false },
+    ]);
+    // The JWT expiry comes from the worker's clock, settlement from the database's: a worker
+    // whose clock runs ten minutes ahead could sign a JWT GitHub accepts past the bound.
+    const skewed = await registerSource("prepared-skewed-clock");
+    const clock = lifecycle.clock;
+    lifecycle.clock = { ...clock, wallNow: () => Date.now() + 10 * 60_000 };
+    const beforeSkew = issues();
+    try {
+      assert.equal(await lifecycle.maintain(signal), "quarantined");
+    } finally {
+      lifecycle.clock = clock;
+    }
+    assert.equal(issues(), beforeSkew, "a skewed worker never reaches GitHub");
+    assert.deepEqual(await attempts(skewed), [
+      { state: "quarantined", custody: "intent", settled: false },
+    ]);
+    await park(skewed);
+
+    // A refusal that carries a token is never not_issued: its token goes to retirement custody.
+    // Last, since the worker's next pass would try to revoke this synthetic token.
+    gh.setIssueStatus(
+      401,
+      JSON.stringify({ message: "Bad credentials", token: "ghs_" + "a".repeat(36) }),
+    );
+    const bearing = await registerSource("prepared-token-bearing-refusal");
+    assert.equal(await lifecycle.maintain(signal), "quarantined");
+    assert.deepEqual(await attempts(bearing), [
+      { state: "quarantined", custody: "retire", settled: false },
+    ]);
+    assert.deepEqual(gh.errors, []);
+  },
+);
+
+/**
+ * A prepared GitHub metadata source registered through the real API, bound to an Agent, over
+ * PostgreSQL and a synthetic HTTPS GitHub App issuer. Both keys are generated here; only the
+ * dedicated issuer Secret receives the private App key.
+ */
+async function preparedLifecycleFixture(t, githubOptions = {}, now = undefined) {
+  const dir = await temporaryDirectory(t, "occ-prepared-gh-");
+  const key = join(dir, "custody.key");
+  await writeFile(key, randomBytes(32), { mode: 0o600 });
+  const gh = await startGitHubFixture(t, { clock: createSystemClock(), ...githubOptions });
+  const secretValue = gh.privateKey.export({ format: "pem", type: "pkcs8" });
+  let lifecycle;
+  let tokens;
+  let tokenRegistration;
+  let secretDriver;
+  let issuer;
+  let source;
+  let registration;
+  const createOwner = (origin = gh.origin, tokenService) =>
+    new PostgresPreparedGitHubLifecycle(key, secretDriver, origin, gh.tls.ca, tokenService);
+  const f = await staticEgressFixture(t, {
+    secretValue,
+    protectedSourceOnly: true,
+    ...(now && { now }),
+    createPreparedGitHub(opts) {
+      secretDriver = opts.secretDriver;
+      tokens = opts.tokenService;
+      const register = tokens.register.bind(tokens);
+      t.mock.method(
+        tokens,
+        "register",
+        async (input, signal) => {
+          const reference = await register(input, signal);
+          tokenRegistration = { kind: input.kind, reference };
+          return reference;
+        },
+        { times: 1 },
+      );
+      lifecycle = createOwner(gh.origin, tokens);
+      return lifecycle;
+    },
+    async appFactory(t, opts) {
+      const app = await postgresApp(t, {
+        ...opts,
+        poolOptions: { max: 1, connectionTimeoutMillis: 2000 },
+      });
+      // Production can register saved OAuth accounts and the GitHub issuer on the same Token Service.
+      tokens.registerIssuer(
+        new OAuthAccountTokens(
+          app.state,
+          secretDriver,
+          app.controller.resolveConnectionClient.bind(app.controller),
+        ),
+      );
+      await lifecycle.connect(app.pool);
+      t.after(() => lifecycle.close());
+      return app;
+    },
+    async admitSource({ app, agent, namespace, secret, path }) {
+      issuer = secret;
+      const created = await app.request("POST", path, {
+        body: (registration = {
+          type: "github-app-metadata",
+          name: "prepared-repository",
+          config: {
+            authority: "execution",
+            app_id: fixtureAppId,
+            installation_id: fixtureInstallationId,
+            repository_id: fixtureRepositoryId,
+            repository: fixtureRepository,
+            agent_id: agent.id,
+          },
+          secrets: { private_key: secret.ref },
+        }),
+      });
+      assert.equal(created.status, 201);
+      source = created.data;
+      return bindRuntimeSource(app, namespace, agent, source);
+    },
+  });
+  source = (
+    await f.state.read((v) => v.credentialSources.findCredentialSource(f.namespace.id, source.id))
+  ).egress;
+  /** Register another prepared source with the same grant; no Agent revision holds it. */
+  const registerSource = async (name) => {
+    const path = `/namespaces/${f.namespace.id}/credential-sources`;
+    const { status, data } = await f.request("POST", path, { body: { ...registration, name } });
+    assert.equal(status, 201);
+    return data.id;
+  };
+  return {
+    gh,
+    f,
+    tokens,
+    tokenRegistration,
+    lifecycle,
+    issuer,
+    source,
+    registration,
+    secretValue,
+    createOwner,
+    registerSource,
+  };
+}
 
 // Start with the signed dispatch above, whose material, peer, custody and policy all agreed.
 // The repository issues SQL directly; no caller-side parser can satisfy these negative cases.

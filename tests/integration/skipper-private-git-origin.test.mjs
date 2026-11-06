@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { request } from "node:https";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -11,6 +10,8 @@ import {
   withdrawDuringFetchCommand,
 } from "../fixtures/skipper-private-git-origin.mjs";
 import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 function api(fixture, method, path, authorization, body, afterHeaders) {
   return new Promise((resolve, reject) => {
@@ -57,8 +58,7 @@ test(
       teamReview: true,
     });
     t.after(() => fixture.close());
-    const directory = await mkdtemp(join(tmpdir(), "private-git-client-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "private-git-client-");
     const caFile = join(directory, "ca.pem");
     await writeFile(caFile, fixture.tls.ca);
     const env = cleanEnvironment({
@@ -275,11 +275,7 @@ test(
       (result) => ({ result }),
       (error) => ({ error }),
     );
-    const deadline = Date.now() + 5000;
-    while (!fixture.discoveryHeld() && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    assert.ok(fixture.discoveryHeld(), "must observe a real authenticated discovery");
+    await waitUntil("a real authenticated discovery", () => fixture.discoveryHeld(), 5000);
     assert.equal(
       (await api(fixture, "DELETE", "/installation/token", `Bearer ${token}`)).status,
       204,
@@ -380,8 +376,7 @@ test(
     const fixture = await startSkipperPrivateGitOrigin({ seedRefs: 40 });
     t.after(() => fixture.close());
     assert.equal(Object.keys(await fixture.readRefs()).length, 41);
-    const directory = await mkdtemp(join(tmpdir(), "private-git-gzip-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "private-git-gzip-");
     const caFile = join(directory, "ca.pem");
     await writeFile(caFile, fixture.tls.ca);
     const issued = await api(

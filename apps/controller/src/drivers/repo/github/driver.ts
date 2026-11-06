@@ -13,10 +13,10 @@ import {
   RepositoryCredentialControlError,
   type RepositoryCredentialControlClient,
 } from "../../../backends/repository-credentials/control-client.ts";
-import { githubInstallationProfile } from "./credentials/registry.ts";
+import { isInstallationRepositoryProfile } from "@openclaw-enterprise/contracts";
 import { encodeRepositoryCredentialSessionFiles } from "./credentials/client/config.ts";
 import type { SessionStatus } from "../credentials/service-contracts.ts";
-import { sameBinding } from "../credentials/sessions.ts";
+import { sameBinding } from "../credentials/grant-identity.ts";
 import { hasControlCharacter } from "../credentials/client-contracts.ts";
 
 function publicStatus(status: SessionStatus): RepositoryCredentialSessionStatus {
@@ -36,14 +36,9 @@ export class GitHubNativeRepositorySender implements NativeRepositorySender {
   static readonly configurationSchema: JSONSchema = Object.freeze({
     type: "object",
     additionalProperties: false,
-    required: ["sessionDurationSeconds", "controlSocket", "publicCaPath"],
+    required: ["controlSocket", "publicCaPath"],
     properties: {
       controlSocket: { type: "string", minLength: 1, maxLength: 103 },
-      sessionDurationSeconds: {
-        type: "integer",
-        minimum: 1,
-        maximum: Math.floor(Number.MAX_SAFE_INTEGER / 1000),
-      },
       publicCaPath: { type: "string", minLength: 1 },
     },
   });
@@ -62,9 +57,12 @@ export class GitHubNativeRepositorySender implements NativeRepositorySender {
       ) {
         return [
           {
-            path: "",
+            path: `/${field}`,
             code: "INVALID_VALUE",
-            message: "Configuration violates the Driver's constraints.",
+            message:
+              field === "controlSocket"
+                ? "repository.nativeSender.controlSocket must be a canonical absolute path without ASCII control characters, at most 103 UTF-8 bytes."
+                : "repository.nativeSender.publicCaPath must be a canonical absolute path without ASCII control characters.",
           },
         ];
       }
@@ -110,7 +108,7 @@ export class GitHubNativeRepositorySender implements NativeRepositorySender {
     input: OpenRepositorySessionInput,
     signal: AbortSignal,
   ): Promise<OpenRepositorySessionResult> {
-    if (input.binding.profile === githubInstallationProfile) {
+    if (isInstallationRepositoryProfile(input.binding.profile)) {
       throw new ScopeViolationError(
         "GitHub installation access requires the protected Credential Proxy.",
       );

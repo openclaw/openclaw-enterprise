@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { chmod, lstat, mkdir, realpath, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { Socket } from "node:net";
-import { prepareControlSocket } from "../../drivers/repo/credentials/server.ts";
+import { prepareControlSocket } from "./control-socket.ts";
 import { inspectRequestHead } from "../../drivers/repo/credentials/transport/request.ts";
 
 /** Only peers sharing the worker's private directory can reach this bounded, single-request socket. */

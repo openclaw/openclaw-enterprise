@@ -1,9 +1,21 @@
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { providerClockSkewMs } from "./driver/lifetime.ts";
-import type { PreparedGitHubEgressSource, Secret } from "@openclaw-enterprise/contracts";
+import {
+  issueAttemptDispatchWindowMs,
+  issueAttemptLiveBoundMs,
+  providerClockSkewMs,
+} from "./driver/lifetime.ts";
+import type {
+  EgressSourceKey,
+  PreparedGitHubEgressSource,
+  Secret,
+} from "@openclaw-enterprise/contracts";
 import { preparedGitHubLive as live, readPreparedGitHubMetadata } from "@openclaw-enterprise/occ";
-import type { PostgresClient, PostgresPool } from "@openclaw-enterprise/occ";
+import type {
+  PostgresClient,
+  PostgresPool,
+  PreparedGitHubMetadataAdmission,
+} from "@openclaw-enterprise/occ";
 import type {
   GitHubPreparationAdmission as Admission,
   GitHubPreparationAttempt as Attempt,
@@ -19,11 +31,25 @@ import type {
 // The provider expiry is an authenticated issuance result. The same clock-skew allowance
 // subtracted for use is added before we can conclude that the provider lifetime elapsed.
 const standingGitExpiry = `CASE WHEN f.source->>'adoption' IN ('prepared_repository_git',
-    'credential_proxy_repository_git','credential_proxy_github_installation')
+    'credential_proxy_repository_git','credential_proxy_github_installation',
+    'credential_proxy_github_repository')
   AND f.source #>> '{session,standingApprovalId}' IS NOT NULL AND NOT f.enabled
   AND a.state='committed' AND a.material_version IS NOT NULL
   AND a.admission=f.admission AND isfinite(a.provider_expires_at)
   AND a.usable_until < a.provider_expires_at THEN a.provider_expires_at END`;
+
+// An attempt settles when no token from it can still be live: revoked, locally expired, refused
+// by an answer that carried no token, or past both bounds: issueAttemptLiveBoundMs after its
+// intent, and any verified provider expiry plus skew. 'current' is live custody, never settled
+// by time. 'intent', 'retire', 'revoking' and 'unknown' (lost issue or revocation) settle by time.
+const settledAfter = (
+  a: string,
+) => `greatest(${a}.started_at + ${issueAttemptLiveBoundMs} * interval '1 millisecond',
+  ${a}.provider_expires_at + ${providerClockSkewMs} * interval '1 millisecond')`;
+export const preparedAttemptSettled = (
+  a: string,
+) => `(${a}.custody IN ('revoked','expired','not_issued')
+  OR (${a}.custody <> 'current' AND ${settledAfter(a)} <= clock_timestamp()))`;
 
 const active = live("'ready'");
 const enrolling = live("'registering','ready'");
@@ -31,6 +57,11 @@ const matching = "f.source_id = $1 AND f.source = $2::jsonb";
 const families = "occ.prepared_github_families";
 const attempts = "occ.prepared_github_attempts";
 type Source = PreparedGitHubEgressSource;
+export interface GitHubPreparationRequest {
+  readonly source: Source;
+  readonly urgency: "proactive" | "required";
+}
+
 type TokenSource = {
   readonly key: { readonly source: { readonly id: string } };
   readonly grant: Admission["grant"];
@@ -42,6 +73,7 @@ type FamilyRow = {
   admission: Admission;
   enabled: boolean;
   live: boolean;
+  observed_at?: string;
 };
 type AttemptRow = {
   id: string;
@@ -52,6 +84,7 @@ type AttemptRow = {
   provider_expires_at: Date;
   usable_until: Date;
   sealed: Buffer;
+  stale: boolean;
 };
 
 const aad = (a: Admission, id: string) =>
@@ -136,7 +169,11 @@ export class PreparedGitHubPostgres {
     }
   }
 
-  async enroll(source: Source, issuer: Readonly<Secret>, admission: Admission) {
+  async enroll(
+    source: Source,
+    issuer: Readonly<Secret>,
+    admission: PreparedGitHubMetadataAdmission,
+  ) {
     const key = source.key.source.id;
     await this.transaction(async (c) => {
       await c.query(
@@ -170,28 +207,91 @@ export class PreparedGitHubPostgres {
     });
   }
 
-  async withdrawalSettled(source: Source) {
-    return this.transaction(async (c) => {
-      const { rows } = await c.query(
-        `SELECT 1 FROM ${attempts} a JOIN ${families} f USING (source_id)
-        WHERE ${matching} AND NOT enabled AND custody <> 'revoked' LIMIT 1`,
-        [source.key.source.id, source],
+  /** Withdraw this issuer's metadata families whose Agent is deleting or gone. Agent deletion
+   * is one-way and fences use at once (see the live predicate); retirement then revokes the
+   * current token. Agent deletion never waits on GitHub; deleting the source settles custody.
+   * A family locked by another transaction is skipped until the next pass. */
+  async withdrawEndedAgents() {
+    await this.transaction(async (c) => {
+      await c.query(
+        `WITH ended AS (SELECT source_id FROM ${families} f
+          WHERE enabled AND f.source->>'adoption'='prepared' AND admission->>'issuerAuthority'=$1
+          AND NOT EXISTS (SELECT 1 FROM occ.agents g WHERE g.status='active'
+            AND g.namespace_id=f.source #>> '{key,namespaceId}' AND g.id=f.source #>> '{grant,isolationId}')
+          FOR UPDATE OF f SKIP LOCKED),
+        stopped AS (UPDATE ${families} f SET enabled=false,worker_claim=NULL FROM ended e
+          WHERE f.source_id=e.source_id RETURNING f.source_id)
+        UPDATE ${attempts} a SET custody='retire' FROM stopped s
+        WHERE a.source_id=s.source_id AND a.custody='current'`,
+        [this.issuerAuthority],
       );
-      return !rows.length;
     });
   }
 
-  async claim(claim: string) {
+  /** Settled, or the earliest time every unsettled attempt settles (none for live custody). */
+  async withdrawalSettlement(source: Source) {
     return this.transaction(async (c) => {
       const { rows } = await c.query(
+        `SELECT count(*)::integer AS unsettled, CASE WHEN NOT bool_or(custody='current')
+          THEN max(${settledAfter("a")}) END AS "settlesAt", bool_and(custody='revoking') AS revoking
+        FROM ${attempts} a JOIN ${families} f USING (source_id)
+        WHERE ${matching} AND NOT enabled AND NOT ${preparedAttemptSettled("a")}`,
+        [source.key.source.id, source],
+      );
+      const { unsettled, settlesAt, revoking } = rows[0] as {
+        unsettled: number;
+        settlesAt: Date | null;
+        revoking: boolean | null;
+      };
+      return unsettled === 0
+        ? { settled: true as const }
+        : {
+            settled: false as const,
+            // Every unsettled attempt is a revocation another owner has in flight.
+            revoking: revoking === true,
+            ...(settlesAt instanceof Date && Number.isFinite(settlesAt.getTime()) && { settlesAt }),
+          };
+    });
+  }
+
+  async registeredSource(reference: EgressSourceKey): Promise<Source | undefined> {
+    return this.transaction(async (c) => {
+      const { rows } = await c.query(
+        `SELECT source FROM ${families} f WHERE f.source_id=$1 AND f.source->'key'=$2::jsonb
+          AND f.enabled AND f.admission->>'issuerAuthority'=$3 AND ${active}`,
+        [reference.source.id, reference, this.issuerAuthority],
+      );
+      return (rows[0] as Pick<FamilyRow, "source"> | undefined)?.source;
+    });
+  }
+
+  async claim(claim: string, request?: GitHubPreparationRequest) {
+    return this.transaction(async (c) => {
+      // Proactive hints keep the normal cadence for short-lived tokens. If this use
+      // cannot proceed, it may advance the exact family's next check without stealing a live claim.
+      const due = "f.next_check_at <= clock_timestamp()";
+      const when = request?.urgency === "required" ? `(f.worker_claim IS NULL OR ${due})` : due;
+      const exact = request ? "AND f.source_id=$3 AND f.source=$4::jsonb" : "";
+      const { rows } = await c.query(
         `WITH due AS (SELECT source_id FROM ${families} f
-        WHERE enabled AND admission->>'issuerAuthority'=$2 AND next_check_at <= clock_timestamp() AND ${active}
+        WHERE enabled AND admission->>'issuerAuthority'=$2 AND ${when} ${exact} AND ${active}
         ORDER BY next_check_at LIMIT 1 FOR UPDATE SKIP LOCKED)
         UPDATE ${families} f SET next_check_at=clock_timestamp() + interval '60 seconds',worker_claim=$1
         FROM due WHERE f.source_id=due.source_id RETURNING f.source, f.issuer`,
-        [claim, this.issuerAuthority],
+        request
+          ? [claim, this.issuerAuthority, request.source.key.source.id, request.source]
+          : [claim, this.issuerAuthority],
       );
       return rows[0] as Pick<FamilyRow, "source" | "issuer"> | undefined;
+    });
+  }
+
+  async releaseClaim(source: Source, claim: string): Promise<void> {
+    await this.transaction(async (c) => {
+      await c.query(
+        `UPDATE ${families} f SET worker_claim=NULL WHERE ${matching} AND worker_claim=$3`,
+        [source.key.source.id, source, claim],
+      );
     });
   }
 
@@ -205,11 +305,12 @@ export class PreparedGitHubPostgres {
         AND enabled AND worker_claim=$3 AND admission->>'issuerAuthority'=$4 AND ${active} FOR UPDATE OF f`,
         [key, source, claim, this.issuerAuthority],
       );
-      const old = (rows[0] as { admission: Admission } | undefined)?.admission;
+      const old = (rows[0] as { admission: PreparedGitHubMetadataAdmission } | undefined)
+        ?.admission;
       if (!old || old.inputVersion === version) {
         return old;
       }
-      const admission: Admission = {
+      const admission: PreparedGitHubMetadataAdmission = {
         ...old,
         inputVersion: version,
         ownerEpoch: old.ownerEpoch + 1,
@@ -223,10 +324,9 @@ export class PreparedGitHubPostgres {
     });
   }
 
-  async metadata(source: Source) {
+  async metadata(source: Source): ReturnType<typeof readPreparedGitHubMetadata> {
     return this.transaction(async (c) => {
-      return (await readPreparedGitHubMetadata(c, source, this.issuerAuthority)) as
-        Omit<AttemptRow, "sealed"> | undefined;
+      return readPreparedGitHubMetadata(c, source, this.issuerAuthority);
     });
   }
 
@@ -245,7 +345,14 @@ export class PreparedGitHubPostgres {
         | {
             state: Attempt["state"];
             custody:
-              "intent" | "current" | "retire" | "revoking" | "revoked" | "unknown" | "expired";
+              | "intent"
+              | "current"
+              | "retire"
+              | "revoking"
+              | "revoked"
+              | "unknown"
+              | "expired"
+              | "not_issued";
             materialVersion: string | null;
             providerExpiresAt: Date | null;
           }
@@ -329,7 +436,7 @@ export class PreparedGitHubPostgres {
   }
 
   // Request access pins the selected material and the earlier material/request deadline.
-  // Null is background preparation: it may open material no longer eligible for requests.
+  // Null selects issuance, which may inspect material no longer eligible for a request.
   store(
     source: { readonly key: { readonly source: { readonly id: string } } },
     access: Readonly<{
@@ -353,7 +460,8 @@ export class PreparedGitHubPostgres {
           await c.query(this.owner.lockIssuance, [source]);
         }
         const { rows } = await c.query(
-          `SELECT admission, enabled, ${this.owner.active} AS live
+          `SELECT admission, enabled, ${this.owner.active} AS live,
+          extract(epoch FROM clock_timestamp()) * 1000 AS observed_at
           FROM ${families} f WHERE ${matching}
           AND admission->>'issuerAuthority'=$3 FOR ${change ? "UPDATE" : "SHARE"} OF f`,
           [key, source, this.issuerAuthority],
@@ -366,8 +474,9 @@ export class PreparedGitHubPostgres {
         // query submitted in time may reach this row late. In-flight bytes cannot be recalled.
         const list = (
           await c.query(
-            `SELECT id,admission,state,custody,material_version,provider_expires_at,
-          usable_until,CASE WHEN custody='current' AND admission->>'issuerAuthority'=$2
+            `SELECT id,admission,state,custody,material_version,provider_expires_at,usable_until,
+          started_at <= clock_timestamp() - ${issueAttemptDispatchWindowMs} * interval '1 millisecond'
+            AS stale,CASE WHEN custody='current' AND admission->>'issuerAuthority'=$2
             AND clock_timestamp() < $3::timestamptz
             AND NOT EXISTS (
               SELECT 1 FROM occ.egress_rejected_material r JOIN occ.prepared_github_families f
@@ -398,11 +507,14 @@ export class PreparedGitHubPostgres {
           admission: f.admission,
           enabled: f.enabled && f.live,
           admittedGrantCount: 1,
+          observedAt: Number(f.observed_at),
           attempts: list.map((a) => ({
             id: a.id,
             admission: a.admission,
             state: a.state,
             ...(a.material_version ? { materialVersion: a.material_version } : {}),
+            // Settlement assumes no dispatch after this window; the issuer rechecks it.
+            ...(a.stale ? { stale: true as const } : {}),
           })),
         };
         if (
@@ -453,7 +565,8 @@ export class PreparedGitHubPostgres {
                   [
                     a.id,
                     a.state,
-                    m ? "current" : bytes ? "retire" : "intent",
+                    // Only a provider answer that refused issuance proves no token exists.
+                    m ? "current" : bytes ? "retire" : a.notIssued ? "not_issued" : "intent",
                     bytes && this.seal(bytes, a.admission, a.id),
                     m?.materialVersion,
                     m && new Date(m.providerExpiresAt),

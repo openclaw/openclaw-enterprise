@@ -20,6 +20,7 @@ const integerPattern = /^[1-9][0-9]*$/;
 // startup files one at a time, since some cases measure timing.
 // container-release.test.mjs pins this list to the lane manifests.
 export const runtimeImageSmokeTests = Object.freeze([
+  "tests/integration/codex-plugin-stdio-real.test.ts",
   "tests/integration/runtime-image-startup.test.mjs",
   "tests/integration/runtime-image-gateway-workspace.test.mjs",
   "tests/integration/runtime-image-public-github-read.test.mjs",
@@ -27,9 +28,16 @@ export const runtimeImageSmokeTests = Object.freeze([
   "tests/integration/runtime-image-managed-files.test.mjs",
   "tests/integration/runtime-image-native-listener.test.mjs",
   "tests/integration/runtime-image-startup-probe.test.mjs",
+  "tests/integration/runtime-image-codex-readiness.test.ts",
   "tests/integration/runtime-image-startup-termination.test.mjs",
+  "tests/integration/runtime-image-gateway-unclean-restart.test.mjs",
+  "tests/integration/runtime-image-gateway-retained-state.test.mjs",
+  "tests/integration/runtime-image-workspace-setup-lock.test.ts",
   "tests/integration/runtime-image-gateway-peer.test.mjs",
   "tests/integration/runtime-image-native-worker.test.mjs",
+  "tests/integration/runtime-image-node-state-permissions.test.ts",
+  "tests/integration/runtime-image-node-state-lock.test.ts",
+  "tests/integration/runtime-image-codex-local-plugins.test.ts",
   "tests/integration/sandbox-driver-startup.test.mjs",
   "tests/integration/workspace-files-native.test.mjs",
 ]);
@@ -282,6 +290,13 @@ export async function fileDigest(path) {
 
 export function skopeo(args, options = {}) {
   return execFileSync("skopeo", args, { maxBuffer: 16 * 1024 * 1024, ...options });
+}
+
+export function skopeoLogin(registry, authfile, username, token) {
+  skopeo(["login", "--authfile", authfile, "--username", username, "--password-stdin", registry], {
+    input: token,
+    stdio: ["pipe", "ignore", "pipe"],
+  });
 }
 
 export function inspectDigest(reference, authfile) {
@@ -581,18 +596,7 @@ export async function publishPrepared(directory, env, producer, verify, aliasTag
   const authDirectory = await mkdtemp(join(tmpdir(), "enterprise-registry-"));
   const authfile = join(authDirectory, "auth.json");
   try {
-    skopeo(
-      [
-        "login",
-        "--authfile",
-        authfile,
-        "--username",
-        env.GITHUB_ACTOR,
-        "--password-stdin",
-        "ghcr.io",
-      ],
-      { input: env.GH_TOKEN, stdio: ["pipe", "ignore", "pipe"] },
-    );
+    skopeoLogin("ghcr.io", authfile, env.GITHUB_ACTOR, env.GH_TOKEN);
     for (const image of prepared) {
       // Source, CI and visibility may change while large images are being copied.
       await verify();

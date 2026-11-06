@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createPostgresAgentApp } from "./postgres-agent-app.mjs";
 
-export async function postgresApp(t, options, transportDatabaseUrl) {
+export async function postgresApp(t, options, transportDatabaseUrl = undefined) {
   const p = await createPostgresAgentApp(t, {
     label: "static-egress",
     transportDatabaseUrl,
@@ -9,6 +9,8 @@ export async function postgresApp(t, options, transportDatabaseUrl) {
     controllerOptions: {
       preparedTokens: options.preparedTokens,
       driverConfigurations: options.driverConfigurations,
+      ...(options.now && { now: options.now }),
+      ...(options.recordOperations && { recordOperations: true }),
     },
     stateOptions: { preparedTokenProof: options.preparedTokens?.postgresCurrentProof },
     authSecret: "static-egress-fixture-session-secret-2026",

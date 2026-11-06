@@ -22,6 +22,14 @@ each story at 1440 and at 390.
 5. Open **Pages / Agent detail / Plugin selections JSON error**. The JSON
    shows "Enter a valid Plugin selections JSON object." under it and has
    focus; the status line below Save does not repeat it.
+   Replace the draft with
+   `{"sample":{"enabled":true,"driverPolicy":{"destructiveEnabled":1e400}}}`.
+   Collapse the raw editor and select **Save plugin selections**. The editor
+   opens, takes focus, and explains that the number is too large or too small
+   to save. No Agent GET preflight or PATCH starts. Open **Configure plugins**:
+   the existing invalid-JSON guidance appears, focus stays in the dialog, and
+   the raw text stays unchanged. These are simulated UI checks; the owning
+   browser test checks refusal and correction through the real Controller.
 6. Open **Authentication source required fields**. The API key Secret field
    shows "API key Secret is required." and has focus; its list stays closed,
    so nothing covers the error. Click the field or press ArrowDown to open
@@ -32,7 +40,41 @@ each story at 1440 and at 390.
    label.
 8. Open **Pages / Create Agent / Create Secret refused**. The "not ready"
    refusal shows in the dialog and has focus.
-9. Open **Workspace file too large**. AGENTS.md shows the 16 KiB error and has
-   focus. Save again: the same error, no bubble. Reload AGENTS.md clears it.
-10. With a screen reader, focus each field with an error: it reads the label,
+9. Open **Workspace file too large**. AGENTS.md shows the 16 KiB error, naming
+   AGENTS.md, and has focus. Save again: the same error, no bubble. Reload
+   AGENTS.md clears it.
+10. Open **Pages / Create Agent / Create Secret fields the API would refuse**.
+    Name shows "Remove tabs, line breaks and other control characters from the
+    name." and has focus; Value shows "Use valid UTF-8 without NUL characters."
+    Value is a masked multiline box: type two lines, then Show value, and
+    both lines are there.
+11. Open **Agent name the API would refuse**. Agent name shows the same Name
+    rule and has focus. Open **Initial workspace file the API would refuse**:
+    Advanced settings is open and AGENTS.md shows its 16 KiB error, naming the
+    file, with focus.
+12. With a screen reader, focus each field with an error: it reads the label,
     then the error and the help.
+
+## Stored Preset refusal
+
+Open **Pages / Create Agent / Preset with a non-text primary** at 1440 and 390 px.
+The refusal explains that the primary model must be text and offers another
+Preset or a template fix. The chooser stays open with **Marker** set to
+`Retained chooser draft`. Follow the story steps to check navigation preserves
+Marker, **Research assistant** opens a normal Agent form, and explicit selection
+of **default-codex** gives the same refusal as the shortcut.
+
+This preview uses the production form with a simulated GET for one older stored
+Preset; the current Controller refuses to save that numeric primary. Keep
+**Preset with an invalid field** as the separate execution-mode check.
+
+## Native admin at creation
+
+Open **Pages / Create Agent / Native admin UI opt-in**. The checkbox starts off.
+Use Space to select it, clear it, then select it again. Create the Agent and
+inspect the simulated provisioning request for `nativeAdmin: true`.
+**Native admin UI selected** shows the checked state; **Native admin UI unavailable**
+shows the disabled control and installation setup guidance. Also inspect the
+existing capability-loading, permission-denied, missing-credential, and create
+failure stories. Capture the checkbox and its explanation at desktop and phone
+widths. These fixtures prove UI behavior, not deployment or native authentication.

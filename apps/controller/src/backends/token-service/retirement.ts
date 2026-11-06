@@ -23,11 +23,23 @@ export async function retireToken<A extends TokenAdmission>(
     return candidate ?? "idle";
   }
   let revoked = false;
+  let revocationFailure: { error: unknown } | undefined;
   try {
     revoked = await revoke(candidate);
-  } finally {
-    candidate.bytes.fill(0);
+  } catch (error) {
+    revocationFailure = { error };
+  }
+  candidate.bytes.fill(0);
+  try {
     await store.finishRetirement(candidate.id, revoked);
+  } catch (error) {
+    if (!revocationFailure) {
+      throw error;
+    }
+    revocationFailure.error = new Error("Token revocation and retirement settlement both failed.");
+  }
+  if (revocationFailure) {
+    throw revocationFailure.error;
   }
   return revoked ? ("retired" as const) : ("unknown" as const);
 }

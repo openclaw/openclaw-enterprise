@@ -12,7 +12,7 @@ import { loadInstallationConfiguration } from "../../apps/controller/src/composi
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
@@ -25,6 +25,7 @@ import {
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { reservePort } from "../helpers/available-port.mjs";
+import { consoleStorage } from "../helpers/console-storage.ts";
 
 const email = "github-recovery@example.test";
 const password = "github-local-recovery-password";
@@ -806,12 +807,7 @@ test(
     assert.equal((await confirmedResult.json()).data.sessionKey, browserSession.sessionKey);
     assert.equal((await pinnedRead).headers()["x-occ-session-key"], browserSession.sessionKey);
     assert.deepEqual(
-      // The tab keeps only its settled Installation-access probe answer.
-      await page.evaluate(() => {
-        const stored = { ...sessionStorage };
-        delete stored["occ.console.installationAccess"];
-        return stored;
-      }),
+      (await consoleStorage(page)).session,
       {},
       "the one-use attemptId leaves tab storage after the exchange",
     );

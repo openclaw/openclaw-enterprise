@@ -12,7 +12,7 @@ import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
 } from "./bootstrap-installation.mjs";
-import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
 import { databaseUrl } from "./postgres-database.mjs";
@@ -47,13 +47,20 @@ export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
  * and Secret are the test Drivers.
  *
  * @param t the test context; pools and the app close after it.
+ * @param {object} options
  * @param options.label names the Drivers (`<label>-pg-iam`, …) and, when this run bootstraps
  *   the database, its Installation.
  * @param options.authSecret the session signing secret (at least 32 characters).
- * @param options.createAuditSink receives the PostgreSQL audit sink and returns the sink the
+ * @param [options.createAuditSink] receives the PostgreSQL audit sink and returns the sink the
  *   app writes to (default: that sink).
- * @param options.appOptions extra Fastify app options, such as `agentRuntimeLogs`. They are
+ * @param [options.appOptions] extra Fastify app options, such as `agentRuntimeLogs`. They are
  *   spread last, so they may also replace a default above.
+ * @param [options.controllerOptions]
+ * @param [options.stateOptions]
+ * @param [options.sandboxDriver]
+ * @param [options.secretDriver]
+ * @param [options.transportDatabaseUrl]
+ * @param [options.poolOptions]
  * @returns `{ pool, state, controller, computeDriver, app, principal, inject, deployAgent }`.
  *   `inject(method, url, body)` sends an administrator request. `deployAgent(name)` creates a
  *   ready Namespace, an Agent Configuration and API-key Secret, and an Agent whose
@@ -71,6 +78,7 @@ export async function createPostgresAgentApp(
     stateOptions,
     sandboxDriver,
     transportDatabaseUrl = databaseUrl,
+    secretDriver = createTestSecretDriver({ id: `${label}-pg-secret` }),
     poolOptions = {},
   },
 ) {
@@ -90,7 +98,6 @@ export async function createPostgresAgentApp(
   const iamDriver = new NativeIAMDriver(state, { id: `${label}-pg-iam` });
   const computeDriver = createRuntimeLogComputeDriver({ id: `${label}-pg-compute` });
   const configurationDriver = createTestConfigurationDriver({ id: `${label}-pg-config` });
-  const secretDriver = createTestSecretDriver({ id: `${label}-pg-secret` });
   const controller = new OpenClawController(installation, {
     state,
     recordOperations: false,
@@ -189,5 +196,16 @@ export async function createPostgresAgentApp(
     return { namespace, secretRef, agent, revision };
   }
 
-  return { pool, state, controller, computeDriver, app, createApp, principal, inject, deployAgent };
+  return {
+    pool,
+    state,
+    controller,
+    computeDriver,
+    app,
+    createApp,
+    principal,
+    inject,
+    deployAgent,
+    adminAccount: { email: adminEmail, password: adminPassword },
+  };
 }

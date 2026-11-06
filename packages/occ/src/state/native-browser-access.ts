@@ -253,7 +253,7 @@ export class PostgresNativeBrowserAccess {
     readonly exchangeHash: string;
     readonly handleHash: string;
     readonly previousHandleHash?: string;
-  }): Promise<NativeBrowserAccess | undefined> {
+  }): Promise<(NativeBrowserAccess & { readonly reusedPreviousHandle: boolean }) | undefined> {
     return this.state.transact(async (unit) => {
       await this.lock(unit);
       const [row] = await this.query(
@@ -282,6 +282,30 @@ export class PostgresNativeBrowserAccess {
         return undefined;
       }
       if (input.previousHandleHash !== undefined) {
+        // An existing socket renews with its original cookie. Keep that handle
+        // only when this launch has exactly the same current authority and expiry.
+        const [existing] = await this.query(
+          unit,
+          `SELECT handle_hash FROM occ.native_browser_handles
+          WHERE handle_hash = $1 AND installation_id = $2 AND parent_session_id = $3
+          AND principal_id = $4 AND namespace_id = $5 AND agent_id = $6 AND revision_id = $7
+          AND origin = $8 AND expires_at = $9 AND expires_at > clock_timestamp()`,
+          [
+            input.previousHandleHash,
+            this.installationId,
+            parent.id,
+            value.principalId,
+            value.namespaceId,
+            value.agentId,
+            value.revisionId,
+            value.origin,
+            parent.expiresAt,
+          ],
+        );
+        if (existing) {
+          await this.audit(unit, value, "authentication.native.issue");
+          return { ...value, parent, reusedPreviousHandle: true };
+        }
         await this.query(
           unit,
           `DELETE FROM occ.native_browser_handles
@@ -317,7 +341,7 @@ export class PostgresNativeBrowserAccess {
         ],
       );
       await this.audit(unit, value, "authentication.native.issue");
-      return { ...value, parent };
+      return { ...value, parent, reusedPreviousHandle: false };
     });
   }
 
