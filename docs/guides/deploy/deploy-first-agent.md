@@ -18,6 +18,13 @@ While provisioning runs, open **Agents → fred** in a second tab. Under **Viewi
 
 In the operator shell, enter those IDs to prepare the network rules and wait for that deployment. Record the Agent and its model credential for the Git and Linear walkthroughs.
 
+The Kubernetes network helper assumes OpenShell runs in `oce-system`. For an
+existing OpenShell gateway in another namespace, set the operator shell variable
+`OPENSHELL_NAMESPACE` to that namespace before `wait_deployment`. The helper
+passes it as `--openshell-namespace` to `kubernetes/service-policies.py`, and
+`save_session` retains it. This changes the OpenShell network peers only; OCE
+remains in `oce-system`. The Installation must already reference that gateway.
+
 ```bash
 agent='<Agent ID from the Console URL>'
 revision='<deployment ID from the same URL>'
