@@ -1884,7 +1884,7 @@ assert.deepEqual(provenance.patches, {
     "openclaw-terminated-gateway-namespace.patch": "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b",
     "stock-codex-0.163.0-alpha.2-dependency-pin.patch": "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119",
   } : {
-    "openclaw-codex-box-owner.patch": "980d5ff7e0b79fa4890e4a32b42166fdd1c8c0159beebf9580675177baff7943",
+    "openclaw-codex-box-owner.patch": "fab67fe3aa048d3dd152e4e39c00c986888a6d1e64e39358dd36e1f575b36d88",
     "openclaw-control-ui-browser-reconnect.patch": "21fef3589702683a173dd2967d852954e1bfa56ea9d9e9a99bdaa28159ff5d2c",
     "openclaw-terminated-gateway-namespace.patch": "1ed77577d53d43619f7c8fb33dbcdcf6a728351821abfe1b0beee947bd6eb456",
     "openclaw-node-setup-renewal.patch": "b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538",

@@ -1,12 +1,12 @@
 diff --git a/extensions/codex/src/app-server/client.ts b/extensions/codex/src/app-server/client.ts
-index 18794d5d772081b4bdd236f30ec46daac1849e55..754e62983c5adf41f604b711f42208e29d5ba189 100644
+index 18794d5..a95e6ec 100644
 --- a/extensions/codex/src/app-server/client.ts
 +++ b/extensions/codex/src/app-server/client.ts
 @@ -55,6 +55,7 @@ import {
    type RpcMessage,
    type RpcRequest,
  } from "./protocol.js";
-+import { allowsProviderBoxRequest, type ProviderBoxOwner } from "./provider-box-owner.js";
++import { providerBoxRequestRefusal, type ProviderBoxOwner } from "./provider-box-owner.js";
  import { dispatchCodexRequestAttempt } from "./request-admission.js";
  import { createCodexRequestAttempt, remainingCodexRequestTime } from "./request-attempt.js";
  import type { CodexRequestWaiterFinished } from "./request-observation.js";
@@ -34,20 +34,23 @@ index 18794d5d772081b4bdd236f30ec46daac1849e55..754e62983c5adf41f604b711f42208e2
      }
      // The spawn callback runs synchronously before registration; initialization
      // stays blocked until registration finishes, without losing startup errors.
-@@ -342,6 +349,11 @@ export class CodexAppServerClient {
+@@ -342,6 +349,14 @@ export class CodexAppServerClient {
      optionsInput?: RequestOptions,
    ): Promise<T> {
      const options = optionsInput ?? {};
-+    if (this.providerBoxOwner && !allowsProviderBoxRequest(this.providerBoxOwner, method, params)) {
++    const boxRefusal = this.providerBoxOwner
++      ? providerBoxRequestRefusal(this.providerBoxOwner, method, params)
++      : undefined;
++    if (boxRefusal !== undefined) {
 +      return Promise.reject(
-+        new Error("The provider Box requires an explicit restricted Codex turn policy."),
++        new Error(`The provider Box refused a Codex request before dispatch (${boxRefusal}).`),
 +      );
 +    }
      if (this.closed) {
        return Promise.reject(this.closeError ?? new Error("codex app-server client is closed"));
      }
 diff --git a/extensions/codex/src/app-server/config-contracts.ts b/extensions/codex/src/app-server/config-contracts.ts
-index 320b5e8a6def833ee50ec06b126baf14679499e3..0092d47bb31592309cc457bf8f4782b0048fe23f 100644
+index 320b5e8..0092d47 100644
 --- a/extensions/codex/src/app-server/config-contracts.ts
 +++ b/extensions/codex/src/app-server/config-contracts.ts
 @@ -77,6 +77,7 @@ export type CodexAppServerStartOptions = {
@@ -59,7 +62,7 @@ index 320b5e8a6def833ee50ec06b126baf14679499e3..0092d47bb31592309cc457bf8f4782b0
    env?: Record<string, string>;
    clearEnv?: string[];
 diff --git a/extensions/codex/src/app-server/config-options.ts b/extensions/codex/src/app-server/config-options.ts
-index a8e7a8776c6f276e798489700d0b077a2335dd3b..6c62a0765af6707c7796e652019722391f497cd9 100644
+index a8e7a87..6c62a07 100644
 --- a/extensions/codex/src/app-server/config-options.ts
 +++ b/extensions/codex/src/app-server/config-options.ts
 @@ -58,6 +58,7 @@ import {
@@ -108,10 +111,10 @@ index a8e7a8776c6f276e798489700d0b077a2335dd3b..6c62a0765af6707c7796e65201972239
        .toSorted(([left], [right]) => left.localeCompare(right))
 diff --git a/extensions/codex/src/app-server/provider-box-owner.test.ts b/extensions/codex/src/app-server/provider-box-owner.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..c22f5d1d242527f351351726cb1e32d93845ec60
+index 0000000..8d5c0f3
 --- /dev/null
 +++ b/extensions/codex/src/app-server/provider-box-owner.test.ts
-@@ -0,0 +1,327 @@
+@@ -0,0 +1,349 @@
 +import { execFileSync } from "node:child_process";
 +import { once } from "node:events";
 +import {
@@ -133,11 +136,33 @@ index 0000000000000000000000000000000000000000..c22f5d1d242527f351351726cb1e32d9
 +import {
 +  allowsProviderBoxRequest,
 +  matchesProviderBoxOwner,
++  providerBoxRequestRefusal,
 +  readProviderBoxOwner,
 +} from "./provider-box-owner.js";
 +import { createWebSocketTransport } from "./transport-websocket.js";
 +
 +const workspaceRoot = "/home/node/workspace";
++it("describes a Box refusal with fixed codes without echoing caller data", () => {
++  const owner = { workspaceRoot };
++  const privateArgument = "/synthetic/caller-controlled";
++  expect(providerBoxRequestRefusal(owner, privateArgument, {})).toBe("rpc-not-allowed");
++  expect(providerBoxRequestRefusal(owner, "thread/inject_items", { input: privateArgument })).toBe(
++    "rpc-thread-inject-items",
++  );
++  expect(
++    providerBoxRequestRefusal(owner, "thread/start", {
++      cwd: privateArgument,
++      sandbox: "workspace-write",
++    }),
++  ).toBe("thread/start:cwd");
++  expect(
++    providerBoxRequestRefusal(owner, "turn/start", {
++      cwd: workspaceRoot,
++      sandboxPolicy: { type: "externalSandbox", networkAccess: "restricted" },
++    }),
++  ).toBeUndefined();
++});
++
 +const generationSha256 = "a".repeat(64);
 +const authToken = "fixture-native-transport-capability";
 +const header = "X-OpenClaw-Box-Owner";
@@ -441,10 +466,10 @@ index 0000000000000000000000000000000000000000..c22f5d1d242527f351351726cb1e32d9
 +});
 diff --git a/extensions/codex/src/app-server/provider-box-owner.ts b/extensions/codex/src/app-server/provider-box-owner.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..70b3ef289d647dc149771c11e5ae7b0de928fa6f
+index 0000000..732a641
 --- /dev/null
 +++ b/extensions/codex/src/app-server/provider-box-owner.ts
-@@ -0,0 +1,379 @@
+@@ -0,0 +1,424 @@
 +import { X509Certificate } from "node:crypto";
 +import {
 +  closeSync,
@@ -741,17 +766,54 @@ index 0000000000000000000000000000000000000000..70b3ef289d647dc149771c11e5ae7b0d
 +  "thread/fork",
 +]);
 +
-+/** Authorize the fixed chat RPC set before sending it over the selected owner's WSS. */
-+export function allowsProviderBoxRequest(
++// Keep rejected method names closed over known protocol literals. An arbitrary
++// caller-provided name must never appear in a Gateway error or model reply.
++const knownDeniedRpcEntries = [
++  ["account/login/start", "rpc-account-login"],
++  ["app/read", "rpc-app-read"],
++  ["command/exec", "rpc-direct-exec"],
++  ["config/batchWrite", "rpc-config-write"],
++  ["config/mcpServer/reload", "rpc-mcp-reload"],
++  ["environment/add", "rpc-environment-add"],
++  ["environment/remove", "rpc-environment-remove"],
++  ["experimentalFeature/list", "rpc-experimental-features"],
++  ["marketplace/add", "rpc-marketplace-add"],
++  ["marketplace/remove", "rpc-marketplace-remove"],
++  ["thread/backgroundTerminals/list", "rpc-background-terminals"],
++  ["thread/goal/get", "rpc-thread-goal"],
++  ["thread/inject_items", "rpc-thread-inject-items"],
++  ["thread/metadata/update", "rpc-thread-metadata"],
++  ["thread/shellCommand", "rpc-thread-shell"],
++] as const;
++
++type ProviderBoxKnownDeniedRpc = (typeof knownDeniedRpcEntries)[number][1];
++const KNOWN_DENIED_RPC_DIAGNOSTICS = new Map<string, ProviderBoxKnownDeniedRpc>(
++  knownDeniedRpcEntries,
++);
++
++type ProviderBoxRequestRefusal =
++  | "rpc-not-allowed"
++  | ProviderBoxKnownDeniedRpc
++  | `thread/${"start" | "resume" | "fork"}:${"params" | "cwd" | "permissions" | "environments" | "roots" | "path" | "sandbox-policy" | "sandbox" | "config"}`
++  | `turn/start:${"params" | "cwd" | "permissions" | "environments" | "roots" | "sandbox" | "sandbox-policy" | "external-policy" | "read-only-policy" | "workspace-write-policy"}`;
++
++function isProviderBoxThreadBinding(
++  method: string,
++): method is "thread/start" | "thread/resume" | "thread/fork" {
++  return THREAD_BINDING.has(method);
++}
++
++/** Check the fixed RPC set without reflecting method or argument data into failures. */
++export function providerBoxRequestRefusal(
 +  owner: Pick<ProviderBoxOwner, "workspaceRoot">,
 +  method: string,
 +  params: unknown,
-+): boolean {
-+  if (CHAT_CONTROL.has(method)) return true;
-+  if (method !== "turn/start" && !THREAD_BINDING.has(method)) return false;
-+  if (!params || typeof params !== "object" || Array.isArray(params)) {
-+    return false;
++): ProviderBoxRequestRefusal | undefined {
++  if (CHAT_CONTROL.has(method)) return;
++  if (method !== "turn/start" && !isProviderBoxThreadBinding(method)) {
++    return KNOWN_DENIED_RPC_DIAGNOSTICS.get(method) ?? "rpc-not-allowed";
 +  }
++  if (!params || typeof params !== "object" || Array.isArray(params)) return `${method}:params`;
 +  const {
 +    cwd,
 +    environments,
@@ -768,64 +830,72 @@ index 0000000000000000000000000000000000000000..70b3ef289d647dc149771c11e5ae7b0d
 +    posix.normalize(path) === path &&
 +    (path === owner.workspaceRoot ||
 +      path.startsWith(owner.workspaceRoot + "/"));
-+  if (
-+    !inside(cwd) ||
-+    permissions !== undefined ||
-+    (environments !== undefined &&
-+      (!Array.isArray(environments) || environments.length !== 0)) ||
-+    (runtimeWorkspaceRoots !== undefined &&
-+      (!Array.isArray(runtimeWorkspaceRoots) ||
-+        !runtimeWorkspaceRoots.every(inside)))
-+  ) {
-+    return false;
-+  }
-+  if (THREAD_BINDING.has(method)) {
-+    return (
-+      path === undefined &&
-+      sandboxPolicy === undefined &&
-+      (sandbox === "read-only" || sandbox === "workspace-write") &&
-+      (config === undefined ||
-+        (config !== null &&
-+          typeof config === "object" &&
-+          !Array.isArray(config) &&
-+          !Object.keys(config).some((key) =>
-+            /^(?:default_permissions|permissions|sandbox_mode|sandbox_workspace_write)(?:\.|$)/.test(
-+              key,
-+            ),
-+          )))
-+    );
++  if (!inside(cwd)) return `${method}:cwd`;
++  if (permissions !== undefined) return `${method}:permissions`;
++  if (environments !== undefined && (!Array.isArray(environments) || environments.length !== 0)) {
++    return `${method}:environments`;
 +  }
 +  if (
-+    sandbox !== undefined ||
-+    !sandboxPolicy ||
-+    typeof sandboxPolicy !== "object" ||
-+    Array.isArray(sandboxPolicy)
++    runtimeWorkspaceRoots !== undefined &&
++    (!Array.isArray(runtimeWorkspaceRoots) || !runtimeWorkspaceRoots.every(inside))
 +  ) {
-+    return false;
++    return `${method}:roots`;
 +  }
-+  const { type, networkAccess, writableRoots } = sandboxPolicy as Record<
-+    string,
-+    unknown
-+  >;
++  if (method !== "turn/start") {
++    if (path !== undefined) return `${method}:path`;
++    if (sandboxPolicy !== undefined) return `${method}:sandbox-policy`;
++    if (sandbox !== "read-only" && sandbox !== "workspace-write") return `${method}:sandbox`;
++    if (
++      config !== undefined &&
++      (config === null ||
++        typeof config !== "object" ||
++        Array.isArray(config) ||
++        Object.keys(config).some((key) =>
++          /^(?:default_permissions|permissions|sandbox_mode|sandbox_workspace_write)(?:\.|$)/.test(
++            key,
++          ),
++        ))
++    ) {
++      return `${method}:config`;
++    }
++    return;
++  }
++  if (sandbox !== undefined) return "turn/start:sandbox";
++  if (!sandboxPolicy || typeof sandboxPolicy !== "object" || Array.isArray(sandboxPolicy)) {
++    return "turn/start:sandbox-policy";
++  }
++  const { type, networkAccess, writableRoots } = sandboxPolicy as Record<string, unknown>;
 +  if (type === "externalSandbox") {
-+    return (
-+      cwd === owner.workspaceRoot &&
++    return cwd === owner.workspaceRoot &&
 +      networkAccess === "restricted" &&
 +      runtimeWorkspaceRoots === undefined &&
 +      Object.keys(sandboxPolicy).length === 2
-+    );
++      ? undefined
++      : "turn/start:external-policy";
 +  }
-+  if (type === "readOnly")
-+    return typeof networkAccess === "boolean" && writableRoots === undefined;
-+  return (
-+    type === "workspaceWrite" &&
++  if (type === "readOnly") {
++    return typeof networkAccess === "boolean" && writableRoots === undefined
++      ? undefined
++      : "turn/start:read-only-policy";
++  }
++  return type === "workspaceWrite" &&
 +    typeof networkAccess === "boolean" &&
 +    Array.isArray(writableRoots) &&
 +    writableRoots.every(inside)
-+  );
++    ? undefined
++    : "turn/start:workspace-write-policy";
++}
++
++/** Authorize the fixed chat RPC set before sending it over the selected owner's WSS. */
++export function allowsProviderBoxRequest(
++  owner: Pick<ProviderBoxOwner, "workspaceRoot">,
++  method: string,
++  params: unknown,
++): boolean {
++  return providerBoxRequestRefusal(owner, method, params) === undefined;
 +}
 diff --git a/extensions/codex/src/app-server/transport-websocket.ts b/extensions/codex/src/app-server/transport-websocket.ts
-index 48945c0fc7d8dc607fcefc24735e0c877bbabc3a..62de0fc8a015b78efc8a13fea8fc8e4ac90fd8f9 100644
+index 48945c0..62de0fc 100644
 --- a/extensions/codex/src/app-server/transport-websocket.ts
 +++ b/extensions/codex/src/app-server/transport-websocket.ts
 @@ -3,8 +3,18 @@ import net from "node:net";
@@ -1003,7 +1073,7 @@ index 48945c0fc7d8dc607fcefc24735e0c877bbabc3a..62de0fc8a015b78efc8a13fea8fc8e4a
      }
      socket.close();
 diff --git a/extensions/codex/src/app-server/turn-params.test.ts b/extensions/codex/src/app-server/turn-params.test.ts
-index eac14a60b157538d8a3d1e934b0c88640904ed7a..d7105d27633d57d2f96fdab529cab3094fd8102b 100644
+index eac14a6..d7105d2 100644
 --- a/extensions/codex/src/app-server/turn-params.test.ts
 +++ b/extensions/codex/src/app-server/turn-params.test.ts
 @@ -55,6 +55,49 @@ it("keeps required-root native environments disabled on warm native turns", asyn
@@ -1057,7 +1127,7 @@ index eac14a60b157538d8a3d1e934b0c88640904ed7a..d7105d27633d57d2f96fdab529cab309
    const params = paramsForTurn();
    let currentPresence = "active_node=unknown";
 diff --git a/extensions/codex/src/app-server/turn-params.ts b/extensions/codex/src/app-server/turn-params.ts
-index 309c0a63b1b623879f190ef4cde9147c9f469489..516be0b2c860fde70fa82b68b043e2e2792ee977 100644
+index 309c0a6..516be0b 100644
 --- a/extensions/codex/src/app-server/turn-params.ts
 +++ b/extensions/codex/src/app-server/turn-params.ts
 @@ -114,11 +114,21 @@ export async function buildTurnStartParams(

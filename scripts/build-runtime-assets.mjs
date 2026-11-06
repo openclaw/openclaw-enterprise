@@ -31,7 +31,7 @@ const appliedPatches = [
   },
   {
     file: "openclaw-codex-box-owner.patch",
-    sha256: "980d5ff7e0b79fa4890e4a32b42166fdd1c8c0159beebf9580675177baff7943",
+    sha256: "fab67fe3aa048d3dd152e4e39c00c986888a6d1e64e39358dd36e1f575b36d88",
   },
   {
     file: "openclaw-required-worker-authority-regression.patch",
