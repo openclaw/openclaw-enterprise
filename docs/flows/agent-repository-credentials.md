@@ -132,14 +132,13 @@ Startup rejects `drivers.repo` in every mode before worker or attempt creation.
 OpenShell parsing and chart constraints belong to
 `apps/controller/src/drivers/egress-proxy/openshell-configuration.ts`.
 
-Bundled deploy calls `resolveBindings` in `OpenClawController.admitRepositoryCredentials`;
-a deselected policy fails. Programmatic controllers call `RepositoryPolicyDriver.resolve`.
-OCC checks Compute topology and freezes Driver identity, grants and an absolute
-deadline that renewal and recovery cannot extend. `validateRepositoryBrokerNetworkProxy`
-refuses Codex proxy settings that block the broker.
+`OpenClawController.admitRepositoryCredentials` requires the bound policy's `resolveBindings`; unbound controllers call `RepositoryPolicyDriver.resolve`.
+OCC checks Compute topology and freezes Driver identity, grants and a deadline
+unchanged by renewal or recovery. `validateRepositoryBrokerNetworkProxy` rejects broker-blocking Codex settings.
 
-Deploy resolves through the current Repo Driver again after reading standing
-approval. Denial or a changed binding or scope blocks revision creation.
+After approval lookup, bound deploys recheck their original owner; a replacement selection
+returns 503 without calling it. Unbound deploys recheck their selected Driver.
+Denial or changed binding or scope prevents revision creation.
 
 Protected `repository.preparedGitHub` uses the installed Sandbox/Credential Proxy
 Driver. Finite sessions need no native sender, control socket, broker CA or

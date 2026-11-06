@@ -12701,7 +12701,7 @@ export class OpenClawController {
             namespace.id,
             [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
             "saved",
-            this.selectedStandingRepositoryAdmission(),
+            this.installationRepositoryAdmission,
           )!;
           const scope = eligibleRepositoryApprovalScope(resolved.driver, {
             namespaceId: namespace.id,
