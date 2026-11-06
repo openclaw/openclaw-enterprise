@@ -107,6 +107,7 @@ Reload the protected Installation configuration and roll out the control-plane
 processes. Deploy replacement Agent revisions to apply Gateway configuration;
 restarting OCC alone does not update running Gateways. A host-list-only change
 rolls out the bundled proxy and may reconnect existing tunnels.
+A directory-only override change needs an API rollout, not Agent replacement.
 
 Verify a permitted HTTPS request, internal Harness connectivity, and no direct
 fallback while the proxy is unavailable. With a host allowlist, also verify an

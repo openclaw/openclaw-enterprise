@@ -71,10 +71,14 @@ without also granting the default proxy or changing Gateway configuration.
 - Both new profile and Helm routing checks failed before the correction and
   passed afterward. The profile check covers both shipped profiles and all
   three Gateway proxy modes: none, external, and bundled.
-- The four-file profile, chart, and Slack directory run passed 249 of 250 checks
-  without skips. The image-upgrade helper stopped at its unchanged-chart guard
-  because this change was not committed; rerun that case after committing.
+- All 250 selected profile, chart, and Slack directory checks passed without
+  skips across the main run and a committed-chart rerun. The main run passed
+  249 checks; the image-upgrade helper stopped at its unchanged-chart guard
+  while the edits were uncommitted. That case passed after implementation
+  commit `c0b974502`, without bypassing the guard.
 - TypeScript, lint, workspace isolation, and CI registration audit passed.
+- Formatting, docs/link/length checks, and all three changed flow validators
+  passed. Documentation checked 335 pages and 5,380 links.
 - This is configuration and rendered-policy proof, not live-cluster enforcement
   or model-turn qualification. Required deployment checks below remain pending.
 

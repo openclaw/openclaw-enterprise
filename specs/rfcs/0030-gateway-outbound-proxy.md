@@ -127,8 +127,9 @@ routing does not authorize individual provider requests or mediate credentials.
 
 ### Applying changes
 
-Operators render and apply protected configuration, then roll out OCC. Endpoint
-changes require replacement Agent revisions. A host-list-only change rolls the
+Operators render and apply protected configuration, then roll out OCC. Gateway
+endpoint changes require replacement Agent revisions. A directory-only override
+change requires an API rollout, not Agent replacement. A host-list-only change rolls the
 bundled proxy and may interrupt existing tunnels. These are configuration
 changes, not exceptions in the image-only upgrade command.
 
