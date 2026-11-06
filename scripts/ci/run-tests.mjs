@@ -1797,6 +1797,19 @@ async function aggregateGroup(
               }),
             );
           }
+          if (
+            need?.lanes !== undefined &&
+            (!Array.isArray(need.lanes) ||
+              need.lanes.length === 0 ||
+              new Set(need.lanes).size !== need.lanes.length ||
+              !need.lanes.every((lane) => typeof lane === "string" && lane.length > 0))
+          ) {
+            issues.push(
+              issue("invalid-need-lanes", `needs JSON has invalid lanes for ${needName}`, {
+                need: needName,
+              }),
+            );
+          }
         }
       }
     } catch (error) {
@@ -1808,9 +1821,18 @@ async function aggregateGroup(
 
   for (const laneName of laneNames ?? []) {
     if (needs) {
-      const need = needs[laneName];
-      if (!need) {
+      const owners = Object.entries(needs).filter(
+        ([name, need]) =>
+          name === laneName || (Array.isArray(need?.lanes) && need.lanes.includes(laneName)),
+      );
+      if (owners.length === 0) {
         issues.push(issue("missing-need", `needs JSON is missing ${laneName}`, { lane: laneName }));
+      } else if (owners.length > 1) {
+        issues.push(
+          issue("ambiguous-need", `needs JSON has multiple jobs for ${laneName}`, {
+            lane: laneName,
+          }),
+        );
       }
     }
 
@@ -1828,25 +1850,11 @@ async function aggregateGroup(
     try {
       const summary = await readJson(resultPath);
       const lane = manifest.lanes.get(laneName);
-      lanes.push({
-        lane: summary.lane,
-        status: summary.status,
-        exitCode: summary.exitCode,
-        sourceSha: summary.sourceSha,
-      });
       if (summary.lane !== laneName) {
         issues.push(
           issue("lane-output-mismatch", `result file for ${laneName} reports ${summary.lane}`, {
             lane: laneName,
             reportedLane: summary.lane,
-          }),
-        );
-      }
-      if (summary.status !== "passed") {
-        issues.push(
-          issue("lane-failed", `lane ${laneName} did not pass`, {
-            lane: laneName,
-            status: summary.status,
           }),
         );
       }
@@ -1856,6 +1864,23 @@ async function aggregateGroup(
             lane: laneName,
             expectedSourceSha: currentSha,
             observedSourceSha: summary.sourceSha,
+          }),
+        );
+      }
+      if (summary.lane !== laneName || summary.sourceSha !== currentSha) {
+        continue;
+      }
+      lanes.push({
+        lane: summary.lane,
+        status: summary.status,
+        exitCode: summary.exitCode,
+        sourceSha: summary.sourceSha,
+      });
+      if (summary.status !== "passed") {
+        issues.push(
+          issue("lane-failed", `lane ${laneName} did not pass`, {
+            lane: laneName,
+            status: summary.status,
           }),
         );
       }
