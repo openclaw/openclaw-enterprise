@@ -15336,6 +15336,11 @@ export class OpenClawController {
     if (record === undefined) {
       throw new WorkClaimLostError();
     }
+    // Hold the IAM configuration lock so a configuration change that revokes the requester's
+    // Group binding commits before this check or after the Owner bindings provisioning writes.
+    // Take it before the Namespace lock: applying the configuration holds it exclusively and
+    // then locks each Namespace it writes a configured binding into.
+    await state.installations.holdIAMConfiguration("shared");
     const namespace = await this.lockNamespace(state, record.namespaceId);
     if (namespace.status !== "ready") {
       throw new NamespaceNotReadyError();
@@ -15350,9 +15355,6 @@ export class OpenClawController {
         throw new ResourceStateConflictError("The Agent lifecycle changed during provisioning.");
       }
     }
-    // Hold the IAM configuration lock so a configuration change that revokes the requester's
-    // Group binding commits before this check or after the Owner bindings provisioning writes.
-    await state.installations.holdIAMConfiguration("shared");
     await this.authorizeProvisioningRecord(state, record.actorId, record);
     return state.provisioning.checkpoint(claim, {
       completedPhase: record.completedPhase,

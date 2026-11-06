@@ -146,14 +146,26 @@ Each account that `POST /api/auth/accounts` creates joins every
 does not change membership.
 
 There is no API to add or remove a member. An account created before a Group was
-listed does not join it. To end a person's access, remove the binding from the
-configuration or disable the account.
+listed does not join it.
 
-A configuration change or a disabled account stops new creates at once.
-Everything the person created stays: their Owner bindings, Namespaces, Agents,
-and deploy-time grants remain until an administrator deletes them or moves the
-Owner binding. Without Namespace read on `default`, the person cannot reach
-their Agents there through the API, but those Agents keep running.
+Removing a Group binding and disabling an account have different results:
+
+- **Remove the Group binding from the configuration.** Editing the file does not
+  change IAM policy. The change takes effect when OCC applies the updated
+  configuration at API and worker startup. After that, OCC refuses only the
+  operations that no remaining grant permits. The person keeps their Owner
+  bindings. With a known resource ID, they can still read, update, and deploy
+  each resource they own, without Namespace read. A Namespace-wide Owner binding
+  still lets them create resources in that Namespace. Without Namespace read on
+  `default`, they cannot list resources there.
+- **Disable the account.** OCC refuses the account's sessions at the next
+  request, so all of the person's API access stops. Their Owner bindings stay in
+  IAM policy and apply again if the account is enabled.
+
+In both cases, everything the person created stays: their Owner bindings,
+Namespaces, Agents, and deploy-time grants remain, and their Agents keep running.
+To remove that access, an administrator deletes the resources or the Owner
+bindings.
 
 ## The default Namespace
 
@@ -193,7 +205,7 @@ the administrator binding, but they stay if that binding is removed.
 
 Each create or deploy that writes an Owner binding or a deploy-time grant holds
 the caller's session and the IAM configuration lock until COMMIT, and authorizes
-only after that. A sign-out, account disable, configuration change, or delete of
+only after that. A sign-out, account disable, configuration apply, or delete of
 an AccessBinding that allowed the request commits either before it, so the
 request is refused and writes nothing, or after its COMMIT.
 
