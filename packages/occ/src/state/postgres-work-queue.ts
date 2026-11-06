@@ -1173,6 +1173,27 @@ export class PostgresWorkQueue {
     return found.rows[0] === undefined ? undefined : asWork(found.rows[0]);
   }
 
+  async hasRepositoryExecutionRedeployRequired(owner: RepositoryRevisionOwner): Promise<boolean> {
+    // Terminal maintenance commits its cleanup obligation in the same transaction.
+    // Most deployment reads have no withdrawal; use its indexed key before history.
+    if ((await this.repositoryExpiryState(owner)) === undefined) {
+      return false;
+    }
+    const { namespaceId, agentId, revisionId } = owner;
+    const found = await this.client.query(
+      `SELECT 1 FROM occ.controller_work
+       WHERE namespace_id = $1 AND agent_id = $2 AND revision_id = $3
+         AND work_kind = 'lifecycle' AND namespace_target IS NULL AND agent_target IS NULL
+         AND state = 'succeeded' AND reason_code = 'REPOSITORY_EXECUTION_REDEPLOY_REQUIRED'
+         AND (idempotency_key = 'agent_revision:' || revision_id || ':reconcile'
+           OR idempotency_key ~
+             ('^agent_revision:' || revision_id || ':maintenance:(0|[1-9][0-9]*)$'))
+       LIMIT 1`,
+      [namespaceId, agentId, revisionId],
+    );
+    return found.rows.length === 1;
+  }
+
   /**
    * Only these exact, durable obligations change maintenance of the still-active revision.
    * A terminal retirement always wins, even after completion. The application cannot delete or

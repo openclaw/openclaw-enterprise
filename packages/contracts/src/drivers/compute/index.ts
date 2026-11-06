@@ -397,6 +397,8 @@ export interface ComputeDriver extends Driver {
    */
   withdrawHarnessExposure?(revision: Readonly<AgentRevision>, signal: AbortSignal): Promise<void>;
   /** Verify the existing execution without creating, replacing or repairing it. */
+  /** Throws OCC's RepositoryExecutionRequiresRedeployError only when durable evidence
+   * proves repository access cannot resume on this execution. Missing evidence remains undefined. */
   verifyRepositoryExecution?(
     revision: Readonly<AgentRevision>,
     signal: AbortSignal,

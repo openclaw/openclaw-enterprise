@@ -3795,7 +3795,7 @@ async function deployAdditionalCredentialAgent(topology, modelSourceId, toolSour
  * - a withdrawal is executed only on its own requester's authority, even on a shared claim;
  * - withdrawing a source from one Agent leaves another Agent's attachment of it in place;
  * - an Agent that loses a source grant after admission never has the revision provisioned;
- * - admission refuses a redeploy without the grant.
+ * - a caller who can operate the source restores the missing grant by redeploying.
  * The model source keeps working throughout.
  */
 async function assertNonModelCredentialSource(topology) {
@@ -4100,15 +4100,61 @@ async function assertNonModelCredentialSource(topology) {
   const kept = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
   assert.equal(kept.data.activeRevisionId, revision.id);
 
-  // Without the grant, admission refuses a further redeploy and admits no revision.
+  // This caller can operate toolB, so a new deploy restores the Agent's exact source grant.
   const revisionsBefore = await revisionCount();
-  const refused = await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/deploy`);
-  assert.equal(refused.status, 403, JSON.stringify(refused.error ?? refused.data));
-  assert.equal(
-    await revisionCount(),
-    revisionsBefore,
-    "a refused deployment must not admit a revision",
+  const restored = await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/deploy`);
+  assert.equal(restored.status, 202, JSON.stringify(restored.error ?? restored.data));
+  assert.equal(await revisionCount(), revisionsBefore + 1);
+  const bindingId = `binding_${agentId}_${toolB.id}_operate`;
+  const grant = await observerPool.query(
+    `SELECT binding.namespace_id, binding.identity_subject_id, binding.role_id,
+            binding.resource_kind, binding.resource_id, role.permissions
+       FROM occ.iam_access_bindings binding JOIN occ.iam_roles role ON role.id = binding.role_id
+      WHERE binding.id = $1`,
+    [bindingId],
   );
+  assert.deepEqual(grant.rows, [
+    {
+      namespace_id: namespaceId,
+      identity_subject_id: topology.agent.servicePrincipalId,
+      role_id: `role_${namespaceId}_agent_credential_source_operate`,
+      resource_kind: "credential_source",
+      resource_id: toolB.id,
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    },
+  ]);
+  const audit = await observerPool.query(
+    `SELECT actor_id, resource_kind, resource_id, outcome, details->>'agentId' AS agent_id
+       FROM occ.audit_events
+      WHERE namespace_id = $1 AND action = 'openclaw.iam.access_bindings.create'
+        AND details->>'bindingId' = $2 AND details->>'reason' = 'agent_deploy'`,
+    [namespaceId, bindingId],
+  );
+  assert.deepEqual(audit.rows, [
+    {
+      actor_id: actorId,
+      resource_kind: "credential_source",
+      resource_id: toolB.id,
+      outcome: "success",
+      agent_id: agentId,
+    },
+  ]);
+
+  // Finish replacement before the next phase scans the active Harness and its workspace.
+  await waitFor(`restored OpenShell revision ${restored.data.id} activation`, async () => {
+    const observed = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
+    assert.equal(observed.status, 200, JSON.stringify(observed.error));
+    if (observed.data.activeRevisionId === restored.data.id) {
+      return observed.data;
+    }
+    const deployment = await request(
+      "GET",
+      `/namespaces/${namespaceId}/agents/${agentId}/deployments/${restored.data.id}`,
+    );
+    assert.equal(deployment.status, 200, JSON.stringify(deployment.error));
+    assert.notEqual(deployment.data.status, "failed", JSON.stringify(deployment.data.error));
+    return undefined;
+  });
 }
 
 // Bounds the Harness file stream; the workspace holds session files, not bulk data.

@@ -588,7 +588,7 @@ export async function observeOpenShellGitInstallation(
           sandbox,
           observed,
           signal,
-          previewReceipt,
+          { kind: "installation", completedPreviewReceipt: previewReceipt },
         );
         if (!hash) {
           return;

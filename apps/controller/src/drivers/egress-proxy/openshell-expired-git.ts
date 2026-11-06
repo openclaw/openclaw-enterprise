@@ -176,7 +176,7 @@ function evidence(
   const kind = options?.receiptId && !options.observe ? "DETACH" : "OBSERVE";
   const expired =
     old &&
-    state === "PROVIDER_READINESS_STATE_FAILED" &&
+    state === "PROVIDER_READINESS_STATE_WITHHELD" &&
     reason === "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED";
   const at = Date.parse(status.observedTime ?? "");
   const evaluated = Date.parse(status.evaluatedTime ?? "");
@@ -228,6 +228,7 @@ function evidence(
       isDeepStrictEqual(generation(o), generation(desired)) &&
       Number.isFinite(at) &&
       at <= evaluated &&
+      (!expired || (evaluated - at < 30_000 && Math.abs(Date.now() - at) < 30_000)) &&
       Math.abs(Date.now() - evaluated) < 30_000,
   );
   return desired;
@@ -256,15 +257,20 @@ async function modelProvider(client: Client, git: Git, model: string, signal: Ab
   return p.id;
 }
 
-/** Called while Git is installed and after the Sandbox Driver verified its complete admitted spec. */
+/** Called while Git is installed and after the Sandbox Driver verified its complete admitted spec.
+ * Predecessor evidence preserves launch identity, never credential readiness or authority. */
 export async function witnessOpenShellGitLaunch(
   client: Client,
   owner: OpenShellGitContinuity,
   box: OpenShellSandboxResponse,
   git: Git,
   signal: AbortSignal,
-  completedPreviewReceipt?: string,
+  observation:
+    | { kind: "predecessor" }
+    | { kind: "installation"; completedPreviewReceipt?: string | undefined },
 ): Promise<string | undefined> {
+  const completedPreviewReceipt =
+    observation.kind === "installation" ? observation.completedPreviewReceipt : undefined;
   const id = await modelProvider(client, git, owner.model, signal);
   const status = await client.getSandboxProviderStatus(
     git.workspace,
@@ -279,16 +285,12 @@ export async function witnessOpenShellGitLaunch(
   ) {
     return;
   }
-  const model = evidence(
-    status,
-    git,
-    git.attachmentEpoch,
-    owner.model,
-    id,
-    completedPreviewReceipt === undefined
-      ? undefined
-      : { receiptId: completedPreviewReceipt, observe: true },
-  );
+  const model = evidence(status, git, git.attachmentEpoch, owner.model, id, {
+    // OpenShell reports expiry for the aggregate environment even when this query
+    // names the model provider. Only the recorded predecessor may use that evidence.
+    old: observation.kind === "predecessor",
+    ...(completedPreviewReceipt && { receiptId: completedPreviewReceipt, observe: true }),
+  });
   if (!model || !isDeepStrictEqual(generation(model), generation(git))) {
     return;
   }

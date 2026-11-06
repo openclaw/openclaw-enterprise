@@ -93,10 +93,13 @@ export interface OpenShellGitRouteStore {
     disposition?: "close-preview",
   ): Promise<OpenShellGitRouteRecord | undefined>;
   /** Read a known standing installation under current authority; never take its fence or open it. */
-  standing(
-    revision: Readonly<AgentRevision>,
-  ): Promise<
-    | { route: OpenShellGitRouteRecord; retainedLaunchHash: string; executionFingerprint: string }
+  standing(revision: Readonly<AgentRevision>): Promise<
+    | {
+        route: OpenShellGitRouteRecord;
+        retainedLaunchHash: string;
+        executionFingerprint: string;
+        workerInstance: string;
+      }
     | undefined
   >;
   /** Reserve a provider write and return its new fence; undefined refuses the write. */
@@ -352,7 +355,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
       // previously witnessed installation and the exact live approval and execution. This read
       // takes no route ownership and cannot turn a pending write or finite admission into renewal.
       const { rows } = await c.query(
-        `SELECT ${columns}, r.retained_policy_hash AS retained_launch_hash, e.fingerprint AS execution_fingerprint FROM ${table} r
+        `SELECT ${columns}, r.worker_instance, r.retained_policy_hash AS retained_launch_hash, e.fingerprint AS execution_fingerprint FROM ${table} r
          JOIN occ.repository_standing_executions e USING (namespace_id, agent_id, revision_id)
          JOIN occ.agent_revisions v ON v.id = r.live_revision_id AND v.agent_id = r.agent_id AND v.namespace_id = r.namespace_id
          WHERE (r.revision_id, r.namespace_id, r.agent_id) = ($1, $2, $3)
@@ -379,12 +382,18 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
         ],
       );
       const row = rows[0] as
-        (Row & { retained_launch_hash: string; execution_fingerprint: string }) | undefined;
+        | (Row & {
+            retained_launch_hash: string;
+            execution_fingerprint: string;
+            worker_instance: string;
+          })
+        | undefined;
       return (
         row && {
           route: record(row),
           retainedLaunchHash: row.retained_launch_hash,
           executionFingerprint: row.execution_fingerprint,
+          workerInstance: row.worker_instance,
         }
       );
     });
