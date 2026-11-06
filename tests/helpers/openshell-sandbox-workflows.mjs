@@ -3342,11 +3342,12 @@ async function registerRefreshSources(request, namespaceId, tokenEcho, keycloak,
         },
       }),
     );
+    const probeTimer = new AbortController();
     const probed =
       gatewayPod.length === 0
         ? "no gateway Pod"
         : await Promise.race([
-            delay(90_000).then(() => "probe timed out"),
+            delay(90_000, undefined, { signal: probeTimer.signal }).then(() => "probe timed out"),
             kubectl(
               "debug",
               "--namespace",
@@ -3366,7 +3367,7 @@ async function registerRefreshSources(request, namespaceId, tokenEcho, keycloak,
               "-e",
               probe,
             ).catch((error) => `probe unavailable: ${String(error.stderr ?? "").slice(-600)}`),
-          ]);
+          ]).finally(() => probeTimer.abort());
     process.stderr.write(
       `OpenShell gateway refresh diagnostics:\n${relevant.join("\n")}\nmounts: ${String(mounts).slice(0, 2000)}\nissuer probe from the gateway Pod: ${String(probed).slice(0, 1000)}\n`,
     );
