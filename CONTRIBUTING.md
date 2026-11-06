@@ -191,7 +191,21 @@ trailer where needed. Credit material review, documentation, and other non-code
 help in the PR description. Credit follows the work; running the merge does not
 make someone its author. Recognition does not grant repository permissions.
 
-Before a release, or when correcting an omission, refresh the README wall from
+The [contributor workflow](.github/workflows/contributors.yml) refreshes the README
+wall once when a PR merges into the default branch, including fork PRs. It does
+not run on each push or on unmerged closures. You can also run it manually from
+the Actions page. It checks out only the default branch and opens or updates one
+PR on `automation/contributors` when the generated README differs. This branch
+is reserved for generated updates; do not add manual commits to it.
+
+To enable PR creation, a repository administrator must enable **Allow GitHub
+Actions to create and approve pull requests** under **Settings > Actions >
+General**. The workflow does not approve or merge PRs. PRs created with
+`GITHUB_TOKEN` do not start ordinary PR checks automatically; close and reopen
+the generated PR as a maintainer to start those checks before review and merge.
+No personal token or GitHub App secret is required.
+
+Before a release, or when correcting an omission, you can refresh the wall from
 the repository root with Node.js 24.22.1 or newer (26.x requires 26.12.1 or newer) and an authenticated GitHub CLI:
 
 ```sh
@@ -205,11 +219,12 @@ The command needs only read access to repository metadata, contributors, pull
 requests, and public user profiles. Existing `gh` authentication is sufficient;
 no administrator access or GitHub App is needed. It prints the observed default
 branch SHA and writes only the README contributor block. Review the diff and
-submit it through the normal PR process. Refreshes are manual.
+submit it through the normal PR process.
 
 The wall combines GitHub contributors and authors of PRs merged into the default
-branch, deduplicates by account ID, and sorts by current login. Documentation
-contributors and default avatars are included. GitHub bot accounts are omitted.
+branch, deduplicates by account ID and explicit account aliases, and sorts by
+current login. Documentation contributors and default avatars are included.
+GitHub bot accounts are omitted.
 The contributor API can lag, and co-authors or people helping outside merged PRs
 may need explicit inclusion. Merged PRs whose author is unavailable are skipped;
 previously published credit still requires an explicit correction before removal.
@@ -222,6 +237,11 @@ an HTTPS `url` pointing to public evidence and a nonempty `reason`, plus one of:
 - `displayName` to change an included person's avatar alt text. Combine it with
   `include: true` when that person is absent from automatic discovery.
 - `exclude: true` for a service account or requested opt-out.
+- `aliasOf: "ACCOUNT_ID"` to show a person's canonical account once when they
+  contribute from multiple accounts. Supply public identity evidence; do not
+  infer identity from matching pictures alone. The target must resolve to a human
+  account, and cannot itself be an alias or excluded. Do not combine `aliasOf`
+  with `include`, `exclude`, or `displayName` on the same entry.
 
 Find the ID with `gh api users/LOGIN --jq .id`. Do not copy upstream's contributor
 list or store private email addresses. Never set both `include` and `exclude`.
