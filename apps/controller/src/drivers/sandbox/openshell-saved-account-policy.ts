@@ -236,7 +236,25 @@ export function openShellSavedAccountPolicy(
             ...profile,
             id,
             binaries: [managedGoogleInstall.binaryPath],
-            endpoints: [{ host, port, path, protocol: "rest", access }],
+            // Stock rejects two providers with the same header and selector even on
+            // disjoint binaries. Exact REST rules narrow this secondary selector to
+            // the MCP path and methods already admitted by the CLI's access preset.
+            endpoints: [
+              {
+                host,
+                port,
+                protocol: "rest",
+                rules: [
+                  { allow: { method: "GET", path } },
+                  ...(access !== "NETWORK_ACCESS_PRESET_READ_ONLY"
+                    ? [{ allow: { method: "POST", path } }]
+                    : []),
+                  ...(access === "NETWORK_ACCESS_PRESET_FULL"
+                    ? [{ allow: { method: "DELETE", path } }]
+                    : []),
+                ],
+              },
+            ],
           },
         });
       }

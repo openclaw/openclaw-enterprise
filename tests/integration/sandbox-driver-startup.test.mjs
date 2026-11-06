@@ -1744,9 +1744,8 @@ test("OpenShell provisions zero-cache token grants and authorizes each saved OAu
     {
       host: slotHost,
       port: 443,
-      path: managedSlackInstall.endpoint.path,
       protocol: "rest",
-      access: "NETWORK_ACCESS_PRESET_READ_ONLY",
+      rules: [{ allow: { method: "GET", path: managedSlackInstall.endpoint.path } }],
     },
   ]);
   // A retry must also remove an owned profile if creating its provider stopped halfway.
