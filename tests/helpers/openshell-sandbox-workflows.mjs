@@ -8478,6 +8478,10 @@ export function registerProviderLifecycleTest(workflow) {
           process.stderr.write(
             "OpenShell integration: credential route verified; testing Pod-absent replacement and cleanup.\n",
           );
+        }
+        if (workflow === "credentials" || workflow === "upstream") {
+          // Retire the Harness used by the positive turns before changing DNS. A fresh
+          // lookup alone cannot redirect its already established model connection.
           await measureOpenShellStage(testContext, "replacement", () =>
             assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology),
           );
