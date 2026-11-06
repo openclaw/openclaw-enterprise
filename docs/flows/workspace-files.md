@@ -127,8 +127,8 @@ Matching markers skip replay; incomplete writes retry the same checks.
 Missing or mismatched markers after recorded completion block startup, preserving
 later edits. Errors omit document contents.
 
-The Box example shares a pinned workspace between its Harness and a separate
-file node. Compute observes that node through normal Gateway enrollment.
+Box shares a pinned workspace between its Harness and file node. Compute
+observes the node through Gateway enrollment.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:safeRuntimeFailureObservation`
 reports refusals (exit 2) as `WORKSPACE_SETUP_REFUSED`; OpenShell raises

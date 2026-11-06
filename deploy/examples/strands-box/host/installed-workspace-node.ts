@@ -238,6 +238,7 @@ export function workspaceNodeArguments(
 ): string[] {
   return [
     "--unshare-all",
+    "--unshare-user",
     "--disable-userns",
     "--die-with-parent",
     "--new-session",
