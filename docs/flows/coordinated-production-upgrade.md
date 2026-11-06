@@ -121,9 +121,10 @@ typed configuration refusals with up to 32 field diagnostics through the API/wor
 log filter. Logs are read only after validated identity, buffered, and retained
 only if the Job and child identities still match after retrieval.
 
-With the bundled Kubernetes Compute Driver selected, `preflight` uses Pod
-credentials (`inCluster` service account), matching startup and refusing
-[split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
+Bundled Kubernetes Compute Driver `preflight` uses Pod credentials (`inCluster`
+service account), matching startup. It refuses
+[split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
+on single-cluster upgrades.
 The image's `isName` validates the stored name from `occ installation get`
 (`INSTALLATION_NAME_INVALID`); images without this rule skip it.
 
@@ -131,7 +132,7 @@ For runtime upgrades, the API Pod calls `resolveConfiguredHarnessId` before
 `refuseUndeployableConfigurationValues` on recorded drafts; deploy checks live
 Harness state. Refusals leave old writers serving. Correct drafts, stop affected
 Agents, or replace images lacking a working resolver, then use fresh evidence.
-Images predating this check, or drafts plus Installation exceeding 1 MiB gzipped,
+Images predating this check, or gzipped drafts plus Installation exceeding 1 MiB,
 warn and defer validation to deploy.
 
 Experimental two-cluster Pods also run
