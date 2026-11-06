@@ -4968,6 +4968,7 @@ async function assertAuthenticatedNativePolicyScopes(topology, receipt) {
   };
   receipt.primaryCheck = "fixture.pause-worker";
   await topology.pauseWorker();
+  let primaryFailed = false;
   try {
     receipt.primaryCheck = "fixture.read-helm-values";
     const original = await executeFile(
@@ -5088,8 +5089,18 @@ async function assertAuthenticatedNativePolicyScopes(topology, receipt) {
       "OpenShell integration: authenticated sandbox:read, config:read and config:write policy boundaries passed.\n",
     );
     receipt.primaryCheck = null;
+  } catch (error) {
+    primaryFailed = true;
+    throw error;
   } finally {
-    await cleanup();
+    try {
+      await cleanup();
+    } catch (error) {
+      // The receipt retains the cleanup checkpoint when both operations fail.
+      if (!primaryFailed) {
+        throw error;
+      }
+    }
   }
 }
 
