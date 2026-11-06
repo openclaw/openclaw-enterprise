@@ -1649,6 +1649,49 @@ test("OpenShell provisions zero-cache token grants and authorizes each saved OAu
     },
   });
   await driver.ensureNamespace(context);
+  // Omitting the opt-in keeps a saved-account-only installation strict. An operator's
+  // static provider would otherwise be attached to every Sandbox without a grant.
+  const strictConfig = structuredClone(withStaticProvider);
+  delete strictConfig.drivers.credential_proxy.configuration.allowNonProxyCredentials;
+  const strict = await loadInstallationFile(t, strictConfig, backendOptions);
+  const savedOnly = {
+    ...revision,
+    compute: { id: strict.computeDriver.id, implementation: strict.computeDriver.implementation },
+    harnessAuth: { method: "runtime" },
+    credentialSources: [],
+    plugins: {
+      ...revision.plugins,
+      savedAccounts: { ...revision.plugins.savedAccounts, driver: strict.protectedDriver.ref },
+    },
+  };
+  strict.computeDriver.validateExecutionAdmission(savedOnly, strict.protectedDriver);
+  const secret = {
+    kind: "secret",
+    namespaceId: revision.namespaceId,
+    id: "sec_00000000-0000-4000-8000-000000000094",
+  };
+  for (const binding of [
+    { harnessAuth: { method: "api_key", source: secret, secretDriverId: "secret-kubernetes" } },
+    { secretBindings: { REPORTS_TOOL_TOKEN: { source: secret } } },
+  ]) {
+    assert.throws(
+      () =>
+        strict.computeDriver.validateExecutionAdmission(
+          { ...savedOnly, ...binding },
+          strict.protectedDriver,
+        ),
+      /exact paired Compute release/,
+    );
+  }
+  await assert.rejects(
+    strict.sandboxDriver.provisionHarness({
+      ...context,
+      revision: savedOnly,
+      requirements: { ...requirements, credentialAttachments: [] },
+    }),
+    /Remove static Sandbox providers to deploy saved plugin accounts/,
+  );
+  assert.equal(created, undefined);
   const provision = () => driver.provisionHarness({ ...context, revision, requirements });
   await provision();
   const { network_policies: routes, network_middlewares: middleware } = created.spec.policy;
