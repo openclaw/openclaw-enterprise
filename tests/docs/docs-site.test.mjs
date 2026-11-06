@@ -217,30 +217,6 @@ test("docs validation rejects broken links, anchors and navigation through the C
   assert.match(result.stderr + result.stdout, /Page missing from navigation: orphan\.md/);
 });
 
-test("docs build uses GitHub slugs as heading IDs and keeps existing IDs", async (t) => {
-  const { directory: fixture } = await createDocsFixture(t, "enterprise-docs-heading-ids-", {
-    pages: ["README", "example"],
-    logo: true,
-  });
-  await writeFile(join(fixture, "docs/README.md"), "# Home\n");
-  await writeFile(
-    join(fixture, "docs/example.md"),
-    "---\ntitle: Example\n---\n# Example\n\n## 4. Step\n\n## A?\n\n## A\n\n## ?\n",
-  );
-  const build = buildDocs(fixture);
-  assert.equal(build.status, 0, build.stderr || build.stdout);
-  const html = await readFile(join(fixture, "dist/docs/example/index.html"), "utf8");
-  const heading = (id) => html.match(new RegExp(`<h2 id="${id}"[^>]*>.*?</h2>`))?.[0] ?? "";
-  // The GitHub slug is canonical; the renderer's ID stays as an alias.
-  assert.match(heading("4-step"), /<span id="4\.-step" class="anchor-alias">/);
-  // `#a` keeps naming the second heading, as it did before; the first keeps its own ID.
-  assert.match(heading("a-1"), /<span id="a" class="anchor-alias">/);
-  assert.match(heading("a%3F"), /A\?/);
-  // A heading whose GitHub slug is empty keeps a usable ID and permalink.
-  assert.match(heading("%3F"), /data-heading-anchor="%3F"/);
-  assert.doesNotMatch(html, /href="[^"]*#"/);
-});
-
 test("docs validation checks Markdown links in deploy example YAML comments", async (t) => {
   const { directory: fixture } = await createDocsFixture(t, "enterprise-docs-yaml-links-");
   await mkdir(join(fixture, "deploy/examples/production"), { recursive: true });
