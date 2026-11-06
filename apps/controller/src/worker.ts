@@ -23,6 +23,7 @@ import {
 import { isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import { OAuthAccountTokens } from "./backends/token-service/oauth-connection.ts";
 import { isSandboxFacet, normalizeSecretBindings } from "@openclaw-enterprise/contracts";
 import type {
   Agent,
@@ -1452,8 +1453,12 @@ export class ControllerWorker {
             this.repositoryAdmission,
           );
     if (this.secretDriver) {
-      this.preparedTokens?.configureAccounts(this.state, this.secretDriver, (ref, approval) =>
-        provisioning.resolveConnectionClient(ref, approval),
+      this.preparedTokens?.registerIssuer(
+        new OAuthAccountTokens(
+          this.state,
+          this.secretDriver,
+          provisioning.resolveConnectionClient.bind(provisioning),
+        ),
       );
     }
     const protectedDriver = this.protectedDriver;
@@ -1677,7 +1682,7 @@ export class ControllerWorker {
     controller: OpenClawController,
     installationId: string,
   ): Promise<void> {
-    const canRenew = this.preparedTokens?.supportsAccounts === true;
+    const canRenew = this.preparedTokens?.issuer("oauth_refresh_token") !== undefined;
     const pollMs = Math.min(this.pollIntervalMs, 250);
     const cleanupIntervalMs = 5_000;
     const batchSize = 4;
@@ -1734,7 +1739,7 @@ export class ControllerWorker {
   /** Retire one account per maintenance pass, then wait before rescanning the same IDs. */
   private async sweepConnectionRevocation(): Promise<void> {
     if (
-      !this.preparedTokens?.supportsAccounts ||
+      !this.preparedTokens?.issuer("oauth_refresh_token") ||
       !this.provisioningController ||
       this.connectionRevocationScanAfter > Date.now()
     ) {

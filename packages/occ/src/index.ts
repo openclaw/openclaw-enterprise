@@ -5103,15 +5103,15 @@ export class OpenClawController {
     });
   }
 
-  private connectionTokenService() {
-    const service = this.preparedTokens;
-    if (!service?.supportsAccounts) {
+  private connectionTokenIssuer() {
+    const issuer = this.preparedTokens?.issuer("oauth_refresh_token");
+    if (!issuer) {
       throw new NotImplementedError(
         "connection_templates",
         "This Installation has no Token Service for browser connections.",
       );
     }
-    return service;
+    return issuer;
   }
 
   private async acceptConnectionTokens(
@@ -5119,12 +5119,12 @@ export class OpenClawController {
     signal: AbortSignal,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    const service = this.connectionTokenService();
+    const issuer = this.connectionTokenIssuer();
     if (holdSession) {
       await this.mutate(holdSession);
     }
-    const reference = await service.register(registration, signal);
-    const { schedule } = await service.accountStatus(reference, signal);
+    const reference = await this.tokenService().register(registration, signal);
+    const { schedule } = await issuer.status(reference, signal);
     if (!schedule) {
       throw new ResourceStateConflictError(
         "No eligible access token is prepared for this account.",
@@ -5192,14 +5192,14 @@ export class OpenClawController {
   }
 
   maintainConnectionToken(namespaceId: string, sourceId: string) {
-    return this.connectionTokenService().maintainAccount(
+    return this.connectionTokenIssuer().maintain(
       { kind: "oauth_refresh_token", namespaceId, sourceId },
       AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
     );
   }
 
   private assertConnectionTokenCustody(): void {
-    this.connectionTokenService();
+    this.connectionTokenIssuer();
     const secrets = this.secretDriver();
     if (!secrets.withValue || !secrets.compareAndSwap) {
       throw new NotImplementedError(
@@ -8549,7 +8549,7 @@ export class OpenClawController {
       return { namespace: exact, source: found };
     });
     if (source.ownerCapability === "token_service") {
-      const refresh = await this.connectionTokenService().accountStatus(
+      const refresh = await this.connectionTokenIssuer().status(
         { kind: "oauth_refresh_token", namespaceId, sourceId: source.id },
         AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
       );
@@ -8732,7 +8732,7 @@ export class OpenClawController {
     gateway: CredentialGatewayDriver | undefined,
   ): Promise<void> {
     if (source.ownerCapability === "token_service") {
-      await this.connectionTokenService().retireAccount(
+      await this.connectionTokenIssuer().retire(
         { kind: "oauth_refresh_token", namespaceId: namespace.id, sourceId: source.id },
         AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
       );

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
 import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
@@ -141,8 +142,15 @@ test(
           provisionAuthAccount: (...args: Parameters<typeof provision>) => provision(...args),
         },
       });
-    preparedTokens.configureAccounts(state, secretDriver, (ref, approval) =>
-      controller.resolveConnectionClient(ref, approval),
+    const resolveClient = controller.resolveConnectionClient.bind(controller);
+    preparedTokens.registerIssuer(new OAuthAccountTokens(state, secretDriver, resolveClient));
+    // A second issuer must not take custody of grants assigned to the installed one.
+    assert.throws(
+      () =>
+        preparedTokens.registerIssuer(
+          new OAuthAccountTokens(state, createTestSecretDriver(), resolveClient),
+        ),
+      /already owns this registration/,
     );
     const auth = new PostgresHumanAuthentication(
       state,
@@ -730,7 +738,9 @@ test(
     // Let this short-lived token actually expire before any worker starts. A normal resolve
     // must obtain its replacement with the current client secret and the original user's grant.
     await setIssuedLifetime(300);
-    const expiring = await preparedTokens.accountStatus(
+    const oauth = preparedTokens.issuer("oauth_refresh_token");
+    assert.ok(oauth);
+    const expiring = await oauth.status(
       { kind: "oauth_refresh_token", namespaceId, sourceId: id },
       t.signal,
     );

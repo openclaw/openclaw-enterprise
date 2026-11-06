@@ -114,7 +114,6 @@ export interface PreparedTokenRef {
 
 /** Registration binds an immutable grant to its issuer secret. Its reference survives renewal. */
 export interface TokenService {
-  readonly supportsAccounts: boolean;
   register(
     registration: OAuthRefreshTokenRegistration,
     signal: AbortSignal,
@@ -132,12 +131,9 @@ export interface TokenService {
     reference: PreparedTokenRef | OAuthAccountRef,
     options: TokenResolveOptions,
   ): Promise<ResolvedToken | undefined>;
-  accountStatus(reference: OAuthAccountRef, signal: AbortSignal): Promise<OAuthConnectionStatus>;
-  maintainAccount(
-    reference: OAuthAccountRef,
-    signal: AbortSignal,
-  ): Promise<OAuthConnectionStatus | undefined>;
-  retireAccount(reference: OAuthAccountRef, signal: AbortSignal): Promise<void>;
+  issuer(
+    kind: OAuthAccountRef["kind"],
+  ): Pick<OAuthRefreshTokenIssuer, "status" | "maintain" | "retire"> | undefined;
   issuer(provider: EgressRef): Omit<PreparedTokenIssuer, "configure" | "resolve"> | undefined;
 }
 
@@ -156,6 +152,22 @@ export interface OAuthRefreshTokenRegistration extends OAuthAccountRef {
     readonly oauthClientId: string;
   };
   readonly grant: OAuthConnectionGrant;
+}
+
+/** The installed owner of saved OAuth grants. OCC and the worker use its lifecycle operations. */
+export interface OAuthRefreshTokenIssuer {
+  readonly tokenKind: OAuthAccountRef["kind"];
+  register(
+    registration: OAuthRefreshTokenRegistration,
+    signal: AbortSignal,
+  ): Promise<OAuthAccountRef>;
+  resolve(
+    ref: OAuthAccountRef,
+    options: TokenResolveOptions,
+  ): Promise<OAuthConnectionAccessToken | undefined>;
+  status(ref: OAuthAccountRef, signal: AbortSignal): Promise<OAuthConnectionStatus>;
+  maintain(ref: OAuthAccountRef, signal: AbortSignal): Promise<OAuthConnectionStatus | undefined>;
+  retire(ref: OAuthAccountRef, signal: AbortSignal): Promise<void>;
 }
 
 /** The client and provider destination pinned when the account was connected. */

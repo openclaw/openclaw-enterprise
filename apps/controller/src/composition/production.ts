@@ -1,3 +1,4 @@
+import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
@@ -337,8 +338,12 @@ export async function composeProduction(
     }
     controller.registerDriver(configurationDriver);
     controller.selectDriver("configuration", configurationDriver.id);
-    config.drivers.tokenService?.configureAccounts(state, secretDriver, (ref, approval) =>
-      controller.resolveConnectionClient(ref, approval),
+    config.drivers.tokenService?.registerIssuer(
+      new OAuthAccountTokens(
+        state,
+        secretDriver,
+        controller.resolveConnectionClient.bind(controller),
+      ),
     );
     config.serviceAccountDriverFactory?.(controller, state);
     controller.installPluginDrivers(pluginDrivers ?? []);

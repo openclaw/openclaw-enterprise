@@ -1,4 +1,4 @@
-import type { PlatformStateStore, PostgresPlatformStateOptions } from "@openclaw-enterprise/occ";
+import type { PostgresPlatformStateOptions } from "@openclaw-enterprise/occ";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
@@ -7,16 +7,14 @@ import type {
   OAuthRefreshTokenRegistration,
   PreparedTokenRegistration,
   PreparedTokenRef,
-  OAuthConnectionClient,
+  OAuthRefreshTokenIssuer,
   OAuthConnectionAccessToken,
   PreparedTokenSelection,
   ResolvedToken,
-  SecretDriver,
   TokenResolveOptions,
   PreparedTokenIssuer,
   TokenService as TokenServiceContract,
 } from "@openclaw-enterprise/contracts";
-import { OAuthAccountTokens } from "./oauth-connection.ts";
 import type { TokenIssue } from "./preparation.ts";
 
 type PostgresProof = NonNullable<PostgresPlatformStateOptions["preparedTokenProof"]>;
@@ -74,44 +72,7 @@ export function runPreparation(owner: Preparation, outer: AbortSignal) {
  * input authority and custody. A request can prepare only its authorized registration.
  */
 export class TokenService implements TokenServiceContract {
-  private accounts?: OAuthAccountTokens;
-
-  configureAccounts(
-    state: PlatformStateStore,
-    secrets: SecretDriver,
-    resolveClient: (
-      ref: OAuthAccountRef,
-      approval?: OAuthRefreshTokenRegistration["approval"],
-    ) => Promise<OAuthConnectionClient>,
-  ) {
-    this.accounts = new OAuthAccountTokens(state, secrets, resolveClient);
-  }
-
-  get supportsAccounts() {
-    return this.accounts !== undefined;
-  }
-
-  private accountOwner() {
-    if (!this.accounts) {
-      throw new Error("The Installation has no saved account token owner.");
-    }
-    return this.accounts;
-  }
-
-  accountStatus(ref: OAuthAccountRef, signal: AbortSignal) {
-    return this.accountOwner().status(ref, signal);
-  }
-
-  maintainAccount(ref: OAuthAccountRef, signal: AbortSignal) {
-    return this.accountOwner().maintain(ref, signal);
-  }
-
-  retireAccount(ref: OAuthAccountRef, signal: AbortSignal) {
-    return this.accountOwner().retire(ref, signal);
-  }
-
-  private readonly issuers = new Map<string, PreparedTokenIssuer>();
-
+  private readonly issuers = new Map<string, PreparedTokenIssuer | OAuthRefreshTokenIssuer>();
   private readonly proofs = new Map<string, PostgresProof>();
 
   /** Called inside the platform transaction that authorizes the send. No credential bytes are read. */
@@ -124,23 +85,49 @@ export class TokenService implements TokenServiceContract {
     },
   });
 
-  registerIssuer(issuer: PreparedTokenIssuer, postgresProof?: PostgresProof): void {
-    if (issuer.tokenKind !== "github_app_installation" && issuer.tokenKind !== "prepared_source") {
-      throw new Error("A prepared token issuer must declare a supported token kind.");
+  registerIssuer(issuer: OAuthRefreshTokenIssuer): void;
+  registerIssuer(issuer: PreparedTokenIssuer, postgresProof?: PostgresProof): void;
+  registerIssuer(
+    issuer: PreparedTokenIssuer | OAuthRefreshTokenIssuer,
+    postgresProof?: PostgresProof,
+  ) {
+    let key: string;
+    switch (issuer.tokenKind) {
+      case "oauth_refresh_token":
+        key = issuer.tokenKind;
+        break;
+      case "github_app_installation":
+      case "prepared_source":
+        key = `provider/${issuer.provider.id}`;
+        break;
+      default:
+        throw new Error("A token issuer must declare a supported token kind.");
     }
-    const { id } = issuer.provider;
-    if (this.issuers.has(id)) {
-      throw new Error("A prepared provider must have exactly one lifecycle owner.");
+    if (this.issuers.has(key)) {
+      throw new Error("A token issuer already owns this registration.");
     }
-    this.issuers.set(id, issuer);
-    if (postgresProof) {
-      this.proofs.set(id, postgresProof);
+    this.issuers.set(key, issuer);
+    if (postgresProof && issuer.tokenKind !== "oauth_refresh_token") {
+      this.proofs.set(issuer.provider.id, postgresProof);
     }
   }
 
-  issuer(provider: EgressRef): PreparedTokenIssuer | undefined {
-    const issuer = this.issuers.get(provider.id);
-    return issuer && isDeepStrictEqual(issuer.provider, provider) ? issuer : undefined;
+  issuer(kind: OAuthAccountRef["kind"]): OAuthRefreshTokenIssuer | undefined;
+  issuer(provider: EgressRef): PreparedTokenIssuer | undefined;
+  issuer(target: EgressRef | OAuthAccountRef["kind"]) {
+    if (target === "oauth_refresh_token") {
+      const issuer = this.issuers.get(target);
+      return issuer?.tokenKind === target ? issuer : undefined;
+    }
+    const issuer = this.issuers.get(`provider/${target.id}`);
+    if (
+      issuer &&
+      issuer.tokenKind !== "oauth_refresh_token" &&
+      isDeepStrictEqual(issuer.provider, target)
+    ) {
+      return issuer;
+    }
+    return undefined;
   }
 
   register(
@@ -153,7 +140,7 @@ export class TokenService implements TokenServiceContract {
     signal: AbortSignal,
   ) {
     switch (registration.kind) {
-      case "oauth_refresh_token":
+      case "oauth_refresh_token": {
         if (
           !hasAccountCoordinates(registration) ||
           !registration.approval?.connectionTemplateId ||
@@ -165,7 +152,12 @@ export class TokenService implements TokenServiceContract {
             "OAuth token registration requires an account, approved template and grant.",
           );
         }
-        return this.accountOwner().register(registration, signal);
+        const issuer = this.issuer(registration.kind);
+        if (!issuer) {
+          throw new Error("The Installation has no saved account token owner.");
+        }
+        return issuer.register(registration, signal);
+      }
       case "github_app_installation":
       case "prepared_source": {
         const { kind, source, secret } = registration;
@@ -207,30 +199,39 @@ export class TokenService implements TokenServiceContract {
     ) {
       return undefined;
     }
-    let issuer: PreparedTokenIssuer | undefined;
+    let read: (
+      options: TokenResolveOptions,
+    ) => Promise<PreparedTokenSelection | OAuthConnectionAccessToken | undefined>;
+    let shutdownSignal: AbortSignal | undefined;
     switch (reference.kind) {
-      case "oauth_refresh_token":
+      case "oauth_refresh_token": {
         if (!hasAccountCoordinates(reference)) {
           return undefined;
         }
-        break;
-      case "github_app_installation":
-      case "prepared_source":
-        if (!reference.key?.provider) {
+        const issuer = this.issuer(reference.kind);
+        if (!issuer) {
           return undefined;
         }
-        issuer = this.issuer(reference.key.provider);
+        read = (bounded) => issuer.resolve(reference, bounded);
+        break;
+      }
+      case "github_app_installation":
+      case "prepared_source": {
+        const issuer = reference.key?.provider && this.issuer(reference.key.provider);
         if (!issuer || issuer.tokenKind !== reference.kind || issuer.shutdownSignal?.aborted) {
           return undefined;
         }
+        shutdownSignal = issuer.shutdownSignal;
+        read = (bounded) => issuer.resolve(reference.key, bounded);
         break;
+      }
       default:
         return undefined;
     }
     const timeout = resolutionDeadline(deadline);
     const signals = [caller, timeout.signal];
-    if (issuer?.shutdownSignal) {
-      signals.push(issuer.shutdownSignal);
+    if (shutdownSignal) {
+      signals.push(shutdownSignal);
     }
     const signal = AbortSignal.any(signals);
     let cancel!: () => void;
@@ -244,12 +245,7 @@ export class TokenService implements TokenServiceContract {
       }
       // Each caller has its own time budget. A provider can finish an already-dispatched
       // renewal after a caller leaves, but a delayed read must never release its bytes.
-      const bounded = { ...options, signal };
-      const selected =
-        reference.kind === "oauth_refresh_token"
-          ? this.accountOwner().resolve(reference, bounded)
-          : issuer?.resolve(reference.key, bounded);
-      const token = await Promise.race([stopped, selected]);
+      const token = await Promise.race([stopped, read({ ...options, signal })]);
       if (!token || signal.aborted) {
         return undefined;
       }

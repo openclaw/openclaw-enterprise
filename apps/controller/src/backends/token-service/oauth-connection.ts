@@ -5,6 +5,7 @@ import type {
   OAuthConnectionGrant,
   OAuthConnectionRegistration,
   OAuthRefreshTokenRegistration,
+  OAuthRefreshTokenIssuer,
   OAuthConnectionClient,
   OAuthAccountRef,
   TokenResolveOptions,
@@ -418,7 +419,9 @@ function eligibleToken(
 }
 
 /** Resolves a saved account through its OCC record. Only this owner opens the private grant. */
-export class OAuthAccountTokens {
+export class OAuthAccountTokens implements OAuthRefreshTokenIssuer {
+  readonly tokenKind = "oauth_refresh_token";
+
   private readonly grants: OAuthGrantStore;
   private readonly state: PlatformStateStore;
   private readonly client: (

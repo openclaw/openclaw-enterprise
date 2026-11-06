@@ -68,6 +68,7 @@ export type {
   OAuthConnectionAccessToken,
   OAuthConnectionGrant,
   OAuthRefreshTokenRegistration,
+  OAuthRefreshTokenIssuer,
   OAuthConnectionClient,
   OAuthConnectionRegistration,
   OAuthConnectionStatus,

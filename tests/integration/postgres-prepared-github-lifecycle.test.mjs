@@ -24,6 +24,7 @@ import {
   fixtureRepositoryId,
   fixtureRepository,
 } from "../fixtures/repository-credentials/github.mjs";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
 import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts";
@@ -1495,8 +1496,12 @@ async function preparedLifecycleFixture(t, githubOptions = {}, now = undefined) 
         poolOptions: { max: 1, connectionTimeoutMillis: 2000 },
       });
       // Production can register saved OAuth accounts and the GitHub issuer on the same Token Service.
-      tokens.configureAccounts(app.state, secretDriver, (ref, approval) =>
-        app.controller.resolveConnectionClient(ref, approval),
+      tokens.registerIssuer(
+        new OAuthAccountTokens(
+          app.state,
+          secretDriver,
+          app.controller.resolveConnectionClient.bind(app.controller),
+        ),
       );
       await lifecycle.connect(app.pool);
       t.after(() => lifecycle.close());
