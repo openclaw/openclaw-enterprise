@@ -165,15 +165,12 @@ Retain HTTPS, hostname verification and authenticated Gateway JWTs; do not enabl
 
 ## Grant access to a GitHub App installation
 
-Use the [GitHub App installation guide](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app)
-for membership and permissions, and the
-[registry reference](../repository-credentials.md#canonical-platform-registry)
-for policy. Prefer repository scope. To expose an
-installation scope, set a distinct `installationAccess.repositoryRef`, allow the
-Namespace with `accessMode: installation`, and select that reference with
-`profile: github-installation` in the Agent's `repositoryBindings`, as its only
-binding (Agent save and deploy refuse it next to another). No default or wildcard selects this scope; the sender must confirm
-`github_installation` support. The bundled OpenShell Credential Proxy requires
+Configure [App membership and permissions](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app)
+and [registry policy](../repository-credentials.md#canonical-platform-registry).
+Prefer repository scope. Installation access requires a distinct `installationAccess.repositoryRef`,
+Namespace `accessMode: installation`, and only that reference with `profile: github-installation`
+in `repositoryBindings`. No default or wildcard opts in. The sender must confirm `github_installation` support.
+The bundled OpenShell Credential Proxy requires
 `observedHookPreviewWorkspace`; otherwise deploy answers
 `409 RESOURCE_CONFLICT`. Missing or incompatible registration returns
 `503 DEPENDENCY_UNAVAILABLE`. Use 0.1.6 for incident key distrust; 0.1.5 remains affected.
@@ -186,16 +183,17 @@ startup probes stay within the selected repository endpoint without broadening
 grants, accessing credentials or releasing the Harness. `github-repository` and
 `github-installation` providers retain their discovery-path probe.
 
-Absence grants only observed assurance: 0.1.5 and 0.1.6 default dynamic registrations
-emit identical absence, without a distinct advertised support signal. Before
-qualification, intentional downgrade is indistinguishable. After qualification,
-registration changes break the recipient fingerprint and close the route.
-Repository grants never use this fallback.
+Default dynamic registrations in 0.1.5 and 0.1.6 emit identical absence,
+so prequalification downgrade is indistinguishable. This provides only
+observed assurance. After qualification, registration changes alter the recipient
+fingerprint and close the route. Repository grants never use this fallback.
 
-OCE does not add a ref allowlist to installation scope. GitHub's membership,
-permissions and branch rules set its limit. See
-[operator verification and withdrawal](../../guides/credential-proxy.md#verify-use-loss-and-withdrawal)
-for profile-specific allowed/denied requests and the required model-source choice.
+Dedicated native OpenClaw requires `kubernetes.userNamespaces: false`, at most one operator
+workspace ServiceAccount, and a Credential Gateway model source. Startup checks hook and recipient; node enrollment is required. Other native profiles remain unsupported.
+
+Codex and native OpenClaw share installation-wide repository and API authority, not
+session-repository-bound Gateway publication. Tokens remain outside the Pod;
+GitHub limits membership and permissions and OCE adds no ref allowlist. Disable unacceptable installation access. [Verify use and withdrawal](../../guides/credential-proxy.md#verify-use-loss-and-withdrawal).
 
 ## Use the admitted repository
 

@@ -471,7 +471,13 @@ export class OpenShellGitRuntime {
       (state.bindings.length !== 1 &&
         !state.bindings.every((b) => b.profile === "github-repository")) ||
       !binding ||
-      revision.harness.id !== "codex" ||
+      (revision.harness.id !== "codex" &&
+        !(
+          revision.harness.id === "openclaw" &&
+          revision.executionAdmission.version === 6 &&
+          binding.profile === githubInstallationProfile &&
+          revision.egressPlan?.repositoryGitAuthorization === observedRequestHook
+        )) ||
       revision.harness.mode !== "dedicated" ||
       (revision.executionAdmission?.version === 6
         ? !this.configuration.observedHookPreviewWorkspace ||
@@ -490,7 +496,7 @@ export class OpenShellGitRuntime {
         binding.profile !== "github-repository")
     ) {
       throw new Error(
-        "OpenShell prepared Git requires one explicitly admitted GitHub binding and its dedicated Codex execution.",
+        "OpenShell prepared Git requires one explicitly admitted GitHub binding and its supported dedicated execution.",
       );
     }
     const scope = this.resolveDelivery(revision);

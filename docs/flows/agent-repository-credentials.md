@@ -10,9 +10,8 @@ last_updated_session: authoring-run/97c319f2-8bb0-4db4-9cfb-50478db52fdb
 
 Dedicated Codex uses prepared sessions without a Sandbox Driver;
 [OpenShell sandboxes](../reference/repository-credentials/protected-openshell-git.md) receive placeholders.
-Workers deliver credentials and check signed requests against live grants.
-See [enrollment and mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
-[service forwarding and retirement](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
+See [enrollment](../guides/repository-credentials/openshell-enrollment.md),
+[service lifecycle](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
 
 ## Entry Points
 
@@ -112,6 +111,8 @@ Requests carry distinct opaque refs and optional profiles, never tokens or grant
 Nonempty selections without a configured Repo Driver return `409 RESOURCE_CONFLICT`.
 OCC saves normalized selections in request order. GitHub’s registry defaults legacy profiles to
 `git-write` without GitHub or control-socket calls.
+
+`apps/controller/src/drivers/compute/kubernetes/index.ts:validateRepositoryCredentials` rejects unprotected native repository access before work; deployment checks profile and preview.
 
 `apps/controller/src/drivers/repo/github/credentials/registry.ts:resolveGitHubRepositoryBinding`
 requires an exact Namespace/ref/profile. The fingerprint binds provider, App,

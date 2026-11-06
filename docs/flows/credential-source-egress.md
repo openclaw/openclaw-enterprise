@@ -124,11 +124,12 @@ During held Git enrollment, `openshell-git-runtime.ts:observeHeldPreview` logs
 [curl and response failures](../reference/repository-credentials/protected-openshell-git.md#worker-log).
 An unconfirmed one-shot probe blocks the route with `bootstrap_failed` before credential delivery or release.
 
-`openshell-git-installation.ts:observeOpenShellGitInstallation` completes a model
-OBSERVE per active environment for observed Git routes, including rotations.
-`ObservedHookPreview.completedModelReceipt` caches completion per environment revision.
-Stale or incomplete model receipts keep the route pending without changing the
-original launch witness or startup acknowledgment.
+For native v6, `NATIVE_WORKER_ENTRYPOINT`
+(`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`) waits for signed release.
+Its Agent-private launcher and shim use Codex's scoped helper and `NODE_EXTRA_CA_CERTS`;
+other principals must not execute them. The shim survives reconnects until the
+native worker supervisor exits. Git setup and other startup failures hold
+`repository-git-route` and `native-worker-startup`, respectively (`UNAVAILABLE`).
 
 ### 2. Capture identity, operation and first authority decision
 

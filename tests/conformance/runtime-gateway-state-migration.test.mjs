@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { writeSync } from "node:fs";
-import { lstat, mkdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -753,6 +754,11 @@ function listener(servers, handler, bindError) {
       }
       server.port = port;
     },
+    close(callback) {
+      server.port = undefined;
+      callback();
+    },
+    closeAllConnections() {},
   };
 }
 
@@ -1083,11 +1089,14 @@ async function runNativeWorker(
   doctor = () => assert.fail("Doctor must not run"),
   {
     env = COMPUTE_STATUS_ENV,
+    preview = false,
+    afterChallenge = async () => {},
     identity = (callback) => callback(null, JSON.stringify({ deviceId: "a".repeat(64) })),
     timer = setTimeout,
   } = {},
 ) {
   const spawned = [];
+  const exits = [];
   const identities = [];
   const errors = [];
   const servers = [];
@@ -1109,13 +1118,32 @@ async function runNativeWorker(
     },
   });
   const inference = { models: { providers: { openai: { baseUrl: "http://127.0.0.1:9" } } } };
+  const keys = preview ? generateKeyPairSync("ed25519") : undefined;
+  const enrollment = {
+    repositoryGitAuthorization: "request-hook-observed",
+    routeCount: 1,
+    inference: "credential_source",
+    plan: { id: randomUUID(), generation: 1 },
+    execution: {
+      installationId: "ins_fixture",
+      namespaceId: "ns_fixture",
+      agentId: "agt_fixture",
+      servicePrincipalId: "sp_fixture",
+      revisionId: "rev_fixture",
+      executionId: randomUUID(),
+    },
+  };
+  const previewCa = join(directory, "preview-ca.pem");
+  if (preview) {
+    await writeFile(previewCa, "synthetic-egress-ca");
+  }
   const context = {
     Buffer,
     Date,
-    JSON,
     Math,
     Number,
     Promise,
+    performance,
     URL,
     clearTimeout,
     setTimeout: timer,
@@ -1131,6 +1159,18 @@ async function runNativeWorker(
         OPENCLAW_NATIVE_WORKER_CAPACITY: "8",
         OPENCLAW_NATIVE_INFERENCE_CONFIG: JSON.stringify(inference),
         ...env,
+        ...(preview
+          ? {
+              OPENCLAW_NATIVE_EGRESS_ENROLLMENT: JSON.stringify(enrollment),
+              OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID: enrollment.execution.revisionId,
+              OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY: keys.publicKey
+                .export({ type: "spki", format: "der" })
+                .toString("base64url"),
+              NODE_EXTRA_CA_CERTS: previewCa,
+              GITHUB_TOKEN: "openshell:resolve:env:s" + "a".repeat(64) + "_GITHUB_TOKEN",
+              GIT_CONFIG_KEY_1: "credential.https://github.com.helper",
+            }
+          : {}),
         OPENCLAW_HARNESS_MODEL: "openai/fixture",
         OPENCLAW_HARNESS_PROVIDER: "openai",
         OPENCLAW_HARNESS_CREDENTIAL_ENV: "OPENAI_API_KEY",
@@ -1145,7 +1185,7 @@ async function runNativeWorker(
       execPath: "/usr/local/bin/node",
       on() {},
       off() {},
-      exit: (code) => assert.fail(`Native worker exited ${code}: ${errors.join("\n")}`),
+      exit: (code) => exits.push(code),
     },
     setInterval: () => {
       holds += 1;
@@ -1157,11 +1197,33 @@ async function runNativeWorker(
       if (specifier !== "node:child_process") {
         return nodeRequire(specifier);
       }
+      const execFile = (command, args, options, callback) => {
+        if (command === "/usr/bin/curl") {
+          // The authorizer response is external to this startup/label test.
+          // The real release helper consumes the denial before accepting the
+          // independently signed release; this is not live sender proof.
+          callback(
+            null,
+            JSON.stringify({
+              error: "middleware_denied",
+              middleware: "oce-prepared-git",
+              reason_code: "oce_hook_" + "b".repeat(36),
+            }) + "\n403",
+          );
+          return;
+        }
+        identities.push(args[2]);
+        identity(callback);
+      };
+      // Match execFile's promisified stdout/stderr shape for enrollment's curl call.
+      execFile[nodeRequire("node:util").promisify.custom] = (...args) =>
+        new Promise((resolve, reject) =>
+          execFile(...args, (error, stdout) =>
+            error ? reject(error) : resolve({ stdout, stderr: "" }),
+          ),
+        );
       return {
-        execFile(command, args, options, callback) {
-          identities.push(args[2]);
-          identity(callback);
-        },
+        execFile,
         spawnSync: (command, args) =>
           args.includes("--probe") ? { status: 0, stdout: probe } : { status: 0 },
         spawn(command, args, options) {
@@ -1182,11 +1244,66 @@ async function runNativeWorker(
     context,
   );
   const synchronous = spawned.map(({ name }) => name);
+  if (preview) {
+    const server = servers.find(({ port }) => port === Number(env.APP_SERVER_PORT));
+    const exchange = async (method, body) => {
+      const request = {
+        method,
+        url: "/openclaw/runtime/egress-enrollment",
+        headers: { authorization: "Bearer " + TRANSPORT_TOKEN, "content-type": "application/json" },
+        async *[Symbol.asyncIterator]() {
+          if (body !== undefined) {
+            yield Buffer.from(JSON.stringify(body));
+          }
+        },
+      };
+      let status;
+      let answer;
+      const response = new EventEmitter();
+      response.writeHead = (code) => {
+        status = code;
+      };
+      response.end = (text) => {
+        answer = JSON.parse(text);
+        queueMicrotask(() => response.emit("finish"));
+      };
+      await server.handler(request, response);
+      return { status, body: answer };
+    };
+    const challenge = (await exchange("GET")).body;
+    const probe = await exchange("POST", {
+      startupId: challenge.startupId,
+      probePath: "/oce-observe-request/" + "c".repeat(32) + ".git/info/refs",
+    });
+    assert.equal(probe.status, 200);
+    await afterChallenge();
+    const installation = {
+      sandboxId: "sandbox",
+      instanceId: "instance",
+      configurationId: "policy",
+      repositoryGitRecipient: {
+        authorization: "request-hook-observed",
+        observedHook: { startupId: challenge.startupId },
+      },
+    };
+    const expiresAt = Date.now() + 30000;
+    const released = await exchange("POST", {
+      challenge,
+      installation,
+      expiresAt,
+      signature: sign(
+        null,
+        Buffer.from(JSON.stringify([challenge, installation, expiresAt])),
+        keys.privateKey,
+      ).toString("base64url"),
+    });
+    assert.equal(released.status, 200, JSON.stringify(released));
+  }
   const connected = () => spawned.some(({ name }) => name === "connect");
-  for (let turn = 0; turn < 100 && holds === 0 && !connected(); turn += 1) {
+  for (let turn = 0; turn < 100 && holds === 0 && exits.length === 0 && !connected(); turn += 1) {
     await new Promise((resolve) => setImmediate(resolve));
   }
-  return { spawned, synchronous, identities, errors, holds, ready, servers };
+  return { spawned, synchronous, identities, errors, exits, holds, ready, servers };
 }
 
 test("Native worker connects current and fresh node state without Doctor", async (t) => {
@@ -1363,5 +1480,137 @@ test("Native worker holds unready without connecting when Doctor leaves older no
     assert.match(message, /then deploy the Agent again\.$/);
     assert.equal(readVersion(sharedPath(join(directory, "node-state"))), STATE_CURRENT - 1);
     await assertHeldFailureServed(outcome.servers, env, "state-migration");
+  }
+});
+
+// Run the complete generated worker through the real one-use release verifier.
+// External HTTP transport, authorizer and model/CLI processes are controlled;
+// filesystem failures, release validation and held-failure classification are real.
+test("Native preview holds Git setup failures separately from other post-release startup failures", async (t) => {
+  const cases = [
+    {
+      name: "Git shim directory",
+      check: "repository-git-route",
+      async prepare(directory) {
+        const temporary = join(directory, "tmp");
+        await rm(temporary, { recursive: true });
+        await writeFile(temporary, "a file replaced the temporary directory");
+      },
+    },
+    {
+      name: "native inference configuration",
+      check: "native-worker-startup",
+      env: { OPENCLAW_NATIVE_INFERENCE_CONFIG: "not-json" },
+    },
+    {
+      name: "worker configuration write",
+      check: "native-worker-startup",
+      async prepare(directory) {
+        await mkdir(join(directory, "node-state", "openclaw.json"));
+      },
+    },
+    {
+      name: "Gateway CA read",
+      check: "native-worker-startup",
+      env: { OPENCLAW_NODE_CA_PATH: "/absent/native-gateway-ca.pem" },
+    },
+    {
+      name: "connect target write after asynchronous migration boundary",
+      check: "native-worker-startup",
+      async prepare(directory) {
+        await mkdir(join(directory, "node-state", "connect-target"));
+      },
+    },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async (subtest) => {
+      const directory = await harnessDirectory(subtest);
+      const outcome = await runNativeWorker(directory, undefined, {
+        env: { ...PROVIDER_TRANSPORT_ENV, ...scenario.env },
+        preview: true,
+        afterChallenge: () => scenario.prepare?.(directory),
+      });
+      assert.equal(outcome.holds, 1);
+      assert.deepEqual(
+        outcome.spawned,
+        [],
+        "a held setup failure must never connect a native child",
+      );
+      await assertHeldFailureServed(outcome.servers, PROVIDER_TRANSPORT_ENV, scenario.check);
+    });
+  }
+});
+
+// Nonpreview workers have no one-use Git release: preserve their existing fatal
+// startup handling instead of inventing a held repository failure.
+test("Native worker without Git retains fatal startup errors without a repository label", async (t) => {
+  const directory = await harnessDirectory(t);
+  const outcome = await runNativeWorker(directory, undefined, {
+    env: { ...PROVIDER_TRANSPORT_ENV, OPENCLAW_NATIVE_INFERENCE_CONFIG: "not-json" },
+  });
+  assert.deepEqual(outcome.exits, [1]);
+  assert.equal(outcome.holds, 0);
+  assert.deepEqual(outcome.spawned, []);
+  assert.equal(outcome.servers.length, 0);
+});
+
+test("Native preview connects after release with a GitHub-scoped Git shim", async (t) => {
+  const directory = await harnessDirectory(t);
+  const outcome = await runNativeWorker(directory, undefined, {
+    env: PROVIDER_TRANSPORT_ENV,
+    preview: true,
+  });
+  assert.deepEqual(outcome.exits, []);
+  assert.equal(outcome.holds, 0);
+  assert.deepEqual(
+    outcome.spawned.map(({ name }) => name),
+    ["connect"],
+  );
+
+  // Execute the initializer's actual generated shell script with real Git. The
+  // fixture supplies external release/model responses; this proves local Git
+  // setup and credential scope, not live OpenShell authorization or model use.
+  const globalConfig = join(directory, "gitconfig");
+  await writeFile(
+    globalConfig,
+    "[http]\nsslVerify = false\nfollowRedirects = true\n[credential]\nuseHttpPath = false\n",
+  );
+  const shim = join(directory, "tmp", "oce-native-git", "git");
+  const git = (args, input) =>
+    spawnSync(shim, args, {
+      input,
+      encoding: "utf8",
+      timeout: 5000,
+      env: {
+        HOME: directory,
+        PATH: "/usr/bin",
+        GIT_CONFIG_SYSTEM: "/dev/null",
+        GIT_CONFIG_GLOBAL: globalConfig,
+      },
+    });
+  const credentials = git(
+    ["credential", "fill"],
+    "protocol=https\nhost=github.com\npath=fixture/repository.git\n\n",
+  );
+  assert.equal(credentials.status, 0, credentials.stderr);
+  assert.match(credentials.stdout, /^username=x-access-token$/m);
+  assert.match(
+    credentials.stdout,
+    new RegExp("^password=openshell:resolve:env:s" + "a".repeat(64) + "_GITHUB_TOKEN$", "m"),
+  );
+  const foreign = git(
+    ["credential", "fill"],
+    "protocol=https\nhost=not-github.example\npath=fixture/repository.git\n\n",
+  );
+  assert.notEqual(foreign.status, 0, "another host cannot receive the GitHub alias");
+  assert.equal(foreign.stdout, "");
+  for (const [key, expected] of [
+    ["http.sslVerify", "true"],
+    ["http.followRedirects", "false"],
+    ["credential.useHttpPath", "true"],
+  ]) {
+    const configured = git(["config", "--get", key]);
+    assert.equal(configured.status, 0, configured.stderr);
+    assert.equal(configured.stdout.trim(), expected, "the shim overrides inherited unsafe " + key);
   }
 });

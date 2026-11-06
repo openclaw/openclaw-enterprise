@@ -299,7 +299,12 @@
       "path": "tests/conformance/runtime-probe-cpu-counter.test.mjs"
     },
     {
-      "path": "tests/conformance/runtime-gateway-state-migration.test.mjs"
+      "path": "tests/conformance/runtime-gateway-state-migration.test.mjs",
+      "expectedTests": [
+        "Native preview holds Git setup failures separately from other post-release startup failures",
+        "Native worker without Git retains fatal startup errors without a repository label",
+        "Native preview connects after release with a GitHub-scoped Git shim"
+      ]
     },
     {
       "path": "tests/conformance/node-test-summary.test.mjs"
@@ -501,7 +506,11 @@
       "path": "tests/conformance/repository-sessions-memory.test.mjs"
     },
     {
-      "path": "tests/integration/repository-credentials-admission.test.mjs"
+      "path": "tests/integration/repository-credentials-admission.test.mjs",
+      "expectedTests": [
+        "Dedicated native OpenClaw applies the OpenShell profile gate before creating deployment work",
+        "Unprotected OpenShell refuses native OpenClaw repository bindings on save and deploy"
+      ]
     },
     {
       "path": "tests/integration/repository-native-cutover.test.ts",

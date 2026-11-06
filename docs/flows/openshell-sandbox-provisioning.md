@@ -292,11 +292,13 @@ permits replacement. Each Harness has one unnamed bearer-passthrough
 ends after confirmed deletion through `withdrawHarnessExposure`, adoption or
 recreation with `workspaceNodeEnrolled`.
 
-After HTTP `400` or `404`, `observeHeldRepositoryGitPreview` and `enrollHarness`
-require the recorded release acknowledgment and authenticated WebSocket. Other
-non-`200` responses stay pending or refuse enrollment without an upgrade.
+Codex's HTTP `400`/`404` fallback requires release acknowledgment and
+authenticated WebSocket; other failures never upgrade. Native has no app-server
+socket. Its acknowledgment requires policy, recipient and Sandbox-ID
+checks plus Compute node enrollment. Release precedes probing, migration and
+connection; enrollment never rereads withdrawn exposure.
 
-The Backend reuses clients and retries setup. Cancellation follows
+Cancellation follows
 setup/credential preparation; stalled initialization/file reads have no cancellation deadline.
 After dispatch it stops local gRPC, but remote mutations may require recovery.
 

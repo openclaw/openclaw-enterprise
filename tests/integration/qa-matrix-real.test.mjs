@@ -59,6 +59,20 @@ test(
     for (const exclusion of selection.exclusions) {
       context.diagnostic(`Excluded: ${exclusion}`);
     }
+    if (selection.sandboxNativeGitHub) {
+      const { verifyQaOpenShellGitHub } = await import("../helpers/qa-openshell-github.mjs");
+      await stage(
+        context,
+        "kubernetes/OpenClaw/OpenShell",
+        "native model turn and GitHub App push",
+        () =>
+          verifyQaOpenShellGitHub(
+            context,
+            artifacts,
+            process.env.OCC_TEST_QA_OPENSHELL_GITHUB_INPUTS,
+          ),
+      );
+    }
     if (selection.sandboxPolicy) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(

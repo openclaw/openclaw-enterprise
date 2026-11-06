@@ -268,3 +268,7 @@ complete disposal, then recreate only this run's installation.
 - [QA matrix test](../../../tests/integration/qa-matrix-real.test.mjs): Agent scenarios.
 - [Scenario selection](../../../tests/helpers/qa-selection.mjs): presets, selectors, and required inputs.
 - [Hosted credentials](../../../scripts/ci/qa-matrix-credentials.mjs): environment preparation.
+
+## Native GitHub installation preview
+
+The explicit `sandbox-native-github` selector exercises a native OpenClaw model turn and GitHub App clone, fetch and push through a prepared OpenShell installation. It is excluded from `all` and the hosted advisory fixture. Set `OCC_TEST_QA_OPENSHELL_GITHUB_INPUTS` to the disposable fixture inputs and `OCC_TEST_QA_REPOSITORY_AUTHORIZED=1` to authorize repository writes. See [OpenShell coverage](../openshell-coverage.md) for prerequisites and proof limits.
