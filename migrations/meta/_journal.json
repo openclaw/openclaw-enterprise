@@ -489,7 +489,14 @@
       "idx": 70,
       "version": "7",
       "when": 1787000000070,
-      "tag": "0070_namespace_plugin_releases",
+      "tag": "0070_saved_connections",
+      "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1787000000071,
+      "tag": "0071_namespace_plugin_releases",
       "breakpoints": true
     }
   ]

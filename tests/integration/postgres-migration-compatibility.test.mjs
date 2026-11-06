@@ -1928,7 +1928,7 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const db = await historyDatabase(context, await migrationHistoryFixture(), "publish", {
-      prefix: 69,
+      prefix: 70,
     });
     // Freeze the built-in Role before plugin publication. Reordering its grants was valid, as was editing its permissions.
     const previous = [
@@ -2052,7 +2052,8 @@ test(
       [66, "preAgentCredentialSourceLimit"],
       [67, "preAgentPluginDriver"],
       [68, "preConnectionTemplates"],
-      [69, "preNamespacePluginReleases"],
+      [69, "preSavedConnections"],
+      [70, "preNamespacePluginReleases"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });

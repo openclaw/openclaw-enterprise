@@ -607,8 +607,18 @@ func (r *runner) importDevelopmentController(ctx context.Context, state *develop
 			return "", err
 		}
 	} else {
+		checkout, err := r.output(ctx, "git", "rev-parse", "--verify", "HEAD")
+		if err != nil {
+			return "", fmt.Errorf("resolve the checkout revision for the controller build: %w", err)
+		}
+		revision := string(checkout)
+		if len(revision) != 40 || strings.Trim(revision, "0123456789abcdef") != "" {
+			return "", fmt.Errorf("the checkout must have a full Git commit revision")
+		}
 		base := r.setting("OCC_DEVELOPMENT_NODE_BASE_IMAGE", developmentNodeBase)
-		if err := r.run(ctx, r.engine, "build", "--target", "runtime", "--build-arg", "NODE_BASE_IMAGE="+base, "--tag", image, "."); err != nil {
+		// Keep the engine as the runner's direct child for cancellation and timing.
+		if err := r.run(ctx, r.engine, "build", "--target", "runtime", "--build-arg", "NODE_BASE_IMAGE="+base,
+			"--build-arg", "OCC_BUILD_REVISION="+revision, "--label", "org.opencontainers.image.revision="+revision, "--tag", image, "."); err != nil {
 			return "", err
 		}
 	}

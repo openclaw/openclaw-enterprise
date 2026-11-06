@@ -1,9 +1,17 @@
 # Debug sidebar fields
 
-Append `?debug=true` to a [console](../console.md) URL, or `&debug=true` if it
-already has a query. The sidebar shows the control-plane build and image
-observations grouped by Agent name. Expand an Agent to inspect its containers.
-Navigation preserves the flag; remove it to hide diagnostics and stop these reads.
+Open the account menu, select **Settings**, then turn on **Debug mode** under
+**Browser preferences**. The preference is saved in local storage for this
+installation's origin in the current browser. It defaults to off and persists
+across navigation, reloads, and sign-out. It is not an account setting and does
+not transfer to another browser. Clearing site data resets it.
+
+The sidebar shows the control-plane build and image observations grouped by
+Agent name. Expand an Agent to inspect its containers. Turn **Debug mode** off
+in Settings to hide diagnostics and stop new image reads. URL query parameters
+do not enable or disable it. If the browser refuses storage access, Settings
+reports that it could not save the preference and leaves the current value.
+
 Use **Refresh** to update the snapshot or retry a failed read. The panel does not
 continuously poll.
 

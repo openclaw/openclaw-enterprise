@@ -5,7 +5,7 @@ import {
   assertExecutionAdmission,
   codexProxiesRepositoryBroker,
   codexRepositoryBrokerNetworkProxy,
-  type PreparedTokenService,
+  type TokenService,
 } from "@openclaw-enterprise/contracts";
 import {
   harnessEgressEnrollment,
@@ -3309,13 +3309,11 @@ function gatewayDocumentBeforeLanBind(
 
 /** Compute observes prepared-source readiness; it does not resolve warm credentials. */
 type PreparedTokenReadinessIssuer = Pick<
-  NonNullable<ReturnType<PreparedTokenService["issuer"]>>,
+  NonNullable<ReturnType<TokenService["issuer"]>>,
   "sourceFromRoute" | "ready"
 >;
 type PreparedTokenReadinessService = {
-  issuer(
-    ...args: Parameters<PreparedTokenService["issuer"]>
-  ): PreparedTokenReadinessIssuer | undefined;
+  issuer(...args: Parameters<TokenService["issuer"]>): PreparedTokenReadinessIssuer | undefined;
 };
 
 function preparedTokenReadiness(
@@ -4129,7 +4127,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       readonly lifecycleDrivers?: readonly Driver[];
       readonly sandboxDriver?: SandboxDriver;
       readonly preparedRepositoryIngress?: true;
-      readonly preparedTokens?: PreparedTokenService;
+      readonly preparedTokens?: TokenService;
       readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
       readonly credentialGatewayDriver?: CredentialGatewayDriver;
       /** Internal composition data for the exact built-in same-Backend pair. */

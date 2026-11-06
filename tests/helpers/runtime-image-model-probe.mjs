@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { changeSignal, followContainer } from "./docker-follow.mjs";
+import { changeSignal, followContainer } from "./docker-follow.ts";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
 import { gatewayMemoryArguments, runDockerCommand } from "./runtime-image-startup.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
