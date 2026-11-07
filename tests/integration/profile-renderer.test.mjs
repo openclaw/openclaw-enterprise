@@ -537,6 +537,35 @@ test(
   },
 );
 
+test(
+  "clusterPort reaches the Kubernetes API egress rule in the rendered chart",
+  { skip: helmSkip },
+  async () => {
+    // OVN-Kubernetes matches egress after Service translation, so OpenShift needs 6443.
+    const input = baseInput();
+    input.controlPlane.clusterPort = 6443;
+    const output = await render("openclaw", input);
+    assert.equal(loadYaml(output.values).cluster.port, 6443);
+    assert.match(
+      helmTemplate(output),
+      /cidr: 192\.0\.2\.11\/32\s+ports:\s+- protocol: TCP\s+port: 6443/,
+    );
+
+    // The port is optional: omitting it keeps the chart default of 443.
+    const defaults = await render("openclaw", baseInput());
+    assert.equal(loadYaml(defaults.values).cluster.port, undefined);
+
+    for (const bad of [0, 65536, "6443"]) {
+      input.controlPlane.clusterPort = bad;
+      const error = await renderError(() => render("openclaw", input));
+      assert.match(
+        error.profileRendererOutput,
+        /controlPlane\.clusterPort must be an integer from 1 through 65535/,
+      );
+    }
+  },
+);
+
 test("profile renderer refuses input paths owned by its output directory without deleting files", async (t) => {
   for (const name of ["values.yaml", "installation.yaml", "preflight.json"]) {
     for (const alias of ["direct", "input-directory", "output-directory", "file", "hardlink"]) {
