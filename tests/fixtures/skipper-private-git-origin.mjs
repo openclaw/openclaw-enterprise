@@ -61,6 +61,8 @@ export async function startSkipperPrivateGitOrigin({
   let armedDiscovery = false;
   let connections = 0;
   let requests = 0;
+  let refusedRetirementIndex;
+  let targetedRetirementRefusals = 0;
   const close = () =>
     (closing ??= (async () => {
       issuedGit?.clear();
@@ -284,6 +286,13 @@ export async function startSkipperPrivateGitOrigin({
             reply(401);
             return;
           }
+          if (authority.tokenIndex(request.headers.authorization) === refusedRetirementIndex) {
+            // Refuse every authenticated attempt for this token, including after worker replacement.
+            // No request is delayed, and the issuer never commits its revocation.
+            targetedRetirementRefusals++;
+            reply(503);
+            return;
+          }
           authority.revoke(request.headers.authorization);
           reply(204);
           return;
@@ -461,7 +470,17 @@ export async function startSkipperPrivateGitOrigin({
         endpoints: { ...counts },
         issued: authority.issuesOfTokens.length,
         tokens: authority.tokenState(),
+        targetedRetirementRefusals,
       }),
+      refuseTokenRetirement(index) {
+        if (!Number.isSafeInteger(index) || !issuedGit?.has(index)) {
+          throw new Error("unknown issued Git witness index");
+        }
+        if (refusedRetirementIndex !== undefined) {
+          throw new Error("token retirement refusal already armed");
+        }
+        refusedRetirementIndex = index;
+      },
       gitAttemptIndices: () =>
         authority.authenticationAttempts
           .filter(

@@ -485,14 +485,16 @@ test(
     let phase = "setup";
     const phases = {
       live: {
-        witness: "live witness",
+        witnessBefore: "live witness before denial",
+        witnessAfter: "live witness after denial",
         denied: "live denied Git",
         signed: "live signed decision",
         origin: "live origin checks",
         positive: "live B positive",
       },
       replacement: {
-        witness: "replacement witness",
+        witnessBefore: "replacement witness before denial",
+        witnessAfter: "replacement witness after denial",
         denied: "replacement denied Git",
         signed: "replacement signed decision",
         origin: "replacement origin checks",
@@ -586,6 +588,9 @@ test(
       let previousReply = await conversation.turn(undefined, remaining());
       phase = "withdrawal";
       inTime();
+      // Keep A's exact upstream credential valid while OCE withdraws access. A real 503
+      // leaves retirement unconfirmed; the issuer must refuse any accidental replay too.
+      origin.refuseTokenRetirement(indexA);
       await fixture.request("PATCH", a.path, {
         configurationId: a.configuration.id,
         repositoryBindings: [],
@@ -594,17 +599,35 @@ test(
       assert.equal(saved.repositoryBindings, undefined);
       assert.equal(saved.activeRevisionId, a.revision.id);
       const identity = { sandboxId: a.target.sandboxId, revisionId: a.revision.id };
+      const witness = async (stage: string) => {
+        phase = stage;
+        let status: number | undefined;
+        try {
+          inTime();
+          assert.ok(remaining() > 5_000, "insufficient time for the bounded origin witness");
+          status = await origin.probeIssuedGit(indexA);
+          assert.equal(status, 200, "A's original credential must still allow discovery");
+          inTime();
+        } finally {
+          try {
+            let outcome = status === undefined ? "unconfirmed" : "refused";
+            if (status === 200) {
+              outcome = "accepted";
+            }
+            await fixture.checkpoint("withdrawal-origin-witness", {
+              stage,
+              outcome,
+              status: status ?? null,
+              targetedRetirementRefusals: origin.snapshot().targetedRetirementRefusals,
+            });
+          } catch {
+            // Preserve the witness failure if diagnostic retention also fails.
+          }
+        }
+      };
       const verify = async (mode: "live" | "replacement", expectedWorker?: string) => {
         const step = phases[mode];
-        phase = step.witness;
-        inTime();
-        assert.ok(remaining() > 5_000, "insufficient time for the bounded origin witness");
-        assert.equal(
-          await origin.probeIssuedGit(indexA),
-          200,
-          "A's original credential must still allow discovery",
-        );
-        inTime();
+        await witness(step.witnessBefore);
         phase = step.signed;
         const previous = await fixture.gitWithdrawalDenials(identity, mode === "replacement");
         if (expectedWorker !== undefined) {
@@ -660,13 +683,7 @@ test(
           "unexpected origin request during withdrawal",
         );
         assert.equal(after.issued, before.issued);
-        phase = step.witness;
-        assert.ok(remaining() > 5_000, "insufficient time for the bounded origin witness");
-        assert.equal(
-          await origin.probeIssuedGit(indexA),
-          200,
-          "the original credential must remain valid after refusal",
-        );
+        await witness(step.witnessAfter);
         phase = step.positive;
         assert.equal(
           await read(b),
@@ -701,6 +718,20 @@ test(
       clearTimeout(timer);
       phase = "alternate-key mismatch";
       await conversation.rejectSubstitution(previousReply, 180_000);
+      phase = "targeted retirement refusal";
+      const finalOrigin = origin.snapshot();
+      assert.equal(finalOrigin.targetedRetirementRefusals, 1, "retirement must run exactly once");
+      assert.equal(
+        finalOrigin.tokens.find((token: OriginToken & { index: number }) => token.index === indexA)
+          ?.revoked,
+        false,
+        "the issuer must not revoke A's original credential",
+      );
+      await fixture.checkpoint("withdrawal-retirement-refused", {
+        outcome: "passed",
+        status: 503,
+        targetedRetirementRefusals: finalOrigin.targetedRetirementRefusals,
+      });
     } catch {
       // Command failures can contain private argv, HTTP data, or workload output.
       throw new Error(`Finite Git withdrawal verification failed (${phase}).`);

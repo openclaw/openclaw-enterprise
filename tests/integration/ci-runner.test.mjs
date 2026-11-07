@@ -5667,6 +5667,24 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     requestsAfter: 1 + index,
     originUnchanged: index === 0,
   }));
+  const withdrawalWitnesses = [
+    ["live witness before denial", "accepted", 200],
+    ["live witness after denial", "refused", 401],
+    ["replacement witness before denial", "refused", 403],
+    ["replacement witness after denial", "unconfirmed", null],
+  ].map(([stage, outcome, status]) => ({
+    event: "withdrawal-origin-witness",
+    stage,
+    outcome,
+    status,
+    targetedRetirementRefusals: 1,
+  }));
+  const withdrawalRetirement = {
+    event: "withdrawal-retirement-refused",
+    outcome: "passed",
+    status: 503,
+    targetedRetirementRefusals: 1,
+  };
   const policyDenials = ["after-expiry", "after-worker-restart"].map((stage) => ({
     event: "git-policy-denied",
     stage,
@@ -5739,6 +5757,8 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     "durable-retention-assertion",
   ];
   const retentionReceipts = [
+    ...withdrawalWitnesses.map((receipt) => ({ ...receipt, error: forbidden, token: forbidden })),
+    { ...withdrawalRetirement, token: forbidden },
     ...maintenanceReasons.map((reason) => ({ ...maintenanceDiagnostic, reason })),
     ...restartStages.map((stage) => ({
       event: "worker-restart-unconfirmed",
@@ -5836,6 +5856,14 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     { event: "cleanup", outcome: "passed" },
   ].map((value) => ({ kind: retentionKind, ...value, unexpected: forbidden }));
   const invalidRetention = [
+    ...["stage", "outcome", "status", "targetedRetirementRefusals"].map((field) => ({
+      ...withdrawalWitnesses[0],
+      [field]: forbidden,
+    })),
+    { ...withdrawalWitnesses[0], targetedRetirementRefusals: -1 },
+    { ...withdrawalRetirement, status: 204 },
+    { ...withdrawalRetirement, outcome: forbidden },
+    { ...withdrawalRetirement, targetedRetirementRefusals: forbidden },
     ...[
       ["stage", "before-expiry"],
       ["reason", "transparent_tcp_identity_unavailable"],
@@ -6226,6 +6254,14 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   );
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
   const receipts = summary.files[0].measurements.filter(({ kind }) => kind === retentionKind);
+  assert.deepEqual(
+    receipts.filter(({ event }) => event === "withdrawal-origin-witness"),
+    withdrawalWitnesses.map((receipt) => ({ kind: retentionKind, ...receipt })),
+  );
+  assert.deepEqual(
+    receipts.find(({ event }) => event === "withdrawal-retirement-refused"),
+    { kind: retentionKind, ...withdrawalRetirement },
+  );
   assert.deepEqual(
     receipts.map(({ event }) => event),
     retentionReceipts.map(({ event }) => event),

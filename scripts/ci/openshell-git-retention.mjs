@@ -261,6 +261,25 @@ for (const name of [
   expiryDiagnostics[name] = [name, count];
 }
 const events = {
+  "withdrawal-origin-witness": {
+    stage: [
+      "stage",
+      choice(
+        "live witness before denial",
+        "live witness after denial",
+        "replacement witness before denial",
+        "replacement witness after denial",
+      ),
+    ],
+    outcome: ["outcome", choice("unconfirmed", "accepted", "refused")],
+    status: ["status", choice(null, 200, 401, 403)],
+    targetedRetirementRefusals: ["targetedRetirementRefusals", count],
+  },
+  "withdrawal-retirement-refused": {
+    outcome: ["outcome", choice("passed")],
+    status: ["status", choice(503)],
+    targetedRetirementRefusals: ["targetedRetirementRefusals", count],
+  },
   "git-policy-denied": {
     stage: ["stage", choice("after-expiry", "after-worker-restart")],
     reason: ["reason", choice("transparent_tcp_policy_denied")],
