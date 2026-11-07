@@ -13,7 +13,7 @@ const STEP_LABELS = [
   "Agent ready",
 ] as const;
 
-export type ProvisioningProgressOutcome = "succeeded" | "failed" | "stopped";
+export type ProvisioningProgressOutcome = "succeeded" | "failed" | "stopped" | "superseded";
 
 export interface ProvisioningProgressView {
   readonly section: HTMLElement;
@@ -43,18 +43,21 @@ function stepLabel(step: number) {
 
 // A terminal heading names the outcome and the step it happened on, so the bar the reader
 // selected Create Agent from says what ended without waiting for the form's error line.
-function outcomeHeading(label: string, outcome: "failed" | "stopped") {
+// Supersession keeps its own wording: a newer deployment took over, which is not a stop
+// (finding from #3070's recovery explanation).
+function outcomeHeading(label: string, outcome: "failed" | "stopped" | "superseded") {
   const step = `${label.charAt(0).toLowerCase()}${label.slice(1)}`;
-  return `${outcome === "failed" ? "Failed" : "Stopped"} while ${step}.`;
+  const lead = outcome === "failed" ? "Failed" : outcome === "stopped" ? "Stopped" : "Superseded";
+  return `${lead} while ${step}.`;
 }
 
 // The step the job is on. `phase` names the last completed phase, so the step after it is
 // current. An unreadable phase keeps the meter on the worker step, and a recorded revision
-// means the deployment step even without a readable phase.
+// means the deployment step even without a readable phase. A queued job that has completed a
+// phase or recorded a revision is deferred between worker checks (an unfinished deployment
+// wait, or a retry that retains its outputs), so it stays on the step it reached; only
+// genuinely unstarted work shows the initial waiting layout.
 function stepOf(job: ProvisioningJob): number {
-  if (job.status === "queued") {
-    return 0;
-  }
   const byPhase =
     job.phase === "admitted"
       ? 1
@@ -63,7 +66,15 @@ function stepOf(job: ProvisioningJob): number {
         : job.phase === undefined
           ? 1
           : 3;
-  return Math.max(byPhase, job.revisionId === undefined ? 0 : 3);
+  const progressed = Math.max(byPhase, job.revisionId === undefined ? 0 : 3);
+  if (
+    job.status === "queued" &&
+    (job.phase === undefined || job.phase === "admitted") &&
+    job.revisionId === undefined
+  ) {
+    return 0;
+  }
+  return progressed;
 }
 
 /**
@@ -149,8 +160,9 @@ export function createProvisioningProgress(): ProvisioningProgressView {
       const step = stepOf(job);
       paint(step, outcome);
       setText(phase, outcomeHeading(stepLabel(step), outcome));
-      // Only a failure carries its reason in the bar; a stop is the owner's choice, and the
-      // form's line below already says what to do next.
+      // Only a failure carries its reason in the bar; a stop is the owner's choice and a
+      // supersession means a newer deployment took over, and the form's line below already
+      // says what to do next.
       const message = outcome === "failed" ? job.error?.message : undefined;
       setText(reason, message ?? "");
       setHidden(reason, !message);

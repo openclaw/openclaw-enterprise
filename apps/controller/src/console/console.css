@@ -2454,7 +2454,8 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   border-color: var(--danger);
   background: var(--danger);
 }
-.provisioning-step[data-state="stopped"] .provisioning-step-marker {
+.provisioning-step[data-state="stopped"] .provisioning-step-marker,
+.provisioning-step[data-state="superseded"] .provisioning-step-marker {
   border-color: var(--muted);
   background: var(--muted);
 }
