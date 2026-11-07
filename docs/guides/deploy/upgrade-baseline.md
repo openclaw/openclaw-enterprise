@@ -21,6 +21,7 @@ control-plane data.
 
 ```bash
 umask 077
+mkdir -p /secure/occ/upgrades
 export BASELINE="/secure/occ/upgrades/baseline-$(date -u +%Y%m%dT%H%M%SZ)"
 export PGPASSFILE=/secure/occ/pgpass
 export OCC_MIGRATION_DATABASE_URL='postgresql://occ_migrator@<postgres-host>:5432/<database>?sslmode=verify-full&sslrootcert=/secure/occ/database-ca.pem'
