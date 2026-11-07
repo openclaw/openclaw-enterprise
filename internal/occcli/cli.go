@@ -941,8 +941,14 @@ func (app *application) agentCommand() *cobra.Command {
 				return err
 			}
 			if page.NextCursor != "" {
+				flags := command.Flags()
+				if flags.Changed("url") || flags.Changed("service-key-file") || flags.Changed("ca-bundle") ||
+					flags.Changed("timeout-seconds") || flags.Changed("output") {
+					noticef(command.ErrOrStderr(), "notice: older revisions may exist; repeat the same command and set --cursor %s", page.NextCursor)
+					return nil
+				}
 				limit := ""
-				if command.Flags().Changed("limit") {
+				if flags.Changed("limit") {
 					limit = fmt.Sprintf(" --limit %d", revisionLimit)
 				}
 				noticef(command.ErrOrStderr(), "notice: older revisions may exist; run \"occ --namespace %s agent revisions %s%s --cursor %s\"", namespace, args[0], limit, page.NextCursor)
