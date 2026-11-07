@@ -2581,9 +2581,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     "the admitted revision must retain its original model reference",
   );
   const expectedGatewayModel =
-    mode === "dedicated" &&
-    harnessId === "codex" &&
-    process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined
+    mode === "dedicated" && harnessId === "codex"
       ? `codex/openai-compatible/${providerModel}`
       : modelReference;
   await assertGatewayEffectiveDefaultModel(
