@@ -1,6 +1,7 @@
 {{- $repositoryBroker := .Values.repositoryCredentials.enabled }}
 {{- $repositoryGit := include "openclaw.repositoryCredentials.gitEnabled" . }}
 {{- range $component := list "api" "worker" }}
+{{- $strandsBoxControl := and (eq $component "worker") $.Values.worker.strandsBoxControlClaimName }}
 {{- $oidcCa := and (eq $component "api") $.Values.auth.oidc $.Values.auth.oidc.enabled $.Values.auth.oidc.caSecretName }}
 {{- $gatewayCa := and $.Values.gatewayRouting.enabled (or (not $.Values.gatewayRouting.issuerRef.name) $.Values.gatewayRouting.caSecretName) }}
 ---
@@ -65,6 +66,12 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- if $strandsBoxControl }}
+        - name: strands-box-control
+          persistentVolumeClaim:
+            claimName: {{ $strandsBoxControl | quote }}
+            readOnly: true
+        {{- end }}
         {{- if $.Values.backend.openshell.clientSecretName }}
         - name: openshell-client
           secret:
@@ -501,6 +508,11 @@ spec:
               value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.convergenceTimeoutMs" "value" $.Values.worker.convergenceTimeoutMs) | quote }}
             {{- end }}
           volumeMounts:
+            {{- if $strandsBoxControl }}
+            - name: strands-box-control
+              mountPath: /run/strands-box
+              readOnly: true
+            {{- end }}
             {{- if $.Values.backend.openshell.clientSecretName }}
             - name: openshell-client
               mountPath: /etc/openclaw/openshell

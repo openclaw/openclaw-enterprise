@@ -8,17 +8,11 @@ last_updated_session: authoring-run/813d3dd8-d371-45db-a6f1-d70156152311
 
 ## Overview
 
-OCC privately stages authenticated creation inputs: `AGENTS.md`, `SOUL.md`,
-`IDENTITY.md`, and `USER.md`. Compute prepares storage; the execution provider
-initializes it before activation.
-
-File operations authorize the exact active Agent through its Compute-resolved
-private Envoy endpoint.
-
-Dedicated execution initializes the Harness workspace for Codex and native
-OpenClaw; see [workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
-
-See [two-cluster transport](../testing/kubernetes.md#two-cluster-validation) for CP/DP routing.
+OCC stages the four authenticated owner documents privately. Compute prepares
+storage; the execution provider initializes it before activation. Live operations
+authorize the exact active Agent through its private Envoy route. See
+[workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation)
+and [two-cluster transport](../testing/kubernetes.md#two-cluster-validation).
 
 ## Entry Points
 
@@ -92,9 +86,9 @@ checked on each update.
 
 ### 2. Deployment initializes storage before execution
 
-`apps/controller/src/worker.ts` reads private setup state into
-`ComputeRevisionContext`. A Driver without `supportsWorkspaceSetup` returns
-`WORKSPACE_SETUP_UNSUPPORTED`. The worker serializes Agent startup and passes `workspaceSetup` to Compute.
+The Worker serializes startup and passes private `workspaceSetup` in
+`ComputeRevisionContext`. Drivers without `supportsWorkspaceSetup` return
+`WORKSPACE_SETUP_UNSUPPORTED`.
 
 Bundled Drivers use
 `apps/controller/src/drivers/compute/workspace-setup-runtime.ts:WORKSPACE_SETUP_RUNTIME`.
@@ -132,6 +126,8 @@ reruns setup for `BOOTSTRAP.md`, verifies results, and atomically writes
 Matching markers skip replay; incomplete writes retry the same checks.
 Missing or mismatched markers after recorded completion block startup, preserving
 later edits. Errors omit document contents.
+
+An [external Codex workspace](../reference/drivers/sandbox.md#harness-transport) binds the enrolled file node to its original root. Additional grants prevent startup.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:safeRuntimeFailureObservation`
 reports refusals (exit 2) as `WORKSPACE_SETUP_REFUSED`; OpenShell raises
