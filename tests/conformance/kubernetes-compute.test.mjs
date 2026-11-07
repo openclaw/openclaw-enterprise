@@ -17042,6 +17042,59 @@ test("resource quantities reject bare numbers with structured field diagnostics"
 // Expected ordering comes from the API server's Quantity.Cmp semantics. These
 // values exercise decimal/binary equivalence, Nano rounding, exact large integers
 // and BinarySI saturation that a floating-point conversion cannot preserve.
+test("counted ResourceQuota values obey native integer precision before construction", () => {
+  for (const resource of [
+    "pods",
+    "services",
+    "services.nodeports",
+    "services.loadbalancers",
+    "replicationcontrollers",
+    "resourcequotas",
+    "secrets",
+    "configmaps",
+    "persistentvolumeclaims",
+    "count/deployments.apps",
+    "example.com/gpu",
+  ]) {
+    const configured = separateResources();
+    configured.resources.namespace.quota = { [resource]: "1500m" };
+    assert.throws(
+      () => requireConfiguration(KubernetesComputeDriver, configured),
+      (error) => {
+        assert.ok(error instanceof SharedConfigurationValidationError);
+        assert.deepEqual(error.error.details, [
+          {
+            path: "/resources/namespace/quota",
+            code: "INVALID_FORMAT",
+            message: `Namespace quota resource ${resource} must satisfy Kubernetes integer precision; use a whole count such as 4.`,
+          },
+        ]);
+        return true;
+      },
+    );
+  }
+  // Upstream ValidateResourceQuotaSpec controls: suffixes can represent whole counts;
+  // its MilliValue check also retains values that round up to a whole milliscaled count.
+  for (const [resource, quantity] of [
+    ["pods", "0"],
+    ["pods", "-0"],
+    ["pods", "1000m"],
+    ["pods", "1.5Ki"],
+    ["pods", "1e3"],
+    ["pods", "0.9999"],
+    ["pods", "1.9999"],
+    ["requests.cpu", "500m"],
+    ["requests.memory", "1.5Gi"],
+    ["requests.nvidia.com/gpu", "1500m"],
+    ["example.kubernetes.io/gpu", "1500m"],
+  ]) {
+    const configured = separateResources();
+    configured.resources.namespace.quota = { [resource]: quantity };
+    requireConfiguration(KubernetesComputeDriver, configured);
+    assert.equal(configured.resources.namespace.quota[resource], quantity);
+  }
+});
+
 test("resource requests must fit their limits before Namespace or workload preparation", () => {
   const pairs = [
     ["cpu", "500m", "250m", false],
