@@ -4,11 +4,10 @@ Resume from the original checkout and private
 [upgrade evidence directory](production-upgrade.md). Directory aliases share its
 lock; a different directory identity stops resume before live access.
 
-For a runtime upgrade, also keep the original private dispatch journal. It is
-`<evidence-directory>.dispatch-state`, beside the resolved evidence directory. Keep the current journal separate from evidence
-backups. A missing or invalid journal stops runtime resume before live access.
-If the journal may have been restored, stop and reconcile from OCC history and
-audit records before starting another run.
+For runtime upgrades, preserve the private `<evidence-directory>.dispatch-state`
+journal beside the resolved directory, separately from evidence backups. Missing
+or invalid journals stop resume before live access. If possibly restored,
+reconcile OCC history and audit records first.
 
 `--preflight-only` leaves writers serving without a freeze. It cannot resume;
 reconcile its resources before deploying with fresh evidence and checks.
@@ -20,17 +19,15 @@ add `--resume` with unchanged arguments, protected paths, kubeconfig contents,
 OCC URL, scripts, flow and chart. Keep candidates semantically unchanged.
 The helper rechecks the pair, nodes and live state against baseline or candidate.
 
-After verified completion, clean up only: no Helm, Agent rollout, Doctor,
-`--resume` or renewed freeze. The helper writes `completed` after its final
-verification and evidence capture. Any `completed` entry makes `--resume` stop
-before cluster or OCC access. Keep the marker with the original evidence; use a
-new evidence directory for a new upgrade.
+When selected, `controller-compatibility-results.json` is immutable prepared
+evidence. Resume uses this copy, not the external file; changing its bytes or
+presence refuses recovery.
 
-If the final command output was lost, inspect the completion marker and retained
-evidence before deciding to resume. If writing the marker failed, reconcile the
-live state first: its absence does not prove the upgrade is unfinished.
-`prepared` survives success and alone is not a reason to resume. Older runs may
-have completed without a `completed` marker.
+After verified completion, clean up only: no Helm, Agent rollout, Doctor,
+`--resume` or renewed freeze. Any `completed` entry refuses resume before live
+access. Preserve it; use fresh evidence for another upgrade. If output or marker
+writing failed, reconcile live state and evidence first: neither an absent marker
+nor surviving `prepared` proves unfinished work. Older runs may lack a marker.
 
 ## Correct unusable comparison inputs
 
@@ -40,11 +37,10 @@ this does not establish drift.
 
 ## Clean up preflight resources
 
-The release owner assigns one cleanup operator; cleanup needs no freeze.
-Unconfirmed cleanup stops preparation. After interruption (`SIGHUP`, `SIGINT`,
-`SIGTERM`), preserve evidence and `.upgrade-lock`. Confirm helper/children stopped
-and reconcile accepted operations and temporary resources before cleanup,
-retrying, restoring the original directory path or removing `.upgrade-lock`.
+One owner-assigned operator cleans up without a freeze. Unconfirmed cleanup stops
+preparation. After interruption (`SIGHUP`, `SIGINT`, `SIGTERM`), preserve evidence
+and `.upgrade-lock`. Confirm helper/children stopped and reconcile accepted
+operations/resources before cleanup, retry, directory restoration or unlocking.
 
 Acknowledged creates retain `preflight-<slot>-identity.json` with fields
 `kind`, `name`, `uid`: `networkpolicy` and `secret` identify dependencies;
@@ -74,14 +70,22 @@ establish ownership.
 
 ## Resume an unfinished prepared upgrade
 
+With `--verify-agent`, inspect `agent-continuity.json` and
+`agent-continuity-after*.json`. The former binds the original revision and workload
+roles; never edit it. Restore that revision's readiness, then resume with the same
+selection. Successful Helm work is not repeated. A replacement revision cannot pass;
+if redeployment is necessary, preserve this incomplete evidence and verify that
+separate recovery. The helper neither redeploys Agents nor rolls back the control plane.
+
 Read `native-command-failures.tsv` for failed scale, Helm or rollout commands:
 rows retain the operation, component (`api`, `worker`, `release`) and exit code.
 Client failures do not establish whether requests took effect; other failures
 may leave no row. Reconcile live state before resuming.
 
-UID, resource-version or replica drift refuses the stop before migration;
-the API may already be stopped. Reconcile `current-<component>-deployment.json`
-and `quiescence-<component>-patch.json` against live state before resuming.
+Both Deployments are validated before stopping either. Later UID/version/replica
+conflicts can leave the API stopped. Reconcile
+`current-<component>-deployment.json` and `quiescence-<component>-patch.json`
+against live state before resuming.
 
 Helm failure or disconnection does not prove migration rollback. Inspect live
 Helm status/history, initialization Job/Pod outcomes and the retained database;

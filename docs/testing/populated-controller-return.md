@@ -94,6 +94,14 @@ Response bodies and credentials are omitted. If recording fails, the test report
 the write failure alongside any upgrade failure, preserving the upgrade as the
 primary cause.
 
+Each completed observation also updates `forward-api-availability.json` in that
+same directory by atomic replacement. If the runner stops, this file retains the
+last saved observations. `upgradeSucceeded: null` means the action has not been
+recorded as finished; do not infer success or recovery from an incomplete file.
+A final boolean records whether the upgrade action succeeded, independently of
+the observed HTTP results. Process interruption does not add an `after` sample.
+This protects completed writes against process termination, not host or disk loss.
+
 These observations do not add an outage-free pass requirement. They measure the
 fixture's HTTPS route, not exact downtime, public ingress, Slack, or model
 continuity. Availability between requests remains unobserved.

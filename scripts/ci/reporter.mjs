@@ -57,6 +57,7 @@ const openShellStageMeasurementKind = "openshell-stage";
 const openShellSandboxMeasurementKind = "openshell-sandbox-phase";
 const openShellPolicyCheckKind = "openshell-network-policy-check";
 const openShellFixtureTeardownKind = "openshell-fixture-teardown";
+const openShellGatewayTurnFailureKind = "openshell-gateway-turn-failure";
 const openShellNativePolicyCheckKind = "openshell-native-policy-check";
 const nativePolicyPrimaryChecks = new Set([
   "agent.get",
@@ -111,6 +112,7 @@ const openShellMeasurementKinds = new Set([
   openShellSandboxMeasurementKind,
   openShellPolicyCheckKind,
   openShellFixtureTeardownKind,
+  openShellGatewayTurnFailureKind,
   openShellNativePolicyCheckKind,
 ]);
 const openShellPolicyChecks = new Set([
@@ -168,6 +170,24 @@ function parseMeasurement(message) {
 }
 
 function safeMeasurement(value) {
+  if (isRecord(value) && value.kind === openShellGatewayTurnFailureKind) {
+    const { kind, checkpoint, turn, status } = value;
+    const outsideTurn = checkpoint === "gateway-setup" || checkpoint === "native-evidence";
+    const validTurn = outsideTurn
+      ? turn === 0
+      : [
+          "turn-request",
+          "response-read",
+          "credential-absence",
+          "http-status",
+          "response-nonce",
+        ].includes(checkpoint) &&
+        (turn === 1 || turn === 2);
+    const validStatus =
+      status === null ||
+      (checkpoint === "http-status" && Number.isInteger(status) && status >= 100 && status <= 599);
+    return validTurn && validStatus ? { kind, checkpoint, turn, status } : undefined;
+  }
   if (isRecord(value) && value.kind === openShellStageMeasurementKind) {
     if (
       ![

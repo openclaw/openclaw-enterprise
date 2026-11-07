@@ -129,9 +129,6 @@ test(
       { binaries: ["/usr/bin/codex"] },
       {
         id: gatewayId,
-        ...(conversation && {
-          modelProvider: { protocol: "openai-responses", baseUrl: conversation.baseUrl },
-        }),
         backend: {
           id: "fixture-gateway",
           drivers: { credential_gateway: gatewayId },

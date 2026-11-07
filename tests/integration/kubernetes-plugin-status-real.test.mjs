@@ -226,6 +226,12 @@ function revision(driver, owner, agentId, number, harnessAuth) {
     servicePrincipalId: `service-agent-${agentId}`,
     createdAt: new Date().toISOString(),
   };
+  candidate.harness.overrides = {};
+  candidate.harness.configuration = driver.resolveHarnessConfiguration(
+    candidate.harness,
+    candidate.harnessAuth,
+    candidate.configuration,
+  );
   candidate.compute.admission = driver.admitRevision(candidate);
   return candidate;
 }

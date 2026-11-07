@@ -5908,6 +5908,21 @@ Save an Agent revision from the Agent's saved settings
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
+##### Request body
+
+**Required:** No
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `harnessOverrides` | `object<string, any>` | No | Nonsecret settings owned and validated by the selected Compute Driver. |
+
+Example request
+```json
+{}
+```
+
 ##### Responses
 
 | Status | Meaning |
@@ -5918,6 +5933,8 @@ Save an Agent revision from the Agent's saved settings
 | `403` | The caller is not allowed to perform this operation. |
 | `404` | The requested platform resource was not found. |
 | `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
 | `503` | A required dependency is unavailable. |
 
@@ -5940,8 +5957,10 @@ Save an Agent revision from the Agent's saved settings
 | `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.gatewayManagedMode` | `boolean` | Yes | Gateway managed mode requested for this Agent version. It does not report Gateway runtime state. |
 | `data.harness` | `object` | Yes | — |
+| `data.harness.configuration` | `object<string, any>` | Yes | Nonsecret settings owned and validated by the selected Compute Driver. |
 | `data.harness.id` | `string` | Yes | min length: 1 |
 | `data.harness.mode` | `"embedded" or "dedicated"` | Yes | — |
+| `data.harness.overrides` | `object<string, any>` | Yes | Nonsecret settings owned and validated by the selected Compute Driver. |
 | `data.harness.version` | `string` | Yes | min length: 1 |
 | `data.harnessAuth` | `object or object or object or object` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -6054,8 +6073,16 @@ Example response
     "createdAt": "2026-10-01T12:00:00.000Z",
     "gatewayManagedMode": true,
     "harness": {
+      "configuration": {
+        "modelProvider": {
+          "baseUrl": "https://api.openai.com/v1",
+          "protocol": "openai-responses",
+          "supportsStandaloneWebSearch": false
+        }
+      },
       "id": "codex",
       "mode": "dedicated",
+      "overrides": {},
       "version": "1"
     },
     "harnessAuth": {
@@ -6114,6 +6141,7 @@ Admit the first deployment of an exact reviewed Configuration; requires Configur
 | --- | --- | --- | --- |
 | `expectedConfigurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `expectedGeneration` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
+| `harnessOverrides` | `object<string, any>` | No | Nonsecret settings owned and validated by the selected Compute Driver. |
 | `key` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._~-]*$` |
 
 Example request
@@ -6190,6 +6218,7 @@ Read an exact first-deployment receipt; null does not prove failure; requires Co
 
 | Name | In | Type | Required | Constraints | Example |
 | --- | --- | --- | --- | --- | --- |
+| `harnessOverrides` | query | `string` | No | max length: 8192 | "{}" |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 | `key` | path | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._~-]*$` | "review-1" |
@@ -8974,8 +9003,10 @@ List Agent revision summaries that you can read for the requested Agent, newest 
 | `data[].deploymentErrorCode` | `string or null` | Yes | The `error.code` that reading this revision's deployment would report, or `null` when it reports no error. It tells a failure from a deployment that a newer version or a Stop ended. |
 | `data[].deploymentStatus` | `"queued" or "running" or "succeeded" or "failed" or null` | Yes | The status that reading this revision's deployment would report, or `null` when OCC has no deployment record for it. |
 | `data[].harness` | `object` | Yes | — |
+| `data[].harness.configuration` | `object<string, any>` | Yes | Nonsecret settings owned and validated by the selected Compute Driver. |
 | `data[].harness.id` | `string` | Yes | min length: 1 |
 | `data[].harness.mode` | `"embedded" or "dedicated"` | Yes | — |
+| `data[].harness.overrides` | `object<string, any>` | Yes | Nonsecret settings owned and validated by the selected Compute Driver. |
 | `data[].harness.version` | `string` | Yes | min length: 1 |
 | `data[].id` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -9008,8 +9039,16 @@ Example response
       "deploymentErrorCode": null,
       "deploymentStatus": "succeeded",
       "harness": {
+        "configuration": {
+          "modelProvider": {
+            "baseUrl": "https://api.openai.com/v1",
+            "protocol": "openai-responses",
+            "supportsStandaloneWebSearch": false
+          }
+        },
         "id": "codex",
         "mode": "dedicated",
+        "overrides": {},
         "version": "1"
       },
       "id": "rev_123e4567-e89b-42d3-a456-426614174000",
@@ -9151,8 +9190,16 @@ Example response
     "createdAt": "2026-10-01T12:00:00.000Z",
     "gatewayManagedMode": true,
     "harness": {
+      "configuration": {
+        "modelProvider": {
+          "baseUrl": "https://api.openai.com/v1",
+          "protocol": "openai-responses",
+          "supportsStandaloneWebSearch": false
+        }
+      },
       "id": "codex",
       "mode": "dedicated",
+      "overrides": {},
       "version": "1"
     },
     "harnessAuth": {

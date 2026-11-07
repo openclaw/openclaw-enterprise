@@ -8,10 +8,12 @@ Usage: scripts/upgrade-production-images \
   --values FILE --installation FILE \
   [--candidate-values FILE] [--candidate-installation FILE] \
   [--controller-image IMAGE@sha256:DIGEST] \
+  [--controller-compatibility-results FILE] \
   [--broker-image IMAGE@sha256:DIGEST] \
   [--runtime-image IMAGE@sha256:DIGEST] \
   --source-revision FULL_GIT_SHA --evidence-dir DIRECTORY \
   [--occ PATH] [--timeout-seconds SECONDS] [--doctor-heap-mib MIB] [--resume] \
+  [--verify-agent AGENT_ID --verify-agent-namespace NAMESPACE_ID] \
   [--migration-history-checked] \
   [--collector-config-reviewed] [--preflight-only]
 
@@ -31,6 +33,9 @@ OCC_URL, OCC_SERVICE_KEY_FILE, and OCC_CA_BUNDLE configure the OCC CLI connectio
 With the bundled Collector enabled, its config Secret must carry this checkout's
 deploy/logging collector.yaml and kubernetes.yaml; pass --collector-config-reviewed
 only to keep a reviewed custom configuration.
+For a controller/broker upgrade, --verify-agent with --verify-agent-namespace
+requires the same active revision and Ready workload Pods before completion.
+It needs exact Agent read/operate and active AgentRevision read permissions.
 --timeout-seconds bounds each wait (default 900, at most 86400).
 --doctor-heap-mib sets OpenClaw Doctor's heap cap (default 384); raise it only
 after Doctor ran out of heap. It can change on --resume.
@@ -321,11 +326,14 @@ installation=
 requested_values=
 requested_installation=
 controller_image=
+controller_compatibility_results=
 broker_image=
 runtime_image=
 source_revision=
 evidence_dir=
 occ=occ
+verify_agent=
+verify_agent_namespace=
 timeout_seconds=900
 doctor_heap_mib=384
 resume=0
@@ -335,8 +343,11 @@ collector_config_reviewed=0
 
 while (($#)); do
   case "$1" in
-    --kubeconfig | --context | --namespace | --release | --values | --installation | --candidate-values | --candidate-installation | --controller-image | --broker-image | --runtime-image | --source-revision | --evidence-dir | --occ | --timeout-seconds | --doctor-heap-mib)
+    --kubeconfig | --context | --namespace | --release | --values | --installation | --candidate-values | --candidate-installation | --controller-image | --controller-compatibility-results | --broker-image | --runtime-image | --source-revision | --evidence-dir | --occ | --timeout-seconds | --doctor-heap-mib | --verify-agent | --verify-agent-namespace)
       (($# >= 2)) || die "$1 requires a value."
+      if [[ "$1" == --verify-agent || "$1" == --verify-agent-namespace ]]; then
+        [[ -n "$2" ]] || die "$1 requires a nonempty value."
+      fi
       case "$1" in
         --kubeconfig) kubeconfig=$2 ;;
         --context) context=$2 ;;
@@ -347,11 +358,17 @@ while (($#)); do
         --candidate-values) requested_values=$2 ;;
         --candidate-installation) requested_installation=$2 ;;
         --controller-image) controller_image=$2 ;;
+        --controller-compatibility-results)
+          [[ -n "$2" ]] || die "$1 requires a nonempty value."
+          controller_compatibility_results=$2
+          ;;
         --broker-image) broker_image=$2 ;;
         --runtime-image) runtime_image=$2 ;;
         --source-revision) source_revision=$2 ;;
         --evidence-dir) evidence_dir=$2 ;;
         --occ) occ=$2 ;;
+        --verify-agent) verify_agent=$2 ;;
+        --verify-agent-namespace) verify_agent_namespace=$2 ;;
         --timeout-seconds) timeout_seconds=$2 ;;
         --doctor-heap-mib) doctor_heap_mib=$2 ;;
       esac
@@ -384,6 +401,11 @@ while (($#)); do
   esac
 done
 
+[[ -z "$verify_agent" && -z "$verify_agent_namespace" || -n "$verify_agent" && -n "$verify_agent_namespace" ]] ||
+  die "--verify-agent and --verify-agent-namespace must be supplied together."
+[[ -z "$verify_agent" || -z "$runtime_image" ]] ||
+  die "--verify-agent cannot be combined with --runtime-image, which selects new Agent revisions."
+
 ((resume == 0 || preflight_only == 0)) || die "--resume cannot be combined with --preflight-only."
 
 for input in kubeconfig context namespace release values installation source_revision evidence_dir; do
@@ -391,6 +413,8 @@ for input in kubeconfig context namespace release values installation source_rev
 done
 [[ -n "$controller_image" || -n "$broker_image" || -n "$runtime_image" ]] ||
   die "select a controller, broker, or runtime image."
+[[ -z "$controller_compatibility_results" || -n "$controller_image" ]] ||
+  die "--controller-compatibility-results requires --controller-image."
 positive_integer "$timeout_seconds" || die "--timeout-seconds must be positive."
 # Each phase's wait gets the whole timeout; a day is far beyond any of them, so a
 # larger value is likely a unit mistake. Compare lengths before arithmetic, which
@@ -589,13 +613,13 @@ trap 'interrupted_upgrade 143' TERM
 # Bind resume to the original physical directory, inputs and chart. The
 # separate dispatch journal protects against restoring stale evidence in place.
 # Kubeconfig bytes bind the context to the same cluster if the file is replaced.
-parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$OCC_URL" "$occ" "${OCC_CA_BUNDLE:-}" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" <<'PYTHON'
+parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$OCC_URL" "$occ" "${OCC_CA_BUNDLE:-}" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" "$verify_agent_namespace" "$verify_agent" "$controller_compatibility_results" <<'PYTHON'
 import hashlib, json, os, sys
 def digest(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
 evidence = os.stat(sys.argv[16])
-print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.mjs"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
+print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.mjs"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
 PYTHON
 )
 if ((resume)); then
@@ -1055,6 +1079,99 @@ No OCC writer was stopped; the old release keeps serving. Correct each draft as 
   touch "$evidence_dir/startup-preflight-passed"
 }
 
+validate_controller_compatibility() {
+  [[ -n "$controller_compatibility_results" ]] || return 0
+  require_private_file "$evidence_dir/controller-compatibility-results.json"
+  require_immutable_image "released controller image" "$current_controller"
+  python3 scripts/upgrade-evidence.py compatibility \
+    "$evidence_dir/controller-compatibility-results.json" "$current_controller" "$selected_controller" ||
+    die "controller compatibility receipt must pass for the exact released and candidate images; no new writer changes were made."
+}
+
+# Sample the exact original revision through the supported read-only runtime API.
+# The Driver's sources describe immutable revision topology; Agent.executionMode
+# describes the editable draft and cannot tell us which Pods must be present.
+verify_agent_continuity() {
+  local phase=$1 deadline=$((SECONDS + timeout_seconds)) remaining revision roles
+  local prefix="$evidence_dir/agent-continuity-$phase" observation ready
+  local failure="selected Agent $verify_agent continuity check failed before writer shutdown."
+  if [[ "$phase" == after ]]; then
+    failure="control-plane upgrade reached verification, but selected Agent $verify_agent continuity failed; completion was not recorded. Preserve the evidence and restore the original revision before --resume; no Agent deployment was requested."
+  fi
+  while true; do
+    remaining=$((deadline - SECONDS))
+    ((remaining > 0)) || die "$failure Timed out waiting for Ready workload Pods."
+    "${occ_json[@]}" --timeout-seconds "$remaining" --namespace "$verify_agent_namespace" \
+      agent get "$verify_agent" </dev/null >"$prefix.agent.json" || die "$failure Cannot read the selected Agent."
+    revision=$(jq -er --arg agent "$verify_agent" --arg namespace "$verify_agent_namespace" '
+      select(.id == $agent and .namespaceId == $namespace and
+        .status == "active" and .desiredRuntimeState == "running") |
+      .activeRevisionId | select(type == "string" and length > 0)
+    ' "$prefix.agent.json") || die "$failure The selected Agent must be active and running with an active revision."
+    if [[ "$phase" == after ]]; then
+      [[ "$revision" == "$(jq -er .revisionId "$evidence_dir/agent-continuity.json")" ]] ||
+        die "$failure The active revision changed."
+    fi
+    remaining=$((deadline - SECONDS))
+    ((remaining > 0)) || die "$failure Timed out reading the selected Agent."
+    "${occ_json[@]}" --timeout-seconds "$remaining" --namespace "$verify_agent_namespace" \
+      agent runtime "$verify_agent" --revision "$revision" </dev/null >"$prefix.runtime.json" ||
+      die "$failure Cannot read the exact revision runtime; check Agent read/operate, AgentRevision read, and runtime inspection configuration."
+    roles=$(jq -ce --arg revision "$revision" '
+      select(.revisionId == $revision) |
+      [.sources[] | select(.kind == "container") | .id] | sort |
+      select(. == ["gateway"] or . == ["agent", "gateway"])
+    ' "$prefix.runtime.json") || die "$failure Runtime inspection did not identify the exact revision and its workload roles."
+    if [[ "$phase" == after ]]; then
+      [[ "$roles" == "$(jq -c .roles "$evidence_dir/agent-continuity.json")" ]] ||
+        die "$failure The revision workload roles changed."
+    fi
+    remaining=$((deadline - SECONDS))
+    ((remaining > 0)) || die "$failure Timed out reading the revision runtime."
+    "${occ_json[@]}" --timeout-seconds "$remaining" --namespace "$verify_agent_namespace" \
+      agent get "$verify_agent" </dev/null >"$prefix.confirm.json" || die "$failure Cannot confirm the selected Agent."
+    jq -e --arg agent "$verify_agent" --arg namespace "$verify_agent_namespace" --arg revision "$revision" '
+      .id == $agent and .namespaceId == $namespace and .status == "active" and
+      .desiredRuntimeState == "running" and .activeRevisionId == $revision
+    ' "$prefix.confirm.json" >/dev/null || die "$failure The selected Agent changed during runtime inspection."
+    ((SECONDS < deadline)) || die "$failure Timed out confirming the selected Agent."
+    observation=$(mktemp "$prefix.XXXXXXXX")
+    jq -n --arg namespace "$verify_agent_namespace" --arg agent "$verify_agent" \
+      --arg revision "$revision" --argjson roles "$roles" --slurpfile runtime "$prefix.runtime.json" '
+      {namespaceId: $namespace, agentId: $agent, revisionId: $revision, roles: $roles,
+       providerHarnessObserved: ($runtime[0] | has("harness")), runtime: $runtime[0]}
+    ' >"$observation"
+    mv "$observation" "$prefix.json"
+    ready=0
+    # Runtime inspection caps each role at eight Pods; a full page cannot prove
+    # uniqueness after filtering ended Pods. Pod Ready includes completed init
+    # containers, whose terminated status must not be treated as a failure.
+    if jq -e '
+      .roles as $roles | .runtime |
+      .pods as $observed |
+      [.pods[] | select(.phase != "Succeeded" and .phase != "Failed")] as $pods |
+      all($roles[]; . as $role | ([$observed[] | select(.role == $role)] | length) < 8) and
+      (($pods | map(.role) | sort) == $roles) and
+      all($pods[]; (.uid | type == "string" and length > 0) and
+        (.name | type == "string" and length > 0) and .phase == "Running" and .ready == true) and
+      ((has("harness") | not) or .harness.state == "running")
+    ' "$prefix.json" >/dev/null; then
+      ready=1
+    fi
+    if [[ "$phase" == after ]] && jq -e .providerHarnessObserved "$evidence_dir/agent-continuity.json" >/dev/null; then
+      jq -e '.runtime.harness.state == "running"' "$prefix.json" >/dev/null || ready=0
+    fi
+    if ((ready)); then
+      if [[ "$phase" == before ]]; then
+        cp "$prefix.json" "$evidence_dir/agent-continuity.json"
+      fi
+      return
+    fi
+    [[ "$phase" != before ]] || die "$failure The original revision workload must be Ready."
+    sleep 2
+  done
+}
+
 prepare_upgrade() {
 if [[ -n "$runtime_image" ]]; then
   mkdir -m 700 "$evidence_dir/inventory" "$evidence_dir/dispatch" "$evidence_dir/status"
@@ -1132,6 +1249,8 @@ fi
 installation_id=$(jq -er '.id' "$evidence_dir/installation.json")
 [[ "$installation_id" == "$cluster_installation_id" ]] ||
   die "OCC Installation $installation_id does not match Kubernetes Installation $cluster_installation_id."
+
+[[ -z "$verify_agent" ]] || verify_agent_continuity before
 
 targets="$evidence_dir/targets.jsonl"
 : >"$targets"
@@ -1221,6 +1340,11 @@ if [[ -n "$controller_image" && -z "$runtime_image" && "$controller_image" == "$
   fi
 fi
 selected_controller=${controller_image:-$current_controller}
+if [[ -n "$controller_compatibility_results" ]]; then
+  require_regular_file "$controller_compatibility_results"
+  cp "$controller_compatibility_results" "$evidence_dir/controller-compatibility-results.json"
+  validate_controller_compatibility
+fi
 
 candidate_values="$evidence_dir/candidate-values.yaml"
 candidate_installation="$evidence_dir/candidate-installation.yaml"
@@ -1451,6 +1575,7 @@ installation_id=$(cat "$evidence_dir/installation-id")
 installation_secret=$(cat "$evidence_dir/installation-secret-name")
 installation_key=$(cat "$evidence_dir/installation-secret-key")
 selected_controller=$(cat "$evidence_dir/selected-controller")
+validate_controller_compatibility
 if [[ -n "$requested_values" ]]; then
   matches_yaml "$requested_values" "$evidence_dir/requested-values.yaml" || die "reviewed candidate values changed after preparation."
 fi
@@ -1549,6 +1674,7 @@ if ((helm_complete == 0)); then
     remaining_seconds=$((deadline - SECONDS))
     ((remaining_seconds > 0)) || die "OCC quiescence timed out; migration was not started."
   }
+  # Validate both writers before stopping either one.
   for component in api worker; do
     deployment="openclaw-enterprise-$component"
     quiescence_remaining
@@ -1569,6 +1695,10 @@ if ((helm_complete == 0)); then
       {op: "test", path: "/spec/replicas", value: .spec.replicas},
       {op: "replace", path: "/spec/replicas", value: 0}
     ]' "$evidence_dir/current-$component-deployment.json" >"$evidence_dir/quiescence-$component-patch.json"
+  done
+  # These writes are sequential; a later conflict can leave the API stopped.
+  for component in api worker; do
+    deployment="openclaw-enterprise-$component"
     quiescence_remaining
     "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" patch "deployment/$deployment" \
       --type json --patch-file "$evidence_dir/quiescence-$component-patch.json" ||
@@ -1819,7 +1949,7 @@ if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
   pids=()
   attempts=()
   for target in "${ready[@]}"; do
-    json_fields "$target" namespace_id=namespaceId agent_id=agentId
+    json_fields "$target" namespace_id=namespaceId agent_id=agentId baseline_revision=baselineRevisionId
     prefix=$(dispatch_prefix "$namespace_id" "$agent_id")
     attempt=$(mktemp -d "$evidence_dir/dispatch/.attempt.XXXXXXXX")
     attempts+=("$attempt")
@@ -1827,7 +1957,7 @@ if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
     # Once this record is durable, interruption at any point is an unknown
     # outcome until we have an acknowledgement or a definite refusal.
     dispatch_state send "$targets" "$namespace_id" "$agent_id"
-    "${occ_json[@]}" --namespace "$namespace_id" agent deploy "$agent_id" </dev/null \
+    "${occ_json[@]}" --namespace "$namespace_id" agent deploy "$agent_id" --retain-harness-overrides "$baseline_revision" </dev/null \
       >"$attempt/response" 2>"$attempt/error" &
     pids+=("$!")
   done
@@ -2270,6 +2400,8 @@ done <"$doctor_targets"
   die "OpenClaw Doctor failed for at least one replacement gateway; inspect $evidence_dir/status/*.doctor.error."
 ((pod_changed == 0)) ||
   die "at least one Agent's gateway or agent Pod did not stay on the same Ready Pod without restarts through OpenClaw Doctor, so the upgrade is not complete. Wait until each named Agent's revision Pods are Ready, then repeat the command with --resume and the same evidence directory; the resume runs Doctor again in the current gateway without new deployments."
+
+[[ -z "$verify_agent" ]] || verify_agent_continuity after
 
 if [[ "$repository_enabled" == true ]]; then
   verify_pair_nodes

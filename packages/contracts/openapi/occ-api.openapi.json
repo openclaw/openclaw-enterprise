@@ -22849,6 +22849,25 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": { "example": { "summary": "Example request", "value": {} } },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "harnessOverrides": {
+                    "additionalProperties": {},
+                    "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
         "responses": {
           "202": {
             "content": {
@@ -22916,7 +22935,19 @@
                         "configurationKind": "agent",
                         "createdAt": "2026-10-01T12:00:00.000Z",
                         "gatewayManagedMode": true,
-                        "harness": { "id": "codex", "mode": "dedicated", "version": "1" },
+                        "harness": {
+                          "configuration": {
+                            "modelProvider": {
+                              "baseUrl": "https://api.openai.com/v1",
+                              "protocol": "openai-responses",
+                              "supportsStandaloneWebSearch": false
+                            }
+                          },
+                          "id": "codex",
+                          "mode": "dedicated",
+                          "overrides": {},
+                          "version": "1"
+                        },
                         "harnessAuth": {
                           "method": "api_key",
                           "source": {
@@ -23008,6 +23039,11 @@
                         "harness": {
                           "additionalProperties": false,
                           "properties": {
+                            "configuration": {
+                              "additionalProperties": {},
+                              "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                              "type": "object"
+                            },
                             "id": { "minLength": 1, "type": "string" },
                             "mode": {
                               "anyOf": [
@@ -23015,9 +23051,14 @@
                                 { "const": "dedicated", "type": "string" }
                               ]
                             },
+                            "overrides": {
+                              "additionalProperties": {},
+                              "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                              "type": "object"
+                            },
                             "version": { "minLength": 1, "type": "string" }
                           },
-                          "required": ["id", "version", "mode"],
+                          "required": ["id", "version", "mode", "overrides", "configuration"],
                           "type": "object"
                         },
                         "harnessAuth": {
@@ -23302,6 +23343,26 @@
             },
             "description": "The requested operation conflicts with the current resource state."
           },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
           "500": {
             "content": {
               "application/json": {
@@ -23427,6 +23488,11 @@
                     "maximum": 9007199254740991,
                     "minimum": 1,
                     "type": "integer"
+                  },
+                  "harnessOverrides": {
+                    "additionalProperties": {},
+                    "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                    "type": "object"
                   },
                   "key": {
                     "maxLength": 128,
@@ -23665,6 +23731,18 @@
         "description": "Requires deploy permission on the exact Agent and read permission on the reviewed Configuration named in the request path. These current permissions are checked for both receipts and misses. Recovery performs no admission or credential preparation.",
         "operationId": "recoverAgentFirstDeployment",
         "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "{}"
+              }
+            },
+            "in": "query",
+            "name": "harnessOverrides",
+            "required": false,
+            "schema": { "maxLength": 8192, "type": "string" }
+          },
           {
             "examples": {
               "example": {
@@ -29331,7 +29409,19 @@
                           "createdAt": "2026-10-01T12:00:00.000Z",
                           "deploymentErrorCode": null,
                           "deploymentStatus": "succeeded",
-                          "harness": { "id": "codex", "mode": "dedicated", "version": "1" },
+                          "harness": {
+                            "configuration": {
+                              "modelProvider": {
+                                "baseUrl": "https://api.openai.com/v1",
+                                "protocol": "openai-responses",
+                                "supportsStandaloneWebSearch": false
+                              }
+                            },
+                            "id": "codex",
+                            "mode": "dedicated",
+                            "overrides": {},
+                            "version": "1"
+                          },
                           "id": "rev_123e4567-e89b-42d3-a456-426614174000",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                           "revision": 1
@@ -29398,6 +29488,11 @@
                           "harness": {
                             "additionalProperties": false,
                             "properties": {
+                              "configuration": {
+                                "additionalProperties": {},
+                                "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                                "type": "object"
+                              },
                               "id": { "minLength": 1, "type": "string" },
                               "mode": {
                                 "anyOf": [
@@ -29405,9 +29500,14 @@
                                   { "const": "dedicated", "type": "string" }
                                 ]
                               },
+                              "overrides": {
+                                "additionalProperties": {},
+                                "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                                "type": "object"
+                              },
                               "version": { "minLength": 1, "type": "string" }
                             },
-                            "required": ["id", "version", "mode"],
+                            "required": ["id", "version", "mode", "overrides", "configuration"],
                             "type": "object"
                           },
                           "id": {
@@ -29644,7 +29744,19 @@
                         "configurationKind": "agent",
                         "createdAt": "2026-10-01T12:00:00.000Z",
                         "gatewayManagedMode": true,
-                        "harness": { "id": "codex", "mode": "dedicated", "version": "1" },
+                        "harness": {
+                          "configuration": {
+                            "modelProvider": {
+                              "baseUrl": "https://api.openai.com/v1",
+                              "protocol": "openai-responses",
+                              "supportsStandaloneWebSearch": false
+                            }
+                          },
+                          "id": "codex",
+                          "mode": "dedicated",
+                          "overrides": {},
+                          "version": "1"
+                        },
                         "harnessAuth": {
                           "method": "api_key",
                           "source": {
@@ -29738,6 +29850,11 @@
                             "harness": {
                               "additionalProperties": false,
                               "properties": {
+                                "configuration": {
+                                  "additionalProperties": {},
+                                  "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                                  "type": "object"
+                                },
                                 "id": { "minLength": 1, "type": "string" },
                                 "mode": {
                                   "anyOf": [
@@ -29745,9 +29862,14 @@
                                     { "const": "dedicated", "type": "string" }
                                   ]
                                 },
+                                "overrides": {
+                                  "additionalProperties": {},
+                                  "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                                  "type": "object"
+                                },
                                 "version": { "minLength": 1, "type": "string" }
                               },
-                              "required": ["id", "version", "mode"],
+                              "required": ["id", "version", "mode", "overrides", "configuration"],
                               "type": "object"
                             },
                             "harnessAuth": {

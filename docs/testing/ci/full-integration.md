@@ -65,11 +65,18 @@ with an account that supports custom profiles can select all three scenarios.
 ### Run a protected integration lane
 
 Configure [integration environments](configuration.md#environments), inspect the
-commit, then dispatch the selected lane or `all` on `main`:
+intended `main` commit, then dispatch one lane, for example Gateway Routing:
 
 ```sh
-gh workflow run full-integration.yml --ref main -f lane=all
+gh workflow run full-integration.yml --ref main -f lane=gateway-routing
 ```
+
+Confirm the run's `headSha` matches the inspected commit, then complete the
+[dispatcher's team approval](configuration.md#environments). Use `lane=all` only
+when you need every supported Full Integration lane.
+
+Manual dispatch uses a separate workflow queue, so this focused run can proceed
+while an automatic full run is active.
 
 ### Run the hosted local installation lane
 

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-11-06"
-last_updated_session: authoring-run/d966f693-ccc4-4b07-8fbc-f66738672284
+updated: "2026-11-07"
+last_updated_session: authoring-run/ca379ce8-200d-4822-9b71-87f49f7644dc
 ---
 
 # Agent repository credential flow
@@ -11,8 +11,8 @@ last_updated_session: authoring-run/d966f693-ccc4-4b07-8fbc-f66738672284
 Dedicated Codex uses prepared sessions without a Sandbox Driver;
 [OpenShell sandboxes](../reference/repository-credentials/protected-openshell-git.md) receive placeholders.
 Workers deliver credentials and check signed requests against live grants.
-See [enrollment and mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
-[service forwarding and retirement](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
+See [mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
+[service lifecycle](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
 
 ## Entry Points
 
@@ -126,28 +126,29 @@ can supply several repositories. Omitted updates preserve selections; `[]` clear
 ### 2. Freeze a deployable version
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
-selects the Backend's GitHub policy with a registry-matched Backend ID.
-`packages/occ/src/index.ts:OpenClawController.forInstallation` binds that owner
-and rejects missing or mismatched repository ownership.
-Startup rejects `drivers.repo` in every mode before worker or attempt creation.
+selects GitHub policy with a registry-matched Backend ID.
+Startup copies validated repository policy before Driver package or registry loading. Policy construction and the protected Git Driver's configuration ID use it.
+`packages/occ/src/index.ts:OpenClawController.forInstallation` binds the owner,
+rejecting missing or mismatched ownership.
+Every mode rejects `drivers.repo` before creating workers or attempts.
 
-OpenShell parsing and chart constraints belong to
-`apps/controller/src/drivers/egress-proxy/openshell-configuration.ts`.
+`apps/controller/src/drivers/egress-proxy/openshell-configuration.ts`
+owns OpenShell parsing and chart constraints.
 
-`OpenClawController.admitRepositoryCredentials` requires the bound policy's `resolveBindings`; unbound controllers call `RepositoryPolicyDriver.resolve`.
+Bound `OpenClawController.admitRepositoryCredentials` requires `resolveBindings`; unbound controllers call `RepositoryPolicyDriver.resolve`.
 OCC checks Compute topology and freezes Driver identity, grants and a deadline
 unchanged by renewal or recovery. `validateRepositoryBrokerNetworkProxy` rejects broker-blocking Codex settings.
 
-After approval lookup, bound deploys recheck their original owner; a replacement selection
-returns 503 without calling it. Unbound deploys recheck their selected Driver.
+After approval lookup, bound deploys recheck their owner; replacement
+returns 503 without calling it. Unbound deploys recheck their Driver.
 Denial or changed binding or scope prevents revision creation.
 
-Protected `repository.preparedGitHub` uses the installed Sandbox/Credential Proxy
+Protected `repository.preparedGitHub` uses installed Sandbox/Credential Proxy
 Driver. Finite sessions need no native sender, control socket, broker CA or
 session files.
 
-`repository.nativeSender` selects `GitHubNativeRepositorySender` for native
-GitHub custody. It owns sessions and files without an App key. Drain accepted
+`repository.nativeSender` selects `GitHubNativeRepositorySender`, which owns native
+sessions and files without an App key. Drain accepted
 work on its original owner before cutover. Cleanup uses recorded identity
 without resolving policy or restoring authority. The worker's prepared provider
 issues and holds credentials.
@@ -167,8 +168,8 @@ State stores identifiers and phases, never bearers or files.
 `apps/controller/src/backends/repository-credentials/control-client.ts:UnixRepositoryCredentialControlClient`
 sends the bound request over the private socket.
 `apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts:createPreparedGitHubRegistryFactory`
-resolves and compares its grant. The client validates status: `DISPOSED` permits historical
-revoked/expired counts, but no outstanding obligations. Only a created response contains a bearer.
+resolves and compares its grant. Client status validation permits historical
+revoked/expired counts for `DISPOSED`, but no outstanding obligations. Only created responses contain bearers.
 `apps/controller/src/drivers/repo/github/credentials/client/config.ts:encodeRepositoryCredentialSessionFiles`
 encodes files; the worker records the session ID before passing them to Compute.
 
@@ -216,8 +217,8 @@ until disposal is confirmed.
 mounts Secrets only in the first initializer. Sorted projections prevent key-order rollouts;
 session replacement still rolls.
 `apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts:REPOSITORY_MATERIAL_INIT_ENTRYPOINT`
-validates the complete projection, then writes mode-0700 directories and
-mode-0600 files in memory. `REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT` mounts the
+validates the complete projection, then writes in-memory mode-0700 directories and
+mode-0600 files. `REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT` mounts the
 private subPath at `/run/oce/repository-credentials`, avoiding the fsGroup-writable root. It calls
 `apps/controller/src/drivers/repo/github/credentials/client/native-git.ts:prepareNativeGitConfiguration`
 with private-file checks. Retry removes only a validated private `gitconfig`.
@@ -367,17 +368,17 @@ remains retryable after partial failure; service restart cannot prove remote tok
 
 ## Debugging and Verification
 
-Check `activeRevisionId` with `occ agent get AGENT_ID --output json`. Inspect
+`occ agent get AGENT_ID --output json` reports `activeRevisionId`. Inspect
 `REPOSITORY_BINDING_CHANGED`, `REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED`,
 `REPOSITORY_SESSION_RECOVERY_UNSAFE`, `REPOSITORY_GIT_TOKEN_QUARANTINED`, `REPOSITORY_GIT_TOKEN_PENDING`, `REPOSITORY_CLEANUP_PENDING` or
 `REPOSITORY_CLEANUP_COMPLETE`. Check registry identity and deadline before retry.
 Pending cleanup logs `worker.repository-cleanup-warning` and `cause` once.
 
-`repository-not-admitted` means an unselected target; `name-one-repository-target`
-or `name-one-repository-ref` requires explicit selection. Inspect metadata
+`repository-not-admitted` identifies unselected targets; `name-one-repository-target`
+and `name-one-repository-ref` require explicit selection. Inspect metadata
 and Pod generation without printing credentials.
 
-The [test guide](../testing/repository-credentials.md) distinguishes lifecycle, installed-runtime
+[Tests](../testing/repository-credentials.md) distinguish lifecycle, installed-runtime
 and live-provider proof. [Docker/Helm checks](../testing/docker.md#repository-runtime-volume-test-environment)
 exclude CNI; console fixtures exclude model, Slack and GitHub execution.
 Verify live PR updates, denial before provider contact and continued chat separately.
@@ -396,6 +397,7 @@ Verify live PR updates, denial before provider contact and continued chat separa
 
 ## Changelog
 
+- 2026-11-07 03:14: Capture policy. (authoring-run/ca379ce8-200d-4822-9b71-87f49f7644dc - 8c600ad53844dca9d2f9eda87ba8733c628d28aa)
 - 2026-11-06 20:39: Distinguish terminal held-launch replacement from transient standing verification. (authoring-run/d966f693-ccc4-4b07-8fbc-f66738672284 - 21a933338904531c51a67f9aaf98c3401ceff025)
 - 2026-11-06 20:36: Document expired predecessor evidence. (authoring-run/b722f746-1774-4354-b82c-00dfe10fb371 - 7e80c3a05be9b84bb1c2fd502675111ca7621d54)
 
