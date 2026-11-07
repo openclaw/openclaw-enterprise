@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-06"
-last_updated_session: "authoring-run/9ac3c663-290c-4524-94bd-7157cbd44914"
+updated: "2026-11-07"
+last_updated_session: "authoring-run/a2f2f4b1-8e0e-4f19-8ce3-11d6e118a054"
 ---
 
 # Production image upgrade flow
@@ -38,7 +38,9 @@ graph TD
     R -->|No| T["Save prepared recovery record"]
     T --> C["Read live Secret and Helm state"]
     C --> D{"Candidate Helm release deployed?"}
-    D -->|No| E["Stop API and worker Pods"]
+    D -->|No| VQ{"Both writers valid?"}
+    VQ -->|No| X
+    VQ -->|Yes| E["Stop API and worker Pods"]
     E --> F["Update Secret and run Helm migration"]
     F --> G{"Helm completes?"}
     G -->|No| H["Inspect migration and release before retry"]
@@ -188,11 +190,11 @@ Jobs and Pods; checks cannot undo committed migrations.
 
 `scripts/upgrade-production-images:quiescence_remaining`
 
-Before Secret changes or Helm, JSON Patch atomically tests each writer's observed
-UID, resource version and replicas before setting replicas to zero. Conflicts
-stop without retry; an earlier API stop remains. Within the shutdown deadline,
-Pods must disappear and both original Deployments remain at zero. Operators stop
-other writers and autoscalers and keep nodes reachable.
+Validate both Deployments before stopping either. Sequential JSON patches test
+observed UID, resource version and replicas before scaling to zero; later conflicts
+can leave the API stopped. Before the deadline, Pods must disappear and original
+Deployments remain at zero. Operators stop other writers and autoscalers and keep
+nodes reachable.
 
 The script atomically replaces protected files with the saved candidate. For
 Installation changes, it updates the Secret's Installation key with a
@@ -207,7 +209,7 @@ reconciliation; restarting old images cannot undo committed migrations.
 
 ### 4. Verify control-plane recovery
 
-`scripts/upgrade-production-images:1596`
+`scripts/upgrade-production-images:1666`
 
 The script waits for both OCC Deployments and checks controller images,
 replica counts, and changed Installation checksums. Each component needs
@@ -332,6 +334,8 @@ saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-07 02:27: Validate both writers before stopping either. (authoring-run/a2f2f4b1-8e0e-4f19-8ce3-11d6e118a054 - 7f5489fe39ba84a34987bd22d905e942cf65a8ee)
 
 - 2026-11-06 19:10: Bind resume to each submitted Helm revision. (authoring-run/9ac3c663-290c-4524-94bd-7157cbd44914 - f1c0865be4c523090af0dccc29c613ad1d47d542)
 

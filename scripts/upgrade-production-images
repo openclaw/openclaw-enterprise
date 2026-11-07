@@ -1549,6 +1549,7 @@ if ((helm_complete == 0)); then
     remaining_seconds=$((deadline - SECONDS))
     ((remaining_seconds > 0)) || die "OCC quiescence timed out; migration was not started."
   }
+  # Validate both writers before stopping either one.
   for component in api worker; do
     deployment="openclaw-enterprise-$component"
     quiescence_remaining
@@ -1569,6 +1570,10 @@ if ((helm_complete == 0)); then
       {op: "test", path: "/spec/replicas", value: .spec.replicas},
       {op: "replace", path: "/spec/replicas", value: 0}
     ]' "$evidence_dir/current-$component-deployment.json" >"$evidence_dir/quiescence-$component-patch.json"
+  done
+  # These writes are sequential; a later conflict can leave the API stopped.
+  for component in api worker; do
+    deployment="openclaw-enterprise-$component"
     quiescence_remaining
     "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" patch "deployment/$deployment" \
       --type json --patch-file "$evidence_dir/quiescence-$component-patch.json" ||
