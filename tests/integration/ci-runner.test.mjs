@@ -3428,6 +3428,90 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert.equal(record.output.omittedLines, 0);
 });
 
+test("run retains redacted Skill exercise and restoration failures within its message limit", async (t) => {
+  const root = await fixture(t);
+  const resultsPath = join(root, "results/restoration.json");
+  const statePath = join(root, "state/restoration.json");
+  await writeFile(
+    join(root, "tests/integration/restoration.test.mjs"),
+    [
+      'import test from "node:test";',
+      'import { execFileSync } from "node:child_process";',
+      `import { withSkillPolicyRestore } from ${JSON.stringify(new URL("../helpers/skill-policy-restore.mjs", import.meta.url).href)};`,
+      `import { registerQaSecret } from ${JSON.stringify(new URL("../helpers/qa-secrets.mjs", import.meta.url).href)};`,
+      'registerQaSecret("fixture-private-restore-value");',
+      'for (const kind of ["short", "long", "multiline", "key-tail"]) {',
+      "  test(`${kind} nested failures`, async () => {",
+      '    const tail = kind === "long" ? "x".repeat(20000) + "beyond-limit" : "";',
+      "    const fail = async (message) => {",
+      '      const key = ["-----BEGIN PRIVATE KEY-----", "synthetic-key-body-must-not-appear", "-----END PRIVATE KEY-----"].join("\\n");',
+      '      if (kind === "multiline") {',
+      '        execFileSync(process.execPath, ["-e", "throw new Error(process.argv[1])", `${message}\\n${key}`], { stdio: "pipe" });',
+      "      }",
+      '      throw new Error(kind === "key-tail" ? `${message}\\n${key.split("\\n").slice(0, -1).join("\\n")}` : message);',
+      "    };",
+      "    await withSkillPolicyRestore(() => withSkillPolicyRestore(",
+      "      () => fail(`original operation failed ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL} ${tail}`),",
+      "      () => fail(`enabled restoration failed fixture-private-restore-value ${tail}`),",
+      '      "Denied node-write test failed and enabled Skill policy restoration failed."),',
+      "      () => fail(`original policy restoration failed password=synthetic-restore-value ${tail}`),",
+      '      "Skill source lifecycle failed and original Skill policy restoration failed.");',
+      "  });",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { restoration: { files: [{ path: "tests/integration/restoration.test.mjs" }] } },
+    groups: { ci: ["restoration"] },
+  });
+
+  // Run the real helper through Node's serialization, the unchanged reporter, and both outputs.
+  const result = run(root, [
+    "run",
+    "restoration",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    statePath,
+    "--results",
+    resultsPath,
+  ]);
+  assert.equal(result.status, 1, result.stderr);
+  const summaryText = await readFile(resultsPath, "utf8");
+  const detailText = await readFile(`${statePath}.diagnostics.json`, "utf8");
+  const summary = JSON.parse(summaryText);
+  const details = JSON.parse(detailText).failures[0].tests;
+  for (const name of [
+    "short nested failures",
+    "long nested failures",
+    "multiline nested failures",
+    "key-tail nested failures",
+  ]) {
+    const failure = summary.files[0].tests.find((entry) => entry.name === name);
+    const detail = details.find((entry) => entry.name === name);
+    for (const message of [failure.error.message, detail.message]) {
+      assert.match(message, /original operation failed/);
+      assert.match(message, /enabled restoration failed/);
+      assert.match(message, /original policy restoration failed password=\[redacted\]/);
+      assert.ok(message.length <= 600);
+      if (name === "multiline nested failures") {
+        assert.equal(message.match(/Node\.js v/g).length, 3);
+      }
+    }
+  }
+  assert.match(result.stderr, /original operation failed/);
+  assert.match(result.stderr, /enabled restoration failed/);
+  assert.match(result.stderr, /original policy restoration failed password=\[redacted\]/);
+  assert.doesNotMatch(
+    `${summaryText}\n${detailText}\n${result.stdout}\n${result.stderr}`,
+    /secretauthvalue|fixture-private-restore-value|synthetic-restore-value|synthetic-key-body-must-not-appear|beyond-limit/,
+  );
+});
+
 test("the reporter sends interrupted tests and the output tail, newest first, on a timeout", async () => {
   const { default: reporter } = await import("../../scripts/ci/reporter.mjs");
   const render = async (events) => {

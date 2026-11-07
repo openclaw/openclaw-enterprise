@@ -43,6 +43,7 @@ import {
   OTEL_RESOURCE,
 } from "../helpers/logging-otel-observation.mjs";
 import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
+import { withSkillPolicyRestore } from "./skill-policy-restore.mjs";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 import { defaultUsersIAM } from "./default-users-iam.mjs";
 import { installManagedSlackProxyFixture } from "./managed-slack-proxy-k3d.mjs";
@@ -3595,9 +3596,9 @@ async function assertDedicatedSkillSources(topology) {
       ),
     );
   }
-  try {
+  const exercise = async () => {
     await deploy(enabled);
-    return await assertDedicatedSkillSourceLifecycle({
+    return assertDedicatedSkillSourceLifecycle({
       callGateway: (method, params) => gatewayCall(topology, method, params),
       readHarnessFile: (path) =>
         readFileOrMissing(topology.placement, topology.harnessPod.metadata.name, path),
@@ -3616,17 +3617,22 @@ async function assertDedicatedSkillSources(topology) {
         (transfer.config ??= {}).nodes = {
           "*": { ...structuredClone(policy), allowWritePaths: [] },
         };
-        try {
-          await deploy(denied);
-          await run();
-        } finally {
-          await deploy(enabled);
-        }
+        await withSkillPolicyRestore(
+          async () => {
+            await deploy(denied);
+            await run();
+          },
+          () => deploy(enabled),
+          "Denied node-write test failed and enabled Skill policy restoration failed.",
+        );
       },
     });
-  } finally {
-    await deploy(original.data.values);
-  }
+  };
+  return withSkillPolicyRestore(
+    exercise,
+    () => deploy(original.data.values),
+    "Skill source lifecycle failed and original Skill policy restoration failed.",
+  );
 }
 
 async function assertGatewayEffectiveDefaultModel(context, topology, expectedModel) {
