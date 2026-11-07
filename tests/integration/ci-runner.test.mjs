@@ -3437,6 +3437,37 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert.equal(record.output.omittedLines, 0);
 });
 
+test("Skill policy restore preserves failures that cannot be formatted", async () => {
+  const { withSkillPolicyRestore } = await import("../helpers/skill-policy-restore.mjs");
+  const original = Object.create(null);
+  const restoration = new Error("synthetic restoration failure");
+  let restoreCalls = 0;
+
+  await assert.rejects(
+    withSkillPolicyRestore(
+      async () => {
+        throw original;
+      },
+      async () => {
+        restoreCalls += 1;
+        throw restoration;
+      },
+      "Synthetic exercise and restoration failed.",
+    ),
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.cause, original);
+      assert.equal(error.errors.length, 2);
+      assert.equal(error.errors[0], original);
+      assert.equal(error.errors[1], restoration);
+      assert.match(error.message, /^Exercise: Failure details unavailable$/m);
+      assert.match(error.message, /^Restoration: synthetic restoration failure$/m);
+      return true;
+    },
+  );
+  assert.equal(restoreCalls, 1);
+});
+
 test("run retains redacted Skill exercise and restoration failures within its message limit", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/restoration.json");
