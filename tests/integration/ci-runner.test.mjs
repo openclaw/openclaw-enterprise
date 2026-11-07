@@ -3372,6 +3372,12 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       `  for (const message of ${JSON.stringify(phaseDiagnostics)}) t.diagnostic(message);`,
       '  assert.fail(`password="fixture,\\nprivate-tail" phase=after\\nOCSF-JSON {"payload":"structured-private-early"}\\n${"stage line\\n".repeat(80)}OCSF-JSON {"payload":"structured-private-late"\\ndecisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
       "});",
+      'test("clipped failure", () => {',
+      '  const clipped = (prefix, tail) => prefix.padEnd(16_384 - 9, "x") + "\\n" + tail;',
+      '  const error = new Error(clipped("OCSF-JSON ", process.env.CI_RUNNER_FIXTURE_CREDENTIAL));',
+      '  error.stack = "Error: clipped\\n    " + clipped("at OCSF-JSON ", "at " + process.env.CI_RUNNER_FIXTURE_CREDENTIAL).replace("\\n", "\\n    ");',
+      "  throw error;",
+      "});",
       "",
     ].join("\n"),
   );
@@ -3438,6 +3444,15 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert.doesNotMatch(
     `${JSON.stringify(summary)}\n${result.stdout}\n${result.stderr}\n${text}`,
     /structured-private|OCSF-JSON/,
+  );
+  // Removing a structured line must not hide the reporter's cut through a secret.
+  assert.equal(
+    summary.files[0].tests.find(({ name }) => name === "clipped failure").status,
+    "failed",
+  );
+  assert.doesNotMatch(
+    `${JSON.stringify(summary)}\n${result.stdout}\n${result.stderr}\n${text}`,
+    /secretau|at secre/,
   );
   const report = JSON.parse(text);
   assert.equal(report.lane, "details");

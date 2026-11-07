@@ -214,8 +214,8 @@ function redactText(text, limit, secrets, root, cut) {
   if (typeof text !== "string" || text.length === 0) {
     return undefined;
   }
-  text = withoutStructuredLogLines(text);
   cut ??= text.length >= failureInputLimit;
+  text = withoutStructuredLogLines(text);
   let result = stripVTControlCharacters(text.slice(0, failureInputLimit));
   if (root.length > 1) {
     result = result.replaceAll(`file://${root}/`, "").replaceAll(`${root}/`, "");
@@ -299,13 +299,12 @@ function redactDetailText(text, secrets, root) {
   if (typeof text !== "string") {
     return undefined;
   }
+  const cut = text.length >= failureInputLimit;
   text = withoutStructuredLogLines(text);
   const raw = dropCredentialLines(
     stripControl(text.slice(0, failureInputLimit)).replace(privateKeyShape, "[redacted]"),
   );
-  return dropCredentialLines(
-    redactText(raw, failureInputLimit, secrets, root, text.length >= failureInputLimit),
-  );
+  return dropCredentialLines(redactText(raw, failureInputLimit, secrets, root, cut));
 }
 
 export function redactFailureDetail(error, secrets, root) {
