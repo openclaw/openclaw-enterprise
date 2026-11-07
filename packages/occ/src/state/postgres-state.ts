@@ -691,7 +691,13 @@ function revisionSummaryFromRow(row: PostgresRow): Readonly<AgentRevisionSummary
     ...metadata,
     configurationId: text(row, "configuration_id"),
     configurationGeneration,
-    harness: { id: harness.id, version: harness.version, mode: harness.mode },
+    harness: {
+      id: harness.id,
+      version: harness.version,
+      mode: harness.mode,
+      overrides: harness.overrides as Readonly<Record<string, unknown>>,
+      configuration: harness.configuration as Readonly<Record<string, unknown>>,
+    },
   });
 }
 

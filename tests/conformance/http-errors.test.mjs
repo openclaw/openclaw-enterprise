@@ -356,7 +356,7 @@ const cases = [
       status: 409,
       code: "RESOURCE_CONFLICT",
       message:
-        "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must match the Installation's runtime.modelProvider.baseUrl. Rebind and redeploy Agents, then delete the old source once unused.",
+        "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must permit the destination selected by the Agent revision. Rebind and redeploy Agents, then delete the old source once unused.",
     },
   ],
   [

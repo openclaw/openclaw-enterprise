@@ -93,7 +93,7 @@ import {
   validPluginApprovers,
   isBackendId,
 } from "@openclaw-enterprise/contracts";
-import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
   AGENT_NAME_CONFLICT,
   CREDENTIAL_SOURCE_NAME_CONFLICT,
@@ -1045,10 +1045,12 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     typeof revision.harness !== "object" ||
     revision.harness === null ||
     Array.isArray(revision.harness) ||
-    Object.keys(revision.harness).length !== 3 ||
+    Object.keys(revision.harness).length !== 5 ||
     !Object.hasOwn(revision.harness, "id") ||
     !Object.hasOwn(revision.harness, "version") ||
     !Object.hasOwn(revision.harness, "mode") ||
+    asRecord(revision.harness.overrides) === undefined ||
+    asRecord(revision.harness.configuration) === undefined ||
     !isNonEmptyString(revision.harness.id) ||
     !isNonEmptyString(revision.harness.version) ||
     (revision.harness.mode !== "embedded" && revision.harness.mode !== "dedicated") ||

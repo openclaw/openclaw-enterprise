@@ -592,7 +592,7 @@ export function createWorkerRevisionFixtures(
         configurationKind: "agent",
         configurationGeneration: 1,
         executionAdmission: { version: 2, mode: "unprotected" },
-        harness: approvedHarness,
+        harness: { ...approvedHarness, overrides: {}, configuration: {} },
         compute: { id: compute.id, implementation: compute.implementation },
         ...(sandboxDriverId === undefined ? {} : { sandboxDriverId }),
         ...(plugins === undefined ? {} : { plugins }),
@@ -607,7 +607,15 @@ export function createWorkerRevisionFixtures(
         await state.transact(async (unit) => {
           const [auth] = await controller.admitHarnessAuth(unit, actorId, owner);
           assert.deepEqual(auth, harnessAuth);
-          const sources = await controller.admitCredentialSources(unit, actorId, owner, sandbox);
+          const sources = await controller.admitCredentialSources(
+            unit,
+            actorId,
+            owner,
+            sandbox,
+            undefined,
+            candidate.harness,
+            compute,
+          );
           assert.deepEqual(sources, credentialSources);
           const configuration = { agents: { defaults: { model: "codex/fixture-model" } } };
           const plan = (chosen) =>
@@ -619,6 +627,7 @@ export function createWorkerRevisionFixtures(
               sandbox.id,
               repositoryCredentials,
               chosen,
+              candidate.harness.configuration,
             );
           await assert.rejects(
             plan({ ...auth, sourceId: "unselected" }),
@@ -654,6 +663,12 @@ export function createWorkerRevisionFixtures(
         // cannot deadlock with a worker holding the Namespace while locking the Agent.
         await unit.namespaces.lockNamespace(namespace.id);
         await unit.agents.lockAgent(namespace.id, owner.id);
+        candidate.harness.configuration =
+          compute.resolveHarnessConfiguration?.(
+            candidate.harness,
+            harnessAuth,
+            candidate.configuration,
+          ) ?? {};
         const admission = compute.admitRevision?.(freezeAgentRevision(candidate));
         if (admission !== undefined) {
           candidate.compute = { ...candidate.compute, admission };

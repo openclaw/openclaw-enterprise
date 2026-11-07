@@ -296,7 +296,7 @@ test("production image upgrades preserve controller/runtime ownership and wait f
   const bin = join(directory, "bin");
   await mkdir(bin);
   // Use real JSON operations for the run's dispatch journal and receipts.
-  const dispatchJson = `if [[ "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$1" == '-ser' || "$1" == '-cser' ]]; then
+  const dispatchJson = `if [[ "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$1" == '-ser' || "$1" == '-cser' ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 `;
@@ -880,7 +880,11 @@ esac
       const journal = await readFile(journalPath);
       assert.deepEqual(lastDispatchEntry(journal), ["send", "ns_test", "agt_test"]);
       const calls = await readFile(log, "utf8");
-      assert.equal(calls.match(/^occ .* agent deploy agt_test$/gmu)?.length, 1);
+      assert.equal(
+        calls.match(/^occ .* agent deploy agt_test --retain-harness-overrides rev_test$/gmu)
+          ?.length,
+        1,
+      );
 
       // An untrusted response cannot authorize another deployment on resume.
       await assert.rejects(

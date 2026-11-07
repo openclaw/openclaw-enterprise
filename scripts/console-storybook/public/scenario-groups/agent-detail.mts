@@ -44,7 +44,8 @@ type AgentDetailScenario = {
   rules?: Parameters<typeof createFixtureFetch>[0];
   nextStory?: string;
   deployed?: true;
-  auth?: "oauth" | "codex_pat" | null;
+  auth?: "oauth" | "codex_pat" | "api-source" | null;
+  harnessOverrides?: Record<string, unknown>;
   agentPlugins?: PluginDesiredState;
   agentPluginApprovers?: PluginApprovers;
   pluginCapabilities?: PluginFieldsOptions["capabilities"];
@@ -238,6 +239,41 @@ export function createAgentDetailScenarios({
     } satisfies Record<string, AgentDetailScenario>,
 
     configuration: {
+      harnessOverrides: {
+        group: "Pages/Agent detail",
+        name: "Harness destination override",
+        path: draft,
+        deployed: true,
+        auth: "api-source",
+        harnessOverrides: {
+          modelProvider: {
+            baseUrl: "https://evaluation.example.com/v1",
+            protocol: "openai-responses",
+            supportsStandaloneWebSearch: false,
+          },
+        },
+        description:
+          "Submit requested overrides and inspect the resolved settings after deployment.",
+        steps: [
+          "Read the requested destination beside the deployment checklist. Open Harness destination, choose Override model provider, enter an authorized HTTPS /v1 endpoint, then deploy and inspect requested and resolved settings.",
+        ],
+        gap: "Simulated UI proof only; source consent, persistence and inference routing require integration checks.",
+      },
+      harnessDeploymentPending: {
+        group: "Pages/Agent detail",
+        name: "Harness deployment pending",
+        path: draft,
+        description:
+          "The actual deployment request is pending; duplicate submission is unavailable.",
+        rules: [{ method: "POST", suffix: "/deploy", hold: true }],
+      },
+      harnessDeploymentDenied: {
+        group: "Pages/Agent detail",
+        name: "Harness deployment denied",
+        path: draft,
+        description: "Admission refuses the requested settings without creating a version.",
+        rules: [{ method: "POST", suffix: "/deploy", status: 403 }],
+      },
       draft: {
         group: "Pages/Agent detail",
         name: "First version",
