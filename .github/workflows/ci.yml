@@ -494,10 +494,21 @@ jobs:
           ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
         run: node scripts/ci/first-agent-smoke.mjs images
       - name: Install, deploy, chat, stop and start
+        id: smoke
         run: node scripts/ci/first-agent-smoke.mjs run
       - name: Show Docker Hub pull endpoints
         if: ${{ !cancelled() }}
         run: bash scripts/ci/docker-hub-mirror.sh report
+      - name: Upload First Agent Smoke timings
+        if: ${{ !cancelled() && (steps.smoke.outcome == 'success' || steps.smoke.outcome == 'failure') }}
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: first-agent-smoke-timing-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/first-agent-smoke-timing.json
+          if-no-files-found: ignore
+          retention-days: 7
 
   ci-required:
     name: CI Required
