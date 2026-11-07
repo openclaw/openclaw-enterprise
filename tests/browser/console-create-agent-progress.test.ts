@@ -327,6 +327,14 @@ test("a failed provisioning job marks its step failed and a retry starts the met
   assert.equal(await retryButton.isVisible(), false);
   await runProvisioningPolls(page, () => Promise.resolve(), work.url, reads.length + 1);
   await waitForProvisioningFailure(page);
+  // The busy flag cleared with the attempt: Retry returns enabled and can run the same job
+  // again, and Create Agent is no longer held busy.
+  assert.equal(await retryButton.isVisible(), true);
+  assert.equal(await retryButton.isEnabled(), true);
+  assert.equal(
+    await page.getByRole("button", { name: "Create Agent", exact: true }).getAttribute("aria-busy"),
+    "false",
+  );
   const paints = await page.evaluate(() => globalThis.meterPaints);
   const layouts = paints.map((paint) => paint.states.join());
   assert.ok(

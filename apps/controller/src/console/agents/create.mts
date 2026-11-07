@@ -3758,6 +3758,9 @@ function renderAgentForm(
         keepDraftAfterRefusal();
       }
     } finally {
+      // Every way an attempt ends clears the busy flag, the retry path included: its callback
+      // sets createPending directly, and only this shared finally runs for a retried attempt.
+      endCreate();
       if (context.isCurrent()) {
         pending = false;
         updateControls();
