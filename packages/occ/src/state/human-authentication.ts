@@ -13,7 +13,14 @@ export interface HumanAuthenticationActor {
   readonly userId: string;
   readonly sessionId: string;
   readonly principalId: string;
+  /** Recheck the selected IAM Driver on the caller's transaction; throw on denial, without auditing. */
+  readonly authorize: (scope: {
+    readonly targetPrincipalId?: string;
+    readonly successorPrincipalId?: string;
+  }) => Promise<void>;
 }
+
+type SessionActor = Pick<HumanAuthenticationActor, "userId" | "sessionId" | "principalId">;
 
 export interface HumanAuthenticationAccount {
   readonly userId: string;
@@ -290,7 +297,11 @@ export class PostgresHumanAuthentication {
    * enrolment rule for activation, online repair (enrolAccount) and stopped maintenance; it
    * runs inside the caller's State transaction and is idempotent.
    */
-  async enrolUser(unit: PlatformUnitOfWork, userId: string): Promise<HumanAuthenticationEnrolment> {
+  async enrolUser(
+    unit: PlatformUnitOfWork,
+    userId: string,
+    actor?: HumanAuthenticationActor,
+  ): Promise<HumanAuthenticationEnrolment> {
     await this.lockUser(unit, userId);
     const principal = await this.findPrincipal(unit, userId);
     if (principal === undefined) {
@@ -304,6 +315,9 @@ export class PostgresHumanAuthentication {
     );
     if (methods.length !== 1) {
       return { enrolled: false, reason: "PASSWORD_METHOD" };
+    }
+    if (actor !== undefined) {
+      await this.guardAuthority(unit, actor, principal);
     }
     const [inserted] = await this.query(
       unit,
@@ -998,7 +1012,7 @@ export class PostgresHumanAuthentication {
   /** Locks the actor and the named users in one order, then requires the actor's session to be current. */
   private async guardActor(
     unit: PlatformUnitOfWork,
-    actor: HumanAuthenticationActor,
+    actor: SessionActor,
     userIds: readonly string[],
     intent: "account-operation" | "session-hold" = "account-operation",
   ): Promise<void> {
@@ -1036,6 +1050,28 @@ export class PostgresHumanAuthentication {
     }
   }
 
+  private async guardAuthority(
+    unit: PlatformUnitOfWork,
+    actor: HumanAuthenticationActor,
+    targetPrincipalId?: string,
+    successorPrincipalId?: string,
+  ): Promise<void> {
+    // Acquire after row locks without waiting into another writer's lock order.
+    // The next statement sees committed policy; these table locks last through COMMIT.
+    await this.query(unit, "SELECT occ.hold_account_administration_policy($1)", [
+      this.installationId,
+    ]);
+    if (typeof actor.authorize !== "function") {
+      throw new CallerStateDeniedError("The account operation has no authorization guard.");
+    }
+    await actor.authorize({
+      ...(targetPrincipalId === undefined ? {} : { targetPrincipalId }),
+      ...(successorPrincipalId === undefined ? {} : { successorPrincipalId }),
+    });
+    // Method locks and the asynchronous IAM decision can outlast the session.
+    await this.guardActor(unit, actor, []);
+  }
+
   /** Retains the guarded actor on the caller's original State transaction. */
   async holdSession(unit: PlatformUnitOfWork, userId: string, sessionId: string): Promise<void> {
     await this.guardActor(
@@ -1055,13 +1091,14 @@ export class PostgresHumanAuthentication {
     userId: string,
     actor: HumanAuthenticationActor,
   ): Promise<HumanAuthenticationAccount> {
-    return this.state.transact(async (unit) => {
+    return this.state.transactReadCommitted(async (unit) => {
       const account = await this.guardAccounts(unit, userId, actor);
       const methods = await this.query(
         unit,
         `SELECT id, provider_id, account_id FROM occ.account WHERE user_id = $1 ORDER BY id`,
         [userId],
       );
+      await this.guardAuthority(unit, actor, account.principal_id as string);
       return {
         userId,
         principalId: account.principal_id as string,
@@ -1089,7 +1126,7 @@ export class PostgresHumanAuthentication {
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
       throw new ResourceStateConflictError("A current account version is required.");
     }
-    return this.state.transact(async (unit) => {
+    return this.state.transactReadCommitted(async (unit) => {
       const account = await this.guardAccounts(unit, userId, actor, expectedVersion);
       if (account.disabled !== false) {
         throw new ResourceStateConflictError("The authentication account is disabled.");
@@ -1099,6 +1136,7 @@ export class PostgresHumanAuthentication {
         `SELECT id, user_id, identity_only FROM occ.account WHERE provider_id = $1 AND account_id = $2 FOR SHARE`,
         [providerId, subject],
       );
+      await this.guardAuthority(unit, actor, account.principal_id as string);
       if (existing !== undefined) {
         // The route admits only an Installation administrator covering the target Principal
         // (controller humanAccountActor), who can already list every account's sign-in
@@ -1147,7 +1185,7 @@ export class PostgresHumanAuthentication {
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
       throw new ResourceStateConflictError("A current account version is required.");
     }
-    return this.state.transact(async (unit) => {
+    return this.state.transactReadCommitted(async (unit) => {
       const account = await this.guardAccounts(unit, userId, actor, expectedVersion);
       const [method] = await this.query(
         unit,
@@ -1162,6 +1200,7 @@ export class PostgresHumanAuthentication {
       ) {
         throw new ResourceStateConflictError("Only an attached external identity can be detached.");
       }
+      await this.guardAuthority(unit, actor, account.principal_id as string);
       // Bindings cascade with the method; the recovery credential is never identity-only.
       await this.query(unit, `DELETE FROM occ.account WHERE id = $1`, [methodId]);
       await this.query(
@@ -1190,7 +1229,7 @@ export class PostgresHumanAuthentication {
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
       throw new ResourceStateConflictError("A current account version is required.");
     }
-    await this.state.transact(async (unit) => {
+    await this.state.transactReadCommitted(async (unit) => {
       const account = await this.guardAccounts(unit, userId, actor, expectedVersion);
       if (operation === "disable") {
         const [recovery] = await this.query(
@@ -1205,6 +1244,7 @@ export class PostgresHumanAuthentication {
       if (operation === "enable" && account.disabled !== true) {
         throw new ResourceStateConflictError("The authentication account is not disabled.");
       }
+      await this.guardAuthority(unit, actor, account.principal_id as string);
       await this.query(
         unit,
         `UPDATE occ.human_authentication_accounts SET disabled = CASE $2::text
@@ -1219,7 +1259,7 @@ export class PostgresHumanAuthentication {
 
   /** Present designation under the administrator guards; this is not an operation-result receipt. */
   async readRecovery(actor: HumanAuthenticationActor): Promise<HumanAuthenticationRecovery> {
-    return this.state.transact(async (unit) => {
+    return this.state.transactReadCommitted(async (unit) => {
       await this.guardActor(unit, actor, []);
       const [row] = await this.query(
         unit,
@@ -1229,6 +1269,7 @@ export class PostgresHumanAuthentication {
       if (row === undefined) {
         throw new ScopeViolationError("The recovery designation is unavailable.");
       }
+      await this.guardAuthority(unit, actor);
       return {
         userId: row.user_id as string,
         principalId: row.principal_id as string,
@@ -1252,7 +1293,7 @@ export class PostgresHumanAuthentication {
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
       throw new ResourceStateConflictError("A current account version is required.");
     }
-    return this.state.transact(async (unit) => {
+    return this.state.transactReadCommitted(async (unit) => {
       // The same lock serializes activation, so a designation cannot appear or move concurrently.
       await this.query(unit, `SELECT pg_advisory_xact_lock(1868785005, hashtext($1))`, [
         this.installationId,
@@ -1293,6 +1334,7 @@ export class PostgresHumanAuthentication {
       // The holder's email keys the reserved password lane; guardActor locked this row, so the
       // email is read in the same transaction that commits the designation.
       const email = (await this.lockUser(unit, userId)).email as string;
+      await this.guardAuthority(unit, actor, designation.principal_id as string, principalId);
       if (designation.user_id === userId) {
         if (designation.principal_id !== principalId || designation.method_id !== method.id) {
           throw new ScopeViolationError("The recovery designation is inconsistent.");
@@ -1328,9 +1370,9 @@ export class PostgresHumanAuthentication {
     userId: string,
     actor: HumanAuthenticationActor,
   ): Promise<{ principalId: string; version: number; created: boolean }> {
-    return this.state.transact(async (unit) => {
+    return this.state.transactReadCommitted(async (unit) => {
       await this.guardActor(unit, actor, [userId]);
-      const enrolment = await this.enrolUser(unit, userId);
+      const enrolment = await this.enrolUser(unit, userId, actor);
       if (!enrolment.enrolled) {
         throw enrolment.reason === "PRINCIPAL_MISSING"
           ? new ScopeViolationError("The authentication Principal is unavailable.")
