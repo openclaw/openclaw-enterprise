@@ -14,6 +14,11 @@ Job writers until the installer exits. Choose a new receipt directory under a
 private, durable parent for this target. Use a filesystem that enforces owner-only
 permissions and supports hard links and directory sync. Keep the receipt after install.
 
+Record the chart source commit and the matching CLI release or build commit and
+binary checksum in a separate private handoff record. The receipt's `version` is
+its file-format version, not the OCE release; an unversioned local CLI build can
+print `dev`. Keep this source identity with the receipt without editing its files.
+
 The CLI syncs `intent.json` (target, attempt ID, time and input hashes) and
 `dispatch.json` before starting Helm once. While Helm waits, it can save the
 first recognized, attempt-marked Job UID in `job.json`. `helm-result.json` records
@@ -25,7 +30,7 @@ The installer removes private temporary copies of the kubeconfig, chart and
 values on normal exit. After a forced kill, confirm its Helm process has exited
 before removing that installation's `occ-install-*` temporary directory. A forced kill during handoff can also leave an `occ-handoff-*`
 directory with the reader's private kubeconfig.
-Share only the receipt with the authorized reader.
+Share only the receipt and this source identity record with the authorized reader.
 
 ## Resume an installation in progress
 
