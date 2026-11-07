@@ -1157,25 +1157,37 @@ test("upgrade availability preserves action and evidence-write failures", async 
   // action is still pending. Preserve its failure and avoid an unhandled observer rejection.
   const unavailableDirectory = join(directory, "not-a-directory");
   await writeFile(unavailableDirectory, "occupied");
-  await assert.rejects(
-    measureUpgradeAvailability(
-      request,
-      "original-installation",
-      unavailableDirectory,
-      async () => {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        throw upgradeFailure;
+  for (const succeeded of [false, true]) {
+    await assert.rejects(
+      measureUpgradeAvailability(
+        request,
+        "original-installation",
+        unavailableDirectory,
+        async () => {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          if (!succeeded) {
+            throw upgradeFailure;
+          }
+        },
+        async () => {
+          throw recordFailure;
+        },
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof AggregateError);
+        const evidenceErrors = succeeded ? error.errors : error.errors.slice(1);
+        if (!succeeded) {
+          assert.equal(error.cause, upgradeFailure);
+          assert.equal(error.errors[0], upgradeFailure);
+        }
+        // Retain one checkpoint failure and the distinct final proof failure.
+        assert.equal(evidenceErrors.length, 2);
+        assert.equal(evidenceErrors[0].code, "ENOTDIR");
+        assert.equal(evidenceErrors[1], recordFailure);
+        return true;
       },
-      async () => {},
-    ),
-    (error: unknown) => {
-      assert.ok(error instanceof AggregateError);
-      assert.equal(error.cause, upgradeFailure);
-      assert.equal(error.errors[0], upgradeFailure);
-      assert.equal(error.errors[1].code, "ENOTDIR");
-      return true;
-    },
-  );
+    );
+  }
   await assert.rejects(
     measureUpgradeAvailability(
       request,

@@ -316,7 +316,7 @@ export async function measureUpgradeAvailability<T>(
     status: number | undefined;
   }[] = [];
   let previousFinish: number | undefined;
-  let recordFailure: { error: unknown } | undefined;
+  const evidenceErrors: unknown[] = [];
   const evidence = (upgradeSucceeded: boolean | null) => ({
     requestTimeoutMs: 5_000,
     intervalAfterResponseMs: 1_000,
@@ -379,7 +379,9 @@ export async function measureUpgradeAvailability<T>(
       await rename(`${path}.tmp`, path);
     } catch (error) {
       // Keep observing without rejecting in parallel with the running upgrade.
-      recordFailure ??= { error };
+      if (evidenceErrors.length === 0) {
+        evidenceErrors.push(error);
+      }
     }
   };
   await sample("before");
@@ -405,20 +407,23 @@ export async function measureUpgradeAvailability<T>(
   try {
     await record(evidence(outcome.succeeded));
   } catch (error) {
-    recordFailure ??= { error };
+    evidenceErrors.push(error);
   }
   if (!outcome.succeeded) {
-    if (recordFailure) {
+    if (evidenceErrors.length > 0) {
       throw new AggregateError(
-        [outcome.error, recordFailure.error],
+        [outcome.error, ...evidenceErrors],
         "Upgrade failed and API availability observations could not be recorded",
         { cause: outcome.error },
       );
     }
     throw outcome.error;
   }
-  if (recordFailure) {
-    throw recordFailure.error;
+  if (evidenceErrors.length === 1) {
+    throw evidenceErrors[0];
+  }
+  if (evidenceErrors.length > 1) {
+    throw new AggregateError(evidenceErrors, "API availability observations could not be recorded");
   }
   return outcome.value;
 }
