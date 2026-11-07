@@ -7,13 +7,17 @@ function failureSummaries(error, limit) {
   if (previous) {
     return previous.slice(0, limit);
   }
-  const text = error instanceof Error ? error.message : String(error);
-  // Mask the entire message before choosing lines, including multi-line private keys.
-  const lines = redactedQaTail(text, process.env, { lines: Infinity, lineChars: 100 });
-  const header =
-    lines.find((line) => /^\s*\w*Error(?:\s*\[[^\]]*\])?:/.test(line)) ?? lines[0] ?? "";
-  const tail = lines.at(-1) ?? "";
-  return [tail === header ? header : `${header} | ${tail.slice(0, 40)}`];
+  try {
+    const text = error instanceof Error ? error.message : String(error);
+    // Mask the entire message before choosing lines, including multi-line private keys.
+    const lines = redactedQaTail(text, process.env, { lines: Infinity, lineChars: 100 });
+    const header =
+      lines.find((line) => /^\s*\w*Error(?:\s*\[[^\]]*\])?:/.test(line)) ?? lines[0] ?? "";
+    const tail = lines.at(-1) ?? "";
+    return [tail === header ? header : `${header} | ${tail.slice(0, 40)}`];
+  } catch {
+    return ["Failure details unavailable"];
+  }
 }
 
 export async function withSkillPolicyRestore(run, restore, combinedMessage) {
