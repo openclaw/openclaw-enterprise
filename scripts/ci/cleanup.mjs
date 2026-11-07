@@ -324,6 +324,25 @@ async function cleanupComposePostgres(resource, state, statePath) {
     }
     throw new Error(`Refusing unconfirmed PostgreSQL bootstrap ownership: ${resource.directory}`);
   }
+  if (resource.directory !== undefined && resource.initSqlCreated !== true) {
+    if (resource.initSqlCreated === false) {
+      try {
+        // Only an empty owned directory is safe before SQL creation is confirmed.
+        await rmdir(resource.directory);
+        return;
+      } catch (error) {
+        if (error.code === "ENOENT") {
+          return;
+        }
+        if (error.code !== "ENOTEMPTY" && error.code !== "EEXIST") {
+          throw error;
+        }
+      }
+    }
+    throw new Error(
+      `Refusing unconfirmed PostgreSQL bootstrap SQL ownership: ${resource.directory}`,
+    );
+  }
   await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
     env: {
       OCC_POSTGRES_PORT: String(resource.port),

@@ -291,34 +291,38 @@ if (process.argv[1] === ${JSON.stringify(preparePath)}) {
   );
 }
 
-test(
-  "PostgreSQL staging refuses an existing SQL symlink without changing its target",
-  {
-    skip: process.platform === "win32" ? "Requires POSIX symlinks." : false,
-  },
-  async (t) => {
-    const root = await fixture(t);
-    const statePath = join(root, "state.json");
-    const target = join(root, "unrelated.sql");
-    await writeFile(target, "unrelated content");
-    const preload = join(root, "competing-symlink.mjs");
-    const docker = join(root, "docker.mjs");
-    await writeFile(
-      docker,
-      `#!${process.execPath}
+for (const scenario of ["symlink", "regular-file", "confirmation-failure"]) {
+  test(
+    `PostgreSQL staging preserves unconfirmed SQL after ${scenario}`,
+    {
+      skip:
+        process.platform === "win32" || process.getuid?.() === 0
+          ? "Requires POSIX symlinks and permission enforcement for a non-root caller."
+          : false,
+    },
+    async (t) => {
+      const root = await fixture(t);
+      const statePath = join(root, "state.json");
+      const target = join(root, "unrelated.sql");
+      await writeFile(target, "unrelated content");
+      const preload = join(root, "sql-write-boundary.mjs");
+      const docker = join(root, "docker.mjs");
+      await writeFile(
+        docker,
+        `#!${process.execPath}
 if (process.argv.includes("up")) process.exit(17);
 console.log("29.9.2");
 `,
-      { mode: 0o700 },
-    );
-    // Insert a real symlink only at the staged write boundary, then call the original writer.
-    // The fixture controls scheduling, not writeFile's flags or filesystem result.
-    await writeFile(
-      preload,
-      `
+        { mode: 0o700 },
+      );
+      // Schedule real filesystem changes around the original writer, without replacing its result.
+      // A failed confirmation save must preserve even a file that this process successfully wrote.
+      await writeFile(
+        preload,
+        `
 import fs from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 if (process.argv[1] === ${JSON.stringify(preparePath)}) {
   const writeFile = fs.writeFile;
   fs.writeFile = async (path, data, options) => {
@@ -326,34 +330,50 @@ if (process.argv[1] === ${JSON.stringify(preparePath)}) {
       .then(JSON.parse, (error) => { if (error.code === "ENOENT") return undefined; throw error; });
     const resource = state?.resources.find((entry) => entry.kind === "compose-postgres");
     if (resource?.directory && path === join(resource.directory, "init-local.sql")) {
-      await fs.symlink(${JSON.stringify(target)}, path);
+      if (${scenario === "symlink"}) await fs.symlink(${JSON.stringify(target)}, path);
+      if (${scenario === "regular-file"}) await writeFile(path, "unrelated content");
+      const result = await writeFile(path, data, options);
+      if (${scenario === "confirmation-failure"}) await fs.chmod(dirname(${JSON.stringify(statePath)}), 0o500);
+      return result;
     }
     return writeFile(path, data, options);
   };
   syncBuiltinESMExports();
 }
 `,
-    );
+      );
+      let result;
+      try {
+        result = await runPrepare(["--lane", "postgres-auth", "--state", statePath], {
+          OCC_DOCKER_BIN: docker,
+          NODE_OPTIONS: `--import=${preload}`,
+        });
+      } finally {
+        await chmod(root, 0o700);
+      }
+      const state = JSON.parse(await readFile(statePath, "utf8"));
+      const initSql = join(state.resources[0].directory, "init-local.sql");
+      const expectedSql =
+        scenario === "confirmation-failure"
+          ? await readFile(join(repositoryRoot, "migrations/init-local.sql"), "utf8")
+          : "unrelated content";
+      const cleanup = await spawnResult(
+        process.execPath,
+        [join(repositoryRoot, "scripts/ci/cleanup.mjs"), "--state", statePath],
+        { env: { ...process.env, OCC_DOCKER_BIN: docker } },
+      );
 
-    const result = await runPrepare(["--lane", "postgres-auth", "--state", statePath], {
-      OCC_DOCKER_BIN: docker,
-      NODE_OPTIONS: `--import=${preload}`,
-    });
-    const state = JSON.parse(await readFile(statePath, "utf8"));
-    const cleanup = await spawnResult(
-      process.execPath,
-      [join(repositoryRoot, "scripts/ci/cleanup.mjs"), "--state", statePath],
-      { env: { ...process.env, OCC_DOCKER_BIN: docker } },
-    );
-
-    assert.equal(await readFile(target, "utf8"), "unrelated content");
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /EEXIST/);
-    assert.equal(cleanup.status, 1);
-    assert.match(cleanup.stderr, /unexpected PostgreSQL bootstrap contents/);
-    assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
-  },
-);
+      assert.equal(await readFile(initSql, "utf8"), expectedSql);
+      assert.equal(await readFile(target, "utf8"), "unrelated content");
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, scenario === "confirmation-failure" ? /EACCES/ : /EEXIST/);
+      assert.equal(cleanup.status, 1);
+      assert.match(cleanup.stderr, /unconfirmed PostgreSQL bootstrap SQL ownership/);
+      assert.equal(state.resources[0].initSqlCreated, false);
+      assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+    },
+  );
+}
 
 // Most cases wait on preparation children: fake engines, deliberate command timeouts
 // and retry backoff, so a few run at once: two per CPU, at most four. With four copies

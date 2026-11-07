@@ -36,10 +36,13 @@ that file exclusively with private permissions, then makes the public SQL readab
 by the PostgreSQL container user. The Compose input
 `OPENCLAW_CI_POSTGRES_INIT_SQL` selects the copy; the checkout remains unchanged.
 The absolute directory path is recorded with the server before exclusive creation;
-creation is confirmed in state before copying SQL or starting Compose. An existing
-directory is refused. Failed creation retires the planned record. If that save fails,
-or a crash interrupts creation before confirmation, cleanup preserves any directory
-at that path and retains the state for inspection.
+directory and SQL creation are each confirmed in state before the next step. Compose
+starts only after both confirmations. An existing directory is refused. Failed
+directory creation retires the planned record. If that save fails,
+or a crash interrupts directory creation before confirmation, cleanup preserves any
+directory at that path and retains the state for inspection. Without SQL creation
+confirmation, cleanup removes only an empty confirmed directory; existing contents
+and their state are retained.
 `scripts/ci/cleanup.mjs:cleanupComposePostgres` checks its exact path against the opened state
 file and removes only the SQL file and its empty directory after Compose teardown.
 Unexpected contents or failed teardown retain cleanup state.

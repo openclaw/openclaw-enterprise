@@ -629,6 +629,7 @@ async function ensurePostgresServer(statePath, state) {
     name: project,
     directory,
     directoryCreated: false,
+    initSqlCreated: false,
     composeFile: composePostgresFile,
     port,
   });
@@ -649,6 +650,8 @@ async function ensurePostgresServer(statePath, state) {
     flag: "wx",
     mode: 0o600,
   });
+  resource.initSqlCreated = true;
+  await writeState(statePath, state);
   await chmod(initSql, 0o644);
   await execFile(
     process.env.OCC_DOCKER_BIN ?? "docker",
