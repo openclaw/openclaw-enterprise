@@ -835,6 +835,10 @@ export function createWorkerRevisionFixtures(
     // every resource kind (["delete"] also drops delete secret). The copied roles keep the
     // source role's scope, usually Installation-wide, so Namespace teardown never removes them;
     // like the copied identity they live until the per-file database is dropped.
+    /**
+     * @param {string} actorId
+     * @param {{ withoutActions?: string[] }} [options]
+     */
     async function copyActorGrants(actorId, { withoutActions = [] } = {}) {
       await observerPool.query(
         `INSERT INTO occ.iam_identities (id, kind, issuer, subject)

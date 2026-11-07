@@ -10,6 +10,7 @@ import {
   ResourceStateConflictError,
   SandboxGatewayUnauthorizedError,
 } from "../../packages/occ/src/index.ts";
+import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { occLogLine } from "../helpers/occ-log-line.ts";
@@ -2966,7 +2967,91 @@ test(
   attachedGitExpires({ newHost: "service-2.example.test", platformProfile: true }),
 );
 
-function attachedGitExpires({ newHost, platformProfile = false }) {
+test(
+  "removing finite Git access before its deadline preserves the Agent through a lost detach reply and cold recovery",
+  { ...requiresPostgres, timeout: 60_000 },
+  attachedGitExpires({ newHost: "inference.example.test", removal: true }),
+);
+
+test(
+  "finite Git removal retires the revision when its original deploy actor loses authority",
+  { ...requiresPostgres, timeout: 60_000 },
+  attachedGitExpires({ newHost: "inference.example.test", removal: true, revokeActor: true }),
+);
+
+test(
+  "removal after acknowledged activation and prior revision retirement preserves deployment completion",
+  { ...requiresPostgres, timeout: 60_000 },
+  attachedGitExpires({
+    newHost: "inference.example.test",
+    removal: true,
+    removalDuringFinalization: true,
+  }),
+);
+
+test(
+  "finite Git removal and Stop before activation acknowledgment preserve completion without routine maintenance",
+  { ...requiresPostgres, timeout: 60_000 },
+  attachedGitExpires({
+    newHost: "inference.example.test",
+    removal: true,
+    removalDuringFinalization: true,
+    stopDuringFinalization: true,
+  }),
+);
+
+test(
+  "unacknowledged activation with finite Git removal retains verified execution without completing deployment or setup",
+  { ...requiresPostgres, timeout: 60_000 },
+  attachedGitExpires({
+    newHost: "inference.example.test",
+    removal: true,
+    unacknowledgedActivation: true,
+  }),
+);
+
+test(
+  "unacknowledged activation with finite Git removal retires unsafe execution without completing setup",
+  { ...requiresPostgres, timeout: 60_000 },
+  attachedGitExpires({
+    newHost: "uploads.github.com",
+    removal: true,
+    unacknowledgedActivation: true,
+  }),
+);
+
+test(
+  "finite removal and readdition during maintenance cannot open another repository session",
+  { ...requiresPostgres, timeout: 60_000 },
+  attachedGitExpires({
+    newHost: "inference.example.test",
+    removal: true,
+    removalDuringPreparation: true,
+  }),
+);
+
+test(
+  "finite Git removal maintenance survives exhausted original reconciliation",
+  { ...requiresPostgres, timeout: 60_000 },
+  attachedGitExpires({
+    newHost: "inference.example.test",
+    removal: true,
+    unacknowledgedActivation: true,
+    leaseExhaustion: true,
+  }),
+);
+
+function attachedGitExpires({
+  newHost,
+  platformProfile = false,
+  removal = false,
+  revokeActor = false,
+  removalDuringFinalization = false,
+  stopDuringFinalization = false,
+  unacknowledgedActivation = false,
+  removalDuringPreparation = false,
+  leaseExhaustion = false,
+}) {
   return async (t) => {
     const backendId = "github-primary";
     const repository = repositoryBoundary({ backendId });
@@ -2978,7 +3063,18 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
     );
     const f = await setup(t, {
       repoDriver: repository.driver,
+      ...(leaseExhaustion && { maxAttempts: 1 }),
       driverSelections: { sandbox: protectedGit.sandboxConfiguration },
+      backends: removalDuringPreparation
+        ? [
+            {
+              id: backendId,
+              type: "github",
+              configuration: { registryPath: "/unused/controlled-registry.json" },
+              drivers: { repo: repository.driver.id },
+            },
+          ]
+        : [],
     });
     const gateway = new OpenShellCredentialGatewayDriver(
       { binaries: ["/usr/bin/codex"] },
@@ -2991,6 +3087,10 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
         },
       },
     );
+    if (removalDuringPreparation) {
+      f.controller.registerDriver(repository.driver);
+      f.controller.selectDriver("repo", repository.driver.id);
+    }
     f.controller.installDriver(protectedGit.owner, ["sandbox", "credential_proxy"]);
     f.controller.registerDriver(gateway);
     f.controller.selectDriver("credential_gateway", gateway.id);
@@ -3037,6 +3137,17 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
     let identity;
     let runtime;
     let senderRuntime;
+    let withdrawalCommitted = false;
+    let finalizationStop;
+    let finalizationRemoval;
+    const stopWork = [];
+    let activationCalls = 0;
+    let prepareCalls = 0;
+    let pauseBeforePreparation = false;
+    let preparing = false;
+    const resumePreparation = Promise.withResolvers();
+    t.after(() => resumePreparation.resolve());
+    let retainedObservations = 0;
     const bodies = await gitCommandBodies(t, pushRef);
     const { client: middleware, keys } = await openShellOnlineGitWire(t, {
       registrationName,
@@ -3066,6 +3177,24 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       auth: "credential_source",
       executionMode: "dedicated",
     });
+    // An earlier admitted candidate exercises the real predecessor-retirement callback.
+    // It is held before execution: this proves ordering, not a serving predecessor process.
+    const pendingSetup = unacknowledgedActivation
+      ? await f.state.transact((unit) =>
+          unit.workspaceSetups.create({
+            id: randomUUID(),
+            namespaceId,
+            agentId: agent.id,
+            files: { "AGENTS.md": "# Pending workspace instructions" },
+            completed: false,
+          }),
+        )
+      : undefined;
+    const previous =
+      removalDuringFinalization || unacknowledgedActivation
+        ? await admitHeldRevision(f, agent, 1)
+        : undefined;
+    const retired = [];
     await f.observerPool.query("UPDATE occ.agents SET repository_bindings=$1 WHERE id=$2", [
       JSON.stringify([{ repositoryRef: binding.repositoryRef, profile: binding.profile }]),
       agent.id,
@@ -3074,8 +3203,8 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
     // fixture's. Enrollment must not replace that profile and erase its overlap controls.
     const model = agent.harnessAuth.sourceId;
     const continuity = { model, workload: async () => "original-workload-and-supervisor" };
-    const deadlineWallMs = Date.now() + 6_000;
-    const revision = await f.revision(agent, 1, {
+    const deadlineWallMs = Date.now() + (removal ? 120_000 : 6_000);
+    const revision = await f.revision(agent, previous ? 2 : 1, {
       protectedRepositoryDriver: protectedGit.owner,
       repositoryCredentials: { ...repository.snapshot, deadlineWallMs, bindings: [binding] },
     });
@@ -3092,6 +3221,21 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       revisionId: revision.id,
       platformProfile,
       deadline: deadlineWallMs,
+      configure(methods, gatewayWorld) {
+        if (!removal) {
+          return;
+        }
+        const observe = methods.GetSandboxProviderStatus;
+        methods.GetSandboxProviderStatus = (request) => {
+          const result = observe(request);
+          // The expiry fixture moves this version when the deadline elapses. Explicit
+          // removal must exercise the same concurrent gateway update before that deadline.
+          if (withdrawalCommitted && gatewayWorld.version === 13) {
+            gatewayWorld.version = 14;
+          }
+          return result;
+        };
+      },
     });
     const material = {
       ...binding.grant,
@@ -3133,6 +3277,7 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
     });
     const compute = {
       ...f.compute,
+      ...(unacknowledgedActivation && { supportsWorkspaceSetup: true }),
       validateExecutionAdmission: kube.validateExecutionAdmission.bind(kube),
       validateRepositoryCredentials(harness, selected) {
         assert.equal(harness.id, "codex");
@@ -3140,8 +3285,24 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
         assert.equal(selected, protectedGit.owner.ref.id);
         kube.validateRepositoryCredentials(harness, selected);
       },
+      ...(removalDuringPreparation && {
+        async bindAgent(context) {
+          // This real Driver call occurs after the worker read the withdrawal marker,
+          // but before repository preparation enters its locked session transaction.
+          if (pauseBeforePreparation) {
+            pauseBeforePreparation = false;
+            preparing = true;
+            await resumePreparation.promise;
+          }
+          await f.compute.bindAgent?.(context);
+        },
+      }),
       async prepareRevision(r, context) {
+        prepareCalls++;
         assert.equal(r.id, revision.id);
+        if (unacknowledgedActivation) {
+          assert.deepEqual(context.workspaceSetup, pendingSetup);
+        }
         assert.equal(r.agentId, agent.id);
         assert.equal(r.harnessAuth.sourceId, model);
         assert.equal(context.harnessAuth.method, "credential_source");
@@ -3149,7 +3310,7 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
         assert.equal(
           world.id,
           undefined,
-          "the worker must not prepare or replace the running revision after expiry",
+          "the worker must not prepare or replace the running revision after Git withdrawal",
         );
         const [open] = await repositoryAttempts(f, r);
         assert.equal(open.phase, "open");
@@ -3180,10 +3341,92 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
         );
         return f.compute.prepareRevision(r, context);
       },
-      retireExpiredRepositoryAccess: (r, signal) =>
-        runtime.retireExpiredRepositoryAccess(r, client, workspace, sandbox, continuity, signal),
-      stopRevision(r) {
+      ...((removalDuringFinalization || unacknowledgedActivation) && {
+        async activateRevision(r) {
+          activationCalls++;
+          assert.equal(activationCalls, 1, "withdrawal recovery must not reactivate Git");
+          assert.equal((await f.currentAgent(agent)).activeRevisionId, r.id);
+          await useInitialGit();
+          if (unacknowledgedActivation) {
+            await commitRemoval();
+            // Hold the independent cleanup's due time so original reconciliation itself
+            // must recover withdrawal. No activation or workspace delivery is acknowledged.
+            await deferWork(
+              f.observerPool,
+              {
+                revisionId: revision.id,
+                state: "queued",
+                keyLike: "%:repository_cleanup:%",
+              },
+              "1 day",
+            );
+            throw new Error("Controlled activation acknowledgment lost");
+          }
+        },
+        async retireRevision(r) {
+          assert.equal(unacknowledgedActivation, false, "cleanup cannot retire a predecessor");
+          assert.equal(r.id, previous.id);
+          assert.equal(activationCalls, 1);
+          await f.compute.retireRevision(r);
+          retired.push(r.id);
+          // Commit removal only after activation and the actual earlier-revision
+          // retirement callback have both returned, before final completion is recorded.
+          await commitRemoval();
+          if (stopDuringFinalization) {
+            // OCC admissions commit while this original deployment still owns the
+            // claim; returning from this Driver call acknowledges its final effect.
+            finalizationStop = await f.requestStop(agent);
+            const held = await f.observerPool.query(
+              `SELECT idempotency_key, state FROM occ.controller_work
+               WHERE agent_id=$1 AND (idempotency_key=$2 OR idempotency_key=$3
+                 OR idempotency_key=$4)`,
+              [
+                agent.id,
+                revision.idempotencyKey,
+                finalizationStop.idempotencyKey,
+                repositoryRemovalWorkKey(revision.id),
+              ],
+            );
+            finalizationRemoval = held.rows.find(
+              (row) => row.idempotency_key === repositoryRemovalWorkKey(revision.id),
+            );
+            assert.ok(finalizationRemoval, "removal retains its own durable cleanup obligation");
+            assert.equal(finalizationRemoval.state, "queued");
+            assert.equal(
+              held.rows.find((row) => row.idempotency_key === revision.idempotencyKey)?.state,
+              "claimed",
+            );
+            assert.equal(
+              held.rows.find((row) => row.idempotency_key === finalizationStop.idempotencyKey)
+                ?.state,
+              "queued",
+              "Stop waits for the original deployment's acknowledgment",
+            );
+          }
+        },
+      }),
+      retireExpiredRepositoryAccess: (r, signal) => {
+        retainedObservations++;
+        return runtime.retireExpiredRepositoryAccess(
+          r,
+          client,
+          workspace,
+          sandbox,
+          continuity,
+          signal,
+        );
+      },
+      async stopRevision(r) {
         stopped.push(r.id);
+        if (stopDuringFinalization) {
+          const claimed = await f.observerPool.query(
+            `SELECT idempotency_key FROM occ.controller_work
+             WHERE agent_id=$1 AND state='claimed'`,
+            [agent.id],
+          );
+          assert.equal(claimed.rowCount, 1);
+          stopWork.push(claimed.rows[0].idempotency_key);
+        }
         return f.compute.stopRevision(r);
       },
     };
@@ -3226,13 +3469,183 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       );
       return result;
     }
+    async function useInitialGit() {
+      const entry = await runtime.entries.get(revision.id);
+      entry.nextObserveAt = 0;
+      entry.nextRefreshAt = 0;
+      await runtime.reconcile(entry);
+      assert.deepEqual(await fetchFromPrivateOrigin(), { decision: 1 });
+    }
+    async function activationAuditCount() {
+      const { rows } = await f.observerPool.query(
+        `SELECT count(*)::int AS total FROM occ.audit_events
+         WHERE resource_id=$1 AND action='openclaw.agents.lifecycle.activate'`,
+        [revision.id],
+      );
+      return rows[0].total;
+    }
+    async function commitRemoval() {
+      const queue = new f.PostgresWorkQueue(f.observerPool);
+      const owner = {
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+      };
+      assert.equal(await queue.repositoryExpiryState(owner), undefined);
+      assert.equal(
+        await runtime.retireExpiredRepositoryAccess(
+          revision,
+          client,
+          workspace,
+          sandbox,
+          continuity,
+          AbortSignal.timeout(4000),
+        ),
+        "retire-runtime",
+        "a finite deadline that has not elapsed is not withdrawal authority",
+      );
+      assert.deepEqual(world.detaches, []);
+      await f.controller.updateAgent(f.actor.id, {
+        namespaceId: f.namespace.id,
+        agentId: agent.id,
+        configurationId: agent.configurationId,
+        repositoryBindings: [],
+      });
+      assert.equal(await queue.repositoryExpiryState(owner), "removal");
+      assert.equal((await f.currentAgent(agent)).activeRevisionId, revision.id);
+      withdrawalCommitted = true;
+    }
+    async function assertUnacknowledged() {
+      assert.equal(activationCalls, 1, "cleanup never retries activation");
+      assert.equal(await activationAuditCount(), 0);
+      assert.notEqual((await f.deploymentStatus(agent, revision)).status, "succeeded");
+      assert.deepEqual(retired, [], "unacknowledged activation cannot retire its predecessor");
+      assert.deepEqual(
+        await f.state.read((unit) => unit.workspaceSetups.find(namespaceId, agent.id)),
+        pendingSetup,
+      );
+    }
     await start();
-    await f.work(revision, "succeeded").catch(async (cause) => {
-      const {
-        rows: [work],
-      } = await f.workResult(revision);
-      throw Error("Git-enabled revision did not activate: " + work?.reason_code, { cause });
-    });
+    if (unacknowledgedActivation) {
+      const unacknowledged = await completion(
+        events,
+        "activation acknowledgment lost",
+        (e) => e.event === "worker.completed" && e.workId === revision.idempotencyKey,
+      );
+      await f.stop();
+      assert.equal(unacknowledged.code, "REVISION_FINALIZATION_INCOMPLETE");
+      assert.equal(unacknowledged.outcome, "pending");
+      await assertUnacknowledged();
+      events.length = 0;
+      if (leaseExhaustion) {
+        const queue = new f.PostgresWorkQueue(f.observerPool, { maxAttempts: 1 });
+        // Simulate two lost workers through real claims and queue recovery. Only
+        // lease timestamps move; recovery owns the allowance, failure and audit.
+        for (let lost = 0; lost < 2; lost++) {
+          await makeWorkDue(f.observerPool, { key: revision.idempotencyKey, state: "queued" });
+          const claim = await queue.claim();
+          assert.equal(claim?.idempotencyKey, revision.idempotencyKey);
+          assert.equal(claim.attemptCount, 1);
+          assert.equal((await f.expireClaim(revision, claim.claimToken)).rowCount, 1);
+          const recovered = await queue.recoverStale();
+          assert.equal(recovered.recovered, 1);
+          assert.equal(recovered.failedPermanent, lost);
+          assert.ok(
+            await queue.findWorkAttempt(revision.idempotencyKey, "ACTIVE_REVISION_RECOVERY"),
+          );
+        }
+        const failed = await queue.findWork(revision.idempotencyKey);
+        assert.equal(failed.state, "failed_permanent");
+        assert.equal(failed.reasonCode, "LEASE_EXPIRED");
+        assert.equal((await f.currentAgent(agent)).activeRevisionId, revision.id);
+        await assertUnacknowledged();
+      }
+    } else {
+      await f.work(revision, "succeeded").catch(async (cause) => {
+        const {
+          rows: [work],
+        } = await f.workResult(revision);
+        throw Error("Git-enabled revision did not activate: " + work?.reason_code, { cause });
+      });
+    }
+    if (removalDuringFinalization) {
+      assert.equal((await f.workResult(revision)).rows[0].reason_code, "REVISION_ACTIVATED");
+      assert.equal((await f.deploymentStatus(agent, revision)).status, "succeeded");
+      assert.equal(await activationAuditCount(), 1);
+      assert.deepEqual(retired, [previous.id]);
+      assert.equal(world.detaches.length, 0, "activation completes before Git withdrawal settles");
+    }
+    if (stopDuringFinalization) {
+      assert.ok(finalizationStop);
+      assert.ok(finalizationRemoval);
+      await f.work(finalizationStop, "succeeded");
+      // Advance only existing work. Terminal Git cleanup may legitimately stop the
+      // exact runtime again; a newly scheduled routine observation must not do so.
+      await waitFor("removal and terminal cleanup settle after Stop", async () => {
+        await advanceCleanupRetries(f, revision);
+        await f.advanceMaintenance(revision);
+        const cleanup = await f.observerPool.query(
+          `SELECT idempotency_key, state FROM occ.controller_work
+           WHERE revision_id=$1 AND idempotency_key LIKE $2`,
+          [revision.id, `agent_revision:${revision.id}:repository_cleanup:%`],
+        );
+        const routine = await f.observerPool.query(
+          `SELECT state FROM occ.controller_work
+           WHERE revision_id=$1 AND idempotency_key LIKE $2`,
+          [revision.id, `agent_revision:${revision.id}:maintenance:%`],
+        );
+        return cleanup.rows.some(
+          (row) => row.idempotency_key === finalizationRemoval.idempotency_key,
+        ) &&
+          cleanup.rows.every((row) => row.state === "succeeded") &&
+          routine.rows.every((row) => row.state === "succeeded")
+          ? true
+          : undefined;
+      });
+      await f.stop();
+      const stoppedAgent = await f.currentAgent(agent);
+      assert.equal(stoppedAgent.desiredRuntimeState, "stopped");
+      assert.equal(stoppedAgent.activeRevisionId, undefined);
+      assert.equal((await f.workResult(revision)).rows[0].reason_code, "REVISION_ACTIVATED");
+      assert.equal((await f.deploymentStatus(agent, revision)).status, "succeeded");
+      assert.equal(await activationAuditCount(), 1);
+      assert.equal(activationCalls, 1);
+      assert.deepEqual(retired, [previous.id]);
+      // This controlled Compute does not remove a physical Sandbox. Prove the
+      // durable Git fence through disposed admission, not its cached sender.
+      assert.deepEqual(
+        [originRequests, originBytes, approved, world.writes],
+        [1, bodies.fetch.length, ["upload-pack"], 1],
+      );
+      assert.deepEqual(
+        (await repositoryAttempts(f, revision)).map((attempt) => [
+          attempt.phase,
+          attempt.sessionId,
+        ]),
+        [["disposed", sessionId]],
+      );
+      assert.ok(
+        stopWork.includes(finalizationStop.idempotencyKey),
+        "authorized Stop reached Compute",
+      );
+      const { rows: routine } = await f.observerPool.query(
+        `SELECT idempotency_key FROM occ.controller_work
+         WHERE revision_id=$1 AND idempotency_key LIKE $2`,
+        [revision.id, `agent_revision:${revision.id}:maintenance:%`],
+      );
+      assert.deepEqual(
+        routine,
+        [],
+        "activation acknowledgment must not enqueue routine maintenance after Stop admission",
+      );
+      assert.ok(
+        stopWork.every(
+          (key) => key === finalizationStop.idempotencyKey || key.includes(":repository_cleanup:"),
+        ),
+        "only authorized Stop or terminal repository cleanup may stop this runtime",
+      );
+      return;
+    }
     const { rows: installations } = await f.observerPool.query(
       "SELECT installation FROM occ.egress_installations WHERE revision_id=$1",
       [revision.id],
@@ -3240,17 +3653,114 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
     assert.equal(installations.length, 1);
     assert.deepEqual(installations[0].installation.plan, revision.egressPlan);
     assert.equal(installations[0].installation.sandboxId, sandboxId);
-    const entry = await runtime.entries.get(revision.id);
-    entry.nextObserveAt = 0;
-    entry.nextRefreshAt = 0;
-    await runtime.reconcile(entry);
-    assert.deepEqual(await fetchFromPrivateOrigin(), { decision: 1 });
+    if (!removalDuringFinalization && !unacknowledgedActivation) {
+      await useInitialGit();
+    }
     assert.deepEqual(approved, ["upload-pack"]);
     const remaining = deadlineWallMs - Date.now();
     assert.ok(remaining > 0, "use Git before its legitimately admitted deadline");
-    // Await the real grant deadline; move only queue due times. Neither the binding nor its
-    // live session is removed by the test, and no expiry or cleanup work is inserted by it.
-    await delay(remaining + 10);
+    if (removalDuringPreparation) {
+      const [original] = await repositoryAttempts(f, revision);
+      await f.stop();
+      pauseBeforePreparation = true;
+      const due = await f.advanceMaintenance(revision);
+      assert.equal(due.rowCount, 1);
+      const maintenanceKey = due.rows[0].idempotency_key;
+      await start();
+      try {
+        await waitFor(
+          "maintenance to enter Compute binding before repository preparation",
+          async () => preparing || undefined,
+        );
+        await commitRemoval();
+        // Readding the same desired binding cannot revive the withdrawn admitted revision.
+        await f.controller.updateAgent(f.actor.id, {
+          namespaceId,
+          agentId: agent.id,
+          configurationId: agent.configurationId,
+          repositoryBindings: [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
+        });
+        // Let the in-flight pass finish first; only this real cleanup work's due time moves.
+        await deferWork(
+          f.observerPool,
+          {
+            revisionId: revision.id,
+            state: "queued",
+            keyLike: "%:repository_cleanup:%",
+          },
+          "1 day",
+        );
+        events.length = 0;
+      } finally {
+        resumePreparation.resolve();
+      }
+      const completed = await completion(
+        events,
+        "in-flight maintenance to finish",
+        (e) => e.event === "worker.completed" && e.workId === maintenanceKey,
+      );
+      await f.stop();
+      assert.deepEqual(
+        [completed.outcome, completed.code],
+        ["pending", "REPOSITORY_CLEANUP_PENDING"],
+      );
+      assert.equal((await f.currentAgent(agent)).activeRevisionId, revision.id);
+      assert.deepEqual(
+        stopped,
+        [],
+        "withdrawal admission refusal must not retire the running revision",
+      );
+      const pending = await f.observerPool.query(
+        "SELECT state, actor_id, attempt_count FROM occ.controller_work WHERE idempotency_key=$1",
+        [maintenanceKey],
+      );
+      assert.deepEqual(
+        pending.rows,
+        [
+          {
+            state: "queued",
+            actor_id: due.rows[0].actor_id,
+            attempt_count: due.rows[0].attempt_count,
+          },
+        ],
+        "the same maintenance work retains its actor and retry budget",
+      );
+      const attempts = await repositoryAttempts(f, revision);
+      assert.deepEqual(
+        attempts.map((a) => a.admissionId),
+        [original.admissionId],
+        "committed finite withdrawal must fence session creation even after binding readdition",
+      );
+      assert.equal(prepareCalls, 1, "stale maintenance must not reprepare the withdrawn revision");
+      return;
+    }
+    if (removal && !removalDuringFinalization && !unacknowledgedActivation) {
+      await f.stop();
+      // Only the committed OCC mutation may authorize predeadline subtraction. Stop the
+      // worker first so its next pass cannot conceal a missing transactional handoff.
+      await commitRemoval();
+
+      if (revokeActor) {
+        // A Git-only reduction cannot preserve execution after the original deployer's
+        // real IAM grant is revoked, even though its removal obligation remains valid.
+        await removeAccessBindings(f, f.actor.id);
+      }
+      await start();
+      if (revokeActor) {
+        await waitFor("revoked deploy authority retires the finite removal owner", async () =>
+          (await f.currentAgent(agent)).activeRevisionId === undefined ? true : undefined,
+        );
+        assert.deepEqual(stopped, [revision.id]);
+        assert.deepEqual(world.detaches, [], "authority loss does not retain a reduced runtime");
+        assert.equal(world.writes, 1, "no replacement Git credential was installed");
+        assert.ok(Date.now() < deadlineWallMs, "authority loss precedes natural Git expiry");
+        return;
+      }
+    } else if (!removal) {
+      // Await the real grant deadline; move only queue due times. Neither the binding nor its
+      // live session is removed by the test, and no expiry or cleanup work is inserted by it.
+      await delay(remaining + 10);
+    }
     const nextExpiry = async (code) => {
       const event = await completion(
         events,
@@ -3258,7 +3768,9 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
         (e) =>
           e.event === "worker.completed" &&
           e.revisionId === revision.id &&
-          e.workId?.includes(":repository_cleanup:"),
+          (unacknowledgedActivation && !leaseExhaustion
+            ? e.workId === revision.idempotencyKey
+            : e.workId?.includes(":repository_cleanup:")),
       );
       assert.equal(event.code, code);
       if (code !== "REPOSITORY_RUNTIME_RETIREMENT_QUEUED") {
@@ -3267,7 +3779,16 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       }
       events.length = 0;
     };
-    assert.equal((await f.advanceMaintenance(revision)).rowCount, 1);
+    const advanceWithdrawal = () =>
+      unacknowledgedActivation && !leaseExhaustion
+        ? makeWorkDue(f.observerPool, { key: revision.idempotencyKey, state: "queued" })
+        : advanceCleanupRetries(f, revision);
+    if (unacknowledgedActivation) {
+      await advanceWithdrawal();
+      await start();
+    } else if (!removal) {
+      assert.equal((await f.advanceMaintenance(revision)).rowCount, 1);
+    }
     await nextExpiry("REPOSITORY_CLEANUP_PENDING");
     assert.equal(world.version, 14);
     assert.deepEqual(world.detaches, [], "no detach at the stale resource version");
@@ -3296,7 +3817,10 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       );
       assert.equal(repository.calls.filter((c) => c.operation === "open").length, 0);
     };
-    await advanceCleanupRetries(f, revision);
+    if (unacknowledgedActivation) {
+      await assertUnacknowledged();
+    }
+    await advanceWithdrawal();
     await nextExpiry("REPOSITORY_CLEANUP_PENDING");
     assert.equal(
       world.detaches.length,
@@ -3306,7 +3830,7 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
     await f.stop();
     world.addRetainedEndpoint(newHost);
     runtime = releaseRuntime(); // empty in-process route, same PostgreSQL and gateway
-    await advanceCleanupRetries(f, revision);
+    await advanceWithdrawal();
     await start();
     if (newHost === "uploads.github.com") {
       await nextExpiry("REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
@@ -3328,9 +3852,50 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       );
       assert.deepEqual([world.detaches.length, world.writes], [1, 1], "no replay or replacement");
       await assertOriginalSession();
+      if (unacknowledgedActivation) {
+        await assertUnacknowledged();
+        assert.equal((await f.deploymentStatus(agent, revision)).status, "failed");
+      }
       return;
     }
     await nextExpiry("REPOSITORY_ACCESS_WITHDRAWN");
+    if (unacknowledgedActivation && !leaseExhaustion) {
+      await assertUnacknowledgedCompletion();
+      // The separate durable removal work must converge on the same maintenance chain.
+      await advanceCleanupRetries(f, revision);
+      await completion(
+        events,
+        "independent removal settles",
+        (e) =>
+          e.event === "worker.completed" &&
+          e.revisionId === revision.id &&
+          e.workId?.includes(":repository_cleanup:") &&
+          e.code === "REPOSITORY_ACCESS_WITHDRAWN",
+      );
+      await assertUnacknowledgedCompletion();
+    }
+    async function assertUnacknowledgedCompletion() {
+      await assertUnacknowledged();
+      assert.equal(
+        (await f.workResult(revision)).rows[0].reason_code,
+        "REPOSITORY_ACCESS_WITHDRAWN",
+      );
+      assert.equal((await f.deploymentStatus(agent, revision)).status, "failed");
+    }
+    if (removalDuringFinalization) {
+      // The independently owned cleanup cannot rewrite deployment completion or emit
+      // another activation after the acknowledged activation's original bookkeeping.
+      assert.equal((await f.workResult(revision)).rows[0].reason_code, "REVISION_ACTIVATED");
+      const deployment = await f.deploymentStatus(agent, revision);
+      assert.equal(deployment.status, "succeeded");
+      assert.equal(deployment.error, null);
+      assert.equal(activationCalls, 1);
+      assert.equal(await activationAuditCount(), 1);
+      assert.deepEqual(retired, [previous.id], "cleanup must not repeat predecessor retirement");
+    }
+    if (removal) {
+      assert.ok(Date.now() < deadlineWallMs, "cold recovery completes before natural expiry");
+    }
     assert.deepEqual(
       world.reports.slice(-2).map(([, state, receipt]) => [state, receipt]),
       [
@@ -3338,11 +3903,41 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
         ["READY", "OBSERVE"],
       ],
     );
-    const {
-      rows: [next],
-    } = await f.advanceMaintenance(revision);
+    const observationsBeforeMaintenance = retainedObservations;
+    const advanced = await f.advanceMaintenance(revision);
+    assert.equal(advanced.rowCount, 1, "withdrawal has one maintenance successor");
+    const [next] = advanced.rows;
     const maintenance = { ...revision, idempotencyKey: next.idempotency_key };
-    await f.work(maintenance, "succeeded");
+    if (leaseExhaustion) {
+      const queue = new f.PostgresWorkQueue(f.observerPool, { maxAttempts: 1 });
+      const completed = await waitFor(
+        "maintenance after exhausted original reconciliation",
+        async () => {
+          const work = await queue.findWork(maintenance.idempotencyKey);
+          return work?.state === "succeeded" || work?.state === "failed_permanent"
+            ? work
+            : undefined;
+        },
+      );
+      assert.equal(
+        completed.state,
+        "succeeded",
+        `maintenance rejected before retained observation: ${completed.reasonCode}`,
+      );
+      assert.equal(
+        retainedObservations,
+        observationsBeforeMaintenance + 1,
+        "maintenance observes the retained runtime once",
+      );
+      await f.stop();
+      assert.equal((await f.workResult(revision)).rows[0].reason_code, "LEASE_EXPIRED");
+      await assertUnacknowledged();
+      const successors = await f.advanceMaintenance(revision);
+      assert.equal(successors.rowCount, 1, "one retained maintenance successor remains");
+      assert.notEqual(successors.rows[0].idempotency_key, maintenance.idempotencyKey);
+    } else {
+      await f.work(maintenance, "succeeded");
+    }
     assert.equal(
       (await f.workResult(maintenance)).rows[0].reason_code,
       "REPOSITORY_ACCESS_WITHDRAWN",
@@ -3361,6 +3956,9 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       [1, 1],
       "no replay or replacement Git material",
     );
+    if (leaseExhaustion) {
+      return;
+    }
     // Losing the evidence for safe retention on the next ordinary maintenance retires this revision.
     if (platformProfile) {
       assert.deepEqual(

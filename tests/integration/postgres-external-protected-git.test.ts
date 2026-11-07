@@ -114,6 +114,12 @@ test(
 );
 
 test(
+  "a capable external Driver reduces finite Git binding removal on the original execution across worker replacement",
+  journeyOptions,
+  externalGitJourney("reducible-installation", false, true),
+);
+
+test(
   "a capable registered Driver observes only the original lost rotation across worker replacement and withdrawal",
   journeyOptions,
   externalGitJourney("lost-rotation"),
@@ -428,6 +434,7 @@ function externalGitJourney(
     | "reducible-installation"
     | "lost-rotation",
   artifactAdmissionOnly = false,
+  finiteRemoval = false,
 ) {
   return async (t: TestContext) => {
     let prepared: Awaited<ReturnType<typeof startPreparedGitHubGitOwner>> | undefined;
@@ -532,7 +539,7 @@ function externalGitJourney(
       broad ?? (await standingGitOrigin(t, namespaceId, 300_000));
     const installationApiOrigin = broad?.gh.origin;
     const conversation =
-      scope === "reducible-installation" && codex
+      scope === "reducible-installation" && !finiteRemoval && codex
         ? await standingGitConversation(t, codex)
         : undefined;
     let askModel: Awaited<ReturnType<NonNullable<typeof conversation>["launch"]>> | undefined;
@@ -722,7 +729,7 @@ function externalGitJourney(
       installs: peer.delivery.installs,
     });
 
-    // The worker opens a real standing session. Workload placement is controlled locally;
+    // The worker opens a real repository session. Workload placement is controlled locally;
     // the optional conversation mode runs shipped Codex with the same admitted model source.
     let preparations = 0;
     let withdrawalStarted = false;
@@ -740,6 +747,11 @@ function externalGitJourney(
     });
     const compute: ComputeDriver = {
       ...f.compute,
+      ...(finiteRemoval && {
+        async retireExpiredRepositoryAccess() {
+          assert.fail("V2 policy reduction belongs to the external Driver, not Compute");
+        },
+      }),
       ...(conversation && { admitRevision: kube.admitRevision.bind(kube) }),
       capability: "compute",
       async stopRevision(stopped) {
@@ -1041,25 +1053,27 @@ function externalGitJourney(
     };
     const awaitCa = await readFile(certFile);
     const key = { namespaceId, agentId, configurationId };
-    const [review] = await controller.listAgentStandingApprovalScopes(
-      who,
-      namespaceId,
-      key.agentId,
-    );
-    await controller.updateAgent(
-      who,
-      {
-        ...key,
-        repositoryStandingApproval: {
-          repositoryRef,
-          approvalId,
-          approved: true,
-          duration: "until-removed",
-          expectedScopeFingerprint: review!.scopeFingerprint,
+    if (!finiteRemoval) {
+      const [review] = await controller.listAgentStandingApprovalScopes(
+        who,
+        namespaceId,
+        key.agentId,
+      );
+      await controller.updateAgent(
+        who,
+        {
+          ...key,
+          repositoryStandingApproval: {
+            repositoryRef,
+            approvalId,
+            approved: true,
+            duration: "until-removed",
+            expectedScopeFingerprint: review!.scopeFingerprint,
+          },
         },
-      },
-      resolveApprovedHarness,
-    );
+        resolveApprovedHarness,
+      );
+    }
     const deploy = () => controller.deployAgent(who, key, resolveApprovedHarness);
     if (artifactAdmissionOnly) {
       // This controlled external Driver proves OCC admission and PostgreSQL freezing.
@@ -1162,7 +1176,10 @@ function externalGitJourney(
       mode: "protected",
     });
     assert.deepEqual(revision.egressPlan?.driver, owner.ref);
-    assert.equal(revision.repositoryCredentials?.standingApprovalId, approvalId);
+    assert.equal(
+      revision.repositoryCredentials?.standingApprovalId,
+      finiteRemoval ? undefined : approvalId,
+    );
     assert.equal(revision.harnessAuth.method, conversation ? "credential_source" : "runtime");
     if (conversation) {
       const model = openShellProviderName(modelSourceId);
@@ -1192,10 +1209,17 @@ function externalGitJourney(
     try {
       await startWorker();
       await waitForRevisionPass(
-        "worker's standing execution",
+        "worker's admitted repository session",
         f,
         revision,
-        () => f.state.read((v) => v.repositorySessions.findStandingExecution(ref)),
+        () =>
+          f.state.read(async (view) =>
+            finiteRemoval
+              ? (await view.repositorySessions.listRevisionAttempts(ref)).find(
+                  (attempt) => attempt.phase === "open",
+                )
+              : view.repositorySessions.findStandingExecution(ref),
+          ),
         25_000,
       );
       const first = await waitFor(
@@ -1205,6 +1229,7 @@ function externalGitJourney(
       );
       assert.equal(peer.delivery.attempts, 1);
       assert.equal(peer.delivery.installs, 1);
+      const originalPolicy = finiteRemoval ? await peer.observePolicy() : undefined;
       if (lostRotation) {
         peer.delivery.loseReply = true;
         peer.delivery.hideObservation = true;
@@ -1983,11 +2008,28 @@ function externalGitJourney(
       }
       preparationsBeforeWithdrawal = preparations;
       withdrawalStarted = true;
-      await controller.removeAgentStandingApproval(who, {
-        ...key,
-        approvalId,
-        expectedGeneration: 1,
-      });
+      if (finiteRemoval) {
+        // This is a binding edit while the immutable finite admission is still live.
+        // Its durable withdrawal must select the already admitted V2 reduction owner.
+        const attempts = await f.state.read((view) =>
+          view.repositorySessions.listRevisionAttempts(ref),
+        );
+        assert.equal(attempts.length, 1);
+        assert.ok(attempts.every((attempt) => attempt.deadlineWallMs > Date.now()));
+        await controller.updateAgent(
+          who,
+          { ...key, repositoryBindings: [] },
+          resolveApprovedHarness,
+        );
+        const queue = new f.PostgresWorkQueue(pool);
+        assert.equal(await queue.repositoryExpiryState(ref), "removal");
+      } else {
+        await controller.removeAgentStandingApproval(who, {
+          ...key,
+          approvalId,
+          expectedGeneration: 1,
+        });
+      }
       const denied = await fetch(true);
       assert.deepEqual(
         providerTraffic(),
@@ -2032,6 +2074,9 @@ function externalGitJourney(
         assert.equal(peer.reduction.attempts, 1);
         await f.stop();
         const reduced = await peer.observePolicy();
+        if (originalPolicy) {
+          assert.equal(reduced.sandboxId, originalPolicy.sandboxId);
+        }
         assert.equal(reduced.plan.repositoryGit, undefined);
         assert.deepEqual(reduced.plan.execution, revision.egressPlan!.execution);
         assert.equal(await fetch(true).then((result) => result.code), 128);
@@ -2085,7 +2130,7 @@ function externalGitJourney(
         await independentRead(200);
         assert.equal(independentRequests, 2);
         await askModel?.("after");
-        if (conversationRequired) {
+        if (conversationRequired && !finiteRemoval) {
           assert.ok(askModel, "required same-conversation proof ran on v7");
         }
         peer.reduction.loseReply = false;

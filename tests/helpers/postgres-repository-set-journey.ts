@@ -1,7 +1,8 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { waitForRevisionPass } from "./postgres-worker-revision-support.mjs";
 import { deferred } from "./deferred.ts";
-import { waitFor } from "./wait-for.mjs";
+import { waitFor, within } from "./wait-for.mjs";
+import { testPool } from "./postgres-database.mjs";
 import { buffer } from "node:stream/consumers";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import {
@@ -20,7 +21,7 @@ import type {
   ComputeRevisionContext,
   ProxyRevisionContext,
 } from "../../packages/contracts/src/index.ts";
-import { InstalledDriver } from "../../packages/occ/src/index.ts";
+import { InstalledDriver, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
@@ -999,31 +1000,46 @@ async function repositoryGitJourney(
       );
       assert.equal(rows.length, 1);
       const heldCredential = state.installed;
-      await narrow({
-        pool: f.observerPool,
-        peer,
-        sandboxId: wire.world.id!,
-        pushRef: delivery.repository.pushRef,
-        grantId: binding.grant.grantId,
-        installed,
-        evaluate,
-        withLookupFault,
-        // Read-only provider observation; this is not a dispatch permit.
-        heldCredentialStatus: async () => (await peer.send(heldCredential, false)).status,
-        admissionId: rows[0].admission_id,
-        removeBinding: () =>
-          f.controller.updateAgent(f.actor.id, {
-            namespaceId: f.namespace.id,
-            agentId: agent.id,
-            configurationId: configuration.id,
-            repositoryBindings: [],
-          }),
-        withdraw: () => f.controller.stopAgent(f.actor.id, f.namespace.id, agent.id),
-      });
-      await peer.noBroker();
-      // Finish normal retirement before another fixture opens the same database
-      // with its own custody key. All authority and held-token checks are complete.
-      await peer.prepared.maintain();
+      const journeyErrors: unknown[] = [];
+      try {
+        await narrow({
+          pool: f.observerPool,
+          peer,
+          sandboxId: wire.world.id!,
+          pushRef: delivery.repository.pushRef,
+          grantId: binding.grant.grantId,
+          installed,
+          evaluate,
+          withLookupFault,
+          // Read-only provider observation; this is not a dispatch permit.
+          heldCredentialStatus: async () => (await peer.send(heldCredential, false)).status,
+          admissionId: rows[0].admission_id,
+          removeBinding: () =>
+            f.controller.updateAgent(f.actor.id, {
+              namespaceId: f.namespace.id,
+              agentId: agent.id,
+              configurationId: configuration.id,
+              repositoryBindings: [],
+            }),
+          withdraw: () => f.controller.stopAgent(f.actor.id, f.namespace.id, agent.id),
+        });
+        await peer.noBroker();
+      } catch (error) {
+        journeyErrors.push(error);
+      }
+      // Even a failed assertion must retire withdrawn material with its original
+      // custody key before the next fixture opens this shared database.
+      try {
+        await peer.prepared.maintain();
+      } catch (error) {
+        journeyErrors.push(error);
+      }
+      if (journeyErrors.length === 1) {
+        throw journeyErrors[0];
+      }
+      if (journeyErrors.length > 1) {
+        throw new AggregateError(journeyErrors, "Git journey and custody cleanup failed");
+      }
       return;
     }
     assert.equal(peer.gh.issuesOfTokens.length, 1, "one issuance for the selected set");
@@ -1257,12 +1273,201 @@ async function repositoryGitJourney(
       return rows[0];
     };
     const originalRoute = await readRetainedRoute();
-    await f.controller.updateAgent(f.actor.id, {
-      namespaceId: f.namespace.id,
-      agentId: agent.id,
-      configurationId: configuration.id,
-      repositoryBindings: [{ repositoryRef: "A" }],
+    // Removal commits while no worker is running: no later poll may create its intent.
+    await f.stop();
+    const queue = new f.PostgresWorkQueue(f.observerPool);
+    const removalOwner = {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      revisionId: revision.id,
+    };
+    const originalBindings = revision.repositoryCredentials!.bindings.map(
+      ({ repositoryRef, profile }) => ({ repositoryRef, profile }),
+    );
+    const update = (repositoryBindings: typeof originalBindings, actorId = f.actor.id) =>
+      f.controller.updateAgent(actorId, {
+        namespaceId: f.namespace.id,
+        agentId: agent.id,
+        configurationId: configuration.id,
+        repositoryBindings,
+      });
+    const removalState = () => queue.repositoryExpiryState(removalOwner);
+    // Unchanged selections and removing a binding outside the admitted set leave this execution alone.
+    await update(originalBindings);
+    await update([...originalBindings, { repositoryRef: "C", profile: "github-repository" }]);
+    await update(originalBindings);
+    assert.equal(await removalState(), undefined);
+    // This supported rejection happens after saving the proposed binding change. Its entire
+    // transaction must roll back, including session closure and the withdrawal obligation.
+    await assert.rejects(
+      f.controller.updateAgent(f.actor.id, {
+        namespaceId: f.namespace.id,
+        agentId: agent.id,
+        configurationId: configuration.id,
+        repositoryBindings: [{ repositoryRef: "A", profile: "github-repository" }],
+        repositoryStandingApproval: {
+          approved: false,
+          approvalId: "missing-approval",
+          expectedGeneration: 1,
+          repositoryRef: "A",
+        },
+      }),
+      /Standing approval does not belong/,
+    );
+    assert.deepEqual((await f.currentAgent(agent))!.repositoryBindings, originalBindings);
+    assert.equal(await removalState(), undefined);
+    const sessionsBefore = await f.state.read((view) =>
+      view.repositorySessions.listRevisionAttempts(removalOwner),
+    );
+    assert.ok(sessionsBefore.every((session) => session.phase === "open"));
+    const editor = `binding-editor-${randomUUID()}`;
+    await f.copyActorGrants(editor, { withoutActions: ["deploy"] });
+    await assert.rejects(
+      f.controller.deployAgent(
+        editor,
+        { namespaceId: f.namespace.id, agentId: agent.id },
+        resolveApprovedHarness,
+      ),
+      { name: "AuthorizationDeniedError" },
+    );
+    await update([{ repositoryRef: "A", profile: "github-repository" }], editor);
+    assert.equal(
+      await removalState(),
+      "removal",
+      "the binding commit owns its irreversible withdrawal",
+    );
+    const removalWork = (
+      await f.observerPool.query(
+        "SELECT idempotency_key,actor_id,state,attempt_count FROM occ.controller_work WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3 AND idempotency_key LIKE '%:repository_cleanup:%'",
+        [revision.namespaceId, revision.agentId, revision.id],
+      )
+    ).rows;
+    assert.equal(removalWork.length, 1);
+    assert.equal(
+      removalWork[0].actor_id,
+      f.actor.id,
+      "retained supervision uses original deploy authority, not the editor",
+    );
+    const closed = await f.state.read((view) =>
+      view.repositorySessions.listRevisionAttempts(removalOwner),
+    );
+    assert.deepEqual(
+      closed.map((session) => session.admissionId),
+      sessionsBefore.map((session) => session.admissionId),
+    );
+    assert.ok(
+      closed.every((session) => session.phase === "closing" && session.deadlineWallMs > Date.now()),
+    );
+    assert.equal((await f.currentAgent(agent))!.activeRevisionId, revision.id);
+    // Readding and removing again cannot revive the old admission or reset its obligation.
+    await update(originalBindings, editor);
+    assert.equal((await evaluate(probe)).decision, 2);
+    await update([{ repositoryRef: "A", profile: "github-repository" }], editor);
+    assert.deepEqual(
+      (
+        await f.observerPool.query(
+          "SELECT idempotency_key,actor_id,state,attempt_count FROM occ.controller_work WHERE idempotency_key=$1",
+          [removalWork[0].idempotency_key],
+        )
+      ).rows,
+      removalWork,
+    );
+    // A repeated removal must not invert the cleanup transaction's work→Namespace→Agent
+    // locks. This exercises real OCC editing against the public Queue/State transaction
+    // boundary used by cleanup; it does not execute a full Worker cleanup pass.
+    await update(originalBindings, editor);
+    const claim = await queue.claim();
+    assert.ok(claim);
+    assert.equal(claim.idempotencyKey, removalWork[0].idempotency_key);
+    const cleanupPool = testPool(t, {
+      connectionString: f.database.url,
+      application_name: `finite-removal-cleanup-${randomUUID()}`,
+      max: 1,
+      statement_timeout: 10_000,
     });
+    const cleanupPid = (await cleanupPool.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+    const cleanupState = new PostgresPlatformState(cleanupPool);
+    const deadlocks = async () =>
+      Number(
+        (
+          await f.observerPool.query(
+            "SELECT deadlocks FROM pg_stat_database WHERE datname=current_database()",
+          )
+        ).rows[0].deadlocks,
+      );
+    const deadlocksBefore = await deadlocks();
+    const workLocked = deferred();
+    const continueCleanup = deferred();
+    const cleanup = cleanupState.transactWithQueue(async (unit, work) => {
+      assert.ok(await work.heartbeat(claim));
+      workLocked.resolve();
+      await within(continueCleanup.promise, "release cleanup scope lock step", 5_000);
+      await unit.namespaces.lockNamespace(claim.namespaceId, { includeDeleted: true });
+      assert.ok(await unit.agents.lockAgent(claim.namespaceId, claim.agentId!));
+    });
+    // Observe each rejection immediately; PostgreSQL may select either transaction as victim.
+    const cleanupResult = Promise.allSettled([cleanup]);
+    let editing: ReturnType<typeof update> | undefined;
+    let editResult: Promise<PromiseSettledResult<Awaited<ReturnType<typeof update>>>[]> | undefined;
+    try {
+      await within(workLocked.promise, "cleanup heartbeat locks its actual work row", 5_000);
+      editing = update([{ repositoryRef: "A", profile: "github-repository" }], editor);
+      editResult = Promise.allSettled([editing]);
+      let editSettled = false;
+      void editResult.then(() => {
+        editSettled = true;
+      });
+      const waiting = await waitFor(
+        "OCC repeat removal waits on cleanup work",
+        async () => {
+          const result = await f.observerPool.query(
+            `SELECT pid,wait_event_type,wait_event,pg_blocking_pids(pid) AS blockers
+           FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))`,
+            [cleanupPid],
+          );
+          if (result.rows.length === 1) {
+            return { blocked: result.rows };
+          }
+          return editSettled ? { completedWhileCleanupHeld: true } : undefined;
+        },
+        5_000,
+      );
+      t.diagnostic(JSON.stringify({ cleanupPid, repeatRemovalWaiting: waiting }));
+    } finally {
+      continueCleanup.resolve();
+    }
+    const outcomes = [
+      ...(await within(cleanupResult, "cleanup transaction settles", 12_000)),
+      ...(await within(editResult!, "OCC repeat removal settles", 12_000)),
+    ];
+    t.diagnostic(
+      JSON.stringify({
+        repeatRemovalOutcomes: outcomes.map((outcome, index) => ({
+          transaction: index === 0 ? "cleanup" : "OCC updateAgent",
+          status: outcome.status,
+          ...(outcome.status === "rejected" && {
+            name: outcome.reason?.name,
+            code: outcome.reason?.code,
+            message: outcome.reason?.message,
+          }),
+        })),
+      }),
+    );
+    if (outcomes.some((outcome) => outcome.status === "rejected")) {
+      const deadlocksAfter = await waitFor(
+        "PostgreSQL records the deadlock victim",
+        async () => {
+          const count = await deadlocks();
+          return count > deadlocksBefore ? count : undefined;
+        },
+        5_000,
+      );
+      t.diagnostic(JSON.stringify({ deadlocksBefore, deadlocksAfter }));
+    }
+    assert.ok(
+      outcomes.every((outcome) => outcome.status === "fulfilled"),
+      "repeat removal and cleanup heartbeat must both commit without a lock inversion",
+    );
     const liveWithdrawalBefore = peer.originCalls() + peer.gh.trace.length;
     const liveWithdrawal = await evaluate(probe);
     assert.equal(liveWithdrawal.decision, 2, "withdrawal closes the running listener");
@@ -1273,13 +1478,13 @@ async function repositoryGitJourney(
     const routeBeforeReplacement = await readRetainedRoute();
     assert.equal(routeBeforeReplacement.binding_id, originalRoute.binding_id);
     const writesBeforeReplacement = wire.world.writes;
-    const replacement = new OpenShellGitRuntime(runtime.configuration, (r) =>
-      createGitHubRepositoryDeliveryResolver(peer.registry)(r),
-    );
-    replacement["routes"] = new PostgresOpenShellGitRouteStore(f.observerPool);
-    const replacementBound = await replacement.bindRepositoryGit(peer.prepared.protectedGit!);
-    t.after(() => replacementBound.close());
-    await replacement["running"];
+    ({ runtime, sandbox, proxy, owner } = createRuntimeOwner());
+    runtime["routes"] = new PostgresOpenShellGitRouteStore(f.observerPool);
+    bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
+    await runtime["running"];
+    const replacement = runtime;
+    // The actual cold reduction and Worker dispatch are covered by the credential-source
+    // journey; this owner verifies persisted routing and fresh signed denial without a model.
     const replacementMiddleware = openShellMiddlewareClient(t, port, tls.caBundle);
     // Production prepare/adopt owns the close-preview fence; do not manufacture a route.
     await assert.rejects(
@@ -1298,10 +1503,12 @@ async function repositoryGitJourney(
     const originalBindingRetained = retainedRoute.binding_id === originalRoute.binding_id;
     assert.equal(originalBindingRetained, true, "replacement preserves the recorded binding");
     if (routeBeforeReplacement.blocked == null) {
-      assert.ok(
-        BigInt(retainedRoute.fence) > BigInt(routeBeforeReplacement.fence),
-        "production adoption fences a route not already closed",
+      assert.equal(
+        retainedRoute.fence,
+        routeBeforeReplacement.fence,
+        "committed removal preserves the recorded recipient instead of adopting its Git authority",
       );
+      assert.equal(retainedRoute.blocked, "repository_expired");
     } else {
       assert.equal(retainedRoute.fence, routeBeforeReplacement.fence);
       assert.equal(retainedRoute.blocked, routeBeforeReplacement.blocked);
