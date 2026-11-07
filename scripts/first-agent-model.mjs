@@ -60,6 +60,32 @@ export function firstAgentPriorPatPolicy(values, record, revisionId, priorRevisi
   );
 }
 
+/**
+ * Accept a nonce-only assistant answer with simple model formatting. Extra
+ * explanation, echoed prompts, and other roles do not verify a model answer.
+ */
+export function firstAgentAssistantNonce(message, nonce) {
+  if (
+    message?.role !== "assistant" ||
+    typeof message.content !== "string" ||
+    typeof nonce !== "string" ||
+    nonce === ""
+  ) {
+    return false;
+  }
+  let answer = message.content.trim();
+  if (answer.endsWith(".")) {
+    answer = answer.slice(0, -1).trimEnd();
+  }
+  const fence = /^```[a-z\d_-]{0,32}\r?\n([\s\S]*?)\r?\n```$/i.exec(answer);
+  if (fence !== null) {
+    answer = fence[1].trim();
+  } else if (["'", '"', "`"].includes(answer[0]) && answer.endsWith(answer[0])) {
+    answer = answer.slice(1, -1).trim();
+  }
+  return answer === nonce;
+}
+
 export function firstAgentPriorPatPolicyWarning(revisionId) {
   return (
     `Warning: revision ${revisionId} predates OpenShell full access and keeps the Codex ` +
@@ -314,7 +340,8 @@ async function probeInGateway({ nonce, prompt, expectProviderKey }) {
       } catch {
         return failure("response_format");
       }
-      const result = body.choices?.[0]?.message?.content;
+      const message = body.choices?.[0]?.message;
+      const result = message?.content;
       const text =
         typeof result === "string"
           ? result
@@ -333,7 +360,7 @@ async function probeInGateway({ nonce, prompt, expectProviderKey }) {
       if (text.length > 20_000) {
         return failure("response_size");
       }
-      return { text };
+      return { text, role: message.role };
     }
 
     const denied = await request(noncePrompt, false);
@@ -352,7 +379,7 @@ async function probeInGateway({ nonce, prompt, expectProviderKey }) {
       emit(proof);
       return;
     }
-    if (!proof.text.includes(nonce)) {
+    if (!firstAgentAssistantNonce({ role: proof.role, content: proof.text }, nonce)) {
       emit(failure("nonce"));
       return;
     }
@@ -361,6 +388,10 @@ async function probeInGateway({ nonce, prompt, expectProviderKey }) {
       const result = await getAssistant(prompt);
       if (result.error) {
         emit(result);
+        return;
+      }
+      if (result.role !== "assistant") {
+        emit(failure("response_format"));
         return;
       }
       emit({ nonce, response: result.text });
@@ -397,7 +428,7 @@ export async function verifyFirstAgentModel(
 
   const { namespace, pod } = await findGateway(kubectl, namespaceId, agentId, revisionId);
   const nonce = `FIRST_AGENT_${randomUUID()}`;
-  const script = `await (${probeInGateway.toString()})(${JSON.stringify({ nonce, prompt, expectProviderKey })});`;
+  const script = firstAgentModelProbeSource({ nonce, prompt, expectProviderKey });
   let result;
   try {
     const output = await kubectl(
@@ -440,4 +471,10 @@ export async function verifyFirstAgentModel(
     throw new Error(probeMessages.credential);
   }
   return prompt === undefined ? { nonce } : { nonce, response: result.response };
+}
+
+// The probe runs inside the gateway container, so the nonce rule has to travel
+// with the serialized function. Declaring it in the same module keeps the call bound.
+export function firstAgentModelProbeSource({ nonce, prompt, expectProviderKey }) {
+  return `${firstAgentAssistantNonce.toString()}\nawait (${probeInGateway.toString()})(${JSON.stringify({ nonce, prompt, expectProviderKey })});`;
 }
