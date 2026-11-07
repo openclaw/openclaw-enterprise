@@ -49,7 +49,7 @@ Prepare:
   database state;
 - the production kubeconfig, Helm values, Installation YAML, OCC service key,
   and optional CA bundle in protected files;
-- Bash, Python 3, Node.js, Helm, kubectl, jq, yq, cmp and mktemp on the operator host. The Kubernetes identity must
+- Bash, Python 3, Node.js satisfying `engines.node` in the release checkout’s `package.json`, Helm, kubectl, jq, yq, cmp and mktemp on the operator host. The Kubernetes identity must
   create and delete Jobs, Secrets and NetworkPolicies; get Jobs and Pods; list Pods;
   read Pod logs; and get and patch Deployments in the release namespace;
 - for the bundled Collector, [refresh its config Secret](../observability.md#refresh-the-collector-configuration-on-upgrade)
@@ -60,11 +60,10 @@ Prepare:
   restoration, and Agent-volume backups for runtime releases that can require
   runtime data restoration.
 
-For repository-enabled releases, pass both `--controller-image` and
+Repository-enabled releases require both `--controller-image` and
 `--broker-image`, even when you retain the current digest. Stage the exact operator-trusted
 images on a Linux host running as UID 1000. Docker Engine must support
-platform-specific image inspection and export. Install Python 3, Node.js and
-OpenSSL. Every node matching the control-plane selector must match the host's native
+platform-specific image inspection and export. Install OpenSSL. Every node matching the control-plane selector must match the host's native
 `linux/amd64` or `linux/arm64` architecture. Freeze eligible nodes and their labels
 during maintenance. The Kubernetes identity must list nodes, read Deployments,
 ReplicaSets and Pods, and run a read-only check in the worker container. Local
