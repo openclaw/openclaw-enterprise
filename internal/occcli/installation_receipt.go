@@ -115,7 +115,9 @@ func (app *application) installationInstallCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Installation intent persisted in %s. An interrupted dispatch remains unknown; do not repeat install.\n", receipt)
+			if _, err = fmt.Fprintf(cmd.OutOrStdout(), "Installation intent persisted in %s. An interrupted dispatch remains unknown; do not repeat install.\n", receipt); err != nil {
+				return err
+			}
 			// Persist before Start: even a crash between these operations stays unknown.
 			if err = writeInstallationRecord(receipt, "dispatch.json", map[string]string{"outcome": "unknown"}); err != nil {
 				return err
@@ -158,7 +160,9 @@ func (app *application) installationInstallCommand() *cobra.Command {
 			finalCtx, done := context.WithTimeout(cmd.Context(), app.parsedTimeout)
 			defer done()
 			result := readInstallationAttempt(finalCtx, frozenConfig, kctx, intent, uid)
-			fmt.Fprintf(cmd.OutOrStdout(), "Helm outcome: %s.\n%s\nUse installation doctor or plan with --receipt and the same explicit target. Do not replay an uncertain installation.\n", outcome, result.message)
+			if _, outputErr := fmt.Fprintf(cmd.OutOrStdout(), "Helm outcome: %s.\n%s\nUse installation doctor or plan with --receipt and the same explicit target. Do not replay an uncertain installation.\n", outcome, result.message); outputErr != nil {
+				return outputErr
+			}
 			if err != nil {
 				return &ExitStatusError{Code: 1}
 			}
