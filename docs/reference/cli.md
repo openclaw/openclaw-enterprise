@@ -138,6 +138,10 @@ All three commands require `--kubeconfig`, `--context`, `--kube-namespace` and
   overrides. Credentials must work without interactive input. Helm applies
   `--wait-timeout` per operation (default `5m`, positive, at most `24h`).
   A successful install exit records Helm success. Check the Job separately.
+  If the intent message cannot be written, the command stops before Helm starts
+  and keeps the saved intent. A final report write error makes the command fail
+  without changing the recorded Helm outcome. Inspect the original receipt
+  before any retry.
 - `occ installation doctor` reports the named Job. `plan` adds next steps.
   Optional `--receipt` requires the original target, install marker and captured
   UID for exit zero on completion. Alternatively, use `--expect-job-uid` for a
