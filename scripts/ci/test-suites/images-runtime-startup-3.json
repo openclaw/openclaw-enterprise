@@ -9,9 +9,9 @@
     "tests/integration/runtime-image-native-worker.test.mjs",
     "tests/integration/runtime-image-native-listener.test.mjs",
     "tests/integration/runtime-image-node-state-permissions.test.ts",
-    "tests/integration/runtime-image-node-state-lock.test.ts",
+    "tests/integration/runtime-image-codex-local-plugins.test.ts",
     "tests/integration/runtime-image-state-migration.test.mjs",
-    "tests/integration/runtime-image-codex-local-plugins.test.ts"
+    "tests/integration/runtime-image-node-state-lock.test.ts"
   ],
   "files": [
     {
