@@ -1192,6 +1192,7 @@ test(
       assert.equal(namespace.agents.length, 1);
       return namespace.agents[0];
     }
+    // The selected development Compute Driver cannot assess worker restart safety.
     assert.deepEqual(await inventoryAgent(), {
       id: sibling.id,
       status: "active",
@@ -1199,6 +1200,7 @@ test(
       executionMode: "embedded",
       activeRevisionId: live.id,
       deploymentInProgress: false,
+      repositoryWorkerRestart: "unknown",
     });
 
     // Completed history must not mask a new deployment of a surviving Agent.
