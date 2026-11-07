@@ -1582,6 +1582,11 @@ export class PostgresPlatformState implements PlatformStateStore {
     return this.execute(false, async (state) => work(state));
   }
 
+  /** Observe changes committed while acquiring locks, regardless of the connection default. */
+  async transactReadCommitted<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
+    return this.execute(false, async (state) => work(state), true);
+  }
+
   /**
    * Run one read-only statement on a pooled connection outside any transaction (one round
    * trip, no BEGIN/COMMIT). Only for a single SELECT that needs no snapshot shared with

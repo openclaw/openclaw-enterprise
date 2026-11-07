@@ -5,10 +5,13 @@ import {
   PostgresHumanAuthentication,
   PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
+import { administrativeActor } from "../helpers/administrative-actor.mjs";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
+import { waitForLockHolder } from "../helpers/postgres-lock-waits.mjs";
+import { waitUntil, within } from "../helpers/wait-for.mjs";
 
 function sessionRecord(userId) {
   const createdAt = new Date();
@@ -110,11 +113,11 @@ test(
     async function signInAdmin() {
       const snapshot = await persistence.snapshotPassword(recoveryEmail);
       adminSession = await persistence.issueSession(snapshot.proof, sessionRecord(recoveryUser.id));
-      admin = {
+      admin = administrativeActor(state, installation.id, {
         userId: recoveryUser.id,
         sessionId: adminSession.id,
         principalId: recoveryPrincipal.id,
-      };
+      });
     }
     async function changeAccount(userId, operation, store = persistence) {
       const target = await persistence.readAccount(userId, admin);
@@ -264,6 +267,158 @@ test(
         assert.equal(await persistence.currentSession(session.token), undefined);
       },
     );
+
+    // A real policy INSERT must serialize with an already-authorized account
+    // mutation. The callback only pauses the real IAM decision; it never supplies one.
+    await context.test("account authorization retains policy locks through commit", async () => {
+      const before = await persistence.readAccount(person.id, admin);
+      const authorized = Promise.withResolvers();
+      const resume = Promise.withResolvers();
+      const writer = await pool.connect();
+      let mutation;
+      let policyWrite;
+      try {
+        await writer.query("BEGIN");
+        await writer.query("SET LOCAL lock_timeout = '5s'");
+        const pid = (await writer.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+        mutation = persistence.changeAccount(
+          person.id,
+          "revoke",
+          {
+            ...admin,
+            authorize: async (scope) => {
+              await admin.authorize(scope);
+              authorized.resolve();
+              await within(resume.promise, "release account authorization", 5000);
+            },
+          },
+          before.version,
+        );
+        // Observe early failures without leaving an unhandled pending operation.
+        mutation.catch(authorized.reject);
+        await within(authorized.promise, "account authorization");
+        policyWrite = writer.query(
+          `INSERT INTO occ.iam_access_bindings
+           (id, identity_subject_id, role_id, resource_kind, resource_id)
+           VALUES ($1, $2, $3, 'installation', $4)`,
+          [`binding_${randomUUID()}`, seed.principal.id, roleId, installation.id],
+        );
+        policyWrite.catch(() => {});
+        await waitForLockHolder(pool, pid, "policy writer blocked by the account transaction", {
+          timeoutMs: 3000,
+        });
+        resume.resolve();
+        await mutation;
+        await policyWrite;
+        // Once the policy writer proceeds, the account change is already visible
+        // to its READ COMMITTED transaction. Roll back its temporary grant.
+        const account = (
+          await writer.query(
+            "SELECT version FROM occ.human_authentication_accounts WHERE user_id = $1",
+            [person.id],
+          )
+        ).rows[0];
+        assert.equal(account.version, before.version + 1);
+      } finally {
+        resume.resolve();
+        await Promise.allSettled([mutation, policyWrite]);
+        await writer.query("ROLLBACK");
+        writer.release();
+      }
+    });
+
+    await context.test(
+      "contended account authorization rolls back and can be retried",
+      async () => {
+        const before = await persistence.readAccount(person.id, admin);
+        const auditsBefore = await state.transact((unit) => unit.audit.list());
+        const writer = await pool.connect();
+        try {
+          await writer.query("BEGIN");
+          // An uncommitted policy change owns a conflicting table lock. Account
+          // administration must refuse promptly instead of writing with stale policy.
+          await writer.query(
+            `INSERT INTO occ.iam_access_bindings
+           (id, identity_subject_id, role_id, resource_kind, resource_id)
+           VALUES ($1, $2, $3, 'installation', $4)`,
+            [`binding_${randomUUID()}`, seed.principal.id, roleId, installation.id],
+          );
+          await assert.rejects(
+            within(
+              persistence.changeAccount(person.id, "revoke", admin, before.version),
+              "contended account operation",
+              3000,
+            ),
+            { name: "DependencyUnavailableError" },
+          );
+        } finally {
+          await writer.query("ROLLBACK");
+          writer.release();
+        }
+        assert.deepEqual(await persistence.readAccount(person.id, admin), before);
+        assert.deepEqual(await state.transact((unit) => unit.audit.list()), auditsBefore);
+        // The failed attempt leaves neither a version change nor a retained lock.
+        await persistence.changeAccount(person.id, "revoke", admin, before.version);
+        assert.equal((await persistence.readAccount(person.id, admin)).version, before.version + 1);
+      },
+    );
+
+    await context.test("expiry during authorization prevents the account mutation", async () => {
+      const proof = (await persistence.snapshotPassword(recoveryEmail)).proof;
+      const session = await persistence.issueSession(proof, sessionRecord(recoveryUser.id));
+      const expiring = administrativeActor(state, installation.id, {
+        ...admin,
+        sessionId: session.id,
+      });
+      const before = await persistence.readAccount(person.id, admin);
+      const auditsBefore = await state.transact((unit) => unit.audit.list());
+      // Seed an otherwise current session near its real deadline. No clock or
+      // authorization result is replaced; the database clock advances normally.
+      const deadline = (
+        await pool.query(
+          "UPDATE occ.session SET expires_at=clock_timestamp()+interval '2 seconds' WHERE id=$1 RETURNING expires_at",
+          [session.id],
+        )
+      ).rows[0].expires_at;
+      await assert.rejects(
+        persistence.changeAccount(
+          person.id,
+          "revoke",
+          {
+            ...expiring,
+            authorize: async (scope) => {
+              await expiring.authorize(scope);
+              assert.equal(
+                (
+                  await pool.query("SELECT clock_timestamp() < $1::timestamptz AS current", [
+                    deadline,
+                  ])
+                ).rows[0].current,
+                true,
+                "the session must still be current when authorization starts",
+              );
+              await waitUntil(
+                "the session expires during authorization",
+                async () =>
+                  (
+                    await pool.query("SELECT clock_timestamp() >= $1::timestamptz AS expired", [
+                      deadline,
+                    ])
+                  ).rows[0].expired,
+                { timeoutMs: 5000 },
+              );
+            },
+          },
+          before.version,
+        ),
+        {
+          name: "AuthorizationDeniedError",
+          message: "The human administrator session is no longer current.",
+        },
+      );
+      assert.deepEqual(await persistence.readAccount(person.id, admin), before);
+      assert.deepEqual(await state.transact((unit) => unit.audit.list()), auditsBefore);
+    });
 
     await context.test(
       "after activation unbound sessions fail at COMMIT and bound issuance still commits",
@@ -1146,11 +1301,11 @@ test(
           assert.equal((await store.currentSession(passwordSession.token)).user.id, person.id);
         }
         // The in-transaction actor re-check follows the same configuration.
-        const actor = {
+        const actor = administrativeActor(state, installation.id, {
           userId: person.id,
           sessionId: externalSession.id,
           principalId: external.proof.principalId,
-        };
+        });
         await assert.rejects(elsewhere.readAccount(person.id, actor), {
           name: "AuthorizationDeniedError",
         });
