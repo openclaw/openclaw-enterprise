@@ -25,6 +25,7 @@ import { standingExecutionFixture } from "../helpers/postgres-standing-execution
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
 import type { PostgresPool } from "../../packages/occ/src/index.ts";
+import { repositoryRestartState } from "../helpers/postgres-repository-restart-inventory.ts";
 
 // Admission is shared; each case still owns its route, worker custody and fault injection.
 async function protectedStandingFixture(
@@ -75,9 +76,11 @@ async function protectedStandingFixture(
 
 // Real standing approval, persisted route, runtime, provider and stock gRPC client. The
 // supervisor, Pod identities and material are controlled; no credential or origin is needed.
-for (const outcome of ["unsent", "lost-reply"] as const) {
+for (const outcome of ["unsent", "lost-reply", "different-execution"] as const) {
   test(
-    `OpenShell standing rotation preserves custody when ${outcome}`,
+    outcome === "different-execution"
+      ? "OpenShell restart preflight rejects a different standing execution witness"
+      : `OpenShell standing rotation preserves custody when ${outcome}`,
     { ...requiresPostgres, timeout: 45_000 },
     async (t) => {
       const {
@@ -310,9 +313,92 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
       assertReceived();
       const execution = await warm.verify();
       assert.ok(execution);
-      await f.state.transact((u) => u.repositorySessions.recordStandingExecution(key, execution));
+      // The API owner has no launcher state or writable route binding. It can only read
+      // the worker's committed evidence, and missing standing evidence stays unknown.
+      const observer = new OpenShellGitRuntime(
+        warm.runtime.configuration,
+        createGitHubRepositoryDeliveryResolver(registry),
+      );
+      observer.connectRestartObservation(routes.restartEvidence.bind(routes));
+      t.after(() => observer.close());
+      assert.equal(await observer.repositoryWorkerRestartDisposition(revision, signal), "unknown");
+      // A different valid witness can exist independently of the route observation.
+      // All delivery and installation joins must still match, so only the fingerprint
+      // comparison distinguishes this case from the supported predecessor.
+      const recordedExecution =
+        outcome === "different-execution"
+          ? {
+              ...execution,
+              fingerprint: createHash("sha256").update("different execution").digest("hex"),
+            }
+          : execution;
+      await f.state.transact((u) =>
+        u.repositorySessions.recordStandingExecution(key, recordedExecution),
+      );
       const original = await routes.standing(revision);
       assert.equal(original?.route.fence, 2);
+      const beforeInventory = await repositoryRestartState(f.observerPool, revision.id);
+      const beforeReads = reads;
+      const beforeWrites = world.writes;
+      const beforeIssued = peer.gh.issuesOfTokens.length;
+      const beforeOrigins = peer.originCalls();
+      assert.equal(
+        await observer.repositoryWorkerRestartDisposition(revision, signal),
+        outcome === "different-execution" ? "unknown" : "reverification-supported",
+      );
+      assert.deepEqual(await repositoryRestartState(f.observerPool, revision.id), beforeInventory);
+      assert.equal(reads, beforeReads);
+      assert.equal(world.writes, beforeWrites);
+      assert.equal(peer.gh.issuesOfTokens.length, beforeIssued);
+      assert.equal(peer.originCalls(), beforeOrigins);
+
+      if (outcome === "different-execution") {
+        assert.ok(original, "delivery and protected installation joins still match");
+        assert.equal(original.executionFingerprint, recordedExecution.fingerprint);
+        return;
+      }
+      if (outcome === "unsent") {
+        // Delay only the pool handoff, keeping the real PostgreSQL client. Cancellation
+        // while waiting must release that client without starting a stale transaction.
+        const beforeCancellation = await repositoryRestartState(f.observerPool, revision.id);
+        const acquired = Promise.withResolvers<void>();
+        const resume = Promise.withResolvers<void>();
+        let queries = 0;
+        let releases = 0;
+        const delayedRoutes = new PostgresOpenShellGitRouteStore({
+          end: async () => {},
+          async connect() {
+            const client = await f.observerPool.connect();
+            acquired.resolve();
+            await resume.promise;
+            return {
+              async query(sql, values) {
+                queries++;
+                return client.query(sql, values && [...values]);
+              },
+              release(discard) {
+                releases++;
+                client.release(discard);
+              },
+            };
+          },
+        });
+        const cancelled = new AbortController();
+        observer.connectRestartObservation(delayedRoutes.restartEvidence.bind(delayedRoutes));
+        const pending = observer.repositoryWorkerRestartDisposition(revision, cancelled.signal);
+        await acquired.promise;
+        cancelled.abort();
+        resume.resolve();
+        assert.equal(await pending, "unknown");
+        assert.equal(queries, 0);
+        assert.equal(releases, 1);
+        observer.connectRestartObservation(routes.restartEvidence.bind(routes));
+        assert.deepEqual(
+          await repositoryRestartState(f.observerPool, revision.id),
+          beforeCancellation,
+        );
+      }
+
       const clock = Date.now;
       let advance = 125_000;
       t.mock.method(Date, "now", () => clock() + advance); // Cross both boundaries; no sleep or SQL clock change.

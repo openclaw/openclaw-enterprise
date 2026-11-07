@@ -32,6 +32,10 @@ import { standingExecutionPlatform } from "./postgres-standing-execution.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { preparedStandingGitPeer } from "./prepared-standing-git-peer.ts";
+import {
+  repositoryRestartInventory,
+  repositoryRestartState,
+} from "./postgres-repository-restart-inventory.ts";
 
 const repositorySet = [
   { repositoryRef: "A", repository: "fixture/repository", repositoryId: "73" },
@@ -350,6 +354,23 @@ async function repositoryGitJourney(
     { namespaceId: f.namespace.id, agentId: agent.id },
     resolveApprovedHarness,
   ));
+  // This is a different API process's owner: production composition supplies its
+  // read callback, while the live worker retains its route and launch witness.
+  const inventory =
+    pendingSuccessor === "cold-worker"
+      ? await repositoryRestartInventory(t, revision, {
+          sandbox: { id, implementation: "openshell", configuration: sandbox["options"] },
+          createSandbox: (configuration, selection) =>
+            new OpenShellSandboxDriver(configuration as (typeof sandbox)["options"], selection),
+          backend: { ...backend, client: { ...backend.client, close: async () => {} } } as never,
+          operatorOwnedKubernetesResources: false,
+          repository: {
+            configuration: runtime.configuration,
+            resolveDelivery: createGitHubRepositoryDeliveryResolver(peer.registry),
+          },
+          proxy: { id, configuration: opts, preparedProviders: [] },
+        })
+      : undefined;
   const queued = await f.observerPool.query(
     "SELECT idempotency_key FROM occ.controller_work WHERE revision_id=$1",
     [revision.id],
@@ -690,7 +711,9 @@ async function repositoryGitJourney(
       const request = () => peer.exchange(() => evaluate(probe), state.installed!, false);
       assert.equal(((await request()) as { status: number }).status, 200);
       assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73]);
-      await f.stop();
+      if (pendingSuccessor !== "cold-worker") {
+        await f.stop();
+      }
       if (pendingSuccessor === "cold-worker") {
         const queue = new f.PostgresWorkQueue(f.observerPool);
         const maintenance = await queue.latestRevisionMaintenanceKey(ownerKey);
@@ -709,6 +732,21 @@ async function repositoryGitJourney(
           ).rows[0];
         const route = await readRoute();
         assert.ok(route.worker_instance, "the original runtime committed its route ownership");
+        const beforeInventory = await repositoryRestartState(f.observerPool, revision.id);
+        const issued = peer.gh.issuesOfTokens.length;
+        const origins = peer.originCalls();
+        assert.ok(inventory);
+        assert.equal(await inventory(), "original-worker-required");
+        assert.deepEqual(
+          await repositoryRestartState(f.observerPool, revision.id),
+          beforeInventory,
+        );
+        assert.equal(peer.gh.issuesOfTokens.length, issued);
+        assert.equal(peer.originCalls(), origins);
+        assert.equal(wire.world.writes, writes);
+        assert.equal(state.installed, installed);
+        assert.equal((await f.deploymentStatus(agent, revision)).repositoryAccess, undefined);
+        await f.stop();
         const replaceRuntime = async () => {
           await bound.close();
           ({ runtime, sandbox, proxy, owner } = createRuntimeOwner());

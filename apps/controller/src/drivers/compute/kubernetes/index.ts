@@ -103,6 +103,7 @@ import type {
   ComputePreflightResult,
   ComputePrepareRevisionFailureDiagnostic,
   ComputeRevisionContext,
+  RepositoryWorkerRestartDisposition,
   ProxyRevisionContext,
   SelectedDriverRegistration,
   ConfigurationValidationOptions,
@@ -6301,6 +6302,37 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return "validated";
   }
 
+  async repositoryWorkerRestartDisposition(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<RepositoryWorkerRestartDisposition> {
+    if (
+      signal.aborted ||
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation
+    ) {
+      return "unknown";
+    }
+    try {
+      return await withComputeAbortSignal(signal, async () => {
+        if (revision.repositoryCredentials === undefined) {
+          if (
+            revision.egressPlan?.repositoryGit !== undefined ||
+            revision.egressPlan?.repositoryGitAuthorization !== undefined
+          ) {
+            return "unknown";
+          }
+          const namespace = await this.ownedRepositoryNamespace(revision);
+          return namespace !== undefined && !signal.aborted ? "not-applicable" : "unknown";
+        }
+        const owned = await this.repositoryAccessContext(revision, signal);
+        return owned?.access.repositoryWorkerRestartDisposition?.(owned.context) ?? "unknown";
+      });
+    } catch {
+      return "unknown";
+    }
+  }
+
   async verifyRepositoryExecution(revision: Readonly<AgentRevision>, signal: AbortSignal) {
     const owned = await this.repositoryAccessContext(revision, signal);
     return owned?.access.verifyExecution(owned.context);
@@ -6348,12 +6380,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (revision.egressPlan) {
       this.validateExecutionAdmission(revision, "stored");
     }
-    const { name, external } = await this.resolveNamespace(revision.namespaceId);
-    const namespace = await this.getNamespace(name);
-    if (!namespace) {
+    const name = await this.ownedRepositoryNamespace(revision);
+    if (name === undefined) {
       return;
     }
-    this.verifyNamespaceOwnership(namespace, { namespaceId: revision.namespaceId }, external);
     const context = await this.sandboxNamespaceContext(
       this.sandboxNamespaceForRevision(revision, name),
       name,
@@ -6362,6 +6392,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
       access,
       context: { ...context, revision, signal: AbortSignal.any([context.signal, signal]) },
     };
+  }
+
+  /** Existing placement and ownership are prerequisites even when no Git grant is present. */
+  private async ownedRepositoryNamespace(revision: Readonly<AgentRevision>) {
+    const { name, external } = await this.resolveNamespace(revision.namespaceId);
+    const namespace = await this.getNamespace(name);
+    if (!namespace) {
+      return;
+    }
+    this.verifyNamespaceOwnership(namespace, { namespaceId: revision.namespaceId }, external);
+    return name;
   }
 
   async prepareRevision(

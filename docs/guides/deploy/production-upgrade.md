@@ -48,7 +48,7 @@ Prepare:
   database state;
 - the production kubeconfig, Helm values, Installation YAML, OCC service key,
   and optional CA bundle in protected files;
-- Bash, Python 3, Node.js, Helm, kubectl, jq, yq, cmp and mktemp on the operator host. The Kubernetes identity must
+- Bash, Python 3, Node.js satisfying `engines.node` in the release checkout’s `package.json`, Helm, kubectl, jq, yq, cmp and mktemp on the operator host. The Kubernetes identity must
   create and delete Jobs, Secrets and NetworkPolicies; get Jobs and Pods; list Pods;
   read Pod logs; and get and patch Deployments in the release namespace;
 - for the bundled Collector, [refresh its config Secret](../observability.md#refresh-the-collector-configuration-on-upgrade)
@@ -59,11 +59,10 @@ Prepare:
   restoration, and Agent-volume backups for runtime releases that can require
   runtime data restoration.
 
-For repository-enabled releases, pass both `--controller-image` and
+Repository-enabled releases require both `--controller-image` and
 `--broker-image`, even when you retain the current digest. Stage the exact operator-trusted
 images on a Linux host running as UID 1000. Docker Engine must support
-platform-specific image inspection and export. Install Python 3, Node.js and
-OpenSSL. Every node matching the control-plane selector must match the host's native
+platform-specific image inspection and export. Install OpenSSL. Every node matching the control-plane selector must match the host's native
 `linux/amd64` or `linux/arm64` architecture. Freeze eligible nodes and their labels
 during maintenance. The Kubernetes identity must list nodes, read Deployments,
 ReplicaSets and Pods, and run a read-only check in the worker container. Local
@@ -75,16 +74,17 @@ Active, desired-running Agents with a selected revision and no pending deploymen
 also require Agent `deploy` and selected-revision `read`. Runtime upgrades additionally
 require Configuration and replacement-revision `read`.
 
-Review runtime drafts; deployments snapshot current values.
+Review runtime drafts before deployment.
 
-Every upgrade needs the serving API’s inventory endpoint; controller-only upgrades
-also need exact revision reads for retained running Agents.
+Every upgrade needs the serving API’s inventory; controller-only upgrades
+also need retained revision reads.
 
-Controller-only upgrades read each active revision with `occ agent revision`,
-refusing missing or unreadable Harness settings before stopping OCC. Plan an
-authorized replacement, or stop and settle the Agent before upgrading, then deploy
-reviewed drafts. Git session continuity still requires the
-[upgrade checklist](upgrade-checklist.md#apply-the-release-in-dependency-order).
+Controller-only upgrades require saved Harness settings and a positive
+[repository restart disposition](../../reference/repository-credentials/worker-replacement.md)
+for retained running revisions. Otherwise, stop and settle affected Agents under
+an authorized interruption, or plan normal replacement. Missing or denied inventory
+is not an empty fleet. A changed pre-stop inventory requires new preparation.
+Git continuity still requires the [upgrade checklist](upgrade-checklist.md#apply-the-release-in-dependency-order).
 
 For OpenShell, a controller change to the generated Harness command requires a
 fresh Agent revision. Existing Sandboxes require the same launch specification;

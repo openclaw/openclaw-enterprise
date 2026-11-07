@@ -16,6 +16,7 @@ REQUIRED = (
     "installation-secret-key", "before-values.yaml", "before-installation.yaml",
     "before-live-values.yaml", "before-live-installation.yaml",
     "before-live-installation-secret.json", "before-helm-status.json",
+    "inventory/restart-preflight.json",
 )
 OPTIONAL = ("installation-changed", "installation-checksum", "agent-continuity.json", "controller-compatibility-results.json")
 
