@@ -16972,6 +16972,7 @@ test("resource quantities reject bare numbers with structured field diagnostics"
   // standard quota resource; values are non-negative quantities.
   for (const [resource, value, message] of [
     ["bad key", "1", /Namespace quota resource "bad key" must be a Kubernetes resource name/],
+    ["https://kubernetes.io/pods", "1", /must be a Kubernetes resource name/],
     ["count/", "1", /must be a Kubernetes resource name/],
     ["Example.com/gpu", "1", /must be a Kubernetes resource name/],
     ["podz", "1", /Namespace quota resource "podz" must be a Kubernetes resource name/],
@@ -17055,6 +17056,7 @@ test("counted ResourceQuota values obey native integer precision before construc
     "persistentvolumeclaims",
     "count/deployments.apps",
     "example.com/gpu",
+    "kubernetes.io.example/gpu",
   ]) {
     const configured = separateResources();
     configured.resources.namespace.quota = { [resource]: "1500m" };
@@ -17087,6 +17089,8 @@ test("counted ResourceQuota values obey native integer precision before construc
     ["requests.memory", "1.5Gi"],
     ["requests.nvidia.com/gpu", "1500m"],
     ["example.kubernetes.io/gpu", "1500m"],
+    // Native classification uses the namespace suffix, not a DNS-label boundary.
+    ["notkubernetes.io/gpu", "1500m"],
   ]) {
     const configured = separateResources();
     configured.resources.namespace.quota = { [resource]: quantity };

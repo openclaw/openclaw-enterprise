@@ -1815,11 +1815,15 @@ const INTEGER_QUOTA_RESOURCES = new Set([
   "persistentvolumeclaims",
 ]);
 
+// An admitted qualified resource key has exactly one slash. Anchor that full
+// shape while retaining Kubernetes's native namespace suffix, not a URL rule.
+const NATIVE_QUOTA_RESOURCE = /^[^/]*kubernetes\.io\/[^/]+$/;
+
 function isIntegerQuotaResource(key: string): boolean {
   return (
     INTEGER_QUOTA_RESOURCES.has(key) ||
     (key.includes("/") &&
-      !key.includes("kubernetes.io/") &&
+      !NATIVE_QUOTA_RESOURCE.test(key) &&
       !key.startsWith("requests.") &&
       isKubernetesQualifiedName(`requests.${key}`))
   );
