@@ -209,7 +209,9 @@ for (const inferred of [false, true]) {
       calls.map((call) => call[0]),
       inferred ? ["repo", "api", "pr", "api"] : ["api", "pr", "api"],
     );
-    if (inferred) assert.deepEqual(calls[0], ["repo", "view", "--json", "nameWithOwner"]);
+    if (inferred) {
+      assert.deepEqual(calls[0], ["repo", "view", "--json", "nameWithOwner"]);
+    }
     assert.deepEqual(calls.find((call) => call[0] === "pr")?.slice(0, 6), [
       "pr",
       "view",
