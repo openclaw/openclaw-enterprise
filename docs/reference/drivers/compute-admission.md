@@ -20,6 +20,12 @@ value, in at most 256 characters. Agent provisioning also calls
 `validateAgentProvisioning`; see
 [initial runtime credential provisioning](compute.md#optional-initial-runtime-credential-provisioning).
 
+For `validateHarnessAuth`, `method: "credential_source"` no longer guarantees a
+`credentialGatewayId`. Check which owner the snapshot records. A Driver that
+handles only Gateway-owned sources must refuse a Proxy-owned snapshot. The Proxy
+form is limited to static `openai/api_key`; the public Agent binding still takes
+only the method and source ID.
+
 ## Agent save
 
 Agent create and update read the named Configuration and check the Agent as it

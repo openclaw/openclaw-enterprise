@@ -5711,8 +5711,13 @@ export class ControllerWorker {
     } else if (revision.harnessAuth.method === "credential_source") {
       const auth = revision.harnessAuth;
       if (
-        this.credentialGateway === undefined ||
-        auth.credentialGatewayId !== this.credentialGateway.id
+        auth.credentialProxyId !== undefined
+          ? auth.credentialGatewayId !== undefined ||
+            auth.credentialProxyId !== this.proxyDriver?.id ||
+            auth.sourceType !== "openai" ||
+            auth.loginMode !== "api_key"
+          : this.credentialGateway === undefined ||
+            auth.credentialGatewayId !== this.credentialGateway.id
       ) {
         return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
       }
@@ -5725,12 +5730,33 @@ export class ControllerWorker {
       if (source === undefined) {
         return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
       }
+      if (
+        auth.credentialProxyId !== undefined &&
+        (source.egress === undefined ||
+          source.egress.schemaVersion !== 1 ||
+          revision.executionAdmission.mode !== "protected" ||
+          revision.egressPlan?.egressDriverId !== auth.credentialProxyId ||
+          !revision.egressPlan.routes.some(
+            (route) =>
+              route.binding.grant.kind === "inference" &&
+              isDeepStrictEqual(route.binding.source, source.egress!.key),
+          ))
+      ) {
+        return { result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" } };
+      }
       if (source.egress !== undefined) {
         const control = this.proxyDriver?.sourceControl;
         const provider = control?.providers.find((entry) =>
           isDeepStrictEqual(entry.ref, source.egress!.key.provider),
         );
-        if (!provider || !isDeepStrictEqual(control?.backend, source.egress.key.backend)) {
+        if (
+          !provider ||
+          !isDeepStrictEqual(control?.backend, source.egress.key.backend) ||
+          (auth.credentialProxyId !== undefined &&
+            (provider.sourceType.type !== auth.sourceType ||
+              provider.sourceType.harnessAuth?.modelProvider !== "openai" ||
+              provider.sourceType.harnessAuth.loginMode !== auth.loginMode))
+        ) {
           return { result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" } };
         }
         // Provider defaults must reach the normal Harness too. In particular, a

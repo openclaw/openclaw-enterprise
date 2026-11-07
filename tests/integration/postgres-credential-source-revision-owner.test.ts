@@ -9,6 +9,10 @@ import type {
   CredentialSource,
   Secret,
 } from "../../packages/contracts/src/index.ts";
+import {
+  InMemoryPlatformState,
+  type PlatformStateStore,
+} from "../../packages/occ/src/state/platform-state.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
 import {
@@ -28,6 +32,21 @@ async function fixture(t: TestContext, sourceCount = 2) {
   });
   const pool = testPool(t, { connectionString: databaseUrl });
   const store = new PostgresPlatformState(pool);
+  const seeded = await seedSnapshotFixture(store, sourceCount);
+  const writer = () => {
+    const name = id("writer");
+    const pool = testPool(t, {
+      connectionString: databaseUrl,
+      application_name: name,
+      max: 1,
+      statement_timeout: 8000,
+    });
+    return { name, state: new PostgresPlatformState(pool) };
+  };
+  return { ...seeded, pool, writer };
+}
+
+async function seedSnapshotFixture(store: PlatformStateStore, sourceCount = 2) {
   const createdAt = new Date().toISOString();
   const ns = { id: id("ns"), name: id("namespace"), status: "ready" as const, createdAt };
   const config = {
@@ -127,18 +146,225 @@ async function fixture(t: TestContext, sourceCount = 2) {
     }
     await unit.agents.createAgent(agent);
   });
-  const writer = () => {
-    const name = id("writer");
-    const pool = testPool(t, {
-      connectionString: databaseUrl,
-      application_name: name,
-      max: 1,
-      statement_timeout: 8000,
-    });
-    return { name, state: new PostgresPlatformState(pool) };
-  };
-  return { pool, store, ns, config, agent, sources, listed, input, writer };
+  return { store, ns, config, agent, sources, listed, input, secret };
 }
+
+/** Synthetic reader fixture: public CREATE and deploy still emit Gateway ownership. */
+async function addProxySnapshot(f: Awaited<ReturnType<typeof seedSnapshotFixture>>) {
+  const sourceId = id("cs");
+  const installation = await f.store.read((view) => view.installations.getInstallation());
+  assert.ok(installation);
+  const source: CredentialSource = {
+    ...f.sources[0]!,
+    id: sourceId,
+    name: "proxy-reader",
+    driverId: "proxy-reader",
+    ownerCapability: "credential_proxy",
+    egress: {
+      key: {
+        installationId: installation.id,
+        namespaceId: f.ns.id,
+        source: { id: sourceId, generation: 1 },
+        backend: { id: "reader-backend", generation: 1 },
+        provider: { id: "reader-openai", generation: 1 },
+      },
+      schemaVersion: 1,
+      adoption: "live",
+      materialRefId: "reader-material",
+      secret: { kind: "secret", namespaceId: f.ns.id, id: f.secret.id },
+      secretDriver: { id: f.secret.driverId, generation: 1 },
+      sender: { id: "reader-sender", generation: 1 },
+      resolver: { id: "reader-resolver", generation: 1 },
+      retention: "none",
+    },
+  };
+  await f.store.transact(async (unit) => {
+    await unit.credentialSources.createCredentialSource(source);
+    await unit.agents.updateConfiguration(
+      f.ns.id,
+      f.agent.id,
+      f.config.id,
+      undefined,
+      { method: "credential_source", sourceId },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [{ sourceId }],
+    );
+  });
+  const snapshot = { sourceId, sourceType: "openai" as const, credentialProxyId: source.driverId };
+  const revision: AgentRevision = {
+    ...f.input,
+    id: id("rev"),
+    revision: 2,
+    harnessAuth: { method: "credential_source", ...snapshot, loginMode: "api_key" },
+    credentialSources: [snapshot],
+  };
+  return { source, revision };
+}
+
+async function checkProxySnapshotReader(store: PlatformStateStore) {
+  const f = await seedSnapshotFixture(store);
+  const archived = await store.transact((unit) => unit.revisions.createRevision(f.input));
+  const { source, revision } = await addProxySnapshot(f);
+  const saved = await store.transact((unit) => unit.revisions.createRevision(revision));
+  assert.deepEqual(saved.harnessAuth, revision.harnessAuth);
+  const auth = revision.harnessAuth;
+  for (const bad of [
+    {
+      method: "credential_source",
+      sourceId: source.id,
+      sourceType: "openai",
+      loginMode: "api_key",
+    },
+    { ...auth, credentialGatewayId: "gateway-original" },
+    { ...auth, credentialProxyId: "wrong-owner" },
+    { ...auth, sourceType: "codex-pat" },
+    { ...auth, loginMode: "codex_pat" },
+    {
+      method: "credential_source",
+      sourceId: source.id,
+      sourceType: "openai",
+      loginMode: "api_key",
+      credentialGatewayId: source.driverId,
+    },
+  ]) {
+    await assert.rejects(
+      store.transact((unit) =>
+        unit.revisions.createRevision({
+          ...revision,
+          id: id("rev"),
+          revision: 3,
+          harnessAuth: bad as AgentRevision["harnessAuth"],
+        }),
+      ),
+      { name: "ScopeViolationError" },
+    );
+  }
+  // Detach the live draft before deleting both source owners. Archives must not consult them.
+  await store.transact(async (unit) => {
+    await unit.agents.updateConfiguration(
+      f.ns.id,
+      f.agent.id,
+      f.config.id,
+      undefined,
+      { method: "runtime" },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+    );
+    for (const entry of [...f.sources, source]) {
+      assert.equal(await unit.credentialSources.deleteCredentialSource(f.ns.id, entry.id), true);
+    }
+  });
+  assert.deepEqual(
+    await store.read((view) => view.revisions.findRevision(f.ns.id, f.agent.id, f.input.id)),
+    archived,
+  );
+  assert.deepEqual(
+    await store.read((view) => view.revisions.findRevision(f.ns.id, f.agent.id, revision.id)),
+    saved,
+  );
+  await assert.rejects(
+    store.transact((unit) =>
+      unit.revisions.createRevision({ ...revision, id: id("rev"), revision: 3 }),
+    ),
+    { name: "ScopeViolationError" },
+  );
+  return { f, archived, saved };
+}
+
+test("synthetic Proxy Harness reader preserves exclusive owners and deleted-source archives in memory", async () => {
+  await checkProxySnapshotReader(new InMemoryPlatformState());
+});
+
+test(
+  "synthetic Proxy Harness reader preserves exclusive owners and deleted-source archives in PostgreSQL",
+  options,
+  async (t) => {
+    await ensurePostgresAgentBootstrap(t, {
+      label: "proxy-reader",
+      authSecret: "proxy-reader-fixture-signing-secret",
+    });
+    const pool = testPool(t, { connectionString: databaseUrl });
+    const { f, archived, saved } = await checkProxySnapshotReader(new PostgresPlatformState(pool));
+    await withPool(databaseUrl, async (fresh: pg.Pool) => {
+      for (const revision of [archived, saved]) {
+        assert.deepEqual(
+          await new PostgresPlatformState(fresh).read((view) =>
+            view.revisions.findRevision(f.ns.id, f.agent.id, revision.id),
+          ),
+          revision,
+        );
+      }
+    });
+  },
+);
+
+test(
+  "SQL enforces exclusive Proxy Harness ownership without rewriting Gateway archives",
+  options,
+  async (t) => {
+    const f = await fixture(t);
+    await f.store.transact((unit) => unit.revisions.createRevision(f.input));
+    const bytes = async () =>
+      (
+        await f.pool.query(
+          "SELECT jsonb_send(admitted_spec) AS bytes FROM occ.agent_revisions WHERE id=$1",
+          [f.input.id],
+        )
+      ).rows[0].bytes;
+    const before = await bytes();
+    const { source, revision } = await addProxySnapshot(f);
+    const insert = async (auth: unknown, listed: unknown = revision.credentialSources) =>
+      f.pool.query(
+        `INSERT INTO occ.agent_revisions (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
+     SELECT $1, namespace_id, agent_id, 2, backend_id,
+       jsonb_set(jsonb_set(admitted_spec, '{harness_auth}', $2::jsonb), '{credential_sources}', $3::jsonb), admitted_at
+     FROM occ.agent_revisions WHERE id=$4 RETURNING id`,
+        [id("rev"), JSON.stringify(auth), JSON.stringify(listed), f.input.id],
+      );
+    for (const auth of [
+      { ...revision.harnessAuth, credentialGatewayId: "gateway-original" },
+      {
+        method: "credential_source",
+        sourceId: source.id,
+        sourceType: "openai",
+        loginMode: "api_key",
+      },
+      { ...revision.harnessAuth, credentialProxyId: "wrong-proxy" },
+      { ...revision.harnessAuth, sourceType: "codex-pat" },
+      { ...revision.harnessAuth, loginMode: "codex_pat" },
+      {
+        method: "credential_source",
+        sourceId: source.id,
+        sourceType: "openai",
+        loginMode: "api_key",
+        credentialGatewayId: source.driverId,
+      },
+    ]) {
+      await assert.rejects(insert(auth), { code: "23514" });
+    }
+    const inserted = await insert(revision.harnessAuth);
+    await withPool(databaseUrl, async (fresh: pg.Pool) => {
+      const read = await new PostgresPlatformState(fresh).read((view) =>
+        view.revisions.findRevision(f.ns.id, f.agent.id, inserted.rows[0].id),
+      );
+      assert.deepEqual(read?.harnessAuth, revision.harnessAuth);
+    });
+    assert.deepEqual(await bytes(), before);
+    // A syntactically valid archive cannot be inserted as fresh authority after withdrawal.
+    await f.store.transact((unit) =>
+      unit.credentialSources.markCredentialSourceDeleting(f.ns.id, source.id),
+    );
+    await assert.rejects(insert(revision.harnessAuth), { code: "23514" });
+  },
+);
 
 // Observe a real server lock wait; time alone is not evidence that insertion reached it.
 async function waitForLock(pool: pg.Pool, name: string): Promise<void> {
@@ -380,3 +606,77 @@ test(
     });
   },
 );
+
+// These direct app-role INSERTs isolate the database trigger from the State writer's
+// own admission locks. The Namespace holder models unrelated non-key metadata work.
+for (const shape of [
+  "source-free absent",
+  "invalid empty list",
+  "Harness source",
+  "listed source",
+] as const) {
+  test(`revision owner trigger Namespace locking: ${shape}`, options, async (t) => {
+    const { pool, store, ns, input } = await fixture(t);
+    await store.transact((unit) => unit.revisions.createRevision(input));
+    const row = await pool.query("SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1", [
+      input.id,
+    ]);
+    const admitted = row.rows[0].admitted_spec;
+    const hasSource = shape === "Harness source" || shape === "listed source";
+    if (shape !== "Harness source") {
+      admitted.harness_auth = { method: "runtime" };
+    }
+    if (shape === "source-free absent" || shape === "Harness source") {
+      delete admitted.credential_sources;
+    } else if (shape === "invalid empty list") {
+      admitted.credential_sources = [];
+    }
+    const insert = {
+      text: `INSERT INTO occ.agent_revisions
+        (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
+        SELECT $1, namespace_id, agent_id, revision_number + 1, backend_id, $2::jsonb, admitted_at
+        FROM occ.agent_revisions WHERE id=$3 RETURNING id`,
+      values: [id("rev"), JSON.stringify(admitted), input.id],
+    };
+    const holder = await pool.connect();
+    const writer = await pool.connect();
+    try {
+      await holder.query("BEGIN");
+      const held = await holder.query(
+        "SELECT id FROM occ.namespaces WHERE id=$1 FOR NO KEY UPDATE",
+        [ns.id],
+      );
+      assert.deepEqual(held.rows, [{ id: ns.id }]);
+      // The completed SELECT proves acquisition before INSERT starts. lock_timeout
+      // bounds the negative observation without releasing the holder prematurely.
+      await writer.query("SET lock_timeout = '500ms'");
+      await writer.query("SET statement_timeout = '3000ms'");
+      if (hasSource) {
+        await assert.rejects(writer.query(insert), (error: unknown) => {
+          const failure = error as { code?: string; where?: string };
+          assert.equal(failure.code, "55P03");
+          assert.match(failure.where ?? "", /check_revision_credential_source_owners/);
+          t.diagnostic(`${shape}: owner trigger waited for the held Namespace lock (55P03)`);
+          return true;
+        });
+        await holder.query("ROLLBACK");
+        // Releasing the competing transaction permits the same valid owner INSERT.
+        assert.equal((await writer.query(insert)).rowCount, 1);
+      } else if (shape === "invalid empty list") {
+        await assert.rejects(writer.query(insert), {
+          code: "23514",
+          constraint: "agent_revisions_admitted_snapshot",
+        });
+      } else {
+        assert.equal((await writer.query(insert)).rowCount, 1);
+        t.diagnostic(`${shape}: INSERT completed while Namespace NO KEY UPDATE remained held`);
+      }
+    } finally {
+      await holder.query("ROLLBACK");
+      await writer.query("RESET lock_timeout");
+      await writer.query("RESET statement_timeout");
+      holder.release();
+      writer.release();
+    }
+  });
+}

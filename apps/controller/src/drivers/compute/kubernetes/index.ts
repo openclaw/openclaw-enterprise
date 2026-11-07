@@ -4674,8 +4674,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
       // The paired Sandbox injects the credential, so this path never projects a model Secret.
       if (
         this.sandboxDriver === undefined ||
-        this.credentialGatewayDriver === undefined ||
-        auth.credentialGatewayId !== this.credentialGatewayDriver.id ||
+        (auth.credentialProxyId !== undefined
+          ? auth.credentialGatewayId !== undefined ||
+            auth.credentialProxyId !== this.proxyDriver?.id ||
+            auth.sourceType !== "openai" ||
+            auth.loginMode !== "api_key"
+          : this.credentialGatewayDriver === undefined ||
+            auth.credentialGatewayId !== this.credentialGatewayDriver.id) ||
         credentialSourceType?.type !== auth.sourceType ||
         credentialSourceType.harnessAuth?.loginMode !== auth.loginMode ||
         credentialSourceType.harnessAuth.modelProvider !== "openai" ||
@@ -6471,7 +6476,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         revision.harnessAuth,
         admittedRevision.configuration,
         revision.secretBindings,
-        await this.admittedCredentialSourceType(revision),
+        await this.admittedCredentialSourceType(revision, context),
       ),
     );
     const channels = this.enabledChannels(admittedRevision);
@@ -7755,7 +7760,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       revision.harnessAuth,
       admittedRevision.configuration,
       revision.secretBindings,
-      await this.admittedCredentialSourceType(revision),
+      await this.admittedCredentialSourceType(revision, context),
     );
     const channels = this.enabledChannels(admittedRevision);
     const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
@@ -11314,12 +11319,79 @@ export class KubernetesComputeDriver implements ComputeDriver {
     };
   }
 
-  /** Dispatch revalidates against the paired gateway's current catalog, not admission's copy. */
+  /** Dispatch revalidates against the recorded owner's current catalog. */
   private async admittedCredentialSourceType(
     revision: AgentRevision,
+    context?: ComputeRevisionContext,
   ): Promise<CredentialSourceType | undefined> {
     if (revision.harnessAuth.method !== "credential_source") {
       return undefined;
+    }
+    const auth = revision.harnessAuth;
+    if (auth.credentialProxyId !== undefined) {
+      const resolved = context?.harnessAuth;
+      const control = this.proxyDriver?.sourceControl;
+      if (resolved?.method !== "credential_source") {
+        return undefined;
+      }
+      const { source, ...snapshot } = resolved;
+      if (
+        !isDeepStrictEqual(snapshot, auth) ||
+        auth.credentialGatewayId !== undefined ||
+        auth.credentialProxyId !== this.proxyDriver?.id ||
+        source.namespaceId !== revision.namespaceId ||
+        source.state !== "ready" ||
+        !credentialSourceMatchesSnapshot(source, auth) ||
+        source.egress === undefined ||
+        source.egress.schemaVersion !== 1 ||
+        revision.executionAdmission.mode !== "protected" ||
+        revision.egressPlan?.egressDriverId !== auth.credentialProxyId ||
+        !isDeepStrictEqual(control?.backend, source.egress.key.backend)
+      ) {
+        return undefined;
+      }
+      const inferenceRoutes = revision.egressPlan.routes.filter(
+        (route) =>
+          route.binding.grant.kind === "inference" &&
+          isDeepStrictEqual(route.binding.source, source.egress!.key),
+      );
+      if (inferenceRoutes.length === 0) {
+        return undefined;
+      }
+      const sourceType = control?.providers.find((provider) =>
+        isDeepStrictEqual(provider.ref, source.egress!.key.provider),
+      )?.sourceType;
+      if (
+        auth.sourceType !== "openai" ||
+        auth.loginMode !== "api_key" ||
+        sourceType?.type !== auth.sourceType ||
+        sourceType.harnessAuth?.modelProvider !== "openai" ||
+        sourceType.harnessAuth.loginMode !== auth.loginMode
+      ) {
+        return undefined;
+      }
+      this.validateHarnessCredentialSources(revision.harness, [source]);
+      const endpoint = new URL(
+        modelProviderBaseUrl(savedModelProvider(revision.harness.configuration)),
+      );
+      // Check only this Harness's retained inference destinations. Provider callbacks and
+      // per-send grant/policy authorization belong to admission and credential exchange.
+      for (const route of inferenceRoutes) {
+        const destination = URL.parse(route.path, endpoint.origin);
+        if (
+          route.origin !== endpoint.origin ||
+          destination === null ||
+          destination.origin !== endpoint.origin ||
+          destination.pathname !== route.path ||
+          (destination.pathname !== endpoint.pathname &&
+            !destination.pathname.startsWith(endpoint.pathname + "/"))
+        ) {
+          throw new ConfigurationFailure(
+            "The admitted Harness route destination does not match its saved model endpoint.",
+          );
+        }
+      }
+      return sourceType;
     }
     const gateway = this.requireCredentialGateway();
     if (gateway.id !== revision.harnessAuth.credentialGatewayId) {

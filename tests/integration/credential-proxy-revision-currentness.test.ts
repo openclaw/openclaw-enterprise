@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import test, { type TestContext } from "node:test";
-import type { ConfigurationDriver } from "../../packages/contracts/src/index.ts";
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
+import { ControllerWorker } from "../../apps/controller/src/worker.ts";
+import { githubMetadataGrant } from "../../packages/contracts/src/index.ts";
 import type {
+  AgentRevision,
+  ConfigurationDriver,
+  CredentialSource,
+  CredentialSourceControl,
+} from "../../packages/contracts/src/index.ts";
+import type {
+  ClaimedWork,
   OpenClawController,
   PlatformStateStore,
   PlatformUnitOfWork,
@@ -218,3 +229,1204 @@ test("credential exchange consults revision history only for inactive executions
   assert.equal((await f.resolve(f.capture())).refused?.code, f.refusalCode("DENIED"));
   assert.equal(revisionListings, 1);
 });
+
+const currentCatalogCases = [
+  "backend-generation",
+  "backend-missing",
+  "provider-generation",
+  "provider-missing",
+  "provider-source-type",
+  "provider-model",
+  "provider-login-mode",
+] as const;
+
+function changedCurrentCatalog(
+  control: CredentialSourceControl,
+  scenario: (typeof currentCatalogCases)[number],
+  providerRef: CredentialSourceControl["providers"][number]["ref"],
+) {
+  const provider = control.providers.find((entry) => isDeepStrictEqual(entry.ref, providerRef));
+  assert.ok(provider?.sourceType.harnessAuth);
+  const replaceProvider = (changed: typeof provider) => ({
+    ...control,
+    providers: control.providers.map((entry) => (entry === provider ? changed : entry)),
+  });
+  // Only the currently installed catalog changes. Source, route, owner and admission stay fixed.
+  return {
+    "backend-generation": {
+      ...control,
+      backend: { ...control.backend, generation: control.backend.generation + 1 },
+    },
+    "backend-missing": { ...control, backend: undefined },
+    "provider-generation": replaceProvider({
+      ...provider,
+      ref: { ...provider.ref, generation: provider.ref.generation + 1 },
+    }),
+    "provider-missing": {
+      ...control,
+      providers: control.providers.filter((entry) => entry !== provider),
+    },
+    "provider-source-type": replaceProvider({
+      ...provider,
+      sourceType: { ...provider.sourceType, type: "other-source" },
+    }),
+    "provider-model": replaceProvider({
+      ...provider,
+      sourceType: {
+        ...provider.sourceType,
+        harnessAuth: { ...provider.sourceType.harnessAuth, modelProvider: "other-model" },
+      },
+    }),
+    "provider-login-mode": replaceProvider({
+      ...provider,
+      sourceType: {
+        ...provider.sourceType,
+        harnessAuth: { ...provider.sourceType.harnessAuth, loginMode: "codex_pat" },
+      },
+    }),
+  }[scenario];
+}
+
+function sourceWithNextGeneration(source: Readonly<CredentialSource>) {
+  assert.ok(source.egress);
+  return {
+    ...source,
+    egress: {
+      ...source.egress,
+      key: {
+        ...source.egress.key,
+        source: {
+          ...source.egress.key.source,
+          generation: source.egress.key.source.generation + 1,
+        },
+      },
+    },
+  };
+}
+
+// Controlled stored extension composition, not a public writer or built-in provider output.
+// Grant unions and Harness catalog metadata are independent in the provider contract.
+function withCompanionInference(
+  t: TestContext,
+  revision: AgentRevision,
+  proxy: object,
+): AgentRevision {
+  // This extension advertises reduction support to admit multiple sources. No reduction
+  // operation is exercised; the reader must decide before installation or policy effects.
+  assert.equal("policyReduction" in proxy, false);
+  Object.defineProperty(proxy, "policyReduction", {
+    configurable: true,
+    value: {
+      version: 1,
+      async apply() {
+        assert.fail("reader must not apply a policy reduction");
+      },
+      async observe() {
+        assert.fail("reader must not observe a policy reduction");
+      },
+    },
+  });
+  t.after(() => {
+    Reflect.deleteProperty(proxy, "policyReduction");
+  });
+  const plan = revision.egressPlan;
+  assert.ok(plan);
+  const route = plan.routes[0];
+  assert.ok(route?.binding.grant.kind === "inference");
+  const grant = githubMetadataGrant({
+    authority: "execution",
+    app_id: "1",
+    installation_id: "2",
+    repository_id: "3",
+    repository: "openclaw/fixture",
+    agent_id: revision.agentId,
+  });
+  return {
+    ...revision,
+    egressPlan: {
+      ...plan,
+      policyReductionVersion: 1,
+      routes: [
+        {
+          ...route,
+          route: { ...route.route, id: route.route.id + "/metadata" },
+          method: "GET",
+          path: "/repos/openclaw/fixture",
+          binding: {
+            ...route.binding,
+            binding: { ...route.binding.binding, id: route.binding.binding.id + "/metadata" },
+            grant,
+            grantHash: createHash("sha256").update(JSON.stringify(grant)).digest("hex"),
+          },
+        },
+        {
+          ...route,
+          route: { ...route.route, id: route.route.id + "/companion" },
+          binding: {
+            ...route.binding,
+            binding: { ...route.binding.binding, id: route.binding.binding.id + "/companion" },
+            source: {
+              ...route.binding.source,
+              source: {
+                ...route.binding.source.source,
+                id: route.binding.source.source.id + "-companion",
+              },
+            },
+          },
+        },
+      ],
+    },
+  };
+}
+
+// This is a private reader fixture. Public CREATE/deploy still emits Gateway snapshots.
+// The controlled Kubernetes receiver stops execution at its first read; this proves the
+// authentication gate on both public Compute operations, not workload readiness or enrollment.
+test("Kubernetes reads a synthetic Proxy Harness through its pinned catalog before external effects", async (t) => {
+  const f = await staticEgressFixture(t, { recordInstallation: false });
+  assert.ok("revision" in f);
+  const gateway = f.controller.selectedDriver("credential_gateway");
+  const compute = createTestKubernetesComputeDriver("proxy-reader-compute", {
+    protectedDriver: f.installedDriver,
+    credentialGatewayDriver: gateway,
+    channelRuntime: true,
+    modelProvider: { protocol: "openai-responses", baseUrl: f.modelProvider.baseUrl },
+  });
+  const storedSource = await f.controller.transact((unit: PlatformUnitOfWork) =>
+    unit.credentialSources.findCredentialSource(f.namespace.id, f.source.id),
+  );
+  assert.ok(storedSource);
+  // Public admission supplies all settings and routes; only Proxy ownership is synthetic.
+  const proxyId = f.egress.id;
+  function proxyFixture(admitted: AgentRevision, original: Readonly<CredentialSource>) {
+    const source = {
+      ...original,
+      ownerCapability: "credential_proxy" as const,
+      driverId: proxyId,
+    };
+    const auth = {
+      method: "credential_source" as const,
+      sourceId: source.id,
+      sourceType: "openai" as const,
+      credentialProxyId: proxyId,
+      loginMode: "api_key" as const,
+    };
+    const admission = compute.admitRevision(admitted);
+    assert.ok(admission);
+    const revision: AgentRevision = {
+      ...admitted,
+      harnessAuth: auth,
+      credentialSources: [
+        { sourceId: source.id, sourceType: source.type, credentialProxyId: proxyId },
+      ],
+      compute: {
+        id: compute.id,
+        implementation: compute.implementation,
+        admission,
+      },
+    };
+    const context = {
+      secretEnvironment: [],
+      harnessAuth: { ...auth, source },
+      currentEgressInstallation: async () => {
+        assert.fail("the controlled first Kubernetes read must precede installation lookup");
+      },
+    };
+    return { source, auth, revision, context };
+  }
+  const { source, auth, revision, context } = proxyFixture(f.revision, storedSource);
+  let reads = 0;
+  const reached = new Error("controlled Kubernetes receiver reached");
+  const apiClients = Promise.resolve({
+    core: {
+      async listNamespace() {
+        reads++;
+        throw reached;
+      },
+    },
+  });
+  Object.assign(compute, { apiClients });
+  const catalog = t.mock.method(gateway, "listSourceTypes", async () => {
+    throw new Error("Proxy Harness must not read Gateway catalog");
+  });
+  for (const operation of ["prepareRevision", "activateRevision"] as const) {
+    await assert.rejects(compute[operation](revision, context), (error) => error === reached);
+    assert.ok(reads > 0);
+    assert.equal(catalog.mock.callCount(), 0);
+    reads = 0;
+    const admittedSource = structuredClone(source);
+    const admittedPlan = structuredClone(revision.egressPlan);
+    const current = f.egress.sourceControl;
+    assert.ok(source.egress);
+    assert.ok(
+      revision.egressPlan?.routes.some((route) =>
+        isDeepStrictEqual(route.binding.source, source.egress!.key),
+      ),
+    );
+    for (const scenario of currentCatalogCases) {
+      await t.test(`${operation}: ${scenario}`, async () => {
+        Object.assign(f.egress, {
+          sourceControl: changedCurrentCatalog(current, scenario, source.egress!.key.provider),
+        });
+        try {
+          // Execution and route admission still pass; refusal must come from current catalog data.
+          compute.validateExecutionAdmission(revision, "stored");
+          assert.deepEqual(source, admittedSource);
+          assert.deepEqual(revision.egressPlan, admittedPlan);
+          await assert.rejects(
+            compute[operation](revision, context),
+            /matching supported OpenAI login mode/,
+          );
+          assert.equal(reads, 0, scenario);
+        } finally {
+          Object.assign(f.egress, { sourceControl: current });
+        }
+        // Restoration reaches the very same receiver with the very same admission.
+        await assert.rejects(compute[operation](revision, context), (error) => error === reached);
+        assert.ok(reads > 0);
+        reads = 0;
+      });
+    }
+    await t.test(`${operation}: source-route-generation`, async () => {
+      // A new source generation leaves ownership and the current catalog unchanged.
+      const changedSource = sourceWithNextGeneration(source);
+      assert.deepEqual(changedSource.egress.key.backend, current.backend);
+      assert.ok(
+        current.providers.some((entry) =>
+          isDeepStrictEqual(entry.ref, changedSource.egress.key.provider),
+        ),
+      );
+      compute.validateExecutionAdmission(revision, "stored");
+      await assert.rejects(
+        compute[operation](revision, {
+          ...context,
+          harnessAuth: { ...auth, source: changedSource },
+        }),
+        /matching supported OpenAI login mode/,
+      );
+      assert.equal(reads, 0, "a source outside the admitted route must not reach Kubernetes");
+      assert.deepEqual(f.egress.sourceControl, current);
+      assert.deepEqual(revision.egressPlan, admittedPlan);
+      await assert.rejects(compute[operation](revision, context), (error) => error === reached);
+      assert.ok(reads > 0, "the admitted source still reaches the same receiver");
+    });
+    // Keep the next operation observable even when this subtest detects a regression.
+    reads = 0;
+    const withoutEgress = { ...source };
+    delete withoutEgress.egress;
+    for (const changedSource of [
+      { ...source, driverId: "replacement-proxy" },
+      { ...source, ownerCapability: "credential_gateway" as const },
+      { ...source, state: "deleting" as const },
+      withoutEgress,
+    ]) {
+      await assert.rejects(
+        compute[operation](revision, {
+          ...context,
+          harnessAuth: { ...auth, source: changedSource },
+        }),
+        /matching supported OpenAI login mode/,
+      );
+      assert.equal(reads, 0);
+    }
+    for (const changedAuth of [
+      { ...auth, credentialProxyId: "replacement-proxy" },
+      { ...auth, credentialGatewayId: gateway.id },
+      { ...auth, sourceType: "codex-pat" },
+    ]) {
+      await assert.rejects(
+        compute[operation]({ ...revision, harnessAuth: changedAuth } as typeof revision, context),
+        {
+          message:
+            "Credential-source Harness authentication requires paired Drivers and a matching supported OpenAI login mode.",
+        },
+      );
+      assert.equal(reads, 0);
+      // A correct stored snapshot cannot make a mismatched resolved context authoritative.
+      await assert.rejects(
+        compute[operation](revision, {
+          ...context,
+          harnessAuth: { ...changedAuth, source },
+        } as typeof context),
+        {
+          message:
+            "Credential-source Harness authentication requires paired Drivers and a matching supported OpenAI login mode.",
+        },
+      );
+      assert.equal(reads, 0);
+    }
+    // This hostile snapshot retains API-key provider settings with a token login mode.
+    // Saved-settings validation must refuse it before the owner/catalog decision.
+    await assert.rejects(
+      compute[operation](
+        { ...revision, harnessAuth: { ...auth, loginMode: "codex_pat" } } as AgentRevision,
+        context,
+      ),
+      { message: "Saved Harness settings are missing, malformed, or unsupported." },
+    );
+    assert.equal(reads, 0);
+  }
+
+  // Ordinary admission supplies normalized overrides, source consent and provider-derived routes.
+  // Only ownership below is synthetic: public writers still emit Gateway-owned Harnesses.
+  catalog.mock.restore();
+  const root = `/namespaces/${f.namespace.id}`;
+  const destination = f.modelProvider.baseUrl.replace("/v1", "/evaluation/v1");
+  const post = async (path: string, body: unknown, status = 201) => {
+    const result = await f.request("POST", root + path, { body });
+    assert.equal(result.status, status, JSON.stringify(result.body));
+    return result.data;
+  };
+  const alternate = await post("/credential-sources", {
+    name: "reader-evaluation",
+    type: "openai",
+    config: { authorized_base_url: destination },
+    secrets: f.source.secrets,
+  });
+  const agent = await post("/agents", {
+    name: "reader-evaluation",
+    configurationId: f.agent.configurationId,
+    executionMode: "dedicated",
+    harnessAuth: { method: "credential_source", sourceId: alternate.id },
+    credentialSources: [{ sourceId: alternate.id }],
+  });
+  const role = await post("/iam/roles", {
+    name: "reader-evaluation",
+    permissions: [{ action: "operate", resourceKind: "credential_source" }],
+  });
+  await post("/iam/access-bindings", {
+    subjectKind: "identity",
+    subjectId: agent.servicePrincipalId,
+    roleId: role.id,
+    resourceKind: "credential_source",
+    resourceId: alternate.id,
+  });
+  const admitted = await post(
+    `/agents/${agent.id}/deploy`,
+    {
+      harnessOverrides: {
+        modelProvider: { protocol: "openai-responses", baseUrl: destination + "/" },
+      },
+    },
+    202,
+  );
+  const { saved, savedSource } = await f.controller.transact(async (unit: PlatformUnitOfWork) => ({
+    saved: await unit.revisions.findRevision(f.namespace.id, agent.id, admitted.id),
+    savedSource: await unit.credentialSources.findCredentialSource(f.namespace.id, alternate.id),
+  }));
+  assert.ok(saved?.egressPlan);
+  assert.ok(savedSource?.egress);
+  const {
+    source: bSource,
+    auth: bAuth,
+    revision: b,
+    context: bContext,
+  } = proxyFixture(saved, savedSource);
+  assert.deepEqual(b.harness.configuration, {
+    modelProvider: {
+      protocol: "openai-responses",
+      baseUrl: destination,
+      supportsStandaloneWebSearch: false,
+    },
+  });
+  assert.ok(
+    b.egressPlan?.routes.every(
+      (route) =>
+        route.origin + route.path === destination + "/responses" ||
+        route.origin + route.path === destination + "/chat/completions",
+    ),
+  );
+  // A new Compute instance has a third default; it must honor the admitted endpoint.
+  const restarted = createTestKubernetesComputeDriver(compute.id, {
+    protectedDriver: f.installedDriver,
+    credentialGatewayDriver: gateway,
+    channelRuntime: true,
+    modelProvider: { protocol: "openai-responses", baseUrl: "https://changed.example.test/v1" },
+  });
+  Object.assign(restarted, { apiClients });
+  const current = f.egress.sourceControl;
+  const provider = current.providers.find((entry) =>
+    isDeepStrictEqual(entry.ref, savedSource.egress.key.provider),
+  );
+  assert.ok(provider);
+  // Hostile stored composition, not normal admission: old endpoint routes with B's binding.
+  const stale = {
+    ...b,
+    egressPlan: {
+      ...b.egressPlan!,
+      routes: provider.routes(
+        { ...bSource, config: source.config },
+        b.egressPlan!.routes[0]!.binding,
+        revision.harness.configuration,
+      ),
+    },
+  };
+  const destinationCases = [
+    [
+      "adjacent pathname prefix",
+      (route: (typeof saved.egressPlan.routes)[number]) => ({
+        ...route,
+        path: route.path.replace("/evaluation/v1/", "/evaluation/v10/"),
+      }),
+    ],
+    [
+      "shifted origin pathname",
+      (route: (typeof saved.egressPlan.routes)[number]) => ({
+        ...route,
+        origin: route.origin + "/evaluation",
+        path: route.path.replace("/evaluation", ""),
+      }),
+    ],
+    [
+      "query in pathname",
+      (route: (typeof saved.egressPlan.routes)[number]) => ({
+        ...route,
+        path: route.path + "?ignored=1",
+      }),
+    ],
+    [
+      "fragment in pathname",
+      (route: (typeof saved.egressPlan.routes)[number]) => ({
+        ...route,
+        path: route.path + "#ignored",
+      }),
+    ],
+    [
+      "rewritten pathname",
+      (route: (typeof saved.egressPlan.routes)[number]) => ({
+        ...route,
+        path: route.path.replace("/v1/", "/v1/./"),
+      }),
+    ],
+  ] as const;
+  const malformedDestinations = destinationCases.map(
+    ([name, change]) =>
+      [
+        name,
+        {
+          ...b,
+          egressPlan: { ...b.egressPlan!, routes: b.egressPlan!.routes.map(change) },
+        },
+      ] as const,
+  );
+  const mixed = withCompanionInference(t, b, f.egress);
+  const restartedCatalog = t.mock.method(gateway, "listSourceTypes", async () => {
+    throw new Error("Proxy Harness must not read Gateway catalog");
+  });
+  for (const operation of ["prepareRevision", "activateRevision"] as const) {
+    reads = 0;
+    await assert.rejects(restarted[operation](b, bContext), (error) => error === reached);
+    assert.ok(reads > 0);
+    assert.equal(restartedCatalog.mock.callCount(), 0);
+    assert.doesNotThrow(() => restarted["validateRevisionExecution"](b, bContext));
+    await t.test(`${operation}: wrong source consent`, async () => {
+      reads = 0;
+      await assert.rejects(
+        restarted[operation](b, {
+          ...bContext,
+          harnessAuth: { ...bAuth, source: { ...bSource, config: source.config } },
+        }),
+        {
+          name: "StoredCredentialSourceConfigError",
+          field: "authorized_base_url",
+        },
+      );
+      assert.equal(reads, 0);
+    });
+    for (const [name, invalid] of [
+      ["stale route destination", stale],
+      ...malformedDestinations,
+    ] as const) {
+      await t.test(`${operation}: ${name}`, async () => {
+        reads = 0;
+        assert.doesNotThrow(() => restarted["validateRevisionExecution"](invalid, bContext));
+        await assert.rejects(restarted[operation](invalid, bContext), {
+          message:
+            "The admitted Harness route destination does not match its saved model endpoint.",
+        });
+        assert.equal(reads, 0);
+      });
+    }
+    await t.test(
+      `${operation}: companion inference cannot serve the selected Harness source`,
+      async () => {
+        reads = 0;
+        // The plan-wide inference/release gate accepts this shape. Only the selected-source
+        // reader can distinguish its non-inference binding from the companion's inference.
+        assert.doesNotThrow(() => restarted["validateRevisionExecution"](mixed, bContext));
+        await assert.rejects(restarted[operation](mixed, bContext), {
+          message:
+            "Credential-source Harness authentication requires paired Drivers and a matching supported OpenAI login mode.",
+        });
+        assert.equal(reads, 0);
+      },
+    );
+    await t.test(
+      `${operation}: catalog shape does not authorize route callback replay`,
+      async () => {
+        let callbacks = 0;
+        const custom = {
+          ...provider,
+          routes() {
+            callbacks++;
+            throw new Error("admission-only route callback must not run during execution");
+          },
+        };
+        Object.assign(f.egress, {
+          sourceControl: {
+            ...current,
+            providers: current.providers.map((entry) => (entry === provider ? custom : entry)),
+          },
+        });
+        try {
+          reads = 0;
+          // Retain one valid route: destination checking must not restore or require removed routes.
+          const reduced = {
+            ...b,
+            egressPlan: { ...b.egressPlan!, routes: b.egressPlan!.routes.slice(0, 1) },
+          };
+          assert.doesNotThrow(() => restarted["validateRevisionExecution"](reduced, bContext));
+          await assert.rejects(
+            restarted[operation](reduced, bContext),
+            (error) => error === reached,
+          );
+          assert.equal(callbacks, 0);
+          assert.ok(reads > 0);
+        } finally {
+          Object.assign(f.egress, { sourceControl: current });
+        }
+      },
+    );
+  }
+});
+
+async function storedProxyHarnessFixture(t: TestContext, mismatchedOwner = false) {
+  let app!: Awaited<ReturnType<typeof postgresApp>>;
+  const legacy = await staticEgressFixture(t, {
+    recordInstallation: false,
+    appFactory: async (context: TestContext, options: object = {}) => {
+      app = await postgresApp(context, options);
+      return app as unknown as Awaited<ReturnType<typeof createConsoleAppFixture>>;
+    },
+  });
+  assert.ok("revision" in legacy);
+  const created = await app.request("POST", `/namespaces/${legacy.namespace.id}/agents`, {
+    body: {
+      name: "proxy-reader-dispatch",
+      configurationId: legacy.agent.configurationId,
+      executionMode: "dedicated",
+      harnessAuth: { method: "runtime" },
+    },
+  });
+  assert.equal(created.status, 201);
+  const f = { ...legacy, agent: created.data };
+  const compute = createTestKubernetesComputeDriver("stored-proxy-reader", {
+    protectedDriver: f.installedDriver,
+    credentialGatewayDriver: f.controller.selectedDriver("credential_gateway"),
+    channelRuntime: true,
+    modelProvider: { protocol: "openai-responses", baseUrl: f.modelProvider.baseUrl },
+  });
+  const oldSource = await app.state.read((view) =>
+    view.credentialSources.findCredentialSource(f.namespace.id, f.source.id),
+  );
+  assert.ok(oldSource?.egress);
+  const sourceOwnerId = mismatchedOwner ? `${f.egress.id}-previous` : f.egress.id;
+  const sourceId = `cs_${randomUUID()}`;
+  const revisionId = `rev_${randomUUID()}`;
+  // This explicitly seeds private reader data. It does not enable or prove public CREATE.
+  const source = {
+    ...oldSource,
+    id: sourceId,
+    name: "synthetic-proxy-reader",
+    ownerCapability: "credential_proxy" as const,
+    driverId: sourceOwnerId,
+    egress: {
+      ...oldSource.egress,
+      key: { ...oldSource.egress.key, source: { ...oldSource.egress.key.source, id: sourceId } },
+    },
+  };
+  const auth = {
+    method: "credential_source" as const,
+    sourceId,
+    credentialProxyId: sourceOwnerId,
+    sourceType: "openai" as const,
+    loginMode: "api_key" as const,
+  };
+  const identities = new Map([
+    [f.egress.id, sourceOwnerId],
+    [oldSource.id, sourceId],
+    [f.revision.id, revisionId],
+    [legacy.agent.id, f.agent.id],
+    [legacy.agent.servicePrincipalId, f.agent.servicePrincipalId],
+  ]);
+  const revision: AgentRevision = {
+    ...f.revision,
+    id: revisionId,
+    revision: 1,
+    agentId: f.agent.id,
+    servicePrincipalId: f.agent.servicePrincipalId,
+    harnessAuth: auth,
+    credentialSources: [{ sourceId, sourceType: "openai", credentialProxyId: sourceOwnerId }],
+    egressPlan: JSON.parse(
+      JSON.stringify(f.revision.egressPlan, (_key, value) =>
+        typeof value === "string" ? (identities.get(value) ?? value) : value,
+      ),
+    ),
+    compute: {
+      id: compute.id,
+      implementation: compute.implementation,
+      admission: compute.admitRevision(f.revision),
+    },
+  };
+  await app.state.transact(async (unit) => {
+    await unit.credentialSources.createCredentialSource(source);
+    await unit.agents.updateConfiguration(
+      f.namespace.id,
+      f.agent.id,
+      f.agent.configurationId,
+      undefined,
+      { method: "credential_source", sourceId },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [{ sourceId }],
+    );
+    await unit.revisions.createRevision(revision);
+  });
+  const role = await app.request("POST", `/namespaces/${f.namespace.id}/iam/roles`, {
+    body: {
+      name: "proxy-reader-use",
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    },
+  });
+  assert.equal(role.status, 201);
+  const grant = await app.request("POST", `/namespaces/${f.namespace.id}/iam/access-bindings`, {
+    body: {
+      subjectKind: "identity",
+      subjectId: f.agent.servicePrincipalId,
+      roleId: role.data.id,
+      resourceKind: "credential_source",
+      resourceId: sourceId,
+    },
+  });
+  assert.equal(grant.status, 201);
+
+  return { app, f, legacy, compute, source, sourceId, auth, revision, revisionId, grant };
+}
+
+test(
+  "Worker reads a stored synthetic Proxy Harness and refuses revoked or withdrawn authority",
+  requiresPostgres,
+  async (t) => {
+    const { app, f, compute, source, sourceId, auth, revisionId, grant } =
+      await storedProxyHarnessFixture(t);
+    const worker = new ControllerWorker({
+      pool: app.pool,
+      computeDriver: compute,
+      sandboxDriver: f.sandboxDriver,
+      proxyDriver: f.egress,
+      emit() {},
+    });
+    const stored = await app.state.read((view) =>
+      view.revisions.findRevision(f.namespace.id, f.agent.id, revisionId),
+    );
+    assert.ok(stored);
+    // Initialize the durable Installation as start() does, without launching its background loop.
+    Object.assign(worker, { installation: await app.state.loadInstallation() });
+    const claim = { actorId: app.principal.id } as ClaimedWork;
+    assert.equal(await worker["authorizeRevision"](claim, f.agent, stored), undefined);
+    const resolved = await worker["resolveRevisionSecretContext"](stored);
+    assert.ok("context" in resolved);
+    assert.equal(resolved.context.harnessAuth?.method, "credential_source");
+    assert.deepEqual(resolved.context.harnessAuth, { ...auth, source });
+    const mixed = withCompanionInference(t, stored, f.egress);
+    assert.doesNotThrow(() => worker["validateExecutionAdmission"](mixed));
+    assert.doesNotThrow(() => compute["validateRevisionExecution"](mixed, resolved.context));
+    assert.deepEqual(await worker["resolveRevisionSecretContext"](mixed), {
+      result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" },
+    });
+    for (const wrongAuth of [
+      { ...auth, credentialProxyId: "wrong-proxy" },
+      { ...auth, credentialGatewayId: "wrong-gateway" },
+      { ...auth, sourceType: "codex-pat" },
+      { ...auth, loginMode: "codex_pat" },
+    ]) {
+      const result: Awaited<ReturnType<ControllerWorker["resolveRevisionSecretContext"]>> =
+        await worker["resolveRevisionSecretContext"]({
+          ...stored,
+          harnessAuth: wrongAuth,
+        } as AgentRevision);
+      assert.ok("result" in result);
+      assert.equal(result.result.outcome, "permanent");
+    }
+    assert.equal(
+      (
+        await app.request(
+          "DELETE",
+          `/namespaces/${f.namespace.id}/iam/access-bindings/${grant.data.id}`,
+        )
+      ).status,
+      204,
+    );
+    assert.equal(
+      (await worker["authorizeRevision"](claim, f.agent, stored))?.code,
+      "AUTHORIZATION_DENIED",
+    );
+    await app.state.transact((unit) =>
+      unit.credentialSources.requestCredentialWithdrawal({
+        namespaceId: stored.namespaceId,
+        agentId: stored.agentId,
+        revisionId: stored.id,
+        credentialSourceId: sourceId,
+        requestedBy: app.principal.id,
+        requestedAt: new Date().toISOString(),
+        state: "pending",
+      }),
+    );
+    const withdrawn = await worker["resolveRevisionSecretContext"](stored);
+    assert.ok("result" in withdrawn);
+    assert.equal(withdrawn.result.code, "CREDENTIAL_WITHDRAWN");
+    // A fresh Worker reads durable withdrawal rather than reattaching the archived source.
+    const restarted = new ControllerWorker({
+      pool: app.pool,
+      computeDriver: compute,
+      sandboxDriver: f.sandboxDriver,
+      proxyDriver: f.egress,
+      emit() {},
+    });
+    assert.deepEqual(await restarted["resolveRevisionSecretContext"](stored), withdrawn);
+  },
+);
+
+// Synthetic B starts at storage: CREATE/deploy emission is deliberately not under test.
+// Claiming the durable queue and entering process() exercises the same dispatch used by run().
+test(
+  "claimed Worker dispatch gates a stored Proxy Harness before Kubernetes effects",
+  requiresPostgres,
+  async (t) => {
+    for (const authority of [
+      "current",
+      "revoked",
+      "mismatched-owner",
+      "withdrawn",
+      "source-route-generation",
+      ...currentCatalogCases,
+    ] as const) {
+      await t.test(authority, async (t) => {
+        const { app, f, compute, sourceId, revision, grant } = await storedProxyHarnessFixture(
+          t,
+          authority === "mismatched-owner",
+        );
+        if (authority === "revoked") {
+          assert.equal(
+            (
+              await app.request(
+                "DELETE",
+                `/namespaces/${f.namespace.id}/iam/access-bindings/${grant.data.id}`,
+              )
+            ).status,
+            204,
+          );
+        }
+        if (authority === "withdrawn") {
+          await app.state.transact((unit) =>
+            unit.credentialSources.requestCredentialWithdrawal({
+              namespaceId: revision.namespaceId,
+              agentId: revision.agentId,
+              revisionId: revision.id,
+              credentialSourceId: sourceId,
+              requestedBy: app.principal.id,
+              requestedAt: new Date().toISOString(),
+              state: "pending",
+            }),
+          );
+        }
+        if (authority === "source-route-generation") {
+          const original = await app.state.read((view) =>
+            view.credentialSources.findCredentialSource(revision.namespaceId, sourceId),
+          );
+          assert.ok(original?.egress);
+          const changed = sourceWithNextGeneration(original);
+          const current = f.egress.sourceControl;
+          const admittedRevision = await app.state.read((view) =>
+            view.revisions.findRevision(revision.namespaceId, revision.agentId, revision.id),
+          );
+          assert.deepEqual(changed.egress.key.backend, current.backend);
+          assert.ok(
+            current.providers.some((entry) =>
+              isDeepStrictEqual(entry.ref, changed.egress.key.provider),
+            ),
+          );
+          assert.ok(
+            revision.egressPlan?.routes.some((route) =>
+              isDeepStrictEqual(route.binding.source, original.egress!.key),
+            ),
+          );
+          const saved = await app.state.transact((unit) =>
+            unit.credentialSources.admitEgressSource(
+              revision.namespaceId,
+              sourceId,
+              original.egress!.key.source.generation,
+              changed.egress,
+            ),
+          );
+          assert.deepEqual(saved, changed);
+          assert.deepEqual(f.egress.sourceControl, current);
+          assert.deepEqual(
+            await app.state.read((view) =>
+              view.revisions.findRevision(revision.namespaceId, revision.agentId, revision.id),
+            ),
+            admittedRevision,
+          );
+          compute.validateExecutionAdmission(revision, "stored");
+        }
+        const catalogScenario = currentCatalogCases.find((scenario) => scenario === authority);
+        if (catalogScenario !== undefined) {
+          const savedSource = await app.state.read((view) =>
+            view.credentialSources.findCredentialSource(revision.namespaceId, sourceId),
+          );
+          assert.ok(savedSource?.egress);
+          assert.ok(
+            revision.egressPlan?.routes.some((route) =>
+              isDeepStrictEqual(route.binding.source, savedSource.egress!.key),
+            ),
+          );
+          const savedRevision = await app.state.read((view) =>
+            view.revisions.findRevision(revision.namespaceId, revision.agentId, revision.id),
+          );
+          const current = f.egress.sourceControl;
+          Object.assign(f.egress, {
+            sourceControl: changedCurrentCatalog(
+              current,
+              catalogScenario,
+              savedSource.egress.key.provider,
+            ),
+          });
+          t.after(() => {
+            Object.assign(f.egress, { sourceControl: current });
+          });
+          compute.validateExecutionAdmission(revision, "stored");
+          assert.deepEqual(
+            await app.state.read((view) =>
+              view.credentialSources.findCredentialSource(revision.namespaceId, sourceId),
+            ),
+            savedSource,
+          );
+          assert.deepEqual(
+            await app.state.read((view) =>
+              view.revisions.findRevision(revision.namespaceId, revision.agentId, revision.id),
+            ),
+            savedRevision,
+          );
+        }
+        let receiverCalls = 0;
+        let freshOperation = false;
+        const invocations = { prepareRevision: 0, activateRevision: 0 };
+        // Pass-through observers retain the real Compute implementation. Cleanup may read
+        // Kubernetes after refusal; those reads are not fresh preparation or activation.
+        async function observe<Result>(
+          method: keyof typeof invocations,
+          work: () => Promise<Result>,
+        ) {
+          invocations[method]++;
+          freshOperation = true;
+          try {
+            return await work();
+          } finally {
+            freshOperation = false;
+          }
+        }
+        const prepare = compute.prepareRevision.bind(compute);
+        const activate = compute.activateRevision.bind(compute);
+        t.mock.method(compute, "prepareRevision", (...args: Parameters<typeof prepare>) =>
+          observe("prepareRevision", () => prepare(...args)),
+        );
+        t.mock.method(compute, "activateRevision", (...args: Parameters<typeof activate>) =>
+          observe("activateRevision", () => activate(...args)),
+        );
+        const absent = async () => {
+          throw Object.assign(new Error("Not found"), { code: 404 });
+        };
+        Object.assign(compute, {
+          apiClients: Promise.resolve({
+            core: {
+              async listNamespace() {
+                if (freshOperation) {
+                  receiverCalls++;
+                  throw new Error("controlled Kubernetes dispatch receiver");
+                }
+                return { items: [] };
+              },
+              readNamespace: absent,
+              readNamespacedService: absent,
+              readNamespacedSecret: absent,
+              readNamespacedServiceAccount: absent,
+              readNamespacedConfigMap: absent,
+              readNamespacedPersistentVolumeClaim: absent,
+              listNamespacedPod: async () => ({ items: [] }),
+            },
+            apps: { readNamespacedDeployment: absent },
+            networking: { readNamespacedNetworkPolicy: absent },
+            objects: { read: absent },
+          }),
+        });
+        // Constructed after withdrawal commits: the new Worker must read durable authority.
+        const worker = new ControllerWorker({
+          pool: app.pool,
+          computeDriver: compute,
+          sandboxDriver: f.sandboxDriver,
+          proxyDriver: f.egress,
+          emit() {},
+        });
+        Object.assign(worker, { installation: await app.state.loadInstallation() });
+        // Synthetic writer boundary: use the same desired-state transition as deploy,
+        // without publishing an active revision or claiming that a runtime exists.
+        await app.state.transact(async (unit) => {
+          assert.ok(
+            await unit.agents.transitionAgentDesiredRuntimeState(
+              revision.namespaceId,
+              revision.agentId,
+              "stopped",
+              "running",
+            ),
+          );
+        });
+        const queue = worker["queue"];
+        const key = `agent_revision:${revision.id}:reconcile`;
+        await queue.enqueue({
+          idempotencyKey: key,
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          revisionId: revision.id,
+          actorId: app.principal.id,
+        });
+        // Other fixture namespaces have queued lifecycle work. Hold their rows while the
+        // production SKIP LOCKED claim selects this scenario; do not rewrite queue outcomes.
+        const scheduling = await app.pool.connect();
+        let claimed;
+        try {
+          await scheduling.query("BEGIN");
+          await scheduling.query(
+            "SELECT idempotency_key FROM occ.controller_work WHERE idempotency_key <> $1 FOR UPDATE",
+            [key],
+          );
+          claimed = await queue.claim();
+        } finally {
+          await scheduling.query("ROLLBACK");
+          scheduling.release();
+        }
+        assert.ok(claimed);
+        assert.equal(claimed.idempotencyKey, key);
+        await worker["process"](claimed);
+        const finished = await queue.findWork(key);
+        assert.ok(finished);
+        assert.notEqual(
+          finished.state,
+          "claimed",
+          "the production dispatch settles its real lease",
+        );
+        if (authority === "current") {
+          assert.ok(receiverCalls > 0, JSON.stringify(finished));
+          assert.equal(invocations.prepareRevision, 1);
+          assert.equal(invocations.activateRevision, 0);
+        } else {
+          assert.equal(
+            receiverCalls,
+            0,
+            "refused authority must not reach prepare/activate receivers",
+          );
+          assert.deepEqual(invocations, { prepareRevision: 0, activateRevision: 0 });
+          assert.equal(
+            finished.reasonCode,
+            catalogScenario !== undefined || authority === "source-route-generation"
+              ? "EGRESS_PROVIDER_UNAVAILABLE"
+              : {
+                  revoked: "AUTHORIZATION_DENIED",
+                  withdrawn: "CREDENTIAL_WITHDRAWN",
+                  "mismatched-owner": "EXECUTION_ADMISSION_UNAVAILABLE",
+                }[authority as "revoked" | "withdrawn" | "mismatched-owner"],
+          );
+        }
+        assert.equal(
+          f.observed.deleted.length,
+          0,
+          "no existing Sandbox is retired by this new Agent's dispatch",
+        );
+        assert.equal(
+          (
+            await app.state.read((view) =>
+              view.agents.findAgent(revision.namespaceId, revision.agentId),
+            )
+          )?.activeRevisionId,
+          undefined,
+        );
+      });
+    }
+  },
+);
+
+test(
+  "archived Gateway revision retires through its original Sandbox after source deletion",
+  requiresPostgres,
+  async (t) => {
+    const { app, f, legacy, compute, sourceId, revision: b } = await storedProxyHarnessFixture(t);
+    // Populate historical A from the ordinary Gateway admission, recording its Compute
+    // before insertion. This archive fixture does not claim a live A activation.
+    const aId = `rev_${randomUUID()}`;
+    const aInput: AgentRevision = {
+      ...legacy.revision,
+      id: aId,
+      revision: 2,
+      compute: {
+        id: compute.id,
+        implementation: compute.implementation,
+        admission: compute.admitRevision(legacy.revision),
+      },
+      egressPlan: JSON.parse(
+        JSON.stringify(legacy.revision.egressPlan, (_key, value) =>
+          value === legacy.revision.id ? aId : value,
+        ),
+      ),
+    };
+    const a = await app.state.transact((unit) => unit.revisions.createRevision(aInput));
+    assert.equal(a.harnessAuth.method, "credential_source");
+    assert.equal(
+      a.harnessAuth.credentialGatewayId,
+      app.controller.selectedDriver("credential_gateway").id,
+    );
+    assert.equal(a.compute.id, compute.id);
+    const bytes = async () =>
+      (
+        await app.pool.query(
+          "SELECT jsonb_send(admitted_spec) AS bytes FROM occ.agent_revisions WHERE id=$1",
+          [a.id],
+        )
+      ).rows[0].bytes;
+    const before = await bytes();
+    // Move only the live draft to B. No active pointer is changed or runtime activation claimed.
+    await app.state.transact(async (unit) => {
+      await unit.agents.updateConfiguration(
+        a.namespaceId,
+        a.agentId,
+        legacy.agent.configurationId,
+        undefined,
+        { method: "credential_source", sourceId },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        [{ sourceId }],
+      );
+      assert.equal(
+        await unit.credentialSources.deleteCredentialSource(a.namespaceId, legacy.source.id),
+        true,
+      );
+    });
+    const fresh = new PostgresPlatformState(app.pool);
+    const archived = await fresh.read((view) =>
+      view.revisions.findRevision(a.namespaceId, a.agentId, a.id),
+    );
+    assert.deepEqual(archived, a);
+    assert.deepEqual(await bytes(), before);
+    assert.equal(
+      await fresh.read((view) =>
+        view.credentialSources.findCredentialSource(a.namespaceId, legacy.source.id),
+      ),
+      undefined,
+    );
+    const bBefore = await fresh.read((view) =>
+      view.revisions.findRevision(b.namespaceId, b.agentId, b.id),
+    );
+    const currentBefore = await fresh.read((view) =>
+      view.agents.findAgent(a.namespaceId, a.agentId),
+    );
+    assert.deepEqual(currentBefore?.harnessAuth, { method: "credential_source", sourceId });
+    const cleanups: AgentRevision[] = [];
+    let refuse = true;
+    // This is the Sandbox cleanup receiver, as in Kubernetes' existing retirement conformance.
+    // Compute remains real; receiver failure must propagate and an explicit retry repeats A.
+    const sandbox = {
+      id: f.sandboxDriver.id,
+      implementation: f.sandboxDriver.implementation,
+      capability: "sandbox" as const,
+      facets: f.sandboxDriver.facets,
+      supportsHarnessExecutionMode: f.sandboxDriver.supportsHarnessExecutionMode,
+      async provisionHarness() {
+        assert.fail("retirement must not provision a Harness");
+      },
+      async cleanup(context: { revision?: Readonly<AgentRevision> }) {
+        assert.deepEqual(context.revision, a);
+        cleanups.push(structuredClone(context.revision!));
+        if (refuse) {
+          refuse = false;
+          throw new Error("controlled Sandbox cleanup unavailable");
+        }
+      },
+    };
+    const retiring = createTestKubernetesComputeDriver(compute.id, { sandboxDriver: sandbox });
+    const namespace = kubernetesNamespaceName(a.namespaceId);
+    const namespaceResource = {
+      apiVersion: "v1",
+      kind: "Namespace",
+      metadata: {
+        name: namespace,
+        labels: {
+          "app.kubernetes.io/managed-by": "openclaw-enterprise",
+          "openclaw.dev/namespace": a.namespaceId,
+        },
+        annotations: { "openclaw.dev/namespace-id": a.namespaceId },
+      },
+    };
+    const absent = async () => {
+      throw Object.assign(new Error("Not found"), { code: 404 });
+    };
+    let podReads = 0;
+    Object.assign(retiring, {
+      apiClients: Promise.resolve({
+        core: {
+          listNamespace: async () => ({ items: [namespaceResource] }),
+          readNamespace: async ({ name }: { name: string }) =>
+            name === namespace ? namespaceResource : absent(),
+          readNamespacedSecret: absent,
+          readNamespacedService: absent,
+          readNamespacedServiceAccount: absent,
+          readNamespacedPersistentVolumeClaim: absent,
+          readNamespacedConfigMap: absent,
+          listNamespacedPod: async () => {
+            podReads++;
+            return { items: [] };
+          },
+        },
+        apps: { readNamespacedDeployment: absent },
+        networking: { readNamespacedNetworkPolicy: absent },
+        objects: { read: absent },
+      }),
+    });
+    assert.ok(archived);
+    await assert.rejects(
+      retiring.retireRevision(archived),
+      /controlled Sandbox cleanup unavailable/,
+    );
+    assert.equal(podReads, 0, "uncertain cleanup must not be reported as successful retirement");
+    await retiring.retireRevision(archived);
+    assert.equal(cleanups.length, 2);
+    assert.deepEqual(
+      await fresh.read((view) => view.agents.findAgent(a.namespaceId, a.agentId)),
+      currentBefore,
+    );
+    assert.ok(podReads > 0);
+    assert.deepEqual(
+      await fresh.read((view) => view.revisions.findRevision(b.namespaceId, b.agentId, b.id)),
+      bBefore,
+    );
+    assert.ok(
+      await fresh.read((view) =>
+        view.credentialSources.findCredentialSource(b.namespaceId, sourceId),
+      ),
+    );
+    assert.deepEqual(await bytes(), before);
+  },
+);

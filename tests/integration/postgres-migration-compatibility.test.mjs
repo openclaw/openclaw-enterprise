@@ -1317,20 +1317,17 @@ async function historySnapshot(db) {
   };
 }
 
-async function assertHistoryRefused(db, refusal) {
+async function assertHistoryRefused(db, refusal, migrate = runHistoryMigration) {
   const before = await historySnapshot(db);
   for (const [mode, checkOnly] of [
     ["development", true],
     ["development", false],
     ["production", false],
   ]) {
-    assert.deepEqual(
-      await runHistoryMigration(db, mode, checkOnly ? "--check" : undefined, refusal),
-      {
-        ok: false,
-        code: "MIGRATION_HISTORY_UNSUPPORTED",
-      },
-    );
+    assert.deepEqual(await migrate(db, mode, checkOnly ? "--check" : undefined, refusal), {
+      ok: false,
+      code: "MIGRATION_HISTORY_UNSUPPORTED",
+    });
     assert.deepEqual(await historySnapshot(db), before);
   }
 }
@@ -1387,6 +1384,7 @@ async function assertCompletedHistory(db, previous = []) {
     ).rows,
     [
       ["occ.check_connection_registration_scope()", false, "search_path=pg_catalog, pg_temp"],
+      ["occ.check_revision_credential_source_owners()", false, "search_path=pg_catalog, pg_temp"],
       // The app records a standing execution; only the Agent lifecycle trigger can close it.
       ["occ.close_repository_standing_execution()", false],
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
@@ -1420,6 +1418,364 @@ function receiptsMatchEntries(receipts, entries) {
   );
 }
 
+const preservedHarnessSettings = {
+  overrides: {
+    modelProvider: {
+      protocol: "openai-responses",
+      baseUrl: "https://model.example.test/v1",
+      supportsStandaloneWebSearch: false,
+    },
+  },
+  configuration: {
+    modelProvider: {
+      protocol: "openai-responses",
+      baseUrl: "https://model.example.test/v1",
+      supportsStandaloneWebSearch: false,
+    },
+  },
+};
+
+// This SQL writer exercises the database boundary across the exact published prefix.
+// It does not claim that public deployment already emits Proxy-owned Harness snapshots.
+async function prepareProxyHarnessUpgrade(db, namespaceId) {
+  const sourceId = `cs_${randomUUID()}`;
+  const secretId = `sec_${randomUUID()}`;
+  await db.app.query(
+    `INSERT INTO occ.secrets(id,namespace_id,name,driver_id,backend_namespace_name,backend_name,backend_key,backend_uid,created_at)
+     VALUES($1,$2,'Reader secret','reader-secret','fixture','reader-secret','value',$3,now())`,
+    [secretId, namespaceId, randomUUID()],
+  );
+  const installationId = (await db.app.query("SELECT id FROM occ.installation")).rows[0].id;
+  const original = (
+    await db.app.query("SELECT * FROM occ.agent_revisions WHERE namespace_id=$1", [namespaceId])
+  ).rows[0];
+  assert.deepEqual(original.admitted_spec.harness.overrides, preservedHarnessSettings.overrides);
+  assert.deepEqual(
+    original.admitted_spec.harness.configuration,
+    preservedHarnessSettings.configuration,
+  );
+  const egress = {
+    key: {
+      installationId,
+      namespaceId,
+      source: { id: sourceId, generation: 1 },
+      backend: { id: "reader-backend", generation: 1 },
+      provider: { id: "reader-openai", generation: 1 },
+    },
+    schemaVersion: 1,
+    adoption: "live",
+    materialRefId: "reader-material",
+    secret: { kind: "secret", namespaceId, id: secretId },
+    secretDriver: { id: "reader-secret", generation: 1 },
+    sender: { id: "reader-sender", generation: 1 },
+    resolver: { id: "reader-resolver", generation: 1 },
+    retention: "none",
+  };
+  await db.app.query(
+    `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,driver_id,state,created_at,owner_capability,egress)
+     VALUES($1,$2,'Proxy reader','openai','{}','proxy-reader','ready',now(),'credential_proxy',$3)`,
+    [sourceId, namespaceId, egress],
+  );
+  await db.app.query(
+    `INSERT INTO occ.credential_source_secrets(namespace_id,credential_source_id,field,secret_id) VALUES($1,$2,'api_key',$3)`,
+    [namespaceId, sourceId, secretId],
+  );
+  const binding = {
+    method: "credential_source",
+    sourceId,
+    sourceType: "openai",
+    loginMode: "api_key",
+    credentialProxyId: "proxy-reader",
+  };
+  const insertSnapshot = (auth, harness = original.admitted_spec.harness, client = db.app) =>
+    client.query(
+      `INSERT INTO occ.agent_revisions(id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at)
+     VALUES($1,$2,$3,2,$4,NULL,now()) RETURNING admitted_spec`,
+      [
+        `rev_${randomUUID()}`,
+        namespaceId,
+        original.agent_id,
+        { ...original.admitted_spec, harness, harness_auth: auth },
+      ],
+    );
+  const badShape = {
+    code: "23514",
+    constraint: "agent_revisions_admitted_snapshot",
+  };
+  // Main has valid settings but cannot read the Proxy-owned resolved Harness variant.
+  await assert.rejects(insertSnapshot(binding), badShape);
+  const sourceState = async (client) => ({
+    source: (await client.query("SELECT * FROM occ.credential_sources WHERE id=$1", [sourceId]))
+      .rows,
+    secret: (await client.query("SELECT * FROM occ.secrets WHERE id=$1", [secretId])).rows,
+    relationship: (
+      await client.query(
+        "SELECT * FROM occ.credential_source_secrets WHERE credential_source_id=$1",
+        [sourceId],
+      )
+    ).rows,
+  });
+  const retainedSource = await sourceState(db.app);
+  return async (target = db) => {
+    const insert = (auth, harness = original.admitted_spec.harness) =>
+      insertSnapshot(auth, harness, target.app);
+    assert.deepEqual(await sourceState(target.app), retainedSource);
+    assert.deepEqual(
+      (await target.app.query("SELECT * FROM occ.agent_revisions WHERE id=$1", [original.id])).rows,
+      [original],
+    );
+    const { overrides: _overrides, ...missingOverrides } = original.admitted_spec.harness;
+    const { configuration: _configuration, ...missingConfiguration } =
+      original.admitted_spec.harness;
+    for (const harness of [
+      missingOverrides,
+      missingConfiguration,
+      { ...original.admitted_spec.harness, overrides: [] },
+      { ...original.admitted_spec.harness, configuration: null },
+    ]) {
+      await assert.rejects(insert(binding, harness), badShape);
+    }
+    for (const auth of [
+      { ...binding, credentialProxyId: "wrong-owner" },
+      {
+        method: "credential_source",
+        sourceId,
+        sourceType: "openai",
+        loginMode: "api_key",
+        credentialGatewayId: "proxy-reader",
+      },
+    ]) {
+      await assert.rejects(insert(auth), {
+        code: "23514",
+        message: /must match its current owner and type/,
+      });
+    }
+    // Roll back only this positive probe, so later compatibility assertions keep their original rows.
+    await target.app.query("BEGIN");
+    try {
+      const saved = (await insert(binding)).rows[0].admitted_spec;
+      assert.deepEqual(saved.harness, original.admitted_spec.harness);
+      assert.deepEqual(saved.harness_auth, binding);
+    } finally {
+      await target.app.query("ROLLBACK");
+    }
+  };
+}
+
+async function seedAccountPolicy(db, installation, namespace, user) {
+  const principal = `prn_${randomUUID()}`;
+  const role = `role_${randomUUID()}`;
+  const group = `grp_${randomUUID()}`;
+  await db.app.query(
+    "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES($1,'principal','migration-fixture',$2)",
+    [principal, user],
+  );
+  await db.app.query(
+    "INSERT INTO occ.iam_roles(id,name,permissions) VALUES($1,'Migration administrator',$2)",
+    [role, JSON.stringify([{ action: "administer", resourceKind: "installation" }])],
+  );
+  await db.app.query("INSERT INTO occ.iam_groups(id,name) VALUES($1,'Migration administrators')", [
+    group,
+  ]);
+  await db.app.query("INSERT INTO occ.iam_group_memberships(group_id,principal_id) VALUES($1,$2)", [
+    group,
+    principal,
+  ]);
+  await db.app.query(
+    "INSERT INTO occ.iam_access_bindings(id,group_subject_id,role_id,resource_kind,resource_id) VALUES($1,$2,$3,'installation',$4)",
+    [`binding_${randomUUID()}`, group, role, installation],
+  );
+  await db.app.query(
+    "INSERT INTO occ.iam_restrictions(id,namespace_id,action,resource_kind,effect) VALUES($1,$2,'deploy','agent','deny')",
+    [`restriction_${randomUUID()}`, namespace],
+  );
+  await db.app.query(
+    "INSERT INTO occ.human_authentication_accounts(user_id,installation_id,principal_id) VALUES($1,$2,$3)",
+    [user, installation, principal],
+  );
+  await db.app.query(
+    `INSERT INTO occ.human_authentication_sessions(session_id,user_id,method_id,version,method_version)
+     SELECT s.id,s.user_id,a.id,1,a.authentication_version FROM occ.session s
+     JOIN occ.account a ON a.user_id=s.user_id AND a.provider_id='credential' WHERE s.user_id=$1`,
+    [user],
+  );
+}
+
+async function accountPolicyData(db) {
+  const data = {};
+  for (const table of [
+    "iam_identities",
+    "iam_roles",
+    "iam_groups",
+    "iam_group_memberships",
+    "iam_access_bindings",
+    "iam_restrictions",
+    "human_authentication_accounts",
+    "human_authentication_sessions",
+    "account",
+    "session",
+  ]) {
+    data[table] = (
+      await db.app.query(
+        `SELECT to_jsonb(t) AS value FROM occ."${table}" t ORDER BY to_jsonb(t)::text`,
+      )
+    ).rows;
+    assert.ok(data[table].length > 0, `${table} must contain real policy or account state`);
+  }
+  return data;
+}
+
+// Prove the preserved database contract and its authentication-store caller. This is
+// not an HTTP API test: authorization uses the real Native IAM Driver on stored policy.
+async function assertAccountAdministrationPolicy(db) {
+  const before = await accountPolicyData(db);
+  const installationId = (await db.app.query("SELECT id FROM occ.installation")).rows[0].id;
+  const identity = (
+    await db.app.query("SELECT id,subject FROM occ.iam_identities WHERE issuer='migration-fixture'")
+  ).rows[0];
+  const sessionId = (
+    await db.app.query("SELECT id FROM occ.session WHERE user_id=$1", [identity.subject])
+  ).rows[0].id;
+  assert.deepEqual(
+    (
+      await db.app.query(`SELECT pg_get_userbyid(proowner) AS owner,prosecdef,proconfig,
+    has_function_privilege('occ_app',oid,'EXECUTE') AS app_execute,
+    has_function_privilege('public',oid,'EXECUTE') AS public_execute
+    FROM pg_proc WHERE oid='occ.hold_account_administration_policy(text)'::regprocedure`)
+    ).rows,
+    [
+      {
+        owner: "occ_migrator",
+        prosecdef: true,
+        proconfig: ["search_path=pg_catalog, occ, pg_temp"],
+        app_execute: true,
+        public_execute: false,
+      },
+    ],
+  );
+  for (const invalid of [null, "ins_unknown"]) {
+    await assert.rejects(
+      db.app.query("SELECT occ.hold_account_administration_policy($1)", [invalid]),
+      { code: "23514" },
+    );
+  }
+  const application = new URL(db.migrationUrl);
+  application.username = "occ_app";
+  application.password = "occ-app-local";
+  const writer = new pg.Client({ connectionString: application.toString() });
+  await writer.connect();
+  const holderPid = (await db.app.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+  const policyLocks = async () =>
+    (
+      await writer.query(
+        `SELECT c.relname FROM pg_locks l
+    JOIN pg_class c ON c.oid=l.relation JOIN pg_namespace n ON n.oid=c.relnamespace
+    WHERE l.pid=$1 AND n.nspname='occ' AND l.mode='ShareRowExclusiveLock' AND l.granted ORDER BY c.relname`,
+        [holderPid],
+      )
+    ).rows.map((row) => row.relname);
+  try {
+    await db.app.query("BEGIN");
+    await db.app.query("SET LOCAL statement_timeout='2s'");
+    await db.app.query("SELECT occ.hold_account_administration_policy($1)", [installationId]);
+    assert.deepEqual(await policyLocks(), [
+      "iam_access_bindings",
+      "iam_group_memberships",
+      "iam_groups",
+      "iam_identities",
+      "iam_restrictions",
+      "iam_roles",
+    ]);
+    await writer.query("SET lock_timeout='250ms'; SET statement_timeout='2s'");
+    await assert.rejects(
+      writer.query(
+        "INSERT INTO occ.iam_roles(id,name,permissions) VALUES($1,'Contention probe','[]')",
+        [`role_${randomUUID()}`],
+      ),
+      {
+        code: "55P03",
+      },
+    );
+    await db.app.query("COMMIT");
+    assert.deepEqual(await policyLocks(), []);
+    await writer.query("BEGIN");
+    assert.ok(
+      (
+        await writer.query(
+          "INSERT INTO occ.iam_roles(id,name,permissions) VALUES($1,'Contention probe','[]')",
+          [`role_${randomUUID()}`],
+        )
+      ).rowCount > 0,
+    );
+
+    await writer.query("ROLLBACK");
+
+    // A conflicting writer on the last table forces NOWAIT after earlier locks
+    // were acquired. The failed transaction must release all of those locks.
+    await writer.query("BEGIN");
+    await writer.query(
+      "INSERT INTO occ.iam_restrictions(id,action,resource_kind,effect) VALUES($1,'read','agent','deny')",
+      [`restriction_${randomUUID()}`],
+    );
+    await db.app.query("BEGIN; SET LOCAL statement_timeout='2s'");
+    await assert.rejects(
+      db.app.query("SELECT occ.hold_account_administration_policy($1)", [installationId]),
+      { code: "55P03" },
+    );
+    await db.app.query("ROLLBACK");
+    assert.deepEqual(await policyLocks(), []);
+    await writer.query("ROLLBACK");
+    await db.app.query("SELECT occ.hold_account_administration_policy($1)", [installationId]);
+  } finally {
+    await db.app.query("ROLLBACK");
+    await writer.query("ROLLBACK");
+    await writer.end();
+  }
+
+  const [{ NativeIAMDriver }, { PostgresPlatformState }, { PostgresHumanAuthentication }] =
+    await Promise.all([
+      import("../../packages/iam/src/index.ts"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+      import("../../packages/occ/src/state/human-authentication.ts"),
+    ]);
+  const pool = new pg.Pool({
+    connectionString: application.toString(),
+    max: 2,
+  });
+  try {
+    const state = new PostgresPlatformState(pool);
+    const iam = new NativeIAMDriver(state);
+    const accounts = new PostgresHumanAuthentication(state, installationId, "migration-fixture");
+    const actor = {
+      userId: identity.subject,
+      principalId: identity.id,
+      sessionId,
+      authorize: async () => {
+        const decision = await iam.authorize({
+          principalId: identity.id,
+          action: "administer",
+          resource: { kind: "installation", id: installationId },
+        });
+        assert.equal(decision.allowed, true);
+      },
+    };
+    const account = await accounts.readAccount(identity.subject, actor);
+    assert.equal(account.principalId, identity.id);
+    assert.equal(account.disabled, false);
+    assert.equal(account.methods.length, 2);
+    await assert.rejects(
+      accounts.readAccount(identity.subject, {
+        ...actor,
+        sessionId: "ses_unknown",
+      }),
+      /session is no longer current/,
+    );
+  } finally {
+    await pool.end();
+  }
+  assert.deepEqual(await accountPolicyData(db), before);
+}
+
 async function seedCanonicalData(
   db,
   {
@@ -1427,6 +1783,7 @@ async function seedCanonicalData(
     computeAdmission = false,
     executionAdmission = false,
     harnessSettings = false,
+    accountPolicy = false,
   } = {},
 ) {
   const installation = `ins_${randomUUID()}`;
@@ -1474,7 +1831,7 @@ async function seedCanonicalData(
             id: "codex",
             version: "1.0.0",
             mode: "dedicated",
-            ...(harnessSettings ? { overrides: {}, configuration: {} } : {}),
+            ...(harnessSettings ? preservedHarnessSettings : {}),
           },
           harness_auth: { method: "runtime" },
           ...(executionAdmission
@@ -1540,6 +1897,9 @@ async function seedCanonicalData(
         },
       ],
     );
+  }
+  if (accountPolicy) {
+    await seedAccountPolicy(db, installation, namespace, user);
   }
   return namespace;
 }
@@ -2037,6 +2397,7 @@ test(
       [70, "preDefaultUsers"],
       [71, "preHarnessOverrides"],
       [72, "preAccountAdministrationPolicy"],
+      [73, "preProxyHarnessSnapshot"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2045,9 +2406,15 @@ test(
           computeAdmission: prefix >= 55,
           // 0060 requires an execution admission on every revision written after it.
           executionAdmission: prefix >= 62,
-          // 0072 requires settings on new rows; earlier prefixes retain their historical shape.
           harnessSettings: prefix >= 72,
+          accountPolicy: prefix >= 72,
         });
+        const assertProxyReader =
+          prefix >= 72 ? await prepareProxyHarnessUpgrade(db, namespaceId) : undefined;
+        const policyBefore = prefix >= 72 ? await accountPolicyData(db) : undefined;
+        if (prefix === 73) {
+          await assertAccountAdministrationPolicy(db);
+        }
         const assertSourceOwners =
           prefix === 59
             ? await retainGatewaySourcesAcrossProxyAdmission(db.app, db.migrator, namespaceId)
@@ -2069,7 +2436,12 @@ test(
         );
         assert.ok(existingBindings.rows.length > 0);
         assert.ok(existingBindings.rows.every((row) => row.first_deployment_digest === null));
+        if (prefix >= 72) {
+          assert.deepEqual(await accountPolicyData(db), policyBefore);
+          await assertAccountAdministrationPolicy(db);
+        }
         await assertUpgradedAuthentication(db);
+        await assertProxyReader?.();
         if (history === "preConnectionTemplates") {
           // An Installation-wide template cannot present a Namespace client's credentials,
           // even when an application-role writer bypasses OCC.
@@ -2575,18 +2947,34 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    for (const lineage of ["canonical", "provider", "canonical51"]) {
-      const prefix = lineage === "canonical51";
-      const history = prefix ? "preProvisioningDeploymentOutcome" : "completed";
+    for (const lineage of ["canonical", "provider", "canonical51", "canonical72", "canonical73"]) {
+      const prefix = { canonical51: 51, canonical72: 72, canonical73: 73 }[lineage];
+      const history =
+        prefix === 51
+          ? "preProvisioningDeploymentOutcome"
+          : prefix === 72
+            ? "preAccountAdministrationPolicy"
+            : prefix === 73
+              ? "preProxyHarnessSnapshot"
+              : "completed";
       const source = await historyDatabase(context, fixture, "dump");
       if (lineage === "provider") {
         await installProviderCompletedHistory(source);
       }
+      let assertProxyReader;
       if (prefix) {
         // Use the published prefix verbatim, before any production upgrade.
-        await installCanonicalPrefix(source, 51);
-        assert.equal((await historyReceipts(source.migrator)).length, 51);
-        await seedCanonicalData(source, { preset: true });
+        await installCanonicalPrefix(source, prefix);
+        assert.equal((await historyReceipts(source.migrator)).length, prefix);
+        const namespaceId = await seedCanonicalData(source, {
+          preset: true,
+          computeAdmission: prefix >= 55,
+          executionAdmission: prefix >= 62,
+          harnessSettings: prefix >= 72,
+          accountPolicy: prefix >= 72,
+        });
+        assertProxyReader =
+          prefix >= 72 ? await prepareProxyHarnessUpgrade(source, namespaceId) : undefined;
         await source.app
           .query(`UPDATE occ.agents a SET active_revision_id=r.id, desired_runtime_state='running'
           FROM occ.agent_revisions r WHERE r.agent_id=a.id`);
@@ -2602,8 +2990,12 @@ test(
         "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES ('restore-human','principal','restore-fixture','human'), ('restore-service','service_principal',NULL,NULL)",
       );
       const native = await logicalRestoreSnapshot(source);
-      assert.equal(native.identities.length, prefix ? 3 : 2);
+      assert.equal(native.identities.length, prefix >= 72 ? 4 : prefix ? 3 : 2);
       const nativeData = prefix ? await canonicalData(source) : undefined;
+      const policyBefore = prefix >= 72 ? await accountPolicyData(source) : undefined;
+      if (prefix === 73) {
+        await assertAccountAdministrationPolicy(source);
+      }
 
       // Restore a real archive into a distinct database, preserving ownership and grants atomically.
       const { stdout: archive } = await execFileAsync(
@@ -2628,11 +3020,22 @@ test(
         history,
       });
       assert.deepEqual(await logicalRestoreSnapshot(restored), accepted);
+      if (prefix >= 72) {
+        assert.deepEqual(await accountPolicyData(restored), policyBefore);
+      }
+      if (prefix === 73) {
+        await assertAccountAdministrationPolicy(restored);
+      }
       assert.deepEqual(await runHistoryCommand(restored, "production"), {
         ok: true,
         history,
       });
       await assertCredentialSchemaPrivileges(restored.app);
+      await assertProxyReader?.(restored);
+      if (prefix >= 72) {
+        assert.deepEqual(await accountPolicyData(restored), policyBefore);
+        await assertAccountAdministrationPolicy(restored);
+      }
       if (prefix) {
         const manifest = JSON.parse(
           await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
@@ -2640,7 +3043,7 @@ test(
         const upgraded = await logicalRestoreSnapshot(restored);
         context.diagnostic(`Upgraded restore: ${catalogDigest(upgraded.occ)}`);
         assert.deepEqual(upgraded.identities, native.identities);
-        assert.deepEqual(upgraded.receipts.slice(0, 51), native.receipts);
+        assert.deepEqual(upgraded.receipts.slice(0, prefix), native.receipts);
         assert.deepEqual(
           upgraded.receipts.map(({ hash, created_at }) => [hash, Number(created_at)]),
           manifest.entries.map(({ sha256, when }) => [sha256, when]),
@@ -2652,16 +3055,18 @@ test(
         });
         assert.deepEqual(await logicalRestoreSnapshot(restored), upgraded);
         assert.deepEqual(await canonicalData(restored), upgradedCanonicalData(nativeData));
-        await assertPopulatedUpgradeReturn(context, fixture.container, restored, archive, {
-          snapshot: async (database) => ({
-            history: await logicalRestoreSnapshot(database),
-            data: await canonicalData(database),
-            revisions: (await database.app.query("SELECT * FROM occ.agent_revisions ORDER BY id"))
-              .rows,
-          }),
-          restore: (bytes) => restoreHistoryArchive(context, fixture, bytes),
-          checkHistory: (database) => runHistoryCommand(database, "production", "--check"),
-        });
+        if (prefix === 51) {
+          await assertPopulatedUpgradeReturn(context, fixture.container, restored, archive, {
+            snapshot: async (database) => ({
+              history: await logicalRestoreSnapshot(database),
+              data: await canonicalData(database),
+              revisions: (await database.app.query("SELECT * FROM occ.agent_revisions ORDER BY id"))
+                .rows,
+            }),
+            restore: (bytes) => restoreHistoryArchive(context, fixture, bytes),
+            checkHistory: (database) => runHistoryCommand(database, "production", "--check"),
+          });
+        }
         assert.deepEqual(await runHistoryCommand(restored, "production", "--check"), {
           ok: true,
           history: "completed",
@@ -3067,6 +3472,59 @@ test(
           await db.migrator.query(sql);
         }
         await assertHistoryRefused(db);
+      });
+    }
+    for (const slot of [71, 72, 73]) {
+      void context.test(`draft snapshot at occupied migration slot ${slot}`, async (child) => {
+        const db = await historyDatabase(child, fixture, "snapshotpreview");
+        const journal = JSON.parse(
+          await readFile(join(migrationsDirectory, "meta/_journal.json"), "utf8"),
+        );
+        // Recreate the draft's SQL and original receipt, not a forged canonical receipt.
+        // Published default-users and Harness-settings prefixes are accepted above.
+        const snapshot = journal.entries.find(
+          (entry) => entry.tag === "0074_proxy_harness_snapshot",
+        );
+        const entries = [
+          ...journal.entries.slice(0, slot - 1),
+          { ...snapshot, idx: slot, when: 1787000000000 + slot },
+        ];
+        await installCanonicalPrefix(db, entries.length, { entries });
+        await seedCanonicalData(db, {
+          preset: true,
+          computeAdmission: true,
+          executionAdmission: true,
+          harnessSettings: slot >= 73,
+        });
+        const before = await canonicalData(db);
+        const receipts = await historyReceipts(db.migrator);
+        assert.equal(receipts.length, slot);
+        assert.deepEqual(
+          [receipts.at(-1).hash, Number(receipts.at(-1).created_at)],
+          [
+            "a80a81c7c5980eeeff4d5129960ad09d9799aea3e08f7a3a4342264944206404",
+            1787000000000 + slot,
+          ],
+        );
+        const sequence = (
+          await db.migrator.query(
+            "SELECT last_value,is_called FROM drizzle.__drizzle_migrations_id_seq",
+          )
+        ).rows;
+        await assertHistoryRefused(
+          db,
+          /applied receipts differ from canonical history; pre-merge preview histories are unsupported/,
+          runHistoryCommand,
+        );
+        assert.deepEqual(
+          (
+            await db.migrator.query(
+              "SELECT last_value,is_called FROM drizzle.__drizzle_migrations_id_seq",
+            )
+          ).rows,
+          sequence,
+        );
+        assert.deepEqual(await canonicalData(db), before);
       });
     }
     void context.test("published premerge credential history", async (child) => {
