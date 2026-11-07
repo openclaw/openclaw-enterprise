@@ -43,6 +43,7 @@ import {
   OTEL_RESOURCE,
 } from "../helpers/logging-otel-observation.mjs";
 import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
+import { withSkillPolicyRestore } from "./skill-policy-restore.mjs";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 import { defaultUsersIAM } from "./default-users-iam.mjs";
 import { installManagedSlackProxyFixture } from "./managed-slack-proxy-k3d.mjs";
@@ -3555,26 +3556,6 @@ async function gatewayCall(topology, method, params, timeoutMs = 180_000) {
   if (result?.ok === false && result.error?.type === "gateway_request_error") {
     throw new Error(result.error.message, { cause: result.error });
   }
-  return result;
-}
-
-async function withSkillPolicyRestore(run, restore, combinedMessage) {
-  let result;
-  try {
-    result = await run();
-  } catch (cause) {
-    const errors = [cause];
-    try {
-      await restore();
-    } catch (error) {
-      errors.push(error);
-    }
-    if (errors.length > 1) {
-      throw new AggregateError(errors, combinedMessage, { cause });
-    }
-    throw cause;
-  }
-  await restore();
   return result;
 }
 

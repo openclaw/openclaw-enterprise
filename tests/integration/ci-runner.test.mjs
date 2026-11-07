@@ -3428,6 +3428,74 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert.equal(record.output.omittedLines, 0);
 });
 
+test("run retains redacted Skill exercise and restoration failures within its message limit", async (t) => {
+  const root = await fixture(t);
+  const resultsPath = join(root, "results/restoration.json");
+  const statePath = join(root, "state/restoration.json");
+  await writeFile(
+    join(root, "tests/integration/restoration.test.mjs"),
+    [
+      'import test from "node:test";',
+      `import { withSkillPolicyRestore } from ${JSON.stringify(new URL("../helpers/skill-policy-restore.mjs", import.meta.url).href)};`,
+      `import { registerQaSecret } from ${JSON.stringify(new URL("../helpers/qa-secrets.mjs", import.meta.url).href)};`,
+      'registerQaSecret("fixture-private-restore-value");',
+      "for (const long of [false, true]) {",
+      '  test(long ? "long nested failures" : "nested failures", async () => {',
+      '    const tail = long ? "x".repeat(20000) + "beyond-limit" : "";',
+      "    await withSkillPolicyRestore(() => withSkillPolicyRestore(",
+      "      async () => { throw new Error(`original operation failed ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL} ${tail}`); },",
+      "      async () => { throw new Error(`enabled restoration failed fixture-private-restore-value ${tail}`); },",
+      '      "Denied node-write test failed and enabled Skill policy restoration failed."),',
+      "      async () => { throw new Error(`original policy restoration failed password=synthetic-restore-value ${tail}`); },",
+      '      "Skill source lifecycle failed and original Skill policy restoration failed.");',
+      "  });",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { restoration: { files: [{ path: "tests/integration/restoration.test.mjs" }] } },
+    groups: { ci: ["restoration"] },
+  });
+
+  // Run the real helper through Node's serialization, the unchanged reporter, and both outputs.
+  const result = run(root, [
+    "run",
+    "restoration",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    statePath,
+    "--results",
+    resultsPath,
+  ]);
+  assert.equal(result.status, 1, result.stderr);
+  const summaryText = await readFile(resultsPath, "utf8");
+  const detailText = await readFile(`${statePath}.diagnostics.json`, "utf8");
+  const summary = JSON.parse(summaryText);
+  const details = JSON.parse(detailText).failures[0].tests;
+  for (const name of ["nested failures", "long nested failures"]) {
+    const failure = summary.files[0].tests.find((entry) => entry.name === name);
+    const detail = details.find((entry) => entry.name === name);
+    for (const message of [failure.error.message, detail.message]) {
+      assert.match(message, /original operation failed/);
+      assert.match(message, /enabled restoration failed/);
+      assert.match(message, /original policy restoration failed password=\[redacted\]/);
+      assert.ok(message.length <= 600);
+    }
+  }
+  assert.match(result.stderr, /original operation failed/);
+  assert.match(result.stderr, /enabled restoration failed/);
+  assert.match(result.stderr, /original policy restoration failed password=\[redacted\]/);
+  assert.doesNotMatch(
+    `${summaryText}\n${detailText}\n${result.stdout}\n${result.stderr}`,
+    /secretauthvalue|fixture-private-restore-value|synthetic-restore-value|beyond-limit/,
+  );
+});
+
 test("the reporter sends interrupted tests and the output tail, newest first, on a timeout", async () => {
   const { default: reporter } = await import("../../scripts/ci/reporter.mjs");
   const render = async (events) => {
