@@ -1,16 +1,15 @@
 # Upgrade production images
 
-Run `scripts/upgrade-production-images` from the release checkout with the
-matching [OCC CLI](../cli.md#connect-to-your-installation) to upgrade an existing
-Kubernetes Compute Helm installation. For installation, see
-[production installation](production-installation.md); for one Agent, see
-[production Agents](production-agents.md). Plan traffic handoff.
+Upgrade an existing Kubernetes Compute Helm installation with
+`scripts/upgrade-production-images` and the matching [OCC CLI](../cli.md#connect-to-your-installation).
+For initial setup or individual Agents, see [production installation](production-installation.md)
+and [production Agents](production-agents.md).
 
 1. [Select and prepare the release](#prepare-the-release). Record the live
    baseline and take the backups required by the [upgrade checklist](upgrade-checklist.md).
 2. [Preflight the target](#rehearse-before-the-maintenance-window).
    [Compare manifests](upgrade-baseline.md#compare-the-candidate-with-the-installed-manifest).
-3. Freeze writers. Apply the [control plane](#upgrade-the-control-plane) or
+3. Plan traffic handoff and freeze writers. Apply the [control plane](#upgrade-the-control-plane) or
    [runtime](#upgrade-agent-runtimes) upgrade once with fresh evidence.
 4. [Verify the release](#verify-the-release) with a real workload.
 5. [Recover from a partial failure](#recover-from-a-partial-failure) before retrying.
@@ -71,13 +70,19 @@ ReplicaSets and Pods, and run a read-only check in the worker container. Local
 preflight checks protocol compatibility. Check Kubernetes image availability
 and admission, image trust, database durability and session disposal separately.
 
-The OCC identity needs Installation `read`. Runtime upgrades also require
-Installation `administer`, exact `read` on every Namespace, Agent, Agent
-Configuration, and selected and replacement Agent revision, and exact `deploy`
-on each running Agent.
+Inventory requires Installation `read`/`administer` and Namespace/Agent `read`.
+Active, desired-running Agents with a selected revision and no pending deployment
+also require Agent `deploy` and selected-revision `read`. Runtime upgrades additionally
+require Configuration and replacement-revision `read`.
 
 Review saved Agent and Configuration drafts before a runtime upgrade. Each
 deployment takes a new snapshot of the current draft.
+
+Controller-only upgrades read each active revision with `occ agent revision`,
+refusing missing or unreadable Harness settings before stopping OCC. Plan an
+authorized replacement, or stop and settle the Agent before upgrading, then deploy
+reviewed drafts. Git session continuity still requires the
+[upgrade checklist](upgrade-checklist.md#apply-the-release-in-dependency-order).
 
 For OpenShell, a controller change to the generated Harness command requires a
 fresh Agent revision. Existing Sandboxes require the same launch specification;
@@ -95,13 +100,12 @@ During maintenance, freeze other Helm changes and disable automation, including
 autoscalers, that restarts or scales OCC Deployments. Stop other OCC database writers, including
 independent API, worker or maintenance processes. Confirm nodes are reachable.
 Do not force-delete OCC Pods. A missing Pod cannot prove a partitioned process
-stopped. The helper stops only the selected Helm release's API and worker. For runtime
-upgrades, freeze Agent deployments and draft edits. Resolve queued or running
-deployments first. Keep restrictions through recovery.
+stopped. The helper stops only the selected Helm release's API and worker. Freeze
+Agent deployments for every upgrade, and draft edits for runtime upgrades. Settle
+queued or running deployments first. Keep restrictions through recovery.
 
-Start in the root of the clean checkout at the reviewed commit. In a dedicated
-Bash shell, set the connection and release inputs. Set `OCC_CA_BUNDLE` only
-if OCC uses a private certificate authority.
+In the reviewed checkout, use a dedicated Bash shell. Set `OCC_CA_BUNDLE` only
+for a private certificate authority.
 
 ```bash
 umask 077
@@ -316,11 +320,9 @@ deployment, stops the command before any change; the refusal lists up to ten
 such Agents by ID, name, and Namespace. Stop or delete each such Agent, or
 deploy it until it succeeds, then start again with a new evidence directory.
 
-The command writes the runtime digest to both Kubernetes Compute image fields,
-updates the Installation Secret after quiescing OCC, and runs Helm with the
-current controller image.
-The Installation checksum restarts the API and worker so they load the new
-configuration; their software version does not change.
+The command quiesces OCC, updates both Kubernetes Compute image fields and the
+Installation Secret, then runs Helm. The new checksum restarts API and worker
+with unchanged controller software.
 
 After OCC recovers, the command deploys every recorded running Agent, waits for
 durable success, confirms each new selected version, and requires its Pods to be
@@ -350,9 +352,7 @@ Success looks like:
 Upgraded runtime image; controller image remained unchanged and <count> running Agents selected new revisions.
 ```
 
-To intentionally release both images together, pass both image options. The
-command applies the controller and runtime changes in one Helm release before
-deploying the recorded fleet.
+Pass both image options to release them together before deploying the recorded fleet.
 
 ## Verify the release
 

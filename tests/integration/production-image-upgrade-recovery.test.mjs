@@ -1171,6 +1171,25 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
             }
           : {}),
       });
+    } else if (args.includes("agent") && args.includes("revision")) {
+      log("revision-read " + args.at(-1));
+      if (state.activeRevisionResponse === "denied") {
+        return fail(1, "revision read denied");
+      }
+      out(
+        state.activeRevisionResponse ?? {
+          id: "rev_old",
+          namespaceId: "ns_test",
+          agentId: "agt_test",
+          harness: {
+            id: "codex",
+            version: "1",
+            mode: "dedicated",
+            overrides: {},
+            configuration: {},
+          },
+        },
+      );
     } else if (args.includes("configuration") && args.includes("get")) {
       // The Agent's saved Configuration (its draft), as OCC returns it.
       const id = args.at(-1);
@@ -1411,6 +1430,7 @@ async function fixture(
     executionCluster = null,
     installationName = "Production",
     inventoryNamespaces = null,
+    activeRevisionResponse,
     names = null,
     configurationValues = null,
     pluginDrivers,
@@ -1606,6 +1626,7 @@ async function fixture(
     preflightFault,
     installationName,
     inventoryNamespaces,
+    activeRevisionResponse,
     names,
     configurationValues,
     olderDraftRules,
@@ -1820,6 +1841,93 @@ function continuityObservation(suffix = "before") {
 function continuityFixture() {
   return { before: continuityObservation(), after: continuityObservation("replacement") };
 }
+
+// Run the actual upgrade shell with independent command responses and real JSON tools.
+// This protects refusal before quiescence; it does not prove a live cluster upgrade.
+test("controller-only upgrades refuse incompatible active Harness snapshots before writes", async (t) => {
+  const snapshot = {
+    id: "rev_old",
+    namespaceId: "ns_test",
+    agentId: "agt_test",
+    harness: { id: "codex", version: "1", mode: "dedicated", overrides: {}, configuration: {} },
+  };
+  for (const [name, response] of [
+    [
+      "missing settings",
+      { ...snapshot, harness: { id: "codex", version: "1", mode: "dedicated" } },
+    ],
+    ["null settings", { ...snapshot, harness: { ...snapshot.harness, configuration: null } }],
+    ["array overrides", { ...snapshot, harness: { ...snapshot.harness, overrides: [] } }],
+    ["wrong revision", { ...snapshot, id: "rev_other" }],
+    [
+      "unreadable snapshot",
+      {
+        id: snapshot.id,
+        namespaceId: snapshot.namespaceId,
+        agentId: snapshot.agentId,
+        configurationReadError: { code: "SAVED_CONFIGURATION_UNREADABLE", field: "plugins" },
+      },
+    ],
+    ["denied read", "denied"],
+  ]) {
+    await t.test(name, async (t) => {
+      const f = await fixture(t, {
+        agent: true,
+        controllerOnly: true,
+        activeRevisionResponse: response,
+      });
+      await assert.rejects(f.run(), /active revision rev_old|active Harness/u);
+      assert.deepEqual(await f.events(), ["revision-read rev_old"]);
+      const state = await f.state();
+      assert.equal(state.version, 1);
+      assert.equal(state.api, 1);
+      assert.equal(state.worker, 1);
+      assert.equal(state.dispatches, 0);
+    });
+  }
+  await t.test(
+    "pending deployment refuses before reading an about-to-change snapshot",
+    async (t) => {
+      const f = await fixture(t, {
+        controllerOnly: true,
+        inventoryNamespaces: [
+          {
+            id: "ns_test",
+            status: "ready",
+            agents: [
+              {
+                id: "agt_test",
+                status: "active",
+                desiredRuntimeState: "running",
+                executionMode: "dedicated",
+                activeRevisionId: "rev_old",
+                deploymentInProgress: true,
+              },
+            ],
+          },
+        ],
+      });
+      await assert.rejects(f.run(), /nonterminal Agent work/u);
+      assert.deepEqual(await f.events(), []);
+      const state = await f.state();
+      assert.equal(state.version, 1);
+      assert.equal(state.api, 1);
+      assert.equal(state.worker, 1);
+      assert.equal(state.dispatches, 0);
+    },
+  );
+  await t.test("valid snapshot preserves controller-only behavior", async (t) => {
+    const f = await fixture(t, {
+      agent: true,
+      controllerOnly: true,
+      activeRevisionResponse: snapshot,
+    });
+    await f.run();
+    assert.equal((await f.state()).dispatches, 0);
+    assert.ok(existsSync(join(f.evidence, "completed")));
+    assert.equal((await f.events())[0], "revision-read rev_old");
+  });
+});
 
 // Existing controller-only semantics intentionally remain unchanged unless selected.
 test("Agent continuity is opt-in; controller recovery alone can complete after Agent loss", async (t) => {
