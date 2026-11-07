@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   chmod,
@@ -15,12 +16,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
+import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   collectNativeWorkerFailure,
   nativePlacementReadRetryable,
   nativeWorkerHistoryEvidence,
+  nativeWorkerProofProgram,
   nativeWorkerPlacementObservation,
   nativeWorkerTurnObservation,
 } from "../helpers/local-first-agent-native.mjs";
@@ -1371,6 +1374,27 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   // This marker is deliberately absent from the redactor's environment secrets.
   // The native projector and reporter must remove it themselves.
   const nativePrivate = "private-native-observation-marker";
+  const failedProgram = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      nativeWorkerProofProgram({
+        sessionFile: { path: join(root, nativePrivate) },
+        createSessionFile: false,
+        toolPrefix: "proof ",
+      }),
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(failedProgram.status, 1);
+  const inconsistentNativeFailures = [
+    [0, "read-session-file", "ENOENT"],
+    [undefined, "read-session-file", "ENOENT"],
+    [1, undefined, "ENOENT"],
+    [1, "read-session-file", undefined],
+    [1, nativePrivate, "ENOENT"],
+    [1, "read-session-file", nativePrivate],
+  ];
   const nativeHistory = nativeWorkerHistoryEvidence({
     runId: "selected",
     toolPrefix: "proof ",
@@ -1386,14 +1410,19 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
         role: "toolResult",
         toolName: "exec",
         isError: false,
-        content: JSON.stringify({ value: { aggregated: nativePrivate, exitCode: 0 } }),
+        content: JSON.stringify({
+          value: { aggregated: failedProgram.stderr, exitCode: failedProgram.status },
+        }),
         __openclaw: { runId: "selected" },
       },
     ],
   }).observation;
   assert.equal(nativeHistory.historyExecCodeStringCount, 1);
   assert.equal(nativeHistory.historyExecCommandStringCount, 0);
-  assert.equal(nativeHistory.historyExecNestedExitZeroCount, 1);
+  assert.equal(nativeHistory.historyExecNestedExitNonzeroCount, 1);
+  assert.equal(nativeHistory.historyExecNestedExitCode, 1);
+  assert.equal(nativeHistory.historyExecFailureOperation, "read-session-file");
+  assert.equal(nativeHistory.historyExecFailureCode, "ENOENT");
   assert.equal(nativeHistory.historyToolProofPresent, false);
   assert.equal(nativeHistory.historyFinalProofPresent, false);
   const nativeWorker = nativeWorkerPlacementObservation({
@@ -2084,6 +2113,18 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
             worker: { ...nativeHistory, transcript: nativePrivate },
           },
         },
+        ...inconsistentNativeFailures.map(([exitCode, operation, code], index) => ({
+          name: `rejects inconsistent native failure ${index}`,
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "model-history",
+            worker: {
+              historyExecNestedExitCode: exitCode,
+              historyExecFailureOperation: operation,
+              historyExecFailureCode: code,
+            },
+          },
+        })),
         {
           name: "rejects hostile native worker diagnostic fields",
           diagnostic: {
@@ -2429,6 +2470,14 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     ).error.diagnostic.worker,
     nativeHistory,
   );
+  for (const [index, [exitCode]] of inconsistentNativeFailures.entries()) {
+    assert.deepEqual(
+      summary.files[0].tests.find(
+        (entry) => entry.name === `rejects inconsistent native failure ${index}`,
+      ).error.diagnostic.worker,
+      exitCode === undefined ? {} : { historyExecNestedExitCode: exitCode },
+    );
+  }
   assert.deepEqual(
     summary.files[0].tests.find(
       (entry) => entry.name === "rejects hostile native worker diagnostic fields",
@@ -6927,6 +6976,83 @@ describe("tests that wait out real runner limits, side by side", { concurrency: 
   }
 });
 
+test("native proof diagnoses real file failures without disclosing program output", async (t) => {
+  const directory = await temporaryDirectory(t, "native-proof-diagnostic-");
+  const toolPrefix = "FIRST_AGENT_NATIVE_TOOL ";
+  const privateName = "private-native-proof-file";
+  const workspaceFile = { path: join(directory, privateName) };
+  await writeFile(workspaceFile.path, "private-workspace-content");
+  for (const [name, createSessionFile, operation, errorCode] of [
+    ["duplicate", true, "write-session-file", "EEXIST"],
+    ["missing-session", false, "read-session-file", "ENOENT"],
+    ["missing-workspace", true, "read-workspace-file", "ENOENT"],
+    ["success", true, undefined, undefined],
+    ["reuse", false, undefined, undefined],
+  ]) {
+    const sessionFile = { path: join(directory, name) };
+    if (name === "duplicate") {
+      await writeFile(sessionFile.path, "keep-existing-session");
+    } else if (name === "reuse") {
+      await writeFile(sessionFile.path, "private-session-content");
+    }
+    // Run the same generated program as the native model prompt against actual
+    // files. Only the recorded Code Mode envelope is supplied to the decoder.
+    const result = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        nativeWorkerProofProgram({
+          sessionFile,
+          sessionFileContent: "private-session-content",
+          toolPrefix,
+          createSessionFile,
+          workspaceFile:
+            name === "missing-workspace" ? { path: workspaceFile.path + "-absent" } : workspaceFile,
+        }),
+      ],
+      { encoding: "utf8", timeout: 10_000 },
+    );
+    assert.equal(result.status, operation ? 1 : 0, name);
+    const evidence = nativeWorkerHistoryEvidence({
+      runId: "selected",
+      toolPrefix,
+      marker: "expected-final",
+      messages: [
+        {
+          role: "toolResult",
+          toolName: "exec",
+          isError: false,
+          content: JSON.stringify({
+            value: { aggregated: result.stdout + result.stderr, exitCode: result.status },
+          }),
+          __openclaw: { runId: "selected" },
+        },
+      ],
+    });
+    const diagnostic = nativeFirstAgentProofDiagnostic("model-history", evidence.observation);
+    assert.equal(diagnostic.worker.historyExecNestedExitCode, result.status, name);
+    assert.equal(diagnostic.worker.historyExecFailureOperation, operation, name);
+    assert.equal(diagnostic.worker.historyExecFailureCode, errorCode, name);
+    assert.equal(Boolean(evidence.tool), !operation, name);
+    assert.equal(Boolean(evidence.final), false, name);
+    assert.doesNotMatch(JSON.stringify(diagnostic), /private-|keep-existing|Error:|\bat /);
+    if (operation) {
+      assert.doesNotMatch(result.stdout + result.stderr, /private-|keep-existing|Error:|\bat /);
+    } else {
+      const proof = JSON.parse(result.stdout.slice(toolPrefix.length));
+      assert.equal(
+        proof.sessionFileSha256,
+        createHash("sha256").update("private-session-content").digest("hex"),
+      );
+      assert.equal(
+        proof.workspaceFileSha256,
+        createHash("sha256").update("private-workspace-content").digest("hex"),
+      );
+    }
+  }
+  assert.equal(await readFile(join(directory, "duplicate"), "utf8"), "keep-existing-session");
+});
+
 test("native history proof keeps exact run, explicit success and marker predicates", () => {
   const prefix = "FIRST_AGENT_NATIVE_TOOL ";
   const marker = "FIRST_AGENT_NATIVE_expected";
@@ -7054,6 +7180,40 @@ test("native history proof keeps exact run, explicit success and marker predicat
     assert.equal(evidence.observation.historyToolProofPresent, false);
     assert.equal(evidence.observation.historyFinalProofPresent, false);
     assert.doesNotMatch(JSON.stringify(evidence.observation), /private-|FIRST_AGENT_NATIVE/);
+  }
+  // Only a single recognized failing result may contribute bounded categories.
+  // Unmarked pre-Node failures and hostile/ambiguous markers remain unclassified.
+  const failureLine =
+    'FIRST_AGENT_NATIVE_FAILURE {"operation":"read-session-file","code":"ENOENT"}';
+  for (const [exitCode, aggregated] of [
+    [1, "private-shell-error"],
+    [1, 'FIRST_AGENT_NATIVE_FAILURE {"operation":"private-path","code":"ENOENT"}'],
+    [1, 'FIRST_AGENT_NATIVE_FAILURE {"operation":"read-session-file","code":"private-error"}'],
+    [1, "FIRST_AGENT_NATIVE_FAILURE {invalid"],
+    [1, "command: " + failureLine],
+    [1, failureLine + "\n" + failureLine],
+    [1, failureLine + "\nFIRST_AGENT_NATIVE_FAILURE {invalid"],
+    [1, failureLine + '\nFIRST_AGENT_NATIVE_FAILURE {"operation":"private-path","code":"ENOENT"}'],
+    [1, failureLine + "\nFIRST_AGENT_NATIVE_FAILURE " + "x".repeat(256)],
+    [0, failureLine],
+    [256, failureLine],
+    [-1, failureLine],
+  ]) {
+    const evidence = nativeWorkerHistoryEvidence({
+      messages: [{ ...tool, content: JSON.stringify({ value: { exitCode, aggregated } }) }],
+      runId: "selected",
+      toolPrefix: prefix,
+      marker,
+    });
+    const diagnostic = nativeFirstAgentProofDiagnostic("model-history", evidence.observation);
+    assert.equal(diagnostic.worker.historyExecFailureOperation, undefined);
+    assert.equal(diagnostic.worker.historyExecFailureCode, undefined);
+    assert.equal(
+      diagnostic.worker.historyExecNestedExitCode,
+      exitCode >= 0 && exitCode <= 255 ? exitCode : undefined,
+    );
+    assert.equal(Boolean(evidence.tool), false);
+    assert.doesNotMatch(JSON.stringify(diagnostic), /private-|FIRST_AGENT_NATIVE/);
   }
   // Peer-supplied part names and command arguments must not become diagnostic values.
   const command = "private-command";

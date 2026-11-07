@@ -1131,6 +1131,35 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
       safe[field] = worker[field];
     }
   }
+  if (
+    Number.isInteger(worker.historyExecNestedExitCode) &&
+    worker.historyExecNestedExitCode >= 0 &&
+    worker.historyExecNestedExitCode <= 255
+  ) {
+    safe.historyExecNestedExitCode = worker.historyExecNestedExitCode;
+  }
+  if (
+    safe.historyExecNestedExitCode > 0 &&
+    ["write-session-file", "read-session-file", "read-workspace-file", "emit-proof"].includes(
+      worker.historyExecFailureOperation,
+    ) &&
+    [
+      "EACCES",
+      "EPERM",
+      "ENOENT",
+      "EEXIST",
+      "EISDIR",
+      "ENOTDIR",
+      "ENOSPC",
+      "EROFS",
+      "EMFILE",
+      "EIO",
+      "other",
+    ].includes(worker.historyExecFailureCode)
+  ) {
+    safe.historyExecFailureOperation = worker.historyExecFailureOperation;
+    safe.historyExecFailureCode = worker.historyExecFailureCode;
+  }
   return { ...diagnostic, worker: safe };
 }
 
