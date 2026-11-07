@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-06
-last_updated_session: authoring-run/67960fd7-f16d-459d-83ae-8dc02997f0d5
+updated: 2026-11-07
+last_updated_session: authoring-run/8cbd0aef-172d-4a4f-baa0-cd6d0d75025c
 ---
 
 # Container publication flow
@@ -120,7 +120,9 @@ plugin's installation. Build stages use full Bookworm; final images use separate
 pinned slim bases. `Dockerfile` checks its dependency and runtime stages, and
 `deploy/runtime/Dockerfile` checks both bases and its runtime, for Node 24.22.1+
 within the 24 series. Older explicit overrides fail. Both bases apply available
-Debian updates; image digests do not freeze Debian repositories.
+Debian updates; image digests do not freeze Debian repositories. Every package-index
+refresh uses `apt-get update --error-on=any`, so any failed index download stops
+the build before installation or upgrade can use stale indexes.
 
 Publication builds use the default package registries. Operators building from
 source can [configure a package registry mirror](../guides/deploy/production-installation.md#build-through-a-package-registry-mirror)
@@ -290,6 +292,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-07 00:55: Stop image builds when Debian package indexes cannot refresh. (authoring-run/8cbd0aef-172d-4a4f-baa0-cd6d0d75025c - c8a9a5f66d138afa4ded680080fad0dc821a5af6)
 
 - 2026-11-06 10:40: Separate local runtime assembly from required native CI source verification. (authoring-run/67960fd7-f16d-459d-83ae-8dc02997f0d5 - a239e6df5946cc62367ab7872791e4c0edf358bc)
 
