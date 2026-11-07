@@ -1087,7 +1087,39 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       out("{}");
     }
   } else if (tool === "occ") {
-    if (args.includes("deployment-inventory")) {
+    if (
+      state.continuity &&
+      args.includes("agent") &&
+      (args.includes("get") || args.includes("runtime"))
+    ) {
+      const selected = state.version > 1 ? state.continuity.after : state.continuity.before;
+      const operation = args.includes("runtime") ? "runtime" : "agent";
+      const expected = state.continuity.before.agent;
+      const verb = operation === "runtime" ? "runtime" : "get";
+      if (
+        fileArg("--namespace") !== expected.namespaceId ||
+        args[args.indexOf(verb) + 1] !== expected.id ||
+        (operation === "runtime" && fileArg("--revision") !== expected.activeRevisionId)
+      ) {
+        return fail(1, "exact Agent and explicit original revision required");
+      }
+      log("continuity-" + operation);
+      if (selected[operation + "Error"]) {
+        return fail(1, selected[operation + "Error"]);
+      }
+      if (operation === "runtime" && state.version > 1 && selected.changeRevisionAfterRuntime) {
+        selected.agent.activeRevisionId = selected.changeRevisionAfterRuntime;
+        delete selected.changeRevisionAfterRuntime;
+        save();
+      }
+      if (operation === "runtime" && state.version > 1 && selected.changeHelmRevisionAfterRuntime) {
+        // An independent release finishes while runtime status is being read.
+        state.version += 1;
+        delete selected.changeHelmRevisionAfterRuntime;
+        save();
+      }
+      out(selected[operation]);
+    } else if (args.includes("deployment-inventory")) {
       out({
         installationId: "ins_test",
         namespaces: state.inventoryNamespaces ?? [
@@ -1364,6 +1396,7 @@ async function fixture(
     release = "oce",
     candidates = false,
     controllerOnly = false,
+    continuity = null,
     repositoryCredentials = false,
     simulatePair = false,
     capabilityReplies = [],
@@ -1563,6 +1596,7 @@ async function fixture(
   }
   const state = {
     release,
+    continuity,
     realChart: Boolean(chart),
     startupCheck: Boolean(chart),
     themeConfigMaps: chart?.configMaps ?? {},
@@ -1714,6 +1748,353 @@ async function fixture(
     failNext: (name) => writeFile(join(directory, name), ""),
   };
 }
+
+// These are the supported CLI JSON responses. They model only external observations;
+// the real upgrade command owns all continuity decisions and recovery writes.
+const continuityNamespace = "ns_00000000-0000-4000-8000-000000000001";
+const continuityAgent = "agt_00000000-0000-4000-8000-000000000002";
+const continuityRevision = "rev_00000000-0000-4000-8000-000000000003";
+const continuityFlags = [
+  "--verify-agent",
+  continuityAgent,
+  "--verify-agent-namespace",
+  continuityNamespace,
+];
+function continuityObservation(suffix = "before") {
+  const observedAt = "2026-11-07T00:00:00Z";
+  const pods = ["agent", "gateway"].map((role) => ({
+    role,
+    cluster: "control",
+    name: `${role}-${suffix}`,
+    uid: `${role}-${suffix}-uid`,
+    phase: "Running",
+    ready: true,
+    createdAt: observedAt,
+    // Provider-backed workloads need not use the Compute container name.
+    containers: [
+      {
+        name: "runtime",
+        state: "running",
+        reason: null,
+        ready: true,
+        restartCount: 0,
+        startedAt: observedAt,
+        lastTermination: null,
+      },
+    ],
+    events: [],
+  }));
+  return {
+    agent: {
+      id: continuityAgent,
+      namespaceId: continuityNamespace,
+      name: "Continuity check",
+      servicePrincipalId: "spn_00000000-0000-4000-8000-000000000004",
+      configurationId: "cfg_00000000-0000-4000-8000-000000000005",
+      backendId: "backend",
+      // The draft was edited to embedded; the running immutable revision is dedicated.
+      executionMode: "embedded",
+      gatewayManagedMode: true,
+      sandboxPolicyEditing: false,
+      activeRevisionId: continuityRevision,
+      desiredRuntimeState: "running",
+      status: "active",
+      harnessAuth: null,
+      createdAt: observedAt,
+    },
+    runtime: {
+      revisionId: continuityRevision,
+      observedAt,
+      pods,
+      sources: pods.map((pod) => ({
+        id: pod.role,
+        kind: "container",
+        available: true,
+        retention: "Available while the Pod is retained.",
+        pods: [{ name: pod.name, uid: pod.uid, container: "runtime", restartCount: 0 }],
+      })),
+      harness: { state: "running" },
+    },
+  };
+}
+function continuityFixture() {
+  return { before: continuityObservation(), after: continuityObservation("replacement") };
+}
+
+// Existing controller-only semantics intentionally remain unchanged unless selected.
+test("Agent continuity is opt-in; controller recovery alone can complete after Agent loss", async (t) => {
+  const continuity = continuityFixture();
+  delete continuity.after.agent.activeRevisionId;
+  continuity.after.runtime.pods = [];
+  const f = await fixture(t, { controllerOnly: true, continuity });
+  await f.run();
+  assert.ok(existsSync(join(f.evidence, "completed")));
+  assert.equal(
+    (await f.events()).some((event) => event.startsWith("continuity-")),
+    false,
+  );
+});
+
+test("Agent continuity accepts replacement Ready Pods for the original immutable topology", async (t) => {
+  const continuity = continuityFixture();
+  continuity.after.runtime.pods[0].containers.push({
+    name: "initialize-workspace",
+    state: "terminated",
+    reason: "Completed",
+    ready: false,
+    restartCount: 0,
+    startedAt: "2026-11-07T00:00:00Z",
+    lastTermination: {
+      reason: "Completed",
+      exitCode: 0,
+      finishedAt: "2026-11-07T00:00:01Z",
+    },
+  });
+  continuity.after.runtime.sources[0].pods.push({
+    name: continuity.after.runtime.pods[0].name,
+    uid: continuity.after.runtime.pods[0].uid,
+    container: "initialize-workspace",
+    restartCount: 0,
+  });
+  const f = await fixture(t, { controllerOnly: true, continuity });
+  await f.run(...continuityFlags);
+  const before = JSON.parse(await readFile(join(f.evidence, "agent-continuity.json")));
+  const after = JSON.parse(await readFile(join(f.evidence, "agent-continuity-after.json")));
+  assert.deepEqual(before.roles, ["agent", "gateway"]);
+  assert.notEqual(before.runtime.pods[0].uid, after.runtime.pods[0].uid);
+  assert.equal(after.revisionId, before.revisionId);
+  assert.ok(existsSync(join(f.evidence, "completed")));
+  assert.equal((await f.state()).dispatches, 0);
+});
+
+test("Agent continuity refuses lost or changed revisions and resumes without repeating Helm", async (t) => {
+  for (const revision of [null, "rev_00000000-0000-4000-8000-000000000099"]) {
+    await t.test(String(revision), async (t) => {
+      const continuity = continuityFixture();
+      continuity.after.agent.activeRevisionId = revision;
+      const f = await fixture(t, { controllerOnly: true, continuity });
+      await assert.rejects(
+        f.run(...continuityFlags),
+        /continuity failed; completion was not recorded/,
+      );
+      assert.equal(existsSync(join(f.evidence, "completed")), false);
+      const baseline = await readFile(join(f.evidence, "agent-continuity.json"), "utf8");
+      const state = await f.state();
+      assert.equal(state.helmSubmissions, 1);
+      state.continuity.after = continuityObservation("restored");
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      await f.run(...continuityFlags, "--resume");
+      assert.equal((await f.state()).helmSubmissions, 1);
+      assert.equal((await f.state()).dispatches, 0);
+      assert.equal(await readFile(join(f.evidence, "agent-continuity.json"), "utf8"), baseline);
+      assert.ok(existsSync(join(f.evidence, "completed")));
+    });
+  }
+});
+
+test("Agent continuity checks read permissions before stopping either writer", async (t) => {
+  for (const [operation, status] of [
+    ["agent", 403],
+    ["runtime", 403],
+    ["runtime", 501],
+  ]) {
+    await t.test(`${operation} HTTP ${status}`, async (t) => {
+      const continuity = continuityFixture();
+      continuity.before[operation + "Error"] =
+        `Error: OCC operation failed (HTTP ${status}): UNAVAILABLE: selected read refused`;
+      const f = await fixture(t, { controllerOnly: true, continuity });
+      await assert.rejects(
+        f.run(...continuityFlags),
+        /continuity check failed before writer shutdown/,
+      );
+      const state = await f.state();
+      assert.equal(state.api, 1);
+      assert.equal(state.worker, 1);
+      assert.equal(state.helmSubmissions, undefined);
+      assert.equal(existsSync(join(f.evidence, "prepared")), false);
+      assert.equal((await f.events()).includes("migration"), false);
+    });
+  }
+});
+
+test("Agent continuity requires every revision role despite an edited draft", async (t) => {
+  const continuity = continuityFixture();
+  continuity.after.runtime.pods = continuity.after.runtime.pods.filter(
+    (pod) => pod.role === "gateway",
+  );
+  Object.assign(
+    continuity.after.runtime.sources.find((source) => source.id === "agent"),
+    {
+      available: false,
+      unavailableCode: "NO_POD",
+      pods: [],
+    },
+  );
+  const f = await fixture(t, { controllerOnly: true, continuity });
+  await assert.rejects(
+    f.run(...continuityFlags, "--timeout-seconds", "5"),
+    /continuity failed; completion was not recorded\..*Timed out/,
+  );
+  const observed = JSON.parse(await readFile(join(f.evidence, "agent-continuity-after.json")));
+  assert.deepEqual(observed.roles, ["agent", "gateway"]);
+  assert.deepEqual(
+    observed.runtime.pods.map((pod) => pod.role),
+    ["gateway"],
+  );
+  assert.equal(existsSync(join(f.evidence, "completed")), false);
+  const state = await f.state();
+  state.continuity.after = continuityObservation("restored");
+  // Retained terminal Pods do not prevent healthy replacement Pods from passing.
+  state.continuity.after.runtime.pods.push({
+    ...continuityObservation().runtime.pods[0],
+    phase: "Failed",
+    ready: false,
+  });
+  state.continuity.after.runtime.sources[0].pods.push(
+    ...continuityObservation().runtime.sources[0].pods,
+  );
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  await f.run(...continuityFlags, "--resume");
+  assert.equal((await f.state()).helmSubmissions, 1);
+  assert.ok(existsSync(join(f.evidence, "completed")));
+});
+
+test("Agent continuity refuses truncated Pod observations and lost provider Harness status", async (t) => {
+  for (const scenario of ["truncated", "missing-harness", "lost-harness", "duplicate-pod"]) {
+    await t.test(scenario, async (t) => {
+      const continuity = continuityFixture();
+      if (scenario === "truncated") {
+        // The endpoint returns at most eight Pods per role; another live Pod may
+        // be omitted beyond seven ended Pods and the one visible live Pod.
+        const pod = continuity.after.runtime.pods[0];
+        for (let index = 0; index < 7; index++) {
+          continuity.after.runtime.pods.push({
+            ...pod,
+            name: `ended-${index}`,
+            uid: `ended-${index}`,
+            phase: "Failed",
+            ready: false,
+          });
+        }
+      } else if (scenario === "missing-harness") {
+        delete continuity.after.runtime.harness;
+      } else if (scenario === "lost-harness") {
+        continuity.after.runtime.harness = { state: "lost", code: "SANDBOX_MISSING" };
+      } else {
+        continuity.after.runtime.pods.push({
+          ...continuity.after.runtime.pods[0],
+          name: "duplicate",
+          uid: "duplicate",
+        });
+      }
+      for (const source of continuity.after.runtime.sources) {
+        source.pods = continuity.after.runtime.pods
+          .filter((pod) => pod.role === source.id)
+          .map((pod) => ({
+            name: pod.name,
+            uid: pod.uid,
+            container: "runtime",
+            restartCount: 0,
+          }));
+      }
+      const f = await fixture(t, { controllerOnly: true, continuity });
+      await assert.rejects(
+        f.run(...continuityFlags, "--timeout-seconds", "5"),
+        /continuity failed; completion was not recorded\..*Timed out/,
+      );
+      // A refusal counts only after the command retained a full observation of
+      // this scenario, not if a slow setup exhausted the deadline beforehand.
+      const observed = JSON.parse(await readFile(join(f.evidence, "agent-continuity-after.json")));
+      assert.equal(observed.revisionId, continuityRevision);
+      if (scenario === "truncated") {
+        assert.equal(observed.runtime.pods.filter((pod) => pod.role === "agent").length, 8);
+      } else if (scenario === "missing-harness") {
+        assert.equal(Object.hasOwn(observed.runtime, "harness"), false);
+      } else if (scenario === "lost-harness") {
+        assert.equal(observed.runtime.harness.state, "lost");
+      } else {
+        assert.equal(
+          observed.runtime.pods.filter((pod) => pod.role === "agent" && pod.phase === "Running")
+            .length,
+          2,
+        );
+      }
+      assert.equal(existsSync(join(f.evidence, "completed")), false);
+      assert.equal((await f.state()).helmSubmissions, 1);
+      assert.equal((await f.state()).dispatches, 0);
+    });
+  }
+});
+
+test("Agent continuity binds original evidence and selection across resume", async (t) => {
+  const continuity = continuityFixture();
+  continuity.after.runtime.sources = continuity.after.runtime.sources.filter(
+    (source) => source.id === "gateway",
+  );
+  const f = await fixture(t, { controllerOnly: true, continuity });
+  await assert.rejects(f.run(...continuityFlags), /revision workload roles changed/);
+  await assert.rejects(f.run("--resume"), /resume evidence directory/);
+  const baseline = join(f.evidence, "agent-continuity.json");
+  await writeFile(baseline, "{}\n");
+  await assert.rejects(f.run(...continuityFlags, "--resume"), /prepared upgrade evidence changed/);
+  assert.equal((await f.state()).helmSubmissions, 1);
+});
+
+test("Agent continuity confirms the active revision after reading runtime status", async (t) => {
+  const continuity = continuityFixture();
+  const replacement = "rev_00000000-0000-4000-8000-000000000099";
+  // The old revision still has Ready Pods when a concurrent deployment switches
+  // the active revision. The final Agent read must catch that intervening change.
+  continuity.after.changeRevisionAfterRuntime = replacement;
+  const f = await fixture(t, { controllerOnly: true, continuity });
+  await assert.rejects(
+    f.run(...continuityFlags),
+    /selected Agent changed during runtime inspection/,
+  );
+  const confirmed = JSON.parse(
+    await readFile(join(f.evidence, "agent-continuity-after.confirm.json")),
+  );
+  assert.equal(confirmed.activeRevisionId, replacement);
+  assert.equal(existsSync(join(f.evidence, "completed")), false);
+  assert.equal((await f.state()).helmSubmissions, 1);
+  assert.equal((await f.state()).dispatches, 0);
+});
+
+test("Agent continuity finishes before the terminal Helm identity check", async (t) => {
+  const continuity = continuityFixture();
+  continuity.after.changeHelmRevisionAfterRuntime = true;
+  const f = await fixture(t, { controllerOnly: true, continuity });
+  await assert.rejects(
+    f.run(...continuityFlags),
+    /the final Helm release is not this submission's deployed revision/,
+  );
+  assert.equal(existsSync(join(f.evidence, "completed")), false);
+  const state = await f.state();
+  assert.equal(state.version, 3);
+  assert.equal(state.helmSubmissions, 1);
+  assert.equal(state.dispatches, 0);
+});
+
+test("Agent continuity rejects explicitly empty selection before external calls", async (t) => {
+  for (const flags of [
+    ["--verify-agent", "", "--verify-agent-namespace", ""],
+    ["--verify-agent", ""],
+    ["--verify-agent-namespace", ""],
+  ]) {
+    await t.test(JSON.stringify(flags), async (t) => {
+      const f = await fixture(t, { controllerOnly: true });
+      await assert.rejects(f.run(...flags), /requires a nonempty value/);
+      assert.equal(f.commands.length, 0);
+    });
+  }
+});
+
+test("Agent continuity rejects incomplete selection and intentional runtime replacement", async (t) => {
+  const f = await fixture(t);
+  await assert.rejects(f.run("--verify-agent", continuityAgent), /must be supplied together/);
+  await assert.rejects(f.run(...continuityFlags), /cannot be combined with --runtime-image/);
+  assert.equal(f.commands.length, 0);
+});
 
 test("an image upgrade can select curated Codex while preserving both plugin registrations", async (t) => {
   const pluginDrivers = [

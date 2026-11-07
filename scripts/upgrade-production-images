@@ -12,6 +12,7 @@ Usage: scripts/upgrade-production-images \
   [--runtime-image IMAGE@sha256:DIGEST] \
   --source-revision FULL_GIT_SHA --evidence-dir DIRECTORY \
   [--occ PATH] [--timeout-seconds SECONDS] [--doctor-heap-mib MIB] [--resume] \
+  [--verify-agent AGENT_ID --verify-agent-namespace NAMESPACE_ID] \
   [--migration-history-checked] \
   [--collector-config-reviewed] [--preflight-only]
 
@@ -31,6 +32,9 @@ OCC_URL, OCC_SERVICE_KEY_FILE, and OCC_CA_BUNDLE configure the OCC CLI connectio
 With the bundled Collector enabled, its config Secret must carry this checkout's
 deploy/logging collector.yaml and kubernetes.yaml; pass --collector-config-reviewed
 only to keep a reviewed custom configuration.
+For a controller/broker upgrade, --verify-agent with --verify-agent-namespace
+requires the same active revision and Ready workload Pods before completion.
+It needs exact Agent read/operate and active AgentRevision read permissions.
 --timeout-seconds bounds each wait (default 900, at most 86400).
 --doctor-heap-mib sets OpenClaw Doctor's heap cap (default 384); raise it only
 after Doctor ran out of heap. It can change on --resume.
@@ -326,6 +330,8 @@ runtime_image=
 source_revision=
 evidence_dir=
 occ=occ
+verify_agent=
+verify_agent_namespace=
 timeout_seconds=900
 doctor_heap_mib=384
 resume=0
@@ -335,8 +341,11 @@ collector_config_reviewed=0
 
 while (($#)); do
   case "$1" in
-    --kubeconfig | --context | --namespace | --release | --values | --installation | --candidate-values | --candidate-installation | --controller-image | --broker-image | --runtime-image | --source-revision | --evidence-dir | --occ | --timeout-seconds | --doctor-heap-mib)
+    --kubeconfig | --context | --namespace | --release | --values | --installation | --candidate-values | --candidate-installation | --controller-image | --broker-image | --runtime-image | --source-revision | --evidence-dir | --occ | --timeout-seconds | --doctor-heap-mib | --verify-agent | --verify-agent-namespace)
       (($# >= 2)) || die "$1 requires a value."
+      if [[ "$1" == --verify-agent || "$1" == --verify-agent-namespace ]]; then
+        [[ -n "$2" ]] || die "$1 requires a nonempty value."
+      fi
       case "$1" in
         --kubeconfig) kubeconfig=$2 ;;
         --context) context=$2 ;;
@@ -352,6 +361,8 @@ while (($#)); do
         --source-revision) source_revision=$2 ;;
         --evidence-dir) evidence_dir=$2 ;;
         --occ) occ=$2 ;;
+        --verify-agent) verify_agent=$2 ;;
+        --verify-agent-namespace) verify_agent_namespace=$2 ;;
         --timeout-seconds) timeout_seconds=$2 ;;
         --doctor-heap-mib) doctor_heap_mib=$2 ;;
       esac
@@ -383,6 +394,11 @@ while (($#)); do
       ;;
   esac
 done
+
+[[ -z "$verify_agent" && -z "$verify_agent_namespace" || -n "$verify_agent" && -n "$verify_agent_namespace" ]] ||
+  die "--verify-agent and --verify-agent-namespace must be supplied together."
+[[ -z "$verify_agent" || -z "$runtime_image" ]] ||
+  die "--verify-agent cannot be combined with --runtime-image, which selects new Agent revisions."
 
 ((resume == 0 || preflight_only == 0)) || die "--resume cannot be combined with --preflight-only."
 
@@ -589,13 +605,13 @@ trap 'interrupted_upgrade 143' TERM
 # Bind resume to the original physical directory, inputs and chart. The
 # separate dispatch journal protects against restoring stale evidence in place.
 # Kubeconfig bytes bind the context to the same cluster if the file is replaced.
-parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$OCC_URL" "$occ" "${OCC_CA_BUNDLE:-}" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" <<'PYTHON'
+parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$OCC_URL" "$occ" "${OCC_CA_BUNDLE:-}" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" "$verify_agent_namespace" "$verify_agent" <<'PYTHON'
 import hashlib, json, os, sys
 def digest(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
 evidence = os.stat(sys.argv[16])
-print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.mjs"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
+print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.mjs"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
 PYTHON
 )
 if ((resume)); then
@@ -1055,6 +1071,90 @@ No OCC writer was stopped; the old release keeps serving. Correct each draft as 
   touch "$evidence_dir/startup-preflight-passed"
 }
 
+# Sample the exact original revision through the supported read-only runtime API.
+# The Driver's sources describe immutable revision topology; Agent.executionMode
+# describes the editable draft and cannot tell us which Pods must be present.
+verify_agent_continuity() {
+  local phase=$1 deadline=$((SECONDS + timeout_seconds)) remaining revision roles
+  local prefix="$evidence_dir/agent-continuity-$phase" observation ready
+  local failure="selected Agent $verify_agent continuity check failed before writer shutdown."
+  if [[ "$phase" == after ]]; then
+    failure="control-plane upgrade reached verification, but selected Agent $verify_agent continuity failed; completion was not recorded. Preserve the evidence and restore the original revision before --resume; no Agent deployment was requested."
+  fi
+  while true; do
+    remaining=$((deadline - SECONDS))
+    ((remaining > 0)) || die "$failure Timed out waiting for Ready workload Pods."
+    "${occ_json[@]}" --timeout-seconds "$remaining" --namespace "$verify_agent_namespace" \
+      agent get "$verify_agent" </dev/null >"$prefix.agent.json" || die "$failure Cannot read the selected Agent."
+    revision=$(jq -er --arg agent "$verify_agent" --arg namespace "$verify_agent_namespace" '
+      select(.id == $agent and .namespaceId == $namespace and
+        .status == "active" and .desiredRuntimeState == "running") |
+      .activeRevisionId | select(type == "string" and length > 0)
+    ' "$prefix.agent.json") || die "$failure The selected Agent must be active and running with an active revision."
+    if [[ "$phase" == after ]]; then
+      [[ "$revision" == "$(jq -er .revisionId "$evidence_dir/agent-continuity.json")" ]] ||
+        die "$failure The active revision changed."
+    fi
+    remaining=$((deadline - SECONDS))
+    ((remaining > 0)) || die "$failure Timed out reading the selected Agent."
+    "${occ_json[@]}" --timeout-seconds "$remaining" --namespace "$verify_agent_namespace" \
+      agent runtime "$verify_agent" --revision "$revision" </dev/null >"$prefix.runtime.json" ||
+      die "$failure Cannot read the exact revision runtime; check Agent read/operate, AgentRevision read, and runtime inspection configuration."
+    roles=$(jq -ce --arg revision "$revision" '
+      select(.revisionId == $revision) |
+      [.sources[] | select(.kind == "container") | .id] | sort |
+      select(. == ["gateway"] or . == ["agent", "gateway"])
+    ' "$prefix.runtime.json") || die "$failure Runtime inspection did not identify the exact revision and its workload roles."
+    if [[ "$phase" == after ]]; then
+      [[ "$roles" == "$(jq -c .roles "$evidence_dir/agent-continuity.json")" ]] ||
+        die "$failure The revision workload roles changed."
+    fi
+    remaining=$((deadline - SECONDS))
+    ((remaining > 0)) || die "$failure Timed out reading the revision runtime."
+    "${occ_json[@]}" --timeout-seconds "$remaining" --namespace "$verify_agent_namespace" \
+      agent get "$verify_agent" </dev/null >"$prefix.confirm.json" || die "$failure Cannot confirm the selected Agent."
+    jq -e --arg agent "$verify_agent" --arg namespace "$verify_agent_namespace" --arg revision "$revision" '
+      .id == $agent and .namespaceId == $namespace and .status == "active" and
+      .desiredRuntimeState == "running" and .activeRevisionId == $revision
+    ' "$prefix.confirm.json" >/dev/null || die "$failure The selected Agent changed during runtime inspection."
+    ((SECONDS < deadline)) || die "$failure Timed out confirming the selected Agent."
+    observation=$(mktemp "$prefix.XXXXXXXX")
+    jq -n --arg namespace "$verify_agent_namespace" --arg agent "$verify_agent" \
+      --arg revision "$revision" --argjson roles "$roles" --slurpfile runtime "$prefix.runtime.json" '
+      {namespaceId: $namespace, agentId: $agent, revisionId: $revision, roles: $roles,
+       providerHarnessObserved: ($runtime[0] | has("harness")), runtime: $runtime[0]}
+    ' >"$observation"
+    mv "$observation" "$prefix.json"
+    ready=0
+    # Runtime inspection caps each role at eight Pods; a full page cannot prove
+    # uniqueness after filtering ended Pods. Pod Ready includes completed init
+    # containers, whose terminated status must not be treated as a failure.
+    if jq -e '
+      .roles as $roles | .runtime |
+      .pods as $observed |
+      [.pods[] | select(.phase != "Succeeded" and .phase != "Failed")] as $pods |
+      all($roles[]; . as $role | ([$observed[] | select(.role == $role)] | length) < 8) and
+      (($pods | map(.role) | sort) == $roles) and
+      all($pods[]; (.uid | type == "string" and length > 0) and
+        (.name | type == "string" and length > 0) and .phase == "Running" and .ready == true) and
+      ((has("harness") | not) or .harness.state == "running")
+    ' "$prefix.json" >/dev/null; then
+      ready=1
+    fi
+    if [[ "$phase" == after ]] && jq -e .providerHarnessObserved "$evidence_dir/agent-continuity.json" >/dev/null; then
+      jq -e '.runtime.harness.state == "running"' "$prefix.json" >/dev/null || ready=0
+    fi
+    if ((ready)); then
+      if [[ "$phase" == before ]]; then
+        cp "$prefix.json" "$evidence_dir/agent-continuity.json"
+      fi
+      return
+    fi
+    [[ "$phase" != before ]] || die "$failure The original revision workload must be Ready."
+    sleep 2
+  done
+}
+
 prepare_upgrade() {
 if [[ -n "$runtime_image" ]]; then
   mkdir -m 700 "$evidence_dir/inventory" "$evidence_dir/dispatch" "$evidence_dir/status"
@@ -1132,6 +1232,8 @@ fi
 installation_id=$(jq -er '.id' "$evidence_dir/installation.json")
 [[ "$installation_id" == "$cluster_installation_id" ]] ||
   die "OCC Installation $installation_id does not match Kubernetes Installation $cluster_installation_id."
+
+[[ -z "$verify_agent" ]] || verify_agent_continuity before
 
 targets="$evidence_dir/targets.jsonl"
 : >"$targets"
@@ -2275,6 +2377,8 @@ done <"$doctor_targets"
   die "OpenClaw Doctor failed for at least one replacement gateway; inspect $evidence_dir/status/*.doctor.error."
 ((pod_changed == 0)) ||
   die "at least one Agent's gateway or agent Pod did not stay on the same Ready Pod without restarts through OpenClaw Doctor, so the upgrade is not complete. Wait until each named Agent's revision Pods are Ready, then repeat the command with --resume and the same evidence directory; the resume runs Doctor again in the current gateway without new deployments."
+
+[[ -z "$verify_agent" ]] || verify_agent_continuity after
 
 if [[ "$repository_enabled" == true ]]; then
   verify_pair_nodes

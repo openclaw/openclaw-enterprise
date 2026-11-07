@@ -248,6 +248,18 @@ the protected values equal to live values; the helper preserves
 the running broker's exact hostname in the candidate. It qualifies the pair
 before cluster mutation and verifies the deployed pair and broker capability.
 
+Add `--verify-agent AGENT_ID --verify-agent-namespace NAMESPACE_ID` to check one
+running Agent. It requires enabled [runtime inspection](../../reference/cli.md#runtime-status-and-logs),
+exact Agent `read`/`operate` and active AgentRevision `read`, verified before shutdown.
+Freeze that Agent's deployment, stop and deletion through verification.
+This option cannot accompany `--runtime-image`, which changes revisions.
+
+Completion requires the original active revision, Ready workload roles and any
+observed provider Harness still running. Replacement Pod UIDs are allowed.
+This samples readiness, not routing, model or channel availability. A final-check failure leaves
+the upgraded control plane without `completed`; follow
+[recovery](production-upgrade-recovery.md#resume-an-unfinished-prepared-upgrade).
+
 If the startup preflight fails, the old release keeps serving. Inspect the
 API and worker preflight logs in the evidence directory. After a cleanup warning
 or interruption, preserve the evidence and lock and follow
