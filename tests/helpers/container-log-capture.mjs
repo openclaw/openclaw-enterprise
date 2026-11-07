@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { failureSecrets } from "../../scripts/ci/failure-redaction.mjs";
+import { projectContainerLog } from "../../scripts/ci/k3d-diagnostics.mjs";
 
 // The CI runner sets this for k3d lanes (scripts/ci/k3d-diagnostics.mjs) and
 // publishes a redacted projection of each record in the lane's diagnostics
@@ -142,13 +144,7 @@ export function followContainerLog({ args, env, target, snapshot }) {
         },
       );
     } else {
-      t.diagnostic(
-        [
-          `${target.container} log of ${target.namespace}/${target.pod} (${reason}):`,
-          ...markers.map(({ label, at }) => `marker ${at} ${label}`),
-          ...record.lines,
-        ].join("\n"),
-      );
+      t.diagnostic(JSON.stringify(projectContainerLog(record, failureSecrets([process.env]))));
     }
   }
 

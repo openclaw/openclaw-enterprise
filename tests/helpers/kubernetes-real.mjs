@@ -12,6 +12,7 @@ import { promisify } from "node:util";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
 import { kubectlGetJson } from "./kubernetes-api-read.mjs";
 import { waitFor as pollFor } from "./wait-for.mjs";
+import { followContainerLog } from "./container-log-capture.mjs";
 
 const execute = promisify(execFile);
 
@@ -123,6 +124,78 @@ export async function withinDiagnosticDeadline(
   } finally {
     // Stops the timer once the diagnostic settles, so it does not hold the event loop.
     timer.abort();
+  }
+}
+
+// Controller startup can fail before any Compute-managed Agent Pod exists. Capture
+// that exact fixture namespace before teardown; the Agent watch cannot observe it.
+export async function waitForDeploymentAvailable(
+  context,
+  selection,
+  { namespace, deployment, container, labels },
+) {
+  const scope = ["--namespace", namespace];
+  const log = followContainerLog({
+    args: kubectlArguments(selection, [
+      "logs",
+      ...scope,
+      `deployment/${deployment}`,
+      "--container",
+      container,
+      "--follow=true",
+      "--timestamps=true",
+      "--tail=1500",
+      "--pod-running-timeout=180s",
+    ]),
+    env: process.env,
+    target: { namespace, container },
+    snapshot: () =>
+      withinDiagnosticDeadline(
+        async () => ({
+          pods: JSON.parse(
+            await kubectlFor(selection, [
+              "get",
+              "pods",
+              ...scope,
+              "-l",
+              Object.entries(labels)
+                .map(([key, value]) => `${key}=${value}`)
+                .join(","),
+              "-o",
+              "json",
+              diagnosticRequestTimeout,
+            ]),
+          ).items,
+          events: JSON.parse(
+            await kubectlFor(selection, [
+              "get",
+              "events",
+              ...scope,
+              "-o",
+              "json",
+              diagnosticRequestTimeout,
+            ]),
+          ).items,
+        }),
+        { timeoutMs: 20_000, timedOut: null },
+      ),
+  });
+  try {
+    return await log.attachOnFailure(
+      context,
+      `deployment/${deployment} readiness`,
+      () =>
+        kubectlFor(selection, [
+          "wait",
+          ...scope,
+          "--for=condition=Available",
+          `deployment/${deployment}`,
+          "--timeout=180s",
+        ]),
+      { waitForExitMs: 0 },
+    );
+  } finally {
+    await log.stop();
   }
 }
 

@@ -6444,6 +6444,212 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
   );
 });
 
+test("run retains controller readiness evidence before its fixture namespace is deleted", async (t) => {
+  const root = await fixture(t);
+  const clusterDirectory = join(root, "cluster");
+  const bin = join(root, "bin");
+  await mkdir(clusterDirectory);
+  await mkdir(bin);
+  const statePath = join(root, "state/k3d.json");
+  const resultsPath = join(root, "results/k3d.json");
+  const deleted = join(root, "namespace-deleted");
+  const calls = join(root, "kubectl-calls.jsonl");
+  await writeJson(statePath, {
+    lane: "k3d-lane",
+    resources: [
+      {
+        kind: "k3d-cluster",
+        status: "ready",
+        name: "owned-cluster",
+        directory: clusterDirectory,
+        kubeconfig: join(clusterDirectory, "kubeconfig"),
+        context: "k3d-owned-cluster",
+      },
+    ],
+  });
+  // These are the controller fixture's real labels, without Compute's managed-by label.
+  // The Agent watch sees no Pod; only the startup wait's capture can retain this failure.
+  const labels = {
+    "app.kubernetes.io/name": "openclaw-enterprise",
+    "app.kubernetes.io/instance": "fixture",
+    "app.kubernetes.io/component": "api",
+  };
+  const namespace = "occ-controller-failed";
+  const pod = {
+    metadata: { namespace, name: "api-0", uid: "api-uid", labels },
+    spec: { containers: [{ name: "api", env: [{ name: "TOKEN", value: "private-env" }] }] },
+    status: {
+      phase: "Running",
+      containerStatuses: [
+        {
+          name: "api",
+          ready: false,
+          restartCount: 2,
+          state: { waiting: { reason: "CrashLoopBackOff" } },
+        },
+      ],
+    },
+  };
+  const event = {
+    metadata: { namespace, name: "api-backoff", uid: "event-uid" },
+    involvedObject: { kind: "Pod", name: "api-0", namespace },
+    type: "Warning",
+    reason: "BackOff",
+    message: "Back-off restarting failed container api",
+  };
+  const kubectl = join(bin, "kubectl");
+  await writeFile(
+    kubectl,
+    [
+      `#!${process.execPath}`,
+      'const fs = require("node:fs");',
+      'const path = require("node:path");',
+      "const args = process.argv.slice(2);",
+      `const root = ${JSON.stringify(root)};`,
+      `fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");`,
+      'const deployment = args.find((arg) => arg.startsWith("deployment/"));',
+      'const ready = deployment && path.join(root, deployment.replace("/", "-") + ".ready");',
+      'if (args.includes("logs")) {',
+      '  process.stdout.write("startup: configured role still has bindings\\nAuthorization: Bearer private-header\\n");',
+      '  fs.writeFileSync(ready, "ready");',
+      "  setTimeout(() => {}, 60000);",
+      '} else if (args.includes("wait")) {',
+      "  const deadline = Date.now() + 5000;",
+      "  const check = () => {",
+      "    if (!fs.existsSync(ready) && Date.now() < deadline) return setTimeout(check, 10);",
+      '    if (deployment === "deployment/healthy") return process.exit(0);',
+      '    process.stderr.write("error: timed out waiting for the condition on deployments/openclaw-enterprise-api\\n");',
+      "    process.exit(1);",
+      "  };",
+      "  check();",
+      '} else if (args.includes("--raw")) {',
+      "  setTimeout(() => {}, 60000);",
+      "} else {",
+      `  if (fs.existsSync(${JSON.stringify(deleted)})) process.exit(1);`,
+      `  const items = args.includes("pods") ? [${JSON.stringify(pod)}] : [${JSON.stringify(event)}];`,
+      "  process.stdout.write(JSON.stringify({ items }));",
+      "}",
+    ].join("\n"),
+  );
+  await chmod(kubectl, 0o755);
+  const helper = join(repositoryRoot, "tests/helpers/kubernetes-real.mjs");
+  await writeFile(
+    join(root, "tests/integration/startup.test.mjs"),
+    [
+      'import test from "node:test";',
+      'import { rm, writeFile } from "node:fs/promises";',
+      `import { waitForDeploymentAvailable } from ${JSON.stringify(helper)};`,
+      'test("controller startup fails", async (t) => {',
+      `  await rm(${JSON.stringify(join(root, "deployment-healthy.ready"))}, { force: true });`,
+      `  await rm(${JSON.stringify(join(root, "deployment-openclaw-enterprise-api.ready"))}, { force: true });`,
+      `  t.after(() => writeFile(${JSON.stringify(deleted)}, "deleted"));`,
+      `  const selection = { kubeconfigPath: ${JSON.stringify(join(clusterDirectory, "kubeconfig"))}, kubernetesContext: "k3d-owned-cluster" };`,
+      `  const target = { namespace: ${JSON.stringify(namespace)}, container: "api", labels: ${JSON.stringify(labels)} };`,
+      '  await waitForDeploymentAvailable(t, selection, { ...target, deployment: "healthy" });',
+      '  await waitForDeploymentAvailable(t, selection, { ...target, deployment: "openclaw-enterprise-api" });',
+      "});",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "scripts/ci/k3d-lane.json"), {
+    files: [
+      { path: "tests/integration/startup.test.mjs", expectedTests: ["controller startup fails"] },
+    ],
+  });
+  await writeJson(join(root, "scripts/ci/suites.json"), {
+    version: 1,
+    lanes: { "k3d-lane": "./k3d-lane.json" },
+    groups: {},
+  });
+  const result = run(
+    root,
+    [
+      "run",
+      "k3d-lane",
+      "--manifest",
+      join(root, "scripts/ci/suites.json"),
+      "--root",
+      root,
+      "--state",
+      statePath,
+      "--results",
+      resultsPath,
+    ],
+    { OCC_KUBECTL_BIN: kubectl, PATH: `${bin}:${process.env.PATH}` },
+  );
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(
+    result.stderr,
+    /timed out waiting for the condition on deployments\/openclaw-enterprise-api/,
+  );
+  assert.equal(await readFile(deleted, "utf8"), "deleted");
+  const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
+  const report = JSON.parse(text);
+  assert.equal(report.agentNamespaces, undefined);
+  assert.ok(
+    Array.isArray(report.containerLogs),
+    "failed controller startup must retain diagnostics",
+  );
+  assert.equal(
+    report.containerLogs.length,
+    1,
+    "a successful wait must not publish a failure record",
+  );
+  const [log] = report.containerLogs;
+  assert.equal(log.namespace, namespace);
+  assert.equal(log.pod, undefined);
+  assert.equal(log.container, "api");
+  assert.equal(log.reason, "deployment/openclaw-enterprise-api readiness");
+  assert.deepEqual(log.lines, [
+    "startup: configured role still has bindings",
+    "[redacted credential-bearing line]",
+  ]);
+  assert.equal(log.snapshots[0].pods[0].uid, "api-uid");
+  assert.equal(log.snapshots[0].pods[0].containers[0].waitingReason, "CrashLoopBackOff");
+  assert.equal(log.snapshots[0].events[0].reason, "BackOff");
+  assert.doesNotMatch(text, /private-env|private-header/);
+  const commands = (await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse);
+  for (const args of commands.filter((args) => !args.includes("--raw"))) {
+    assert.equal(args[args.indexOf("--namespace") + 1], namespace);
+  }
+  const reads = commands.filter((args) => args.includes("pods"));
+  assert.equal(reads.length, 2);
+  for (const args of reads) {
+    assert.equal(
+      args[args.indexOf("-l") + 1],
+      Object.entries(labels)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(","),
+    );
+  }
+  assert.deepEqual(
+    (await readdir(clusterDirectory)).filter((name) => name.startsWith("container-logs-")),
+    [],
+  );
+  // A direct local run has no CI record directory. Its diagnostic must be just as
+  // redacted, and failed diagnostic reads must not replace the readiness error.
+  const directEnv = runnerEnv({ PATH: `${bin}:${process.env.PATH}` });
+  delete directEnv.NODE_TEST_CONTEXT;
+  delete directEnv.OPENCLAW_CI_CONTAINER_LOG_DIR;
+  const direct = spawnSync(
+    process.execPath,
+    ["--test", join(root, "tests/integration/startup.test.mjs")],
+    {
+      cwd: root,
+      env: directEnv,
+      encoding: "utf8",
+      timeout: 15_000,
+    },
+  );
+  assert.equal(direct.status, 1, direct.stderr);
+  assert.match(
+    direct.stdout,
+    /timed out waiting for the condition on deployments\/openclaw-enterprise-api/,
+  );
+  assert.match(direct.stdout, /"unavailable":true/);
+  assert.match(direct.stdout, /startup: configured role still has bindings/);
+  assert.doesNotMatch(direct.stdout + direct.stderr, /private-env|private-header/);
+});
+
 describe("tests that wait out real runner limits, side by side", { concurrency: true }, () => {
   for (const args of waitingTests) {
     test(...args);
