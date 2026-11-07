@@ -1391,6 +1391,7 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.close_repository_standing_execution()", false],
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
+      ["occ.hold_account_administration_policy(text)", true],
       ["occ.record_repository_standing_execution(text,text,text,text,text)", true],
       ["occ.remove_sandbox_policy_access()", false, "search_path=pg_catalog, occ"],
       ["occ.retry_failed_agent_deletion(text,text,text,text)", true],
@@ -1959,7 +1960,7 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const db = await historyDatabase(context, await migrationHistoryFixture(), "publish", {
-      prefix: 72,
+      prefix: 73,
     });
     // Freeze the built-in Role before plugin publication. Reordering its grants was valid, as was editing its permissions.
     const previous = [
@@ -2086,7 +2087,8 @@ test(
       [69, "preSavedConnections"],
       [70, "preDefaultUsers"],
       [71, "preHarnessOverrides"],
-      [72, "preNamespacePluginReleases"],
+      [72, "preAccountAdministrationPolicy"],
+      [73, "preNamespacePluginReleases"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2095,7 +2097,7 @@ test(
           computeAdmission: prefix >= 55,
           // 0060 requires an execution admission on every revision written after it.
           executionAdmission: prefix >= 62,
-          // 0072 requires newly admitted revisions to store their Harness settings.
+          // 0072 requires settings on new rows; earlier prefixes retain their historical shape.
           harnessSettings: prefix >= 72,
         });
         const assertSourceOwners =
