@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -6491,12 +6500,19 @@ for (const earlyLogExit of [false, true]) {
         ],
       },
     };
+    const eventValue = "opaque-long-value-" + "z".repeat(600);
     const event = {
       metadata: { namespace, name: "api-backoff", uid: "event-uid" },
       involvedObject: { kind: "Pod", name: "api-0", namespace },
       type: "Warning",
       reason: "BackOff",
-      message: "Back-off restarting failed container api",
+      message: [
+        "Back-off restarting failed container api",
+        "-----BEGIN " + "PRIVATE KEY-----",
+        "synthetic-pem-body-marker",
+        "-----END " + "PRIVATE KEY-----",
+        eventValue,
+      ].join("\n"),
     };
     const kubectl = join(bin, "kubectl");
     await writeFile(
@@ -6580,7 +6596,11 @@ for (const earlyLogExit of [false, true]) {
         "--results",
         resultsPath,
       ],
-      { OCC_KUBECTL_BIN: kubectl, PATH: `${bin}:${process.env.PATH}` },
+      {
+        OCC_KUBECTL_BIN: kubectl,
+        PATH: `${bin}:${process.env.PATH}`,
+        OCC_TEST_EVENT_VALUE: eventValue,
+      },
     );
     assert.equal(result.status, 1, result.stderr);
     assert.match(
@@ -6618,7 +6638,10 @@ for (const earlyLogExit of [false, true]) {
     } else {
       assert.equal(log.snapshots[0].events[0].reason, "BackOff");
     }
-    assert.doesNotMatch(text, /private-env|private-header/);
+    assert.doesNotMatch(
+      text,
+      /private-env|private-header|synthetic-pem-body-marker|opaque-long-value-/,
+    );
     const commands = (await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse);
     for (const args of commands.filter((args) => !args.includes("--raw"))) {
       assert.equal(args[args.indexOf("--namespace") + 1], namespace);
@@ -6643,7 +6666,13 @@ for (const earlyLogExit of [false, true]) {
     );
     // A direct local run has no CI record directory. Its diagnostic must be just as
     // redacted, and failed diagnostic reads must not replace the readiness error.
-    const directEnv = runnerEnv({ PATH: `${bin}:${process.env.PATH}` });
+    if (!earlyLogExit) {
+      await rm(deleted);
+    }
+    const directEnv = runnerEnv({
+      PATH: `${bin}:${process.env.PATH}`,
+      OCC_TEST_EVENT_VALUE: eventValue,
+    });
     delete directEnv.NODE_TEST_CONTEXT;
     delete directEnv.OPENCLAW_CI_CONTAINER_LOG_DIR;
     const direct = spawnSync(
@@ -6661,9 +6690,16 @@ for (const earlyLogExit of [false, true]) {
       direct.stdout,
       /timed out waiting for the condition on deployments\/openclaw-enterprise-api/,
     );
-    assert.match(direct.stdout, /"unavailable":true/);
+    if (earlyLogExit) {
+      assert.match(direct.stdout, /"unavailable":true/);
+    } else {
+      assert.match(direct.stdout, /Back-off restarting failed container api/);
+    }
     assert.match(direct.stdout, /startup: configured role still has bindings/);
-    assert.doesNotMatch(direct.stdout + direct.stderr, /private-env|private-header/);
+    assert.doesNotMatch(
+      direct.stdout + direct.stderr,
+      /private-env|private-header|synthetic-pem-body-marker|opaque-long-value-/,
+    );
   });
 }
 
