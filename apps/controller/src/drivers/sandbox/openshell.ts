@@ -3116,15 +3116,18 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             ),
           );
         const observedFields = authorityFields(actual);
-        if (actual.kind === "NetworkPolicy" && Object.hasOwn(observedFields, "spec")) {
-          observedFields.spec = networkPolicySpecToJson(observedFields.spec as V1NetworkPolicySpec);
+        const expectedFields = authorityFields(expected);
+        for (const [resource, fields] of [
+          [actual, observedFields],
+          [expected, expectedFields],
+        ] as const) {
+          if (isCoreNetworkPolicy(resource) && Object.hasOwn(fields, "spec")) {
+            fields.spec = networkPolicySpecToJson(fields.spec as V1NetworkPolicySpec);
+          }
         }
         if (
           // SDK models carry prototypes; compare their full JSON content with the wire manifest.
-          !isDeepStrictEqual(
-            JSON.parse(JSON.stringify(observedFields)),
-            authorityFields(expected),
-          ) ||
+          !isDeepStrictEqual(JSON.parse(JSON.stringify(observedFields)), expectedFields) ||
           actual.metadata?.name !== expected.metadata?.name ||
           actual.metadata?.namespace !== namespace
         ) {

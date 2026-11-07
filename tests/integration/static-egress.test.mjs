@@ -3218,13 +3218,21 @@ function admissionCases(revision) {
 test("production Compute refuses protected admission and release, including empty plans", async (t) => {
   const compute = createTestKubernetesComputeDriver("admission-cutoff");
   const f = await staticEgressFixture(t);
-  const { unprotected, refused } = admissionCases(f.revision);
+  const admittingCompute = createTestKubernetesComputeDriver("admission-origin", {
+    gatewayRuntime: true,
+  });
+  // Keep valid resolved-provider admission while testing the independent protection gate.
+  const admitted = {
+    ...f.revision,
+    compute: { ...f.revision.compute, admission: admittingCompute.admitRevision(f.revision) },
+  };
+  const { unprotected, refused } = admissionCases(admitted);
   const cases = [
     ...refused,
-    [f.revision, /Protected execution is unavailable/],
+    [admitted, /Protected execution is unavailable/],
     [
       {
-        ...f.revision,
+        ...admitted,
         credentialSources: [],
         egressPlan: { ...f.revision.egressPlan, routes: [] },
       },
@@ -3247,7 +3255,7 @@ test("production Compute refuses protected admission and release, including empt
   await compute.activateRevision({
     ...unprotected,
     gatewayManagedMode: false,
-    compute: { id: compute.id, implementation: compute.implementation },
+    compute: { ...unprotected.compute, id: compute.id, implementation: compute.implementation },
   });
 
   // Protection comes from the selected execution policy, not the number of credentials.

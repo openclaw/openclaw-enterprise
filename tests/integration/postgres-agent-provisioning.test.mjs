@@ -1943,6 +1943,68 @@ test(
   },
 );
 
+test(
+  "provisioning takes the IAM configuration lock before the Namespace lock",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await createFixture(context, { stopAfterProvisioning: true });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: provisioningBody(namespace.id, secrets),
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+
+    // Applying the iam configuration at API or worker startup holds this advisory lock
+    // exclusively (the key is IAM_CONFIGURATION_LOCK_KEY in postgres-state.ts), then locks each
+    // Namespace it writes a configured binding into. Hold the lock until the provisioning worker
+    // waits on it: that wait must not already hold the Namespace, or a startup that overlaps
+    // provisioning deadlocks and PostgreSQL aborts one of them.
+    const holder = await fixture.pool.connect();
+    let failed = false;
+    try {
+      await holder.query("BEGIN");
+      const backend = await holder.query("SELECT pg_backend_pid() AS pid");
+      await holder.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+        "occ:iam-configuration",
+      ]);
+      await fixture.startWorker();
+      await waitForLockWaiter(
+        fixture.pool,
+        backend.rows[0].pid,
+        "the provisioning worker's wait on the IAM configuration lock",
+      );
+      await assert.doesNotReject(
+        holder.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE NOWAIT", [
+          namespace.id,
+        ]),
+        "provisioning waiting for the IAM configuration must not already hold its Namespace",
+      );
+      await holder.query("COMMIT");
+    } catch (error) {
+      failed = true;
+      await holder.query("ROLLBACK").catch(() => {});
+      throw error;
+    } finally {
+      holder.release(failed);
+    }
+
+    // Once the configuration change commits, the same provisioning attempt goes on to create
+    // its Agent.
+    try {
+      const created = await waitFor("provisioning to create its Agent", async () => {
+        const observed = await fixture.request("GET", admitted.data.provisioning.url);
+        assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
+        return observed.data.agentId === undefined ? undefined : observed.data;
+      });
+      fixture.cancelProvisioningAtTeardown(namespace.id, created.agentId);
+    } finally {
+      await fixture.stopWorker();
+    }
+  },
+);
+
 for (const harnessAuth of ["api_key", "credential_source"]) {
   test(
     harnessAuth === "api_key"

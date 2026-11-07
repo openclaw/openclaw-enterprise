@@ -98,6 +98,9 @@ For lanes that accept optional Kubernetes runtime images, set both
 `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and `OCC_TEST_KUBERNETES_AGENT_IMAGE` to
 immutable references, or omit both to build from source. Supplying only one fails
 preparation before state or resources are created.
+Preparation also selects the verified Gateway image in the host container engine
+for `OCC_DOCKER_RUNTIME_IMAGE`, used by the loopback Gateway relay. Kubernetes
+selectors use the separately verified references imported into the cluster.
 
 These process environment variables are optional. First Agent Smoke has its own
 [directories and slot settings](first-agent-smoke.md#local-isolation).

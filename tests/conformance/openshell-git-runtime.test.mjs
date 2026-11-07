@@ -3,6 +3,10 @@ import test, { afterEach } from "node:test";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
+import {
+  observeOpenShellGitPredecessor,
+  witnessOpenShellGitLaunch,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts";
 import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
 import {
   OpenShellGitRouteBlockedError,
@@ -28,6 +32,7 @@ import {
 } from "../helpers/openshell-git-runtime.ts";
 import {
   DependencyUnavailableError,
+  RepositoryExecutionRequiresRedeployError,
   SandboxGatewayUnavailableError,
 } from "../../packages/occ/src/errors.ts";
 import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
@@ -944,6 +949,126 @@ test("a restarted worker names why it cannot adopt a revision's Sandbox, once pe
   ]);
   assert.equal(f.calls.getSandbox, 1, "the retained failure is not re-observed");
   assert.equal(openShellGitRouteReadiness(f.runtime.route(f.revision.id)), "blocked");
+});
+
+test("cold held-launch verification requires typed redeployment before supplier or material effects", async (t) => {
+  const f = await reconciledFixture({ store: routeStore() });
+  const standingRegistry = validateGitHubRepositoryRegistry(
+    {
+      ...registry,
+      allowStandingApprovals: true,
+      repositories: registry.repositories.map((repository) => ({
+        ...repository,
+        namespaces: repository.namespaces.map((namespace) => ({
+          ...namespace,
+          allowStandingApproval: true,
+        })),
+      })),
+    },
+    registry.backendId,
+  );
+  const binding = resolveGitHubRepositoryBinding(standingRegistry, {
+    namespaceId: "namespace-a",
+    repositoryRef: "application",
+    profile: "git-write",
+  });
+  const credentials = {
+    ...f.revision.repositoryCredentials,
+    bindings: [binding],
+    standingApprovalId: "approval",
+  };
+  const revision = {
+    ...f.revision,
+    repositoryCredentials: credentials,
+    egressPlan: { ...f.revision.egressPlan, repositoryGit: credentials },
+  };
+  for (const fault of [
+    "none",
+    "missing observation",
+    "missing generation",
+    "missing owner",
+    "same owner",
+    "moved fence",
+    "invalid binding",
+    "wrong Agent",
+    "aborted",
+    "preview",
+  ]) {
+    await t.test(fault, async () => {
+      const runtime = new OpenShellGitRuntime(
+        f.runtime.configuration,
+        createGitHubRepositoryDeliveryResolver(standingRegistry),
+      );
+      const record = structuredClone(f.store.rows.get(revision.id));
+      const saved = {
+        route: record,
+        workerInstance: record.workerInstance,
+        retainedLaunchHash: "saved-launch",
+        executionFingerprint: "saved-execution",
+      };
+      if (fault === "missing observation") {
+        record.observed = undefined;
+      }
+      if (fault === "missing generation") {
+        record.generation = undefined;
+      }
+      if (fault === "missing owner") {
+        saved.workerInstance = "";
+      }
+      if (fault === "same owner") {
+        saved.workerInstance = runtime.instance;
+      }
+      if (fault === "invalid binding") {
+        record.bindingId = "invalid";
+      }
+      if (fault === "wrong Agent") {
+        record.agentId = "other-agent";
+      }
+      let reads = 0;
+      // Controlled durable reads feed the real verifier. No replacement of its decision,
+      // supplier access, authorization or material path is involved.
+      runtime.routes = {
+        ...f.store,
+        standing: async () => {
+          const result = structuredClone(saved);
+          reads += 1;
+          if (fault === "moved fence" && reads === 2) {
+            result.route.fence += 1;
+          }
+          return result;
+        },
+      };
+      runtime.owner = f.owner;
+      const before = { calls: structuredClone(f.calls), store: structuredClone(f.store.calls) };
+      let supplier = 0;
+      const signal = fault === "aborted" ? AbortSignal.abort() : AbortSignal.timeout(2_000);
+      const target =
+        fault === "preview"
+          ? { ...revision, executionAdmission: { ...revision.executionAdmission, version: 6 } }
+          : revision;
+      const verification = runtime.verifyExecution(target, signal, async () => {
+        supplier += 1;
+        throw new Error("supplier must not be accessed");
+      });
+      if (fault === "none") {
+        await assert.rejects(
+          verification,
+          (error) => error instanceof RepositoryExecutionRequiresRedeployError,
+        );
+      } else {
+        assert.equal(
+          await verification,
+          undefined,
+          "incomplete or moving ownership cannot establish redeployment",
+        );
+      }
+      assert.equal(supplier, 0);
+      assert.deepEqual(f.calls, before.calls);
+      assert.deepEqual(f.store.calls, before.store);
+      assert.equal(runtime.entries.size, 0);
+      await runtime.close();
+    });
+  }
 });
 
 test("a fresh Git route uses the execution ID admitted before gateway reads", async () => {
@@ -1963,6 +2088,7 @@ test("Git expiry observes the original model in the reduced stock installation, 
     const admitted = new Map();
     const violations = [];
     let expiry = false;
+    let aggregateExpiry = true;
     let state = "";
     let trace = [];
     // Each cleanup pass's own signal, so a fault can abort the pass it runs in.
@@ -2035,7 +2161,7 @@ test("Git expiry observes the original model in the reduced stock installation, 
       const removed = !box.spec.providers.includes(git);
       const isGit = provider === git;
       const absent = removed && isGit;
-      const oldExpired = !removed && isGit && expiry;
+      const oldExpired = !removed && expiry && (isGit || aggregateExpiry);
       const status = absent ? "REVOKED" : "READY";
       const epoch = box.spec.provider_attachment_epoch;
       const snapshot = {
@@ -2117,6 +2243,18 @@ test("Git expiry observes the original model in the reduced stock installation, 
           result.observed.providerEnvRevision = "7";
         }
       }
+      if (oldExpired && fault === "old observation close to evaluation") {
+        // The supplier interval is only 10 s and evaluation skew is 20 s, but local age
+        // is exactly 30 s. Neither the 15 s lease nor evaluation skew can replace this bound.
+        result.evaluatedTime = new Date(Date.now() - 20_000).toISOString();
+        result.observedTime = new Date(Date.now() - 30_000).toISOString();
+      }
+      if (oldExpired && pass && fault.startsWith("stale expired observation")) {
+        // Both timestamps use the gateway clock. Its allowed skew must not hide age.
+        const evaluated = Date.now() + (fault.endsWith("clock skew") ? 20_000 : 0);
+        result.observedTime = new Date(evaluated - 40_000).toISOString();
+        result.evaluatedTime = new Date(evaluated).toISOString();
+      }
       if (absent) {
         trace.push(receiptId ?? "OBSERVE");
         if (fault === "expired after detach") {
@@ -2134,6 +2272,13 @@ test("Git expiry observes the original model in the reduced stock installation, 
       if (removed && !isGit) {
         if (fault === "failed model") {
           result.state = "PROVIDER_READINESS_STATE_FAILED";
+        }
+        if (fault === "expired model") {
+          result.state = "PROVIDER_READINESS_STATE_WITHHELD";
+          result.reason = "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED";
+          result.observed.reason = result.reason;
+          result.observed.credentialsInstalled = false;
+          result.observed.launchEnvironmentInstalled = false;
         }
         if (fault === "other process") {
           result.observed.processInstanceId = "replacement";
@@ -2242,9 +2387,134 @@ test("Git expiry observes the original model in the reduced stock installation, 
     await f.reconcile();
     assert.ok(await f.lookup(), "Git works on witnessed installation");
     expiry = true;
+    if (fault === "success") {
+      const before = { ...f.calls, observedWith: [...f.calls.observedWith] };
+      assert.equal(
+        await witnessOpenShellGitLaunch(
+          client,
+          owner,
+          box,
+          entry.supervisor,
+          AbortSignal.timeout(5_000),
+          { kind: "predecessor" },
+        ),
+        store.rows.get(r.id).retainedLaunchHash,
+        "aggregate expiry identifies only the originally witnessed launch",
+      );
+      assert.equal(f.calls.rotate, before.rotate);
+      assert.equal(f.calls.material, before.material);
+      assert.equal(sends, 0);
+      assert.equal(detach, undefined);
+      const statusReader = client.getSandboxProviderStatus;
+      const sandboxReader = client.getSandbox;
+      const workloadReader = owner.workload;
+      for (const changed of ["missing", "elapsed", "replacement"]) {
+        const original = structuredClone(box);
+        const originalBefore = structuredClone(original);
+        let current = structuredClone(box);
+        const readOrder = [];
+        if (changed === "replacement") {
+          owner.workload = async (...args) => {
+            const workload = await workloadReader(...args);
+            readOrder.push("workload");
+            return workload;
+          };
+          client.getSandbox = async () => {
+            readOrder.push("current-sandbox");
+            return structuredClone(current);
+          };
+        }
+        // The model report is read after the Git predecessor. Its own lease and the
+        // final live instance still need proof before the launch hash can be returned.
+        client.getSandboxProviderStatus = async (...args) => {
+          const status = await statusReader(...args);
+          if (changed === "missing") {
+            return { ...status, state: "PROVIDER_READINESS_STATE_PENDING" };
+          }
+          if (changed === "replacement") {
+            readOrder.push("model-report");
+            // The supplier's fresh state changes; the original snapshot stays detached.
+            current = { ...current, mainProcessInstanceId: "replacement-during-model-read" };
+            return status;
+          }
+          status.observedTime = new Date(Date.parse(status.evaluatedTime) - 14_900).toISOString();
+          await delay(150);
+          return status;
+        };
+        try {
+          const witness = witnessOpenShellGitLaunch(
+            client,
+            owner,
+            original,
+            entry.supervisor,
+            AbortSignal.timeout(5_000),
+            { kind: "predecessor" },
+          );
+          if (changed === "replacement") {
+            await assert.rejects(witness, /cannot retain this execution after Git expiry/);
+            assert.deepEqual(readOrder, ["model-report", "workload", "current-sandbox"]);
+            assert.deepEqual(
+              original,
+              originalBefore,
+              "the supplied launch snapshot stays unchanged",
+            );
+            assert.equal(original.mainProcessInstanceId, entry.supervisor.networkInstanceId);
+            assert.notEqual(current.mainProcessInstanceId, original.mainProcessInstanceId);
+          } else {
+            assert.equal(await witness, undefined, changed);
+          }
+        } finally {
+          client.getSandboxProviderStatus = statusReader;
+          client.getSandbox = sandboxReader;
+          owner.workload = workloadReader;
+        }
+        assert.equal(f.calls.material, before.material);
+        assert.equal(f.calls.rotate, before.rotate);
+        assert.equal(detach, undefined);
+        assert.equal(sends, 0);
+      }
+      // The same expired environment cannot establish a new ready installation.
+      await assert.rejects(
+        witnessOpenShellGitLaunch(
+          client,
+          owner,
+          box,
+          entry.supervisor,
+          AbortSignal.timeout(5_000),
+          {
+            kind: "installation",
+          },
+        ),
+        /cannot retain this execution after Git expiry/,
+      );
+    }
+    if (fault === "success") {
+      // Expired Git alone does not invent model expiry. This helper witnesses the model
+      // and launch; the installation caller must separately verify current Git material.
+      aggregateExpiry = false;
+      assert.equal(
+        await witnessOpenShellGitLaunch(
+          client,
+          owner,
+          box,
+          entry.supervisor,
+          AbortSignal.timeout(5_000),
+          { kind: "installation" },
+        ),
+        store.rows.get(r.id).retainedLaunchHash,
+      );
+      aggregateExpiry = true;
+    }
     f.revision.repositoryCredentials.deadlineWallMs = Date.now() - 1;
     await f.reconcile();
     assert.equal(await f.lookup(), undefined, "Git denied at its own deadline before withdrawal");
+    if (fault.startsWith("stale expired observation")) {
+      pass = new AbortController();
+      await assert.rejects(
+        observeOpenShellGitPredecessor(client, entry.supervisor, pass.signal),
+        /cannot retain this execution after Git expiry/,
+      );
+    }
     const cleanup = (runtime, observer = owner) => {
       pass = new AbortController();
       return runtime.retireExpiredRepositoryAccess(
@@ -2296,9 +2566,14 @@ test("Git expiry observes the original model in the reduced stock installation, 
           "changed predecessor",
           "replaced live instance",
           "stopped live instance",
+          "old observation close to evaluation",
+          "stale expired observation",
+          "stale expired observation with clock skew",
         ].includes(fault)
       ) {
         assert.equal(sends, 0);
+        assert.equal(detach, undefined, "refusal must not create a detach intent");
+        assert.equal(f.calls.rotate, 1, "refusal must not install new material");
       }
       assert.ok(
         !expiries(f).some((event) => event.check === "record-reduced-generation"),
@@ -2308,6 +2583,10 @@ test("Git expiry observes the original model in the reduced stock installation, 
       return;
     }
     assert.equal(sends, fault === "version churn" || delayedWitness ? 0 : 1);
+    if (delayedWitness) {
+      assert.equal(detach, undefined, "elapsed evidence cannot create a detach intent");
+      assert.equal(f.calls.rotate, 1, "elapsed evidence cannot install new material");
+    }
     if (fault === "Sandbox moved after intent") {
       // Another change to the Sandbox lands before the next pass: the recorded request's
       // precondition can never hold again.
@@ -2392,8 +2671,16 @@ test("Git expiry observes the original model in the reduced stock installation, 
     ["unsupported stock", "retire-runtime"],
     ["other process", "retire-runtime"],
     ["failed model", "retire-runtime"],
+    ["expired model", "retire-runtime"],
+    ["old observation close to evaluation", "retire-runtime"],
+    ["stale expired observation", "retire-runtime"],
+    ["stale expired observation with clock skew", "retire-runtime"],
   ]) {
     await t.test(fault, (t) => {
+      if (fault === "old observation close to evaluation") {
+        const now = Date.now();
+        t.mock.method(Date, "now", () => now);
+      }
       if (fault === "fractional predecessor") {
         // Isolate wire timestamp precision from scheduling latency within its sub-ms lease.
         t.mock.method(process.hrtime, "bigint", () => 0n);

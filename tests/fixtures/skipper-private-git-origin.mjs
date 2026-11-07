@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
-import { createServer } from "node:https";
+import { createServer, get as httpsGet } from "node:https";
+import { checkServerIdentity } from "node:tls";
 import { isIP } from "node:net";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -23,6 +24,7 @@ export async function startSkipperPrivateGitOrigin({
   repositoryId = "73",
   teamReview = false,
   seedRefs = 0,
+  witnessIssuedGit = false,
 } = {}) {
   if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/.test(repository)) {
     throw new Error("repository must be owner/name");
@@ -51,6 +53,7 @@ export async function startSkipperPrivateGitOrigin({
       }
     }
   };
+  const issuedGit = witnessIssuedGit === true ? new Map() : undefined;
   let server;
   let closing;
   let heldDiscovery;
@@ -60,6 +63,7 @@ export async function startSkipperPrivateGitOrigin({
   let requests = 0;
   const close = () =>
     (closing ??= (async () => {
+      issuedGit?.clear();
       for (const socket of sockets) {
         socket.destroy();
       }
@@ -262,6 +266,9 @@ export async function startSkipperPrivateGitOrigin({
             reply(403);
             return;
           }
+          if (issuedGit && !closing) {
+            issuedGit.set(authority.tokenIndex(`Bearer ${issued.token}`), issued.token);
+          }
           reply(201, {
             token: issued.token,
             expires_at: new Date(issued.expires).toISOString(),
@@ -412,6 +419,7 @@ export async function startSkipperPrivateGitOrigin({
       server.listen(port, host, resolve);
     });
     const origin = `https://${isIP(advertisedHost) === 6 ? `[${advertisedHost}]` : advertisedHost}:${server.address().port}`;
+    const listener = server.address();
     const readRefs = async () =>
       Object.fromEntries(
         (await git(["-C", bare, "for-each-ref", "--format=%(refname) %(objectname)"])).stdout
@@ -454,6 +462,71 @@ export async function startSkipperPrivateGitOrigin({
         issued: authority.issuesOfTokens.length,
         tokens: authority.tokenState(),
       }),
+      gitAttemptIndices: () =>
+        authority.authenticationAttempts
+          .filter(
+            ({ boundary, tokenIndex }) => boundary === "git" && Number.isSafeInteger(tokenIndex),
+          )
+          .map(({ tokenIndex }) => tokenIndex),
+      async probeIssuedGit(index) {
+        if (!issuedGit) {
+          throw new Error("issued Git witness disabled");
+        }
+        if (closing || !server.listening) {
+          throw new Error("origin closed");
+        }
+        if (!Number.isSafeInteger(index) || !issuedGit.has(index)) {
+          throw new Error("unknown issued Git index");
+        }
+        // Connect only to this listener; its service DNS name resolves inside the test cluster.
+        const hostname =
+          listener.address === "0.0.0.0"
+            ? "127.0.0.1"
+            : listener.address === "::"
+              ? "::1"
+              : listener.address;
+        const response = await new Promise((resolve, reject) => {
+          httpsGet(
+            {
+              hostname,
+              port: listener.port,
+              path: gitPrefix + "/info/refs?service=git-upload-pack",
+              agent: false,
+              ca: tls.ca ?? tls.cert,
+              rejectUnauthorized: true,
+              servername: isIP(advertisedHost) ? "" : advertisedHost,
+              checkServerIdentity: (_host, cert) => checkServerIdentity(advertisedHost, cert),
+              signal: AbortSignal.timeout(5000),
+              auth: "x-access-token:" + issuedGit.get(index),
+              headers: { host: new URL(origin).host },
+            },
+            resolve,
+          ).once("error", reject);
+        });
+        const chunks = [];
+        let length = 0;
+        for await (const chunk of response) {
+          length += chunk.length;
+          assert.ok(length <= 1024 * 1024, "oversized fixture advertisement");
+          chunks.push(chunk);
+        }
+        if (response.statusCode === 401 || response.statusCode === 403) {
+          return response.statusCode;
+        }
+        assert.equal(response.statusCode, 200, "unexpected fixture discovery status");
+        assert.ok(
+          response.complete &&
+            response.headers["content-type"] === "application/x-git-upload-pack-advertisement",
+        );
+        // Positive controls check the actual ref against Git; do not implement a second Git parser.
+        assert.ok(
+          Buffer.concat(chunks)
+            .subarray(0, 34)
+            .equals(Buffer.from("001e# service=git-upload-pack\n0000")),
+          "missing upload-pack advertisement",
+        );
+        return 200;
+      },
       readRefs,
       observePullRequest,
       holdNextDiscovery() {

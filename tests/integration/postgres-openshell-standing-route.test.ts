@@ -351,14 +351,21 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
         undefined,
         "another approval generation is not this route",
       );
-      // Stock reports expiry across the shared environment, including the model. A cold
-      // worker cannot reconstruct its launch witness until that model is ready again.
+      // Expired aggregate evidence can identify the recorded predecessor, but a stop
+      // between reads or a different workload cannot establish that original identity.
       stopOnColdRead = true;
       await assert.rejects(probe(), /cannot retain this execution/);
       stopOnColdRead = false;
-      assert.equal(await probe(), undefined);
-      assert.equal(world.writes, 1, "refused cold verification sends no successor credential");
-      assert.equal(world.detaches.length, 0, "refused cold verification does not detach Git");
+      workload = "replacement-pods";
+      assert.equal(await probe(), undefined, "matching names do not make a replacement our launch");
+      workload = "original-pods-and-containers";
+      assert.deepEqual(
+        await probe(),
+        execution,
+        "fresh matching expired evidence identifies the original execution, not Git authority",
+      );
+      assert.equal(world.writes, 1, "identity verification sends no successor credential");
+      assert.equal(world.detaches.length, 0, "identity verification does not detach Git");
       assert.deepEqual(
         await routes.standing(revision),
         original,

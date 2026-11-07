@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 
@@ -12,6 +12,7 @@ import { verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createOpenShellGitInstallation } from "../helpers/openshell-git-installation.mjs";
+import { createFiniteGitConversation } from "../helpers/finite-git-conversation.ts";
 import { createOpenShellGitDenial } from "../helpers/openshell-git-denial.mjs";
 
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
@@ -59,6 +60,158 @@ async function observeUntil<T>(
   throw new Error(`Timed out waiting for ${label}`);
 }
 
+type GitInstallation = Awaited<ReturnType<typeof createOpenShellGitInstallation>>;
+
+async function deployFiniteAgent(t: TestContext, fixture: GitInstallation) {
+  const {
+    request,
+    namespace,
+    modelSource,
+    repositoryRef,
+    workspace,
+    gatewayClient,
+    checkpoint: evidence,
+  } = fixture;
+  const base = `/namespaces/${namespace.id}`;
+  const suffix = randomUUID();
+  const model = process.env.OCC_TEST_OPENAI_MODEL;
+  assert.ok(model, "Select the real CI model before provisioning the Agent");
+  const configuration = await request("POST", `${base}/configurations`, {
+    kind: "agent",
+    values: createHarnessConfiguration("codex", model),
+  });
+  const agent = await request("POST", `${base}/agents`, {
+    name: `git-retention-${suffix}`,
+    configurationId: configuration.id,
+    executionMode: "dedicated",
+    harnessAuth: { method: "credential_source", sourceId: modelSource.id },
+    credentialSources: [{ sourceId: modelSource.id }],
+    repositoryBindings: [{ repositoryRef, profile: "github-repository" }],
+  });
+  const path = `${base}/agents/${agent.id}`;
+  const role = await request("POST", `${base}/iam/roles`, {
+    name: `git-retention-model-${suffix}`,
+    permissions: [{ action: "operate", resourceKind: "credential_source" }],
+  });
+  await request("POST", `${base}/iam/access-bindings`, {
+    subjectKind: "identity",
+    subjectId: agent.servicePrincipalId,
+    roleId: role.id,
+    resourceKind: "credential_source",
+    resourceId: modelSource.id,
+  });
+  const transport = await request("POST", `${path}/runtime-credentials`, {});
+  assert.equal(transport.transportConfigured, true);
+
+  // The selected-repository profile grants finite access. Use its actual
+  // admission deadline; neither the application clock nor queue is patched.
+  const admissionStartedAt = Date.now();
+  const revision = await request("POST", `${path}/deploy`);
+  const admissionReturnedAt = Date.now();
+  assert.equal(revision.harness.id, "codex");
+  assert.equal(revision.harnessAuth.method, "credential_source");
+  assert.equal(revision.harnessAuth.sourceId, modelSource.id);
+  const deadlineWallMs = revision.repositoryCredentials?.deadlineWallMs;
+  assert.ok(Number.isSafeInteger(deadlineWallMs));
+  assert.ok(deadlineWallMs >= admissionStartedAt + 600_000);
+  assert.ok(deadlineWallMs <= admissionReturnedAt + 600_000);
+  await evidence("finite-git-grant", { revisionId: revision.id, deadlineWallMs });
+  await observeUntil(
+    "real Agent startup",
+    t.signal,
+    async () => {
+      const [current, deployment] = await Promise.all([
+        request("GET", path),
+        request("GET", `${path}/deployments/${revision.id}`),
+      ]);
+      assert.notEqual(deployment.status, "failed", "the original deployment failed");
+      return current.activeRevisionId === revision.id && deployment.status === "succeeded"
+        ? current
+        : undefined;
+    },
+    10 * 60_000,
+  );
+
+  const selector = `openclaw.dev/agent=${agent.id},openclaw.dev/revision=${revision.id},openclaw.dev/workload-role=agent`;
+  const readExecution = async () => {
+    const current = await request("GET", path);
+    assert.equal(current.activeRevisionId, revision.id, "Agent revision changed");
+    const pods = JSON.parse(
+      await fixture.kube(["get", "pods", "-A", "-l", selector, "-o", "json"]),
+    ) as { items: RuntimePod[] };
+    assert.equal(pods.items.length, 1, "expected the single original Harness Pod");
+    const pod = pods.items[0];
+    assert.ok(pod);
+    assert.ok(
+      pod.status.conditions.some(({ type, status }) => type === "Ready" && status === "True"),
+      "the original Harness Pod must remain ready",
+    );
+    const owner = pod.metadata.ownerReferences.find(({ kind }) => kind === "Sandbox");
+    assert.ok(owner?.name && owner.uid, "the stock supplier must own the Harness Pod");
+    const resource = JSON.parse(
+      await fixture.kube([
+        "get",
+        "sandboxes.agents.x-k8s.io",
+        owner.name,
+        "-n",
+        pod.metadata.namespace,
+        "-o",
+        "json",
+      ]),
+    );
+    assert.equal(resource.metadata.uid, owner.uid);
+    const sandbox = await gatewayClient.getSandbox({ workspace, name: owner.name }, t.signal);
+    assert.ok(sandbox?.id && sandbox.mainProcessInstanceId);
+    assert.equal(sandbox.annotations["openclaw.dev/revision-id"], revision.id);
+    const containers = pod.status.containerStatuses.map((container) => {
+      assert.ok(container.containerID && container.imageID && container.state.running?.startedAt);
+      assert.match(container.imageID, /sha256:[a-f0-9]{64}/);
+      return {
+        name: container.name,
+        id: container.containerID,
+        imageId: container.imageID,
+        startedAt: container.state.running.startedAt,
+        restartCount: container.restartCount,
+      };
+    });
+    return {
+      sandbox,
+      identity: {
+        revisionId: current.activeRevisionId,
+        sandboxId: sandbox.id,
+        sandboxName: sandbox.name,
+        sandboxUid: owner.uid,
+        podUid: pod.metadata.uid,
+        containers,
+        mainProcessInstanceId: sandbox.mainProcessInstanceId,
+        mainProcessStartedAt: sandbox.mainProcessStartedAt,
+      },
+    };
+  };
+  const original = await readExecution();
+  await evidence("initial-runtime", original.identity);
+  const target = {
+    sandboxName: original.sandbox.name,
+    sandboxId: original.sandbox.id,
+  };
+  const supervisor = await fixture.verifySupervisorImage(target);
+  assert.equal(supervisor.workloadPodUid, original.identity.podUid);
+  assert.equal(supervisor.sandboxId, original.identity.sandboxId);
+  await evidence("installed-supervisor", supervisor);
+  return {
+    agent,
+    revision,
+    configuration,
+    path,
+    suffix,
+    deadlineWallMs,
+    readExecution,
+    original,
+    target,
+    supervisor,
+  };
+}
+
 test(
   "OpenShell retains its runtime after Git expiry and worker restart",
   { skip: !selected, timeout: 45 * 60_000 },
@@ -67,141 +220,15 @@ test(
     // The only controlled upstream is a private Git server and its App token issuer.
     const fixture = await createOpenShellGitInstallation(t);
     const {
-      request,
       namespace,
       modelSource,
-      repositoryRef,
       origin,
       gatewayClient,
       workspace,
       checkpoint: evidence,
     } = fixture;
-    const base = `/namespaces/${namespace.id}`;
-    const suffix = randomUUID();
-    const model = process.env.OCC_TEST_OPENAI_MODEL;
-    assert.ok(model, "Select the real CI model before provisioning the Agent");
-    const configuration = await request("POST", `${base}/configurations`, {
-      kind: "agent",
-      values: createHarnessConfiguration("codex", model),
-    });
-    const agent = await request("POST", `${base}/agents`, {
-      name: `git-retention-${suffix}`,
-      configurationId: configuration.id,
-      executionMode: "dedicated",
-      harnessAuth: { method: "credential_source", sourceId: modelSource.id },
-      credentialSources: [{ sourceId: modelSource.id }],
-      repositoryBindings: [{ repositoryRef, profile: "github-repository" }],
-    });
-    const path = `${base}/agents/${agent.id}`;
-    const role = await request("POST", `${base}/iam/roles`, {
-      name: `git-retention-model-${suffix}`,
-      permissions: [{ action: "operate", resourceKind: "credential_source" }],
-    });
-    await request("POST", `${base}/iam/access-bindings`, {
-      subjectKind: "identity",
-      subjectId: agent.servicePrincipalId,
-      roleId: role.id,
-      resourceKind: "credential_source",
-      resourceId: modelSource.id,
-    });
-    const transport = await request("POST", `${path}/runtime-credentials`, {});
-    assert.equal(transport.transportConfigured, true);
-
-    // The selected-repository profile grants finite access. Use its actual
-    // admission deadline; neither the application clock nor queue is patched.
-    const admissionStartedAt = Date.now();
-    const revision = await request("POST", `${path}/deploy`);
-    const admissionReturnedAt = Date.now();
-    assert.equal(revision.harness.id, "codex");
-    assert.equal(revision.harnessAuth.method, "credential_source");
-    assert.equal(revision.harnessAuth.sourceId, modelSource.id);
-    const deadlineWallMs = revision.repositoryCredentials?.deadlineWallMs;
-    assert.ok(Number.isSafeInteger(deadlineWallMs));
-    assert.ok(deadlineWallMs >= admissionStartedAt + 600_000);
-    assert.ok(deadlineWallMs <= admissionReturnedAt + 600_000);
-    await evidence("finite-git-grant", { revisionId: revision.id, deadlineWallMs });
-    await observeUntil(
-      "real Agent startup",
-      t.signal,
-      async () => {
-        const [current, deployment] = await Promise.all([
-          request("GET", path),
-          request("GET", `${path}/deployments/${revision.id}`),
-        ]);
-        assert.notEqual(deployment.status, "failed", "the original deployment failed");
-        return current.activeRevisionId === revision.id && deployment.status === "succeeded"
-          ? current
-          : undefined;
-      },
-      10 * 60_000,
-    );
-
-    const selector = `openclaw.dev/agent=${agent.id},openclaw.dev/revision=${revision.id},openclaw.dev/workload-role=agent`;
-    const readExecution = async () => {
-      const current = await request("GET", path);
-      assert.equal(current.activeRevisionId, revision.id, "expiry replaced the revision");
-      const pods = JSON.parse(
-        await fixture.kube(["get", "pods", "-A", "-l", selector, "-o", "json"]),
-      ) as { items: RuntimePod[] };
-      assert.equal(pods.items.length, 1, "expected the single original Harness Pod");
-      const pod = pods.items[0];
-      assert.ok(pod);
-      assert.ok(
-        pod.status.conditions.some(({ type, status }) => type === "Ready" && status === "True"),
-        "the original Harness Pod must remain ready",
-      );
-      const owner = pod.metadata.ownerReferences.find(({ kind }) => kind === "Sandbox");
-      assert.ok(owner?.name && owner.uid, "the stock supplier must own the Harness Pod");
-      const resource = JSON.parse(
-        await fixture.kube([
-          "get",
-          "sandboxes.agents.x-k8s.io",
-          owner.name,
-          "-n",
-          pod.metadata.namespace,
-          "-o",
-          "json",
-        ]),
-      );
-      assert.equal(resource.metadata.uid, owner.uid);
-      const sandbox = await gatewayClient.getSandbox({ workspace, name: owner.name }, t.signal);
-      assert.ok(sandbox?.id && sandbox.mainProcessInstanceId);
-      assert.equal(sandbox.annotations["openclaw.dev/revision-id"], revision.id);
-      const containers = pod.status.containerStatuses.map((container) => {
-        assert.ok(container.containerID && container.imageID && container.state.running?.startedAt);
-        assert.match(container.imageID, /sha256:[a-f0-9]{64}/);
-        return {
-          name: container.name,
-          id: container.containerID,
-          imageId: container.imageID,
-          startedAt: container.state.running.startedAt,
-          restartCount: container.restartCount,
-        };
-      });
-      return {
-        sandbox,
-        identity: {
-          revisionId: current.activeRevisionId,
-          sandboxId: sandbox.id,
-          sandboxName: sandbox.name,
-          sandboxUid: owner.uid,
-          podUid: pod.metadata.uid,
-          containers,
-          mainProcessInstanceId: sandbox.mainProcessInstanceId,
-          mainProcessStartedAt: sandbox.mainProcessStartedAt,
-        },
-      };
-    };
-    const original = await readExecution();
-    await evidence("initial-runtime", original.identity);
-    const target = {
-      sandboxName: original.sandbox.name,
-      sandboxId: original.sandbox.id,
-    };
-    const supervisor = await fixture.verifySupervisorImage(target);
-    assert.equal(supervisor.workloadPodUid, original.identity.podUid);
-    assert.equal(supervisor.sandboxId, original.identity.sandboxId);
-    await evidence("installed-supervisor", supervisor);
+    const { agent, revision, suffix, deadlineWallMs, readExecution, original, target, supervisor } =
+      await deployFiniteAgent(t, fixture);
     const modelKubectl = async (...args: (string | { input?: string; timeout?: number })[]) => {
       const options = args.pop();
       assert.ok(options && typeof options === "object");
@@ -448,5 +475,233 @@ test(
     );
     await evidence("worker-restarted", restart);
     await verifyRetainedExecution("after-worker-restart");
+  },
+);
+
+test(
+  "OpenShell denies a removed repository binding while another Agent can still read",
+  { skip: !selected, timeout: 45 * 60_000 },
+  async (t) => {
+    let phase = "setup";
+    const phases = {
+      live: {
+        witness: "live witness",
+        denied: "live denied Git",
+        signed: "live signed decision",
+        origin: "live origin checks",
+        positive: "live B positive",
+      },
+      replacement: {
+        witness: "replacement witness",
+        denied: "replacement denied Git",
+        signed: "replacement signed decision",
+        origin: "replacement origin checks",
+        positive: "replacement B positive",
+      },
+    } as const;
+    try {
+      const finite = new AbortController();
+      const context = {
+        signal: AbortSignal.any([t.signal, finite.signal]),
+        after: t.after.bind(t),
+        diagnostic: t.diagnostic.bind(t),
+      } as TestContext;
+      const fixture = await createOpenShellGitInstallation(context, { witnessIssuedGit: true });
+      const { origin, workspace, gatewayClient } = fixture;
+      // The finite clock starts at deploy. Neither Agent borrows the other's admission.
+      const agents = await Promise.allSettled([
+        deployFiniteAgent(context, fixture),
+        deployFiniteAgent(context, fixture),
+      ] as const);
+      const [a, b] = agents.map((result) => {
+        if (result.status === "rejected") {
+          throw result.reason;
+        }
+        return result.value;
+      });
+      assert.ok(a && b);
+      assert.notEqual(a.agent.id, b.agent.id);
+      assert.notEqual(a.target.sandboxId, b.target.sandboxId);
+      const deadline = Math.min(a.deadlineWallMs, b.deadlineWallMs);
+      const remaining = () => {
+        assert.ok(Date.now() < deadline, "expiry would invalidate explicit-withdrawal evidence");
+        return Math.max(1, deadline - Date.now());
+      };
+      const timer = setTimeout(() => finite.abort(), remaining());
+      t.after(() => clearTimeout(timer));
+      const finiteSignal = context.signal;
+      const conversation = createFiniteGitConversation({
+        kube: fixture.kube,
+        agent: {
+          id: a.agent.id,
+          namespaceId: fixture.namespace.id,
+          revision: { id: a.revision.id },
+        },
+        signal: t.signal,
+        readExecution: a.readExecution,
+        originalIdentity: a.original.identity,
+      });
+      const execute = createManagedWorkloadExec(
+        { signal: finiteSignal, after: t.after.bind(t) },
+        {
+          backend: fixture.gatewayBackend,
+          workspace,
+          gatewayClient,
+          checkpoint: fixture.checkpoint,
+        },
+      );
+      assert.match(origin.repository, /^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/);
+      const git =
+        "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 git -c protocol.version=2 ls-remote --exit-code --refs https://github.com/" +
+        origin.repository +
+        ".git refs/heads/main";
+      const read = async (actor: typeof a) => {
+        remaining();
+        const before = origin.snapshot();
+        const priorAttempts = origin.gitAttemptIndices().length;
+        const outcome = await execute(actor.target, ["sh", "-ceu", git]);
+        assert.equal(
+          outcome.stdout.toString("utf8").trim() === origin.initialSha + "\trefs/heads/main",
+          true,
+          "authorized Git must return the expected ref",
+        );
+        const after = origin.snapshot();
+        const used = [...new Set<number>(origin.gitAttemptIndices().slice(priorAttempts))];
+        assert.ok(
+          used.length === 1 && used[0] !== undefined,
+          "one Git credential for this successful read",
+        );
+        assert.ok(
+          after.endpoints["upload-advertise:200"] > (before.endpoints["upload-advertise:200"] ?? 0),
+        );
+        return used[0];
+      };
+      const indexA = await read(a);
+      const indexB = await read(b);
+      assert.notEqual(indexA, indexB, "two Agents must use distinct credentials");
+      const inTime = () => {
+        remaining();
+      };
+      phase = "before chat";
+      let previousReply = await conversation.turn(undefined, remaining());
+      phase = "withdrawal";
+      inTime();
+      await fixture.request("PATCH", a.path, {
+        configurationId: a.configuration.id,
+        repositoryBindings: [],
+      });
+      const saved = await fixture.request("GET", a.path);
+      assert.equal(saved.repositoryBindings, undefined);
+      assert.equal(saved.activeRevisionId, a.revision.id);
+      const identity = { sandboxId: a.target.sandboxId, revisionId: a.revision.id };
+      const verify = async (mode: "live" | "replacement", expectedWorker?: string) => {
+        const step = phases[mode];
+        phase = step.witness;
+        inTime();
+        assert.ok(remaining() > 5_000, "insufficient time for the bounded origin witness");
+        assert.equal(
+          await origin.probeIssuedGit(indexA),
+          200,
+          "A's original credential must still allow discovery",
+        );
+        inTime();
+        phase = step.signed;
+        const previous = await fixture.gitWithdrawalDenials(identity, mode === "replacement");
+        if (expectedWorker !== undefined) {
+          assert.equal(
+            previous.workerUid === expectedWorker,
+            true,
+            "replacement denial must use the named Worker",
+          );
+        }
+        phase = step.origin;
+        const before = origin.snapshot();
+        phase = step.denied;
+        // Keep the Git error inside the workload. Ordinary transport failures do not qualify.
+        await execute(a.target, [
+          "sh",
+          "-ceu",
+          "if error=$(" +
+            git +
+            ' 2>&1); then exit 1; fi; case "$error" in *"returned error: 403"*|*"response 403"*) ;; *) exit 2 ;; esac',
+        ]);
+        phase = step.signed;
+        const observation = await observeUntil(
+          "withdrawal decision for original Sandbox and revision",
+          finiteSignal,
+          async () => {
+            const next = await fixture.gitWithdrawalDenials(identity, mode === "replacement");
+            assert.equal(
+              next.workerUid,
+              previous.workerUid,
+              "Worker changed inside the denial interval",
+            );
+            const fresh = next.requestIds.filter((id: string) => !previous.requestIds.includes(id));
+            return fresh.length ? fresh : undefined;
+          },
+          Math.min(10_000, remaining()),
+        );
+        assert.equal(new Set(observation).size, 1, "ambiguous signed Git denial interval");
+        phase = step.origin;
+        const after = origin.snapshot();
+        // Retirement has its own endpoint. No fresh Git request (including a denied GET),
+        // unexpected API request, or new issuance may be hidden by the probes.
+        const countsWithoutRetirement = (snapshot: typeof before) =>
+          Object.entries(snapshot.endpoints).filter(([name]) => !name.startsWith("revoke:"));
+        assert.deepEqual(countsWithoutRetirement(after), countsWithoutRetirement(before));
+        const revocations = (snapshot: typeof before) =>
+          Object.entries(snapshot.endpoints).reduce(
+            (sum, [key, n]) => sum + (key.startsWith("revoke:") ? Number(n) : 0),
+            0,
+          );
+        assert.equal(
+          after.requests - before.requests,
+          revocations(after) - revocations(before),
+          "unexpected origin request during withdrawal",
+        );
+        assert.equal(after.issued, before.issued);
+        phase = step.witness;
+        assert.ok(remaining() > 5_000, "insufficient time for the bounded origin witness");
+        assert.equal(
+          await origin.probeIssuedGit(indexA),
+          200,
+          "the original credential must remain valid after refusal",
+        );
+        phase = step.positive;
+        assert.equal(
+          await read(b),
+          indexB,
+          "the second Agent must retain its authorized Git credential",
+        );
+        assert.deepEqual((await a.readExecution()).identity, a.original.identity);
+        assert.deepEqual((await b.readExecution()).identity, b.original.identity);
+        inTime();
+      };
+      await verify("live");
+      phase = "after chat";
+      previousReply = await conversation.turn(previousReply, remaining());
+      phase = "restart";
+      const restart = await fixture.restartWorker({
+        agentId: a.agent.id,
+        revisionId: a.revision.id,
+      });
+      inTime();
+      assert.ok(
+        typeof restart.afterUid === "string" &&
+          restart.afterUid.length > 0 &&
+          restart.afterUid !== restart.beforeUid,
+        "the replacement must name a new Worker",
+      );
+      await verify("replacement", restart.afterUid);
+      phase = "replacement chat";
+      previousReply = await conversation.turn(previousReply, remaining());
+      // This extra control follows both finite Git observations and does not spend their budget.
+      clearTimeout(timer);
+      phase = "alternate-key mismatch";
+      await conversation.rejectSubstitution(previousReply, 180_000);
+    } catch {
+      // Command failures can contain private argv, HTTP data, or workload output.
+      throw new Error(`Finite Git withdrawal verification failed (${phase}).`);
+    }
   },
 );

@@ -368,26 +368,23 @@ test(
       "the real worker must recover explicit namespace selection from PostgreSQL",
     );
 
-    async function grantSecretOperate(namespaceId, servicePrincipalId, secretId, label) {
-      const role = await request("POST", `/namespaces/${namespaceId}/iam/roles`, {
-        name: `${label} Secret operate ${randomUUID()}`,
-        permissions: [{ action: "operate", resourceKind: "secret" }],
-      });
-      assert.equal(role.status, 201, JSON.stringify(role.error));
-      const binding = await request("POST", `/namespaces/${namespaceId}/iam/access-bindings`, {
-        subjectKind: "identity",
-        subjectId: servicePrincipalId,
-        roleId: role.data.id,
-        resourceKind: "secret",
-        resourceId: secretId,
-      });
-      assert.equal(binding.status, 201, JSON.stringify(binding.error));
-      return { role: role.data, binding: binding.data };
-    }
-
-    async function assertDeployDenied(namespaceId, agentId, label) {
-      const denied = await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/deploy`);
-      assert.equal(denied.status, 403, `${label}: ${JSON.stringify(denied.error)}`);
+    // The caller can operate each Agent's Secrets, so its deploy gives the Agent's
+    // ServicePrincipal operate on exactly those Secrets (RFC-0026). A deploy by a caller who
+    // cannot operate a source writes no grant and is refused; postgres-default-users.test.ts
+    // covers it.
+    async function assertDeployGrants(namespaceId, agent) {
+      const bindings = await request("GET", `/namespaces/${namespaceId}/iam/access-bindings`);
+      assert.equal(bindings.status, 200, JSON.stringify(bindings.error));
+      for (const secretId of [agent.modelSecretId, agent.boundSecretId].filter(Boolean)) {
+        const grant = bindings.data.find(
+          ({ id }) => id === `binding_${agent.id}_${secretId}_operate`,
+        );
+        assert.deepEqual(
+          grant && [grant.subjectId, grant.resourceKind, grant.resourceId],
+          [agent.servicePrincipalId, "secret", secretId],
+          `${agent.id}: deploy grants its Agent operate on Secret ${secretId}`,
+        );
+      }
     }
 
     const initialWorkspaceFilesByAgent = new Map();
@@ -514,8 +511,6 @@ test(
           false,
         );
       }
-      await assertDeployDenied(namespaceId, created.data.id, `${label} before model Secret grant`);
-      await grantSecretOperate(namespaceId, created.data.servicePrincipalId, secret.data.id, label);
       if (boundSecret !== undefined) {
         // Configuration save refuses channel credentials without Secret bindings, naming the
         // setting and the binding, before any deployment (finding 2319).
@@ -551,20 +546,10 @@ test(
           },
         );
         assert.equal(updated.status, 200, JSON.stringify(updated.error));
-        await assertDeployDenied(
-          namespaceId,
-          created.data.id,
-          `${label} before bound Secret grant`,
-        );
-        await grantSecretOperate(
-          namespaceId,
-          created.data.servicePrincipalId,
-          boundSecret.data.id,
-          `${label} bound`,
-        );
       }
       return {
         ...created.data,
+        modelSecretId: secret.data.id,
         ...(boundSecret === undefined
           ? {}
           : { boundSecretId: boundSecret.data.id, boundSecretValue }),
@@ -649,6 +634,16 @@ test(
       deploy(namespaceIds[2], adoptedTenant.id),
       deploy(namespaceIds[0], boundSecretAgent.id),
     ]);
+    for (const [namespaceId, agent] of [
+      [namespaceIds[0], first],
+      [namespaceIds[0], second],
+      [namespaceIds[1], separateTenant],
+      [namespaceIds[1], embeddedDelete],
+      [namespaceIds[2], adoptedTenant],
+      [namespaceIds[0], boundSecretAgent],
+    ]) {
+      await assertDeployGrants(namespaceId, agent);
+    }
     if (runtimeImage !== undefined) {
       const afterDeploy = await request(
         "GET",

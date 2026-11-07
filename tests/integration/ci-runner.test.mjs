@@ -226,6 +226,8 @@ test("run resolves lane documents relative to the manifest and preserves ordered
       "OCC_PROBE_BROKER_IMAGE",
       "OCC_PROBE_OLD_CONTROLLER_IMAGE",
       "OCC_PROBE_OLD_BROKER_IMAGE",
+      "OCC_TEST_RELEASED_CONTROLLER_IMAGE",
+      "OCC_TEST_CANDIDATE_CONTROLLER_IMAGE",
     ],
     files: [
       {
@@ -265,6 +267,8 @@ test("run resolves lane documents relative to the manifest and preserves ordered
       OCC_PROBE_BROKER_IMAGE: `private.example/current-broker@sha256:${"c".repeat(64)}`,
       OCC_PROBE_OLD_CONTROLLER_IMAGE: `private.example/old-controller@sha256:${"d".repeat(64)}`,
       OCC_PROBE_OLD_BROKER_IMAGE: `private.example/old-broker@sha256:${"e".repeat(64)}`,
+      OCC_TEST_RELEASED_CONTROLLER_IMAGE: `private.example/released-controller@sha256:${"f".repeat(64)}`,
+      OCC_TEST_CANDIDATE_CONTROLLER_IMAGE: `private.example/candidate-controller@sha256:${"1".repeat(64)}`,
     },
   );
 
@@ -291,6 +295,8 @@ test("run resolves lane documents relative to the manifest and preserves ordered
     pairBroker: `sha256:${"c".repeat(64)}`,
     pairOldController: `sha256:${"d".repeat(64)}`,
     pairOldBroker: `sha256:${"e".repeat(64)}`,
+    releasedController: `sha256:${"f".repeat(64)}`,
+    candidateController: `sha256:${"1".repeat(64)}`,
   };
   assert.deepEqual(summary.files[0].imageDigests, {
     controller: `sha256:${"a".repeat(64)}`,
@@ -789,7 +795,7 @@ test("run records failed, skipped, todo, and passed dispositions separately", as
   );
 });
 
-test("run clears inherited selectors and keep flags while preserving explicit lane inputs", async (t) => {
+test("run clears inherited selectors and keep flags while preserving explicit lane and file inputs", async (t) => {
   const root = await fixture(t);
 
   await writeFile(
@@ -802,6 +808,8 @@ test("run clears inherited selectors and keep flags while preserving explicit la
       '  assert.equal(process.env.OCC_TEST_LANE_SELECTOR, "lane");',
       '  assert.equal(process.env.OCC_TEST_OPTIONAL_SELECTOR, "selected");',
       '  assert.equal(process.env.OCC_TEST_OPTIONAL_EMPTY, "");',
+      '  assert.equal(process.env.OCC_TEST_FILE_SELECTOR, "file");',
+      "  assert.equal(process.env.OCC_TEST_FILE_ABSENT, undefined);",
       "  assert.equal(process.env.OCC_TEST_OPTIONAL_ABSENT, undefined);",
       "  assert.equal(process.env.OCC_TEST_LEAKED_SELECTOR, undefined);",
       '  assert.equal(process.env.OCC_PROBE_REQUIRED_SELECTOR, "required");',
@@ -826,13 +834,32 @@ test("run clears inherited selectors and keep flags while preserving explicit la
           "OCC_TEST_OPTIONAL_ABSENT",
           "OCC_TEST_LANE_SELECTOR",
         ],
-        files: [{ path: "tests/integration/env-isolation.test.mjs" }],
+        files: [
+          {
+            path: "tests/integration/env-isolation.test.mjs",
+            optionalEnv: ["OCC_TEST_FILE_SELECTOR", "OCC_TEST_FILE_ABSENT"],
+          },
+          { path: "tests/integration/env-sibling.test.mjs" },
+        ],
       },
     },
     groups: {
       ci: ["isolated"],
     },
   });
+
+  await writeFile(
+    join(root, "tests/integration/env-sibling.test.mjs"),
+    [
+      'import assert from "node:assert/strict";',
+      'import test from "node:test";',
+      'test("file selectors do not leak into siblings", () => {',
+      "  assert.equal(process.env.OCC_TEST_FILE_SELECTOR, undefined);",
+      '  assert.equal(process.env.OCC_TEST_OPTIONAL_SELECTOR, "selected");',
+      "});",
+      "",
+    ].join("\n"),
+  );
 
   const result = run(
     root,
@@ -854,6 +881,7 @@ test("run clears inherited selectors and keep flags while preserving explicit la
       OCC_TEST_LEAKED_SELECTOR: "1",
       OCC_TEST_REQUIRED_SELECTOR: "required",
       OCC_TEST_OPTIONAL_SELECTOR: "selected",
+      OCC_TEST_FILE_SELECTOR: "file",
       OCC_TEST_OPTIONAL_EMPTY: "",
       OCC_TEST_LANE_SELECTOR: "inherited",
       OCC_PROBE_LEAKED_SELECTOR: "1",
@@ -1335,6 +1363,31 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   // This marker is deliberately absent from the redactor's environment secrets.
   // The native projector and reporter must remove it themselves.
   const nativePrivate = "private-native-observation-marker";
+  const nativeHistory = nativeWorkerHistoryEvidence({
+    runId: "selected",
+    toolPrefix: "proof ",
+    marker: nativePrivate,
+    command: nativePrivate,
+    messages: [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", name: "exec", arguments: { code: nativePrivate } }],
+        __openclaw: { runId: "selected" },
+      },
+      {
+        role: "toolResult",
+        toolName: "exec",
+        isError: false,
+        content: JSON.stringify({ value: { aggregated: nativePrivate, exitCode: 0 } }),
+        __openclaw: { runId: "selected" },
+      },
+    ],
+  }).observation;
+  assert.equal(nativeHistory.historyExecCodeStringCount, 1);
+  assert.equal(nativeHistory.historyExecCommandStringCount, 0);
+  assert.equal(nativeHistory.historyExecNestedExitZeroCount, 1);
+  assert.equal(nativeHistory.historyToolProofPresent, false);
+  assert.equal(nativeHistory.historyFinalProofPresent, false);
   const nativeWorker = nativeWorkerPlacementObservation({
     placement: {
       state: "failed",
@@ -2016,6 +2069,14 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
           },
         },
         {
+          name: "retains value-free native history observations through CI",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "model-history",
+            worker: { ...nativeHistory, transcript: nativePrivate },
+          },
+        },
+        {
           name: "rejects hostile native worker diagnostic fields",
           diagnostic: {
             kind: "native-first-agent-proof",
@@ -2034,6 +2095,7 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
               assistantError: nativePrivate,
               execError: nativePrivate,
               execResultCount: 4097,
+              ...Object.fromEntries(Object.keys(nativeHistory).map((key) => [key, nativePrivate])),
             },
           },
         },
@@ -2355,6 +2417,12 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   });
   assert.deepEqual(
     summary.files[0].tests.find(
+      (entry) => entry.name === "retains value-free native history observations through CI",
+    ).error.diagnostic.worker,
+    nativeHistory,
+  );
+  assert.deepEqual(
+    summary.files[0].tests.find(
       (entry) => entry.name === "rejects hostile native worker diagnostic fields",
     ).error.diagnostic.worker,
     {
@@ -2365,6 +2433,7 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
       turnError: "other",
       assistantError: "other",
       execError: "other",
+      historyExecErrorFlag: "other",
     },
   );
   for (const [, category] of turnCases) {
@@ -3200,7 +3269,56 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     elapsedMs: 1_234,
   };
   const failedStage = { ...failedPhase, kind: "openshell-stage" };
-  const phaseDiagnostics = [failedPhase, failedStage].map(
+  const failedCheck = {
+    kind: "openshell-network-policy-check",
+    check: "provider-denial-observed",
+  };
+  const teardown = { kind: "openshell-fixture-teardown", outcome: "failed" };
+  const nativeBodyCheck = {
+    kind: "openshell-native-policy-check",
+    stage: "native-policy-scopes",
+    primaryCheck: "read.unauthenticated-code-16",
+    cleanupCheck: null,
+  };
+  const nativeCleanupCheck = {
+    ...nativeBodyCheck,
+    primaryCheck: null,
+    cleanupCheck: "cleanup.restore-auth.helm-upgrade",
+  };
+  const nativeBothChecks = { ...nativeBodyCheck, cleanupCheck: nativeCleanupCheck.cleanupCheck };
+  const gatewayStatus = {
+    kind: "openshell-gateway-turn-failure",
+    checkpoint: "http-status",
+    turn: 1,
+    status: 503,
+  };
+  const gatewayRequest = { ...gatewayStatus, checkpoint: "turn-request", turn: 2, status: null };
+  const gatewayNative = { ...gatewayStatus, checkpoint: "native-evidence", turn: 0, status: null };
+  const gatewayUnknownStatus = { ...gatewayStatus, status: null };
+  const phaseDiagnostics = [
+    failedPhase,
+    failedStage,
+    failedCheck,
+    { ...failedCheck, check: "fixture-opaque-phase-detail\nunknown check" },
+    { ...teardown, outcome: "fixture-opaque-phase-detail" },
+    nativeBodyCheck,
+    nativeCleanupCheck,
+    nativeBothChecks,
+    { ...nativeBodyCheck, primaryCheck: "fixture-opaque-phase-detail" },
+    { ...nativeBodyCheck, cleanupCheck: "fixture-opaque-phase-detail" },
+    { ...nativeBodyCheck, stage: "fixture-opaque-phase-detail" },
+    { ...nativeBodyCheck, primaryCheck: null },
+    gatewayStatus,
+    gatewayRequest,
+    gatewayNative,
+    gatewayUnknownStatus,
+    { ...gatewayStatus, checkpoint: "fixture-opaque-phase-detail" },
+    { ...gatewayStatus, turn: 3 },
+    { ...gatewayStatus, turn: "1" },
+    { ...gatewayStatus, status: 999 },
+    { ...gatewayRequest, status: 200 },
+    { ...gatewayNative, turn: 1 },
+  ].map(
     (measurement) =>
       `openclaw-ci-measurement ${JSON.stringify({ ...measurement, detail: "fixture-opaque-phase-detail" })}`,
   );
@@ -3210,7 +3328,17 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       'import assert from "node:assert/strict";',
       'import test from "node:test";',
       'test("passes", () => {});',
+      'import { writeFileSync } from "node:fs";',
+      "import { boundedTeardown } from " +
+        JSON.stringify(new URL("../helpers/kubernetes-real.mjs", import.meta.url).href) +
+        ";",
       'test("long failure", (t) => {',
+      "  const { context } = boundedTeardown(t, {",
+      "    log() {},",
+      '    onOutcome(outcome) { t.diagnostic("openclaw-ci-measurement " + JSON.stringify({ kind: "openshell-fixture-teardown", outcome })); },',
+      "  });",
+      '  context.after(() => writeFileSync("teardown-completed", "yes"));',
+      '  context.after(() => { throw new Error("fixture cleanup failed"); });',
       '  console.log("progress before the failure");',
       "  console.error(`credential ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);",
       '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
@@ -3254,7 +3382,20 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert.equal(result.status, 1);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
   assert.equal(summary.files[0].status, "failed");
-  assert.deepEqual(summary.files[0].measurements, [failedPhase, failedStage]);
+  assert.deepEqual(summary.files[0].measurements, [
+    failedPhase,
+    failedStage,
+    failedCheck,
+    nativeBodyCheck,
+    nativeCleanupCheck,
+    nativeBothChecks,
+    gatewayStatus,
+    gatewayRequest,
+    gatewayNative,
+    gatewayUnknownStatus,
+    teardown,
+  ]);
+  assert.equal(await readFile(join(root, "teardown-completed"), "utf8"), "yes");
   const failed = summary.files[0].tests.find(({ name }) => name === "long failure");
   // Results and the job log keep the short message only.
   assert.match(failed.error.message, /\.\.\. \[truncated\]$/);
@@ -3275,9 +3416,9 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert.equal(record.file, "tests/integration/details.test.mjs");
   assert.equal(record.omittedTests, 0);
   const detail = record.tests.find(({ name }) => name === "long failure");
-  assert.equal(detail.line, 10);
+  assert.equal(detail.line, 18);
   assert.match(detail.message, /decisive line \[env:CI_RUNNER_FIXTURE_CREDENTIAL\]$/);
-  assert.match(detail.stack, /tests\/integration\/details\.test\.mjs:10:\d+/);
+  assert.match(detail.stack, /tests\/integration\/details\.test\.mjs:18:\d+/);
   // stdout and stderr arrive on separate pipes, so only the set of lines is fixed.
   assert.deepEqual([...record.output.lines].sort(), [
     "[redacted credential-bearing line]",
@@ -6668,6 +6809,14 @@ test("native history proof keeps exact run, explicit success and marker predicat
     ["source echo", [{ ...tool, content: "command: " + output }, final], false, true, "false"],
     ["wrong run", [{ ...tool, __openclaw: { runId: "other" } }, final], false, true, "none"],
     ["wrong marker", [tool, { ...final, content: "Done: " + marker }], true, false, "false"],
+    ["unsupported content", [{ ...tool, content: { output } }, final], false, true, "false"],
+    [
+      "unrecognized envelope",
+      [{ ...tool, content: JSON.stringify({ output }) }, final],
+      false,
+      true,
+      "false",
+    ],
     [
       "tool continuation",
       [tool, { ...final, content: [{ type: "text", text: marker }, { type: "toolCall" }] }],
@@ -6685,11 +6834,117 @@ test("native history proof keeps exact run, explicit success and marker predicat
     assert.equal(Boolean(evidence.tool), toolPresent, name);
     assert.equal(Boolean(evidence.final), finalPresent, name);
     assert.equal(evidence.observation.historyExecErrorFlag, flag, name);
+    if (name === "source echo") {
+      assert.equal(evidence.observation.historyToolPrefixContainsCount, 1);
+      assert.equal(evidence.observation.historyToolPrefixCount, 0);
+    }
+    if (name === "wrong marker") {
+      assert.equal(evidence.observation.historyFinalMarkerContainsCount, 1);
+      assert.equal(evidence.observation.historyFinalMarkerCount, 0);
+    }
+    if (name === "unsupported content") {
+      assert.equal(evidence.observation.historyOtherContentCount, 1);
+      assert.equal(evidence.observation.historyExecNonemptyTextCount, 0);
+    }
+    if (name === "unrecognized envelope") {
+      assert.equal(evidence.observation.historyExecOtherJsonCount, 1);
+      assert.equal(evidence.observation.historyExecAggregatedCount, 0);
+    }
     assert.doesNotMatch(
       JSON.stringify(evidence.observation),
       /private-host|private-value|FIRST_AGENT_NATIVE/,
     );
   }
+  // Code Mode can succeed without producing the requested shell proof. Source
+  // mentions and nested exit codes remain observations, never proof predicates.
+  for (const [exitCode, aggregated] of [
+    ...[0, 2, undefined, null, "0", 0.5].map((code) => [code, "private-output"]),
+    [0, undefined],
+    [2, null],
+    [0, ""],
+  ]) {
+    const call = {
+      ...final,
+      stopReason: "toolUse",
+      content: [
+        {
+          type: "toolCall",
+          name: "exec",
+          arguments: { code: `console.log(${JSON.stringify(prefix)}); // private-code` },
+        },
+      ],
+    };
+    const result = {
+      ...tool,
+      content: JSON.stringify({ value: { aggregated, exitCode } }),
+    };
+    const evidence = nativeWorkerHistoryEvidence({
+      messages: [
+        call,
+        result,
+        { ...final, content: "Done" },
+        { ...call, __openclaw: { runId: "other" } },
+        { ...result, __openclaw: { runId: "other" } },
+      ],
+      runId: "selected",
+      toolPrefix: prefix,
+      marker,
+    });
+    assert.equal(evidence.observation.historyExecCodeStringCount, 1);
+    assert.equal(evidence.observation.historyExecCodeToolPrefixContainsCount, 1);
+    assert.equal(evidence.observation.historyExecCommandStringCount, 0);
+    assert.equal(
+      evidence.observation.historyExecNestedExitZeroCount,
+      exitCode === 0 && typeof aggregated === "string" ? 1 : 0,
+    );
+    assert.equal(
+      evidence.observation.historyExecNestedExitNonzeroCount,
+      exitCode === 2 && typeof aggregated === "string" ? 1 : 0,
+    );
+    assert.equal(evidence.observation.historyToolProofPresent, false);
+    assert.equal(evidence.observation.historyFinalProofPresent, false);
+    assert.doesNotMatch(JSON.stringify(evidence.observation), /private-|FIRST_AGENT_NATIVE/);
+  }
+  // Peer-supplied part names and command arguments must not become diagnostic values.
+  const command = "private-command";
+  const observed = nativeWorkerHistoryEvidence({
+    runId: "selected",
+    toolPrefix: prefix,
+    marker,
+    command,
+    messages: [
+      {
+        ...final,
+        content: [
+          { type: "toolCall", name: "exec", arguments: { command } },
+          { type: "toolCall", name: "exec", arguments: { command: "other-private-command" } },
+          { type: "text", text: "private-text" },
+          { type: "private-part-type", value: "private-value" },
+        ],
+      },
+      {
+        ...tool,
+        content: [{ type: "text", text: JSON.stringify({ value: { aggregated: output } }) }],
+      },
+      // An unrelated run cannot affect command or shape evidence.
+      {
+        ...final,
+        content: [{ type: "toolCall", name: "exec", arguments: { command } }],
+        __openclaw: { runId: "other" },
+      },
+    ],
+  });
+  assert.equal(observed.observation.historyArrayContentCount, 2);
+  assert.equal(observed.observation.historyTextPartCount, 2);
+  assert.equal(observed.observation.historyToolCallPartCount, 2);
+  assert.equal(observed.observation.historyOtherPartCount, 1);
+  assert.equal(observed.observation.historyExecCallCount, 2);
+  assert.equal(observed.observation.historyExecCommandStringCount, 2);
+  assert.equal(observed.observation.historyExecExactCommandCount, 1);
+  assert.equal(observed.observation.historyExecNonemptyTextCount, 1);
+  assert.equal(observed.observation.historyExecAggregatedCount, 1);
+  assert.equal(observed.observation.historyAssistantNonemptyTextCount, 1);
+  assert.doesNotMatch(JSON.stringify(observed.observation), /private-|FIRST_AGENT_NATIVE/);
 });
 
 test("native placement retries only the correlated pinned read-generation signal", async () => {

@@ -86,6 +86,24 @@ The OpenClaw `model-ui` case checks the example Console theme through sign-in
 and Agent use. It also redeploys the Agent with a provider alias, the existing OCC
 Secret, and `OCE_MODEL_API_KEY`, then requires a real model turn.
 
+### Harness destination overrides
+
+The explicit `harness-overrides` QA scenario runs dedicated Codex and OpenClaw
+through an installed Kubernetes/OpenShell workflow. It deploys two Agents with
+distinct authorized destinations and a third inheriting the default, performs real
+model turns, restarts the controllers with changed and removed defaults, and
+withdraws one Agent's source while the other Agents continue serving.
+
+Select `OCC_TEST_QA_INSTALLATION=kubernetes`, `OCC_TEST_QA_PRESET=all`, and
+`OCC_TEST_QA_SCENARIOS=harness-overrides`. Provide two authorized HTTPS port-443
+endpoints in `OCC_TEST_QA_HARNESS_ENDPOINT_A` and `_B`, protected API-key file paths
+in `OCC_TEST_QA_HARNESS_KEY_FILE_A` and `_B`, and a model authorized at both endpoints
+in `OCC_TEST_QA_HARNESS_MODEL`. Use the normal source-built QA images and disposable
+cluster prerequisites. Missing inputs fail before setup. This scenario is explicit
+until hosted credentials for both destinations are configured; ordinary PR checks
+run HTTP and PostgreSQL override coverage. The scenario does not collect independent
+upstream access logs.
+
 ### OpenShell file coverage
 
 OpenShell requires the Linux Landlock security feature, which the Blacksmith

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-11-05
-last_updated_session: authoring-run/3c7815cf-f818-421f-879b-2b2fe90deac5
+updated: 2026-11-06
+last_updated_session: authoring-run/3cb37e31-4ea8-4dfe-bb12-965884fa83db
 ---
 
 # Common Operational Logging Flow
@@ -209,8 +209,8 @@ the local diagnostic message is excluded from remote export.
 `occ.code`, and
 `authentication.sign-in-limited` keeps only `occ.sign_in.lane`; its local key
 hash is not exported. `authentication.provider-unavailable-warning` keeps
-`occ.sign_in.provider`, `.step` (`authorization`, `token`, `jwks`, `profile` or
-`membership`), `.cause` and `.status`, plus a transport code as `occ.code`; the provider
+`occ.sign_in.provider`, `.step` (`authorization`, `token`, `jwks`, `profile`,
+`membership` or `email`), `.cause` and `.status`, plus a transport code as `occ.code`; the provider
 instance ID stays local.
 `worker.repository-cleanup-warning` keeps `occ.code` and its cause code of at most 64 allowed characters as
 `occ.worker.cause`.
@@ -326,6 +326,8 @@ covers credentials, supervision, queue storage and backend verification.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 15:37: Retain the verified-email lookup stage in provider outage exports. (authoring-run/3cb37e31-4ea8-4dfe-bb12-965884fa83db - 3e29a60b00d2a4c6eb15d4ea2f1f283113592f74)
 
 - 2026-11-05 20:53: Export held Git probe failure categories and bounded curl exit codes through the Collector. (authoring-run/3c7815cf-f818-421f-879b-2b2fe90deac5 - 0a9351b645)
 
