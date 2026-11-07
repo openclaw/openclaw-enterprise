@@ -14,6 +14,8 @@ Let an Agent use a provider without giving it the provider credential. If `build
 
 Retire `CredentialGatewayDriver` and `CredentialRefreshDriver` as Installation capabilities. The selected `CredentialProxyDriver` configures and withdraws protected egress. Its paired `SandboxDriver` installs the policy and prevents bypass. OCE’s built-in Token Service registers dynamic credentials and resolves access tokens through provider-specific issuers. `SecretDriver` supplies authorized static material. See [credential access and lifecycle](contracts.md#credential-access-and-lifecycle).
 
+[Proposed amendment: recheck the selected Secret reader before each storage read](secret-read-selection.md).
+
 ![Proposed protected egress: Sandbox prevents bypass; a trusted sender checks current authority, resolves a credential if needed, and sends the request](assets/overview.svg)
 
 [Diagram source](assets/overview.mmd)
