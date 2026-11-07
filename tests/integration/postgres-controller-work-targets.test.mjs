@@ -79,7 +79,13 @@ test(
           draft_spec: {},
           harness_auth: { ...harnessAuth, secretDriverId: "secret-queue" },
           execution_admission: { version: 2, mode: "unprotected" },
-          harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+          harness: {
+            id: "openclaw",
+            version: "1.0.0",
+            mode: "embedded",
+            overrides: {},
+            configuration: {},
+          },
           compute: {
             id: "compute-local-development",
             implementation: "deterministic-local-development",

@@ -926,7 +926,12 @@ test("Agent configuration references stay mutable while deployment admits deeply
   assert.equal(first.configurationGeneration, 1);
   assert.equal(first.servicePrincipalId, agent.servicePrincipalId);
   assert.deepEqual(first.configuration, admittedConfiguration(servedAs(savedValues, agent.name)));
-  assert.deepEqual(first.harness, { ...harness, mode: "embedded" });
+  assert.deepEqual(first.harness, {
+    ...harness,
+    mode: "embedded",
+    overrides: {},
+    configuration: {},
+  });
   assert.deepEqual(first.compute, {
     id: "compute-driver-a",
     implementation: "test-only-compute",
@@ -1064,6 +1069,8 @@ test("Sandbox admission applies provider-owned Agent configuration before freezi
       assert.deepEqual(harness, {
         ...PRODUCTION_HARNESS_DESCRIPTOR,
         mode: "dedicated",
+        overrides: {},
+        configuration: {},
       });
       assert.equal(Object.isFrozen(harness), true);
       const configured = structuredClone(configuration);

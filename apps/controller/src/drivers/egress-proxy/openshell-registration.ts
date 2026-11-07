@@ -1,4 +1,3 @@
-import type { ModelProviderConfiguration } from "../compute/model-provider.ts";
 import type {
   Backend,
   CredentialProxyDriver,
@@ -35,7 +34,6 @@ export function createOpenShellCapabilities(input: {
     readonly resolveDelivery: RepositoryGitDeliveryResolver | undefined;
   };
   readonly proxy?: {
-    readonly modelProvider?: ModelProviderConfiguration;
     readonly id: string;
     readonly configuration: OpenShellProxyOptions;
     readonly exchangeAuthority?: EgressAuthorityConfiguration;
@@ -69,9 +67,6 @@ export function createOpenShellCapabilities(input: {
       backend: input.backend,
       sandbox,
       preparedProviders: input.proxy.preparedProviders,
-      ...(input.proxy.modelProvider === undefined
-        ? {}
-        : { modelProvider: input.proxy.modelProvider }),
       ...(input.proxy.exchangeAuthority && { exchangeAuthority: input.proxy.exchangeAuthority }),
       ...(git && {
         bindRepositoryGit: git.bindRepositoryGit.bind(git),

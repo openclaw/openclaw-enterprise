@@ -224,4 +224,4 @@ It also checks pending setup, graceful worker restart, IAM denial and revocation
 quota refusal, and deletion of partial and ready Namespaces. The Namespace-only
 QA case needs no model credential. This checkpoint does not establish Agent model
 turns, projected workload identity, active lease loss, or external-namespace
-cleanup through the new hooks. Remaining delivery checks are tracked in the [implementation plan](../../specs/plans/0030-namespace-driver-lifecycle.md).
+cleanup through the new hooks. Remaining delivery checks are tracked in the [implementation plan](../../specs/plans/0031-namespace-driver-lifecycle.md).

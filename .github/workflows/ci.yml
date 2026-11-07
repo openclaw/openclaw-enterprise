@@ -126,8 +126,8 @@ jobs:
       # Runner labels now expose their named CPU capacity. Restore the
       # measured pre-November 3 allocations without changing lane concurrency.
       # k3d keeps Blacksmith's kernel for NetworkPolicy checks. Image lanes
-      # retain 8 CPUs / 30.4 GiB for their measured 15-20 GiB peaks; browser
-      # lanes retain 16 CPUs for their observed parallel CPU demand.
+      # retain 8 CPUs / 30.4 GiB for their measured 15-20 GiB peaks. Browser
+      # lanes use 8 CPUs with their existing eight-file concurrency.
       - id: matrix
         name: Build lane matrix
         env:
@@ -137,8 +137,8 @@ jobs:
             [
               {"lane": "checks-baseline-1", "title": "Checks and Conformance 1", "profile": "baseline", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "checks-baseline-2", "title": "Checks and Conformance 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
-              {"lane": "checks-browser", "title": "Console Browser", "profile": "baseline", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "checks-browser-2", "title": "Console Browser 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
+              {"lane": "checks-browser", "title": "Console Browser", "profile": "baseline", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "checks-browser-2", "title": "Console Browser 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "postgres", "title": "PostgreSQL Migrations", "profile": "postgres", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "postgres-application", "title": "PostgreSQL Application", "profile": "postgres", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "postgres-auth", "title": "PostgreSQL Authentication", "profile": "postgres", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"},

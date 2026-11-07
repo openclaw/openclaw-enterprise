@@ -1,13 +1,13 @@
 ---
-rfc: ../rfcs/0030-namespace-driver-lifecycle.md
+rfc: ../rfcs/0031-namespace-driver-lifecycle.md
 ---
 
 # Implementation plan: Namespace Driver lifecycle
 
-- **ID:** RFC-0030
+- **ID:** RFC-0031
 - **Delivery status:** In progress
 - **Owner:** kevinlin-openai
-- **Authority:** [Proposed Namespace lifecycle RFC](../rfcs/0030-namespace-driver-lifecycle.md)
+- **Authority:** [Proposed Namespace lifecycle RFC](../rfcs/0031-namespace-driver-lifecycle.md)
 - **Source baseline:** `ecb2973b13c1a338c7b9ddbc468fca6fa8e9a848`
 
 ## Outcome and scope
@@ -83,6 +83,8 @@ owns the runnable Namespace checkpoint and its limits.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-07: Renumbered the unmerged proposal and plan to RFC-0031 after main assigned RFC-0030 to Harness overrides.
 
 - 2026-11-07: Implemented shared orchestration and recorded real Namespace proof; delivery remains incomplete.
 - 2026-11-06: Adapted the proposal and planned source-backed delivery at `ecb2973b13c1`.

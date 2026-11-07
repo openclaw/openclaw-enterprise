@@ -7,6 +7,7 @@ const scenarioPresets = {
   "openshell-linear-read": ["Codex"],
   "model-ui": ["OpenClaw"],
   "codex-search-config": ["Codex"],
+  "harness-overrides": ["OpenClaw", "Codex"],
   "console-secrets": ["OpenClaw", "Codex"],
   "git-write": ["Codex"],
   "git-push-denied": ["Codex"],
@@ -25,19 +26,19 @@ export function selectQaMatrix(env = process.env) {
   assert.ok(["all", "OpenClaw", "Codex"].includes(preset), "invalid QA preset selection");
   const allScenarios = Object.keys(scenarioPresets);
   const input = env.OCC_TEST_QA_SCENARIOS ?? "all";
+  const defaultScenarios = allScenarios.filter(
+    (name) =>
+      ![
+        "namespace-lifecycle",
+        "sandbox-policy",
+        "plugin-install",
+        "openshell-linear-read",
+        "codex-search-config",
+        "harness-overrides",
+      ].includes(name),
+  );
   const scenarios =
-    input === "all"
-      ? allScenarios.filter(
-          (name) =>
-            ![
-              "namespace-lifecycle",
-              "sandbox-policy",
-              "plugin-install",
-              "openshell-linear-read",
-              "codex-search-config",
-            ].includes(name),
-        )
-      : input.split(",").map((name) => name.trim());
+    input === "all" ? defaultScenarios : input.split(",").map((name) => name.trim());
   assert.ok(
     scenarios.length > 0 && scenarios.every((name) => allScenarios.includes(name)),
     "invalid QA scenario selection",
@@ -67,6 +68,7 @@ export function selectQaMatrix(env = process.env) {
             "sandbox-policy",
             "plugin-install",
             "openshell-linear-read",
+            "harness-overrides",
           ].includes(scenario) && scenarioPresets[scenario].includes(name),
       ),
       unselected: allScenarios.filter(
@@ -76,6 +78,7 @@ export function selectQaMatrix(env = process.env) {
             "sandbox-policy",
             "plugin-install",
             "openshell-linear-read",
+            "harness-overrides",
           ].includes(scenario) &&
           scenarioPresets[scenario].includes(name) &&
           !scenarios.includes(scenario),
@@ -87,6 +90,7 @@ export function selectQaMatrix(env = process.env) {
             "sandbox-policy",
             "plugin-install",
             "openshell-linear-read",
+            "harness-overrides",
           ].includes(scenario) && !scenarioPresets[scenario].includes(name),
       ),
     })),
@@ -130,13 +134,29 @@ export function selectQaMatrix(env = process.env) {
   const sandboxPolicy = scenarios.includes("sandbox-policy");
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");
+  const harnessOverrides = scenarios.includes("harness-overrides");
+  if (harnessOverrides) {
+    assert.notEqual(
+      installation,
+      "compose",
+      "Harness override proof requires Kubernetes with OpenShell",
+    );
+    requiredEnv.push(
+      "OCC_TEST_QA_HARNESS_ENDPOINT_A",
+      "OCC_TEST_QA_HARNESS_ENDPOINT_B",
+      "OCC_TEST_QA_HARNESS_KEY_FILE_A",
+      "OCC_TEST_QA_HARNESS_KEY_FILE_B",
+      "OCC_TEST_QA_HARNESS_MODEL",
+    );
+  }
   assert.ok(
     exclusions.length === 0 ||
       activeScenarios.length > 0 ||
       namespaceLifecycle ||
       sandboxPolicy ||
       pluginInstall ||
-      linearRead,
+      linearRead ||
+      harnessOverrides,
     "All selected QA scenarios require a custom Codex permission profile",
   );
   if (linearRead) {
@@ -184,6 +204,8 @@ export function selectQaMatrix(env = process.env) {
     sandboxPolicy,
     pluginInstall,
     linearRead,
+    harnessOverrides,
+    presets,
     cells,
     scenarios,
     requiredEnv,
@@ -193,7 +215,8 @@ export function selectQaMatrix(env = process.env) {
       exclusions.length === 0 &&
       installation === "all" &&
       preset === "all" &&
-      scenarios.length === allScenarios.length - 5
+      scenarios.length === defaultScenarios.length &&
+      defaultScenarios.every((name) => scenarios.includes(name))
         ? "full"
         : "partial:selected",
   };

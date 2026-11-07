@@ -31,6 +31,9 @@ kind: reference/driver
   - [`bindAgent`](#method-bind-agent)
   - [`validateConfiguration`](#method-validate-configuration)
   - [`validateGatewaySettings`](#method-validate-gateway-settings)
+  - [`normalizeHarnessOverrides`](#method-normalize-harness-overrides)
+  - [`resolveHarnessConfiguration`](#method-resolve-harness-configuration)
+  - [`validateHarnessCredentialSources`](#method-validate-harness-credential-sources)
   - [`validateHarnessAuth`](#method-validate-harness-auth)
   - [`validateWorkspaceSetup`](#method-validate-workspace-setup)
   - [`validateAgentProvisioning`](#method-validate-agent-provisioning)
@@ -62,14 +65,13 @@ kind: reference/driver
 
 ## Overview
 
-OpenClaw Control Plane (OCC) selects one Compute Driver per Installation for
-Namespace infrastructure and Agent execution, routing, stop and retirement.
-Compute owns identity, isolation and readiness. [Sandbox](sandbox.md) can provision
-the dedicated Harness; Compute retains the Agent gateway and routing.
+Compute manages Namespace infrastructure, Agent workloads, identity, isolation, and readiness
+for OpenClaw Control Plane (OCC). A paired [Sandbox Driver](sandbox.md) can provision
+Harnesses; Compute retains gateway routing.
 
 ## Interface
 
-See the [exported interface](../../../packages/contracts/src/drivers/compute/index.ts).
+[Exported interface](../../../packages/contracts/src/drivers/compute/index.ts)
 
 ### Properties
 
@@ -106,6 +108,9 @@ See the [exported interface](../../../packages/contracts/src/drivers/compute/ind
 | <a id="method-bind-agent"></a>`bindAgent`                                                                            | Optional    | The worker supplies the approved Namespace and Agent before revision work. A rejection prevents further runtime work on that attempt.                                                                                                                                                                                                                     |
 | <a id="method-validate-configuration"></a>`validateConfiguration`                                                    | Optional    | Check native Configuration values on save. Preset validation identifies unresolved variables separately.                                                                                                                                                                                                                                                  |
 | <a id="method-validate-gateway-settings"></a>`validateGatewaySettings`                                               | Optional    | Refuse gateway settings the Driver cannot honor at deployment. Name the setting without exposing its value. OCC skips this check if omitted.                                                                                                                                                                                                              |
+| <a id="method-normalize-harness-overrides"></a>`normalizeHarnessOverrides`                                           | Optional    | Normalize overrides; requires `resolveHarnessConfiguration`. Omission rejects nonempty requests.                                                                                                                                                                                                                                                          |
+| <a id="method-resolve-harness-configuration"></a>`resolveHarnessConfiguration`                                       | Optional    | Resolve before credentials and egress; save for execution. Omission saves `{}`.                                                                                                                                                                                                                                                                           |
+| <a id="method-validate-harness-credential-sources"></a>`validateHarnessCredentialSources`                            | Optional    | Check source consent against resolved settings before delivery.                                                                                                                                                                                                                                                                                           |
 | <a id="method-validate-harness-auth"></a>`validateHarnessAuth`                                                       | Optional    | Check the Harness, authentication method, Configuration, and bindings. Deployment and Agent provisioning fail if this check is unavailable.                                                                                                                                                                                                               |
 | <a id="method-validate-workspace-setup"></a>`validateWorkspaceSetup`                                                 | Optional    | Check whether initial files can be delivered on the selected topology. See [admission checks](compute-admission.md) for when OCC calls each validator.                                                                                                                                                                                                    |
 | <a id="method-validate-agent-provisioning"></a>`validateAgentProvisioning`                                           | Optional    | Required for Agent provisioning; see prerequisites and refusals below.                                                                                                                                                                                                                                                                                    |
@@ -145,9 +150,8 @@ uses a 10-second timeout and accepts up to 4 MiB per response, ten pages, and
 
 ### Namespace and gateway results
 
-Return the requested `namespaceId`. Failures are `retryable` or `permanent`;
-a true ready or deleted flag succeeds only without a failure. Worker-log
-failure reasons allow up to 256 characters: letters, digits, spaces, and
+Namespace results follow the [shared lifecycle contract](namespace-lifecycle.md).
+Worker-log failure reasons allow up to 256 characters: letters, digits, spaces, and
 `. _ : / @ -`. Exclude provider output and other tenants' values.
 
 Derive a [gateway endpoint](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)

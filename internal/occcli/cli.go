@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -781,6 +782,7 @@ func (app *application) agentCommand() *cobra.Command {
 	update.Flags().StringVar(&updateFile, "file", "", "JSON document path")
 	_ = update.MarkFlagRequired("file")
 
+	var harnessOverridesFile, retainedHarnessRevision string
 	deploy := &cobra.Command{
 		Use:   "deploy ID",
 		Short: "Deploy an Agent and create an immutable revision",
@@ -794,7 +796,35 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			revision, err := client.DeployAgent(namespace, args[0])
+			overrides := map[string]any{}
+			if harnessOverridesFile != "" {
+				value, err := readJSON(harnessOverridesFile)
+				if err != nil {
+					return err
+				}
+				if err := json.Unmarshal(value, &overrides); err != nil || overrides == nil {
+					return fmt.Errorf("Harness overrides must be a JSON object")
+				}
+			}
+			if retainedHarnessRevision != "" {
+				previous, err := client.GetAgentRevision(namespace, args[0], retainedHarnessRevision)
+				if err != nil {
+					return err
+				}
+				record, ok := previous.(map[string]any)
+				if !ok {
+					return fmt.Errorf("the selected revision is unavailable")
+				}
+				harness, ok := record["harness"].(map[string]any)
+				if !ok {
+					return fmt.Errorf("the selected revision has no Harness settings")
+				}
+				overrides, ok = harness["overrides"].(map[string]any)
+				if !ok {
+					return fmt.Errorf("the selected revision has no requested Harness overrides")
+				}
+			}
+			revision, err := client.DeployAgent(namespace, args[0], overrides)
 			if err != nil {
 				return err
 			}
@@ -810,9 +840,13 @@ func (app *application) agentCommand() *cobra.Command {
 			return nil
 		},
 	}
+	deploy.Flags().StringVar(&harnessOverridesFile, "harness-overrides", "", "JSON file containing requested Harness overrides")
+	deploy.Flags().StringVar(&retainedHarnessRevision, "retain-harness-overrides", "", "Revision ID whose requested Harness overrides to submit")
+	deploy.MarkFlagsMutuallyExclusive("harness-overrides", "retain-harness-overrides")
 	firstDeploymentCommand := func(recoverOnly bool) *cobra.Command {
 		var intent occclient.FirstDeploymentIntent
 		var generation string
+		var overridesFile string
 		name, description := "deploy-first", "Deploy exactly the reviewed Configuration, only if never deployed"
 		if recoverOnly {
 			name, description = "recover-first-deployment", "Read an exact first-deployment receipt without deploying"
@@ -829,6 +863,15 @@ func (app *application) agentCommand() *cobra.Command {
 				parsed, err := strconv.ParseInt(generation, 10, 64)
 				if err != nil || strconv.FormatInt(parsed, 10) != generation {
 					return fmt.Errorf("--generation must be a canonical positive decimal integer")
+				}
+				if overridesFile != "" {
+					value, err := readJSON(overridesFile)
+					if err != nil {
+						return err
+					}
+					if err := json.Unmarshal(value, &intent.HarnessOverrides); err != nil || intent.HarnessOverrides == nil {
+						return fmt.Errorf("Harness overrides must be a JSON object")
+					}
 				}
 				intent.ExpectedGeneration = parsed
 				if err := intent.Validate(); err != nil {
@@ -847,7 +890,7 @@ func (app *application) agentCommand() *cobra.Command {
 				}
 				if err != nil {
 					if !recoverOnly {
-						app.firstDeploymentRecoveryNotice(command.ErrOrStderr(), namespace, args[0], intent, err)
+						app.firstDeploymentRecoveryNotice(command.ErrOrStderr(), namespace, args[0], intent, err, overridesFile)
 					}
 					return err
 				}
@@ -863,6 +906,7 @@ func (app *application) agentCommand() *cobra.Command {
 				})
 			},
 		}
+		cmd.Flags().StringVar(&overridesFile, "harness-overrides", "", "JSON file containing the same requested Harness overrides for deployment and recovery")
 		cmd.Flags().StringVar(&intent.Key, "key", "", "Stable nonsecret intent key")
 		cmd.Flags().StringVar(&intent.ExpectedConfigurationID, "configuration", "", "Reviewed Configuration ID")
 		cmd.Flags().StringVar(&generation, "generation", "", "Reviewed Configuration generation (canonical positive decimal)")
@@ -1018,7 +1062,7 @@ func (app *application) agentCommand() *cobra.Command {
 	return command
 }
 
-func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespace, agentID string, intent occclient.FirstDeploymentIntent, err error) {
+func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespace, agentID string, intent occclient.FirstDeploymentIntent, err error, overridesFile string) {
 	var dial *net.OpError
 	if errors.As(err, &dial) && dial.Op == "dial" {
 		return
@@ -1035,8 +1079,12 @@ func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespa
 	}
 	// Connection settings can contain shell metacharacters; the intent and IDs
 	// have already passed their restricted-ASCII validation. No key value is read.
-	fmt.Fprintf(notices, "  occ --url %s --service-key-file %s --ca-bundle %s --timeout-seconds %s --namespace %s agent recover-first-deployment %s --key %s --configuration %s --generation %d\n",
-		quote(app.url), quote(app.serviceKeyFile), quote(app.caBundle), quote(app.timeoutSeconds), namespace, agentID, intent.Key, intent.ExpectedConfigurationID, intent.ExpectedGeneration)
+	overridesOption := ""
+	if overridesFile != "" {
+		overridesOption = " --harness-overrides " + quote(overridesFile)
+	}
+	fmt.Fprintf(notices, "  occ --url %s --service-key-file %s --ca-bundle %s --timeout-seconds %s --namespace %s agent recover-first-deployment %s --key %s --configuration %s --generation %d%s\n",
+		quote(app.url), quote(app.serviceKeyFile), quote(app.caBundle), quote(app.timeoutSeconds), namespace, agentID, intent.Key, intent.ExpectedConfigurationID, intent.ExpectedGeneration, overridesOption)
 }
 
 // defaultDeploymentNotice says which revision deployment-status chose without
