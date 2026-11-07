@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-11-05
-last_updated_session: authoring-run/33ffb317-d84b-4de5-b946-70b58f35af74
+updated: 2026-11-07
+last_updated_session: authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -25,12 +25,14 @@ Kubernetes Compute provisions Codex and OpenClaw Harnesses through OpenShell.
 
 ```mermaid
 graph TD
-  A["<b>Reconcile Agent revision</b><br/>Worker selects Drivers"] --> B["<b>Prepare Namespace</b><br/>Kubernetes isolation"]
+  A["<b>Reconcile Namespace</b><br/>Worker selects Drivers"] --> B["<b>Prepare Namespace</b><br/>Kubernetes isolation"]
   B --> C{"<b>Workspace mode</b><br/>Installation setting"}
   C -- "managed" --> X["<b>Reject configuration</b><br/>Before mutation"]
   C -- "operator" --> D["<b>Reconcile resources</b><br/>Labels and workspace chart"]
-  D --> E["<b>Own Workspace</b><br/>Create or adopt"]
-  E --> F["<b>Derive Harness</b><br/>Compute requirements"]
+  D --> G0["<b>Ensure configured gateway</b><br/>Owned resources and health"]
+  G0 --> E["<b>Own Workspace</b><br/>Create or adopt"]
+  E --> A0["<b>Namespace ready</b><br/>Deployment permitted"]
+  A0 --> F["<b>Derive Harness</b><br/>Compute requirements"]
   F --> K0["<b>Start Agent Gateway</b><br/>Fail-closed transport"]
   K0 --> Y0{"<b>Node setup</b><br/>Material exists?"}
   Y0 -- "no" --> R0["<b>Retry preparation</b><br/>No provider or Sandbox"]
@@ -66,7 +68,8 @@ graph TD
   L --> N["<b>Delete Sandbox</b><br/>Version cleanup"]
   U --> N
   N --> O["<b>Delete Workspace</b><br/>Namespace cleanup"]
-  O --> P["<b>Delete Namespace</b><br/>Compute cleanup"]
+  O --> P0["<b>Delete owned gateway</b><br/>Operator resources retained"]
+  P0 --> P["<b>Delete Namespace</b><br/>Compute cleanup"]
 
   classDef state fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
@@ -144,13 +147,11 @@ status reads return stored work.
 
 ### 1. Prepare the Namespace and OpenShell Workspace
 
-`apps/controller/src/drivers/compute/kubernetes/index.ts:ensureNamespace`
+`packages/occ/src/namespace-lifecycle.ts:reconcileNamespaceLifecycle`,
+`apps/controller/src/composition/namespace-lifecycle.ts:sandboxNamespaceLifecycleBinding`
 
-Compute establishes quota, limits and baseline NetworkPolicies before
-`SandboxDriver.ensureNamespace`. Managed mode rejects before Kubernetes/Gateway
-use. Operator mode checks optional local readiness, applies namespace labels,
-workspace resources and provider NetworkPolicies, then checks health.
-Development uses the central Gateway.
+OCC invokes Sandbox after Compute isolation, with resolved placement and cancellation. `openshell-namespace-gateway.ts:reconcileNamespaceGateway` prepares
+configured gateways; operator-mode setup verifies health and owns the Workspace.
 
 `apps/controller/src/backends/openshell.ts:clientForNamespace` passes raw endpoints,
 including bracketed IPv6, unchanged to gRPC. HTTP retains explicit port 80;
@@ -410,6 +411,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 23:26: Move Namespace orchestration. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - 91b1a51eb)
 
 - 2026-11-05 14:34: Reuse bounded retries for the pinned Agent Sandbox manifest. (authoring-run/33ffb317-d84b-4de5-b946-70b58f35af74 - a383313636fc348a2325c0b1f6e05ae80327fd30)
 

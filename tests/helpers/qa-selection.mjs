@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 const scenarioPresets = {
+  "namespace-lifecycle": ["OpenClaw", "Codex"],
   "sandbox-policy": ["Codex"],
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
@@ -29,6 +30,7 @@ export function selectQaMatrix(env = process.env) {
       ? allScenarios.filter(
           (name) =>
             ![
+              "namespace-lifecycle",
               "sandbox-policy",
               "plugin-install",
               "openshell-linear-read",
@@ -60,19 +62,32 @@ export function selectQaMatrix(env = process.env) {
       preset: name,
       scenarios: scenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
-          scenarioPresets[scenario].includes(name),
+          ![
+            "namespace-lifecycle",
+            "sandbox-policy",
+            "plugin-install",
+            "openshell-linear-read",
+          ].includes(scenario) && scenarioPresets[scenario].includes(name),
       ),
       unselected: allScenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
+          ![
+            "namespace-lifecycle",
+            "sandbox-policy",
+            "plugin-install",
+            "openshell-linear-read",
+          ].includes(scenario) &&
           scenarioPresets[scenario].includes(name) &&
           !scenarios.includes(scenario),
       ),
       notApplicable: allScenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
-          !scenarioPresets[scenario].includes(name),
+          ![
+            "namespace-lifecycle",
+            "sandbox-policy",
+            "plugin-install",
+            "openshell-linear-read",
+          ].includes(scenario) && !scenarioPresets[scenario].includes(name),
       ),
     })),
   );
@@ -111,12 +126,14 @@ export function selectQaMatrix(env = process.env) {
     }
     requiredEnv.push("OCC_TEST_QA_CODEX_MODEL_BASE_URL");
   }
+  const namespaceLifecycle = scenarios.includes("namespace-lifecycle");
   const sandboxPolicy = scenarios.includes("sandbox-policy");
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");
   assert.ok(
     exclusions.length === 0 ||
       activeScenarios.length > 0 ||
+      namespaceLifecycle ||
       sandboxPolicy ||
       pluginInstall ||
       linearRead,
@@ -134,8 +151,8 @@ export function selectQaMatrix(env = process.env) {
       "OCC_TEST_CODEX_LINEAR_RESULT_EXPECT",
     );
   }
-  if (sandboxPolicy || pluginInstall) {
-    if (!requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
+  if (namespaceLifecycle || sandboxPolicy || pluginInstall) {
+    if ((sandboxPolicy || pluginInstall) && !requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
       requiredEnv.push("OCC_TEST_QA_CODEX_TOKEN_FILE");
     }
     requiredEnv.push("OCC_TEST_QA_SANDBOX_ENV");
@@ -163,6 +180,7 @@ export function selectQaMatrix(env = process.env) {
   return {
     installations,
     exclusions,
+    namespaceLifecycle,
     sandboxPolicy,
     pluginInstall,
     linearRead,
@@ -175,7 +193,7 @@ export function selectQaMatrix(env = process.env) {
       exclusions.length === 0 &&
       installation === "all" &&
       preset === "all" &&
-      scenarios.length === allScenarios.length - 4
+      scenarios.length === allScenarios.length - 5
         ? "full"
         : "partial:selected",
   };

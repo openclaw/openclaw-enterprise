@@ -1,3 +1,15 @@
+import {
+  reconcileNamespaceLifecycle,
+  selectedNamespaceLifecycle,
+  type NamespaceLifecycleBinding,
+  type NamespaceLifecycleEvidence,
+} from "./namespace-lifecycle.ts";
+
+export { reconcileNamespaceLifecycle, selectedNamespaceLifecycle } from "./namespace-lifecycle.ts";
+export type {
+  NamespaceLifecycleBinding,
+  NamespaceLifecycleEvidence,
+} from "./namespace-lifecycle.ts";
 import { deploymentRepositoryAccessStatus } from "./deployment-repository-access.ts";
 import { exchangeAuthorizationCode, startBrowserAuthorization } from "./browser-authorization.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
@@ -537,6 +549,7 @@ export {
   SandboxGatewayUnauthorizedError,
   SandboxGatewayUnavailableError,
   SandboxNamespaceRefusedError,
+  SandboxNamespacePendingError,
   ProtectedExecutionNetworkPolicyError,
   SandboxNetworkPolicyConflictError,
   SandboxRevisionUnsupportedError,
@@ -827,6 +840,7 @@ export interface InstallationIAMConfiguration {
 }
 
 export interface ControllerOptions {
+  readonly namespaceLifecycleBindings?: readonly NamespaceLifecycleBinding[] | undefined;
   /** Code-only composition binding for the bundled retained-source plugin reader. */
   readonly pluginSourceReader?: {
     readonly gateway: CredentialGatewayDriver;
@@ -2264,6 +2278,7 @@ export class OpenClawController {
   private readonly pluginSourceReader: ControllerOptions["pluginSourceReader"];
   private readonly preparedTokens: TokenService | undefined;
   private readonly selections = new Map<DriverCapability, RegisteredDriver>();
+  private readonly namespaceLifecycleBindings: readonly NamespaceLifecycleBinding[];
   private pluginRegistrations: readonly RegisteredDriver[] = [];
   private readonly backends: readonly BackendDefinition[];
   private readonly defaultPresets: readonly PresetDraftDefinition[];
@@ -2274,6 +2289,7 @@ export class OpenClawController {
   private readonly configuredServiceAccountDriverId: string | undefined;
 
   constructor(installation: Installation, options: ControllerOptions = {}) {
+    this.namespaceLifecycleBindings = options.namespaceLifecycleBindings ?? [];
     if (!isNonEmptyString(installation.id)) {
       throw new ScopeViolationError("The controller requires one valid server-owned Installation.");
     }
@@ -14024,6 +14040,29 @@ export class OpenClawController {
     });
   }
 
+  /** Observe resources only; the caller owns authorization, claims, and status commits. */
+  async observeNamespaceLifecycle(
+    namespace: Readonly<Namespace>,
+    target: "ready" | "deleted",
+    signal: AbortSignal,
+    record: (evidence: NamespaceLifecycleEvidence) => void | Promise<void>,
+  ): Promise<NamespaceEnsureResult | NamespaceDeleteResult> {
+    const owners = [...this.selections.values(), ...this.pluginRegistrations].map((selected) => {
+      if (!this.unchangedDriver(selected)) {
+        throw new DriverSelectionError("A selected Namespace lifecycle Driver changed identity.");
+      }
+      return selected.owner ?? selected.driver;
+    });
+    return reconcileNamespaceLifecycle(
+      this.selectedDriver("compute"),
+      selectedNamespaceLifecycle(owners, this.namespaceLifecycleBindings),
+      namespace,
+      target,
+      signal,
+      record,
+    );
+  }
+
   /**
    * Execute one deterministic Namespace lifecycle attempt for a claimed work item.
    * This is a reusable conformance harness, not a polling production worker.
@@ -14068,7 +14107,19 @@ export class OpenClawController {
     if (target === "deleted") {
       let result;
       try {
-        result = await compute.deleteNamespace(namespace);
+        result = await this.observeNamespaceLifecycle(
+          namespace,
+          "deleted",
+          new AbortController().signal,
+          (evidence) =>
+            this.recordLifecycleResult(
+              actorId,
+              namespace,
+              compute,
+              evidence.outcome === "complete" ? "success" : "failure",
+              { ...evidence },
+            ),
+        );
       } catch {
         await this.recordLifecycleResult(actorId, namespace, compute, "failure", {
           failure: "unavailable",
@@ -14116,7 +14167,19 @@ export class OpenClawController {
 
     let result;
     try {
-      result = await compute.ensureNamespace(namespace);
+      result = await this.observeNamespaceLifecycle(
+        namespace,
+        "ready",
+        new AbortController().signal,
+        (evidence) =>
+          this.recordLifecycleResult(
+            actorId,
+            namespace,
+            compute,
+            evidence.outcome === "complete" ? "success" : "failure",
+            { ...evidence },
+          ),
+      );
     } catch {
       await this.recordLifecycleResult(actorId, namespace, compute, "failure", {
         failure: "unavailable",
@@ -18036,6 +18099,10 @@ export class OpenClawController {
     proposed: ReadonlyMap<DriverCapability, RegisteredDriver>,
     plugins: readonly RegisteredDriver[],
   ): void {
+    const namespaceParticipants = selectedNamespaceLifecycle(
+      [...proposed.values(), ...plugins].map((entry) => entry.owner ?? entry.driver),
+      this.namespaceLifecycleBindings,
+    );
     const lifecycleDrivers = this.lifecycleDrivers(proposed, plugins);
     const compute = proposed.get("compute");
     if (compute !== undefined) {
@@ -18043,6 +18110,14 @@ export class OpenClawController {
         throw new DriverSelectionError("The selected compute Driver identity has changed.");
       }
       const selectedCompute = compute.driver as ComputeDriver;
+      if (
+        namespaceParticipants.some(({ hooks }) => hooks.deleteNamespace !== undefined) &&
+        typeof selectedCompute.checkNamespaceDeletion !== "function"
+      ) {
+        throw new DriverSelectionError(
+          "Namespace cleanup requires Compute deletion eligibility checks.",
+        );
+      }
       if (typeof selectedCompute.setLifecycleDrivers === "function") {
         selectedCompute.setLifecycleDrivers(lifecycleDrivers);
       } else if (lifecycleDrivers.length > 0) {

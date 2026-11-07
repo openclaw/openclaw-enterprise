@@ -272,7 +272,7 @@ async function apiServerPodProxySourceCidrs() {
   return [`${source}/32`];
 }
 
-async function createScopedController(context, identifier, platformNamespace, kubeconfig) {
+export async function createScopedController(context, identifier, platformNamespace, kubeconfig) {
   const suffix = hash(identifier);
   const account = "openclaw-production-controller";
   const namespaceRole = `oce-openshell-namespaces-${suffix}`;

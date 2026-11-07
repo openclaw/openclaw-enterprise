@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: kevinlin-openai
 ---
 
@@ -8,7 +8,7 @@ author: kevinlin-openai
 
 - **ID:** RFC-0030
 - **Created:** 2026-11-06
-- **Last updated:** 2026-11-06
+- **Last updated:** 2026-11-07
 - **Implementation plan:** [Namespace Driver lifecycle](../plans/0030-namespace-driver-lifecycle.md)
 - **Related:** [Namespace lifecycle](../../docs/reference/namespaces.md),
   [Sandbox contract](../../docs/reference/drivers/sandbox.md),
@@ -143,6 +143,12 @@ Service and workload readiness and gateway health, then creates or observes the
 owned Workspace through the real gateway API. Repeated reconciliation preserves
 one Workspace. Operator-owned gateway configuration retains verification-only
 behavior; selecting namespace-owned setup must not silently fall back to it.
+
+The Driver creates a private gateway signing key per Namespace, separate from
+Agent and model credentials. Other gateway Secret templates are create-only;
+retries verify their initial values and preserve provider-managed fields.
+It retains that key across retries and removes it
+after owned gateway teardown.
 
 Cluster-wide CRDs, RuntimeClasses, operator installation, approved images, and
 controller credentials remain explicit installation prerequisites. Tests may

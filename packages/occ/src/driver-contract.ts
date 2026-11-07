@@ -1,3 +1,4 @@
+import { validNamespaceLifecycleHooks } from "./namespace-lifecycle.ts";
 import type {
   ComputeLifecycleHooks,
   Driver,
@@ -12,10 +13,8 @@ import {
 import { asRecord } from "@openclaw-enterprise/utils";
 
 const COMPUTE_LIFECYCLE_PHASES = [
-  "afterNamespacePrepared",
   "beforeWorkloadStart",
   "beforeWorkloadStop",
-  "beforeNamespaceDelete",
 ] as const satisfies readonly (keyof ComputeLifecycleHooks)[];
 
 export function capability(value: unknown): value is DriverCapability {
@@ -263,6 +262,12 @@ function sandboxFacets(value: unknown): value is readonly SandboxFacet[] {
 }
 
 export function driverHasValidLifecycleHooks(driver: Driver): boolean {
+  if (
+    driver.namespaceLifecycleHooks !== undefined &&
+    !validNamespaceLifecycleHooks(driver.namespaceLifecycleHooks)
+  ) {
+    return false;
+  }
   const hooks: unknown = driver.computeLifecycleHooks;
   if (hooks === undefined) {
     return true;

@@ -1,3 +1,5 @@
+import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
+import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import type { ModelProviderConfiguration } from "../drivers/compute/model-provider.ts";
 import {
   openShellProxyConfiguration,
@@ -248,6 +250,7 @@ export interface InstallationRuntimeDrivers {
   readonly pluginSourceReader?: ControllerOptions["pluginSourceReader"];
   readonly credentialRefreshDriver?: CredentialRefreshDriver;
   readonly protectedDriver?: InstalledDriver;
+  readonly namespaceLifecycleBindings?: readonly NamespaceLifecycleBinding[];
   readonly proxyDriver?: CredentialProxyDriver;
   /** Present only when this registration owns protected repository delivery. */
   readonly repositoryGitDriver?: InstalledDriver;
@@ -1564,6 +1567,17 @@ export async function loadInstallationConfiguration(options: {
       },
     );
   }
+  const namespaceLifecycleBindings =
+    sandboxDriver === undefined ||
+    (protectedDriver ?? sandboxDriver).namespaceLifecycleHooks !== undefined
+      ? []
+      : [
+          sandboxNamespaceLifecycleBinding(
+            computeDriver,
+            sandboxDriver,
+            protectedDriver ?? sandboxDriver,
+          ),
+        ];
   const createIAMDriver = (state: NativeIAMStateStore): IAMDriver => {
     return iamPackage === undefined
       ? new NativeIAMDriver(state, { id: iam.id, implementation: iam.implementation })
@@ -1585,6 +1599,7 @@ export async function loadInstallationConfiguration(options: {
     bundledPresetVersions,
     installation,
     computeDriver,
+    namespaceLifecycleBindings,
     configurationDriver,
     secretDriver,
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),

@@ -5373,8 +5373,22 @@ test("Kubernetes namespace deletion waits for Sandbox namespace cleanup", async 
     objects: {},
   });
 
+  const { sandboxNamespaceLifecycleBinding } =
+    await import("../../apps/controller/src/composition/namespace-lifecycle.ts");
+  const { reconcileNamespaceLifecycle } = await import("../../packages/occ/src/index.ts");
+  const binding = sandboxNamespaceLifecycleBinding(driver, sandboxDriver);
+  const remove = () =>
+    reconcileNamespaceLifecycle(
+      driver,
+      [{ id: sandboxDriver.id, hooks: binding.hooks }],
+      { ...tenant, status: "deleting" },
+      "deleted",
+      new AbortController().signal,
+      () => {},
+    );
+
   // A provider cleanup failure must leave the Kubernetes Namespace intact for a safe retry.
-  assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }), {
+  assert.deepEqual(await remove(), {
     namespaceId: tenant.id,
     namespaceDeleted: false,
     failure: "retryable",
@@ -5382,7 +5396,7 @@ test("Kubernetes namespace deletion waits for Sandbox namespace cleanup", async 
   assert.equal(present, true);
   assert.deepEqual(calls, ["sandbox-cleanup"]);
 
-  assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }), {
+  assert.deepEqual(await remove(), {
     namespaceId: tenant.id,
     namespaceDeleted: true,
   });
@@ -6011,20 +6025,7 @@ test("Namespace deletion removes only its owned Gateway target after data-plane 
   for (const external of [false, true]) {
     for (const foreign of [false, true]) {
       const calls = [];
-      const driver = new KubernetesComputeDriver(twoClusterOptions(), {
-        lifecycleDrivers: [
-          {
-            id: "configuration-selected",
-            capability: "configuration",
-            implementation: "local-selected",
-            computeLifecycleHooks: {
-              async beforeNamespaceDelete() {
-                calls.push("revoke");
-              },
-            },
-          },
-        ],
-      });
+      const driver = new KubernetesComputeDriver(twoClusterOptions());
       let gateway = driver.gatewayNamespaceManifest({ namespaceId: tenant.id });
       gateway.metadata.uid = "owned-gateway-namespace-uid";
       if (foreign) {
@@ -6066,7 +6067,7 @@ test("Namespace deletion removes only its owned Gateway target after data-plane 
         namespaceDeleted: !foreign,
         ...(foreign ? { failure: "permanent" } : {}),
       });
-      assert.deepEqual(calls, foreign ? [] : ["revoke", "delete-gateway"]);
+      assert.deepEqual(calls, foreign ? [] : ["delete-gateway"]);
     }
   }
 });
@@ -15213,7 +15214,7 @@ test("Kubernetes lifecycle owners cannot be replaced after their first operation
     id: "configuration-selected",
     capability: "configuration",
     implementation: "local-selected",
-    computeLifecycleHooks: { async afterNamespacePrepared() {} },
+    computeLifecycleHooks: { async beforeWorkloadStart() {} },
   };
   const driver = new KubernetesComputeDriver(options(), { lifecycleDrivers: [selected] });
 
@@ -15231,7 +15232,7 @@ test("Kubernetes lifecycle owners cannot be replaced after their first operation
       driver.setLifecycleDrivers([
         {
           ...selected,
-          computeLifecycleHooks: { async afterNamespacePrepared() {} },
+          computeLifecycleHooks: { async beforeWorkloadStart() {} },
         },
       ]),
     /owners cannot change.*operations begin/i,
@@ -15246,17 +15247,11 @@ test("Kubernetes lifecycle hooks never run before cluster ownership and workload
     capability: "configuration",
     implementation: "local-selected",
     computeLifecycleHooks: {
-      async afterNamespacePrepared() {
-        calls.push("namespace-prepared");
-      },
       async beforeWorkloadStart() {
         calls.push("workload-start");
       },
       async beforeWorkloadStop() {
         calls.push("workload-stop");
-      },
-      async beforeNamespaceDelete() {
-        calls.push("namespace-delete");
       },
     },
   };

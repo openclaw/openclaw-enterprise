@@ -171,12 +171,10 @@ revision to change artifact authority. Live Agent policy apply remains unavailab
 
 ### Gateway readiness and workspace
 
-Optional readiness observes a Service and Pods in the OCC namespace (a paired
-Gateway normally uses a Backend `endpoint`). It needs a positive `timeoutMs`;
+Optional readiness observes the backing namespace's Service and Pods. It needs a positive `timeoutMs`;
 `pollIntervalMs` (default 1000) is at most `2147483647`. Development uses Harness readiness with the optional `startupDelayMs` unset.
 
-Install OpenShell's gateway separately. Required `gateway.workspaceMode`
-accepts `operator` or `managed`; deferred managed mode fails before Kubernetes
+Install operator-owned gateways separately. `gateway.workspaceMode` accepts `operator` or `managed`; deferred managed mode fails before Kubernetes
 mutations or Gateway calls. Configure the Gateway's Kubernetes driver with `workspaceMode: operator`, a
 namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels`
 listing `openclaw.dev/*`, `app.kubernetes.io/name`, and
@@ -184,6 +182,8 @@ listing `openclaw.dev/*`, `app.kubernetes.io/name`, and
 `SANDBOX_POD_LABELS_NOT_PERMITTED`. An OpenShell Workspace
 name must equal its pre-provisioned Kubernetes namespace: `oce-` plus a
 15-character digest, within the 19-character limit.
+
+[Namespace-owned gateway setup](openshell-sandbox/namespace-gateway.md) runs before Agents; live qualification remains required.
 
 The [development profile](../../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile)
 installs one Gateway with workspace resources disabled: in `oce-system` for the

@@ -143,9 +143,9 @@ model turn.
 
 ### Sandbox provisioning
 
-With OpenShell sandboxing, the optional `SandboxDriver.ensureNamespace`
-hook uses Compute's Kubernetes access directly, without a separate
-SandboxDriver Kubernetes access adapter. The hook applies approved
+With OpenShell sandboxing, composition adapts `SandboxDriver.ensureNamespace`
+to OCC Namespace lifecycle hooks. Compute resolves the exact backing namespace
+and selected Kubernetes client without calling Sandbox. The hook applies approved
 namespace-scoped OpenShell labels and NetworkPolicy resources, checks OpenShell
 gateway readiness, and creates or adopts the Namespace Workspace. Harness
 provisioning and cleanup follow the [SandboxDriver lifecycle](sandbox.md#admission-and-lifecycle):
