@@ -310,18 +310,28 @@ async function cleanupComposePostgres(resource, state, statePath) {
       `Refusing cleanup outside the owned PostgreSQL directory: ${resource.directory}`,
     );
   }
-  await execFile(
-    process.env.OCC_DOCKER_BIN ?? "docker",
-    composeArgs(resource, state, "down", "--volumes", "--remove-orphans"),
-    {
-      env: {
-        OCC_POSTGRES_PORT: String(resource.port),
-        ...(resource.directory === undefined
-          ? {}
-          : { OPENCLAW_CI_POSTGRES_INIT_SQL: join(resource.directory, "init-local.sql") }),
-      },
+  const args = composeArgs(resource, state, "down", "--volumes", "--remove-orphans");
+  if (resource.directory !== undefined && resource.directoryCreated !== true) {
+    if (resource.directoryCreated === false) {
+      try {
+        await lstat(resource.directory);
+      } catch (error) {
+        if (error.code === "ENOENT") {
+          return;
+        }
+        throw error;
+      }
+    }
+    throw new Error(`Refusing unconfirmed PostgreSQL bootstrap ownership: ${resource.directory}`);
+  }
+  await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
+    env: {
+      OCC_POSTGRES_PORT: String(resource.port),
+      ...(resource.directory === undefined
+        ? {}
+        : { OPENCLAW_CI_POSTGRES_INIT_SQL: join(resource.directory, "init-local.sql") }),
     },
-  );
+  });
   if (resource.directory !== undefined) {
     let entries;
     try {

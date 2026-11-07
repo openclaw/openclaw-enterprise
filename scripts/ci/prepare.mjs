@@ -628,11 +628,21 @@ async function ensurePostgresServer(statePath, state) {
   const resource = addResource(state, "compose-postgres", {
     name: project,
     directory,
+    directoryCreated: false,
     composeFile: composePostgresFile,
     port,
   });
   await writeState(statePath, state);
-  await mkdir(directory, { mode: 0o700 });
+  try {
+    await mkdir(directory, { mode: 0o700 });
+  } catch (error) {
+    state.resources = state.resources.filter(({ id }) => id !== resource.id);
+    await writeState(statePath, state);
+    throw error;
+  }
+  // Cleanup must not claim a competing directory if creation or this save fails.
+  resource.directoryCreated = true;
+  await writeState(statePath, state);
   // PostgreSQL reads this public bootstrap as its container user, not the checkout owner.
   const initSql = join(directory, "init-local.sql");
   await writeFile(initSql, await readFile(join(repositoryRoot, "migrations/init-local.sql")));

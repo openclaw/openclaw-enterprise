@@ -22,7 +22,9 @@ exit. Its PostgreSQL server is disposable, so preparation turns off `fsync`,
 needs its own state file. Preparation stages a container-readable copy of the public
 bootstrap SQL, so restrictive checkout permissions do not need changing. Cleanup
 removes this copy with the disposable server; unexpected files in its directory
-are preserved and reported as a cleanup failure. With Docker Compose available, run:
+are preserved and reported as a cleanup failure. If creation was not durably confirmed,
+cleanup also preserves the directory and state. Inspect their ownership before manual
+removal; a competing process may own the directory. With Docker Compose available, run:
 
 ```sh
 (

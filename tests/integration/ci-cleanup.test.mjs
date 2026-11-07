@@ -493,6 +493,7 @@ test("cleanup continues after a failed database drop and retains only the failed
   await mkdir(directory);
   await writeFile(join(directory, "init-local.sql"), "-- public bootstrap\n");
   state.resources[0].directory = directory;
+  state.resources[0].directoryCreated = true;
   await writeState(statePath, state);
 
   const result = await runAsync(statePath, { OCC_DOCKER_BIN: docker });
@@ -529,7 +530,7 @@ for (const location of ["unrelated-name", "matching-name-under-other-parent"]) {
         : join(root, "other-parent", `${state.resources[0].name}-bootstrap`);
     await mkdir(directory, { recursive: true });
     await writeFile(join(directory, "sentinel"), "unrelated content");
-    state.resources = [{ ...state.resources[0], directory }];
+    state.resources = [{ ...state.resources[0], directory, directoryCreated: true }];
     await writeState(statePath, state);
     const docker = await writeCommand(join(root, "bin"), "docker", "exit 0\n");
 
@@ -550,7 +551,7 @@ test("cleanup preserves unexpected PostgreSQL bootstrap contents and state", asy
   await mkdir(directory);
   await writeFile(join(directory, "init-local.sql"), "-- public bootstrap\n");
   await writeFile(join(directory, "sentinel"), "unrelated content");
-  state.resources = [{ ...state.resources[0], directory }];
+  state.resources = [{ ...state.resources[0], directory, directoryCreated: true }];
   await writeState(statePath, state);
   const docker = await writeCommand(join(root, "bin"), "docker", "exit 0\n");
 
@@ -560,6 +561,24 @@ test("cleanup preserves unexpected PostgreSQL bootstrap contents and state", asy
   assert.equal(result.status, 1);
   assert.match(result.stderr, /unexpected PostgreSQL bootstrap contents/);
   assert.equal(await readFile(join(directory, "init-local.sql"), "utf8"), "-- public bootstrap\n");
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+});
+
+test("cleanup retains a bootstrap directory whose creation was not durably confirmed", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state.json");
+  const state = failedDropState();
+  const directory = join(root, `${state.resources[0].name}-bootstrap`);
+  // A crash after mkdir but before confirmation leaves this exact durable state.
+  await mkdir(directory);
+  state.resources = [{ ...state.resources[0], directory, directoryCreated: false }];
+  await writeState(statePath, state);
+
+  const result = await runAsync(statePath, { OCC_DOCKER_BIN: join(root, "must-not-run") });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /unconfirmed PostgreSQL bootstrap ownership/);
+  assert.equal((await stat(directory)).isDirectory(), true);
   assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
 });
 

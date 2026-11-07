@@ -34,8 +34,11 @@ The preparation CLI records run-owned resources in a private state file before c
 `migrations/init-local.sql` into a run-owned directory beside the state file and makes that
 copy readable by the PostgreSQL container user. The Compose input
 `OPENCLAW_CI_POSTGRES_INIT_SQL` selects the copy; the checkout remains unchanged.
-The absolute directory path is recorded with the server before exclusive creation.
-An existing directory is refused.
+The absolute directory path is recorded with the server before exclusive creation;
+creation is confirmed in state before copying SQL or starting Compose. An existing
+directory is refused. Failed creation retires the planned record. If that save fails,
+or a crash interrupts creation before confirmation, cleanup preserves any directory
+at that path and retains the state for inspection.
 `scripts/ci/cleanup.mjs:cleanupComposePostgres` checks its exact path against the opened state
 file and removes only the SQL file and its empty directory after Compose teardown.
 Unexpected contents or failed teardown retain cleanup state.
