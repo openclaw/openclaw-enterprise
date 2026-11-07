@@ -680,12 +680,14 @@ test(
       await verify("live");
       phase = "after chat";
       previousReply = await conversation.turn(previousReply, remaining());
-      phase = "restart";
+      phase = "restart invocation";
       const restart = await fixture.restartWorker({
         agentId: a.agent.id,
         revisionId: a.revision.id,
       });
+      phase = "restart deadline";
       inTime();
+      phase = "restart identity";
       assert.ok(
         typeof restart.afterUid === "string" &&
           restart.afterUid.length > 0 &&
