@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-11-03
-last_updated_session: authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc
+updated: 2026-11-04
+last_updated_session: authoring-run/2f3cbf74-8902-4a39-8a88-09d6cc1b7dda
 ---
 
 # Installation Profile Rendering Flow
@@ -199,10 +199,11 @@ Kubernetes Compute, Kubernetes Secrets, default Preset seeding, and the profile
 PluginDriver. Compute settings consume the runtime image, DNS peer, trusted
 proxy CIDRs, plugin-status proxy CIDRs, gateway routing identity, runtime
 storage class, node selectors, and transport Secret prefix. The Codex profile
-also consumes the reviewed `runtime.codexSeccompProfile` path. Preflight applies
-the Compute driver's localhost-profile rule and refuses an absolute path, a
-backslash, an empty, `.`, or `..` segment, or a segment named `unconfined`,
-before writing `installation.yaml`. Optional `runtime.modelProvider.baseUrl` gets
+also consumes the optional reviewed `runtime.codexSeccompProfile` path when it
+is supplied and otherwise leaves Compute on `RuntimeDefault`. Preflight applies
+the Compute driver's localhost-profile rule to a supplied path and refuses an
+absolute path, a backslash, an empty, `.`, or `..` segment, or a segment named
+`unconfined`, before writing `installation.yaml`. Optional `runtime.modelProvider.baseUrl` gets
 Compute's endpoint rule. When optional
 managed ServiceAccount inputs are supplied, it emits the ChatGPT Backend and a
 matching ServiceAccount Driver; otherwise Codex Agents use the existing
@@ -305,6 +306,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 03:06: Align Codex profile rendering with Compute's optional localhost seccomp setting. (authoring-run/2f3cbf74-8902-4a39-8a88-09d6cc1b7dda - 09a17c8f7521382a9778b999b224e7e1cabdf3de)
 
 - 2026-11-03 15:09: Document shared provider routing and separate destination authorization. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 47e0e95df)
 
