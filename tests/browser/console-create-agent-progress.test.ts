@@ -196,12 +196,15 @@ test("Create Agent advances the provisioning step meter through each reported ph
   const handedOff = { agentId, configurationId: "cfg_progress", revisionId };
   // One phase per poll: the worker step, the Configuration and Agent, runtime credentials, the
   // first deployment, then success. The job's phase names the last completed phase, so the
-  // meter must stay one step behind it.
+  // meter must stay one step behind it. The queued read after handoff is the normal deferral
+  // between worker checks: it keeps its completed phases and revision, so the meter must not
+  // repaint every step pending.
   const reads = [
     work.job("running", { phase: "admitted" }),
     work.job("running", { phase: "configuration" }),
     work.job("running", { phase: "transport" }),
     work.job("running", { phase: "handoff", ...handedOff }),
+    work.job("queued", { phase: "handoff", ...handedOff }),
     work.job("succeeded", { phase: "handoff", ...handedOff }),
   ];
   const served = await routeProvisioningJob(page, fixture, work, reads);
@@ -337,6 +340,55 @@ test("a failed provisioning job marks its step failed and a retry starts the met
   assert.equal(layouts.at(-1), "done,done,failed,pending,pending");
 });
 
+test("a superseded first deployment keeps its own meter outcome", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
+  await fixture.bootstrap();
+  const namespace = await readyNamespace(fixture, "Progress superseded");
+  const page = await openCreateForm(t, fixture, namespace);
+  const work = provisioningJob(namespace.id, "work_progress_superseded");
+  const agentId = "agt_00000000-0000-4000-8000-00000000b637";
+  const revisionId = "rev_00000000-0000-4000-8000-00000000b637";
+  const handedOff = { agentId, configurationId: "cfg_superseded", revisionId };
+  // A newer deployment took over before the first was ready: a neutral ending, not a stop.
+  const reads = [
+    work.job("running", { phase: "admitted" }),
+    work.job("running", { phase: "handoff", ...handedOff }),
+    work.job("failed", {
+      phase: "handoff",
+      ...handedOff,
+      error: {
+        code: "REVISION_SUPERSEDED",
+        message: "Deployment was superseded by a newer revision.",
+      },
+    }),
+  ];
+  await routeProvisioningJob(page, fixture, work, reads);
+  await page.route(
+    `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
+    (route) =>
+      route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "NOT_FOUND", message: "No such deployment." },
+          meta: { requestId: "req_deployment_missing" },
+        }),
+      }),
+  );
+  await runProvisioningPolls(
+    page,
+    () => page.getByRole("button", { name: "Create Agent", exact: true }).click(),
+    work.url,
+    reads.length,
+  );
+  const state = await meterState(page);
+  assert.equal(state.outcome, "superseded");
+  assert.equal(state.phase, "Superseded while starting the first deployment.");
+  assert.equal(state.reason, "");
+  assert.equal(state.reasonHidden, true);
+  assert.deepEqual(state.steps, stepStates(["done", "done", "done", "superseded", "pending"]));
+});
+
 test("a refused provisioning request shows no step meter", async (t) => {
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
   await fixture.bootstrap();
@@ -369,6 +421,13 @@ test("the meter's throbber is static under reduced motion", async (t) => {
   const work = provisioningJob(namespace.id, "work_progress_reduced_motion");
   // The last read repeats, so the job stays running while the page is inspected.
   await routeProvisioningJob(page, fixture, work, [work.job("running", { phase: "admitted" })]);
+  // The taller sticky bar must raise the page's focus-scroll clearance while the meter is in
+  // it: the meter-specific rule wins the cascade over the base html:has(#create-agent-form).
+  const clearanceBefore = await page.evaluate(() =>
+    parseFloat(
+      globalThis.getComputedStyle(globalThis.document.documentElement).scrollPaddingBottom,
+    ),
+  );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page.waitForFunction(
     () =>
@@ -378,6 +437,15 @@ test("the meter's throbber is static under reduced motion", async (t) => {
   const state = await meterState(page);
   assert.equal(state.phaseRole, "status");
   assert.equal(state.elapsedRole, null);
+  const clearanceAfter = await page.evaluate(() =>
+    parseFloat(
+      globalThis.getComputedStyle(globalThis.document.documentElement).scrollPaddingBottom,
+    ),
+  );
+  assert.ok(
+    clearanceAfter - clearanceBefore >= 200,
+    `scroll clearance grew only ${clearanceAfter - clearanceBefore}px with the meter visible`,
+  );
   // The meter pins in the sticky action bar (the bar the reader selected Create Agent from),
   // and Retry stays hidden while the request is still in flight.
   assert.equal(state.inActionBar, true);
