@@ -87,8 +87,8 @@ denied records. Retry failures explicitly. `readingOverview` protects explicit r
 **Refresh deployment** queues a full reread; **Refresh record** preserves focus, ignoring
 repeats. Refusals open details; matching errors share alerts.
 
-Each surface shows revision-specific `repositoryAccess.message` beside the unchanged outcome.
-Conditions reveal details, never deploy; absence implies no health.
+Each surface shows revision-specific `repositoryAccess.message` beside unchanged outcomes.
+Conditions reveal details without deploying. Missing guidance leaves repository health unknown.
 
 `agents/deployment-recovery.mts` places failure recovery above the summary;
 `deployment-failure-steps.ts` classifies `deploy-again`, `logs` or `change`.
