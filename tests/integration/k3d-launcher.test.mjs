@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -56,6 +56,7 @@ async function runLauncher(
     activeLock = false,
     foreignState = false,
     checkoutBuiltState = false,
+    alreadyReset = false,
     stateVersion = 1,
     resourceOwner = "openclaw-ci-test",
     preparedHarness,
@@ -201,21 +202,27 @@ INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${${selecte
     await mkdir(state, { recursive: true });
     await writeFile(
       join(state, "state.json"),
-      `${JSON.stringify(
-        preparedState(
+      `${JSON.stringify({
+        ...preparedState(
           foreignState ? join(root, "another-checkout") : repositoryRoot,
           stateVersion,
           resourceOwner,
           stateHarness === "openclaw" ? "openshell" : "gateway-routing",
         ),
-      )}\n`,
+        ...(checkoutBuiltState ? { env: { OCC_K3D_OPENCLAW_COMMIT: "a".repeat(40) } } : {}),
+      })}\n`,
     );
     await writeFile(
       join(state, "env"),
-      "OCC_TEST_KUBERNETES_KUBECONFIG=/private/demo/kubeconfig\nOCC_TEST_KUBERNETES_CONTEXT=k3d-demo\n" +
-        (checkoutBuiltState ? `OCC_K3D_OPENCLAW_COMMIT=${"a".repeat(40)}\n` : ""),
+      "OCC_TEST_KUBERNETES_KUBECONFIG=/private/demo/kubeconfig\nOCC_TEST_KUBERNETES_CONTEXT=k3d-demo\n",
     );
     await writeFile(join(state, "ready"), "");
+    if (alreadyReset) {
+      // A prior reset deleted the exported environment but kept the state file.
+      await rm(join(state, "env"));
+      await rm(join(state, "ready"));
+      await writeFile(join(state, "reset"), "");
+    }
     if (action !== "reset" && action !== "down") {
       await writeFile(
         join(state, "demo.json"),
@@ -503,13 +510,17 @@ test("k3d rejects another checkout's prepared state before reset or reuse", asyn
 });
 
 test("k3d rejects a prepared native image built from a checkout", async (context) => {
-  // Older preparation recorded the checkout commit; the Gateway refuses that image.
-  await assert.rejects(
-    runLauncher(context, "docker", ["test", "--harness", "openclaw"], {
-      checkoutBuiltState: true,
-    }),
-    /predates the pinned runtime; run '.\/scripts\/k3d down --harness openclaw'/,
-  );
+  // Older preparation recorded the checkout commit; the Gateway refuses that image,
+  // and a reset must not let the saved state bypass the rejection.
+  for (const alreadyReset of [false, true]) {
+    await assert.rejects(
+      runLauncher(context, "docker", ["test", "--harness", "openclaw"], {
+        checkoutBuiltState: true,
+        alreadyReset,
+      }),
+      /predates the pinned runtime; run '.\/scripts\/k3d down --harness openclaw'/,
+    );
+  }
 });
 
 test("k3d validates prepared state metadata before reset", async (context) => {

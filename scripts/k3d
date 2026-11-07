@@ -373,6 +373,16 @@ load_state_lane() {
   ' "$state_file" 2>/dev/null || fail "prepared state is unreadable; run './scripts/k3d down'"
 }
 
+# Earlier preparation recorded a checkout commit for a native image the Gateway rejects.
+# The state file keeps it across reset, which deletes the exported environment.
+checkout_built_state() {
+  node -e '
+    const { readFileSync } = require("node:fs");
+    const state = JSON.parse(readFileSync(process.argv[1], "utf8"));
+    process.exit(state.env?.OCC_K3D_OPENCLAW_COMMIT ? 0 : 1);
+  ' "$state_file" 2>/dev/null
+}
+
 validate_prepared_environment() {
   # The embedded JavaScript must not use shell interpolation.
   # shellcheck disable=SC2016
@@ -713,6 +723,10 @@ export NODE_RUNTIME_BASE_IMAGE
 [ -n "$NODE_RUNTIME_BASE_IMAGE" ] ||
   fail "deploy/runtime/Dockerfile does not declare NODE_RUNTIME_BASE_IMAGE"
 
+if [ -f "$state_file" ] && checkout_built_state; then
+  fail "prepared native OpenClaw image predates the pinned runtime; run './scripts/k3d down --harness $harness' before retrying"
+fi
+
 if [ ! -f "$state_file" ]; then
   info "Preparing a disposable k3d cluster, PostgreSQL database, and runtime images."
   for base_image in "$NODE_BASE_IMAGE" "$NODE_RUNTIME_BASE_IMAGE"; do
@@ -746,10 +760,6 @@ elif [ ! -f "$env_file" ] || [ ! -f "$ready_file" ]; then
 else
   [ "$(load_state_lane)" = "$prepared_lane" ] ||
     fail "prepared state is not for the selected Harness; run './scripts/k3d down --harness $harness' before retrying"
-  # Earlier preparation recorded a checkout commit for a native image the Gateway rejects.
-  if grep -q '^OCC_K3D_OPENCLAW_COMMIT=' "$env_file"; then
-    fail "prepared native OpenClaw image predates the pinned runtime; run './scripts/k3d down --harness $harness' before retrying"
-  fi
   info "Reusing the prepared cluster, PostgreSQL database, and runtime images."
 fi
 
