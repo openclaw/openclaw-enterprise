@@ -201,12 +201,21 @@ export function failureSecrets(environments) {
   return [...values].sort(([a], [b]) => b.length - a.length);
 }
 
+function withoutStructuredLogLines(text) {
+  return text
+    .split("\n")
+    .filter((line) => !line.includes("OCSF-JSON"))
+    .join("\n");
+}
+
 // `cut` says the reporter cut the text at failureInputLimit (a caller may have
 // shortened it since).
-function redactText(text, limit, secrets, root, cut = text?.length >= failureInputLimit) {
+function redactText(text, limit, secrets, root, cut) {
   if (typeof text !== "string" || text.length === 0) {
     return undefined;
   }
+  text = withoutStructuredLogLines(text);
+  cut ??= text.length >= failureInputLimit;
   let result = stripVTControlCharacters(text.slice(0, failureInputLimit));
   if (root.length > 1) {
     result = result.replaceAll(`file://${root}/`, "").replaceAll(`${root}/`, "");
@@ -290,6 +299,7 @@ function redactDetailText(text, secrets, root) {
   if (typeof text !== "string") {
     return undefined;
   }
+  text = withoutStructuredLogLines(text);
   const raw = dropCredentialLines(
     stripControl(text.slice(0, failureInputLimit)).replace(privateKeyShape, "[redacted]"),
   );

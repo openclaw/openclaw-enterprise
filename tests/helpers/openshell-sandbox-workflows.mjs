@@ -66,6 +66,7 @@ import {
 import {
   assertGatewayPolicyRunSucceeded,
   openShellStaleRelay,
+  openShellSettingsChange,
   observeSandboxProbe,
   tokenEchoDigest,
   tokenEchoReply,
@@ -4979,7 +4980,7 @@ function unavailableTurnObservation(request) {
     policyAfterSha256: null,
     turnoverAtMs: null,
     staleTunnelAtMs: null,
-    disconnectedAtMs: null,
+    harness1006LogObserved: false,
     capturedGeneration: null,
     currentGeneration: null,
     configUnchanged: false,
@@ -5021,7 +5022,6 @@ async function gatewayTurnObservation(topology, before, request) {
       return read.value;
     });
   });
-  const timestamp = (line) => Date.parse(line.split(" ", 1)[0]);
   // Both snapshots bracket Gateway time against this process. The disposable k3d
   // containers share a host clock; uncertain boundary ordering is not proof of overlap.
   const clockOffsetMinMs =
@@ -5030,48 +5030,39 @@ async function gatewayTurnObservation(topology, before, request) {
     before && after ? Math.min(before.clockOffsetMaxMs, after.clockOffsetMaxMs) : null;
   const comparable =
     clockOffsetMinMs !== null && clockOffsetMaxMs !== null && clockOffsetMinMs <= clockOffsetMaxMs;
-  const couldOverlap = (line) =>
+  const couldOverlap = (time) =>
     comparable &&
-    timestamp(line) >= request.startedAtMs + clockOffsetMinMs &&
-    timestamp(line) <= request.finishedAtMs + clockOffsetMaxMs;
-  const supervisorLines = (logs?.[0] ?? []).filter(couldOverlap);
+    time >= request.startedAtMs + clockOffsetMinMs &&
+    time <= request.finishedAtMs + clockOffsetMaxMs;
+  // OCSF time records occurrence; kubectl timestamps record queued log delivery.
+  const supervisorLines = logs?.[0] ?? [];
   const settings = supervisorLines
-    .filter(
-      (line) =>
-        !line.includes("OCSF-JSON") && line.includes("Settings poll: config change detected"),
-    )
-    .map((line) => ({
-      line,
-      match:
-        /Settings poll: config change detected \[old_revision:(\d+) new_revision:(\d+) policy_changed:(true|false) provider_env_changed:(true|false)\]/.exec(
-          line,
-        ),
-    }));
-  const providerOnly = ({ match }) =>
-    match && match[1] === match[2] && match[3] === "false" && match[4] === "true";
+    .map(openShellSettingsChange)
+    .filter((event) => event && couldOverlap(event.atMs));
+  const providerOnly = (event) =>
+    event.oldRevision === event.newRevision && !event.policyChanged && event.providerEnvChanged;
   const turnover = settings.find(providerOnly);
   const settingsConsistent = settings.every(
     (event) =>
       providerOnly(event) &&
-      createHash("sha256").update(event.match[1]).digest("hex") === before?.config &&
-      createHash("sha256").update(event.match[2]).digest("hex") === after?.config,
+      createHash("sha256").update(event.oldRevision).digest("hex") === before?.config &&
+      createHash("sha256").update(event.newRevision).digest("hex") === after?.config,
   );
   const target = `${openShellGatewayName(topology.agent.id)}.${topology.gatewayPlacement}.svc.cluster.local`;
   const stale = supervisorLines
-    .map((line) => ({ line, relay: openShellStaleRelay(line, target) }))
+    .map((line) => openShellStaleRelay(line, target))
     .find(
-      ({ line, relay }) =>
-        relay &&
+      (event) =>
+        event &&
+        couldOverlap(event.atMs) &&
         turnover &&
-        timestamp(line) >= timestamp(turnover.line) &&
-        relay.currentGeneration === relay.capturedGeneration + 1,
+        event.atMs >= turnover.atMs &&
+        event.currentGeneration === event.capturedGeneration + 1,
     );
-  const disconnected = (logs?.[1] ?? []).find(
-    (line) =>
-      couldOverlap(line) &&
-      stale &&
-      timestamp(line) >= timestamp(stale.line) &&
-      line.includes("node host gateway closed (1006)"),
+  // The native close line has no occurrence timestamp. It only corroborates a
+  // 1006 in this bounded log; do not infer its order or cause from delivery time.
+  const harness1006LogObserved = (logs?.[1] ?? []).some((line) =>
+    line.includes("node host gateway closed (1006)"),
   );
   const complete = Boolean(before && after && logs);
   const stableRuntime =
@@ -5093,11 +5084,11 @@ async function gatewayTurnObservation(topology, before, request) {
     configAfterSha256: metadata(after, "config"),
     policyBeforeSha256: metadata(before, "policy"),
     policyAfterSha256: metadata(after, "policy"),
-    turnoverAtMs: turnover ? timestamp(turnover.line) : null,
-    staleTunnelAtMs: stale ? timestamp(stale.line) : null,
-    disconnectedAtMs: disconnected ? timestamp(disconnected) : null,
-    capturedGeneration: stale?.relay.capturedGeneration ?? null,
-    currentGeneration: stale?.relay.currentGeneration ?? null,
+    turnoverAtMs: turnover?.atMs ?? null,
+    staleTunnelAtMs: stale?.atMs ?? null,
+    harness1006LogObserved,
+    capturedGeneration: stale?.capturedGeneration ?? null,
+    currentGeneration: stale?.currentGeneration ?? null,
     configUnchanged: Boolean(before && after && before.config === after.config),
     policyUnchanged: Boolean(before && after && before.policy === after.policy),
     providerEnvChanged: Boolean(turnover),

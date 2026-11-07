@@ -3370,7 +3370,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
       '  t.diagnostic("phase timings 1234 ms");',
       `  for (const message of ${JSON.stringify(phaseDiagnostics)}) t.diagnostic(message);`,
-      '  assert.fail(`password="fixture,\\nprivate-tail" phase=after ${"stage line\\n".repeat(80)}decisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
+      '  assert.fail(`password="fixture,\\nprivate-tail" phase=after\\nOCSF-JSON {"payload":"structured-private-early"}\\n${"stage line\\n".repeat(80)}OCSF-JSON {"payload":"structured-private-late"\\ndecisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
       "});",
       "",
     ].join("\n"),
@@ -3435,6 +3435,10 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
   assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123|private-tail|passing output/);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${text}`, /fixture-opaque-phase-detail/);
+  assert.doesNotMatch(
+    `${JSON.stringify(summary)}\n${result.stdout}\n${result.stderr}\n${text}`,
+    /structured-private|OCSF-JSON/,
+  );
   const report = JSON.parse(text);
   assert.equal(report.lane, "details");
   assert.equal(report.failures.length, 1);
@@ -5686,7 +5690,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     policyAfterSha256: null,
     turnoverAtMs: null,
     staleTunnelAtMs: null,
-    disconnectedAtMs: null,
+    harness1006LogObserved: false,
     capturedGeneration: null,
     currentGeneration: null,
     configUnchanged: false,
@@ -5725,7 +5729,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     providerEnvAfterSha256: "e".repeat(64),
     turnoverAtMs: 1_800_000_001_000,
     staleTunnelAtMs: 1_800_000_002_000,
-    disconnectedAtMs: 1_800_000_002_001,
+    harness1006LogObserved: true,
     capturedGeneration: 1,
     currentGeneration: 2,
     providerEnvChanged: true,
@@ -5756,6 +5760,16 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     qualification: "incomplete",
   };
   const changedGateway = { ...turnContinuity, stableRuntime: false, qualification: "incomplete" };
+  const earlyRelay = {
+    ...turnContinuity,
+    staleTunnelAtMs: 1_799_999_999_999,
+    qualification: "incomplete",
+  };
+  const lateTurnover = {
+    ...turnContinuity,
+    turnoverAtMs: 1_800_000_010_001,
+    qualification: "incomplete",
+  };
   await writeFile(
     join(root, "tests/integration/measurements.test.mjs"),
     [
@@ -5989,13 +6003,19 @@ test("run records only allowlisted measurements from test diagnostics", async (t
           { nonceMatched: "secretauthvalue-matched" },
           { durableCommands: 1 },
           { stableRuntime: undefined },
+          { harness1006LogObserved: "secretauthvalue-close" },
         ].map((invalid) => measurement({ ...turnContinuity, ...invalid })),
-        ...[conflictingSettings, unchangedProvider, missingTurnoverEvent, changedGateway].flatMap(
-          (value) => [
-            measurement(value),
-            measurement({ ...value, qualification: "turn-continuity" }),
-          ],
-        ),
+        ...[
+          conflictingSettings,
+          unchangedProvider,
+          missingTurnoverEvent,
+          changedGateway,
+          earlyRelay,
+          lateTurnover,
+        ].flatMap((value) => [
+          measurement(value),
+          measurement({ ...value, qualification: "turn-continuity" }),
+        ]),
         "openclaw-ci-measurement secretauthvalue-not-json",
         "secretauthvalue-plain-diagnostic",
       ].map((message) => `  t.diagnostic(${JSON.stringify(message)});`),
@@ -6107,6 +6127,8 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     unchangedProvider,
     missingTurnoverEvent,
     changedGateway,
+    earlyRelay,
+    lateTurnover,
   ]);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
 });

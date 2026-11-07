@@ -473,11 +473,12 @@ export function openShellTurnoverQualification(value) {
   ) {
     return "incomplete";
   }
-  const events = [value.turnoverAtMs, value.staleTunnelAtMs, value.disconnectedAtMs];
+  const events = [value.turnoverAtMs, value.staleTunnelAtMs];
   const providerChanged = value.providerEnvBeforeSha256 !== value.providerEnvAfterSha256;
   if (
     !providerChanged &&
     !value.providerEnvChanged &&
+    !value.harness1006LogObserved &&
     events.every((time) => time === null) &&
     value.capturedGeneration === null &&
     value.currentGeneration === null &&
@@ -493,14 +494,14 @@ export function openShellTurnoverQualification(value) {
   if (
     providerChanged &&
     value.providerEnvChanged &&
+    value.harness1006LogObserved &&
     events.every(inRequest) &&
     Number.isSafeInteger(value.connectedBeforeMs) &&
     value.connectedBeforeMs <= value.startedAtMs + value.clockOffsetMinMs &&
     value.connectedAfterMs > value.connectedBeforeMs &&
     inRequest(value.connectedAfterMs) &&
     value.turnoverAtMs <= value.staleTunnelAtMs &&
-    value.staleTunnelAtMs <= value.disconnectedAtMs &&
-    value.disconnectedAtMs <= value.connectedAfterMs &&
+    value.staleTunnelAtMs <= value.connectedAfterMs &&
     Number.isSafeInteger(value.capturedGeneration) &&
     value.capturedGeneration >= 0 &&
     value.currentGeneration === value.capturedGeneration + 1
@@ -546,7 +547,6 @@ function safeOpenShellInitialTurnoverMeasurement(value) {
     "connectedAfterMs",
     "turnoverAtMs",
     "staleTunnelAtMs",
-    "disconnectedAtMs",
     "capturedGeneration",
     "currentGeneration",
   ]) {
@@ -574,6 +574,7 @@ function safeOpenShellInitialTurnoverMeasurement(value) {
   }
   for (const key of [
     "nonceMatched",
+    "harness1006LogObserved",
     "durableCommands",
     "configUnchanged",
     "policyUnchanged",

@@ -17,6 +17,7 @@ import { prependPath } from "../helpers/fake-commands.ts";
 import {
   assertGatewayPolicyRunSucceeded,
   openShellStaleRelay,
+  openShellSettingsChange,
   observeSandboxProbe,
 } from "../helpers/k3d-failure-diagnostics.mjs";
 import { listen } from "../helpers/listen.mjs";
@@ -51,6 +52,7 @@ test("OpenShell turnover accepts established relay failures, not connection admi
   // Serialized shapes follow the pinned supervisor NetworkActivity producer. This proves
   // parsing and projection only, not that a live supervisor emitted the event.
   const event = {
+    time: 1_799_999_999_000,
     class_uid: 4001,
     activity_id: 4,
     status_id: 2,
@@ -62,11 +64,14 @@ test("OpenShell turnover accepts established relay failures, not connection admi
   for (const protocol of ["TLS", "L7", "HTTP"]) {
     assert.deepEqual(
       openShellStaleRelay(line({ ...event, message: `${protocol} relay error: ${stale}` }), domain),
-      { capturedGeneration: 7, currentGeneration: 8 },
+      { atMs: 1_799_999_999_000, capturedGeneration: 7, currentGeneration: 8 },
     );
   }
   for (const rejected of [
     { ...event, activity_id: 1, action_id: 2 },
+    { ...event, time: undefined },
+    { ...event, time: "1799999999000" },
+    { ...event, time: Number.MAX_SAFE_INTEGER + 1 },
     { ...event, message: stale },
     { ...event, class_uid: 6003 },
     { ...event, status_id: 1 },
@@ -80,6 +85,24 @@ test("OpenShell turnover accepts established relay failures, not connection admi
     null,
   );
   assert.equal(openShellStaleRelay('2026-11-07T00:00:00Z OCSF-JSON {"message":', domain), null);
+  // Delivery time above is intentionally different; occurrence and u64 revision
+  // text must survive without JavaScript numeric rounding.
+  const revision = "18446744073709551615";
+  const settings = {
+    time: event.time,
+    class_uid: 5019,
+    activity_id: 1,
+    status_id: 1,
+    message: `Settings poll: config change detected [old_revision:${revision} new_revision:${revision} policy_changed:false provider_env_changed:true]`,
+  };
+  assert.deepEqual(openShellSettingsChange(line(settings)), {
+    atMs: event.time,
+    oldRevision: revision,
+    newRevision: revision,
+    policyChanged: false,
+    providerEnvChanged: true,
+  });
+  assert.equal(openShellSettingsChange(line({ ...settings, time: null })), null);
 });
 
 test("a failed protected update reports its stored job state without disclosing Gateway text", async (t) => {

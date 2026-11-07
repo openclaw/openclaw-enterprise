@@ -77,14 +77,18 @@ the original turns still run. Full structured events stay out of raw failure dia
 Bounded reads before and after each original request use Compute's Agent-owned
 `workspace-node.json` binding and authenticated `node.list` to identify the same
 node and its connection timestamp. The measurements retain metadata fingerprints,
-request timing through body and nonce verification, and matching supervisor and
-Harness event times. They contain no request payloads, raw node identifiers,
+request timing through body and nonce verification, supervisor event occurrence
+times, and whether the bounded Harness log contains a 1006 close. They contain no request payloads, raw node identifiers,
 credentials, or raw logs.
 
 `turn-continuity` requires an in-request provider-environment change with unchanged
 configuration and policy, a structured failure from the Agent Gateway's established
-relay reporting a stale generation,
-a 1006 disconnect, the same node reconnecting, and a successful original response.
+relay reporting a stale generation, the same node reconnecting, and a successful
+original response. Supervisor occurrence times and the node's connection timestamp
+must be ordered within the original request; queued log delivery timestamps do not
+establish that order. `harness1006LogObserved` also requires a 1006 close in the
+bounded Harness log. That line has no occurrence timestamp and does not establish
+close order or cause.
 Gateway boot identity and Gateway, Harness, and supervisor container identities
 must remain unchanged. Provider snapshots must be ready with all installation flags and show a revision change; all
 settings-change events must corroborate unchanged configuration and policy.
