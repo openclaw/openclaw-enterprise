@@ -156,6 +156,46 @@ export function projectOpenShellGitExpiryObservation(value) {
   return project(value, fields);
 }
 
+/** Select matching maintenance completions before buffering their diagnostics. */
+export function projectOpenShellGitMaintenanceCompletion(value) {
+  return project(value, {
+    outcome: [
+      "outcome",
+      (outcome) => choice("success", "pending", "retry", "permanent")(outcome) ?? "unrecognized",
+    ],
+    code: ["code", (code) => cleanupCode(code) ?? "unrecognized"],
+  });
+}
+
+const maintenanceDiagnostics = {
+  reason: [
+    "reason",
+    choice("permanent", "read-failure", "cancelled", "own-budget-exhausted", "unrecognized"),
+  ],
+  completionsTruncated: ["completionsTruncated", boolean],
+  completions: [
+    "completions",
+    (value) => {
+      if (!Array.isArray(value) || value.length > 16) {
+        return undefined;
+      }
+      const selected = value.map(projectOpenShellGitMaintenanceCompletion);
+      return selected.every((item) => item !== undefined) ? selected : undefined;
+    },
+  ],
+};
+for (const name of [
+  "logReads",
+  "logReadSuccesses",
+  "logReadFailures",
+  "linesRead",
+  "parsedEvents",
+  "parseFailures",
+  "tailLimitReads",
+]) {
+  maintenanceDiagnostics[name] = [name, count];
+}
+
 const expiryDiagnostics = {
   namespaceIdHash: ["namespaceId", identityHash],
   agentIdHash: ["agentId", identityHash],
@@ -278,6 +318,7 @@ const events = {
         }),
     ],
   },
+  "worker-maintenance-unconfirmed": maintenanceDiagnostics,
   "worker-restart-unconfirmed": {
     stage: [
       "stage",

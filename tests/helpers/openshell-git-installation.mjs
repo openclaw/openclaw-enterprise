@@ -11,6 +11,7 @@ import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sa
 import {
   openShellGitRetentionKind,
   projectOpenShellGitExpiryObservation,
+  projectOpenShellGitMaintenanceCompletion,
   projectOpenShellGitRetention,
 } from "../../scripts/ci/openshell-git-retention.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
@@ -1192,6 +1193,8 @@ async function installOpenShellGit(t, witnessIssuedGit) {
   };
   const restartWorker = async (identity) => {
     let stage = "ready-worker";
+    let maintenance;
+    const maintenanceWait = "replacement worker revision maintenance";
     try {
       const before = await eventually("ready worker", worker);
       stage = "durable-before";
@@ -1216,11 +1219,38 @@ async function installOpenShellGit(t, witnessIssuedGit) {
         return pod?.metadata.uid !== before.metadata.uid ? pod : undefined;
       });
       stage = "revision-maintenance";
-      await eventually("replacement worker revision maintenance", () =>
-        completedWork(after, identity, (event) =>
-          event.workId?.startsWith(`agent_revision:${identity.revisionId}:maintenance:`),
-        ),
-      );
+      maintenance = {
+        logReads: 0,
+        logReadSuccesses: 0,
+        logReadFailures: 0,
+        linesRead: 0,
+        parsedEvents: 0,
+        parseFailures: 0,
+        tailLimitReads: 0,
+        completions: [],
+        completionsTruncated: false,
+      };
+      await eventually(maintenanceWait, async () => {
+        const events = await workerEvents(after, maintenance);
+        return completedWork(
+          after,
+          identity,
+          (event) => {
+            const matches = event.workId?.startsWith(
+              `agent_revision:${identity.revisionId}:maintenance:`,
+            );
+            if (matches) {
+              maintenance.completions.push(projectOpenShellGitMaintenanceCompletion(event));
+              if (maintenance.completions.length > 16) {
+                maintenance.completions.shift();
+                maintenance.completionsTruncated = true;
+              }
+            }
+            return matches;
+          },
+          events,
+        );
+      });
       stage = "durable-after";
       const retained = await durableIdentity();
       stage = "durable-retention-assertion";
@@ -1229,6 +1259,25 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     } catch (error) {
       try {
         measurement("worker-restart-unconfirmed", { stage });
+        if (stage === "revision-maintenance") {
+          let reason = "unrecognized";
+          if (
+            error?.code === "ERR_ASSERTION" &&
+            maintenance.completions.at(-1)?.outcome === "permanent"
+          ) {
+            reason = "permanent";
+          } else if (t.signal.aborted) {
+            reason = "cancelled";
+          } else if (maintenance.logReadFailures > 0) {
+            reason = "read-failure";
+          } else if (
+            error instanceof Error &&
+            error.message === `Timed out waiting for ${maintenanceWait}`
+          ) {
+            reason = "own-budget-exhausted";
+          }
+          measurement("worker-maintenance-unconfirmed", { ...maintenance, reason });
+        }
       } catch {
         // Diagnostic failures must not hide the original restart failure.
       }

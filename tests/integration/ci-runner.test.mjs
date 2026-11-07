@@ -5630,8 +5630,16 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   };
   // The live observer uses this same projection before retaining or emitting a
   // record. Malicious fields must disappear there, not just in the reporter.
-  const { projectOpenShellGitExpiryObservation } =
+  const { projectOpenShellGitExpiryObservation, projectOpenShellGitMaintenanceCompletion } =
     await import("../../scripts/ci/openshell-git-retention.mjs");
+  assert.deepEqual(
+    projectOpenShellGitMaintenanceCompletion({
+      outcome: forbidden,
+      code: forbidden,
+      error: forbidden,
+    }),
+    { outcome: "unrecognized", code: "unrecognized" },
+  );
   const captured = expiryDiagnostic.observations.map(projectOpenShellGitExpiryObservation);
   assert.ok(!JSON.stringify(captured).includes(forbidden));
   assert.equal(captured[4].code, "unrecognized");
@@ -5671,6 +5679,31 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     startedAt: 1_800_000_000_000,
     endedAt: 1_800_000_001_000,
   }));
+  const maintenanceDiagnostic = {
+    event: "worker-maintenance-unconfirmed",
+    reason: "own-budget-exhausted",
+    logReads: 3,
+    logReadSuccesses: 2,
+    logReadFailures: 1,
+    linesRead: 2004,
+    parsedEvents: 2000,
+    parseFailures: 4,
+    tailLimitReads: 1,
+    completionsTruncated: false,
+    completions: [
+      { outcome: "pending", code: "REPOSITORY_CLEANUP_PENDING", error: forbidden },
+      { outcome: "retry", code: forbidden },
+      { outcome: "permanent", code: "REPOSITORY_ACCESS_WITHDRAWN" },
+    ],
+    error: forbidden,
+  };
+  const maintenanceReasons = [
+    "permanent",
+    "read-failure",
+    "cancelled",
+    "own-budget-exhausted",
+    "unrecognized",
+  ];
   const restartStages = [
     "ready-worker",
     "durable-before",
@@ -5682,6 +5715,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     "durable-retention-assertion",
   ];
   const retentionReceipts = [
+    ...maintenanceReasons.map((reason) => ({ ...maintenanceDiagnostic, reason })),
     ...restartStages.map((stage) => ({
       event: "worker-restart-unconfirmed",
       stage,
@@ -5829,6 +5863,13 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     { event: "finite-git-grant", revisionId: opaque, deadlineWallMs: -1 },
     { event: "model-turn-succeeded", stage: "before-expiry", nonce: forbidden },
     { event: "model-turn-succeeded", stage: forbidden, nonce: `FIRST_AGENT_${uuid}` },
+    { ...maintenanceDiagnostic, reason: forbidden },
+    { ...maintenanceDiagnostic, logReadFailures: -1 },
+    { ...maintenanceDiagnostic, logReadSuccesses: forbidden },
+    { ...maintenanceDiagnostic, tailLimitReads: 0.5 },
+    { ...maintenanceDiagnostic, completionsTruncated: forbidden },
+    { ...maintenanceDiagnostic, completions: Array(17).fill({ outcome: "retry", code: "x" }) },
+    { ...maintenanceDiagnostic, completions: [forbidden] },
     { event: "worker-restart-unconfirmed", stage: forbidden },
     { event: "worker-restart-unconfirmed" },
     { event: "cleanup", outcome: forbidden },
@@ -6223,6 +6264,27 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       kind: retentionKind,
       event: "worker-restart-unconfirmed",
       stage,
+    })),
+  );
+  assert.deepEqual(
+    receipts.filter(({ event }) => event === "worker-maintenance-unconfirmed"),
+    maintenanceReasons.map((reason) => ({
+      kind: retentionKind,
+      event: "worker-maintenance-unconfirmed",
+      reason,
+      logReads: 3,
+      logReadSuccesses: 2,
+      logReadFailures: 1,
+      linesRead: 2004,
+      parsedEvents: 2000,
+      parseFailures: 4,
+      tailLimitReads: 1,
+      completionsTruncated: false,
+      completions: [
+        { outcome: "pending", code: "REPOSITORY_CLEANUP_PENDING" },
+        { outcome: "retry", code: "unrecognized" },
+        { outcome: "permanent", code: "REPOSITORY_ACCESS_WITHDRAWN" },
+      ],
     })),
   );
   const unconfirmed = receipts.find(({ event }) => event === "git-expiry-unconfirmed");
