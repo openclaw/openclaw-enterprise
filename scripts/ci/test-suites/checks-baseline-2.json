@@ -138,6 +138,7 @@
         "release checkout admission rejects hidden edits and ignored execution inputs before Docker",
         "rehearsal TLS requests reject malformed and interrupted responses without exposing bytes",
         "upgrade availability observations retain failures and gaps without overlapping TLS requests",
+        "upgrade availability retains incomplete observations when its process is killed",
         "upgrade availability preserves action and evidence-write failures",
         "timed-out fixture commands reject success and terminate their subprocesses without exposing output",
         "interrupted rehearsal runners stop concurrent command groups before exiting",
