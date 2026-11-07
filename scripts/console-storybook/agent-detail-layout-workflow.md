@@ -106,6 +106,15 @@ backend persistence or deployment.
    phone widths. At phone width, reload and repeat. This time, scroll to the top
    after tabbing to the button. The details still open and the reader stays at
    the top.
+   In **Refresh deployment focus when a newer version appears**, open the preview
+   in its own tab, fold **Deployment details**, and Tab to **Refresh deployment**.
+   About five seconds after queued v7 appears, its quiet poll starts and the
+   button stays enabled. Press Enter during the next six seconds. The button
+   becomes busy immediately and keeps focus as the panel switches to v8.
+   When the simulated record read fails, v8 shows a retry notice and the
+   button is enabled and still focused. Reset the story to replay. The real
+   Controller regression for this replacement is in
+   `tests/browser/console-agent-detail-2.test.ts`.
    These stories simulate responses. The real Controller browser regression in
    `tests/browser/console-deployment-activity.test.ts` additionally checks queued →
    503 → queued, queued → running, terminal completion with the diagnostics
