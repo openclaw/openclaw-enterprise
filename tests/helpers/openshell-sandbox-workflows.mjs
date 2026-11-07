@@ -4725,7 +4725,7 @@ async function readGatewayTurnFailureDiagnostic(
   return `\n${sections.join("\n")}`;
 }
 
-async function requestGatewayTurns(context, topology, harnessId) {
+async function requestGatewayTurns(context, topology, harnessId, recordCheckpoint) {
   const passwordSecret = await resource(
     "secret",
     `gateway-password-${hash(topology.agent.id)}`,
@@ -4740,6 +4740,7 @@ async function requestGatewayTurns(context, topology, harnessId) {
   const sessionKey = `openshell-gateway-${randomUUID()}`;
   const nonces = [];
   const requestTurn = async () => {
+    recordCheckpoint?.("turn-request", nonces.length + 1);
     const nonce = `OCC-OPENSHELL-GATEWAY-${randomUUID()}`;
     nonces.push(nonce);
     const prompt =
@@ -4769,9 +4770,12 @@ async function requestGatewayTurns(context, topology, harnessId) {
         `Agent Gateway turn request failed: ${error?.message ?? String(error)}${diagnostic}`,
       );
     }
+    recordCheckpoint?.("response-read", nonces.length);
     const body = await response.text();
+    recordCheckpoint?.("credential-absence", nonces.length);
     assert.equal(body.includes(modelCredential), false);
     assert.equal(body.includes(gatewayPassword), false);
+    recordCheckpoint?.("http-status", nonces.length, response.status);
     const failureDiagnostic =
       response.status === 200 ? "" : await gatewayTurnFailureDiagnostic(topology, gatewayPassword);
     assert.equal(
@@ -4779,6 +4783,7 @@ async function requestGatewayTurns(context, topology, harnessId) {
       200,
       `Gateway ${harnessId} turn ${nonces.length}: HTTP ${response.status}, expected 200.${failureDiagnostic}`,
     );
+    recordCheckpoint?.("response-nonce", nonces.length);
     assert.match(JSON.parse(body).choices?.[0]?.message?.content ?? "", new RegExp(nonce));
   };
 
@@ -4787,6 +4792,7 @@ async function requestGatewayTurns(context, topology, harnessId) {
   await requestTurn();
   await requestTurn();
   if (harnessId === "codex") {
+    recordCheckpoint?.("native-evidence", 0);
     // Inspect native, durable command records, not the model's claim that it ran printf.
     // The HTTP requests above must pass through the regular OpenClaw bridge.
     const claims = new Set(
@@ -8583,9 +8589,23 @@ export function registerProviderLifecycleTest(workflow) {
         process.stderr.write(
           "OpenShell integration: exposed Codex initialized; starting real shell turns through the Agent Gateway.\n",
         );
-        await measureOpenShellStage(testContext, "initial-model", () =>
-          requestGatewayTurns(context, topology, "codex"),
-        );
+        await measureOpenShellStage(testContext, "initial-model", async () => {
+          let failure = { checkpoint: "gateway-setup", turn: 0, status: null };
+          try {
+            await requestGatewayTurns(context, topology, "codex", (checkpoint, turn, status) => {
+              failure = {
+                checkpoint,
+                turn,
+                status: Number.isInteger(status) && status >= 100 && status <= 599 ? status : null,
+              };
+            });
+          } catch (error) {
+            testContext.diagnostic(
+              `openclaw-ci-measurement ${JSON.stringify({ kind: "openshell-gateway-turn-failure", ...failure })}`,
+            );
+            throw error;
+          }
+        });
         process.stderr.write("OpenShell integration: regular Gateway shell turns passed.\n");
         if (policyCase) {
           if (!networkPolicyOnly) {
