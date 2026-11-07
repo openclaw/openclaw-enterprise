@@ -2040,6 +2040,30 @@ test("a nonaccepted Helm submission retries the same successor after checked his
   assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
 });
 
+test("quiescence validates both writers before stopping either and resumes after correction", async (t) => {
+  const f = await fixture(t);
+  // A preexisting worker configuration must not cause an avoidable API outage.
+  const initial = await f.state();
+  initial.worker = 2;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(initial));
+  await assert.rejects(f.run(), /openclaw-enterprise-worker has unexpected ownership or replicas/);
+  const refused = await f.state();
+  const events = await f.events();
+  t.diagnostic(JSON.stringify({ api: refused.api, worker: refused.worker, events }));
+  assert.equal(refused.api, 1);
+  assert.equal(refused.worker, 2);
+  assert.deepEqual(events, []);
+  assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+
+  // Operator correction permits normal resume without replaying a migration.
+  refused.worker = 1;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(refused));
+  await f.run("--resume");
+  assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "secret-replaced", "migration"]);
+  assert.equal((await f.state()).api, 1);
+  assert.equal((await f.state()).worker, 1);
+});
+
 test("an interrupted quiescence never starts migration while the worker still runs", async (t) => {
   const f = await fixture(t);
   await f.failNext("fail-scale-worker");

@@ -79,9 +79,10 @@ rows retain the operation, component (`api`, `worker`, `release`) and exit code.
 Client failures do not establish whether requests took effect; other failures
 may leave no row. Reconcile live state before resuming.
 
-UID, resource-version or replica drift refuses the stop before migration;
-the API may already be stopped. Reconcile `current-<component>-deployment.json`
-and `quiescence-<component>-patch.json` against live state before resuming.
+Both Deployments are validated before stopping either. Later UID/version/replica
+conflicts can leave the API stopped. Reconcile
+`current-<component>-deployment.json` and `quiescence-<component>-patch.json`
+against live state before resuming.
 
 Helm failure or disconnection does not prove migration rollback. Inspect live
 Helm status/history, initialization Job/Pod outcomes and the retained database;
