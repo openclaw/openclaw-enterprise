@@ -319,17 +319,13 @@ test("a failed provisioning job marks its step failed and a retry starts the met
   assert.ok(bar.meter.top >= 0 && bar.meter.bottom <= bar.viewportHeight, "meter off screen");
 
   // The retry resets the meter to its first step before the job fails again on the next read.
-  // Retry itself is offered only now that the request ended; it stayed hidden in flight.
-  assert.equal(
-    await page.getByRole("button", { name: "Retry provisioning request" }).isVisible(),
-    true,
-  );
-  await runProvisioningPolls(
-    page,
-    () => page.getByRole("button", { name: "Retry provisioning request" }).click(),
-    work.url,
-    reads.length + 1,
-  );
+  // Retry itself is offered only now that the request ended; it stayed hidden in flight, and
+  // the retried request hides it again for its own run, exactly like the first submission.
+  const retryButton = page.getByRole("button", { name: "Retry provisioning request" });
+  assert.equal(await retryButton.isVisible(), true);
+  await retryButton.click();
+  assert.equal(await retryButton.isVisible(), false);
+  await runProvisioningPolls(page, () => Promise.resolve(), work.url, reads.length + 1);
   await waitForProvisioningFailure(page);
   const paints = await page.evaluate(() => globalThis.meterPaints);
   const layouts = paints.map((paint) => paint.states.join());

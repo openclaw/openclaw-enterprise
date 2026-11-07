@@ -328,18 +328,22 @@ export function createAgentRoutes(scenario: CreateScenario, dependencies: Create
                   : "succeeded"
                 : "running";
         }
+        // Production records the Configuration and Agent during the configuration phase and
+        // the revision only at handoff; the fixture follows the same lifecycle so the meter
+        // walks each step instead of jumping to the deployment on an early revision.
+        const phase = scenario.provisioningPhases
+          ? (scenario.provisioningPhases[
+              Math.min(current.reads - 1, scenario.provisioningPhases.length - 1)
+            ] ?? "handoff")
+          : current.reads > 1
+            ? "handoff"
+            : "configuration";
         return response({
           provisioning: {
             requestId: current.requestId,
             workId: current.workId,
             status: current.status,
-            phase: scenario.provisioningPhases
-              ? (scenario.provisioningPhases[
-                  Math.min(current.reads - 1, scenario.provisioningPhases.length - 1)
-                ] ?? "handoff")
-              : current.reads > 1
-                ? "handoff"
-                : "configuration",
+            phase,
             attemptCount: 1,
             updatedAt: createdAt,
             url: current.url,
@@ -376,7 +380,9 @@ export function createAgentRoutes(scenario: CreateScenario, dependencies: Create
               ? {
                   configurationId: current.configurationId,
                   agentId: current.agentId,
-                  revisionId: current.revisionId,
+                  ...(phase === "handoff" || current.status === "succeeded"
+                    ? { revisionId: current.revisionId }
+                    : {}),
                 }
               : {}),
             // Corrupt only the outgoing terminal reply; stored deployment details stay valid.
