@@ -112,6 +112,18 @@ const cleanupCause = choice(
   "REPOSITORY_CLEANUP_PENDING",
   "COMPUTE_DRIVER_MISMATCH",
 );
+// worker.ts and Kubernetes activation report these ordinary readiness waits.
+// Keep unknown Driver codes private, just as for cleanup diagnostics.
+const readinessCode = choice(
+  "REPOSITORY_GIT_ROUTE_PENDING",
+  "REPOSITORY_GIT_MATERIAL_PENDING",
+  "WORKSPACE_NODE_PENDING",
+  "WORKSPACE_NODE_BINDING_PENDING",
+  "WORKSPACE_NODE_RECONNECT_PENDING",
+  "WORKSPACE_SETUP_RETRYING",
+  "REVISION_INCOMPLETE",
+  "REVISION_FINALIZATION_INCOMPLETE",
+);
 
 /** Select before buffering: worker records may contain unrelated private fields. */
 export function projectOpenShellGitExpiryObservation(value) {
@@ -163,7 +175,7 @@ export function projectOpenShellGitMaintenanceCompletion(value) {
       "outcome",
       (outcome) => choice("success", "pending", "retry", "permanent")(outcome) ?? "unrecognized",
     ],
-    code: ["code", (code) => cleanupCode(code) ?? "unrecognized"],
+    code: ["code", (code) => cleanupCode(code) ?? readinessCode(code) ?? "unrecognized"],
   });
 }
 

@@ -1232,6 +1232,10 @@ async function installOpenShellGit(t, witnessIssuedGit) {
       };
       await eventually(maintenanceWait, async () => {
         const events = await workerEvents(after, maintenance);
+        // Each read repeats the current log tail. Retain this snapshot's matching
+        // completions once, rather than counting previous polls as new work.
+        maintenance.completions = [];
+        maintenance.completionsTruncated = false;
         return completedWork(
           after,
           identity,
