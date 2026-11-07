@@ -1368,6 +1368,45 @@ export function createAgentDetailScenarios({
           "Open Deployment details with Enter to inspect the completed stages. Refresh deployment; your disclosure choice is preserved.",
         ],
       },
+      repositoryAccessRedeployRequired: {
+        group: "Pages/Agent detail",
+        name: "Repository access needs redeployment after completion",
+        path: `${candidateVersion}&tab=deployment`,
+        deployed: true,
+        candidateDeploymentStatus: "succeeded",
+        candidateSelected: true,
+        rules: [
+          {
+            method: "GET",
+            suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+            skip: 1,
+            data: {
+              deploymentId: "rev_00000000-0000-4000-8000-000000000007",
+              namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+              agentId: "agt_00000000-0000-4000-8000-000000000001",
+              status: "succeeded",
+              cleanup: null,
+              error: null,
+              progress: null,
+              warnings: [],
+              repositoryAccess: {
+                state: "redeploy-required",
+                code: "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED",
+                message:
+                  "The controller can no longer renew this version's repository access on its current runtime. Deploy again to restore repository access.",
+              },
+            } satisfies AgentDeploymentStatusWire,
+          },
+        ],
+        description:
+          "A completed version acquires a repository access condition on refresh. The original deployment remains Completed and the API guidance appears beside it.",
+        steps: [
+          "Open Deployment and choose Refresh record. Both the version record and expanded Deployment activity show the repository access guidance while keeping Completed.",
+          "View v6 and open Deployment. Its record has no repository notice; Deployment activity still describes v7. Browsing and refreshing send no deployment request.",
+          "Return to v7 and choose Refresh deployment. The guidance stays with v7. Repeat at phone width and check the full message wraps without horizontal scrolling.",
+        ],
+        gap: "Simulated UI proof only; no repository renewal, deployment, or runtime is exercised. Absence of the condition does not establish healthy Git access.",
+      },
       repositoryDraft: {
         group: "Pages/Agent detail",
         name: "Repository access in new version",
