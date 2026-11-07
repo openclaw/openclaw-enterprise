@@ -5643,6 +5643,75 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     outcome: "passed",
     elapsedMs: 39_000,
   };
+  // Observation metadata can survive unavailable probes; payloads and raw identities cannot.
+  const unavailableTurnover = {
+    kind: "openshell-initial-turnover",
+    request: 1,
+    clockOffsetMinMs: -1,
+    clockOffsetMaxMs: 1,
+    startedAtMs: 1_800_000_000_000,
+    finishedAtMs: 1_800_000_010_000,
+    requestOutcome: "failed",
+    httpStatus: null,
+    nonceMatched: false,
+    observation: "unavailable",
+    qualification: "failed",
+    durableCommands: false,
+    nodeIdSha256: null,
+    connectedBeforeMs: null,
+    connectedAfterMs: null,
+    providerEnvBeforeSha256: null,
+    providerEnvAfterSha256: null,
+    configBeforeSha256: null,
+    configAfterSha256: null,
+    policyBeforeSha256: null,
+    policyAfterSha256: null,
+    turnoverAtMs: null,
+    staleTunnelAtMs: null,
+    disconnectedAtMs: null,
+    capturedGeneration: null,
+    currentGeneration: null,
+    configUnchanged: false,
+    policyUnchanged: false,
+    providerEnvChanged: false,
+    settingsConsistent: false,
+    stableRuntime: false,
+  };
+  const unexercisedTurnover = {
+    ...unavailableTurnover,
+    requestOutcome: "passed",
+    httpStatus: 200,
+    nonceMatched: true,
+    observation: "complete",
+    qualification: "unexercised",
+    durableCommands: true,
+    nodeIdSha256: "a".repeat(64),
+    connectedBeforeMs: 1_799_999_999_000,
+    connectedAfterMs: 1_799_999_999_000,
+    providerEnvBeforeSha256: "b".repeat(64),
+    providerEnvAfterSha256: "b".repeat(64),
+    configBeforeSha256: "c".repeat(64),
+    configAfterSha256: "c".repeat(64),
+    policyBeforeSha256: "d".repeat(64),
+    policyAfterSha256: "d".repeat(64),
+    configUnchanged: true,
+    policyUnchanged: true,
+    settingsConsistent: true,
+    stableRuntime: true,
+  };
+  const turnContinuity = {
+    ...unexercisedTurnover,
+    request: 2,
+    qualification: "turn-continuity",
+    connectedAfterMs: 1_800_000_003_000,
+    providerEnvAfterSha256: "e".repeat(64),
+    turnoverAtMs: 1_800_000_001_000,
+    staleTunnelAtMs: 1_800_000_002_000,
+    disconnectedAtMs: 1_800_000_002_001,
+    capturedGeneration: 1,
+    currentGeneration: 2,
+    providerEnvChanged: true,
+  };
   const runtimeFailure = {
     kind: "local-first-agent-command",
     phase: "setup",
@@ -5651,6 +5720,24 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     failed: 3,
     elapsedMs: 200,
   };
+  // These records exercise the same consistency decision used by the real observer.
+  // Contradiction stays incomplete even when each field is well-typed.
+  const conflictingSettings = {
+    ...turnContinuity,
+    settingsConsistent: false,
+    qualification: "incomplete",
+  };
+  const unchangedProvider = {
+    ...turnContinuity,
+    providerEnvAfterSha256: turnContinuity.providerEnvBeforeSha256,
+    qualification: "incomplete",
+  };
+  const missingTurnoverEvent = {
+    ...unexercisedTurnover,
+    providerEnvAfterSha256: "e".repeat(64),
+    qualification: "incomplete",
+  };
+  const changedGateway = { ...turnContinuity, stableRuntime: false, qualification: "incomplete" };
   await writeFile(
     join(root, "tests/integration/measurements.test.mjs"),
     [
@@ -5858,6 +5945,39 @@ test("run records only allowlisted measurements from test diagnostics", async (t
         measurement({ ...openshellPhase, outcome: "secretauthvalue-phase-outcome" }),
         measurement({ ...openshellPhase, elapsedMs: 2_400_001 }),
         measurement({ ...openshellPhase, elapsedMs: 0.5 }),
+        ...[unavailableTurnover, unexercisedTurnover, turnContinuity].map((value) =>
+          measurement({
+            ...value,
+            detail: "secretauthvalue-turnover-detail",
+            nodeId: "secretauthvalue-node-id",
+            provider: { config: "secretauthvalue-provider-config" },
+          }),
+        ),
+        ...[
+          { request: 3 },
+          { startedAtMs: -1 },
+          { finishedAtMs: Number.MAX_SAFE_INTEGER + 1 },
+          { requestOutcome: "secretauthvalue-request-outcome" },
+          { httpStatus: 600 },
+          { observation: "secretauthvalue-observation" },
+          { qualification: "secretauthvalue-qualification" },
+          { nodeIdSha256: "secretauthvalue-node-id" },
+          { providerEnvAfterSha256: "A".repeat(64) },
+          { configBeforeSha256: "a".repeat(63) },
+          { policyAfterSha256: undefined },
+          { connectedAfterMs: 0.5 },
+          { turnoverAtMs: "secretauthvalue-time" },
+          { currentGeneration: -1 },
+          { nonceMatched: "secretauthvalue-matched" },
+          { durableCommands: 1 },
+          { stableRuntime: undefined },
+        ].map((invalid) => measurement({ ...turnContinuity, ...invalid })),
+        ...[conflictingSettings, unchangedProvider, missingTurnoverEvent, changedGateway].flatMap(
+          (value) => [
+            measurement(value),
+            measurement({ ...value, qualification: "turn-continuity" }),
+          ],
+        ),
         "openclaw-ci-measurement secretauthvalue-not-json",
         "secretauthvalue-plain-diagnostic",
       ].map((message) => `  t.diagnostic(${JSON.stringify(message)});`),
@@ -5962,6 +6082,13 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       budgetMs: 15_000,
     },
     openshellPhase,
+    unavailableTurnover,
+    unexercisedTurnover,
+    turnContinuity,
+    conflictingSettings,
+    unchangedProvider,
+    missingTurnoverEvent,
+    changedGateway,
   ]);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
 });

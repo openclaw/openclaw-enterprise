@@ -70,6 +70,27 @@ network, and credential enforcement. Exact workload identity, approved mounts
 and privileges, source withdrawal, replacement, and cleanup remain required.
 Missing prerequisites fail rather than skip.
 
+The refresh case's initial Codex turns also emit `openshell-initial-turnover` measurements.
+Bounded reads before and after each original request use Compute's Agent-owned
+`workspace-node.json` binding and authenticated `node.list` to identify the same
+node and its connection timestamp. The measurements retain metadata fingerprints,
+request timing through body and nonce verification, and matching supervisor and
+Harness event times. They contain no request payloads, raw node identifiers,
+credentials, or raw logs.
+
+`turn-continuity` requires an in-request provider-environment change with unchanged
+configuration and policy, the Agent Gateway's stale-generation tunnel closure,
+a 1006 disconnect, the same node reconnecting, and a successful original response.
+Gateway boot identity and Gateway, Harness, and supervisor container identities
+must remain unchanged. Provider snapshots must show a revision change, and all
+settings-change events must corroborate unchanged configuration and policy.
+Missing or contradictory observations cannot qualify.
+`durableCommands: true` additionally records both existing native command checks.
+No matching turnover is `unexercised`; unavailable reads or incomplete correlation
+are `incomplete`. These observations use synchronized host and container clocks.
+They do not prove that a particular workspace read was pending or retried, and
+ordinary refresh success alone is not evidence of read recovery.
+
 ## Agent network policy
 
 The policy scenario uses the production HTTP admission path, PostgreSQL worker,
