@@ -1421,7 +1421,12 @@ function receiptsMatchEntries(receipts, entries) {
 
 async function seedCanonicalData(
   db,
-  { preset = false, computeAdmission = false, executionAdmission = false } = {},
+  {
+    preset = false,
+    computeAdmission = false,
+    executionAdmission = false,
+    harnessSettings = false,
+  } = {},
 ) {
   const installation = `ins_${randomUUID()}`;
   const namespace = `ns_${randomUUID()}`;
@@ -1464,7 +1469,12 @@ async function seedCanonicalData(
           configuration_kind: "agent",
           configuration_generation: 1,
           draft_spec: {},
-          harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+          harness: {
+            id: "codex",
+            version: "1.0.0",
+            mode: "dedicated",
+            ...(harnessSettings ? { overrides: {}, configuration: {} } : {}),
+          },
           harness_auth: { method: "runtime" },
           ...(executionAdmission
             ? { execution_admission: { version: 2, mode: "unprotected" } }
@@ -2085,6 +2095,8 @@ test(
           computeAdmission: prefix >= 55,
           // 0060 requires an execution admission on every revision written after it.
           executionAdmission: prefix >= 62,
+          // 0072 requires newly admitted revisions to store their Harness settings.
+          harnessSettings: prefix >= 72,
         });
         const assertSourceOwners =
           prefix === 59
