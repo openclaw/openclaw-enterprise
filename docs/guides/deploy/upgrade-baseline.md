@@ -90,8 +90,11 @@ done
 ```
 
 `pod-images.txt` records the digest each container actually runs, which the
-configured image reference alone does not prove. The PVC UIDs must be unchanged
-after the upgrade: a new UID means the volume and its Agent data were replaced.
+configured image reference alone does not prove. The PVC UIDs must remain unchanged
+after the upgrade. A changed UID identifies a different claim object; it does
+not by itself establish whether the backing volume or Agent data changed. Stop
+and reconcile the claim, volume identity and workspace checks against the
+baseline before continuing.
 
 ## Record the OCC inventory
 
