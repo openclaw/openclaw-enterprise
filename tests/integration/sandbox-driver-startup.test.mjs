@@ -7686,11 +7686,11 @@ test(
       extensions: [{ configured_name: "oce-prepared-git", kind: 4, protocol_major: 1 }],
     });
     const originalGetWorkspace = gateway.getWorkspace;
-    gateway.getWorkspace = async (name) => ({
-      ...(await originalGetWorkspace(name)),
-      name,
-      id: "workspace-id",
-    });
+    gateway.getWorkspace = async (name) => {
+      const workspace = await originalGetWorkspace(name);
+      // Preserve absence after deletion; adding fixture identity must not resurrect a Workspace.
+      return workspace === undefined ? undefined : { ...workspace, name, id: "workspace-id" };
+    };
     const originalImportProfile = gateway.importProviderProfile;
     gateway.importProviderProfile = async (workspace, profile) => {
       await originalImportProfile(workspace, profile);
@@ -7881,6 +7881,11 @@ test(
       { message: /[Rr]epository credentials require/ },
     );
     const { context, revision, requirements } = runtimeSandboxFixture(protectedGit.sandboxDriver);
+    // Revision execution starts in an existing, owned Workspace. Its deletion must remain observable.
+    gateway.workspaces.set(openShellWorkspaceName(context.namespace), {
+      ...ownedWorkspace(openShellWorkspaceName(context.namespace), context.namespace.id),
+      id: "workspace-id",
+    });
     const auth = {
       method: "credential_source",
       sourceId: "cs_test",

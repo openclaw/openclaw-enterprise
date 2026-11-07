@@ -1,3 +1,5 @@
+import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.mjs";
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { openShellLogDecision } from "../../apps/controller/src/drivers/sandbox/openshell-log-decisions.ts";
 import assert from "node:assert/strict";
 import { createHmac, randomUUID } from "node:crypto";
@@ -120,6 +122,11 @@ function logOnlyGatewayClient() {
 }
 
 function openShellSandboxDriver(gatewayClient) {
+  const namespaceProtocol = openShellWorkspaceProtocol();
+  const client = new Proxy(gatewayClient, {
+    get: (target, property) =>
+      property in namespaceProtocol ? namespaceProtocol[property] : target[property],
+  });
   return new OpenShellSandboxDriver(
     {
       gateway: { workspaceMode: "operator" },
@@ -149,7 +156,10 @@ function openShellSandboxDriver(gatewayClient) {
       backend: {
         id: "openshell",
         drivers: { sandbox: "openshell-sandbox" },
-        client: new OpenShellGateway({ serviceName: "openshell-gateway" }, { gatewayClient }),
+        client: new OpenShellGateway(
+          { serviceName: "openshell-gateway" },
+          { gatewayClient: client },
+        ),
       },
     },
   );
@@ -318,7 +328,7 @@ test("sandbox log pages never contain planted credentials from command lines or 
   assert.deepEqual([...new Set(gateway.touched)], ["getSandboxLogs"]);
   assert.equal(gateway.requests.length, 2);
   const [first] = gateway.requests;
-  assert.equal(first.workspace, SANDBOX_NAMESPACE);
+  assert.equal(first.workspace, kubernetesNamespaceName(target.namespace.id));
   assert.match(first.sandbox, /^sb-[0-9a-f]+$/);
   assert.equal(first.lines, 1000);
   assert.equal(logs.data.stream.sandbox, first.sandbox);
@@ -740,7 +750,7 @@ test("a lost OpenShell Harness Sandbox is reported by the runtime description an
     assert.deepEqual(rest, computeChecks);
   }
   const read = gateway.requests.find((request) => request.getSandbox !== undefined).getSandbox;
-  assert.equal(read.workspace, SANDBOX_NAMESPACE);
+  assert.equal(read.workspace, kubernetesNamespaceName(target.namespace.id));
   assert.match(read.name, /^sb-[0-9a-f]+$/);
 
   // An unreadable record is unknown; the gateway's error text never reaches the caller.

@@ -1,3 +1,4 @@
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
@@ -96,11 +97,18 @@ export async function createPostgresAgentApp(
     pool,
   });
   const iamDriver = new NativeIAMDriver(state, { id: `${label}-pg-iam` });
-  const computeDriver = createRuntimeLogComputeDriver({ id: `${label}-pg-compute` });
+  const computeDriver = createRuntimeLogComputeDriver({
+    id: `${label}-pg-compute`,
+    ...(sandboxDriver === undefined ? {} : { sandboxNamespace: true }),
+  });
   const configurationDriver = createTestConfigurationDriver({ id: `${label}-pg-config` });
   const controller = new OpenClawController(installation, {
     state,
     recordOperations: false,
+    namespaceLifecycleBindings:
+      sandboxDriver?.ensureNamespace === undefined
+        ? []
+        : [sandboxNamespaceLifecycleBinding(computeDriver, sandboxDriver)],
     ...controllerOptions,
   });
   for (const driver of [iamDriver, computeDriver, configurationDriver, secretDriver]) {

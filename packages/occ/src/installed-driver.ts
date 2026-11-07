@@ -1,4 +1,3 @@
-import { validNamespaceLifecycleHooks } from "./namespace-lifecycle.ts";
 import type { NamespaceLifecycleHooks } from "@openclaw-enterprise/contracts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -16,6 +15,7 @@ import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { canonicalProvisioningJson } from "./agent-provisioning.ts";
 import {
   capability,
+  validNamespaceLifecycleHooks,
   driverHasCapabilityContract,
   driverHasValidLifecycleHooks,
 } from "./driver-contract.ts";

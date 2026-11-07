@@ -74,6 +74,9 @@ export function protectedRepositoryGitRelease(
     id,
     implementation: "registered-online-sender",
     capability: "sandbox",
+    // This sender fixture implements revision admission, not Namespace infrastructure.
+    // Do not inherit a setup operation whose OpenShell instance state it does not own.
+    ensureNamespace: undefined,
     supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     networkPolicy: { wildcards: true, portRanges: true, live: true },

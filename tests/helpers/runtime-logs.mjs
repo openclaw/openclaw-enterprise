@@ -1,3 +1,5 @@
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "./sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -76,13 +78,16 @@ export function createRuntimeLogComputeDriver(options = {}) {
     state,
     podName,
     validateHarnessAuth() {},
+    async resolveSandboxNamespaceContext(namespace, signal) {
+      return { namespace: await this.resolveSandboxNamespace(namespace), kubernetes: {}, signal };
+    },
     ...(options.sandboxNamespace === undefined
       ? {}
       : {
           // Compute's placement of the Namespace, where the Sandbox Driver finds the Sandbox.
           async resolveSandboxNamespace(namespace) {
             calls.push({ operation: "resolveSandboxNamespace", namespaceId: namespace.id });
-            return Object.freeze({ ...namespace, name: options.sandboxNamespace });
+            return Object.freeze({ ...namespace, name: kubernetesNamespaceName(namespace.id) });
           },
         }),
     ...(options.withoutDescribe
@@ -342,6 +347,10 @@ export async function createRuntimeLogFixture(options = {}) {
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: new InMemoryPlatformState({ auditSink }),
+        namespaceLifecycleBindings:
+          options.sandboxDriver?.ensureNamespace === undefined
+            ? []
+            : [sandboxNamespaceLifecycleBinding(computeDriver, options.sandboxDriver)],
         recordOperations: false,
         driverConfigurations: options.driverConfigurations,
       });

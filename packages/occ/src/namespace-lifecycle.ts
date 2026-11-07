@@ -9,6 +9,7 @@ import type {
   NamespaceLifecycleParticipant,
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
+import { validNamespaceLifecycleHooks } from "./driver-contract.ts";
 import { InstalledDriver } from "./installed-driver.ts";
 import { DriverSelectionError } from "./errors.ts";
 
@@ -16,18 +17,6 @@ import { DriverSelectionError } from "./errors.ts";
 export interface NamespaceLifecycleBinding {
   readonly owner: Driver | InstalledDriver;
   readonly hooks: NamespaceLifecycleHooks;
-}
-
-export function validNamespaceLifecycleHooks(value: unknown): value is NamespaceLifecycleHooks {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-  const hooks = value as Record<string, unknown>;
-  return (
-    typeof hooks.ensureNamespace === "function" &&
-    (hooks.deleteNamespace === undefined || typeof hooks.deleteNamespace === "function") &&
-    Object.keys(hooks).every((key) => key === "ensureNamespace" || key === "deleteNamespace")
-  );
 }
 
 export function selectedNamespaceLifecycle(
