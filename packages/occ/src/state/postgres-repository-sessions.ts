@@ -1,6 +1,7 @@
 import { postgresStandingRepositoryApprovals } from "./postgres-standing-repository-approvals.ts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
-import { DependencyUnavailableError } from "../errors.ts";
+import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
+import { DependencyUnavailableError, ScopeViolationError } from "../errors.ts";
 import type {
   RepositorySessionAttempt,
   RepositoryBrokerReceipt,
@@ -123,6 +124,41 @@ export function postgresRepositorySessions(
         execution.executionId,
         execution.fingerprint,
       ]);
+    },
+    async withdrawFinite(owner, at) {
+      const result = await client.query(
+        `INSERT INTO occ.controller_work
+          (idempotency_key,namespace_id,agent_id,revision_id,actor_id,state,available_at,created_at,updated_at)
+         SELECT $4,v.namespace_id,v.agent_id,v.id,work.actor_id,'queued',clock_timestamp(),clock_timestamp(),clock_timestamp()
+         FROM occ.agent_revisions v JOIN occ.agents a
+           ON (a.namespace_id,a.id,a.active_revision_id)=(v.namespace_id,v.agent_id,v.id)
+         JOIN occ.controller_work work ON (work.namespace_id,work.agent_id,work.revision_id)=(v.namespace_id,v.agent_id,v.id)
+           AND work.idempotency_key='agent_revision:' || v.id || ':reconcile'
+           AND work.agent_target IS NULL AND work.namespace_target IS NULL
+         WHERE (v.namespace_id,v.agent_id,v.id)=($1,$2,$3)
+           AND a.status='active' AND a.desired_runtime_state='running'
+           AND v.admitted_spec->'repository_credentials' IS NOT NULL
+           AND NOT (v.admitted_spec->'repository_credentials' ? 'standingApprovalId')
+         ON CONFLICT (idempotency_key) DO UPDATE SET attempt_count=
+           CASE WHEN (controller_work.namespace_id,controller_work.agent_id,controller_work.revision_id)=($1,$2,$3)
+             AND controller_work.agent_target IS NULL AND controller_work.namespace_target IS NULL
+           THEN controller_work.attempt_count ELSE -1 END
+         RETURNING idempotency_key`,
+        [
+          owner.namespaceId,
+          owner.agentId,
+          owner.revisionId,
+          repositoryRemovalWorkKey(owner.revisionId),
+        ],
+      );
+      if (result.rowCount !== 1) {
+        throw new ScopeViolationError("Finite withdrawal requires the exact active revision.");
+      }
+      await client.query(
+        `UPDATE occ.repository_session_attempts SET phase='closing',updated_at=greatest(updated_at,$4::timestamptz)
+         WHERE (namespace_id,agent_id,revision_id)=($1,$2,$3) AND phase IN ('opening','open')`,
+        [owner.namespaceId, owner.agentId, owner.revisionId, at],
+      );
     },
     lockAttempt: async (admissionId) => {
       const result = await client.query(

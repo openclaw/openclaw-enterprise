@@ -1257,12 +1257,105 @@ async function repositoryGitJourney(
       return rows[0];
     };
     const originalRoute = await readRetainedRoute();
-    await f.controller.updateAgent(f.actor.id, {
-      namespaceId: f.namespace.id,
-      agentId: agent.id,
-      configurationId: configuration.id,
-      repositoryBindings: [{ repositoryRef: "A" }],
-    });
+    // Removal commits while no worker is running: no later poll may create its intent.
+    await f.stop();
+    const queue = new f.PostgresWorkQueue(f.observerPool);
+    const removalOwner = {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      revisionId: revision.id,
+    };
+    const originalBindings = revision.repositoryCredentials!.bindings.map(
+      ({ repositoryRef, profile }) => ({ repositoryRef, profile }),
+    );
+    const update = (repositoryBindings: typeof originalBindings, actorId = f.actor.id) =>
+      f.controller.updateAgent(actorId, {
+        namespaceId: f.namespace.id,
+        agentId: agent.id,
+        configurationId: configuration.id,
+        repositoryBindings,
+      });
+    const removalState = () => queue.repositoryExpiryState(removalOwner);
+    // Unchanged selections and removing a binding outside the admitted set leave this execution alone.
+    await update(originalBindings);
+    await update([...originalBindings, { repositoryRef: "C", profile: "github-repository" }]);
+    await update(originalBindings);
+    assert.equal(await removalState(), undefined);
+    // This supported rejection happens after saving the proposed binding change. Its entire
+    // transaction must roll back, including session closure and the withdrawal obligation.
+    await assert.rejects(
+      f.controller.updateAgent(f.actor.id, {
+        namespaceId: f.namespace.id,
+        agentId: agent.id,
+        configurationId: configuration.id,
+        repositoryBindings: [{ repositoryRef: "A", profile: "github-repository" }],
+        repositoryStandingApproval: {
+          approved: false,
+          approvalId: "missing-approval",
+          expectedGeneration: 1,
+          repositoryRef: "A",
+        },
+      }),
+      /Standing approval does not belong/,
+    );
+    assert.deepEqual((await f.currentAgent(agent))!.repositoryBindings, originalBindings);
+    assert.equal(await removalState(), undefined);
+    const sessionsBefore = await f.state.read((view) =>
+      view.repositorySessions.listRevisionAttempts(removalOwner),
+    );
+    assert.ok(sessionsBefore.every((session) => session.phase === "open"));
+    const editor = `binding-editor-${randomUUID()}`;
+    await f.copyActorGrants(editor, { withoutActions: ["deploy"] });
+    await assert.rejects(
+      f.controller.deployAgent(
+        editor,
+        { namespaceId: f.namespace.id, agentId: agent.id },
+        resolveApprovedHarness,
+      ),
+      { name: "AuthorizationDeniedError" },
+    );
+    await update([{ repositoryRef: "A", profile: "github-repository" }], editor);
+    assert.equal(
+      await removalState(),
+      "removal",
+      "the binding commit owns its irreversible withdrawal",
+    );
+    const removalWork = (
+      await f.observerPool.query(
+        "SELECT idempotency_key,actor_id,state,attempt_count FROM occ.controller_work WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3 AND idempotency_key LIKE '%:repository_cleanup:%'",
+        [revision.namespaceId, revision.agentId, revision.id],
+      )
+    ).rows;
+    assert.equal(removalWork.length, 1);
+    assert.equal(
+      removalWork[0].actor_id,
+      f.actor.id,
+      "retained supervision uses original deploy authority, not the editor",
+    );
+    const closed = await f.state.read((view) =>
+      view.repositorySessions.listRevisionAttempts(removalOwner),
+    );
+    assert.deepEqual(
+      closed.map((session) => session.admissionId),
+      sessionsBefore.map((session) => session.admissionId),
+    );
+    assert.ok(
+      closed.every((session) => session.phase === "closing" && session.deadlineWallMs > Date.now()),
+    );
+    assert.equal((await f.currentAgent(agent))!.activeRevisionId, revision.id);
+    // Readding and removing again cannot revive the old admission or reset its obligation.
+    await update(originalBindings, editor);
+    assert.equal((await evaluate(probe)).decision, 2);
+    await update([{ repositoryRef: "A", profile: "github-repository" }], editor);
+    assert.deepEqual(
+      (
+        await f.observerPool.query(
+          "SELECT idempotency_key,actor_id,state,attempt_count FROM occ.controller_work WHERE idempotency_key=$1",
+          [removalWork[0].idempotency_key],
+        )
+      ).rows,
+      removalWork,
+    );
     const liveWithdrawalBefore = peer.originCalls() + peer.gh.trace.length;
     const liveWithdrawal = await evaluate(probe);
     assert.equal(liveWithdrawal.decision, 2, "withdrawal closes the running listener");
@@ -1273,13 +1366,13 @@ async function repositoryGitJourney(
     const routeBeforeReplacement = await readRetainedRoute();
     assert.equal(routeBeforeReplacement.binding_id, originalRoute.binding_id);
     const writesBeforeReplacement = wire.world.writes;
-    const replacement = new OpenShellGitRuntime(runtime.configuration, (r) =>
-      createGitHubRepositoryDeliveryResolver(peer.registry)(r),
-    );
-    replacement["routes"] = new PostgresOpenShellGitRouteStore(f.observerPool);
-    const replacementBound = await replacement.bindRepositoryGit(peer.prepared.protectedGit!);
-    t.after(() => replacementBound.close());
-    await replacement["running"];
+    ({ runtime, sandbox, proxy, owner } = createRuntimeOwner());
+    runtime["routes"] = new PostgresOpenShellGitRouteStore(f.observerPool);
+    bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
+    await runtime["running"];
+    const replacement = runtime;
+    // The actual cold reduction and Worker dispatch are covered by the credential-source
+    // journey; this owner verifies persisted routing and fresh signed denial without a model.
     const replacementMiddleware = openShellMiddlewareClient(t, port, tls.caBundle);
     // Production prepare/adopt owns the close-preview fence; do not manufacture a route.
     await assert.rejects(
@@ -1298,10 +1391,12 @@ async function repositoryGitJourney(
     const originalBindingRetained = retainedRoute.binding_id === originalRoute.binding_id;
     assert.equal(originalBindingRetained, true, "replacement preserves the recorded binding");
     if (routeBeforeReplacement.blocked == null) {
-      assert.ok(
-        BigInt(retainedRoute.fence) > BigInt(routeBeforeReplacement.fence),
-        "production adoption fences a route not already closed",
+      assert.equal(
+        retainedRoute.fence,
+        routeBeforeReplacement.fence,
+        "committed removal preserves the recorded recipient instead of adopting its Git authority",
       );
+      assert.equal(retainedRoute.blocked, "repository_expired");
     } else {
       assert.equal(retainedRoute.fence, routeBeforeReplacement.fence);
       assert.equal(retainedRoute.blocked, routeBeforeReplacement.blocked);

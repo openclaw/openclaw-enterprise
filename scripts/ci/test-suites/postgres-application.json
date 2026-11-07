@@ -99,7 +99,12 @@
         "attached Git expires under ordinary maintenance; a moving Sandbox version and lost detach reply preserve the Agent",
         "attached Git expires; a retained model profile that now covers GitHub retires the revision",
         "attached Git expires; an overlapping platform profile behind a benign workspace namesake retires the revision",
-        "attached Git expires; a safe platform profile preserves the Agent until ordinary maintenance loses permission to read it"
+        "attached Git expires; a safe platform profile preserves the Agent until ordinary maintenance loses permission to read it",
+        "removing finite Git access before its deadline preserves the Agent through a lost detach reply and cold recovery",
+        "finite Git removal retires the revision when its original deploy actor loses authority",
+        "removal after acknowledged activation and prior revision retirement preserves deployment completion",
+        "unacknowledged activation with finite Git removal retains verified execution without completing deployment or setup",
+        "unacknowledged activation with finite Git removal retires unsafe execution without completing setup"
       ]
     },
     {

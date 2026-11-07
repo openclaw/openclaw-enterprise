@@ -2424,25 +2424,38 @@ export class ControllerWorker {
       if (complete && expiryRevision !== undefined && withdrawal === "withdrawn") {
         // Publish withdrawal and resume normal runtime maintenance in this same transaction.
         // A recovered expiry claim may be far older than the interrupted maintenance bucket.
-        const previous =
-          withdrawnRevision === undefined
-            ? await queue.latestRevisionMaintenanceKey({
-                namespaceId: claim.namespaceId,
-                agentId: claim.agentId!,
-                revisionId: expiryRevision.id,
-              })
-            : claim.idempotencyKey;
+        const previous = claim.idempotencyKey.startsWith(
+          `agent_revision:${expiryRevision.id}:maintenance:`,
+        )
+          ? claim.idempotencyKey
+          : await queue.latestRevisionMaintenanceKey({
+              namespaceId: claim.namespaceId,
+              agentId: claim.agentId!,
+              revisionId: expiryRevision.id,
+            });
+        const existing =
+          previous === undefined || previous === claim.idempotencyKey
+            ? undefined
+            : await queue.findWork(previous);
+        const maintenancePending = existing?.state === "queued" || existing?.state === "claimed";
         // Use the ordinary observation cadence. In particular, do not require the removed
         // standing policy (or its shorter renewal cadence) to supervise the retained runtime.
-        if (expiryRevision.repositoryCredentials?.standingApprovalId) {
+        // Another cleanup or the original deployment may already have started this chain.
+        if (!maintenancePending && expiryRevision.repositoryCredentials?.standingApprovalId) {
           const interval = Math.min(
             this.maintenanceIntervalMs ?? Infinity,
             this.repositoryCleanupRetryMs,
           );
           await this.enqueueMaintenance(queue, claim, expiryRevision, previous, interval);
-        } else if (this.revisionMaintenanceInterval(expiryRevision) !== undefined) {
+        } else if (
+          !maintenancePending &&
+          this.revisionMaintenanceInterval(expiryRevision) !== undefined
+        ) {
           await this.enqueueMaintenance(queue, claim, expiryRevision, previous);
         }
+        // An unfinished original deployment can retain the verified runtime too, but this
+        // observation proves neither activation nor workspace setup. Keep its nonactivation
+        // result; only completeActivatedRevision publishes ordinary deployment success.
         completionCode = "REPOSITORY_ACCESS_WITHDRAWN";
       }
       if (complete) {
@@ -4523,19 +4536,25 @@ export class ControllerWorker {
         });
         return;
       }
-      const expiredMaintenance =
+      const repositoryWithdrawal =
         revision.repositoryCredentials !== undefined &&
         agent.activeRevisionId === revision.id &&
-        agent.desiredRuntimeState === "running" &&
-        claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`) &&
-        (await this.queue.repositoryExpiryState({
-          namespaceId: revision.namespaceId,
-          agentId: revision.agentId,
-          revisionId: revision.id,
-        })) !== undefined;
-      // Expired maintenance rechecks independent authority in cleanup after the existing
-      // successor decision. Authorization and Backend checks must not strand its retirement work.
-      if (!expiredMaintenance) {
+        agent.desiredRuntimeState === "running"
+          ? await this.queue.repositoryExpiryState({
+              namespaceId: revision.namespaceId,
+              agentId: revision.agentId,
+              revisionId: revision.id,
+            })
+          : undefined;
+      const withdrawnExecutionWork =
+        repositoryWithdrawal !== undefined &&
+        (claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`) ||
+          (isCandidateDeployment(claim) &&
+            (repositoryWithdrawal === "removal" || repositoryWithdrawal === "retiring")));
+      // A removal can commit after the original deployment published its active pointer.
+      // Like maintenance, unfinished activation withdraws instead of readmitting Git; cleanup
+      // cannot complete setup, publish activation success or retire its predecessors.
+      if (!withdrawnExecutionWork) {
         const denied = await this.authorizeRevision(claim, agent, revision);
         if (denied !== undefined) {
           await this.finalizeRevision(claim, denied);
@@ -4735,7 +4754,7 @@ export class ControllerWorker {
         });
         return;
       }
-      if (expiredMaintenance) {
+      if (withdrawnExecutionWork) {
         // Cleanup owns continued supervision only after successor and refusal retirement.
         await this.processRepositoryCleanup(claim, revision);
         return;
@@ -6797,6 +6816,7 @@ export class ControllerWorker {
       throw new Error("The activated Agent revision is unavailable.");
     }
     let completed = false;
+    let withdrawalPending = false;
     await this.state.transactWithQueue(async (unit, queue) => {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
@@ -6804,11 +6824,30 @@ export class ControllerWorker {
       const agent = await this.lockClaimAgent(unit, claim);
       if (
         agent === undefined ||
+        agent.status !== "active" ||
         agent.id !== revision.agentId ||
         agent.servicePrincipalId !== revision.servicePrincipalId ||
-        agent.activeRevisionId !== revision.id
+        agent.activeRevisionId !== revision.id ||
+        agent.desiredRuntimeState !== "running" ||
+        (await unit.namespaces.findNamespace(claim.namespaceId))?.status !== "ready"
       ) {
         await queue.retry(claim, { code: "ACTIVE_REVISION_CHANGED" });
+        return;
+      }
+      const repositoryWithdrawal = await queue.repositoryExpiryState({
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+      });
+      if (
+        repositoryWithdrawal === "retiring" ||
+        (!isCandidateDeployment(claim) && repositoryWithdrawal === "removal")
+      ) {
+        // Maintenance observed the old Git admission. Its next pass must supervise withdrawal.
+        // An original deployment reaching this method has already completed activation and
+        // predecessor retirement; its completion does not consume the separate removal work.
+        await queue.defer(claim, { code: "REPOSITORY_WITHDRAWAL_UNCONFIRMED" });
+        withdrawalPending = true;
         return;
       }
       const setup = await unit.workspaceSetups.find(revision.namespaceId, revision.agentId);
@@ -6829,6 +6868,20 @@ export class ControllerWorker {
       completed = true;
     }, this.queueOptions);
     this.passOutcome = result.outcome;
+    if (withdrawalPending) {
+      this.passOutcome = "pending";
+      this.emit({
+        event: "worker.completed",
+        ...workLogFields(claim),
+        namespaceId: claim.namespaceId,
+        agentId: claim.agentId,
+        revisionId: claim.revisionId,
+        result: "pending",
+        outcome: "pending",
+        code: "REPOSITORY_WITHDRAWAL_UNCONFIRMED",
+      });
+      return;
+    }
     if (!completed) {
       this.passOutcome = claim.attemptCount >= this.maxAttempts ? "permanent" : "retry";
       // Like the pointer commit's lost race, this pass committed a retry (finding 1611).

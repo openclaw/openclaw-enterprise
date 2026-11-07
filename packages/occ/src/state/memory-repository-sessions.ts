@@ -55,6 +55,7 @@ export function memoryRepositorySessions(
   findRevision: (owner: RepositoryRevisionOwner) => Readonly<AgentRevision> | undefined,
   ownerAcceptsAdmission: (owner: RepositoryRevisionOwner) => boolean,
   executionAcceptsAdmission: (owner: RepositoryRevisionOwner) => boolean,
+  recordFiniteWithdrawal: (owner: RepositoryRevisionOwner, at: string) => void,
 ): RepositorySessionRepository {
   const list = (matches: (attempt: RepositorySessionAttempt) => boolean) =>
     Object.freeze(
@@ -191,6 +192,34 @@ export function memoryRepositorySessions(
         current.id,
         immutableCopy({ ...current, revokedAt, generation: current.generation + 1 }),
       );
+    },
+    async withdrawFinite(owner, at) {
+      const revision = findRevision(owner);
+      if (
+        !executionAcceptsAdmission(owner) ||
+        !revision?.repositoryCredentials ||
+        revision.repositoryCredentials.standingApprovalId
+      ) {
+        throw new ScopeViolationError("Finite withdrawal requires the exact active revision.");
+      }
+      recordFiniteWithdrawal(owner, timestamp(at));
+      for (const [id, attempt] of attempts) {
+        if (
+          sameOwner(attempt, owner) &&
+          (attempt.phase === "opening" || attempt.phase === "open")
+        ) {
+          attempts.set(
+            id,
+            immutableCopy({
+              ...attempt,
+              phase: "closing",
+              updatedAt: new Date(
+                Math.max(Date.parse(attempt.updatedAt), Date.parse(timestamp(at))),
+              ).toISOString(),
+            }),
+          );
+        }
+      }
     },
     lockAttempt: async (admissionId) => {
       const attempt = attempts.get(admissionId);
