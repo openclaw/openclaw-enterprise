@@ -160,7 +160,7 @@ and recovery. The helper compares their references, not their contents; review
 them with the [repository installation guide](../repository-credentials/installation.md)
 before upgrading.
 
-Add either or both flags to any upgrade command below:
+Add either or both flags:
 
 ```text
 --candidate-values /secure/occ/candidate-values.yaml
@@ -170,8 +170,8 @@ Add either or both flags to any upgrade command below:
 The helper saves the reviewed inputs in its private evidence, applies the image
 selections and preserved broker endpoint, and writes the final candidate to the
 baseline paths during the upgrade. An Installation change also updates its
-Secret and restarts OCC with the new checksum. Keep candidate files unchanged
-and available at the same paths for recovery.
+Secret and restarts OCC with the new checksum. Retain unchanged candidate files
+at these paths for recovery.
 
 ### Apply other Installation changes
 
@@ -183,23 +183,29 @@ recommended resource values, separately with
 
 ## Bind the Installation once
 
-Skip this step when the live Installation Secret already has the correct
-`openclaw.dev/installation-id` annotation.
-
-After initial production bootstrap, read the Installation ID from the retained
-bootstrap key and annotate the Secret:
+After bootstrap, bind the Installation Secret using the retained key. Skip an
+already-correct `openclaw.dev/installation-id` annotation:
 
 ```bash
-export OCC_INSTALLATION_ID="$(jq -er '.meta.installationId' "$OCC_BOOTSTRAP_KEY_FILE")"
-export OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' /secure/occ/values.yaml)"
-kubectl --kubeconfig /secure/occ/kubeconfig \
-  --context '<reviewed-context>' --namespace openclaw-system \
-  annotate secret "$OCC_INSTALLATION_SECRET" \
-  openclaw.dev/installation-id="$OCC_INSTALLATION_ID"
+(
+  set -o pipefail
+  OCC_INSTALLATION_ID=$(jq -ser '
+    select(length == 1) | .[0].meta.installationId | select(type == "string") |
+    select(test("^ins_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\z"))
+  ' "$OCC_BOOTSTRAP_KEY_FILE") &&
+  OCC_INSTALLATION_SECRET=$(yq -o=json '.' /secure/occ/values.yaml | jq -ser '
+    select(length == 1) | .[0] | objects | .installation.secretName |
+    if . == null then "occ-installation-startup" else . end |
+    select(type == "string" and length > 0) | select(test("\\s") | not)
+  ') || { printf '%s\n' 'Invalid inputs; annotation unchanged.' >&2; exit 1; }
+  kubectl --kubeconfig /secure/occ/kubeconfig \
+    --context '<reviewed-context>' --namespace openclaw-system \
+    annotate secret "$OCC_INSTALLATION_SECRET" \
+    openclaw.dev/installation-id="$OCC_INSTALLATION_ID"
+)
 ```
 
-Do not replace a different existing ID. Investigate why the cluster and
-bootstrap record disagree.
+Never overwrite a different ID; reconcile cluster and bootstrap records.
 
 ## Rehearse before the maintenance window
 
@@ -239,7 +245,7 @@ Operators must establish authenticity. `sourceSha` identifies the runner checkou
 not image revisions or worktree cleanliness. This proves neither IAM startup
 compatibility nor online or rollback safety; writers still stop.
 
-Set the controller image without `--runtime-image`:
+Omit `--runtime-image`:
 
 ```bash
 export CONTROLLER_IMAGE='<registry>/controller@sha256:<64-hex-digest>'
