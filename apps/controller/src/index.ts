@@ -143,6 +143,13 @@ import {
 import { presetHandlers } from "./http/presets.ts";
 import { connectionTemplateHandlers } from "./http/connection-templates.ts";
 import {
+  CONNECTION_CALLBACK_PATH,
+  connectionCallbackOperation,
+  connectionCallbackSchema,
+  createConnectionCallback,
+  namespaceConnectionHandlers,
+} from "./http/connections.ts";
+import {
   isRuntimeLogDownload,
   RUNTIME_LOG_DOWNLOAD_ACTION,
   runtimeLogDownloadBody,
@@ -241,6 +248,7 @@ interface RequiredPermission {
     | "authenticated_plugin_discovery"
     | "read_logs_alternative"
     | "bound_credential_source"
+    | "unless_consent_owner"
     | "saved_sandbox_policy_additions";
 }
 
@@ -507,7 +515,9 @@ function operationTarget(
   }
   if (
     (operation.operationId === "createCredentialSource" ||
-      operation.operationId === "listCredentialSources") &&
+      operation.operationId === "listCredentialSources" ||
+      operation.operationId === "listUsableConnectionTemplates" ||
+      operation.operationId === "startNamespaceConnection") &&
     namespaceId
   ) {
     return { kind: "credential_source", id: namespaceId, namespaceId };
@@ -569,6 +579,16 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     action: operation.iamAction,
     resourceKind: operation.resourceKind,
   };
+
+  if (operation.operationId === "disconnectNamespaceConnection") {
+    return [{ ...permission, scope: "requested", condition: "unless_consent_owner" }];
+  }
+  if (operation.operationId === "listNamespaceConnections") {
+    return [
+      { ...permission, scope: "requested" },
+      { action: "read", resourceKind: "credential_source", scope: "each_returned" },
+    ];
+  }
 
   if (
     [
@@ -1059,6 +1079,9 @@ function permissionDescription(
   const description = permissions
     .map(({ action, resourceKind, scope, condition }) => {
       const name = names[resourceKind];
+      if (condition === "unless_consent_owner") {
+        return "Requires delete permission on this CredentialSource unless the caller owns the saved connection.";
+      }
       if (condition === "associated_service_account") {
         return `Requires ${action} permission on each currently associated or newly associated ${name} when present.`;
       }
@@ -1827,7 +1850,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   const connectionOrigin = publicOrigin ?? browserOrigin?.origin;
+  const connectionRedirectUri =
+    connectionOrigin && `${connectionOrigin}${CONNECTION_CALLBACK_PATH}`;
   const handlers: ResourceHandlers = {
+    ...namespaceConnectionHandlers(connectionRedirectUri),
     ...resourceHandlers,
     ...sandboxPolicyHandlers,
     ...createAgentHandlers({
@@ -1912,7 +1938,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
       operation.operationId !== "deleteServiceAccount" &&
-      operation.operationId !== "listAgentRevisions"
+      operation.operationId !== "listAgentRevisions" &&
+      operation.operationId !== "recoverAgentFirstDeployment" &&
+      operation !== connectionCallbackOperation
     ) {
       throw failure(
         400,
@@ -2087,6 +2115,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     const context: RequestContext = {
       actorId: identity.id,
+      ...(admitted.method === "session" && { sessionId: admitted.session.id }),
       issuer: admitted.externalIdentity.issuer,
       subject: admitted.externalIdentity.subject,
       admissionDecisionId: admitted.decisionId,
@@ -2140,6 +2169,25 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       context.actorId,
       params.namespaceId as string,
       operation.operationId === "updatePreset" ? params.presetId : undefined,
+    );
+  }
+
+  // Each OCC transaction that writes durable authority (an Owner binding or deploy-time grants)
+  // holds a session caller's session through COMMIT, as Namespace policy writes do (#2311), so a
+  // sign-out or account disable cannot commit in between. Other work runs unchanged.
+  function performFenced(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    operation: OccApiRoute,
+  ): Promise<void> {
+    const admitted = admissions.get(request);
+    if (controller === undefined || admitted?.method !== "session") {
+      return perform(request, reply, operation);
+    }
+    const { session } = admitted;
+    return controller.withAuthorityFence(
+      (unit) => options.auth.holdSession(unit, session, request),
+      () => perform(request, reply, operation),
     );
   }
 
@@ -2214,6 +2262,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             event(operation, request, target, "bootstrap", context, decision.evidence),
           );
         });
+        await created.applyIAMConfiguration();
         controller = created;
         reply.status(201).send({
           data: clientInstallation(
@@ -2368,6 +2417,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (operation.operationId === "getNamespace") {
       reply.send({
         data: await controller.getNamespace(context.actorId, namespaceId),
+        meta: { requestId: request.id },
+      });
+      return;
+    }
+
+    if (operation.operationId === "getNamespaceAgentCapabilities") {
+      reply.send({
+        data: {
+          capabilities: await controller.getNamespaceAgentCapabilities(
+            context.actorId,
+            namespaceId,
+          ),
+        },
         meta: { requestId: request.id },
       });
       return;
@@ -4395,10 +4457,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           password,
           ...(name === undefined ? {} : { name }),
         });
-        const seed = options.auth.principalSeed(
-          prepared,
-          roleId === undefined ? { grant: "none" } : { roleId },
-        );
+        // Each new account joins the configured `iam.defaultUserGroups` in its creating unit.
+        const groupIds = controller?.defaultUserGroupIds ?? [];
+        const seed = {
+          ...options.auth.principalSeed(
+            prepared,
+            roleId === undefined ? { grant: "none" } : { roleId },
+          ),
+          ...(groupIds.length === 0 ? {} : { groupIds }),
+        };
         const baseAuditEvent = event(
           createAuthAccountOperation,
           request,
@@ -4414,6 +4481,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ...baseAuditEvent.details,
             principalId: seed.principal.id,
             ...(roleId === undefined ? { grant: "none" } : { roleId }),
+            ...(groupIds.length === 0 ? {} : { groupIds }),
           },
         };
         try {
@@ -4480,6 +4548,44 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       nativeAdmin.resolveReturn,
     );
+    routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
+      CONNECTION_CALLBACK_PATH,
+      {
+        schema: connectionCallbackSchema,
+        config: { rateLimit: new RequestRateLimiter(60, 5) },
+        onRequest: async (request, reply) => {
+          reply.header("referrer-policy", "no-referrer").header("cache-control", "no-store");
+          const retryAfter = request.routeOptions.config.rateLimit.consume(request.ip);
+          if (retryAfter !== undefined) {
+            reply.header("retry-after", String(retryAfter));
+            throw failure(
+              429,
+              "RATE_LIMITED",
+              "Too many OAuth callback requests. Wait before retrying.",
+            );
+          }
+          await admit(request, connectionCallbackOperation);
+        },
+        preHandler: async (request) => resolveIdentity(request, connectionCallbackOperation),
+      },
+      createConnectionCallback({
+        withCurrentSession: (request, work) => {
+          const admitted = admissions.get(request);
+          if (admitted?.method !== "session") {
+            throw failure(403, "FORBIDDEN", "A current browser session is required.");
+          }
+          return options.auth.withSessionAuthority(admitted.session, () =>
+            work((unit) => options.auth.holdSession(unit, admitted.session, request)),
+          );
+        },
+        getController: () => controller,
+        getContext: (request) => contexts.get(request),
+        auditEvent: (request, context, target) =>
+          event(connectionCallbackOperation, request, target, "mutation", context),
+        auditFailure: (request, context, reasonCode) =>
+          rejectedMutation(connectionCallbackOperation, request, context, reasonCode),
+      }),
+    );
     routes.route({
       method: "GET",
       url: nativeAdminStatusOperation.path,
@@ -4529,6 +4635,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             request.body !== undefined ||
             Number(request.headers["content-length"] ?? 0) > 0 ||
             request.headers["transfer-encoding"] !== undefined;
+          if (operation.operationId === "deployAgent" && !hasRequestBody) {
+            request.body = {};
+          }
           if (!Object.hasOwn(operation.schema, "body") && hasRequestBody) {
             throw failure(
               400,
@@ -4546,7 +4655,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         ...(authorizesBeforeBody(operation)
           ? {}
           : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
-        handler: async (request, reply) => perform(request, reply, operation),
+        handler: async (request, reply) => performFenced(request, reply, operation),
       });
     }
   });

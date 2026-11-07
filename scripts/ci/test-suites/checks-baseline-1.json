@@ -22,6 +22,7 @@
     "tests/docs/docs-site.test.mjs",
     "tests/integration/github-login-transport.test.mjs",
     "tests/conformance/kubernetes-compute.test.mjs",
+    "tests/conformance/openshell-static-credential-attachment.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
     "tests/conformance/workspace-node-supervisor.test.mjs",
@@ -59,12 +60,14 @@
     "tests/integration/production-image-upgrade.test.mjs",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
     "tests/conformance/test-files.test.mjs",
+    "tests/conformance/update-contributors.test.mjs",
     "tests/conformance/socket-directory.test.mjs",
     "tests/conformance/temporary-directory.test.mjs",
     "tests/integration/production-controller-security.test.mjs",
     "tests/conformance/kubernetes-runtime-credentials.test.mjs",
     "tests/conformance/openshell-gateway-wire.test.mjs",
     "tests/conformance/openshell-provider-profile-wire.test.ts",
+    "tests/conformance/oauth-connection.test.mjs",
     "tests/conformance/openshell-oauth-wire.test.mjs",
     "tests/conformance/openshell-codex-device.test.mjs",
     "tests/conformance/openshell-harness-status.test.mjs",
@@ -119,6 +122,7 @@
     "tests/integration/egress-stock-online-authority.test.mjs",
     "tests/integration/managed-plugin-request-authority.test.ts",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
+    "tests/integration/harness-egress-probe-diagnostics.test.ts",
     "tests/conformance/openshell-prepared-git-provider.test.mjs",
     "tests/conformance/openshell-git-runtime.test.mjs",
     "tests/integration/openshell-observed-request-hook.test.ts",
@@ -173,6 +177,9 @@
       "path": "tests/conformance/contracts.test.mjs"
     },
     {
+      "path": "tests/conformance/update-contributors.test.mjs"
+    },
+    {
       "path": "tests/docs/docs-length.test.mjs"
     },
     {
@@ -201,6 +208,9 @@
     },
     {
       "path": "tests/conformance/kubernetes-compute.test.mjs"
+    },
+    {
+      "path": "tests/conformance/openshell-static-credential-attachment.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-provider-harness.test.mjs"
@@ -263,6 +273,9 @@
     {
       "path": "tests/conformance/openshell-provider-profile-wire.test.ts",
       "expectedTests": ["provider profile wire defaults preserve Git overlap enforcement"]
+    },
+    {
+      "path": "tests/conformance/oauth-connection.test.mjs"
     },
     {
       "path": "tests/conformance/openshell-oauth-wire.test.mjs"
@@ -602,6 +615,12 @@
         "protected Git replies to this online decision before its authority deadline",
         "shipped gh metadata stays within selected-repository authority",
         "bounded selected REST bodies retain transport and authority limits"
+      ]
+    },
+    {
+      "path": "tests/integration/harness-egress-probe-diagnostics.test.ts",
+      "expectedTests": [
+        "held enrollment distinguishes probe failures without exposing proxy output or retrying"
       ]
     },
     {

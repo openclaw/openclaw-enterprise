@@ -495,7 +495,7 @@ export const credentialSources = occSchema.table(
     type: text("type").notNull(),
     config: jsonb("config").$type<Readonly<Record<string, string>>>().notNull(),
     egress: jsonb("egress").$type<ProtectedEgressSource>(),
-    driverId: text("driver_id").notNull(),
+    driverId: text("driver_id"),
     ownerCapability: text("owner_capability").$type<CredentialSourceOwnerCapability>().notNull(),
     state: text("state").$type<CredentialSourceState>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
@@ -528,7 +528,7 @@ export const credentialSources = occSchema.table(
     ),
     check(
       "credential_sources_owner_capability_valid",
-      sql`${table.ownerCapability} = 'credential_gateway' OR (${table.ownerCapability} = 'credential_proxy' AND ${table.egress} IS NOT NULL)`,
+      sql`(${table.driverId} IS NOT NULL AND (${table.ownerCapability} = 'credential_gateway' OR (${table.ownerCapability} = 'credential_proxy' AND ${table.egress} IS NOT NULL))) OR (${table.ownerCapability} = 'token_service' AND ${table.driverId} IS NULL AND ${table.type} = 'oauth2-refresh-token' AND ${table.egress} IS NULL)`,
     ),
     check(
       "credential_sources_driver_id_valid",
@@ -774,8 +774,10 @@ export const agentRevisions = occSchema.table(
         AND mod((${table.admittedSpec}->>'configuration_generation')::numeric, 1) = 0
         AND jsonb_typeof(${table.admittedSpec}->'draft_spec') = 'object'
         AND jsonb_typeof(${table.admittedSpec}->'harness') = 'object'
-        AND ((${table.admittedSpec}->'harness') ?& ARRAY['id', 'version', 'mode'])
-        AND ((${table.admittedSpec}->'harness') - 'id' - 'version' - 'mode') = '{}'::jsonb
+        AND ((${table.admittedSpec}->'harness') ?& ARRAY['id', 'version', 'mode', 'overrides', 'configuration'])
+        AND ((${table.admittedSpec}->'harness') - 'id' - 'version' - 'mode' - 'overrides' - 'configuration') = '{}'::jsonb
+        AND jsonb_typeof(${table.admittedSpec} #> '{harness,overrides}') = 'object'
+        AND jsonb_typeof(${table.admittedSpec} #> '{harness,configuration}') = 'object'
         AND jsonb_typeof(${table.admittedSpec} #> '{harness,id}') = 'string'
         AND COALESCE(btrim(${table.admittedSpec} #>> '{harness,id}'), '') <> ''
         AND jsonb_typeof(${table.admittedSpec} #> '{harness,version}') = 'string'
@@ -1093,6 +1095,12 @@ export const iamRoles = occSchema.table(
   (table) => [
     unique("iam_roles_namespace_id_id_unique").on(table.namespaceId, table.id).nullsNotDistinct(),
     check("iam_roles_permissions_array", sql`jsonb_typeof(${table.permissions}) = 'array'`),
+    check(
+      "iam_roles_configured_scope",
+      sql`${table.id} NOT LIKE 'role\\_config\\_%'
+        OR (${table.namespaceId} IS NULL
+          AND NOT ${table.permissions} @> '[{"resourceKind":"installation"}]'::jsonb)`,
+    ),
   ],
 );
 
@@ -2489,5 +2497,148 @@ export const oauthConnectionTemplateVersions = occSchema.table(
       AND ${table.observedMetadata}->>'authorizationUrl' = ${table.authorizationUrl}
       AND ${table.observedMetadata}->>'tokenUrl' = ${table.tokenUrl} AND jsonb_array_length(${table.destinations}) = 1)`,
     ),
+  ],
+);
+
+export const connectionTokenCustody = occSchema.table(
+  "connection_token_custody",
+  {
+    namespaceId: text("namespace_id").notNull(),
+    credentialSourceId: text("credential_source_id").notNull(),
+    secretRef: jsonb("secret_ref").notNull(),
+    scheduledVersion: text("scheduled_version"),
+    nextRefreshAt: timestamp("next_refresh_at", { withTimezone: true }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.namespaceId, table.credentialSourceId] }),
+    index("connection_token_refresh_due")
+      .on(table.nextRefreshAt)
+      .where(sql`${table.nextRefreshAt} IS NOT NULL`),
+    foreignKey({
+      name: "connection_token_custody_source",
+      columns: [table.namespaceId, table.credentialSourceId],
+      foreignColumns: [credentialSources.namespaceId, credentialSources.id],
+    })
+      .onDelete("cascade")
+      .onUpdate("restrict"),
+  ],
+);
+
+export const savedConnections = occSchema.table(
+  "saved_connections",
+  {
+    namespaceId: text("namespace_id").notNull(),
+    credentialSourceId: text("credential_source_id").notNull(),
+    oauthClientId: text("oauth_client_id")
+      .notNull()
+      .references(() => oauthClients.id, { onDelete: "restrict" }),
+    clientId: text("client_id").notNull(),
+    issuer: text("issuer").notNull(),
+    tokenUrl: text("token_url").notNull(),
+    destinations: jsonb("destinations").notNull(),
+    mcpServerUrl: text("mcp_server_url"),
+    resource: text("resource"),
+    requestedScopes: text("requested_scopes").array().notNull(),
+    grantedScopes: text("granted_scopes").array().notNull(),
+    revocationRequestedBy: text("revocation_requested_by"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    ownerPrincipalId: text("owner_principal_id")
+      .notNull()
+      .references(() => iamIdentities.id, { onDelete: "restrict", onUpdate: "restrict" }),
+    connectionTemplateId: text("connection_template_id").notNull(),
+    connectionTemplateVersion: integer("connection_template_version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.namespaceId, table.credentialSourceId] }),
+    check(
+      "saved_connections_mcp_resource",
+      sql`(${table.mcpServerUrl} IS NULL) = (${table.resource} IS NULL)`,
+    ),
+    check(
+      "saved_connections_requested_scopes",
+      sql`array_position(${table.requestedScopes},NULL) IS NULL`,
+    ),
+    check(
+      "saved_connections_granted_scopes",
+      sql`array_position(${table.grantedScopes},NULL) IS NULL AND (cardinality(${table.requestedScopes}) = 0 OR ${table.grantedScopes} <@ ${table.requestedScopes})`,
+    ),
+    foreignKey({
+      name: "saved_connections_source_owner",
+      columns: [table.namespaceId, table.credentialSourceId],
+      foreignColumns: [credentialSources.namespaceId, credentialSources.id],
+    })
+      .onDelete("cascade")
+      .onUpdate("restrict"),
+    foreignKey({
+      name: "saved_connections_template_version",
+      columns: [table.connectionTemplateId, table.connectionTemplateVersion],
+      foreignColumns: [
+        oauthConnectionTemplateVersions.templateId,
+        oauthConnectionTemplateVersions.version,
+      ],
+    })
+      .onDelete("restrict")
+      .onUpdate("restrict"),
+    check(
+      "saved_connections_revocation_requested",
+      sql`${table.revokedAt} IS NULL OR ${table.revocationRequestedBy} IS NOT NULL`,
+    ),
+    index("saved_connections_revoking_idx")
+      .on(table.credentialSourceId)
+      .where(sql`${table.revocationRequestedBy} IS NOT NULL`),
+    index("saved_connections_namespace_owner_idx").on(table.namespaceId, table.ownerPrincipalId),
+    index("saved_connections_template_idx").on(
+      table.connectionTemplateId,
+      table.connectionTemplateVersion,
+    ),
+  ],
+);
+
+export const connectionSessions = occSchema.table(
+  "connection_sessions",
+  {
+    stateHash: text("state_hash").primaryKey(),
+    namespaceId: text("namespace_id").notNull(),
+    credentialSourceId: text("credential_source_id").notNull(),
+    pkceVerifier: text("pkce_verifier").notNull(),
+    selectedScopes: text("selected_scopes").array().notNull(),
+    issuerRequired: boolean("issuer_required").notNull(),
+    sessionId: text("session_id").notNull(),
+    redirectUri: text("redirect_uri").notNull(),
+    actorId: text("actor_id").notNull(),
+    connectionTemplateId: text("connection_template_id").notNull(),
+    connectionTemplateVersion: integer("connection_template_version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    check("connection_sessions_state_hash_format", sql`${table.stateHash} ~ '^[0-9a-f]{64}$'`),
+    check(
+      "connection_sessions_expiry_after_creation",
+      sql`${table.expiresAt} > ${table.createdAt}`,
+    ),
+    foreignKey({
+      name: "connection_sessions_source_owner",
+      columns: [table.namespaceId, table.credentialSourceId],
+      foreignColumns: [credentialSources.namespaceId, credentialSources.id],
+    })
+      .onDelete("cascade")
+      .onUpdate("restrict"),
+    foreignKey({
+      name: "connection_sessions_template_version",
+      columns: [table.connectionTemplateId, table.connectionTemplateVersion],
+      foreignColumns: [
+        oauthConnectionTemplateVersions.templateId,
+        oauthConnectionTemplateVersions.version,
+      ],
+    })
+      .onDelete("restrict")
+      .onUpdate("restrict"),
+    check(
+      "connection_sessions_selected_scopes_valid",
+      sql`array_position(${table.selectedScopes},NULL) IS NULL`,
+    ),
+    index("connection_sessions_expiry_idx").on(table.expiresAt),
   ],
 );

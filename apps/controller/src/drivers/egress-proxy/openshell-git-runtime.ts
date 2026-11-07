@@ -1,8 +1,9 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { dirname, posix } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { asRecord } from "@openclaw-enterprise/utils";
 import { githubInstallationProfile } from "@openclaw-enterprise/contracts";
 import type {
   AgentRevision,
@@ -14,7 +15,10 @@ import type {
   RepositoryGitInstallationFence,
   SandboxRepositoryAccess,
 } from "@openclaw-enterprise/contracts";
-import type { PostgresPool } from "@openclaw-enterprise/occ";
+import {
+  RepositoryExecutionRequiresRedeployError,
+  type PostgresPool,
+} from "@openclaw-enterprise/occ";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import type { RepositoryTransportEmit } from "../../composition/repository-credentials/contracts.ts";
 import { REPOSITORY_CLIENT_BIN } from "../compute/kubernetes/repository-native-configuration.ts";
@@ -84,12 +88,18 @@ export type {
 
 export interface OpenShellGitRuntimeConfiguration {
   readonly registrationName: string;
-  /** Selected with the paired Sandbox and Credential Proxy, never inferred on an old revision. */
-  readonly protectedExecution?: true;
   /** Dedicated supported stock gateway, only operator-controlled writers, no other workspace member. */
   readonly observedHookPreviewWorkspace?: string;
   readonly authority: EgressAuthorityConfiguration;
 }
+/** Only the worker that witnessed a held launch can authorize its next Git session. */
+function requiresOriginalLauncher(revision: Readonly<AgentRevision>, profile: string): boolean {
+  return (
+    revision.egressPlan?.repositoryGitAuthorization === "online-request" &&
+    profile !== githubInstallationProfile
+  );
+}
+
 type ReadMaterial = ProtectedRepositoryGitAuthority["online"]["readMaterial"];
 type MaterialReader = {
   readOpenShellMaterial(
@@ -474,21 +484,21 @@ export class OpenShellGitRuntime {
       !binding ||
       revision.harness.id !== "codex" ||
       revision.harness.mode !== "dedicated" ||
-      (this.configuration.protectedExecution
-        ? (revision.executionAdmission.version === 6
-            ? !this.configuration.observedHookPreviewWorkspace ||
-              binding.profile !== githubInstallationProfile ||
-              revision.egressPlan?.repositoryGitAuthorization !== observedRequestHook
-            : revision.executionAdmission.version !== 5 ||
-              revision.egressPlan?.repositoryGitAuthorization !== "online-request" ||
-              (binding.profile === githubInstallationProfile &&
-                !!this.configuration.observedHookPreviewWorkspace)) ||
-          !revision.egressPlan?.driver ||
-          !isDeepStrictEqual(revision.egressPlan.repositoryGit, state) ||
-          (binding.profile !== "git-write" &&
-            binding.profile !== githubInstallationProfile &&
-            binding.profile !== "github-repository")
-        : revision.egressPlan !== undefined || binding.profile !== "git-write")
+      (revision.executionAdmission?.version === 6
+        ? !this.configuration.observedHookPreviewWorkspace ||
+          binding.profile !== githubInstallationProfile ||
+          revision.egressPlan?.repositoryGitAuthorization !== observedRequestHook
+        : revision.executionAdmission?.version !== 5 ||
+          revision.egressPlan?.repositoryGitAuthorization !== "online-request" ||
+          (binding.profile === githubInstallationProfile &&
+            !!this.configuration.observedHookPreviewWorkspace)) ||
+      !revision.egressPlan?.driver ||
+      !isDeepStrictEqual(revision.egressPlan.repositoryGit, state) ||
+      typeof revision.egressPlan.execution?.executionId !== "string" ||
+      revision.egressPlan.execution.executionId.trim().length === 0 ||
+      (binding.profile !== "git-write" &&
+        binding.profile !== githubInstallationProfile &&
+        binding.profile !== "github-repository")
     ) {
       throw new Error(
         "OpenShell prepared Git requires one explicitly admitted GitHub binding and its dedicated Codex execution.",
@@ -512,6 +522,7 @@ export class OpenShellGitRuntime {
     }
     const entry = await this.entries.get(revision.id);
     if (!entry && revision.executionAdmission?.version === 6) {
+      // Observed-hook preview retains its separate cold-adoption refusal.
       return;
     }
     if (!entry && cold && revision.repositoryCredentials?.standingApprovalId) {
@@ -526,6 +537,27 @@ export class OpenShellGitRuntime {
         return;
       }
       const scope = this.scope(revision);
+      if (requiresOriginalLauncher(revision, scope.binding.profile)) {
+        // No local entry alone proves nothing. The durable owner, exact binding and
+        // unchanged fence establish that this process cannot inherit the held launch.
+        const current = await this.routes?.standing(revision);
+        if (
+          saved.workerInstance &&
+          saved.workerInstance !== this.instance &&
+          saved.route.revisionId === revision.id &&
+          saved.route.namespaceId === revision.namespaceId &&
+          saved.route.agentId === revision.agentId &&
+          /^[A-Za-z0-9_-]{32}$/.test(saved.route.bindingId) &&
+          Number.isSafeInteger(saved.route.fence) &&
+          saved.route.fence > 0 &&
+          !signal.aborted &&
+          !this.stopped.signal.aborted &&
+          isDeepStrictEqual(saved, current)
+        ) {
+          throw new RepositoryExecutionRequiresRedeployError();
+        }
+        return;
+      }
       const context = await cold();
       if (!context || git.workspace !== context.workspace || git.sandbox !== context.sandbox) {
         return;
@@ -544,7 +576,11 @@ export class OpenShellGitRuntime {
         return;
       }
       const box = await client.getSandbox({ workspace, name: sandbox }, signal);
-      const hash = box && (await witnessOpenShellGitLaunch(client, continuity, box, git, signal));
+      const hash =
+        box &&
+        (await witnessOpenShellGitLaunch(client, continuity, box, git, signal, {
+          kind: "predecessor",
+        }));
       const identity = openShellGitExecutionIdentity(git);
       if (
         hash !== saved.retainedLaunchHash ||
@@ -621,10 +657,9 @@ export class OpenShellGitRuntime {
       throw new Error("OpenShell prepared Git requires a live admitted GitHub binding.");
     }
     const scope = this.scope(revision);
+    const admittedExecutionId = revision.egressPlan!.execution.executionId;
     const legacyPreview = revision.executionAdmission?.version === 6;
-    const mandatory =
-      revision.egressPlan?.repositoryGitAuthorization === "online-request" &&
-      scope.binding.profile !== githubInstallationProfile;
+    const mandatory = requiresOriginalLauncher(revision, scope.binding.profile);
     const preview = legacyPreview || mandatory;
     if (
       (legacyPreview && workspace !== this.configuration.observedHookPreviewWorkspace) ||
@@ -756,10 +791,7 @@ export class OpenShellGitRuntime {
           scope.delivery,
           preview ? true : undefined,
         );
-        const bindingId =
-          persisted?.bindingId ??
-          revision.egressPlan?.execution.executionId ??
-          randomBytes(24).toString("base64url");
+        const bindingId = persisted?.bindingId ?? admittedExecutionId;
         const route = {
           revisionId: revision.id,
           namespaceId: revision.namespaceId,
@@ -1259,7 +1291,31 @@ export class OpenShellGitRuntime {
       }
       try {
         const path = preview.arm(startupId, entry.authorization.delivery.repository);
-        preview.confirm(await probe(path));
+        const result = await probe(path);
+        const failure = asRecord(asRecord(result)?.probeFailure);
+        if (
+          failure?.error === "probe_process_failed" ||
+          failure?.error === "probe_response_invalid"
+        ) {
+          try {
+            const code = failure.code;
+            this.emit?.({
+              event: "worker.openshell-git-probe-failed",
+              reason: failure.error,
+              ...(failure.error === "probe_process_failed" &&
+              typeof code === "number" &&
+              Number.isInteger(code) &&
+              code > 0 &&
+              code <= 99
+                ? { code }
+                : {}),
+              ...this.identity(entry),
+            });
+          } catch {
+            // Diagnostics must not change the original one-shot refusal.
+          }
+        }
+        preview.confirm(result);
         await this.fenced(entry, signal);
       } catch (error) {
         this.block(entry, "bootstrap_failed");
@@ -1462,9 +1518,7 @@ export class OpenShellGitRuntime {
    * this only after withdraw() and after OpenShell confirms the revision's Sandbox gone, so no
    * route can use the provider again: in this process the entry is blocked, and adoption by any
    * other worker finds neither the Sandbox nor the provider (the store's tombstone, written best
-   * effort, refuses it earlier). (Without a route store, which only the
-   * unprotected git-write path lacks, a restarted worker asked to prepare the revision again
-   * starts a new bootstrap with every admission check, as a first preparation does.) The name
+   * effort, refuses it earlier). The name
    * derives from the revision's own scope, as at preparation, so a restarted worker finds
    * it too. `attached`, the Sandbox's provider list read before its deletion, names it when the
    * scope no longer resolves (its grant or standing approval was withdrawn, often the reason the
@@ -2339,7 +2393,7 @@ export class OpenShellGitRuntime {
 
   /** The protected sender gets committed material and one request decision, never the issuer. */
   async bindRepositoryGit(authority: ProtectedRepositoryGitAuthority) {
-    if (!this.configuration.protectedExecution || !this.routes) {
+    if (!this.routes) {
       throw new Error("OpenShell protected repository Git requires its selected route store.");
     }
     await this.start(

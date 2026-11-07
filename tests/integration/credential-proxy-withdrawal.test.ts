@@ -94,16 +94,25 @@ test(
         // The reduction protocol needs distinct upstreams. Only the primary source is a Harness
         // model source; a separate fixture provider owns the auxiliary API destination.
         const auxiliaryOrigin = origin.replace("provider.example.test", "second.example.test");
-        const auxiliary = createOpenAiStaticProvider({
-          protocol: "openai-responses",
-          baseUrl: `${auxiliaryOrigin}/v1`,
-        });
+        const auxiliary = createOpenAiStaticProvider();
         const auxiliaryType = { ...auxiliary.sourceType, type: "auxiliary-inference" };
         delete auxiliaryType.harnessAuth;
         const auxiliaryProvider = {
           ...auxiliary,
           ref: { ...auxiliary.ref, id: "auxiliary-inference" },
           sourceType: auxiliaryType,
+          routes(
+            source: Parameters<typeof auxiliary.routes>[0],
+            binding: Parameters<typeof auxiliary.routes>[1],
+          ) {
+            return auxiliary.routes(source, binding, {
+              modelProvider: {
+                protocol: "openai-responses",
+                baseUrl: `${auxiliaryOrigin}/v1`,
+                supportsStandaloneWebSearch: false,
+              },
+            });
+          },
         };
         // This test-owned catalogue adapter delegates validation and routing to the real provider.
         // Registration remains live through the Proxy; no Gateway copy is invented for this type.

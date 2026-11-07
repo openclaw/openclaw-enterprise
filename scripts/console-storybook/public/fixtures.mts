@@ -48,7 +48,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     slackGrantMissing?: string;
     auth?: null | string;
     namespaceDeleteOutcome?: string;
-    namespaceDeleteRetryStatusFailure?: true;
+    namespaceDeleteRetryStatusFailure?: "unavailable" | "invalid";
     observabilityUrl?: string;
     repositoryOptions?: readonly RepositoryOption[];
     credentialRegistrationOutcome?: string;
@@ -125,6 +125,9 @@ type StoredCredentialSource = Pick<
   CredentialSourceMetadata,
   "id" | "namespaceId" | "ref" | "state"
 > & {
+  name?: string;
+  type?: string;
+  secrets?: CredentialSourceMetadata["secrets"];
   config: unknown;
   driverId: string;
   createdAt: string;
@@ -340,9 +343,23 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           ? { method: "codex_pat", source: { kind: "service_account", namespaceId, id: "sa_demo" } }
           : scenario.auth === "codex_pat"
             ? { method: "codex_pat", source: secretRef("sec_demo_service_account") }
-            : scenario.auth === "oauth"
+            : scenario.auth === "oauth" || scenario.auth === "api-source"
               ? { method: "credential_source", sourceId: "cs_00000000-0000-4000-8000-000000000010" }
               : auth;
+  if (scenario.auth === "api-source" && selectedAuth?.method === "credential_source") {
+    credentialSources.set(selectedAuth.sourceId, {
+      id: selectedAuth.sourceId,
+      namespaceId,
+      name: "Evaluation API key",
+      type: "openai",
+      config: { authorized_base_url: "https://evaluation.example.com/v1" },
+      secrets: { api_key: secretRef("sec_demo_model") },
+      ref: { kind: "credential_source", namespaceId, id: selectedAuth.sourceId },
+      driverId: "credential-gateway-storybook",
+      state: "ready",
+      createdAt,
+    });
+  }
   // The demo Agent was granted its harness authentication Secret or credential source, unless the
   // scenario left it out: an administrator's Credentials tab reads this grant (finding 2260).
   const harnessCredential =
@@ -534,16 +551,21 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         return response(item, 202);
       }
       if (method === "GET") {
-        // Consume this preview failure only while the ordinary retry prompt is open.
-        // Earlier polls and later Refresh status reads keep their normal responses.
+        // The invalid-value preview fails the first read after the unconfirmed write;
+        // the unavailable preview waits for the ordinary retry prompt to open.
         if (
           scenario.namespaceDeleteRetryStatusFailure &&
           item.id === namespaceId &&
           !namespaceDeleteRetryStatusFailed &&
-          document.querySelector(".namespace-delete-dialog[open] #namespace-delete-title")
-            ?.textContent === `Retry deletion of ${item.name}?`
+          (scenario.namespaceDeleteRetryStatusFailure === "invalid"
+            ? item.status === "deleting"
+            : document.querySelector(".namespace-delete-dialog[open] #namespace-delete-title")
+                ?.textContent === `Retry deletion of ${item.name}?`)
         ) {
           namespaceDeleteRetryStatusFailed = true;
+          if (scenario.namespaceDeleteRetryStatusFailure === "invalid") {
+            return response({ ...item, status: [item.status] });
+          }
           return new Response("Service unavailable", { status: 503 });
         }
         if (item.status === "deleting" && scenario.namespaceDeleteOutcome === "complete") {
@@ -700,7 +722,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
             return error(
               400,
               "INVALID_REQUEST",
-              "Credential destination authorization must match the Installation model provider.",
+              "Credential destination authorization requires a valid HTTPS /v1 endpoint.",
             );
           }
           if (body === null || body === undefined) {
@@ -786,6 +808,16 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       }
       if (resource === "permissions/secrets" && method === "GET") {
         return response({ operateDenied: scenario.secretOperateDenied ?? [] });
+      }
+      // A member reads the Installation's capabilities from the Namespace, minus guided
+      // provisioning and its native admin option (RFC-0026).
+      if (resource === "agent-capabilities" && method === "GET") {
+        const {
+          nativeAdmin: _provisioningOnly,
+          agentProvisioning: _administratorOnly,
+          ...capabilities
+        } = installationFixture(installationScenario(scenario), createdAt).capabilities ?? {};
+        return response({ capabilities });
       }
       if (
         resource === "agents" ||

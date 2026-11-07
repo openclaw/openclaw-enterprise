@@ -61,10 +61,23 @@ export type {
   PreparedTokenGrant,
   PreparedTokenSource,
   PreparedTokenSelection,
+  ResolvedToken,
   PreparedTokenEvidence,
   PreparedTokenCurrentProof,
   PreparedTokenIssuer,
-  PreparedTokenService,
+  OAuthConnectionAccessToken,
+  OAuthConnectionGrant,
+  OAuthRefreshTokenRegistration,
+  OAuthRefreshTokenIssuer,
+  OAuthConnectionClient,
+  OAuthConnectionRegistration,
+  OAuthConnectionStatus,
+  OAuthAccountRef,
+  PreparedTokenKind,
+  PreparedTokenRegistration,
+  PreparedTokenRef,
+  TokenResolveOptions,
+  TokenService,
 } from "./prepared-token.ts";
 export {
   preparedGitHubType,
@@ -148,6 +161,8 @@ export type {
   ConnectionTemplate,
   ConnectionTemplateValues,
   OAuthConnectionTemplateVersion,
+  ConnectionSession,
+  SavedConnection,
 } from "./connection-templates.ts";
 export {
   ConnectionTemplateValidationError,
@@ -531,11 +546,18 @@ export interface CredentialSourceType {
 /** `registering` is recorded before the gateway write, so an uncertain outcome stays visible. */
 export type CredentialSourceState = "registering" | "ready" | "deleting";
 
-/** Driver IDs are scoped to a capability. Both parts of a source owner are immutable. */
-export type CredentialSourceOwnerCapability = "credential_gateway" | "credential_proxy";
+/** Driver-owned sources pin the selected Driver. The Token Service owns saved accounts directly. */
+type CredentialSourceOwner =
+  | {
+      readonly ownerCapability: "credential_gateway" | "credential_proxy";
+      readonly driverId: string;
+    }
+  | { readonly ownerCapability: "token_service"; readonly driverId?: never };
+
+export type CredentialSourceOwnerCapability = CredentialSourceOwner["ownerCapability"];
 
 /** OCC source admission, including its owner and Secret references, never credential values. */
-export interface CredentialSource {
+export type CredentialSource = CredentialSourceOwner & {
   readonly egress?: ProtectedEgressSource;
   readonly id: string;
   readonly namespaceId: string;
@@ -543,11 +565,9 @@ export interface CredentialSource {
   readonly type: string;
   readonly config: Readonly<Record<string, string>>;
   readonly secrets: Readonly<Record<string, SecretReference>>;
-  readonly ownerCapability: CredentialSourceOwnerCapability;
-  readonly driverId: string;
   readonly state: CredentialSourceState;
   readonly createdAt: string;
-}
+};
 
 export interface CredentialSourceMetadata {
   readonly ownerCapability: CredentialSourceOwnerCapability;
@@ -617,6 +637,9 @@ export function credentialSourceMatchesSnapshot(
     return false;
   }
   switch (source.ownerCapability) {
+    case "token_service":
+      // A saved account has no runnable sender until a consumer receives its own binding.
+      return false;
     case "credential_gateway":
       return (
         snapshot.credentialProxyId === undefined && snapshot.credentialGatewayId === source.driverId
@@ -1091,6 +1114,10 @@ export interface HarnessDescriptor {
 
 export interface RevisionHarnessDescriptor extends HarnessDescriptor {
   readonly mode: HarnessExecutionMode;
+  /** Requested settings, normalized by the selected Compute Driver. */
+  readonly overrides?: Readonly<Record<string, unknown>>;
+  /** Resolved once at admission; execution must not reconstruct these from defaults. */
+  readonly configuration?: Readonly<Record<string, unknown>>;
 }
 
 export interface AgentRevision extends Scope {
@@ -1106,7 +1133,10 @@ export interface AgentRevision extends Scope {
   readonly configurationGeneration: number;
   readonly configuration: OpenClawConfigurationDocument;
   readonly gatewayManagedMode: boolean;
-  readonly harness: RevisionHarnessDescriptor;
+  readonly harness: RevisionHarnessDescriptor & {
+    readonly overrides: Readonly<Record<string, unknown>>;
+    readonly configuration: Readonly<Record<string, unknown>>;
+  };
   readonly compute: {
     readonly id: string;
     readonly implementation: string;
@@ -1177,7 +1207,7 @@ export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevi
     ...(revision.repositoryCredentials === undefined
       ? {}
       : { repositoryCredentials: immutableCopy(revision.repositoryCredentials) }),
-    harness: Object.freeze({ ...revision.harness }),
+    harness: immutableCopy(revision.harness),
     compute: Object.freeze({ ...revision.compute }),
     harnessAuth: immutableCopy(revision.harnessAuth),
     ...(revision.credentialSources === undefined
@@ -1269,6 +1299,21 @@ export interface Role extends Scope {
   readonly permissions: readonly Permission[];
 }
 
+/**
+ * ID prefixes of the Roles, Groups, and Group bindings that OCC writes from the Installation
+ * `iam` configuration (RFC-0026). OCC adds, changes, and deletes only rows with these prefixes
+ * when the configuration changes.
+ */
+export const CONFIGURED_IAM_ID_PREFIXES = Object.freeze({
+  role: "role_config_",
+  group: "group_config_",
+  binding: "binding_config_",
+} as const);
+
+export function isConfiguredRoleId(roleId: string): boolean {
+  return roleId.startsWith(CONFIGURED_IAM_ID_PREFIXES.role);
+}
+
 export interface Group extends Scope {
   readonly id: string;
   readonly namespaceId?: string;
@@ -1302,10 +1347,22 @@ export interface Restriction extends Scope {
   readonly effect: "deny";
 }
 
+/** Resource kinds that belong to one Agent, so an exact binding on that Agent applies to them. */
+export const AGENT_CHILD_RESOURCE_KINDS = Object.freeze([
+  "agent_revision",
+  "sandbox_policy",
+] as const);
+
 export interface AuthorizationRequest {
   readonly principalId: string;
   readonly action: PermissionAction;
   readonly resource: ResourceRef;
+  /**
+   * The Agent that owns an `agent_revision` or `sandbox_policy` resource, supplied by OCC from
+   * stored state. An exact binding on this Agent also applies its Role's permissions for the
+   * requested kind. Absent for every other kind.
+   */
+  readonly parentAgentId?: string;
 }
 
 /** Asks whether one identity already holds every grant of another identity. */
@@ -1390,6 +1447,10 @@ export type {
   IAMManagedRoleInput,
   IAMManagedAccessBindingInput,
   IAMManagedServicePrincipalInput,
+  IAMOwnerBindingInput,
+  IAMConfiguredPolicy,
+  IAMConfiguredPolicyInput,
+  IAMConfiguredPolicyChanges,
 } from "./drivers/iam/index.ts";
 export type { ServiceAccountDriver } from "./drivers/service-account/index.ts";
 export type {
@@ -1504,6 +1565,8 @@ export type {
   Preset,
   PresetSummary,
   PresetTemplate,
+  PresetDraftTemplate,
+  PresetDraftDefinition,
   PresetLaunchSettings,
   PresetVariable,
 } from "./presets.ts";
@@ -1516,7 +1579,7 @@ export {
   presetTemplateDefaults,
   presetTemplateDefaultsWithPlaceholders,
   requiredPresetVariables,
-} from "./preset-variables.mjs";
+} from "./preset-variables.mts";
 
 export {
   CODEX_FAILURE_OUTPUT_CLASSES,

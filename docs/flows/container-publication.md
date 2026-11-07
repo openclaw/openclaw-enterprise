@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-04
-last_updated_session: authoring-run/2811a56d-1652-4ba4-bb5f-a5be2e647c16
+updated: 2026-11-06
+last_updated_session: authoring-run/67960fd7-f16d-459d-83ae-8dc02997f0d5
 ---
 
 # Container publication flow
@@ -66,6 +66,24 @@ permission or protected-environment credentials.
 `.github/workflows/container-publish.yml:jobs.prepare` calls the reusable
 `.github/workflows/container-check.yml:jobs.prepare` image/architecture matrix. Controller and runtime each build on native AMD64 and ARM64 Linux runners.
 See [shared CI settings](../release/configuration.md#build-settings) for native runner defaults and overrides.
+
+### Runtime source verification
+
+To verify runtime changes locally, first
+[resolve the build arguments](../../deploy/runtime/README.md#resolve-openclaw-build-arguments), then run:
+
+```bash
+docker build -f deploy/runtime/Dockerfile \
+  "${openclaw_build_args[@]}" --target openclaw-bridge-tests .
+```
+
+Runtime jobs first build the explicit `openclaw-bridge-tests` target, which runs
+the broad bridge suites, CUA tests, and source typechecks. The subsequent image
+assembly uses the same checkout, source build arguments, base, and platform.
+Verification failure prevents assembly, smoke checks, and artifact upload through
+the normal required-step failure path. Local image assembly has no dependency on
+this target; see [local source verification](../../deploy/runtime/README.md#verify-runtime-source).
+
 Each job checks its architecture and logs CPU, memory, and available disk.
 The reported runner label alone is not evidence of allocated capacity.
 `scripts/ci/setup-tools.sh` installs checksum-pinned kubectl, k3d, Helm, and yq
@@ -127,6 +145,14 @@ new owner-only directory, so native first use can create private SQLite stores
 under the Sandbox workspace. Existing parent permissions and filesystem admission
 checks remain unchanged. The final image records the patch checksums in its
 provenance.
+
+The [Codex profile patch](../../deploy/runtime/openclaw-codex-full-access-profile.patch)
+requires the requested named profile before returning a thread. Refusals for profiles
+other than `:danger-full-access` report fixed request-source, selector-agreement and
+response-comparison categories, without profile names or configuration. Missing metadata
+and a different returned ID remain refusals. The message directs the caller to ask
+the workspace administrator to verify profile availability and runtime compatibility
+before retrying.
 
 The runtime disables npm background update checks. See the
 [runtime defaults](../../deploy/runtime/README.md).
@@ -264,6 +290,10 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-06 10:40: Separate local runtime assembly from required native CI source verification. (authoring-run/67960fd7-f16d-459d-83ae-8dc02997f0d5 - a239e6df5946cc62367ab7872791e4c0edf358bc)
+
+- 2026-11-05 19:00: Categorize named-profile refusals without exposing profile values. (authoring-run/d159cc84-e825-40d4-a8db-8adc7ca9ce42 - 0ecbe50bfe)
 
 - 2026-11-04 22:30: Document the Debian curl CONNECT-authentication backport and package verification. (authoring-run/2811a56d-1652-4ba4-bb5f-a5be2e647c16 - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 

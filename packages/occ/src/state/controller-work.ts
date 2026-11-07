@@ -2,6 +2,10 @@ import { immutableCopy, isNonEmptyString, isPositiveSafeInteger } from "@opencla
 import { isComputePreparationFailureEvidence } from "@openclaw-enterprise/contracts";
 import type { RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
 
+import {
+  repositoryExecutionRedeployMessage,
+  type DeploymentRepositoryAccessStatus,
+} from "../deployment-repository-access.ts";
 import { SandboxRepositoryRecipientUnverifiedError, ScopeViolationError } from "../errors.ts";
 import { recognizedRuntimeFailureValues, runtimeFailureCause } from "../runtime-failure-cause.ts";
 
@@ -27,6 +31,7 @@ export interface DeploymentStatusResult {
   readonly agentId: string;
   readonly status: DeploymentStatus;
   readonly error: DeploymentStatusError | null;
+  readonly repositoryAccess?: DeploymentRepositoryAccessStatus;
   readonly warnings: readonly PluginDeploymentWarning[];
   readonly progress: {
     readonly lastAttempt: {
@@ -854,6 +859,8 @@ function deploymentErrorMessage(code: string): string {
       return "The Installation's repository credential Driver cannot keep the session records this version's repository access needs. Ask an Installation administrator for a Driver that supports them, or remove the Agent's repository access, then deploy again.";
     case "REPOSITORY_EXECUTION_CLOSED":
       return "This version's standing repository access was closed, and the controller does not reopen it for the same version. Deploy again to restore repository access.";
+    case "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED":
+      return repositoryExecutionRedeployMessage;
     case "REPOSITORY_EXECUTION_CHANGED":
     case "REPOSITORY_EXECUTION_REPLACED":
       return "This version's runtime was replaced after the controller checked it for repository access, so the controller closed that access. Deploy again to restore repository access.";

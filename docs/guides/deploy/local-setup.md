@@ -31,11 +31,6 @@ run_root=${XDG_STATE_HOME:-$HOME/.local/state}/oce
 install -d -m 700 "$run_root"
 RUN_DIR=$(mktemp -d "$run_root/openshell.XXXXXXXX")
 printf 'Private session directory: %s\n' "$RUN_DIR"
-
-# Stage the network policy for cluster startup and the configuration script for the Helm reload.
-install -m 600 docs/snippets/openshell-quickstart/plugin-network-policy.yaml "${RUN_DIR:?}/artifacts.yaml"
-install -m 600 docs/snippets/openshell-quickstart/configure-installation.mjs "$RUN_DIR/configure-installation.mjs"
-source docs/snippets/openshell-quickstart/stage-session.sh
 ```
 
 Choose one image path before starting the cluster.
@@ -51,6 +46,17 @@ unset OCC_DEVELOPMENT_CONTROLLER_IMAGE OCC_KUBERNETES_RUNTIME_IMAGE
 ```bash
 export OCC_DEVELOPMENT_CONTROLLER_IMAGE="${CONTROLLER_IMAGE:?Select the published controller}"
 export OCC_KUBERNETES_RUNTIME_IMAGE="${RUNTIME_IMAGE:?Select the published runtime}"
+```
+
+After selecting the images and matching checkout, stay in the same Bash shell
+and stage the quickstart files from that checkout. `RUN_DIR` still names the
+private directory created above, even after changing checkouts.
+
+```bash
+# Stage the network policy for cluster startup and the configuration script for the Helm reload.
+install -m 600 docs/snippets/openshell-quickstart/plugin-network-policy.yaml "${RUN_DIR:?}/artifacts.yaml"
+install -m 600 docs/snippets/openshell-quickstart/configure-installation.mjs "$RUN_DIR/configure-installation.mjs"
+source docs/snippets/openshell-quickstart/stage-session.sh
 ```
 
 ## 2. Start a new k3d installation

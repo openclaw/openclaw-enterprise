@@ -299,7 +299,11 @@ export interface CredentialProviderDefinition {
     models: readonly string[],
     config?: Readonly<Record<string, string>>,
   ): InferenceGrant | GitHubMetadataGrant | CredentialFreeMetadataGrant | PreparedTokenGrant;
-  routes(source: Readonly<CredentialSource>, binding: EgressBinding): readonly EgressRoute[];
+  routes(
+    source: Readonly<CredentialSource>,
+    binding: EgressBinding,
+    harnessConfiguration?: Readonly<Record<string, unknown>>,
+  ): readonly EgressRoute[];
   classify(route: EgressRoute, request: EgressRequest): EgressOperation | undefined;
   inject(value: string): readonly (readonly [string, string])[];
   /** Positive provider evidence only; status alone never identifies rejected credentials. */

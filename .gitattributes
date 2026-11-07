@@ -1,3 +1,6 @@
+# Keep text files in LF format when staging and checking out.
+* text=auto eol=lf
+
 # Exclude archived implementations from release archives.
 /legacy export-ignore
 /legacy/** export-ignore

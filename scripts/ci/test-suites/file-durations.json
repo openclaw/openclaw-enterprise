@@ -5,7 +5,7 @@
     "tests/browser/console-agent-channels.test.ts": 16600,
     "tests/browser/console-agent-deploy-again.test.ts": 18600,
     "tests/browser/console-agent-deploy-focus.test.ts": 2500,
-    "tests/browser/console-agent-detail-2.test.mjs": 54700,
+    "tests/browser/console-agent-detail-2.test.ts": 54700,
     "tests/browser/console-agent-detail.test.ts": 68400,
     "tests/browser/console-agent-draft-guards.test.ts": 45900,
     "tests/browser/console-agent-logs.test.ts": 83900,

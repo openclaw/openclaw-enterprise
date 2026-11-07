@@ -23,6 +23,7 @@ import {
 import { isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import { OAuthAccountTokens } from "./backends/token-service/oauth-connection.ts";
 import { isSandboxFacet, normalizeSecretBindings } from "@openclaw-enterprise/contracts";
 import type {
   Agent,
@@ -53,8 +54,8 @@ import type {
   BackendDefinition,
   SandboxDriver,
   SandboxHarnessObservation,
-  CredentialRefreshDriver,
   CredentialGatewayDriver,
+  CredentialRefreshDriver,
   SecretBindings,
   SecretDriver,
   ResolvedHarnessAuth,
@@ -152,7 +153,7 @@ import {
 } from "./worker/repository-credentials.ts";
 
 /**
- * Connection limits for the worker's main PostgreSQL pool. The worker is serial, so one query
+ * Connection limits for the worker's main PostgreSQL pool. Work claims are serial, so one query
  * on a connection that went silent (a failover or partition with no RST) would otherwise stop
  * every claim forever. `query_timeout` is client-side: it abandons the query, the transaction
  * owner discards the connection, and the loop retries on a fresh one. It is not sent to the
@@ -1182,11 +1183,13 @@ export class ControllerWorker {
   private readonly sandbox: SandboxDriver | undefined;
   private readonly credentialGateway: CredentialGatewayDriver | undefined;
   private readonly credentialRefresh: CredentialRefreshDriver | undefined;
+  private connectionRevocationCursor: string | undefined;
+  private connectionRevocationScanAfter = 0;
+  private connectionMaintenance: Promise<void> | undefined;
   private nextClientCleanup = 0;
   private readonly proxyDriver: CredentialProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
-  private readonly preparedTokens:
-    import("@openclaw-enterprise/contracts").PreparedTokenService | undefined;
+  private readonly preparedTokens: InstallationRuntimeDrivers["tokenService"];
   private readonly backends: readonly BackendDefinition[];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
   private readonly requireComputePreflight: boolean;
@@ -1398,11 +1401,19 @@ export class ControllerWorker {
         throw new Error("The selected native repository sender is unavailable.");
       }
     }
+    const bound = this.repositoryAdmission?.policy;
+    if (
+      this.repositoryAdmission !== undefined &&
+      (bound !== this.repositoryPolicy || typeof bound?.resolveBindings !== "function")
+    ) {
+      throw new Error("The bound repository admission owner is not selected or unavailable.");
+    }
     this.repositoryCredentials = new RepositoryCredentialLifecycle({
       state: this.state,
       queueOptions: this.queueOptions,
-      driver: this.repositoryPolicy,
-      repositoryAdmission: this.repositoryAdmission,
+      repository: bound
+        ? { kind: "bound", policy: bound }
+        : this.repositoryPolicy && { kind: "registered", policy: this.repositoryPolicy },
       nativeSender: this.nativeRepositorySender,
       verifyExecution: (claim, revision) =>
         this.withClaimHeartbeat(
@@ -1449,6 +1460,15 @@ export class ControllerWorker {
             provisioningOptions,
             this.repositoryAdmission,
           );
+    if (this.secretDriver) {
+      this.preparedTokens?.registerIssuer(
+        new OAuthAccountTokens(
+          this.state,
+          this.secretDriver,
+          provisioning.resolveConnectionClient.bind(provisioning),
+        ),
+      );
+    }
     const protectedDriver = this.protectedDriver;
     if (protectedDriver !== undefined) {
       provisioning.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
@@ -1491,6 +1511,7 @@ export class ControllerWorker {
       ...(this.sandbox === undefined ? {} : { sandboxDriverId: this.sandbox.id }),
     });
     this.loop = this.run();
+    this.connectionMaintenance = this.maintainConnections(provisioning, installation.id);
   }
 
   /**
@@ -1503,7 +1524,8 @@ export class ControllerWorker {
       this.stopping = true;
       this.abort.abort();
     }
-    await this.loop;
+    // Let an in-flight OAuth exchange persist a rotated grant before closing its dependencies.
+    await Promise.all([this.loop, this.connectionMaintenance]);
     // A claim's heartbeat starts health checks that the loop does not await.
     await this.pendingHealth;
   }
@@ -1541,6 +1563,7 @@ export class ControllerWorker {
         ) {
           this.claimedPassesSinceSweep = 0;
           await this.withdrawPendingHarnessExposure();
+          await this.sweepConnectionRevocation();
           if (Date.now() >= this.nextClientCleanup) {
             this.nextClientCleanup = Date.now() + 30_000;
             await this.provisioningController?.cleanupOAuthClients();
@@ -1660,6 +1683,97 @@ export class ControllerWorker {
       .finally(() => {
         this.pendingProgress = false;
       });
+  }
+
+  /** Renewal must continue while a long Agent deployment or shutdown owns the work loop. */
+  private async maintainConnections(
+    controller: OpenClawController,
+    installationId: string,
+  ): Promise<void> {
+    const canRenew = this.preparedTokens?.issuer("oauth_refresh_token") !== undefined;
+    const pollMs = Math.min(this.pollIntervalMs, 250);
+    const cleanupIntervalMs = 5_000;
+    const batchSize = 4;
+    let cursor: string | undefined;
+    let nextCleanupAt = 0;
+    while (!this.stopping) {
+      if (Date.now() >= nextCleanupAt) {
+        // Abandoned attempts still need cleanup if browser connections were disabled.
+        nextCleanupAt = Date.now() + cleanupIntervalMs;
+        try {
+          await controller.expireConnectionSessions(32);
+        } catch {
+          this.emit({ event: "worker.error", code: "CONNECTION_SESSION_CLEANUP_FAILED" });
+        }
+      }
+      let waitMs = cleanupIntervalMs;
+      if (canRenew && !this.stopping) {
+        try {
+          const accounts = await this.state.read((view) =>
+            view.savedConnections.listDueConnectionTokens(installationId, batchSize, cursor),
+          );
+          if (this.stopping) {
+            return;
+          }
+          // Advance past unhealthy accounts so later sources can renew in the same scan.
+          const outcomes = await Promise.allSettled(
+            accounts.map(({ namespaceId, credentialSourceId }) =>
+              controller.maintainConnectionToken(namespaceId, credentialSourceId),
+            ),
+          );
+          if (outcomes.some(({ status }) => status === "rejected")) {
+            this.emit({ event: "worker.error", code: "CONNECTION_TOKEN_MAINTENANCE_FAILED" });
+          }
+          if (accounts.length === batchSize) {
+            cursor = accounts[batchSize - 1]!.credentialSourceId;
+            continue;
+          }
+          cursor = undefined;
+          waitMs = pollMs;
+        } catch {
+          this.emit({ event: "worker.error", code: "CONNECTION_TOKEN_MAINTENANCE_FAILED" });
+        }
+      }
+      try {
+        await delay(waitMs, undefined, { signal: this.abort.signal });
+      } catch (error) {
+        if (!this.stopping) {
+          throw error;
+        }
+      }
+    }
+  }
+
+  /** Retire one account per maintenance pass, then wait before rescanning the same IDs. */
+  private async sweepConnectionRevocation(): Promise<void> {
+    if (
+      !this.preparedTokens?.issuer("oauth_refresh_token") ||
+      !this.provisioningController ||
+      this.connectionRevocationScanAfter > Date.now()
+    ) {
+      return;
+    }
+    try {
+      const [account] = await this.state.read((view) =>
+        view.savedConnections.listRevokingConnections(
+          this.installation!.id,
+          1,
+          this.connectionRevocationCursor,
+        ),
+      );
+      if (!account) {
+        this.connectionRevocationCursor = undefined;
+        this.connectionRevocationScanAfter = Date.now() + 30_000;
+        return;
+      }
+      this.connectionRevocationCursor = account.credentialSourceId;
+      await this.provisioningController.finishConnectionRevocation(
+        account.namespaceId,
+        account.credentialSourceId,
+      );
+    } catch {
+      this.emit({ event: "worker.error", code: "CONNECTION_REVOCATION_PENDING" });
+    }
   }
 
   private async health(force: boolean): Promise<void> {
@@ -4848,7 +4962,7 @@ export class ControllerWorker {
       }
       if (
         error instanceof RepositoryCredentialAuthorityError &&
-        (await this.completeStandingRepositoryDenial(claim, error.code))
+        (await this.completeStandingRepositoryWithdrawal(claim, error.code))
       ) {
         return;
       }
@@ -4982,17 +5096,21 @@ export class ControllerWorker {
     });
   }
 
-  /** Loss of Git approval is not loss of model authority. Close only repository
-   * access on an already active execution; ordinary stop/replacement still owns Compute.
-   * The online authorizer denies immediately from the approval/policy before this cleanup. */
-  private async completeStandingRepositoryDenial(
+  /** Terminal repository authority loss does not revoke independent model authority.
+   * Close Git admission durably; the existing cleanup owner verifies whether this
+   * execution can remain running without it. Ordinary stop/replacement still owns Compute. */
+  private async completeStandingRepositoryWithdrawal(
     claim: ClaimedWork,
     code: string,
   ): Promise<boolean> {
     if (
       !claim.agentId ||
       !claim.revisionId ||
-      !["REPOSITORY_STANDING_APPROVAL_REMOVED", "REPOSITORY_STANDING_POLICY_CHANGED"].includes(code)
+      ![
+        "REPOSITORY_STANDING_APPROVAL_REMOVED",
+        "REPOSITORY_STANDING_POLICY_CHANGED",
+        "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED",
+      ].includes(code)
     ) {
       return false;
     }
@@ -5023,6 +5141,8 @@ export class ControllerWorker {
         return false;
       }
       // A delayed error cannot remove an unrelated generation or a now-valid policy.
+      // The Driver's terminal execution verdict cannot recover on this same revision;
+      // the current claim and exact active owner were revalidated above.
       const snapshot = revision.repositoryCredentials;
       if (code === "REPOSITORY_STANDING_APPROVAL_REMOVED") {
         const approval = await unit.repositorySessions.findStandingApproval(
@@ -5038,7 +5158,7 @@ export class ControllerWorker {
         ) {
           return false;
         }
-      } else {
+      } else if (code === "REPOSITORY_STANDING_POLICY_CHANGED") {
         try {
           this.repositoryCredentials.validate(revision);
           return false;

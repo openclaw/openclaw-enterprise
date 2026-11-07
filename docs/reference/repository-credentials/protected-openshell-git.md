@@ -1,22 +1,18 @@
 # Protected repository access with OpenShell
 
-Before issuing repository credentials, OCE verifies registration and matches a held
-launcher request to an authenticated middleware denial. The Agent starts after
-credential installation and signed release.
-
 Follow [OpenShell enrollment](../../guides/repository-credentials/openshell-enrollment.md).
-Select repositories sharing an explicit permission map. OCE requests canonical IDs
-and verifies GitHub’s returned scope. GitHub governs refs and REST/GraphQL.
-Changed or removed grants block subsequent use.
+OCE matches the held launcher request to an authenticated middleware denial before
+issuing credentials. Installation and signed release precede Agent startup.
+Select repositories sharing explicit permissions. OCE verifies GitHub's returned scope
+against canonical IDs; GitHub governs refs and REST/GraphQL. Grant changes block use.
 
-Existing `git-write` grants retain their exact ref policy. OCE qualifies the live
-sender by its configured capabilities and runtime evidence. `git-read` and
+`git-write` retains exact ref policy. Qualification requires configured capabilities
+and runtime evidence. `git-read` and
 `git-full` keep their existing semantics. Installation preview requires separate
 opt-in. Exact-dispatch and v7 reduction guarantees remain unqualified.
 
 Keep Credential Gateway with the bundled OpenShell Backend. The Proxy serves
-repository access, while model access uses a Gateway Harness source. For an
-existing installation, follow the
+repository access, while model access uses a Gateway Harness source. For upgrades, see
 [compatibility upgrade](../../guides/deploy/credential-proxy-upgrade.md#check-compatibility-before-interrupting-access).
 
 ## Prerequisites
@@ -236,17 +232,15 @@ See [Credential Proxy uncertainty](../drivers/credential-proxy.md#cancellation-r
 
 ## Diagnose a refused request
 
-Git does not print the body of a JSON error response. When OpenShell refuses the
-first request of a clone, fetch, `ls-remote` or push, Git shows only
-`The requested URL returned error: 403` (exit 128). When it refuses only the
-push's upload, usually `request_not_allowed` for another branch or tag, Git
-shows `error: RPC failed; HTTP 403`, then
-`fatal: the remote end hung up unexpectedly`, and may end with
-`Everything up-to-date` (exit 1). That last line does not mean there was nothing
-to push: the push never reached GitHub.
+Git hides JSON error bodies. If OpenShell refuses the first clone, fetch,
+`ls-remote` or push request, Git reports `The requested URL returned error: 403`
+(exit 128). If only the push upload is refused, usually for another branch or tag
+(`request_not_allowed`), Git reports `error: RPC failed; HTTP 403`, then
+`fatal: the remote end hung up unexpectedly`. Even if it prints
+`Everything up-to-date` (exit 1), the push never reached GitHub.
 
-Only after a known pre-send refusal, diagnose with a fresh read using Git's HTTP
-trace, which redacts the authorization header. Never rerun an uncertain write. The trace splits the body across lines, so join them first:
+After a known pre-send refusal, trace a fresh read. Git redacts the authorization
+header. Join the response lines to extract the reason. Never replay an uncertain write.
 
 ```bash
 GIT_TRACE_CURL=1 git ls-remote origin 2>&1 | sed -n 's/.*<= Recv data: //p' \
@@ -275,14 +269,23 @@ A version that is still deploying has no credential yet, so its requests answer
 
 ### Worker log
 
-Each refused request logs one `worker.openshell-git-denied` line. Its `reasonCode`
-is the code above, and its `reason` is the worker's detailed cause, such as
-`ref_not_allowed`, `draft_rejected`, `session_closed`, `material_unavailable`,
-`installation_changed` or `route_blocked`. The line also carries the Sandbox ID and
-the request ID that the supervisor's own log shows. The
-`worker.openshell-git-route-warning` line for a lost credential carries the same
-`reasonCode`, so an alert can tell a removed binding (`access_withdrawn`) from a
-rejected App key (`credential_unavailable`).
+After held enrollment failure and cleanup, check worker logs.
+`worker.openshell-git-probe-failed` records the HTTP 400 `reason`:
+
+- `probe_process_failed`: curl failed; optional integer `code` is its exit status (1–99).
+- `probe_response_invalid`: the launcher could not read response JSON.
+
+The event omits stdout, stderr, response bodies, URLs and proofs. Collector
+attributes: `occ.git_probe.reason` and optional `occ.git_probe.exit_code`
+([limits](../../flows/common-logging.md#7-collector-exports-only-operational-classes)).
+A parsed unexpected denial returns HTTP 409 `preview_not_observed`.
+
+For refused Git requests, `worker.openshell-git-denied` records `reasonCode`
+from the table, the detailed `reason` (such as `ref_not_allowed`, `draft_rejected`,
+`session_closed`, `material_unavailable`, `installation_changed` or `route_blocked`),
+Sandbox ID and supervisor request ID. For lost credentials,
+`worker.openshell-git-route-warning` carries the same `reasonCode` to distinguish
+a removed binding (`access_withdrawn`) from a rejected App key (`credential_unavailable`).
 
 ## Route state, restarts and recovery
 
@@ -297,11 +300,18 @@ a moved Sandbox version or an outcome the gateway cannot tell retires the runtim
 An empty OpenShell profile workspace selects the platform profile, not a same-named
 Workspace profile.
 
+Standing succession can use a fresh expired-provider report only to confirm
+predecessor identity. New installations and post-detach model completion require
+ready credentials; model authorization remains independent.
+
 A transient observation failure closes access until the same installation verifies,
 with retry backoff from 1 s to 10 s. The held-launch paths (`github-repository`,
 protected `git-write`, and installation preview) cannot be adopted by a replacement
 worker: deploy a new revision after `worker_replaced` or terminal `bootstrap_failed`.
-Waiting for reconciliation cannot reopen that route. Other qualified paths may retry
+For v5 held launches after verified replacement, deployment detail reports `repositoryAccess.state: redeploy-required`
+and `REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`, preserving history. OCE closes Git and checks
+withdrawal and model authority.
+Waiting cannot reopen this route. Other qualified paths may retry
 a pre-write read or re-observe durable delivery after restart. No path replays an
 uncertain provider write. Provider writes retain their own deadline. See
 [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
@@ -315,14 +325,12 @@ or `gateway_unauthorized`. `worker.openshell-git-route-warning` distinguishes
 `unobserved` reads, `pending` material, `closed` routes (`worker_replaced`, or
 `withdrawn` and `repository_expired` when another worker closed the route) and
 `retained` ones.
-`OPENSHELL_GIT_WITHDRAWAL_UNRECORDED` means the store did not record a withdrawal:
-this worker still refuses the route, but confirm its Sandbox was deleted, or another
-worker could adopt it. The worker drops a closed route once its Sandbox reads absent
-(twice if it never observed one); a failed read keeps it. A read the gateway refuses by
-the worker's identity logs one `retained` warning with `gateway_unauthorized`: the
-route stays in memory, read again with backoff, until a read finds its Sandbox gone.
-The worker still refuses to
-prepare, adopt or verify that revision, and later denials log `no_binding`.
+`OPENSHELL_GIT_WITHDRAWAL_UNRECORDED` means withdrawal was not persisted.
+Confirm Sandbox deletion: this worker refuses the route, but another could adopt it.
+Closed routes are dropped after confirmed absence (two reads if never observed).
+Failed reads retain them. Gateway authorization refusal logs `retained` with
+`gateway_unauthorized` and retries with backoff until absence; preparation, adoption
+and verification remain refused, and denials log `no_binding`.
 `worker.openshell-git-route` reports adoption and restoration, with `durationMs`.
 Correlate the revision and request ID with `worker.openshell-git-denied`.
 

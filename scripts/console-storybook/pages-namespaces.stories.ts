@@ -29,6 +29,7 @@ export const DeleteRestricted = { ...story("namespaceDeleteRestricted") };
 export const DeleteRefused = { ...story("namespaceDeleteRefused") };
 export const DeletePending = { ...story("namespaceDeletePending") };
 export const DeleteUnknown = { ...story("namespaceDeleteUnknown") };
+export const DeleteInvalidStatus = { ...story("namespaceDeleteInvalidStatus") };
 export const DeleteRetry = { ...story("namespaceDeleteRetry") };
 export const DeleteRetryStatusFailure = { ...story("namespaceDeleteRetryStatusFailure") };
 
