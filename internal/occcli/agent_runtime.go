@@ -115,6 +115,12 @@ func (app *application) agentRevision(
 			"notice: reading the active revision %s; %s %s exists but its runtime could not be read (%v); pass --revision %s to read it",
 			active, other, probe.latest, probe.err, probe.latest,
 		)
+	case probe.listErr != nil:
+		noticef(
+			notices,
+			"notice: reading the active revision %s; a newer or failed revision was not checked because revision discovery failed (%v)",
+			active, probe.listErr,
+		)
 	case probe.unlisted && revisionAdvice != "":
 		// The list is filtered by revision read and the active revision is not in
 		// it, so the caller may read no revision: say what was not checked. A
@@ -146,19 +152,24 @@ type newerRevision struct {
 	description any
 	// err is the failure to read latest's runtime description.
 	err error
+	// listErr is the failure to discover the latest readable revision.
+	listErr error
 	// unlisted reports an empty revision list: the caller may read no revision.
 	unlisted bool
 }
 
 // newerRevisionWithRuntime looks for a latest revision that is not the active one
-// and checks for Pods or running, starting or lost provider Harness status. A failure to
-// list revisions keeps the active revision silently; an empty list sets unlisted.
+// and checks for Pods or running, starting or lost provider Harness status.
+// A failed lookup and a successful empty list are reported separately.
 func newerRevisionWithRuntime(client *occclient.Client, namespace, agentID, active string) newerRevision {
 	latest, number, err := latestReadableRevision(client, namespace, agentID)
 	if errors.Is(err, errNoReadableRevisions) {
 		return newerRevision{unlisted: true}
 	}
-	if err != nil || latest == active {
+	if err != nil {
+		return newerRevision{listErr: err}
+	}
+	if latest == active {
 		return newerRevision{}
 	}
 	description, err := client.GetAgentRuntime(namespace, agentID, latest)
