@@ -142,12 +142,11 @@ export function refreshPinnedOAuthGrant(
   grant: Pick<
     OAuthConnectionGrant & OAuthConnectionRegistration,
     | "tokenUrl"
-    | "refreshToken"
     | "clientId"
     | "tokenEndpointAuthMethod"
     | "resource"
     | "grantedScopes"
-  >,
+  > & { readonly refreshToken: string },
   signal: AbortSignal,
   clientSecret: string | undefined,
 ) {
