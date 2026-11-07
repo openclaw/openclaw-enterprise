@@ -72,22 +72,25 @@ type NarrowPolicy = { draftPull?: boolean; pushRef?: string };
 
 export async function narrowOnlineGitJourney(
   t: TestContext,
+  testUrl: string,
   exercise: (journey: NarrowJourney) => Promise<void>,
   policy: NarrowPolicy = {},
 ) {
-  return repositoryGitJourney(t, exercise, policy);
+  return repositoryGitJourney(t, testUrl, exercise, policy);
 }
 
 export async function repositorySetJourney(
   t: TestContext,
+  testUrl: string,
   standing = false,
   pendingSuccessor?: "recipient" | "approval" | "cold-worker",
 ) {
-  return repositoryGitJourney(t, undefined, {}, standing, pendingSuccessor);
+  return repositoryGitJourney(t, testUrl, undefined, {}, standing, pendingSuccessor);
 }
 
 async function repositoryGitJourney(
   t: TestContext,
+  testUrl: string,
   narrow?: (journey: NarrowJourney) => Promise<void>,
   policy: NarrowPolicy = {},
   standing = false,
@@ -236,7 +239,7 @@ async function repositoryGitJourney(
     { binaries: ["/usr/bin/codex"] },
     { id: CREDENTIAL_GATEWAY_FIXTURE_ID, backend: backend as never },
   );
-  const f = await standingExecutionPlatform(t, import.meta.url, { sandbox: selected }, [
+  const f = await standingExecutionPlatform(t, testUrl, { sandbox: selected }, [
     {
       id: "prepared-standing",
       type: "github",
