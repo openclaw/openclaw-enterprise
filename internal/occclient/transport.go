@@ -110,10 +110,21 @@ func (err *APIError) Error() string {
 		)
 	}
 	message := fmt.Sprintf("OCC operation failed (HTTP %d)", err.Status)
-	if err.Code != "" {
+	if err.Code == "RUNTIME_LOGS_RATE_LIMITED" {
+		delay := "shortly"
+		if err.RetryAfter > 0 {
+			seconds := int(math.Ceil(err.RetryAfter.Seconds()))
+			unit := "seconds"
+			if seconds == 1 {
+				unit = "second"
+			}
+			delay = fmt.Sprintf("in %d %s", seconds, unit)
+		}
+		message = fmt.Sprintf("%s: %s: Too many log requests. Try again %s.", message, err.Code, delay)
+	} else if err.Code != "" {
 		message = fmt.Sprintf("%s: %s: %s", message, err.Code, err.Message)
 	}
-	if err.RetryAfter > 0 {
+	if err.RetryAfter > 0 && err.Code != "RUNTIME_LOGS_RATE_LIMITED" {
 		// OCC's rate-limit messages say to wait for Retry-After; name the delay.
 		message = fmt.Sprintf("%s. Retry after %ds.", strings.TrimSuffix(message, "."), int(math.Ceil(err.RetryAfter.Seconds())))
 	}

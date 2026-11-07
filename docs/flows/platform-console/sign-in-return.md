@@ -87,7 +87,9 @@ browser-origin check, a provider that the API no longer configures (`403`), or
 an attempt that expired or was replaced (`401`), never a refused identity.
 Password sign-in reports `429` with the `Retry-After` wait. The provider
 budgets send no `Retry-After`, so provider start and the exchange say to wait a
-minute. Each reports the origin check with its own text; every other password
+minute. `sign-in-presentation.mts:requestRefusalMessage` explains that sign-in requires the
+configured scheme, hostname and port, and asks for the administrator's link. It
+does not build a link from the request or error text. Every other password
 `400`, `401` or `403` keeps one message. On the API side, `sendAuthEndpoint`
 answers `429` with the wait and `503` with an outage message; every refusal
 keeps the endpoint's one message.
@@ -170,6 +172,14 @@ reads. After **Retry**, Namespace and Agent reads carry the confirmed binding.
 - 2026-11-04 12:53: Explain keyboard focus while sign-in is pending. (authoring-run/1ca69282-ea7b-4b53-8db4-3fdb81fc30e1 - 15f0c1d443090f1346dc3d94444dad2397cb4fdc)
 
 - 2026-11-04 12:29: Document recovery from a malformed Console session reply. (authoring-run/e5be3034-9c43-4cba-9ba7-e7e2f487f042 - 9f1dcbeb2361006e7bea52d0cee595d9616ed16a)
+
+- 2026-11-04 10:50: Correct the browser-suite pointer after its TypeScript rename. (authoring-run/f3ac7737-494a-40ed-834e-194dbd804522 - 9ca96ac4489e91f6df131ef8561be39233edb774)
+
+- 2026-11-04 04:08: Follow the Console entry source pointers after its TypeScript conversion. (authoring-run/fafbdaa9-0149-45da-b434-59f2f68b1950 - 72f7f2b807d635edb1653cfbf0a8ad7e7e2ab49f)
+
+- 2026-11-04 03:17: Follow the origin-refusal recovery message into the typed sign-in presentation module. (authoring-run/f1b8b374-d669-461b-a493-778b826cdcd7 - 5049dfd3c02d7084e9ee20af58ff749ed7d1a76c)
+
+- 2026-11-03 13:50: Explain recovery from an untrusted sign-in origin. (authoring-run/ba39ab24-0fa9-473c-a144-634f38a40c46 - 54f83409c8ee37fcd54f00d09e57898021f7e812)
 
 - 2026-10-26 18:00: A Secrets page link's Secret ID survives sign-in. (2645)
 

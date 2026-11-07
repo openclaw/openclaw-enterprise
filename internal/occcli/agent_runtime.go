@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/openclaw/openclaw-enterprise/internal/occclient"
@@ -106,14 +107,14 @@ func (app *application) agentRevision(
 		other := "another readable revision"
 		switch order, _ := revisionOrder(client, namespace, agentID, active, probe.number); order {
 		case "newer":
-			other = "a newer revision"
+			other = "newer revision"
 		case "older":
-			other = "an older revision"
+			other = "older revision"
 		}
 		noticef(
 			notices,
-			"notice: reading the active revision %s; %s %s exists but its runtime could not be read (%v); pass --revision %s to read it",
-			active, other, probe.latest, probe.err, probe.latest,
+			"notice: showing active revision %s. Could not read runtime status for %s %s: %s. To retry that revision, pass --revision %s.",
+			active, other, probe.latest, strings.TrimSuffix(probe.err.Error(), "."), probe.latest,
 		)
 	case probe.unlisted && revisionAdvice != "":
 		// The list is filtered by revision read and the active revision is not in

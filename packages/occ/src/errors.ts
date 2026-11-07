@@ -404,7 +404,7 @@ export class RepositoryBindingSelectionError extends ScopeViolationError {
   static readonly installationAccessAlone =
     "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryBindings or repositoryAccess.repositories, or select each repository with its own profile instead.";
   static readonly accessOrBindings =
-    "Send repositoryAccess or repositoryBindings, not both. In repositoryAccess, list each repository once, at most 16, with a defaultProfile other than github-installation.";
+    "Remove either `repositoryAccess` or `repositoryBindings`. Send only one.";
   // The Driver refuses a whole selection without saying which entry; this text lists its rules.
   static readonly notApproved =
     "Choose up to 16 distinct repositories approved for this Namespace and profile. For github-repository, all selections must have the same configured permissions. Ask an Installation administrator to check the available options.";
@@ -655,7 +655,7 @@ export class ProtectedExecutionNetworkPolicyError extends ResourceStateConflictE
 export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictError {
   static readonly code = "REPOSITORY_GIT_SENDER_UNQUALIFIED";
   static readonly description =
-    "The selected Credential Proxy cannot enforce the Agent's git-write repository binding: no OpenShell release is qualified for it. Remove the binding, select a qualified installed sender, or use native prepared Git without a Sandbox, then deploy again.";
+    "This installation cannot enforce the Git access selected for this Agent. Ask an administrator to enable protected Git access before deploying. The selected Credential Proxy has no qualified Git sender.";
   readonly code = RepositoryGitSenderUnqualifiedError.code;
 
   constructor() {
@@ -674,10 +674,16 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
  */
 export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictError {
   static readonly description =
-    "With repository.openShell the Credential Proxy serves only repository Git, not Proxy-owned credential sources or Agents without repository access. Installation administrators can drop repository.openShell and drivers.credential_proxy, losing protected Git.";
+    "This Credential Proxy's middleware serves only Git, not this source type. Ask an administrator to check `drivers.credential_proxy` and its middleware registration in the Credential Proxy guide.";
+  static readonly repositoryRequired =
+    "This installation requires a repository. Ask an administrator to confirm protected Git access is ready. Then select an approved repository, save this Agent, and deploy again.";
 
-  constructor() {
-    super(CredentialProxyRepositoryOnlyError.description);
+  constructor(operation: "source" | "deploy" = "source") {
+    super(
+      operation === "deploy"
+        ? CredentialProxyRepositoryOnlyError.repositoryRequired
+        : CredentialProxyRepositoryOnlyError.description,
+    );
     this.name = "CredentialProxyRepositoryOnlyError";
   }
 }

@@ -364,7 +364,7 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
         code: "DEPENDENCY_UNAVAILABLE",
         message: DEPENDENCY_UNAVAILABLE,
       },
-      text: "Outcome unknown.",
+      text: "We couldn't confirm the result of your request.",
       available: false,
     },
     {
@@ -374,20 +374,20 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
         message:
           "The operation outcome is unknown. Do not retry automatically; inspect current state before a deliberate new action.",
       },
-      text: "Outcome unknown.",
+      text: "We couldn't confirm the result of your request.",
       available: false,
     },
     {
       // A 503 without a code, such as a proxy's, names no refusal whatever it says.
       error: { message: "Channel credential validation is temporarily unavailable." },
-      text: "Outcome unknown.",
+      text: "We couldn't confirm the result of your request.",
       available: false,
     },
     {
       // Only a 503 names a refusal: a gateway's 502 says nothing about the request.
       status: 502,
       error: { code: "CHANNEL_CREDENTIAL_UNAVAILABLE", message: "Synthetic named outage." },
-      text: "Outcome unknown.",
+      text: "We couldn't confirm the result of your request.",
       available: false,
     },
   ]) {
@@ -397,7 +397,13 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
     await deploy.click();
     const alert = page.getByRole("alert").filter({ hasText: text });
     await alert.waitFor();
-    assert.equal(await page.getByText(/Outcome unknown/).count(), available ? 0 : 1, label);
+    assert.equal(
+      await page
+        .getByText("We couldn't confirm the result of your request.", { exact: false })
+        .count(),
+      available ? 0 : 1,
+      label,
+    );
     assert.equal(await page.getByText("Deploying…", { exact: true }).count(), 0, label);
     assert.equal(await deploy.isEnabled(), available, label);
     if (!available) {
@@ -603,7 +609,9 @@ test("revision deployment blocks unavailable reads and does not replay a lost re
   await page.reload();
   await waitForEnabled(deploy);
   await deploy.click();
-  await page.getByText(/Outcome unknown/).waitFor();
+  await page
+    .getByText("We couldn't confirm the result of your request.", { exact: false })
+    .waitFor();
   assert.equal(await deploy.isDisabled(), true);
   assert.equal(deploymentRequests, 1);
   const revisions = await fixture.request(
