@@ -34,6 +34,19 @@ Tracks platform Namespaces, their lifecycle status, and any existing Kubernetes 
 - `created_at`
 - `deleted_at`
 
+### `namespace_lifecycle`
+
+Keeps [durable Namespace lifecycle identity and Driver checkpoints](../drivers/compute-namespace-lifecycle.md), including with the tombstone.
+
+- `namespace_id`
+- `lifecycle_id`
+- `compute_driver_id`
+- `compute_implementation`
+- `revision`
+- `data`
+- `created_at`
+- `updated_at`
+
 ### `agents`
 
 Stores Agent drafts, their desired runtime state, and the selected version reference.

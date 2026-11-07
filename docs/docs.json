@@ -1272,7 +1272,8 @@
               "flows/credential-source-egress",
               "reference/sandbox-policies",
               "guides/topics/agent-sandbox-policy",
-              "flows/agent-sandbox-policy"
+              "flows/agent-sandbox-policy",
+              "reference/drivers/compute-namespace-lifecycle"
             ]
           }
         ]

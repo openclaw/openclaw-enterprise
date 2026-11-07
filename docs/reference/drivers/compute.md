@@ -145,14 +145,17 @@ uses a 10-second timeout and accepts up to 4 MiB per response, ten pages, and
 
 ### Namespace and gateway results
 
-Return the requested `namespaceId`. Failures are `retryable` or `permanent`;
-a true ready or deleted flag succeeds only without a failure. Worker-log
-failure reasons allow up to 256 characters: letters, digits, spaces, and
+Namespace calls require [durable context](compute-namespace-lifecycle.md).
+Commit cleanup confirmation before removing retry access.
+
+Return requested `namespaceId`. Failures are `retryable` or `permanent`;
+true `namespaceReady` or `namespaceDeleted` requires no failure. Worker-log
+reasons allow up to 256 characters: letters, digits, spaces, and
 `. _ : / @ -`. Exclude provider output and other tenants' values.
 
-Derive a [gateway endpoint](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
-from trusted settings and the approved resource IDs. Returning an address does
-not establish readiness or authorize a connection.
+Derive [gateway endpoints](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
+from trusted settings and approved resource IDs; addresses establish neither readiness
+nor connection authority.
 
 ### Optional initial runtime credential provisioning
 

@@ -281,6 +281,7 @@ test(
     const observerPool = new Pool({ connectionString: databaseUrl, max: 8 });
     const relay = await startDatabaseRelay(databaseUrl);
     // Use the production pool: resetting the relay drops idle clients as well as active queries.
+
     const workerPool = await createPostgresPool(relay.url, {
       max: 4,
       ...workerDatabasePoolOptions(60_000),

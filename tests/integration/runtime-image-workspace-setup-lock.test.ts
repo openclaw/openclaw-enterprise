@@ -6,11 +6,16 @@ import type { TestContext } from "node:test";
 
 import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
-import type { AgentRevision, ComputeRevisionContext } from "../../packages/contracts/src/index.ts";
+import type {
+  AgentRevision,
+  ComputeRevisionContext,
+  NamespaceLifecycleContext,
+} from "../../packages/contracts/src/index.ts";
 import {
   createHarnessConfiguration,
   withStubbedProviderEndpoint,
 } from "../helpers/harness-configuration.mjs";
+import { namespaceLifecycleFixture } from "../helpers/namespace-lifecycle.mjs";
 import { cpuScaledImageTimeoutMs } from "../helpers/image-smoke-timeout.mjs";
 import {
   docker,
@@ -294,14 +299,18 @@ test(
       harnessAuth: { method: "runtime" },
       secretEnvironment: [],
     });
+    const lifecycle: NamespaceLifecycleContext = {
+      ...(await namespaceLifecycleFixture(driver, namespace)),
+      target: "ready",
+    };
     t.after(async () => {
-      const result = await driver.deleteNamespace(namespace);
+      const result = await driver.deleteNamespace(namespace, { ...lifecycle, target: "deleted" });
       assert.equal(result.namespaceDeleted, true, "owned containers, volumes and network removed");
     });
     await driver.preflight();
     await pollFailing.preflight();
     await startFailing.preflight();
-    assert.equal((await driver.ensureNamespace(namespace)).namespaceReady, true);
+    assert.equal((await driver.ensureNamespace(namespace, lifecycle)).namespaceReady, true);
 
     // Native setup outlasts the Driver's wait while it holds the state lock (finding 3109).
     // A stop would SIGKILL it (its PID 1 ignores SIGTERM) and leave the lock to a holder no

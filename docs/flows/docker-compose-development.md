@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
 updated: 2026-11-06
-last_updated_session: authoring-run/b63d4772-19f9-4e46-8f8e-bd52bd2ea26f
+last_updated_session: authoring-run/06ea0064-3df1-4770-ab8a-64a5abc819b4
 ---
 
 # Compose development flow
@@ -329,26 +329,10 @@ describes accepted selectors.
 
 ## Changelog
 
+- 2026-11-06 18:12: Preserve the checkout line-ending guard and both development cleanup histories while merging main. (authoring-run/06ea0064-3df1-4770-ab8a-64a5abc819b4 - 11214072c8afd401fbf217f564627a63caabffc1)
+
 - 2026-11-06 20:03: Refuse a nearest CRLF checkout before startup or cleanup can select an outer stack. (authoring-run/b63d4772-19f9-4e46-8f8e-bd52bd2ea26f - 7cc3f1b9f2b372bf6da57a980d03eeebf8256506)
 
-- 2026-11-04 20:46: Overlap selected-image setup while retaining joined readiness and rollback gates. (authoring-run/4dc828f0-0acc-4001-b6e2-3f57824db925 - 7951de4edf7abadc02725484771bcd6207ed9b9d)
-
-- 2026-11-04 08:53: Remove retired local authority provisioning and retain authenticated Gateway readiness and recorded-state cleanup. (authoring-run/a8b6b1f4-19b7-48f0-bb5b-f86a5dcf62a9 - d0421ca03868db643faa8ba2d13e784fc637cc2e)
-
-- 2026-11-02 13:31: Separate default authenticated Gateway bootstrap from opt-in static inference; accompanying launcher changes. (01a19d8b-33a8-76c0-9817-521a7f10626d - f5bef23f5796c2c3421189c79e6508079257cfd5)
-
-- 2026-10-30 16:09: Reconcile patched OpenShell documentation with capability-based repository admission. (authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f - 87d52638bda95e06820328e244ba2ad9960df1c4)
-
-- 2026-10-30 10:12: Select paired OpenShell 0.1.6 and preserve guarded preview admission. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
-
-- 2026-10-28 21:21: Select paired OpenShell 0.1.6 inputs without widening credential preview admission. (authoring-run/cc92d8d2-ac00-488a-a581-bba758672967 - aa2cfe543b3bba361679e7e1a3028c3327d2c388)
-
-- 2026-10-15 23:41: Isolate development-wrapper path resolution from CDPATH while preserving the CLI environment. (authoring-run/92de1204-326a-4c11-a868-5b3f1b9de0c1 - 04514330688378316bd0641b8d5560da56aeff85)
-
-- 2026-10-14 18:14: Bound declared and streamed Docker API response bodies before complete buffering. (issue-2406 - 1fc3258afdd73b2888c524092b988a2110449bbb)
-
-- 2026-10-14 17:03: Validate protected development selectors before CLI dispatch and direct Docker script effects. (authoring-run/5607c5fd-a268-466b-a5c9-93e0cc984807 - 3fba9be5bae09aa9c33483a768221f44079edc3b)
-
-- 2026-10-14 16:11: Add the default-off protected OpenShell launch, native mTLS credential ownership, authority-first readiness and disposable database selection. (authoring-run/b0bd473e-3b1d-44cc-a1b1-4a1d411a1829 - 126b6a1b13b48281aee5d3ca4d476ec75da8a24a)
+- 2026-11-04 19:20: Preserve durable cleanup and joined readiness while overlapping image preparation. (authoring-run/73695cc1-a0da-41a6-9cb1-c3fbde5f5a71 - 3f3150ce8a8b024e902ecf493a5e41ff5b72c934)
 
 [Compose development documentation history](docker-compose-development/history.md) preserves the older dated entries.
