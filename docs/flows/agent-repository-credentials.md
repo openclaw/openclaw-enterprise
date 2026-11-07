@@ -1,18 +1,18 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-07"
-last_updated_session: authoring-run/ca379ce8-200d-4822-9b71-87f49f7644dc
+last_updated_session: "authoring-run/dc361ab2-8dc2-4ed3-872d-220eb9cce3c1"
 ---
 
 # Agent repository credential flow
 
 ## Overview
 
-Dedicated Codex uses prepared sessions without a Sandbox Driver;
-[OpenShell sandboxes](../reference/repository-credentials/protected-openshell-git.md) receive placeholders.
-Workers deliver credentials and check signed requests against live grants.
-See [mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
-[service lifecycle](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
+Dedicated Codex uses prepared sessions without a Sandbox;
+[OpenShell](../reference/repository-credentials/protected-openshell-git.md) receives placeholders.
+Workers deliver credentials and verify signed requests.
+See [enrollment](../guides/repository-credentials/openshell-enrollment.md) and
+[qualification](../testing/repository-credentials.md).
 
 ## Entry Points
 
@@ -95,8 +95,7 @@ graph TD
 
 `listRepositoryOptions` checks Namespace create or exact Agent update permission
 and Compute availability. Bundled listing uses the bound GitHub catalog;
-programmatic listing uses the registered Repo Driver. Stale owner results are
-rejected. Deploy checks the exact Harness. An empty Namespace catalog yields `[]`;
+programmatic listing uses the registered Repo Driver. Reject stale owner results. Deploy checks the Harness. An empty Namespace catalog yields `[]`;
 absent `repository` adds `meta.notConfigured`. Closed Namespaces conflict.
 Classified discovery failures return `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
 
@@ -110,7 +109,7 @@ Save Configuration first; reuse it after known Agent rejections.
 Repository retries require reload and nonempty reselection. Failed reloads block
 creation; ignore stale results. After unknown outcomes, read stored Agent and Configuration.
 
-Requests carry distinct opaque refs and optional profiles, never tokens or grant IDs.
+Requests carry distinct refs and optional profiles, never tokens or grant IDs.
 Nonempty selections without a configured Repo Driver return `409 RESOURCE_CONFLICT`.
 OCC saves normalized selections in request order. GitHub’s registry defaults legacy profiles to
 `git-write` without GitHub or control-socket calls.
@@ -173,13 +172,13 @@ revoked/expired counts for `DISPOSED`, but no outstanding obligations. Only crea
 `apps/controller/src/drivers/repo/github/credentials/client/config.ts:encodeRepositoryCredentialSessionFiles`
 encodes files; the worker records the session ID before passing them to Compute.
 
-Confirmed open sessions yield `retained` bindings without files. `recoverOnly` finds or
-fences unfinished admissions and closes recovered sessions. Fresh material requires
-confirmed disposal or a missing opening without a recorded session ID. Invalidated known
-sessions block replacement. Closing raises `REPOSITORY_CLEANUP_PENDING`, subject to Work
-bounds and the revision deadline. Cleanup uses the configured interval while any session
-closes. Otherwise, an unsettled obligation retains its code and retries at `age / 40`,
-bounded by the configured interval and ten minutes.
+Confirmed open sessions yield `retained` bindings without files. `recoverOnly` finds or fences
+unfinished admissions and closes recovered sessions. Fresh material requires
+confirmed disposal or a missing opening with no recorded session. Invalidated
+sessions block replacement. Closing raises `REPOSITORY_CLEANUP_PENDING` under Work
+bounds and the revision deadline. Closing cleanup uses the configured interval;
+otherwise obligations keep their code and retry at `age / 40`, bounded by that
+interval and ten minutes.
 `apps/controller/src/worker.ts:processRepositoryCleanup` logs
 `worker.repository-cleanup-warning` with `cause` once per worker.
 
@@ -292,8 +291,8 @@ The [worker](../../apps/controller/src/worker.mjs) supplies `ProtectedRepository
 to the [binder](../../apps/controller/src/composition/repository-credentials/transport.ts) for maintenance and shutdown.
 Missing authority or mismatched Drivers prevent binding; bare Sandboxes have no Git.
 
-`reconcile` runs serially: 25-second timeout, one-second interval.
-Close aborts and joins. Readback never reinstalls or restores withdrawn access.
+`reconcile` runs serially every second with a 25-second timeout; close aborts and joins.
+Readback cannot restore withdrawn access.
 
 [The gRPC client](../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts)
 defaults omitted endpoint/credential lists to empty arrays after checking profile identity.
@@ -332,6 +331,10 @@ See [first-token handling](../reference/repository-credentials/prepared-native-g
 Missing standing evidence closes Git. Without preparation or activation, the worker rechecks
 model authority, withdrawal, stop and replacement within five seconds.
 Harness readiness cannot authorize Git ([test](../../tests/integration/postgres-standing-session-worker.test.ts)).
+
+`OpenShellGitRuntime.repositoryWorkerRestartDisposition` reads evidence
+for [upgrade preflight](coordinated-production-upgrade.md#1-prepare-the-candidate),
+sharing verification's held-launch classification.
 
 `OpenShellGitRuntime.verifyExecution` reports `RepositoryExecutionRequiresRedeployError`
 when a v5 held route's persisted owner, binding and stable fence prove non-adoptable replacement. `ControllerWorker.completeStandingRepositoryWithdrawal` rechecks
@@ -396,6 +399,8 @@ Verify live PR updates, denial before provider contact and continued chat separa
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-07 08:06: Assess repository worker replacement before stopping writers. (authoring-run/dc361ab2-8dc2-4ed3-872d-220eb9cce3c1 - d84756d04bec6aa6499364548cd21a07bbbc86d7)
 
 - 2026-11-07 03:14: Capture policy. (authoring-run/ca379ce8-200d-4822-9b71-87f49f7644dc - 8c600ad53844dca9d2f9eda87ba8733c628d28aa)
 - 2026-11-06 20:39: Distinguish terminal held-launch replacement from transient standing verification. (authoring-run/d966f693-ccc4-4b07-8fbc-f66738672284 - 21a933338904531c51a67f9aaf98c3401ceff025)

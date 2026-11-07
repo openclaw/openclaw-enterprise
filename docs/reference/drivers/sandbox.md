@@ -23,16 +23,16 @@ The [exported interface](../../../packages/contracts/src/drivers/sandbox/index.t
 
 ### Properties
 
-| Property                       | Requirement | Value and meaning                                                                                                                                     |
-| ------------------------------ | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`, `implementation`         | Required    | Identify the selected Driver and its implementation.                                                                                                  |
-| `capability`                   | Required    | Must be `"sandbox"`.                                                                                                                                  |
-| `supportsHarnessExecutionMode` | Required    | OpenClaw mode support set during Driver construction. See [mode support](#harness-mode-support).                                                      |
-| `facets`                       | Required    | Declare at least one distinct [containment facet](#containment-facets). Startup rejects unknown, duplicate, or empty declarations.                    |
-| `harnessHome`                  | Optional    | Normalized absolute Harness user home. Compute uses it for Harness-local paths. Default: `/home/node`.                                                |
-| `repositoryAccess`             | Optional    | Compute verifies the execution receiving repository access, checks whether its Git route is ready, and retires expired access through this interface. |
-| `networkPolicy`                | Optional    | Declare support for [network policy operations](#optional-network-policy-operations).                                                                 |
-| `computeLifecycleHooks`        | Optional    | Inherited from `Driver`. Installed packages supply hooks on the registration and must omit them on the capability object.                             |
+| Property                       | Requirement | Value and meaning                                                                                                                                            |
+| ------------------------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`, `implementation`         | Required    | Identify the selected Driver and its implementation.                                                                                                         |
+| `capability`                   | Required    | Must be `"sandbox"`.                                                                                                                                         |
+| `supportsHarnessExecutionMode` | Required    | OpenClaw mode support set during Driver construction. See [mode support](#harness-mode-support).                                                             |
+| `facets`                       | Required    | Declare at least one distinct [containment facet](#containment-facets). Startup rejects unknown, duplicate, or empty declarations.                           |
+| `harnessHome`                  | Optional    | Normalized absolute Harness user home. Compute uses it for Harness-local paths. Default: `/home/node`.                                                       |
+| `repositoryAccess`             | Optional    | Verify repository execution and route readiness, retire access, and optionally assess [worker replacement](../repository-credentials/worker-replacement.md). |
+| `networkPolicy`                | Optional    | Declare support for [network policy operations](#optional-network-policy-operations).                                                                        |
+| `computeLifecycleHooks`        | Optional    | Inherited from `Driver`. Installed packages supply hooks on the registration and must omit them on the capability object.                                    |
 
 ### Harness mode support
 

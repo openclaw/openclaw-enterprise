@@ -573,7 +573,8 @@
               "reference/repository-credentials/development-token",
               "reference/repository-credentials/openshell-git",
               "reference/repository-credentials/openshell-git-refusals",
-              "reference/repository-credentials/openshell-git-restarts"
+              "reference/repository-credentials/openshell-git-restarts",
+              "reference/repository-credentials/worker-replacement"
             ]
           },
           {

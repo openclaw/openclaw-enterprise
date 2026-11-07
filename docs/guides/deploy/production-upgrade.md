@@ -74,16 +74,17 @@ Active, desired-running Agents with a selected revision and no pending deploymen
 also require Agent `deploy` and selected-revision `read`. Runtime upgrades additionally
 require Configuration and replacement-revision `read`.
 
-Review runtime drafts; deployments snapshot current values.
+Review runtime drafts before deployment.
 
-Every upgrade needs the serving API’s inventory endpoint; controller-only upgrades
-also need exact revision reads for retained running Agents.
+Every upgrade needs the serving API’s inventory; controller-only upgrades
+also need retained revision reads.
 
-Controller-only upgrades read each active revision with `occ agent revision`,
-refusing missing or unreadable Harness settings before stopping OCC. Plan an
-authorized replacement, or stop and settle the Agent before upgrading, then deploy
-reviewed drafts. Git session continuity still requires the
-[upgrade checklist](upgrade-checklist.md#apply-the-release-in-dependency-order).
+Controller-only upgrades require saved Harness settings and a positive
+[repository restart disposition](../../reference/repository-credentials/worker-replacement.md)
+for retained running revisions. Otherwise, stop and settle affected Agents under
+an authorized interruption, or plan normal replacement. Missing or denied inventory
+is not an empty fleet. A changed pre-stop inventory requires new preparation.
+Git continuity still requires the [upgrade checklist](upgrade-checklist.md#apply-the-release-in-dependency-order).
 
 For OpenShell, a controller change to the generated Harness command requires a
 fresh Agent revision. Existing Sandboxes require the same launch specification;

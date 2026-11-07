@@ -5174,10 +5174,47 @@ test("Installation deployment inventory fails closed on incomplete authorization
           executionMode: "embedded",
           activeRevisionId: admitted.data.id,
           deploymentInProgress: false,
+          repositoryWorkerRestart: "unknown",
         },
       ],
     },
   );
+
+  // Hold only the external read boundary: the real API and State must detect a new Agent
+  // and reauthorize after observation. These checks do not qualify a Driver's disposition.
+  for (const change of ["new-agent", "authority"]) {
+    const observing = Promise.withResolvers();
+    const resume = Promise.withResolvers();
+    fixture.computeDriver.repositoryWorkerRestartDisposition = async () => {
+      observing.resolve();
+      await resume.promise;
+      return "unknown";
+    };
+    const pending = controller.request("GET", inventoryPath);
+    await observing.promise;
+    if (change === "new-agent") {
+      await createAgent(controller, namespace.id, "inventory-arrival");
+    } else {
+      fixture.state.restrictions.push({
+        id: "deny-inventory-during-observation",
+        resourceKind: "installation",
+        resourceId: fixture.installationId,
+        action: "administer",
+        effect: "deny",
+      });
+    }
+    resume.resolve();
+    const changed = await pending;
+    assert.equal(changed.status, change === "new-agent" ? 503 : 403);
+    assert.equal(
+      changed.body.error.code,
+      change === "new-agent" ? "DEPENDENCY_UNAVAILABLE" : "FORBIDDEN",
+    );
+    if (change === "authority") {
+      fixture.state.restrictions.pop();
+    }
+    delete fixture.computeDriver.repositoryWorkerRestartDisposition;
+  }
 
   // The inventory needs Installation administer, and a complete fleet response must not turn
   // any exact-resource denial into omission.

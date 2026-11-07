@@ -1120,6 +1120,19 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       }
       out(selected[operation]);
     } else if (args.includes("deployment-inventory")) {
+      const response = state.inventoryResponses?.[state.inventoryReadCount ?? 0];
+      state.inventoryReadCount = (state.inventoryReadCount ?? 0) + 1;
+      save();
+      if (state.inventoryRequiresApi && state.api === 0) {
+        return fail(1, "API unavailable");
+      }
+      if (response === "denied") {
+        return fail(1, "permission denied");
+      }
+      if (response !== undefined) {
+        out(response);
+        return io.exit(0);
+      }
       out({
         installationId: "ins_test",
         namespaces: state.inventoryNamespaces ?? [
@@ -1135,6 +1148,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
                     executionMode: "embedded",
                     activeRevisionId: "rev_old",
                     deploymentInProgress: false,
+                    repositoryWorkerRestart: "reverification-supported",
                   },
                 ]
               : [],
@@ -1430,6 +1444,8 @@ async function fixture(
     executionCluster = null,
     installationName = "Production",
     inventoryNamespaces = null,
+    inventoryResponses,
+    inventoryRequiresApi = false,
     activeRevisionResponse,
     names = null,
     configurationValues = null,
@@ -1626,6 +1642,8 @@ async function fixture(
     preflightFault,
     installationName,
     inventoryNamespaces,
+    inventoryResponses,
+    inventoryRequiresApi,
     activeRevisionResponse,
     names,
     configurationValues,
@@ -1859,6 +1877,12 @@ test("controller-only upgrades refuse incompatible active Harness snapshots befo
     ["null settings", { ...snapshot, harness: { ...snapshot.harness, configuration: null } }],
     ["array overrides", { ...snapshot, harness: { ...snapshot.harness, overrides: [] } }],
     ["wrong revision", { ...snapshot, id: "rev_other" }],
+    ["empty output", ""],
+    ["duplicate documents", JSON.stringify(snapshot) + "\n" + JSON.stringify(snapshot)],
+    [
+      "invalid then valid",
+      JSON.stringify({ ...snapshot, id: "rev_other" }) + "\n" + JSON.stringify(snapshot),
+    ],
     [
       "unreadable snapshot",
       {
@@ -1927,6 +1951,182 @@ test("controller-only upgrades refuse incompatible active Harness snapshots befo
     assert.ok(existsSync(join(f.evidence, "completed")));
     assert.equal((await f.events())[0], "revision-read rev_old");
   });
+});
+
+function restartInventory(
+  repositoryWorkerRestart = "reverification-supported",
+  revision = "rev_old",
+) {
+  return {
+    installationId: "ins_test",
+    namespaces: [
+      {
+        id: "ns_test",
+        status: "ready",
+        agents: [
+          {
+            id: "agt_test",
+            status: "active",
+            desiredRuntimeState: "running",
+            executionMode: "embedded",
+            activeRevisionId: revision,
+            deploymentInProgress: false,
+            ...(repositoryWorkerRestart === "missing" ? {} : { repositoryWorkerRestart }),
+          },
+        ],
+      },
+    ],
+  };
+}
+
+// These cases exercise the shipped shell and real jq against external command
+// responses. Driver integration separately proves the server's assessment.
+test("repository restart preflight refuses unsafe or incomplete retained fleets before writes", async (t) => {
+  const malformed = restartInventory();
+  delete malformed.namespaces[0].agents[0].deploymentInProgress;
+  for (const [name, response, expected] of [
+    ...["original-worker-required", "unknown", "missing", "future-value"].map((disposition) => [
+      disposition,
+      restartInventory(disposition),
+      /Namespace "ns_test", Agent "agt_test", revision "rev_old": (original-worker-required|unknown)/u,
+    ]),
+    ["denied", "denied", /cannot read the complete deployment inventory/u],
+    ["empty output", "", /inventory is incomplete/u],
+    [
+      "multiple documents",
+      JSON.stringify(restartInventory()) + "\n" + JSON.stringify(restartInventory()),
+      /inventory is incomplete/u,
+    ],
+    ["missing namespaces", { installationId: "ins_test" }, /inventory is incomplete/u],
+    ["missing field", malformed, /inventory is incomplete/u],
+  ]) {
+    await t.test(name, async (t) => {
+      const f = await fixture(t, { controllerOnly: true, inventoryResponses: [response] });
+      await assert.rejects(f.run(), expected);
+      assert.deepEqual(await f.events(), []);
+      const state = await f.state();
+      assert.equal(state.api, 1);
+      assert.equal(state.worker, 1);
+      assert.equal(state.version, 1);
+      assert.equal(state.dispatches, 0);
+    });
+  }
+});
+
+test("repository restart preflight refreshes selections immediately before stopping writers", async (t) => {
+  for (const [name, initial, fresh] of [
+    [
+      "new revision",
+      restartInventory(),
+      restartInventory("reverification-supported", "rev_changed"),
+    ],
+    ["changed assessment", restartInventory(), restartInventory("not-applicable")],
+    ["new Agent", { installationId: "ins_test", namespaces: [] }, restartInventory()],
+    ["lost access", restartInventory(), "denied"],
+  ]) {
+    await t.test(name, async (t) => {
+      const f = await fixture(t, {
+        controllerOnly: true,
+        inventoryResponses: [initial, fresh],
+      });
+      await assert.rejects(
+        f.run(),
+        /inventory selections or repository restart assessments changed|cannot read the complete deployment inventory/u,
+      );
+      const state = await f.state();
+      assert.equal(state.inventoryReadCount, 2);
+      assert.equal(state.api, 1);
+      assert.equal(state.worker, 1);
+      assert.equal(state.version, 1);
+      assert.equal(state.dispatches, 0);
+      assert.equal(
+        (await f.events()).some((event) => event.startsWith("scale-")),
+        false,
+      );
+    });
+  }
+});
+
+test("repository restart preflight permits positively assessed or empty fleets without deploying", async (t) => {
+  for (const [name, inventory] of [
+    ["supported", restartInventory()],
+    ["no repository access", restartInventory("not-applicable")],
+    ["empty", { installationId: "ins_test", namespaces: [] }],
+  ]) {
+    await t.test(name, async (t) => {
+      const f = await fixture(t, {
+        controllerOnly: true,
+        inventoryResponses: [inventory, inventory],
+      });
+      await f.run();
+      const state = await f.state();
+      assert.equal(state.inventoryReadCount, 2);
+      assert.equal(state.dispatches, 0);
+      assert.equal(state.version, 2);
+      assert.equal((await f.events()).filter((event) => event.startsWith("scale-")).length, 2);
+    });
+  }
+});
+
+test("repository restart preflight resumes prospectively only while the worker still runs", async (t) => {
+  await t.test(
+    "stopped API must be available for fresh inventory before the remaining stop",
+    async (t) => {
+      const inventory = restartInventory();
+      const f = await fixture(t, {
+        controllerOnly: true,
+        inventoryRequiresApi: true,
+        inventoryResponses: [
+          inventory,
+          inventory,
+          inventory,
+          restartInventory("original-worker-required"),
+          inventory,
+        ],
+      });
+      await f.failNext("fail-scale-worker");
+      await assert.rejects(f.run(), injectedFault);
+      assert.deepEqual(
+        (await f.events()).filter((event) => event.startsWith("scale-")),
+        ["scale-api"],
+      );
+      await assert.rejects(f.run("--resume"), /Restore access to the existing API/u);
+      assert.equal((await f.state()).api, 0);
+      assert.equal((await f.state()).worker, 1);
+      assert.equal((await f.state()).version, 1);
+      assert.equal((await f.state()).dispatches, 0);
+      // Once the operator restores the old API, an unsafe fresh assessment still
+      // refuses. Earlier positive evidence cannot authorize the remaining stop.
+      const state = await f.state();
+      state.api = 1;
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      await assert.rejects(f.run("--resume"), /original-worker-required/u);
+      assert.equal((await f.state()).api, 1);
+      await f.run("--resume");
+      assert.equal((await f.state()).dispatches, 0);
+      assert.equal((await f.events()).filter((event) => event === "scale-worker").length, 1);
+    },
+  );
+  await t.test(
+    "after stopping both writers recovery does not replay stops or reread inventory",
+    async (t) => {
+      const inventory = restartInventory();
+      const f = await fixture(t, {
+        controllerOnly: true,
+        candidates: true,
+        inventoryResponses: [inventory, inventory, "denied"],
+      });
+      await f.failNext("lost-secret-response");
+      await assert.rejects(f.run(), injectedFault);
+      const count = (await f.state()).inventoryReadCount;
+      assert.equal((await f.state()).worker, 0);
+      assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+      await f.run("--resume");
+      assert.equal((await f.state()).inventoryReadCount, count);
+      assert.equal((await f.events()).filter((event) => event.startsWith("scale-")).length, 2);
+      assert.equal((await f.state()).dispatches, 0);
+    },
+  );
 });
 
 // Existing controller-only semantics intentionally remain unchanged unless selected.
@@ -2561,14 +2761,7 @@ test("resume reads an accepted Secret write before Helm and preserves its other 
     /bbbbbbbbbbbbbbbb/,
   );
   await f.run("--resume");
-  assert.deepEqual(await f.events(), [
-    "scale-api",
-    "scale-worker",
-    "secret-replaced",
-    "scale-api",
-    "scale-worker",
-    "migration",
-  ]);
+  assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "secret-replaced", "migration"]);
   const state = await f.state();
   assert.equal(state.secret.metadata.annotations.retained, "yes");
   assert.equal(state.secret.data.retained, "cHJlc2VydmVk");
@@ -2812,7 +3005,6 @@ test("quiescence refuses a worker changed after observation and preserves partia
       await f.run("--resume");
       assert.deepEqual(await f.events(), [
         "scale-api",
-        "scale-api",
         "scale-worker",
         "secret-replaced",
         "migration",
@@ -2910,7 +3102,10 @@ test("failed Helm migration keeps old writers stopped and requires checked histo
 });
 
 test("resume stops on an unknown Agent deployment until an accepted revision is confirmed", async (t) => {
-  const f = await fixture(t, { agent: true });
+  // A normal runtime upgrade can replace a worker-bound revision, but a lost
+  // response must never turn that planned replacement into a second deployment.
+  const inventory = restartInventory("original-worker-required");
+  const f = await fixture(t, { agent: true, inventoryResponses: [inventory, inventory] });
   await f.failNext("lost-agent-response");
   await assert.rejects(f.run(), /deployment outcome is unknown/);
   const calls = f.commands.length;
@@ -2929,6 +3124,7 @@ test("resume stops on an unknown Agent deployment until an accepted revision is 
   await writeFile(receipt, JSON.stringify({ id: "rev_new" }), { mode: 0o600 });
   await f.run("--resume");
   assert.equal((await f.state()).dispatches, 1);
+  assert.equal((await f.state()).inventoryReadCount, 2);
 });
 
 describe("resume evidence directory ownership", { concurrency: 2 }, () => {
@@ -3932,7 +4128,11 @@ test(
   { concurrency: true },
   async (t) => {
     const cases = [];
-    for (const name of ["candidate-values.yaml", "targets.jsonl"]) {
+    for (const name of [
+      "candidate-values.yaml",
+      "targets.jsonl",
+      "inventory/restart-preflight.json",
+    ]) {
       cases.push(
         t.test(name, async (subtest) => {
           const f = await fixture(subtest);

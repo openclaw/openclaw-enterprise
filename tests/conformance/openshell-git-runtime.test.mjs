@@ -109,6 +109,11 @@ test("Git preparation refuses missing admission or plan identity before gateway 
                   : { executionId: invalid === "empty-id" ? "" : "admitted-execution" },
             },
     };
+    assert.equal(
+      await f.runtime.repositoryWorkerRestartDisposition(revision, AbortSignal.timeout(2_000)),
+      "unknown",
+      "incomplete admission cannot establish a prospective restart disposition",
+    );
     let gatewayCalls = 0;
     f.faults.gatewayCall = () => {
       gatewayCalls += 1;
@@ -132,6 +137,52 @@ test("Git preparation refuses missing admission or plan identity before gateway 
     assert.equal(f.calls.rotate, 0, invalid);
     assert.equal(f.store.rows.size, 0, invalid);
   }
+});
+
+test("restart assessment distinguishes absent repository access from unsupported delivery", async () => {
+  const f = fixture();
+  const signal = AbortSignal.timeout(2_000);
+  const before = structuredClone(f.calls);
+  const { repositoryCredentials, egressPlan, ...withoutRepository } = f.revision;
+  assert.equal(
+    await f.runtime.repositoryWorkerRestartDisposition(withoutRepository, signal),
+    "not-applicable",
+  );
+  assert.equal(
+    await f.runtime.repositoryWorkerRestartDisposition(
+      { ...withoutRepository, egressPlan },
+      signal,
+    ),
+    "unknown",
+    "a route without its matching repository snapshot is inconsistent",
+  );
+  const { repositoryGit: _repositoryGit, ...authorizationOnly } = egressPlan;
+  assert.equal(
+    await f.runtime.repositoryWorkerRestartDisposition(
+      { ...withoutRepository, egressPlan: authorizationOnly },
+      signal,
+    ),
+    "unknown",
+    "a repository authorization mode without its snapshot is also inconsistent",
+  );
+  assert.equal(
+    await f.runtime.repositoryWorkerRestartDisposition(
+      { ...withoutRepository, repositoryCredentials },
+      signal,
+    ),
+    "unknown",
+    "a profile alone does not identify this owner's delivery mode",
+  );
+  assert.equal(
+    await f.runtime.repositoryWorkerRestartDisposition(f.revision, signal),
+    "unknown",
+    "finite installation access is not evidence of standing cold re-verification",
+  );
+  assert.equal(
+    await f.runtime.repositoryWorkerRestartDisposition(withoutRepository, AbortSignal.abort()),
+    "unknown",
+  );
+  assert.deepEqual(f.calls, before, "assessment does not call the provider or material owner");
 });
 
 // Ordinary routes use admitted v5 installation access. Mandatory exact-ref and
@@ -2472,6 +2523,17 @@ async function observedGitRoute(
   f.entry.authorization = resolve(revision);
   f.runtime.configuration.observedHookPreviewWorkspace = f.sandbox.workspace;
   f.runtime.configuration.authority.audience = "preview";
+  // A separate API process can identify the admitted finite held launch before the
+  // original worker stops. Its empty cache neither makes the launch safe nor requires adoption.
+  const assessor = new OpenShellGitRuntime(f.runtime.configuration, resolve);
+  const beforeAssessment = structuredClone(f.calls);
+  const routeBeforeAssessment = structuredClone(f.store.rows);
+  assert.equal(
+    await assessor.repositoryWorkerRestartDisposition(revision, AbortSignal.timeout(2_000)),
+    "original-worker-required",
+  );
+  assert.deepEqual(f.calls, beforeAssessment);
+  assert.deepEqual(f.store.rows, routeBeforeAssessment);
   const preview = new ObservedHookPreview(
     f.sandbox.workspace,
     f.entry.bindingId,

@@ -426,6 +426,7 @@
       "expectedTests": [
         "OpenShell standing rotation preserves custody when unsent",
         "OpenShell standing rotation preserves custody when lost-reply",
+        "OpenShell restart preflight rejects a different standing execution witness",
         "lost initial OpenShell route commit acknowledgement prevents bootstrap and replay across restart"
       ]
     },
