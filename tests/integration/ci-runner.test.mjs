@@ -5636,9 +5636,10 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     projectOpenShellGitMaintenanceCompletion({
       outcome: forbidden,
       code: forbidden,
+      failure: forbidden,
       error: forbidden,
     }),
-    { outcome: "unrecognized", code: "unrecognized" },
+    { outcome: "unrecognized", code: "unrecognized", failure: "UNRECOGNIZED" },
   );
   const captured = expiryDiagnostic.observations.map(projectOpenShellGitExpiryObservation);
   assert.ok(!JSON.stringify(captured).includes(forbidden));
@@ -5692,7 +5693,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     completionsTruncated: false,
     completions: [
       { outcome: "pending", code: "REPOSITORY_CLEANUP_PENDING", error: forbidden },
-      { outcome: "retry", code: forbidden },
+      { outcome: "retry", code: forbidden, failure: forbidden },
       { outcome: "permanent", code: "REPOSITORY_ACCESS_WITHDRAWN" },
       // Ordinary revision readiness must remain distinguishable from Git cleanup.
       { outcome: "pending", code: "REPOSITORY_GIT_ROUTE_PENDING" },
@@ -5701,9 +5702,22 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       { outcome: "pending", code: "WORKSPACE_NODE_BINDING_PENDING" },
       { outcome: "pending", code: "WORKSPACE_NODE_RECONNECT_PENDING" },
       { outcome: "pending", code: "WORKSPACE_SETUP_RETRYING" },
-      { outcome: "pending", code: "REVISION_INCOMPLETE" },
-      { outcome: "pending", code: "REVISION_FINALIZATION_INCOMPLETE" },
-      { outcome: "pending", code: `REPOSITORY_GIT_ROUTE_PENDING_${forbidden}` },
+      // Keep the optional runtime failure separate from the maintenance wait code.
+      {
+        outcome: "pending",
+        code: "REVISION_INCOMPLETE",
+        failure: "REPOSITORY_ROUTE_BLOCKED",
+      },
+      {
+        outcome: "pending",
+        code: "REVISION_FINALIZATION_INCOMPLETE",
+        failure: "MODEL_PROBE_FAILED",
+      },
+      {
+        outcome: "pending",
+        code: `REPOSITORY_GIT_ROUTE_PENDING_${forbidden}`,
+        failure: { code: "REPOSITORY_ROUTE_BLOCKED", message: forbidden },
+      },
     ],
     error: forbidden,
   };
@@ -6292,7 +6306,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       completionsTruncated: false,
       completions: [
         { outcome: "pending", code: "REPOSITORY_CLEANUP_PENDING" },
-        { outcome: "retry", code: "unrecognized" },
+        { outcome: "retry", code: "unrecognized", failure: "UNRECOGNIZED" },
         { outcome: "permanent", code: "REPOSITORY_ACCESS_WITHDRAWN" },
         { outcome: "pending", code: "REPOSITORY_GIT_ROUTE_PENDING" },
         { outcome: "pending", code: "REPOSITORY_GIT_MATERIAL_PENDING" },
@@ -6300,9 +6314,17 @@ test("run records only allowlisted measurements from test diagnostics", async (t
         { outcome: "pending", code: "WORKSPACE_NODE_BINDING_PENDING" },
         { outcome: "pending", code: "WORKSPACE_NODE_RECONNECT_PENDING" },
         { outcome: "pending", code: "WORKSPACE_SETUP_RETRYING" },
-        { outcome: "pending", code: "REVISION_INCOMPLETE" },
-        { outcome: "pending", code: "REVISION_FINALIZATION_INCOMPLETE" },
-        { outcome: "pending", code: "unrecognized" },
+        {
+          outcome: "pending",
+          code: "REVISION_INCOMPLETE",
+          failure: "REPOSITORY_ROUTE_BLOCKED",
+        },
+        {
+          outcome: "pending",
+          code: "REVISION_FINALIZATION_INCOMPLETE",
+          failure: "MODEL_PROBE_FAILED",
+        },
+        { outcome: "pending", code: "unrecognized", failure: "UNRECOGNIZED" },
       ],
     })),
   );

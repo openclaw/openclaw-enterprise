@@ -1,4 +1,10 @@
 import { createHash } from "node:crypto";
+import {
+  RUNTIME_DIAGNOSTIC_CODES,
+  UNRECOGNIZED_RUNTIME_VALUE,
+  WORKSPACE_SETUP_FAILED,
+  WORKSPACE_SETUP_REFUSED,
+} from "../../packages/contracts/src/runtime-failure.mjs";
 
 export const openShellGitRetentionKind = "openshell-git-retention";
 
@@ -124,6 +130,11 @@ const readinessCode = choice(
   "REVISION_INCOMPLETE",
   "REVISION_FINALIZATION_INCOMPLETE",
 );
+const runtimeFailureCode = choice(
+  ...RUNTIME_DIAGNOSTIC_CODES,
+  WORKSPACE_SETUP_FAILED,
+  WORKSPACE_SETUP_REFUSED,
+);
 
 /** Select before buffering: worker records may contain unrelated private fields. */
 export function projectOpenShellGitExpiryObservation(value) {
@@ -170,13 +181,17 @@ export function projectOpenShellGitExpiryObservation(value) {
 
 /** Select matching maintenance completions before buffering their diagnostics. */
 export function projectOpenShellGitMaintenanceCompletion(value) {
-  return project(value, {
+  const completion = project(value, {
     outcome: [
       "outcome",
       (outcome) => choice("success", "pending", "retry", "permanent")(outcome) ?? "unrecognized",
     ],
     code: ["code", (code) => cleanupCode(code) ?? readinessCode(code) ?? "unrecognized"],
   });
+  if (completion && value.failure !== undefined) {
+    completion.failure = runtimeFailureCode(value.failure) ?? UNRECOGNIZED_RUNTIME_VALUE;
+  }
+  return completion;
 }
 
 const maintenanceDiagnostics = {
