@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-07"
-last_updated_session: "authoring-run/a2f2f4b1-8e0e-4f19-8ce3-11d6e118a054"
+last_updated_session: "authoring-run/87bf103a-4285-4561-8ab8-6a9f1e265248"
 ---
 
 # Production image upgrade flow
@@ -9,7 +9,8 @@ last_updated_session: "authoring-run/a2f2f4b1-8e0e-4f19-8ce3-11d6e118a054"
 ## Overview
 
 `scripts/upgrade-production-images` updates the OpenClaw Control Plane (OCC),
-Agent runtimes, or both. Controller-only upgrades stop after API/worker recovery.
+Agent runtimes, or both. Controller-only upgrades optionally verify one original
+Agent revision after API/worker recovery.
 Runtime upgrades redeploy initially running Agents, then check ready Pods and
 read-only Doctor lint.
 
@@ -48,7 +49,9 @@ graph TD
     G -->|Yes| I["Verify OCC rollout"]
     D -->|Yes| I
     I --> J{"Runtime release?"}
-    J -->|No| K["Hand off application checks"]
+    J -->|No| AC{"Selected Agent still Ready?"}
+    AC -->|"Yes or not selected"| K["Hand off application checks"]
+    AC -->|No| X
     J -->|Yes| W["Reconcile journal and receipts"]
     W --> L["Deploy Agents still eligible"]
     L --> M{"Dispatch response known?"}
@@ -77,20 +80,22 @@ Runtime upgrades lock the private sibling dispatch journal, separate from restor
 evidence.
 
 Candidates match the [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
-as ordered YAML mappings, including images. Validate both candidates before
-protected-setting projections. `scripts/upgrade-production-images:matches_yaml`
-compares checked conversions and exits on unusable inputs or unwritable
-evidence with `Cannot compare upgrade YAML`. Only the Slack directory proxy and
-curated Codex PluginDriver selection may change before image selection. An explicit
-candidate may also wrap the installed single plugin registration in an array.
-The comparison preserves configuration, except for the curated
-catalog choice; it does not rewrite the baseline. Startup checks still validate
-the candidate against the selected controller. Broker
-checks compare references, not ConfigMap or Secret contents.
+as ordered YAML mappings, including images. `matches_yaml` validates candidates
+before protected-setting projections; unusable inputs or unwritable evidence cause
+`Cannot compare upgrade YAML`. Only Slack directory proxy, curated Codex
+PluginDriver selection and wrapping a single plugin registration in an array may
+change before image selection. Baselines remain unchanged. Startup validates the
+candidate controller; broker checks compare references, not ConfigMap/Secret contents.
 
 Runtime upgrades require a complete authorized inventory and baseline versions.
 Nonterminal deployments, missing versions or unready Namespaces stop preparation.
 Stopped or deleting Agents are excluded; pending repository cleanup does not block.
+
+Optional `--verify-agent` with `--verify-agent-namespace` requires Agent read/operate,
+active AgentRevision read and enabled runtime inspection. Before shutdown,
+`verify_agent_continuity` brackets explicit-revision CLI runtime reads with Agent
+reads. It freezes active identity and Driver-declared workload roles in hashed
+`agent-continuity.json`; editable Agent topology is not authoritative.
 
 Repository-enabled releases require explicit immutable controller and broker images.
 All nodes matching the control plane selector, even unready or cordoned nodes,
@@ -147,10 +152,9 @@ and `delete`. Worker Job grants are required even with runtime logs disabled.
 A missing rule refuses the candidate and points to
 [upgrading the execution chart](../testing/kubernetes.md#upgrade-the-execution-chart).
 
-The helper copies `openclaw-enterprise-dependency-egress` into a temporary
-NetworkPolicy, including execution-cluster API rules. Job templates retain the
-labels selecting this policy and the chart's default deny. Controller ownership
-addresses the EKS standalone-Pod limitation; verify target-cluster enforcement.
+Preflight Jobs retain default-deny labels and a copy of
+`openclaw-enterprise-dependency-egress`, including execution-cluster API rules.
+Controller ownership addresses EKS's standalone-Pod limitation; verify enforcement.
 
 Startup failures, timeouts and unconfirmed creates stop preparation before writers
 stop. Create errors remain in `preflight-<resource>-create.err`.
@@ -171,12 +175,12 @@ drafts per the [production guide](../guides/deploy/production-upgrade.md).
 
 ### 2. Reconcile a prior attempt
 
-`scripts/upgrade-production-images:1450`
+`scripts/upgrade-production-images:1565`
 
 Resume requires prepared evidence; otherwise reconcile preflight resources and
 use fresh evidence per [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
-It binds directory identity, kubeconfig contents, inputs, OCC URL, scripts, flow,
-chart and pair evidence; requalifies the pair; and rejects changed eligible nodes.
+It binds directory, kubeconfig, inputs, OCC URL, scripts, flow, chart and pair;
+requalifies the pair; and rejects changed eligible nodes.
 Ineligible Helm states stop before values/Secret reads. Values must match baseline
 or candidate; Secret UID, Installation annotation and other data must match baseline.
 Only saved reviewed candidates apply.
@@ -196,9 +200,8 @@ can leave the API stopped. Before the deadline, Pods must disappear and original
 Deployments remain at zero. Operators stop other writers and autoscalers and keep
 nodes reachable.
 
-The script atomically replaces protected files with the saved candidate. For
-Installation changes, it updates the Secret's Installation key with a
-resource-version precondition, preserving other data and metadata.
+The script atomically installs saved candidates. Installation Secret updates use
+a resource-version precondition, preserving other data and metadata.
 An already-present candidate is not rewritten after a lost response.
 Both OCC Pod templates include its checksum.
 
@@ -209,7 +212,7 @@ reconciliation; restarting old images cannot undo committed migrations.
 
 ### 4. Verify control-plane recovery
 
-`scripts/upgrade-production-images:1666`
+`scripts/upgrade-production-images:1768`
 
 The script waits for both OCC Deployments and checks controller images,
 replica counts, and changed Installation checksums. Each component needs
@@ -229,24 +232,21 @@ controller-only reuse cannot adopt the changed command. See the
 Controller fixes to Pod configuration and [diagnostics](agent-deployment-diagnostics.md)
 reach other Agents on their next preparation or deployment.
 
-For a repository-enabled release, it also verifies the ready API and worker
-Pods, their owning ReplicaSets, node architecture, and runtime controller and
-broker image IDs against the qualified pair. The deployed Driver checks the real
-broker's admission capability without opening a session. Pod identities must
-remain stable across that check and before dispatch and completion.
+Repository-enabled releases verify Ready API/worker Pods, owning ReplicaSets,
+node architecture and runtime image IDs against the qualified pair. The Driver
+checks broker admission without a session. Pod identities must remain stable
+through that check, dispatch and completion.
 
 ### 5. Deploy and verify the recorded fleet
 
 `scripts/upgrade-production-images:confirmed_deployment_status` and
 `scripts/upgrade-dispatch-state.py:transition`
 
-The helper flushes intent before each deploy and starts the eligible batch
-before collecting replies. An unresolved intent blocks later sends on resume.
-The journal records accepted revisions and definite refusals. Resume can retry
-a refusal. It keeps superseded receipts and uses the journal's current revision.
-A new replacement receipt must name the current failed revision. If an outcome
-is unknown or the journal may be stale, use the
-[recovery guide](../guides/deploy/production-upgrade-recovery.md).
+The helper flushes intent before dispatching the batch. Unresolved intents block
+later sends. The journal records accepted revisions and definite refusals, which
+resume may retry. Superseded receipts remain; replacements must name the current
+failed revision. Unknown outcomes or stale journals require
+[recovery](../guides/deploy/production-upgrade-recovery.md).
 
 The script verifies authorized deployment status, version, and ready Pods on the
 candidate digest. Before OpenClaw starts, `openClawStateMigrationHelper` in
@@ -277,16 +277,19 @@ resume checks the replacement.
 
 `docs/guides/deploy/production-upgrade.md:Verify the release`
 
-Completion requires the expected deployed Helm revision and OCC access; runtime upgrades verify
-deployments, readiness and Doctor without errors.
-It writes a private `completed` marker. New upgrades require fresh
-evidence. Failed marker writes require reconciling evidence with live state;
-absence alone does not prove unfinished work.
-Operators verify models, providers, channels, credentials, workspace continuity,
-native access and restores.
-`scripts/verify-console-release.ts:verifyConsoleRelease` isolates Git selection,
-compares HTML/CSS against publication artifacts and rejects invalid headers,
-URLs and themes ([verification](../release/container-promotion.md#verify-the-served-console)).
+Completion requires the expected Helm revision and OCC access; runtime upgrades
+also require deployment, readiness and Doctor success. For selected-Agent checks,
+`verify_agent_continuity` waits before terminal controller/Helm checks.
+Every declared role needs one Running, Ready Pod; replaced UIDs are allowed.
+Completed init containers are valid. Eight returned Pods for a role may hide
+another Pod beyond the runtime endpoint's cap, so cannot prove uniqueness.
+Previously observed provider Harness status must remain running. Failure retains
+observations without `completed`; resume rechecks without repeating successful Helm.
+
+The private `completed` marker refuses further resume. Failed marker writes need
+reconciliation; absence proves nothing. Operators separately verify routing,
+models, channels, credentials, workspaces and restores. Console publication checks
+use [`verifyConsoleRelease`](../release/container-promotion.md#verify-the-served-console).
 
 ### Read-only export after a split-layout refusal
 
@@ -334,6 +337,8 @@ saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-07 02:48: Verify selected Agent readiness before completion. (authoring-run/87bf103a-4285-4561-8ab8-6a9f1e265248 - ada47832cb112f255f6c51d34dae37acce9760cd)
 
 - 2026-11-07 02:27: Validate both writers before stopping either. (authoring-run/a2f2f4b1-8e0e-4f19-8ce3-11d6e118a054 - 7f5489fe39ba84a34987bd22d905e942cf65a8ee)
 
