@@ -1009,6 +1009,10 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			resource, _ := agent.(map[string]any)
+			if resource["id"] != args[0] || resource["namespaceId"] != namespace || resource["desiredRuntimeState"] != "stopped" {
+				return fmt.Errorf("OCC returned an invalid Agent stop response; the stop outcome is unknown. Run \"occ --namespace %s agent get %s\" to check the Agent's state", namespace, args[0])
+			}
 			if err := app.printAgent(agent, false); err != nil {
 				return err
 			}
