@@ -15,7 +15,10 @@ import type {
   RepositoryGitInstallationFence,
   SandboxRepositoryAccess,
 } from "@openclaw-enterprise/contracts";
-import type { PostgresPool } from "@openclaw-enterprise/occ";
+import {
+  RepositoryExecutionRequiresRedeployError,
+  type PostgresPool,
+} from "@openclaw-enterprise/occ";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import type { RepositoryTransportEmit } from "../../composition/repository-credentials/contracts.ts";
 import { REPOSITORY_CLIENT_BIN } from "../compute/kubernetes/repository-native-configuration.ts";
@@ -89,6 +92,14 @@ export interface OpenShellGitRuntimeConfiguration {
   readonly observedHookPreviewWorkspace?: string;
   readonly authority: EgressAuthorityConfiguration;
 }
+/** Only the worker that witnessed a held launch can authorize its next Git session. */
+function requiresOriginalLauncher(revision: Readonly<AgentRevision>, profile: string): boolean {
+  return (
+    revision.egressPlan?.repositoryGitAuthorization === "online-request" &&
+    profile !== githubInstallationProfile
+  );
+}
+
 type ReadMaterial = ProtectedRepositoryGitAuthority["online"]["readMaterial"];
 type MaterialReader = {
   readOpenShellMaterial(
@@ -511,6 +522,7 @@ export class OpenShellGitRuntime {
     }
     const entry = await this.entries.get(revision.id);
     if (!entry && revision.executionAdmission?.version === 6) {
+      // Observed-hook preview retains its separate cold-adoption refusal.
       return;
     }
     if (!entry && cold && revision.repositoryCredentials?.standingApprovalId) {
@@ -525,6 +537,27 @@ export class OpenShellGitRuntime {
         return;
       }
       const scope = this.scope(revision);
+      if (requiresOriginalLauncher(revision, scope.binding.profile)) {
+        // No local entry alone proves nothing. The durable owner, exact binding and
+        // unchanged fence establish that this process cannot inherit the held launch.
+        const current = await this.routes?.standing(revision);
+        if (
+          saved.workerInstance &&
+          saved.workerInstance !== this.instance &&
+          saved.route.revisionId === revision.id &&
+          saved.route.namespaceId === revision.namespaceId &&
+          saved.route.agentId === revision.agentId &&
+          /^[A-Za-z0-9_-]{32}$/.test(saved.route.bindingId) &&
+          Number.isSafeInteger(saved.route.fence) &&
+          saved.route.fence > 0 &&
+          !signal.aborted &&
+          !this.stopped.signal.aborted &&
+          isDeepStrictEqual(saved, current)
+        ) {
+          throw new RepositoryExecutionRequiresRedeployError();
+        }
+        return;
+      }
       const context = await cold();
       if (!context || git.workspace !== context.workspace || git.sandbox !== context.sandbox) {
         return;
@@ -543,7 +576,11 @@ export class OpenShellGitRuntime {
         return;
       }
       const box = await client.getSandbox({ workspace, name: sandbox }, signal);
-      const hash = box && (await witnessOpenShellGitLaunch(client, continuity, box, git, signal));
+      const hash =
+        box &&
+        (await witnessOpenShellGitLaunch(client, continuity, box, git, signal, {
+          kind: "predecessor",
+        }));
       const identity = openShellGitExecutionIdentity(git);
       if (
         hash !== saved.retainedLaunchHash ||
@@ -622,9 +659,7 @@ export class OpenShellGitRuntime {
     const scope = this.scope(revision);
     const admittedExecutionId = revision.egressPlan!.execution.executionId;
     const legacyPreview = revision.executionAdmission?.version === 6;
-    const mandatory =
-      revision.egressPlan?.repositoryGitAuthorization === "online-request" &&
-      scope.binding.profile !== githubInstallationProfile;
+    const mandatory = requiresOriginalLauncher(revision, scope.binding.profile);
     const preview = legacyPreview || mandatory;
     if (
       (legacyPreview && workspace !== this.configuration.observedHookPreviewWorkspace) ||

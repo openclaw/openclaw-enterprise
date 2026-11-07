@@ -213,10 +213,11 @@ Historical revisions remain readable after source deletion.
 The worker rechecks the deploying actor's and Agent's
 `credential_source:operate` (`AUTHORIZATION_DENIED`), the selected Gateway/Proxy
 snapshot (`CREDENTIAL_GATEWAY_MISMATCH`) and live source ownership/type.
-For a Proxy-owned `openai/api_key` Harness snapshot, the protected route must
-match the ready source and the current Backend and provider generations. Worker
-and Compute refuse mismatches without trying the Gateway. Deploying a
-`credential_source` Harness binding still records its Gateway.
+For a Proxy-owned `openai/api_key` Harness snapshot, Worker and Compute require
+the ready source's inference binding to match current Backend and provider
+generations. Before its first cluster read, Compute checks the saved model
+endpoint against source consent and the bound route's origin and path.
+Both refuse mismatches without Gateway fallback. Public deploys still record the Gateway.
 Unavailable sources return `HARNESS_AUTH_SOURCE_UNAVAILABLE` or
 `CREDENTIAL_SOURCE_UNAVAILABLE`. Withdrawn sources stay detached; Compute repeats
 snapshot checks before

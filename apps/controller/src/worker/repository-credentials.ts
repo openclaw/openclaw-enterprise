@@ -19,6 +19,7 @@ import {
   repositoryApprovalFingerprint,
   revisionAdmittedBeforeWork,
   WorkClaimLostError,
+  RepositoryExecutionRequiresRedeployError,
   type ClaimedWork,
   type PlatformUnitOfWork,
   type PlatformReadView,
@@ -525,6 +526,17 @@ export class RepositoryCredentialLifecycle {
     return driver;
   }
 
+  private async verifyExecution(claim: ClaimedWork, revision: Revision) {
+    try {
+      return await this.dependencies.verifyExecution?.(claim, revision);
+    } catch (error) {
+      if (error instanceof RepositoryExecutionRequiresRedeployError) {
+        throw new RepositoryCredentialAuthorityError(error.code);
+      }
+      throw error;
+    }
+  }
+
   /** Pins only a fresh observation of the active execution; never creates or repairs Compute. */
   async captureExecution(
     claim: ClaimedWork,
@@ -543,7 +555,7 @@ export class RepositoryCredentialLifecycle {
       }
       return;
     }
-    const execution = await this.dependencies.verifyExecution?.(claim, revision);
+    const execution = await this.verifyExecution(claim, revision);
     if (!execution || !execution.executionId || !/^[a-f0-9]{64}$/.test(execution.fingerprint)) {
       if (required) {
         throw new RepositoryCredentialAuthorityError("REPOSITORY_EXECUTION_UNVERIFIED");
@@ -590,7 +602,7 @@ export class RepositoryCredentialLifecycle {
         if (recorded.closed) {
           throw new RepositoryCredentialAuthorityError("REPOSITORY_EXECUTION_CLOSED");
         }
-        const observed = await this.dependencies.verifyExecution?.(claim, revision);
+        const observed = await this.verifyExecution(claim, revision);
         if (!observed || !observed.executionId || !/^[a-f0-9]{64}$/.test(observed.fingerprint)) {
           throw new RepositoryCredentialAuthorityError("REPOSITORY_EXECUTION_UNVERIFIED");
         }

@@ -87,7 +87,19 @@ const revision = {
   gatewayManagedMode: true,
   configuration,
   compute: { id: "kubernetes", implementation: "kubernetes" },
-  harness: { id: "codex", mode: "dedicated", version: "1" },
+  harness: {
+    id: "codex",
+    mode: "dedicated",
+    version: "1",
+    overrides: {},
+    configuration: {
+      modelProvider: {
+        protocol: "openai-responses",
+        baseUrl: "https://api.openai.com/v1",
+        supportsStandaloneWebSearch: false,
+      },
+    },
+  },
   backendId: null,
   harnessAuth,
   createdAt: time,
@@ -249,6 +261,7 @@ export const parameterExamples = {
   key: "review-1",
   expectedConfigurationId: configurationId,
   expectedGeneration: "1",
+  harnessOverrides: "{}",
   namespaceId,
   agentId,
   configurationId,
@@ -303,6 +316,7 @@ export const requestExamples = {
     clientSecret: "example-client-secret",
   },
   rotateOAuthClientSecret: { clientSecret: "replacement-example-client-secret" },
+  deployAgent: {},
   deployAgentFirst: {
     key: "review-1",
     expectedConfigurationId: configurationId,

@@ -1147,7 +1147,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       state.dispatches += 1;
       // A scripted failure for this Agent answers like the real occ: exit 1 and its error
       // on stderr. A refusal (4xx) commits no revision, so the selected revision stays.
-      const agentId = args.at(-1);
+      const agentId = args[args.indexOf("deploy") + 1];
       const failure = state.deployFailures?.[agentId];
       if (failure) {
         delete state.deployFailures[agentId];

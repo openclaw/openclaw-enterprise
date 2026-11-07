@@ -83,27 +83,33 @@ UID, resource-version or replica drift refuses the stop before migration;
 the API may already be stopped. Reconcile `current-<component>-deployment.json`
 and `quiescence-<component>-patch.json` against live state before resuming.
 
-Helm failure or disconnection does not prove migration rollback. Inspect current
-Helm status/history, initialization Job/Pod logs and the retained database.
-`current-helm-status.json` may predate the failure. Resolve `pending-*` releases
-separately. Never start old writers against a migrated database. If the
-deployed revision equals `helm-started`'s expected revision and matches candidate
-values, resume skips Helm. Invalid or empty intents and revisions outside the
-recorded prior/expected pair refuse resume, even with checked history. Stop/reconcile the original Helm client before retry; revision binding cannot
-fence concurrent clients. Keep the operator freeze. Wait until the initialization Job and its Pods are terminal, then run the **candidate controller
-image** with `node scripts/migrate-production.mjs --check` against the same
-retained database, using its dedicated migrator credential and required database
-CA in an authorized environment. On Kubernetes, the
-[maintenance procedure](auth-maintenance.md#run-the-command) provides all three: set
-`CONTROLLER_IMAGE` to the candidate image and replace its `args` with
-`["scripts/migrate-production.mjs","--check"]`. Keep its exit-zero
-`migration.checked` output in private evidence. Follow [migration history](../../reference/settings/operations.md#migration-history)
-to interpret unsupported or uncertain state. Only after this check and review of
-the Job outcome, repeat the command with `--resume --migration-history-checked`.
-That flag records your attestation; it does not run the database check. The
-helper keeps or returns OCC to zero replicas and records a new expected successor
-from the live revision before retrying. Prefer a reviewed forward fix; neither Helm rollback nor the helper
-reverses committed migrations.
+Helm failure or disconnection does not prove migration rollback. Inspect live
+Helm status/history, initialization Job/Pod outcomes and the retained database;
+`current-helm-status.json` may be stale. Keep the operator freeze. Stop and
+reconcile the original Helm client before retry or recovery. Resolve `pending-*`
+releases with the release owner. Revision checks cannot fence concurrent clients.
+
+Resume skips Helm only for `helm-started`'s expected deployed revision with
+matching candidate values and Installation. Invalid intents or revisions outside
+the recorded prior/expected pair refuse resume. `--migration-history-checked`
+bypasses neither refusal nor pending releases.
+
+If external recovery moves outside this pair, preserve intent and evidence
+unchanged. The release owner must verify the
+recovered manifest, values, Installation, required hook outcomes and migration
+history, then finish verification separately.
+
+Never start old writers against a migrated database. For a retry within the recorded pair, wait
+until the initialization Job and Pods are terminal. Run the **candidate controller
+image** with `node scripts/migrate-production.mjs --check` against the retained
+database, with its migrator credential and required CA. The Kubernetes
+[maintenance procedure](auth-maintenance.md#run-the-command) supplies these: set
+`CONTROLLER_IMAGE` and args `["scripts/migrate-production.mjs","--check"]`.
+Retain exit-zero `migration.checked` output; follow [migration history](../../reference/settings/operations.md#migration-history).
+After checking the Job outcome, use `--resume --migration-history-checked`.
+This attestation does not run the check. The helper returns OCC to zero replicas
+and records the next expected revision before retrying. Prefer a reviewed forward
+fix; neither Helm rollback nor the helper reverses committed migrations.
 
 After an unknown Agent dispatch, requests in the same batch may still finish.
 Before resuming, inspect the Agent's revision history, status and audit records.

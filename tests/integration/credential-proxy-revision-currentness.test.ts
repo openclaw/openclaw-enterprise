@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import test, { type TestContext } from "node:test";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 import { ControllerWorker } from "../../apps/controller/src/worker.ts";
+import { githubMetadataGrant } from "../../packages/contracts/src/index.ts";
 import type {
   AgentRevision,
   ConfigurationDriver,
@@ -303,6 +304,81 @@ function sourceWithNextGeneration(source: Readonly<CredentialSource>) {
   };
 }
 
+// Controlled stored extension composition, not a public writer or built-in provider output.
+// Grant unions and Harness catalog metadata are independent in the provider contract.
+function withCompanionInference(
+  t: TestContext,
+  revision: AgentRevision,
+  proxy: object,
+): AgentRevision {
+  // This extension advertises reduction support to admit multiple sources. No reduction
+  // operation is exercised; the reader must decide before installation or policy effects.
+  assert.equal("policyReduction" in proxy, false);
+  Object.defineProperty(proxy, "policyReduction", {
+    configurable: true,
+    value: {
+      version: 1,
+      async apply() {
+        assert.fail("reader must not apply a policy reduction");
+      },
+      async observe() {
+        assert.fail("reader must not observe a policy reduction");
+      },
+    },
+  });
+  t.after(() => {
+    Reflect.deleteProperty(proxy, "policyReduction");
+  });
+  const plan = revision.egressPlan;
+  assert.ok(plan);
+  const route = plan.routes[0];
+  assert.ok(route?.binding.grant.kind === "inference");
+  const grant = githubMetadataGrant({
+    authority: "execution",
+    app_id: "1",
+    installation_id: "2",
+    repository_id: "3",
+    repository: "openclaw/fixture",
+    agent_id: revision.agentId,
+  });
+  return {
+    ...revision,
+    egressPlan: {
+      ...plan,
+      policyReductionVersion: 1,
+      routes: [
+        {
+          ...route,
+          route: { ...route.route, id: route.route.id + "/metadata" },
+          method: "GET",
+          path: "/repos/openclaw/fixture",
+          binding: {
+            ...route.binding,
+            binding: { ...route.binding.binding, id: route.binding.binding.id + "/metadata" },
+            grant,
+            grantHash: createHash("sha256").update(JSON.stringify(grant)).digest("hex"),
+          },
+        },
+        {
+          ...route,
+          route: { ...route.route, id: route.route.id + "/companion" },
+          binding: {
+            ...route.binding,
+            binding: { ...route.binding.binding, id: route.binding.binding.id + "/companion" },
+            source: {
+              ...route.binding.source,
+              source: {
+                ...route.binding.source.source,
+                id: route.binding.source.source.id + "-companion",
+              },
+            },
+          },
+        },
+      ],
+    },
+  };
+}
+
 // This is a private reader fixture. Public CREATE/deploy still emits Gateway snapshots.
 // The controlled Kubernetes receiver stops execution at its first read; this proves the
 // authentication gate on both public Compute operations, not workload readiness or enrollment.
@@ -320,50 +396,56 @@ test("Kubernetes reads a synthetic Proxy Harness through its pinned catalog befo
     unit.credentialSources.findCredentialSource(f.namespace.id, f.source.id),
   );
   assert.ok(storedSource);
-  const source = {
-    ...storedSource,
-    ownerCapability: "credential_proxy" as const,
-    driverId: f.egress.id,
-  };
-  const auth = {
-    method: "credential_source" as const,
-    sourceId: source.id,
-    sourceType: "openai" as const,
-    credentialProxyId: f.egress.id,
-    loginMode: "api_key" as const,
-  };
-  const revision: AgentRevision = {
-    ...f.revision,
-    harnessAuth: auth,
-    credentialSources: [
-      { sourceId: source.id, sourceType: source.type, credentialProxyId: f.egress.id },
-    ],
-    compute: {
-      id: compute.id,
-      implementation: compute.implementation,
-      admission: compute.admitRevision(f.revision),
-    },
-  };
-  const context = {
-    secretEnvironment: [],
-    harnessAuth: { ...auth, source },
-    currentEgressInstallation: () =>
-      f.controller.transact((unit: PlatformUnitOfWork) =>
-        unit.credentialSources.findRevisionEgressInstallation(revision.namespaceId, revision.id),
-      ),
-  };
+  // Public admission supplies all settings and routes; only Proxy ownership is synthetic.
+  const proxyId = f.egress.id;
+  function proxyFixture(admitted: AgentRevision, original: Readonly<CredentialSource>) {
+    const source = {
+      ...original,
+      ownerCapability: "credential_proxy" as const,
+      driverId: proxyId,
+    };
+    const auth = {
+      method: "credential_source" as const,
+      sourceId: source.id,
+      sourceType: "openai" as const,
+      credentialProxyId: proxyId,
+      loginMode: "api_key" as const,
+    };
+    const admission = compute.admitRevision(admitted);
+    assert.ok(admission);
+    const revision: AgentRevision = {
+      ...admitted,
+      harnessAuth: auth,
+      credentialSources: [
+        { sourceId: source.id, sourceType: source.type, credentialProxyId: proxyId },
+      ],
+      compute: {
+        id: compute.id,
+        implementation: compute.implementation,
+        admission,
+      },
+    };
+    const context = {
+      secretEnvironment: [],
+      harnessAuth: { ...auth, source },
+      currentEgressInstallation: async () => {
+        assert.fail("the controlled first Kubernetes read must precede installation lookup");
+      },
+    };
+    return { source, auth, revision, context };
+  }
+  const { source, auth, revision, context } = proxyFixture(f.revision, storedSource);
   let reads = 0;
   const reached = new Error("controlled Kubernetes receiver reached");
-  Object.assign(compute, {
-    apiClients: Promise.resolve({
-      core: {
-        async listNamespace() {
-          reads++;
-          throw reached;
-        },
+  const apiClients = Promise.resolve({
+    core: {
+      async listNamespace() {
+        reads++;
+        throw reached;
       },
-    }),
+    },
   });
+  Object.assign(compute, { apiClients });
   const catalog = t.mock.method(gateway, "listSourceTypes", async () => {
     throw new Error("Proxy Harness must not read Gateway catalog");
   });
@@ -430,11 +512,13 @@ test("Kubernetes reads a synthetic Proxy Harness through its pinned catalog befo
     });
     // Keep the next operation observable even when this subtest detects a regression.
     reads = 0;
+    const withoutEgress = { ...source };
+    delete withoutEgress.egress;
     for (const changedSource of [
       { ...source, driverId: "replacement-proxy" },
       { ...source, ownerCapability: "credential_gateway" as const },
       { ...source, state: "deleting" as const },
-      { ...source, egress: undefined },
+      withoutEgress,
     ]) {
       await assert.rejects(
         compute[operation](revision, {
@@ -449,14 +533,270 @@ test("Kubernetes reads a synthetic Proxy Harness through its pinned catalog befo
       { ...auth, credentialProxyId: "replacement-proxy" },
       { ...auth, credentialGatewayId: gateway.id },
       { ...auth, sourceType: "codex-pat" },
-      { ...auth, loginMode: "codex_pat" },
     ]) {
       await assert.rejects(
         compute[operation]({ ...revision, harnessAuth: changedAuth } as typeof revision, context),
-        /matching supported OpenAI login mode|Installation model provider changed/,
+        {
+          message:
+            "Credential-source Harness authentication requires paired Drivers and a matching supported OpenAI login mode.",
+        },
+      );
+      assert.equal(reads, 0);
+      // A correct stored snapshot cannot make a mismatched resolved context authoritative.
+      await assert.rejects(
+        compute[operation](revision, {
+          ...context,
+          harnessAuth: { ...changedAuth, source },
+        } as typeof context),
+        {
+          message:
+            "Credential-source Harness authentication requires paired Drivers and a matching supported OpenAI login mode.",
+        },
       );
       assert.equal(reads, 0);
     }
+    // This hostile snapshot retains API-key provider settings with a token login mode.
+    // Saved-settings validation must refuse it before the owner/catalog decision.
+    await assert.rejects(
+      compute[operation](
+        { ...revision, harnessAuth: { ...auth, loginMode: "codex_pat" } } as AgentRevision,
+        context,
+      ),
+      { message: "Saved Harness settings are missing, malformed, or unsupported." },
+    );
+    assert.equal(reads, 0);
+  }
+
+  // Ordinary admission supplies normalized overrides, source consent and provider-derived routes.
+  // Only ownership below is synthetic: public writers still emit Gateway-owned Harnesses.
+  catalog.mock.restore();
+  const root = `/namespaces/${f.namespace.id}`;
+  const destination = f.modelProvider.baseUrl.replace("/v1", "/evaluation/v1");
+  const post = async (path: string, body: unknown, status = 201) => {
+    const result = await f.request("POST", root + path, { body });
+    assert.equal(result.status, status, JSON.stringify(result.body));
+    return result.data;
+  };
+  const alternate = await post("/credential-sources", {
+    name: "reader-evaluation",
+    type: "openai",
+    config: { authorized_base_url: destination },
+    secrets: f.source.secrets,
+  });
+  const agent = await post("/agents", {
+    name: "reader-evaluation",
+    configurationId: f.agent.configurationId,
+    executionMode: "dedicated",
+    harnessAuth: { method: "credential_source", sourceId: alternate.id },
+    credentialSources: [{ sourceId: alternate.id }],
+  });
+  const role = await post("/iam/roles", {
+    name: "reader-evaluation",
+    permissions: [{ action: "operate", resourceKind: "credential_source" }],
+  });
+  await post("/iam/access-bindings", {
+    subjectKind: "identity",
+    subjectId: agent.servicePrincipalId,
+    roleId: role.id,
+    resourceKind: "credential_source",
+    resourceId: alternate.id,
+  });
+  const admitted = await post(
+    `/agents/${agent.id}/deploy`,
+    {
+      harnessOverrides: {
+        modelProvider: { protocol: "openai-responses", baseUrl: destination + "/" },
+      },
+    },
+    202,
+  );
+  const { saved, savedSource } = await f.controller.transact(async (unit: PlatformUnitOfWork) => ({
+    saved: await unit.revisions.findRevision(f.namespace.id, agent.id, admitted.id),
+    savedSource: await unit.credentialSources.findCredentialSource(f.namespace.id, alternate.id),
+  }));
+  assert.ok(saved?.egressPlan);
+  assert.ok(savedSource?.egress);
+  const {
+    source: bSource,
+    auth: bAuth,
+    revision: b,
+    context: bContext,
+  } = proxyFixture(saved, savedSource);
+  assert.deepEqual(b.harness.configuration, {
+    modelProvider: {
+      protocol: "openai-responses",
+      baseUrl: destination,
+      supportsStandaloneWebSearch: false,
+    },
+  });
+  assert.ok(
+    b.egressPlan?.routes.every(
+      (route) =>
+        route.origin + route.path === destination + "/responses" ||
+        route.origin + route.path === destination + "/chat/completions",
+    ),
+  );
+  // A new Compute instance has a third default; it must honor the admitted endpoint.
+  const restarted = createTestKubernetesComputeDriver(compute.id, {
+    protectedDriver: f.installedDriver,
+    credentialGatewayDriver: gateway,
+    channelRuntime: true,
+    modelProvider: { protocol: "openai-responses", baseUrl: "https://changed.example.test/v1" },
+  });
+  Object.assign(restarted, { apiClients });
+  const current = f.egress.sourceControl;
+  const provider = current.providers.find((entry) =>
+    isDeepStrictEqual(entry.ref, savedSource.egress.key.provider),
+  );
+  assert.ok(provider);
+  // Hostile stored composition, not normal admission: old endpoint routes with B's binding.
+  const stale = {
+    ...b,
+    egressPlan: {
+      ...b.egressPlan!,
+      routes: provider.routes(
+        { ...bSource, config: source.config },
+        b.egressPlan!.routes[0]!.binding,
+        revision.harness.configuration,
+      ),
+    },
+  };
+  const destinationCases = [
+    [
+      "adjacent pathname prefix",
+      (route: (typeof saved.egressPlan.routes)[number]) => ({
+        ...route,
+        path: route.path.replace("/evaluation/v1/", "/evaluation/v10/"),
+      }),
+    ],
+    [
+      "shifted origin pathname",
+      (route: (typeof saved.egressPlan.routes)[number]) => ({
+        ...route,
+        origin: route.origin + "/evaluation",
+        path: route.path.replace("/evaluation", ""),
+      }),
+    ],
+    [
+      "query in pathname",
+      (route: (typeof saved.egressPlan.routes)[number]) => ({
+        ...route,
+        path: route.path + "?ignored=1",
+      }),
+    ],
+    [
+      "fragment in pathname",
+      (route: (typeof saved.egressPlan.routes)[number]) => ({
+        ...route,
+        path: route.path + "#ignored",
+      }),
+    ],
+    [
+      "rewritten pathname",
+      (route: (typeof saved.egressPlan.routes)[number]) => ({
+        ...route,
+        path: route.path.replace("/v1/", "/v1/./"),
+      }),
+    ],
+  ] as const;
+  const malformedDestinations = destinationCases.map(
+    ([name, change]) =>
+      [
+        name,
+        {
+          ...b,
+          egressPlan: { ...b.egressPlan!, routes: b.egressPlan!.routes.map(change) },
+        },
+      ] as const,
+  );
+  const mixed = withCompanionInference(t, b, f.egress);
+  const restartedCatalog = t.mock.method(gateway, "listSourceTypes", async () => {
+    throw new Error("Proxy Harness must not read Gateway catalog");
+  });
+  for (const operation of ["prepareRevision", "activateRevision"] as const) {
+    reads = 0;
+    await assert.rejects(restarted[operation](b, bContext), (error) => error === reached);
+    assert.ok(reads > 0);
+    assert.equal(restartedCatalog.mock.callCount(), 0);
+    assert.doesNotThrow(() => restarted["validateRevisionExecution"](b, bContext));
+    await t.test(`${operation}: wrong source consent`, async () => {
+      reads = 0;
+      await assert.rejects(
+        restarted[operation](b, {
+          ...bContext,
+          harnessAuth: { ...bAuth, source: { ...bSource, config: source.config } },
+        }),
+        {
+          name: "StoredCredentialSourceConfigError",
+          field: "authorized_base_url",
+        },
+      );
+      assert.equal(reads, 0);
+    });
+    for (const [name, invalid] of [
+      ["stale route destination", stale],
+      ...malformedDestinations,
+    ] as const) {
+      await t.test(`${operation}: ${name}`, async () => {
+        reads = 0;
+        assert.doesNotThrow(() => restarted["validateRevisionExecution"](invalid, bContext));
+        await assert.rejects(restarted[operation](invalid, bContext), {
+          message:
+            "The admitted Harness route destination does not match its saved model endpoint.",
+        });
+        assert.equal(reads, 0);
+      });
+    }
+    await t.test(
+      `${operation}: companion inference cannot serve the selected Harness source`,
+      async () => {
+        reads = 0;
+        // The plan-wide inference/release gate accepts this shape. Only the selected-source
+        // reader can distinguish its non-inference binding from the companion's inference.
+        assert.doesNotThrow(() => restarted["validateRevisionExecution"](mixed, bContext));
+        await assert.rejects(restarted[operation](mixed, bContext), {
+          message:
+            "Credential-source Harness authentication requires paired Drivers and a matching supported OpenAI login mode.",
+        });
+        assert.equal(reads, 0);
+      },
+    );
+    await t.test(
+      `${operation}: catalog shape does not authorize route callback replay`,
+      async () => {
+        let callbacks = 0;
+        const custom = {
+          ...provider,
+          routes() {
+            callbacks++;
+            throw new Error("admission-only route callback must not run during execution");
+          },
+        };
+        Object.assign(f.egress, {
+          sourceControl: {
+            ...current,
+            providers: current.providers.map((entry) => (entry === provider ? custom : entry)),
+          },
+        });
+        try {
+          reads = 0;
+          // Retain one valid route: destination checking must not restore or require removed routes.
+          const reduced = {
+            ...b,
+            egressPlan: { ...b.egressPlan!, routes: b.egressPlan!.routes.slice(0, 1) },
+          };
+          assert.doesNotThrow(() => restarted["validateRevisionExecution"](reduced, bContext));
+          await assert.rejects(
+            restarted[operation](reduced, bContext),
+            (error) => error === reached,
+          );
+          assert.equal(callbacks, 0);
+          assert.ok(reads > 0);
+        } finally {
+          Object.assign(f.egress, { sourceControl: current });
+        }
+      },
+    );
   }
 });
 
@@ -601,6 +941,12 @@ test(
     assert.ok("context" in resolved);
     assert.equal(resolved.context.harnessAuth?.method, "credential_source");
     assert.deepEqual(resolved.context.harnessAuth, { ...auth, source });
+    const mixed = withCompanionInference(t, stored, f.egress);
+    assert.doesNotThrow(() => worker["validateExecutionAdmission"](mixed));
+    assert.doesNotThrow(() => compute["validateRevisionExecution"](mixed, resolved.context));
+    assert.deepEqual(await worker["resolveRevisionSecretContext"](mixed), {
+      result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" },
+    });
     for (const wrongAuth of [
       { ...auth, credentialProxyId: "wrong-proxy" },
       { ...auth, credentialGatewayId: "wrong-gateway" },
