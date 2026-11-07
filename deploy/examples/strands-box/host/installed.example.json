@@ -12,7 +12,7 @@
   "exec": ["/usr/bin/tini"],
   "owner": {
     "driverId": "strands-box-pilot",
-    "implementation": "@openclaw-enterprise/example-strands-box-driver@0.1.0",
+    "implementation": "@openclaw-enterprise/example-strands-box-driver@0.1.1",
     "namespaceId": "ns_example",
     "namespaceName": "agent-example",
     "agentId": "agt_example"

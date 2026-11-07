@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { json } from "node:stream/consumers";
 import test, { type TestContext } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import pg from "pg";
+import driverPackage from "../../deploy/examples/strands-box/driver/package.json" with { type: "json" };
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import {
   KubernetesComputeDriver,
@@ -20,7 +21,11 @@ import type {
   HarnessWorkloadRequirements,
   Namespace,
 } from "../../packages/contracts/src/index.ts";
-import { PostgresWorkQueue } from "../../packages/occ/src/index.ts";
+import {
+  DependencyUnavailableError,
+  PostgresWorkQueue,
+  TransientDependencyError,
+} from "../../packages/occ/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
@@ -32,12 +37,45 @@ import { waitFor } from "../helpers/wait-for.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const driverSource = join(repository, "deploy/examples/strands-box/driver");
-const packageName = "@openclaw-enterprise/example-strands-box-driver";
-const implementation = `${packageName}@0.1.0`;
+const { name: packageName, version: packageVersion } = driverPackage;
+const implementation = `${packageName}@${packageVersion}`;
+const archive = `${packageName.replace(/^@/u, "").replaceAll("/", "-")}-${packageVersion}.tgz`;
 const sandboxId = "strands-box-demo";
 const modelOrigin = "https://model.pilot.svc.cluster.local/v1";
 const modelMarker = "openclaw-strands-controlled-inference-v1";
 const setupCode = "test-only-workspace-setup-code";
+
+test("only initial absence in the private control export is a transient socket failure", async (t) => {
+  const installed = await installedPackage(t);
+  const controlUrl = pathToFileURL(
+    join(installed.packageRoot, "node_modules", packageName, "dist", "control.js"),
+  );
+  const { control }: typeof import("../../deploy/examples/strands-box/driver/control.ts") =
+    await import(controlUrl.href);
+  const directory = await temporaryDirectory(t, "strands-missing-socket-");
+  const path = join(directory, "control.sock");
+  const initial = { method: "GET", phase: "initial-provision" } as const;
+  const { signal } = new AbortController();
+  const generic = (error: unknown) =>
+    error instanceof DependencyUnavailableError && !(error instanceof TransientDependencyError);
+  await assert.rejects(
+    control(path, initial, signal),
+    (error: unknown) =>
+      error instanceof TransientDependencyError && error.code === "SANDBOX_GATEWAY_UNAVAILABLE",
+  );
+  await assert.rejects(control(path, { method: "GET" }, signal), generic);
+  await assert.rejects(
+    control(join(directory, "absent-export", "control.sock"), initial, signal),
+    generic,
+  );
+  await writeFile(path, "", { mode: 0o600, flag: "wx" });
+  await assert.rejects(control(path, initial, signal), generic);
+  const cancellation = new Error("cancelled");
+  await assert.rejects(
+    control(path, initial, AbortSignal.abort(cancellation)),
+    (error) => error === cancellation,
+  );
+});
 
 interface ObjectRef {
   readonly kind: string;
@@ -224,7 +262,7 @@ async function installedPackage(t: TestContext) {
   await cp(join(driverSource, "package.json"), join(staging, "package.json"));
   await writeFile(
     join(packageRoot, "package.json"),
-    JSON.stringify({ dependencies: { [packageName]: "0.1.0" } }),
+    JSON.stringify({ dependencies: { [packageName]: packageVersion } }),
   );
   for (const peer of ["occ", "utils", "contracts"]) {
     await symlink(join(repository, "packages", peer), join(scope, peer), "dir");
@@ -233,7 +271,6 @@ async function installedPackage(t: TestContext) {
     cwd: repository,
   });
   execFileSync("pnpm", ["pack", "--pack-destination", directory], { cwd: staging, stdio: "pipe" });
-  const archive = "openclaw-enterprise-example-strands-box-driver-0.1.0.tgz";
   execFileSync("tar", ["-xzf", join(directory, archive), "--strip-components=1", "-C", installed]);
   const caPath = join(directory, "ca.pem");
   execFileSync(
@@ -315,22 +352,28 @@ async function heldHostPeer(
     }
     response.writeHead(409).end();
   });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(path, resolve);
-  });
+  let listening = false;
+  const listen = async () => {
+    assert.equal(listening, false);
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(path, resolve);
+    });
+    listening = true;
+    await chmod(path, 0o600);
+  };
   t.after(
     () =>
       new Promise<void>((resolve) => {
-        server.close(() => resolve());
+        if (listening) server.close(() => resolve());
+        else resolve();
       }),
   );
-  await chmod(path, 0o600);
-  return { path, calls, admissions };
+  return { path, calls, admissions, listen };
 }
 
 test(
-  "the normal Worker holds an installed file-only Box deployment on its exact bound workspace claim",
+  "the normal Worker waits for the first file-only Box Host on the original deployment and bound claim",
   {
     ...requiresPostgres,
     timeout: 60_000,
@@ -364,6 +407,21 @@ test(
     const stock = base.drivers.compute.configuration;
     const { gatewayClients: _gatewayClients, ...network } = stock.network;
     const path = join(installed.packageRoot, "installation.json");
+    const sandboxConfiguration = {
+      namespace: kubeNamespace,
+      controlSocket: host.path,
+      nativeEndpoint: `wss://box-harness.${kubeNamespace}.svc.cluster.local:8443/`,
+      nativeCaBundle: installed.ca,
+      workspaceRoot: "/home/node/workspace",
+      controlledInference: { modelBaseUrl: modelOrigin },
+      workspaceNodeMode: "file-only-v1",
+      relay: {
+        image: `registry.example/relay@sha256:${"f".repeat(64)}`,
+        hostAddress: "10.0.0.7",
+        installation: "pilot",
+        workerPeer: { namespace: "occ-system", podLabels: { app: "worker" } },
+      },
+    };
     await writeFile(
       path,
       JSON.stringify({
@@ -374,21 +432,7 @@ test(
           sandbox: {
             id: sandboxId,
             package: packageName,
-            configuration: {
-              namespace: kubeNamespace,
-              controlSocket: host.path,
-              nativeEndpoint: `wss://box-harness.${kubeNamespace}.svc.cluster.local:8443/`,
-              nativeCaBundle: installed.ca,
-              workspaceRoot: "/home/node/workspace",
-              controlledInference: { modelBaseUrl: modelOrigin },
-              workspaceNodeMode: "file-only-v1",
-              relay: {
-                image: `registry.example/relay@sha256:${"f".repeat(64)}`,
-                hostAddress: "10.0.0.7",
-                installation: "pilot",
-                workerPeer: { namespace: "occ-system", podLabels: { app: "worker" } },
-              },
-            },
+            configuration: sandboxConfiguration,
           },
           compute: {
             ...base.drivers.compute,
@@ -481,7 +525,9 @@ test(
     });
     assert.equal(agentResult.statusCode, 201, agentResult.body);
     const agent = agentResult.json<{ data: Agent }>().data;
+    assert.equal(agent.desiredRuntimeState, "stopped");
     await grantAgentSecretOperate(fixture.pool, agent, source.id);
+    await assert.rejects(lstat(host.path), { code: "ENOENT" });
     const admitted = await fixture.inject("POST", `${nsPath}/agents/${agent.id}/deploy`);
     assert.equal(admitted.statusCode, 202, admitted.body);
     const [revision] = await fixture.state.read((view) =>
@@ -525,6 +571,36 @@ test(
       },
     });
 
+    const missingSocketPass = await waitFor(
+      () => "the first Worker result after the Gateway is ready and before the Host socket exists",
+      () =>
+        events.find(
+          (event) =>
+            event.event === "worker.completed" &&
+            event.revisionId === revision.id &&
+            ((event.outcome === "pending" && event.code === "SANDBOX_GATEWAY_UNAVAILABLE") ||
+              (event.outcome === "retry" && event.code === "DEPENDENCY_UNAVAILABLE")),
+        ),
+    );
+    const queue = new PostgresWorkQueue(fixture.pool);
+    const workKey = `agent_revision:${revision.id}:reconcile`;
+    const beforeHost = await queue.findWork(workKey);
+    assert.ok(beforeHost);
+    await assert.rejects(lstat(host.path), { code: "ENOENT" });
+    assert.deepEqual(host.calls, []);
+    assert.deepEqual(api.providerSecretReads, []);
+    assert.ok(
+      [...api.objects.values()].some(
+        ({ kind, status, metadata, spec }) =>
+          kind === "PersistentVolumeClaim" &&
+          status?.phase === "Bound" &&
+          metadata.uid === workspaceVolume.claimUid &&
+          spec?.volumeName === workspaceVolume.volumeName,
+      ),
+    );
+    const absentEventIndex = events.indexOf(missingSocketPass);
+    await host.listen();
+
     const admission: Admission = await waitFor(
       () =>
         `the installed Box Driver's Unix hold request; events: ${JSON.stringify(events.filter(({ event }) => event !== "worker.error").slice(-12))}`,
@@ -534,15 +610,67 @@ test(
       () =>
         `the Worker's attributable pending result; events: ${JSON.stringify(events.slice(-12))}`,
       () =>
-        events.find(
-          (event) =>
-            event.event === "worker.completed" &&
-            event.revisionId === revision.id &&
-            event.outcome === "pending" &&
-            event.code === "SANDBOX_GATEWAY_UNAVAILABLE",
-        ),
+        events
+          .slice(absentEventIndex + 1)
+          .find(
+            (event) =>
+              event.event === "worker.completed" &&
+              event.revisionId === revision.id &&
+              event.outcome === "pending" &&
+              event.code === "SANDBOX_GATEWAY_UNAVAILABLE",
+          ),
     );
     await worker.stopLoop();
+    const afterHost = await queue.findWork(workKey);
+    const revisions = await fixture.state.read((view) =>
+      view.revisions.listRevisions(namespace.id, agent.id),
+    );
+    const agentAfterHold = await fixture.state.read((view) =>
+      view.agents.findAgent(namespace.id, agent.id),
+    );
+    assert.equal(missingSocketPass.outcome, "pending");
+    assert.equal(missingSocketPass.code, "SANDBOX_GATEWAY_UNAVAILABLE");
+    assert.equal(missingSocketPass.dependency, "sandbox_gateway");
+    assert.equal(missingSocketPass.cause, "unavailable");
+    assert.equal(beforeHost.state, "queued");
+    assert.equal(beforeHost.attemptCount, 0);
+    assert.ok(afterHost, "the original deployment still owns its work item while held");
+    assert.equal(afterHost.state, "queued");
+    assert.equal(afterHost.attemptCount, 0);
+    assert.ok(agentAfterHold, "the original Agent still exists while held");
+    assert.equal(agentAfterHold.activeRevisionId, undefined);
+    assert.deepEqual([...new Set(host.calls)], ["GET /v1/execution", "POST /v1/admission"]);
+    assert.deepEqual(
+      revisions.map(({ id }) => id),
+      [revision.id],
+    );
+    const driverUrl = pathToFileURL(
+      join(installed.packageRoot, "node_modules", packageName, "dist", "index.js"),
+    );
+    const { createDriver }: typeof import("../../deploy/examples/strands-box/driver/index.ts") =
+      await import(driverUrl.href);
+    const { workspaceNodeMode: _fileOnly, ...ordinaryConfiguration } = sandboxConfiguration;
+    const ordinaryDriver = createDriver({
+      id: sandboxId,
+      implementation,
+      configuration: {
+        ...ordinaryConfiguration,
+        controlSocket: join(installed.directory, "ordinary.sock"),
+      },
+    });
+    await assert.rejects(
+      ordinaryDriver.provisionHarness!({
+        namespace: { ...namespace, name: kubeNamespace },
+        revision,
+        requirements: admission.requirements,
+        kubernetes: api.clients.objects,
+        signal: new AbortController().signal,
+      }),
+      (error: unknown) =>
+        error instanceof DependencyUnavailableError &&
+        !(error instanceof TransientDependencyError) &&
+        error.message === "The Strands Box host did not confirm the execution operation.",
+    );
     assert.deepEqual(admission.owner, {
       driverId: sandboxId,
       implementation,
