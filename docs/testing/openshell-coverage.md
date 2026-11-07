@@ -206,3 +206,22 @@ The selected workflow must pass without skips. Its sanitized runtime log is
 written to the matrix artifacts directory. Cleanup remains with the owner of the
 prepared OpenShell lane; run the documented cleanup even on failure. The existing
 OpenShell advisory job exercises this workflow with the rest of its runtime suite.
+
+## Namespace bootstrap
+
+`namespace-driver-openshell-k3d-real.test.ts` uses shipped Installation bootstrap,
+PostgreSQL and the queued worker. It renders gateway configuration without
+installing gateway workloads. Selected Drivers create the gateway, signing key,
+and Workspace. The test checks zero persisted Agents, actual Pod readiness,
+gateway health, Workspace ownership, and distinct resources for a later Namespace.
+Operator-installed CRDs, RuntimeClass and RBAC are prerequisites, not gateway proof.
+
+Select `OCC_TEST_NAMESPACE_OPENSHELL_REAL=1` with the prepared `openshell` lane
+file environment, or QA scenario `namespace-lifecycle` with
+`OCC_TEST_QA_SANDBOX_ENV`. The advisory matrix includes the file on `main` and
+trusted `full-qa` PRs. Missing preparation fails the selected case.
+It also checks pending setup, graceful worker restart, IAM denial and revocation,
+quota refusal, and deletion of partial and ready Namespaces. The Namespace-only
+QA case needs no model credential. This checkpoint does not establish Agent model
+turns, projected workload identity, active lease loss, or external-namespace
+cleanup through the new hooks. Remaining delivery checks are tracked in the [implementation plan](../../specs/plans/0031-namespace-driver-lifecycle.md).

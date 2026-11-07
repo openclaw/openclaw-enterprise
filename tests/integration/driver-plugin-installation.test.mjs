@@ -208,8 +208,14 @@ async function authenticatedApplication(t, drivers) {
         state: new InMemoryPlatformState({ auditSink }),
         driverConfigurations: installationDriverConfigurations(drivers.installation),
         backends: drivers.installation.backend,
+        namespaceLifecycleBindings: drivers.namespaceLifecycleBindings,
         recordOperations: false,
       });
+      if (drivers.protectedDriver !== undefined) {
+        // Keep the shared registration owner, as production composition does. Registering
+        // its Sandbox view again would discard the owner of its Namespace binding.
+        controller.installDriver(drivers.protectedDriver, ["sandbox", "credential_proxy"]);
+      }
       if (drivers.credentialGatewayDriver !== undefined) {
         controller.registerDriver(drivers.credentialGatewayDriver);
         controller.selectDriver("credential_gateway", drivers.credentialGatewayDriver.id);
@@ -220,7 +226,7 @@ async function authenticatedApplication(t, drivers) {
     computeDriver: drivers.computeDriver,
     configurationDriver: drivers.configurationDriver,
     secretDriver: drivers.secretDriver,
-    sandboxDriver: drivers.sandboxDriver,
+    sandboxDriver: drivers.protectedDriver === undefined ? drivers.sandboxDriver : undefined,
     resolveHarness: resolveApprovedProductionHarness,
     auditSink,
     development: {

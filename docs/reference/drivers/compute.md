@@ -21,6 +21,8 @@ kind: reference/driver
 - [Methods](#methods)
   - [`ensureNamespace`](#method-ensure-namespace)
   - [`deleteNamespace`](#method-delete-namespace)
+  - [`checkNamespaceDeletion`](#method-check-namespace-deletion)
+  - [`resolveSandboxNamespaceContext`](#method-resolve-sandbox-namespace-context)
   - [`prepareRevision`](#method-prepare-revision)
   - [`stopRevision`](#method-stop-revision)
   - [`retireRevision`](#method-retire-revision)
@@ -63,7 +65,7 @@ kind: reference/driver
 
 ## Overview
 
-Compute manages Namespaces, Agent workloads, identity, isolation, and readiness
+Compute manages Namespace infrastructure, Agent workloads, identity, isolation, and readiness
 for OpenClaw Control Plane (OCC). A paired [Sandbox Driver](sandbox.md) can provision
 Harnesses; Compute retains gateway routing.
 
@@ -79,7 +81,8 @@ Harnesses; Compute retains gateway routing.
 | <a id="property-capability"></a>`capability`                                              | Required    | Must be `"compute"`.                                                                                                                                                            |
 | <a id="property-activation-order"></a>`activationOrder`                                   | Optional    | Defaults to `"afterCommit"`; controls traffic switching relative to saving the selected revision.                                                                               |
 | <a id="property-agent-provisioning"></a>`agentProvisioning`                               | Optional    | Lists supported execution modes; OCC rejects unlisted modes. Omission does not disable provisioning.                                                                            |
-| <a id="property-compute-lifecycle-hooks"></a>`computeLifecycleHooks`                      | Optional    | Inherited from `Driver`. Installed packages supply hooks on the registration. See [selected-driver hooks](#optional-selected-driver-hooks).                                     |
+| <a id="property-compute-lifecycle-hooks"></a>`computeLifecycleHooks`                      | Optional    | [Workload hooks](#optional-selected-driver-hooks).                                                                                                                              |
+| `namespaceLifecycleHooks`                                                                 | Optional    | [Registration-level Namespace hooks](namespace-lifecycle.md).                                                                                                                   |
 | <a id="property-maintenance-interval-ms"></a>`maintenanceIntervalMs`                      | Optional    | Interval between maintenance passes, in milliseconds; positive safe integer.                                                                                                    |
 | <a id="property-requires-agent-runtime-credentials"></a>`requiresAgentRuntimeCredentials` | Optional    | When `true`, OCC checks transport credentials before deployment and can create them before the first revision. Missing status/provisioning methods mean dependency unavailable. |
 | <a id="property-runtime-logging"></a>`runtimeLogging`                                     | Optional    | Defaults to `"platform"`; `"driver"` gives Compute ownership of native logging configuration and delivery.                                                                      |
@@ -95,6 +98,8 @@ Harnesses; Compute retains gateway routing.
 | -------------------------------------------------------------------------------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | <a id="method-ensure-namespace"></a>`ensureNamespace`                                                                | Required    | Prepare or check isolation for the supplied Namespace, before an Agent exists. Return `namespaceReady` when ready.                                                                                                                                                                                                                                        |
 | <a id="method-delete-namespace"></a>`deleteNamespace`                                                                | Required    | Remove supported infrastructure for an empty Namespace. Return `namespaceDeleted` only after teardown. Refuse deletion of infrastructure outside the Driver's ownership.                                                                                                                                                                                  |
+| <a id="method-check-namespace-deletion"></a>`checkNamespaceDeletion`                                                 | Conditional | Read-only eligibility before participant cleanup.                                                                                                                                                                                                                                                                                                         |
+| <a id="method-resolve-sandbox-namespace-context"></a>`resolveSandboxNamespaceContext`                                | Conditional | Resolve Sandbox placement and client without provisioning.                                                                                                                                                                                                                                                                                                |
 | <a id="method-prepare-revision"></a>`prepareRevision`                                                                | Required    | Create or reuse the gateway and prepare the Harness. Return readiness for the requested Namespace, Agent, and revision. The worker supplies authorized revision context.                                                                                                                                                                                  |
 | <a id="method-stop-revision"></a>`stopRevision`                                                                      | Required    | Remove inbound routing and stop execution, including applicable Driver hooks and Sandbox cleanup. Keep Agent credentials, workspace data, and saved revisions. Repeated calls must be safe.                                                                                                                                                               |
 | <a id="method-retire-revision"></a>`retireRevision`                                                                  | Required    | Revoke workload access, stop the workload, and complete applicable Sandbox cleanup. Preserve the replacement's gateway.                                                                                                                                                                                                                                   |
@@ -145,9 +150,8 @@ uses a 10-second timeout and accepts up to 4 MiB per response, ten pages, and
 
 ### Namespace and gateway results
 
-Return the requested `namespaceId`. Failures are `retryable` or `permanent`;
-a true ready or deleted flag succeeds only without a failure. Worker-log
-failure reasons allow up to 256 characters: letters, digits, spaces, and
+Namespace results follow the [shared lifecycle contract](namespace-lifecycle.md).
+Worker-log failure reasons allow up to 256 characters: letters, digits, spaces, and
 `. _ : / @ -`. Exclude provider output and other tenants' values.
 
 Derive a [gateway endpoint](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)

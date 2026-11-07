@@ -5788,10 +5788,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (!(await this.ensureGatewayNamespace(ownership))) {
         return result;
       }
-      await this.lifecycle.afterNamespacePrepared(namespace);
-      await this.sandboxDriver?.ensureNamespace?.(
-        await this.sandboxNamespaceContext(namespace, name),
-      );
       return { ...result, namespaceReady: true };
     } catch (error) {
       if (tenantAccessRequired && numericErrorStatus(error) === 403) {
@@ -5981,6 +5977,44 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
+  async checkNamespaceDeletion(namespace: Readonly<Namespace>, signal: AbortSignal) {
+    signal.throwIfAborted();
+    const result = { namespaceId: namespace.id, deletionAllowed: false };
+    try {
+      if (this.preprovisionedNamespace) {
+        throw new OwnershipFailure(
+          "The operator retains the preprovisioned Namespace and owns its teardown.",
+        );
+      }
+      const { name, external } = await this.resolveNamespace(
+        namespace.id,
+        namespace.existingNamespace,
+      );
+      const ownership = { namespaceId: namespace.id };
+      const existing = await this.getNamespace(name);
+      if (existing !== undefined) {
+        this.verifyNamespaceOwnership(existing, ownership, external);
+        if (
+          existing.metadata.deletionTimestamp !== undefined ||
+          existing.status?.phase === "Terminating"
+        ) {
+          return result;
+        }
+      }
+      if (this.options.executionCluster !== undefined) {
+        const gateway = await this.getNamespace(await this.controlNamespace(namespace.id));
+        if (gateway !== undefined) {
+          this.verifyGatewayNamespace(gateway, ownership);
+        }
+      }
+      signal.throwIfAborted();
+      return { ...result, deletionAllowed: true };
+    } catch (error) {
+      signal.throwIfAborted();
+      return { ...result, failure: failure(error) };
+    }
+  }
+
   async deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult> {
     this.lifecycleStarted = true;
     const result = { namespaceId: namespace.id, namespaceDeleted: false };
@@ -6009,7 +6043,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
             this.verifyGatewayNamespace(gateway, ownership);
           }
         }
-        await this.lifecycle.beforeNamespaceDelete(namespace);
         return { ...result, namespaceDeleted: await this.deleteGatewayNamespace(ownership) };
       }
       this.verifyNamespaceOwnership(existing, ownership, external);
@@ -6025,11 +6058,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           this.verifyGatewayNamespace(gateway, ownership);
         }
       }
-      await this.lifecycle.beforeNamespaceDelete(namespace);
       await this.reconcileRepositoryIngress({ namespace: name.name, namespaceId: namespace.id });
-      if (this.sandboxDriver !== undefined) {
-        await this.sandboxDriver.cleanup(await this.sandboxNamespaceContext(namespace, name));
-      }
       if (!(await this.deleteGatewayNamespace(ownership))) {
         return result;
       }
@@ -10488,6 +10517,24 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     return Object.freeze({ ...namespace, name: placement.name.name });
+  }
+
+  async resolveSandboxNamespaceContext(
+    namespace: Readonly<Namespace>,
+    signal: AbortSignal,
+  ): Promise<SandboxNamespaceContext> {
+    signal.throwIfAborted();
+    const placement = await this.resolveNamespace(namespace.id, namespace.existingNamespace);
+    if (placement.external && namespace.existingNamespace === undefined) {
+      throw new OwnershipFailure("An external Kubernetes namespace must be explicitly selected.");
+    }
+    const { objects: kubernetes } = await this.clients(placement.name.plane);
+    signal.throwIfAborted();
+    return {
+      namespace: Object.freeze({ ...namespace, name: placement.name.name }),
+      kubernetes,
+      signal,
+    };
   }
 
   private sandboxNamespaceContext(

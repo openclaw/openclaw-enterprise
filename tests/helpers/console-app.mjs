@@ -1,3 +1,6 @@
+import { openShellNamespaceObjects } from "./openshell-workspace-protocol.mjs";
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID, createHash, X509Certificate } from "node:crypto";
@@ -60,12 +63,13 @@ function computeDriver({
   credentialGatewayDriver,
   resolveSandboxNamespace = async (namespace) => ({
     ...namespace,
-    name: `console-${namespace.id}`,
+    name: kubernetesNamespaceName(namespace.id),
   }),
   // OCC applies the bundled Kubernetes Compute's own save rules (channel credentials only from
   // Secret bindings, finding 2319) only under its implementation, such as `kubernetes-local`.
   implementation = "test-memory-lifecycle",
 } = {}) {
+  const namespaceObjects = openShellNamespaceObjects();
   const driver = createTestKubernetesComputeDriver("console-compute", {
     gatewayRuntime: true,
     ...(modelProvider === undefined ? {} : { modelProvider }),
@@ -97,6 +101,16 @@ function computeDriver({
     },
     // The same fixture placement is shared by source management and the Sandbox.
     resolveSandboxNamespace,
+    async resolveSandboxNamespaceContext(namespace, signal) {
+      return {
+        namespace: await resolveSandboxNamespace(namespace),
+        kubernetes: namespaceObjects,
+        signal,
+      };
+    },
+    async checkNamespaceDeletion(namespace) {
+      return { namespaceId: namespace.id, deletionAllowed: true };
+    },
     async prepareRevision(revision) {
       return {
         namespaceId: revision.namespaceId,
@@ -437,6 +451,11 @@ export async function createConsoleAppFixture(t, options = {}) {
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: platformState,
+        namespaceLifecycleBindings:
+          options.namespaceLifecycleBindings ??
+          (options.sandboxDriver?.ensureNamespace === undefined
+            ? []
+            : [sandboxNamespaceLifecycleBinding(appOptions.computeDriver, options.sandboxDriver)]),
         ...(authorizeWith === undefined ? {} : { authorize: authorizeWith(iamDriver) }),
         preparedTokens: options.preparedTokens,
         ...(options.pluginSourceReader === undefined
@@ -862,6 +881,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   }
 
   return {
+    principal: seed.principal,
     origin,
     browserArgs,
     credentials,

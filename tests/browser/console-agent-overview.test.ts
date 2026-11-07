@@ -1060,7 +1060,7 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
     harnessError: Error | undefined;
   } = sandbox.state;
   const { fixture, namespace } = await readyNamespace(t, "Lost Sandbox", {
-    computeDriver: createRuntimeLogComputeDriver({ sandboxNamespace: "tenant-console" }),
+    computeDriver: createRuntimeLogComputeDriver({ sandboxNamespaceName: () => "tenant-console" }),
     sandboxDriver,
   });
   const agent = await fixture.createAgent(
