@@ -632,6 +632,9 @@
     },
     {
       "path": "tests/integration/staging-qualification.test.ts"
+    },
+    {
+      "path": "tests/integration/openshell-full-integration.test.ts"
     }
   ]
 }

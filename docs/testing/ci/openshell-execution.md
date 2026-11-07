@@ -49,9 +49,10 @@ prepare their required cluster, database server, routing, and images; their imag
 builds now read the same cache. The runner enforces both lane-wide and per-file `requiredEnv`
 inputs, expected cases, and cleanup. A failed shard does not cancel the
 others. Each result has `scope: focused`; require every shard to pass before
-claiming full advisory OpenShell coverage. The manual Full Integration lane
-continues to run the full manifest serially and prepares the shared resources
-needed by its other files. First-Agent files do not request a separate CI database
+claiming full advisory OpenShell coverage. Full Integration runs two complete OpenShell lanes on separate VMs.
+Each prepares its own shared resources and runs its assigned manifest files
+serially. The Full Integration Aggregate requires both results for the same
+checkout revision. First-Agent files do not request a separate CI database
 in either mode.
 
 ## Cache and runner limits
