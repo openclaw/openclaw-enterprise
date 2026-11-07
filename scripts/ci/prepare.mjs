@@ -834,6 +834,11 @@ function assertImmutableOptionalEnvImages(names, env = process.env) {
   }
 }
 
+const importedOpenClawTestFiles = [
+  "tests/integration/openshell-imported-skill-real.test.ts",
+  "tests/integration/openshell-imported-mcp-real.test.ts",
+];
+
 async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   const name = laneName(lane);
   const prepare = lanePrepare(name);
@@ -851,9 +856,10 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   ].includes(file);
   const openShellApiKey =
     name === "openshell" &&
-    ((effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
-      (openShellGatewayFile ||
-        (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"))) ||
+    (importedOpenClawTestFiles.includes(file) ||
+      (effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
+        (openShellGatewayFile ||
+          (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"))) ||
       (openShellGatewayFile && Boolean(effectiveEnv.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim())));
   requireEnv(
     (prepare.requireEnv ?? []).map((input) =>
@@ -3540,6 +3546,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
       [
         "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
         "tests/integration/openshell-plugin-install-real.test.ts",
+        ...importedOpenClawTestFiles,
         "tests/integration/openshell-gateway-tool-policy-real.test.ts",
         "tests/integration/openshell-refresh-real.test.ts",
         "tests/integration/openshell-upstream-real.test.ts",

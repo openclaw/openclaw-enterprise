@@ -50,8 +50,7 @@ path. A retryable `503` means Slack or its route failed. When the production API
 has no proxy URL, its egress is closed (`OCC_API_HTTPS_EGRESS_OPEN` is not `true`),
 and `auth.test` gets no answer from Slack (connection, DNS, or time budget
 failure), validation instead returns `409` `RESOURCE_CONFLICT`. Helm sets
-`OCC_API_HTTPS_EGRESS_OPEN` to `true` when GitHub, Google or OIDC sign-in is
-enabled with empty `egressCidrs`, because that rule allows TCP 443 to any address. The
+`OCC_API_HTTPS_EGRESS_OPEN` to `true` because the chart leaves API Server egress open. The
 message names the [proxy settings](#enable-lookup-in-production) and says to try
 again if the API has another approved route to Slack, because an open route that
 timed out gets the same answer. App-token prefixes do not prove validity, scopes, or app/bot pairing.
@@ -60,13 +59,10 @@ startup, which remains a separate connectivity check.
 
 ## Enable lookup in production
 
-The production API selects the Slack Driver. With default-deny egress, Slack
-lookup and credential validation need a proxy. With the recommended Helm setting
-`slackProxy.enabled: true`, the chart:
+The production API uses the Slack Driver and can contact Slack directly. To route API requests through the managed proxy, enable `slackProxy.enabled`. The chart then:
 
 - creates a private `openclaw-enterprise-slack-proxy` Service;
 - points `OCC_CHANNEL_DIRECTORY_PROXY_URL` at that Service DNS name;
-- allows API Pod egress only to the proxy Pod selector; and
 - allows the proxy public IPv4 egress on TCP 443, excluding private and
   reserved ranges.
 
@@ -78,9 +74,7 @@ Operators can instead set Helm `api.channelDirectoryProxyUrl` to an approved
 external HTTP or HTTPS proxy, such as `http://198.51.100.25:3128` with the
 example IP and port replaced. The value must contain one literal IPv4 address
 other than `0.0.0.0` and an explicit port, without credentials or a path. The
-chart passes it to the API as `OCC_CHANNEL_DIRECTORY_PROXY_URL` and allows API
-Pod egress only to that IP and port. The proxy must permit `CONNECT slack.com:443`; restrict its other
-destinations at the proxy. The chart does not grant the worker or Agent Pods this
+chart passes it to the API as `OCC_CHANNEL_DIRECTORY_PROXY_URL`. Configure the proxy to permit `CONNECT slack.com:443`. The chart does not grant the worker or Agent Pods this
 egress.
 
 The Driver sends Slack API requests through the selected tunnel and verifies

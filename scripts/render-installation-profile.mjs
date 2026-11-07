@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import dns from "node:dns/promises";
 import { realpathSync, statSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -956,13 +955,6 @@ function signInProvider(source, name, diagnostics) {
       );
     }
   }
-  if (source.egressCidrs !== undefined) {
-    rendered.egressCidrs = stringArray(source, [...path, "egressCidrs"], diagnostics, {
-      validate: isIpv4Cidr,
-      description: "an IPv4 CIDR with a prefix from 1 through 32",
-      nonempty: false,
-    });
-  }
   return rendered;
 }
 
@@ -1246,7 +1238,7 @@ function buildInput(rawInput, diagnostics) {
     ["runtimeProxyUrl", "directoryProxyUrl", "managedSlackProxy"],
     diagnostics,
   );
-  closed(codex, "codex", ["managedServiceAccounts", "modelDiscoveryCidrs"], diagnostics);
+  closed(codex, "codex", ["managedServiceAccounts"], diagnostics);
   closed(
     repository,
     "repository",
@@ -1291,7 +1283,6 @@ function buildInput(rawInput, diagnostics) {
       "allowedOrgs",
       "allowedTeams",
       "autoEnrollGroupId",
-      "egressCidrs",
     ],
     diagnostics,
   );
@@ -1299,7 +1290,7 @@ function buildInput(rawInput, diagnostics) {
   closed(
     google,
     "controlPlane.google",
-    ["secretName", "clientIdKey", "clientSecretKey", "allowedDomains", "egressCidrs"],
+    ["secretName", "clientIdKey", "clientSecretKey", "allowedDomains"],
     diagnostics,
   );
   const oidc = section(controlPlane, "oidc", diagnostics, false);
@@ -1316,7 +1307,6 @@ function buildInput(rawInput, diagnostics) {
       "clientSecretKey",
       "tokenAuth",
       "displayName",
-      "egressCidrs",
     ],
     diagnostics,
   );
@@ -1331,7 +1321,7 @@ function buildInput(rawInput, diagnostics) {
   closed(
     managedServiceAccounts,
     "codex.managedServiceAccounts",
-    ["workspaceId", "adminSecretName", "adminSecretKey", "providerCidr", "credentialTtlSeconds"],
+    ["workspaceId", "adminSecretName", "adminSecretKey", "credentialTtlSeconds"],
     diagnostics,
   );
 
@@ -1775,14 +1765,6 @@ function buildRendered(profile, parsed, diagnostics) {
               },
             ),
           }),
-      modelDiscoveryCidrs:
-        profile.name === "codex" && codex.modelDiscoveryCidrs !== undefined
-          ? stringArray(codex, ["codex", "modelDiscoveryCidrs"], diagnostics, {
-              validate: (value) => isIpv4Cidr(value, 32),
-              description: "an IPv4 /32 CIDR",
-              nonempty: false,
-            })
-          : [],
       ...(controlPlane.trustedProxy === undefined
         ? {}
         : { trustedProxy: renderTrustedProxy(trustedProxy, diagnostics) }),
@@ -2050,12 +2032,6 @@ function buildRendered(profile, parsed, diagnostics) {
               diagnostics,
               secretKeyRule,
             ) ?? "admin-key",
-          providerCidr: asString(
-            managedServiceAccounts,
-            ["codex", "managedServiceAccounts", "providerCidr"],
-            diagnostics,
-            { validate: (value) => isIpv4Cidr(value, 32), description: "an IPv4 /32 CIDR" },
-          ),
         },
       };
       installation.backend.push({
@@ -2299,51 +2275,6 @@ function buildRendered(profile, parsed, diagnostics) {
   };
 }
 
-async function resolveHostedDiscoveryCidrs(profile, parsed, values, diagnostics) {
-  const hostedDiscovery = profile.installation.drivers.plugin.some(
-    (entry) =>
-      entry.id === "codex-plugin" && (entry.configuration?.catalogSource ?? "hosted") === "hosted",
-  );
-  if (!hostedDiscovery) {
-    return;
-  }
-  const hosts = ["auth.openai.com", "chatgpt.com"];
-  diagnostics.prerequisites.push(
-    "Verify API Pods can reach auth.openai.com and chatgpt.com on HTTPS using their actual DNS and translated destinations before testing hosted discovery in the Console.",
-  );
-  if (parsed.codex.modelDiscoveryCidrs !== undefined) {
-    if (values.api.modelDiscoveryCidrs.length === 0) {
-      diagnostics.warnings.push(
-        "codex.modelDiscoveryCidrs is explicitly empty: supply external API HTTPS policy for auth.openai.com and chatgpt.com; Helm grants no discovery egress.",
-      );
-    }
-    return;
-  }
-  // Independent resolvers ignore process-level DNS settings unless copied. Keep
-  // those settings while bounding queries; explicit operator CIDRs stay offline.
-  const resolver = new dns.Resolver({ timeout: 1500, tries: 1 });
-  resolver.setServers(dns.getServers());
-  const answers = await Promise.allSettled(hosts.map((host) => resolver.resolve4(host)));
-  const addresses = [];
-  answers.forEach((answer, index) => {
-    if (answer.status === "rejected") {
-      diagnostics.errors.push(
-        `Hosted Codex discovery could not resolve IPv4 addresses for ${hosts[index]}. Rerender with DNS access or supply codex.modelDiscoveryCidrs with reviewed IPv4 /32 destinations.`,
-      );
-    } else {
-      addresses.push(...answer.value);
-    }
-  });
-  if (diagnostics.errors.length === 0) {
-    values.api.modelDiscoveryCidrs = [...new Set(addresses)]
-      .sort()
-      .map((address) => `${address}/32`);
-    diagnostics.warnings.push(
-      "Hosted discovery egress is a DNS snapshot from the renderer host. Verify it matches API Pod destinations, and rerender then upgrade Helm when addresses change.",
-    );
-  }
-}
-
 async function writePreflight(outDir, profile, diagnostics, output = {}) {
   const preflight = {
     ok: diagnostics.errors.length === 0,
@@ -2404,10 +2335,6 @@ export async function renderInstallationProfile(args) {
   ]);
   const parsed = buildInput(rawInput, diagnostics);
   const { values, installation } = buildRendered(profile, parsed, diagnostics);
-
-  if (diagnostics.errors.length === 0) {
-    await resolveHostedDiscoveryCidrs(profile, parsed, values, diagnostics);
-  }
 
   if (diagnostics.errors.length === 0) {
     const installationYaml = renderYaml(installation);

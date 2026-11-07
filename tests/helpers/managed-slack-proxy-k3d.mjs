@@ -28,12 +28,14 @@ export async function installManagedSlackProxyFixture({
   const name = "openclaw-enterprise-slack-proxy";
   const items = (await parseProductionChart(stdout)).filter(
     ({ kind, metadata }) =>
-      (metadata.name === name &&
-        ["Deployment", "Service", "ServiceAccount", "NetworkPolicy"].includes(kind)) ||
-      (kind === "NetworkPolicy" &&
-        metadata.name === "openclaw-enterprise-api-managed-slack-proxy-egress"),
+      metadata.name === name &&
+      ["Deployment", "Service", "ServiceAccount", "NetworkPolicy"].includes(kind),
   );
-  assert.equal(items.length, 5, "the chart must supply the proxy and API egress resources");
+  assert.equal(
+    items.length,
+    4,
+    "the chart must supply the proxy workload, Service, account and policy",
+  );
   for (const item of items) {
     item.metadata.namespace = namespace;
   }

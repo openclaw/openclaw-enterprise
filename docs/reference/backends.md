@@ -316,17 +316,9 @@ backend:
     enabled: true
     secretName: occ-chatgpt-admin
     key: admin-key
-    providerCidr: "203.0.113.10/32" # Example only; replace with the approved destination.
 ```
 
-Enable it with the Installation Backend. The dedicated Secret mounts only in
-the API Pod at `/etc/openclaw/chatgpt/admin-key`; `apiKeyPath` must match.
-`providerCidr` is required when `enabled` is true: the chart refuses to render
-without exactly one IPv4 `/32`. It adds that destination on TCP/443 to the API
-Pod's NetworkPolicy. It configures no DNS, routing, or application proxy. The bundled
-client sends HTTPS directly to `api.chatgpt.com`; the upstream URL is fixed,
-and the chart configures no HTTP CONNECT or `HTTPS_PROXY` transport. Entering
-an ordinary forward proxy's IP will not cause the client to use it.
+Enable the Helm setting with the Installation Backend. The dedicated Secret mounts only in the API Pod at `/etc/openclaw/chatgpt/admin-key`. Set `apiKeyPath` to that path. The bundled client sends HTTPS directly to `api.chatgpt.com`.
 
 Before enabling the Backend, have your network operator confirm that the
 address the NetworkPolicy sees for `api.chatgpt.com:443` is the configured

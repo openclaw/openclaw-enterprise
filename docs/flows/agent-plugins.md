@@ -1,14 +1,14 @@
 ---
 created: 2026-09-08
 updated: 2026-11-05
-last_updated_session: authoring-run/ead82952-8ee4-4f4a-82fe-148da7fa2edc
+last_updated_session: authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e
 ---
 
 # Agent Plugin Deployment Flow
 
 ## Overview
 
-OCC validates selections against the Harness catalog and snapshots the Driver and policy at deployment. The Harness owns tools and approvals.
+OCC validates selections against the Harness catalog and freezes the Driver and policy at deployment. A Namespace administrator [publishes packages](../../apps/controller/src/drivers/plugin/import-package.ts). Agent owners select releases by digest. [OpenShell](../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts) enforces the bound MCP account and selected tools.
 
 ## Entry Points
 
@@ -45,6 +45,8 @@ graph TD
   A["Authorize and validate policy"] -->|valid| S["Save Agent selections"]
   A -->|unsupported| Y["Reject write"]
   S --> B["Revalidate and snapshot version"]
+  B -->|imported skills| V["Mount verified files in the Gateway"]
+  V --> I
   B -->|managed MCP| K["Project worker MCP and Gateway tool selections"]
   K --> L["Sandbox applies account and tool request policy"]
   L --> I
@@ -121,9 +123,9 @@ detects conflicting enablement defaults. `BundledPluginDriverBase.validate`
 allowlists it for OCC's fixed `PluginPolicyValidationError` advice.
 Unrecognized refusals stay generic. The Console preserves rejected drafts.
 
-[Save](../../apps/controller/src/console/agents/plugins.mts#L396) keeps out-of-range
+[Save](../../apps/controller/src/console/agents/plugins.mts#L419) keeps out-of-range
 **Plugin selections JSON** text and skips Agent `GET`/`PATCH`.
-[Picker edits](../../apps/controller/src/console/agents/plugin-fields.mts#L414)
+[Picker edits](../../apps/controller/src/console/agents/plugin-fields.mts#L416)
 stop. [Available catalogs](../guides/console/configuration-plugins-and-files.md#plugins-tab)
 remain browsable.
 
@@ -156,6 +158,8 @@ PluginDriver refuses an automatic reviewer unless the policy is `on-request` or
 `on-failure`, because an omitted policy lets the Gateway pick one the startup
 check cannot see. Configuration save and Compute Drivers refuse policies the
 Gateway refuses at load, such as `untrusted`.
+
+[Compute](../../apps/controller/src/drivers/compute/kubernetes/imported-plugin-skills.ts) mounts verified files read-only in the dedicated Gateway. Before delivery, the [Gateway](../../deploy/runtime/openclaw-pinned-skill-sources.patch) checks the advertised skill’s pinned source and rejects a same-name workspace skill. The worker preserves executable permissions and points the model to its local `SKILL.md`.
 
 The Kubernetes ConfigMap is immutable and per version. A version prepared
 by an earlier controller keeps its earlier `config.toml` (without
@@ -335,23 +339,10 @@ The OpenClaw model probe's CPU-based deadline cannot exceed 600 seconds. CPU wai
 delta; throttled time is capped by throttled periods. Missing, nonfinite or reset samples give no delta and cannot
 establish starvation.
 
-- Compare `Agent.plugins` with the selected version snapshot and deployment status.
-  A successful Agent write alone is not runtime installation evidence.
-- Invalid or unsupported policy leaves Agent desired state unchanged. Catalog
-  membership, authenticated metadata, ownership, and effective native configuration
-  are checked during startup; failure keeps the candidate unready.
-- Check missing native packages, release drift, connector authentication, and
-  effective policy when readiness fails; preserve credential values in protected
-  runtime state rather than copying them into logs.
-- Before host effects, SSH Compute rejects nonempty requested Agent plugin maps or
-  default plugin approver policies. Clear both or use compatible Kubernetes.
-- For plugin warnings, check deployment status for `PLUGIN_INSTALL_FAILED` or
-  `PLUGIN_AUTH_REQUIRED` and the admitted `pluginId`. Confirm the corresponding
-  runtime and gateway entries are disabled. Do not infer plugin attribution
-  from arbitrary native logs.
-- Prove behavior with a model-chosen plugin call in a normal Agent turn, then
-  disable or remove the plugin and verify another Agent is unchanged. Source or
-  fixture tests are not native runtime proof.
+- Compare `Agent.plugins`, the revision snapshot and deployment status. Startup verifies catalog membership, package ownership, authentication and native configuration.
+- Check `PLUGIN_INSTALL_FAILED` or `PLUGIN_AUTH_REQUIRED` for the affected `pluginId`. Verify its runtime and Gateway entries are disabled. Keep credentials out of logs.
+- SSH Compute rejects plugin selections and default approvers before host effects. Use compatible Kubernetes Compute or clear both.
+- Verify a plugin call in a normal Agent turn, then remove the selection, redeploy and check behavior on that Agent and a second Agent.
 
 ## Related docs
 
@@ -372,6 +363,8 @@ establish starvation.
 - 2026-11-05 21:02: Trace plugin JSON refusal. (authoring-run/ead82952-8ee4-4f4a-82fe-148da7fa2edc - 3768cfd0d640f450f485cb334b6753ac1e5ea1c3)
 
 - 2026-11-05 13:37: Trace plugin-policy refusal recovery. (authoring-run/9cb771c4-f1a8-44ec-a4ef-7c914a5ddb6e - a8259883139ac831b32c0a7b0fe872f6db4ee290)
+
+- 2026-11-05 04:01: Trace Namespace publication, pinned skill delivery and imported MCP enforcement. (authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e - d4c9146f564444412e93181b3b6b6c9c1e3b4820)
 
 - 2026-11-05 01:02: Select the Harness catalog and recheck its identity before cutover. (01a169f0-a851-7b81-8e83-ff597893aa21 - 0e9575278)
 

@@ -11,6 +11,7 @@ export function gatewayManagedModeEnvironment(managedMode: boolean): string {
           OPENCLAW_CONFIG_READONLY: "1",
           OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS: "1",
           OPENCLAW_DISABLE_CRON_HOST_EXECUTION: "1",
+          OPENCLAW_DISABLE_SKILL_INSTALLS: "1",
           OPENCLAW_CONFIG_READONLY_NOTICE:
             "OpenClaw Enterprise manages this Gateway’s configuration. In the OCE Console, edit and save the Agent’s draft Configuration, then select Deploy new version. https://docs-enterprise.openclaw.org/reference/agents/gateway-managed-mode/",
         }

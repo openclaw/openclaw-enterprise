@@ -209,7 +209,8 @@ function revision(driver, owner, agentId, number, harnessAuth) {
     configurationId: `cfg_${randomUUID()}`,
     configurationKind: "agent",
     configurationGeneration: number,
-    gatewayManagedMode: true,
+    // This fixture implements the plugin status endpoint. Managed skill installation is qualified on the native image.
+    gatewayManagedMode: false,
     configuration: admitLoggingConfiguration(
       withStubbedProviderEndpoint({
         gateway: { controlUi: { enabled: false } },

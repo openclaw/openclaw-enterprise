@@ -1,3 +1,4 @@
+import { PluginPackageInspectionError } from "@openclaw-enterprise/contracts";
 import type { FastifyError, FastifyReply } from "fastify";
 import {
   ConnectionTemplateValidationError,
@@ -749,7 +750,7 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
       503,
       "DEPENDENCY_UNAVAILABLE",
       error.reason === "unreachable"
-        ? "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs), then try again."
+        ? "OCC could not reach the sign-in service at auth.openai.com. Check HTTPS connectivity from the API server, then try again."
         : "Device login could not start. Try again.",
     );
   }
@@ -807,6 +808,9 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   }
   if (error instanceof SecretValueError) {
     return failure(400, "INVALID_REQUEST", error.message, [{ path: "/value", code: error.code }]);
+  }
+  if (error instanceof PluginPackageInspectionError) {
+    return failure(422, "INVALID_REQUEST", error.message);
   }
   if (error instanceof ConfigurationHarnessError) {
     return failure(400, "INVALID_REQUEST", error.message);

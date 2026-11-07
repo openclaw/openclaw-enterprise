@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-11-04
-last_updated_session: authoring-run/1bc99c10-f761-424e-9533-b6e6a6ae9975
+updated: 2026-11-05
+last_updated_session: authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e
 ---
 
 # Agent Channel Directory Lookup Flow
@@ -36,9 +36,9 @@ graph TD
   P -->|yes| C["SecretDriver reads current value"]
   C --> D["OCC rechecks target, Secret grant, and backend identity"]
   D -->|changed| X
-  D -->|current| M{"Managed Helm proxy?"}
-  M -->|yes| H["Tunnel through proxy Service DNS"]
-  M -->|no| I["Tunnel through external proxy IP"]
+  D -->|current| M{"API proxy configured?"}
+  M -->|yes| H["Tunnel through the configured Slack proxy"]
+  M -->|no| I["Connect directly over HTTPS"]
   H --> E["Slack Driver reads workspace and directory pages"]
   I --> E
   E -->|provider error| X
@@ -84,14 +84,7 @@ An incomplete page cannot establish that a name is absent or unique.
 cancels an unused response body on a non-success HTTP status before returning
 the safe rate-limit or unavailable error. This releases occupied transport
 capacity even when the error body has not finished. The same request owner
-serves credential validation; no automatic retry is added. Production
-composition sets `expectProxy`: with no proxy URL, a credential check whose
-fetch fails to connect, resolve, or answer within the time budget raises
-`SlackRouteNotConfiguredError` (`409`) instead of the unavailable error (finding
-2521). Its message names the Helm proxy settings and says to try again when the
-API has another approved route, since an open route can also time out (finding
-2531). Any other fetch rejection, such as a refused redirect, a TLS failure, or
-an invalid header value, stays unavailable (finding 2532). Successful responses
+serves credential validation; no automatic retry is added. Helm enables direct API HTTPS. With no proxy, an unanswered Slack request returns `503`. A non-Helm installation that expects a proxy can return `409` for a missing route during credential validation. Successful responses
 have an 8,000,000-byte streaming cap before decoded JSON is checked against the
 existing limit of 2,000,000 UTF-16 code units. Overflow cancels the body read and returns `invalid_response`.
 
@@ -146,10 +139,7 @@ view.
 - A denied lookup requires checking the exact edit permission and Secret
   `operate` grant. A token, scope, rate limit, or provider error returns a
   safe code without the token or upstream payload.
-- A `501` lookup in production means the API has no directory proxy configured.
-  Enable Helm `slackProxy.enabled` or set the approved
-  external proxy IP and port in `api.channelDirectoryProxyUrl`, then verify that
-  the proxy permits CONNECT to `slack.com:443`.
+- A `501` lookup indicates the Channel Driver does not provide directory lookup. For a `503`, check the API Pod’s connection to Slack and any configured proxy.
 - Directory conformance tests cover provider pagination, safe errors, and native
   HTTP connection recovery after unfinished 429 and 503 response bodies. The
   OCC API integration test covers both authorization checks and response
@@ -171,6 +161,8 @@ view.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 23:32: Trace direct Slack lookup from the API Server. (authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e - 30037b3d8929ce73cb8f01dd0a9ec6ebf2d3fae6)
 
 - 2026-11-04 22:37: Document closed-picker reopening and pending activation cancellation in the accompanying local change. (authoring-run/1bc99c10-f761-424e-9533-b6e6a6ae9975 - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 

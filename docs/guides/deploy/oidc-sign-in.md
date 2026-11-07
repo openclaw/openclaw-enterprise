@@ -80,48 +80,13 @@ auth:
     clientSecretKey: client-secret
     tokenAuth: client_secret_post # or client_secret_basic
     displayName: Acme SSO # optional button label, up to 40 characters
-    egressCidrs: [] # optional IPv4 CIDRs
 agentNativeAdmin:
   enabled: false
 ```
 
-Rendering fails on the URL rules above, a shared Secret, an HTTP base URL, native
-administration, an unknown `tokenAuth`, a label over 40 characters, or an invalid CIDR;
-the API refuses the same values at startup. The chart adds the API-only NetworkPolicy
-`openclaw-enterprise-api-oidc-login-egress` on TCP 443. Empty `egressCidrs` allows any
-address except link-local `169.254.0.0/16`; list the IdP's ranges to narrow it.
+Rendering rejects invalid URLs, a shared Secret, an HTTP base URL, native administration, an unknown `tokenAuth`, or a label over 40 characters.
 
-The policy matches the destination Pod port after the Service forwards the connection,
-not the Service port. An IdP outside the cluster is reached on 443. For an IdP that runs
-in the cluster behind a Service whose `targetPort` is not 443 (for example, an ingress
-gateway Service mapping 443 to Pod port 10443), the API's connection is refused, and
-sign-in fails with audit reason `PROVIDER_UNAVAILABLE`. `egressCidrs` cannot help,
-because the port is fixed. Add your own egress policy for the API Pod to the IdP's Pods
-on their target port:
-
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: openclaw-enterprise-api-in-cluster-idp-egress
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/component: api
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: idp-gateway # the IdP Service's Namespace
-          podSelector:
-            matchLabels:
-              app: idp-gateway # the Pods behind the IdP Service
-      ports:
-        - protocol: TCP
-          port: 10443 # the Service's targetPort
-```
+The API Server connects to the token and JWKS URLs. If you enforce your own egress policy, permit those endpoints. For an in-cluster IdP, check the destination Pod port and its ingress policy.
 
 The API reads these variables; see
 [production settings](../../reference/settings/oidc.md):

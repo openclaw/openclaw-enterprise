@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-11-03
-last_updated_session: authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc
+updated: 2026-11-05
+last_updated_session: authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e
 ---
 
 # Installation Profile Rendering Flow
@@ -19,8 +19,7 @@ service accounts, the repository registry, and Slack consumers.
 
 - Trigger: `node scripts/render-installation-profile.mjs --profile openclaw|codex --input <json> --out-dir <dir>`.
 - Source: `scripts/render-installation-profile.mjs:parseArgs`,
-  `scripts/render-installation-profile.mjs:buildRendered`, and
-  `scripts/render-installation-profile.mjs:resolveHostedDiscoveryCidrs`.
+  `scripts/render-installation-profile.mjs:buildRendered`.
 - Assumptions: The caller runs from the repository root with installed
   dependencies, a trusted profile under `deploy/profiles/`, and site inputs that
   contain no plaintext credentials.
@@ -40,13 +39,7 @@ graph TD
   E --> F["Build objects and validate consumed inputs"]
   F --> G{"Any diagnostics errors?"}
   G -->|Yes| H["Write preflight.json with ok:false"]
-  G -->|No| I{"Hosted codex-plugin without a supplied CIDR list?"}
-  I -->|Yes| M["Resolve auth.openai.com and chatgpt.com IPv4 addresses"]
-  M --> N{"Resolution succeeded?"}
-  N -->|No| H
-  N -->|Yes| O["Set API-only HTTPS CIDRs from sorted unique addresses"]
-  I -->|No| J["Render YAML"]
-  O --> J
+  G -->|No| J["Render YAML"]
   J --> K["Write values.yaml and installation.yaml"]
   K --> L["Write preflight.json with prerequisites and next steps"]
 ```
@@ -77,8 +70,6 @@ files remain untouched.
 
 `deploy/profiles/` supplies profile identity and PluginDriver selection. JSON
 supplies site images, domains, CIDRs, Secrets, and repository registry names.
-Explicit discovery CIDRs keep rendering offline and stable; omitted hosted
-Codex CIDRs make Helm values depend on DNS.
 
 ### 3. Validate every supplied input
 
@@ -208,7 +199,7 @@ managed ServiceAccount inputs are supplied, it emits the ChatGPT Backend and a
 matching ServiceAccount Driver; otherwise Codex Agents use the existing
 `codex_pat` token path configured at Agent creation. If the chart-managed Slack
 proxy is enabled, Compute receives the generated Service DNS URL and selector
-for gateway-to-proxy egress; the chart grants API-to-proxy egress. Repository
+for gateway-to-proxy egress. The chart configures the API to use this proxy. Repository
 opt-in adds the GitHub Backend, Repo Driver,
 and worker peer expected by the broker sidecar.
 
@@ -228,23 +219,7 @@ Kubernetes Compute startup requires: `<prefix>-<12 hex characters>`, at most
 Installation YAML. A trailing hyphen in the prefix remains valid; a trailing
 dot does not, because the suffix would start a new label with a hyphen.
 
-### 6. Resolve hosted discovery egress
-
-`scripts/render-installation-profile.mjs:resolveHostedDiscoveryCidrs`
-
-After validation, hosted `codex-plugin` with omitted `codex.modelDiscoveryCidrs`
-queries IPv4 addresses for `auth.openai.com` and `chatgpt.com` with a resolver timeout of 1.5 seconds and one try. Sorted unique
-IPv4 `/32` answers populate the existing API-only TCP 443 Helm policy; the driver
-mutates no Kubernetes resources.
-
-Supplied lists bypass DNS unchanged; `[]` requires external HTTPS policy for
-both hosts. Other driver selections bypass resolution. DNS failure records a
-preflight error and revokes both YAML files, including after successful renders.
-This snapshot needs operator verification of API Pod DNS/NAT, authenticated
-Console discovery, and rerender/upgrade after address changes; it never
-refreshes live policy.
-
-### 7. Write outputs and preflight
+### 6. Write outputs and preflight
 
 `scripts/render-installation-profile.mjs:writeYaml`
 
@@ -278,16 +253,14 @@ activation, and repository registry creation need separate evidence.
   values through the renderer and `helm template`, plus the API parser or
   Compute where they apply.
 - Inspect `<out-dir>/preflight.json` first. `ok:false` means required input is
-  missing, supplied input is invalid, or hosted discovery DNS failed; `values.yaml` and
+  missing or invalid; `values.yaml` and
   `installation.yaml` are intentionally absent.
 - Run `helm template oce deploy/helm/openclaw-enterprise --namespace <namespace> --values <out-dir>/values.yaml`
   to check chart-level validation before applying the chart.
 - Startup-only input changes should change `controlPlane.installationChecksum`
   in `values.yaml` and the API/worker deployment pod-template annotations in
   Helm output.
-- Check the release API selector and TCP 443 `/32` grants in
-  `openclaw-enterprise-api-model-discovery-egress`, then verify **Load plugins**;
-  rendering alone proves no catalog access.
+- Verify **Load plugins** in the Console with an authorized account to check that the API Server can reach the catalog.
 - For runtime proof, continue through the production installation and Agent
   deployment guides. Rendered files alone do not prove native admin access,
   Codex sandboxing, hosted discovery, Slack connectivity, or repository
@@ -305,6 +278,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 23:27: Remove provider DNS resolution from profile rendering. (authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e - 30037b3d8929ce73cb8f01dd0a9ec6ebf2d3fae6)
 
 - 2026-11-03 15:09: Document shared provider routing and separate destination authorization. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 47e0e95df)
 

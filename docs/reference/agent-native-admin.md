@@ -113,8 +113,7 @@ Native chat or other activity in the Agent tab does not renew the console sessio
 ## Gateway managed mode
 
 Managed mode defaults on where the Compute Driver supports it. It prevents Gateway administrators from editing native
-configuration, opening Gateway-local terminals, and running Gateway-hosted command
-jobs. An Installation administrator can change the setting in OCE for the next
+configuration, installing or publishing skills, opening Gateway-local terminals, and running Gateway-hosted command jobs. An Installation administrator can change the setting in OCE for the next
 deployment. See [Gateway managed mode](agents/gateway-managed-mode.md) for runtime
 requirements and behavior when managed mode is off.
 

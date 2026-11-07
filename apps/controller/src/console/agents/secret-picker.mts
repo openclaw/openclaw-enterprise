@@ -414,7 +414,7 @@ export function createSecretReferenceField({
   label: string;
   getCurrentSource(): unknown;
   onSecretSelected(secret: SecretMetadata): void | Promise<void>;
-  createSecretName(): string;
+  createSecretName?(): string;
   createDialogTitle?: string;
   createFixedKey?: { label: string; value: string; hint: string };
   metadataLabel?: string;
@@ -606,11 +606,13 @@ export function createSecretReferenceField({
         secret,
       });
     }
-    options.push({
-      kind: "create",
-      label: syntheticLabel("Create new Secret...", "action"),
-      searchText: "create new secret",
-    });
+    if (createSecretName) {
+      options.push({
+        kind: "create",
+        label: syntheticLabel("Create new Secret...", "action"),
+        searchText: "create new secret",
+      });
+    }
     options.push({
       kind: "refresh",
       label: syntheticLabel(
@@ -905,7 +907,7 @@ export function createSecretReferenceField({
 
   function openCreateSecretDialog() {
     const { namespaceId, request } = context;
-    if (!namespaceId || !request || !isCurrent()) {
+    if (!createSecretName || !namespaceId || !request || !isCurrent()) {
       return;
     }
     const dialog = element("dialog", {

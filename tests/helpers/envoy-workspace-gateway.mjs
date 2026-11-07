@@ -241,32 +241,32 @@ export async function startWorkspaceGatewayHostRelay(
     /^(?:\d{1,3}\.){3}\d{1,3}$/,
     "the disposable k3d Gateway must expose an IPv4 ClusterIP.",
   );
-  const endpointPort = usesContainerVm ? await availablePort() : 443;
-  if (usesContainerVm) {
-    const envoyHttpsPort = envoyService.spec.ports.find(({ port }) => port === 443);
-    assert.ok(envoyHttpsPort, "the workspace Gateway Service must retain its HTTPS port.");
-    await kubectl(
-      "patch",
-      "service",
-      envoyService.metadata.name,
-      "--namespace",
-      workspaceGateway.routing.envoyNamespace,
-      "--type=json",
-      "--patch",
-      JSON.stringify([
-        {
-          op: "add",
-          path: "/spec/ports/-",
-          value: {
-            name: "oce-host-relay",
-            protocol: envoyHttpsPort.protocol ?? "TCP",
-            port: endpointPort,
-            targetPort: envoyHttpsPort.targetPort ?? envoyHttpsPort.port,
-          },
+  // Each real cluster gets a distinct loopback endpoint. Node Pods use that same port through
+  // the Gateway Service, where it targets the original Envoy TLS listener.
+  const endpointPort = await availablePort();
+  const envoyHttpsPort = envoyService.spec.ports.find(({ port }) => port === 443);
+  assert.ok(envoyHttpsPort, "the workspace Gateway Service must retain its HTTPS port.");
+  await kubectl(
+    "patch",
+    "service",
+    envoyService.metadata.name,
+    "--namespace",
+    workspaceGateway.routing.envoyNamespace,
+    "--type=json",
+    "--patch",
+    JSON.stringify([
+      {
+        op: "add",
+        path: "/spec/ports/-",
+        value: {
+          name: "oce-host-relay",
+          protocol: envoyHttpsPort.protocol ?? "TCP",
+          port: endpointPort,
+          targetPort: envoyHttpsPort.targetPort ?? envoyHttpsPort.port,
         },
-      ]),
-    );
-  }
+      },
+    ]),
+  );
   const relayPod = `oce-routing-relay-${hash(randomUUID())}`;
   const relayLabels = Object.entries(workspaceGateway.apiPodLabels)
     .map(([name, value]) => `${name}=${value}`)
@@ -327,7 +327,7 @@ export async function startWorkspaceGatewayHostRelay(
     '  client.on("error", () => upstream.destroy());',
     '  upstream.on("error", () => client.destroy());',
     "});",
-    `server.listen(443, ${JSON.stringify(usesContainerVm ? "0.0.0.0" : "127.0.0.1")});`,
+    `server.listen(${usesContainerVm ? 443 : endpointPort}, ${JSON.stringify(usesContainerVm ? "0.0.0.0" : "127.0.0.1")});`,
     'process.on("SIGTERM", () => server.close(() => process.exit(0)));',
   ].join("\n");
   await executeFile(containerEngine, [
@@ -360,7 +360,11 @@ export async function startWorkspaceGatewayHostRelay(
   } catch {
     // --rm removes a relay that cannot bind its loopback listener.
   }
-  assert.equal(relayRunning, true, "the exact host routing relay must own loopback port 443.");
+  assert.equal(
+    relayRunning,
+    true,
+    `the host routing relay must own the selected loopback port ${endpointPort}.`,
+  );
   const originalLookup = dns.lookup;
   dns.lookup = function lookup(hostname, options, callback) {
     if (hostname !== gatewayHostname) {

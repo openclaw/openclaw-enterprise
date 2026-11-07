@@ -115,14 +115,9 @@ service; browsing a historical version does not change the destination. Stopped 
 unsupported states offer **Open draft**. An unavailable deployment offers **View deployment**
 when a readable version exists. Other unavailable states keep Refresh access.
 
-The warning describes Gateway managed mode and OCE overwriting changes made while
-it is off; durable configuration belongs in OCE.
+`apps/controller/src/drivers/compute/runtime-startup.ts:gatewayManagedModeEnvironment`
 
-Docker and Kubernetes also pass `OPENCLAW_CONFIG_READONLY_NOTICE` to the Gateway
-child when the deployed revision enables managed mode
-(`apps/controller/src/drivers/compute/runtime-startup.ts:gatewayManagedModeEnvironment`).
-A supporting Gateway uses this text to direct administrators to the Console when
-configuration is read-only. A change to the draft's managed mode takes effect at deployment.
+On deployment, Docker and Kubernetes set `OPENCLAW_CONFIG_READONLY_NOTICE` and `OPENCLAW_DISABLE_SKILL_INSTALLS=1` on the managed Gateway. The notice points operators to the OCE draft. Native skill handlers refuse installation and publication before fetching packages, writing files, or starting installers, including for `operator.admin`.
 
 ### 2. OCC protects the availability route
 

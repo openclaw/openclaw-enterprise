@@ -73,6 +73,10 @@ See [per-Agent policies](../sandbox-policies.md).
 - `version`
 - `document` (additions, pending/latest application, last confirmed live version)
 
+### `plugin_releases`
+
+Retains an immutable [imported plugin release](../agent-plugins.md#current-support). The primary key combines `namespace_id` and `digest`. The row records the publishing `actor_id` and the inspected `document`, including the skill files and hosted server definitions.
+
 ### `agent_revisions`
 
 Stores numbered, immutable snapshots of Agent settings accepted for deployment.
@@ -221,6 +225,7 @@ Records the owner of each source. A Credential Gateway or Credential Proxy sourc
 - `name`
 - `type`
 - `config`
+- `plugin_release_digest`, `plugin_server_name` (optional immutable connection template)
 - `egress` (optional admitted source and versioned resolver references)
 - `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service` for a saved account)
 - `driver_id` (Gateway and Proxy sources)

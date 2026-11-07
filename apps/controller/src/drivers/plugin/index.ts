@@ -1,5 +1,10 @@
+import { inspectPluginPackage } from "./import-package.ts";
 import { requireManagedCredentialRuntime } from "./managed-runtime.ts";
-import { type ErrorDetail } from "@openclaw-enterprise/contracts";
+import {
+  importedPluginDigest,
+  type InspectedPluginPackage,
+  type ErrorDetail,
+} from "@openclaw-enterprise/contracts";
 import {
   CODEX_PLUGIN_DRIVER_IMPLEMENTATION,
   OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION,
@@ -8,6 +13,8 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   managedCliCredentialBindings,
+  managedSelectionsForImportedReleases,
+  managedMcpInstallsForReleases,
   managedInstalls,
   managedPluginCredentials,
   managedMcpCredentialBindings,
@@ -396,11 +403,16 @@ function splitOpenClawSelections(selections: PluginDesiredState) {
   for (const { id } of managed) {
     delete native[id];
   }
-  return { managed, native };
+  const imported = Object.keys(native).filter((id) => importedPluginDigest(id));
+  for (const id of imported) {
+    delete native[id];
+  }
+  return { managed, native, imported };
 }
 
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   readonly harnessId = "openclaw" as const;
+  readonly inspectPackage = inspectPluginPackage;
   readonly discoveryCredential = "none" as const;
   readonly credentials = managedPluginCredentials;
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
@@ -414,8 +426,35 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     driverPolicySchema: EMPTY_CONFIGURATION_SCHEMA,
   });
 
-  validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void {
-    const { managed, native } = splitOpenClawSelections(selections);
+  validatePolicies(
+    selections: PluginDesiredState,
+    defaultApprovers?: PluginApprovers,
+    releases?: Readonly<Record<string, InspectedPluginPackage>>,
+  ): void {
+    const { managed, native, imported } = splitOpenClawSelections(selections);
+    const skillNames = new Set(
+      managed.flatMap(({ id, skillName }) =>
+        selections[id]!.enabled && skillName ? [skillName] : [],
+      ),
+    );
+    for (const id of imported) {
+      const selection = selections[id]!;
+      if (Object.keys(selection).some((key) => key !== "enabled" && key !== "driverPolicy")) {
+        throw new ConfigurationHarnessError(
+          "Imported releases support enablement and reviewed tool selections.",
+        );
+      }
+      if (selection.enabled) {
+        for (const { name } of releases?.[id]?.skills ?? []) {
+          if (skillNames.has(name)) {
+            throw new ConfigurationHarnessError(
+              `Two enabled plugins provide the skill "${name}". Select one of them.`,
+            );
+          }
+          skillNames.add(name);
+        }
+      }
+    }
     this.validate("openclaw", native, defaultApprovers);
     for (const pkg of managed) {
       const policy = selections[pkg.id]!;
@@ -429,7 +468,14 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
       }
     }
     managedCliCredentialBindings(selections);
-    managedMcpCredentialBindings(selections);
+    if (releases) {
+      managedMcpCredentialBindings(
+        managedSelectionsForImportedReleases(selections, releases),
+        managedMcpInstallsForReleases(releases),
+      );
+    } else {
+      managedMcpCredentialBindings(selections);
+    }
   }
 
   static validateConfiguration(): readonly ErrorDetail[] {
@@ -493,7 +539,17 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
       readonly gateway: string | undefined;
     },
   ): void {
-    const { managed, native } = splitOpenClawSelections(selections);
+    const { managed, native, imported } = splitOpenClawSelections(selections);
+    if (
+      imported.length &&
+      (harness.id !== "openclaw" ||
+        harness.mode !== "dedicated" ||
+        !["occ/kubernetes", "kubernetes-local"].includes(computeImplementation))
+    ) {
+      throw new ConfigurationHarnessError(
+        "Imported releases require a dedicated OpenClaw Agent on Kubernetes Compute.",
+      );
+    }
     const [nativeId] = Object.keys(native);
     if (managed.length > 0 && nativeId !== undefined) {
       const names = managed.map(({ entry }) => entry.name).join(", ");

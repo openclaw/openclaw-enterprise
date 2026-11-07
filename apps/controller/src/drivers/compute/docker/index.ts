@@ -314,7 +314,7 @@ delete process.env.OPENCLAW_CONFIG_JSON;
 delete process.env.OPENCLAW_LOG_LEVEL;
 const pluginRuntime = readGatewayPluginRuntime();
 try {
-if (gatewayToolPolicyInput !== undefined) requireGatewayToolPolicyRuntime();
+if (gatewayToolPolicyInput !== undefined || ${managedMode}) requireGatewayPolicyRuntime(${managedMode});
 if (pluginRuntime !== undefined) installOpenClawPlugins(pluginRuntime);
 if (gatewayToolPolicyInput !== undefined) configureManagedGatewayTools(gatewayToolPolicyInput);
 // State on the Agent's state volume outlives runtime image upgrades. Doctor
