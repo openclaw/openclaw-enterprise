@@ -1258,8 +1258,8 @@ targets="$evidence_dir/targets.jsonl"
 target_count=0
 inventory="$evidence_dir/inventory/deployment-inventory.json"
 "${occ_json[@]}" installation deployment-inventory >"$inventory"
-jq -e --arg installationId "$installation_id" '.installationId == $installationId' \
-  "$inventory" >/dev/null || die "the deployment inventory belongs to another Installation."
+jq -es --arg installationId "$installation_id" 'length == 1 and (.[0].installationId == $installationId)' \
+  "$inventory" >/dev/null || die "the deployment inventory must be one JSON document belonging to this Installation."
 
 if jq -e '.namespaces[].agents[] | select(.deploymentInProgress)' "$inventory" >/dev/null; then
   die "the deployment inventory contains nonterminal Agent work; wait for it to finish before upgrading."
@@ -1278,9 +1278,10 @@ if [[ -z "$runtime_image" ]]; then
     "${occ_json[@]}" --namespace "$namespace_id" agent revision "$agent_id" "$revision_id" \
       </dev/null >"$snapshot" ||
       die "cannot read active revision $revision_id of Agent $agent_id; no OCC writer was stopped."
-    jq -e --arg namespaceId "$namespace_id" --arg agentId "$agent_id" --arg revisionId "$revision_id" '
-      .namespaceId == $namespaceId and .agentId == $agentId and .id == $revisionId and
-      (.harness.overrides | type) == "object" and (.harness.configuration | type) == "object"
+    jq -es --arg namespaceId "$namespace_id" --arg agentId "$agent_id" --arg revisionId "$revision_id" '
+      length == 1 and (.[0] |
+        .namespaceId == $namespaceId and .agentId == $agentId and .id == $revisionId and
+        (.harness.overrides | type) == "object" and (.harness.configuration | type) == "object")
     ' "$snapshot" >/dev/null ||
       die "active revision $revision_id of Agent $agent_id has missing or unreadable saved Harness settings; this upgrade does not replace Agent revisions. Plan an authorized replacement or stop and settle the Agent before upgrading. No OCC writer was stopped."
   done <"$evidence_dir/inventory/active-revisions.jsonl"

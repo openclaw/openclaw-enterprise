@@ -1120,27 +1120,29 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       }
       out(selected[operation]);
     } else if (args.includes("deployment-inventory")) {
-      out({
-        installationId: "ins_test",
-        namespaces: state.inventoryNamespaces ?? [
-          {
-            id: "ns_test",
-            status: "ready",
-            agents: state.agent
-              ? [
-                  {
-                    id: "agt_test",
-                    status: "active",
-                    desiredRuntimeState: "running",
-                    executionMode: "embedded",
-                    activeRevisionId: "rev_old",
-                    deploymentInProgress: false,
-                  },
-                ]
-              : [],
-          },
-        ],
-      });
+      out(
+        state.inventoryResponse ?? {
+          installationId: "ins_test",
+          namespaces: state.inventoryNamespaces ?? [
+            {
+              id: "ns_test",
+              status: "ready",
+              agents: state.agent
+                ? [
+                    {
+                      id: "agt_test",
+                      status: "active",
+                      desiredRuntimeState: "running",
+                      executionMode: "embedded",
+                      activeRevisionId: "rev_old",
+                      deploymentInProgress: false,
+                    },
+                  ]
+                : [],
+            },
+          ],
+        },
+      );
     } else if (
       state.names &&
       args.includes("get") &&
@@ -1430,6 +1432,7 @@ async function fixture(
     executionCluster = null,
     installationName = "Production",
     inventoryNamespaces = null,
+    inventoryResponse,
     activeRevisionResponse,
     names = null,
     configurationValues = null,
@@ -1626,6 +1629,7 @@ async function fixture(
     preflightFault,
     installationName,
     inventoryNamespaces,
+    inventoryResponse,
     activeRevisionResponse,
     names,
     configurationValues,
@@ -1869,6 +1873,12 @@ test("controller-only upgrades refuse incompatible active Harness snapshots befo
       },
     ],
     ["denied read", "denied"],
+    ["empty snapshot output", ""],
+    ["duplicate snapshots", `${JSON.stringify(snapshot)}\n${JSON.stringify(snapshot)}`],
+    [
+      "invalid snapshot followed by valid snapshot",
+      `${JSON.stringify({ ...snapshot, id: "rev_other" })}\n${JSON.stringify(snapshot)}`,
+    ],
   ]) {
     await t.test(name, async (t) => {
       const f = await fixture(t, {
@@ -1878,6 +1888,27 @@ test("controller-only upgrades refuse incompatible active Harness snapshots befo
       });
       await assert.rejects(f.run(), /active revision rev_old|active Harness/u);
       assert.deepEqual(await f.events(), ["revision-read rev_old"]);
+      const state = await f.state();
+      assert.equal(state.version, 1);
+      assert.equal(state.api, 1);
+      assert.equal(state.worker, 1);
+      assert.equal(state.dispatches, 0);
+    });
+  }
+  // A stream must not let a valid final document hide a missing or unrelated inventory.
+  const inventory = { installationId: "ins_test", namespaces: [] };
+  for (const [name, response] of [
+    ["empty inventory output", ""],
+    ["duplicate inventories", `${JSON.stringify(inventory)}\n${JSON.stringify(inventory)}`],
+    [
+      "invalid inventory followed by valid inventory",
+      `${JSON.stringify({ ...inventory, installationId: "ins_other" })}\n${JSON.stringify(inventory)}`,
+    ],
+  ]) {
+    await t.test(name, async (t) => {
+      const f = await fixture(t, { controllerOnly: true, inventoryResponse: response });
+      await assert.rejects(f.run(), /deployment inventory/u);
+      assert.deepEqual(await f.events(), []);
       const state = await f.state();
       assert.equal(state.version, 1);
       assert.equal(state.api, 1);

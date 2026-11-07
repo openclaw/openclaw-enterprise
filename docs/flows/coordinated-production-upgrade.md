@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-07"
-last_updated_session: "authoring-run/dd27d6b9-6dec-4ba5-bc83-d3595d72273d"
+last_updated_session: "authoring-run/f5d332f5-a699-45b8-82ec-07b982cab516"
 ---
 
 # Production image upgrade flow
@@ -71,16 +71,17 @@ graph TD
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
-Controller-only preparation reads the authorized inventory, then each exact active
-snapshot via `occ agent revision AGENT_ID REVISION_ID`. Wrong ownership or missing
-object-valued Harness overrides/configuration refuses preparation before quiescence,
-without substituting drafts or deploying. Runtime preparation instead records
-replacement targets and checks drafts; admission follows rollout. Operators exclude concurrent deployments; this is not atomic with quiescence.
-Neither path classifies repository session continuity across worker replacement.
+Controller-only preparation requires one authorized inventory JSON document and one
+per `occ agent revision AGENT_ID REVISION_ID` snapshot. Wrong ownership or missing
+object-valued Harness overrides/configuration refuses before quiescence, without
+substituting drafts or deploying. Runtime preparation checks drafts and records
+replacement targets; admission follows rollout. Exclude concurrent
+deployments; quiescence is not atomic. Neither classifies repository session
+continuity across worker replacement.
 
 Before protected reads, writes or cluster access, `HEAD` must match
-`--source-revision`. Chart changes, symlinks and baseline/evidence aliases inside
-the chart are rejected. Other edits and image provenance remain unchecked.
+`--source-revision`. Reject chart changes, symlinks and baseline/evidence aliases
+inside the chart. Other edits and image provenance remain unchecked.
 
 Resume binds the evidence directory's path, device and inode; aliases share its
 lock. Any `completed` entry refuses resume before live calls or evidence changes.
@@ -343,6 +344,8 @@ no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-07 08:18: Require single-document responses. (authoring-run/f5d332f5-a699-45b8-82ec-07b982cab516 - 0aa6334cace7c272c3b1eb69e456292a068a2c1a)
 
 - 2026-11-07 07:39: Check exact active Harness snapshots before controller-only upgrades. (authoring-run/dd27d6b9-6dec-4ba5-bc83-d3595d72273d - e658fa14b627fc6d55c8d67a68f5668efc27397c)
 
