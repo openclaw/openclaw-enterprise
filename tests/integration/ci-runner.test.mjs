@@ -5671,7 +5671,22 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     startedAt: 1_800_000_000_000,
     endedAt: 1_800_000_001_000,
   }));
+  const restartStages = [
+    "ready-worker",
+    "durable-before",
+    "rollout-restart",
+    "rollout-ready",
+    "replacement-worker",
+    "revision-maintenance",
+    "durable-after",
+    "durable-retention-assertion",
+  ];
   const retentionReceipts = [
+    ...restartStages.map((stage) => ({
+      event: "worker-restart-unconfirmed",
+      stage,
+      error: forbidden,
+    })),
     ...policyDenials.map((receipt) => ({ ...receipt, message: forbidden, credential: forbidden })),
     ...retainedFailures.map((receipt) => ({
       ...receipt,
@@ -5814,6 +5829,8 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     { event: "finite-git-grant", revisionId: opaque, deadlineWallMs: -1 },
     { event: "model-turn-succeeded", stage: "before-expiry", nonce: forbidden },
     { event: "model-turn-succeeded", stage: forbidden, nonce: `FIRST_AGENT_${uuid}` },
+    { event: "worker-restart-unconfirmed", stage: forbidden },
+    { event: "worker-restart-unconfirmed" },
     { event: "cleanup", outcome: forbidden },
   ].map((value) => ({ kind: retentionKind, ...value }));
   const runtimeFailure = {
@@ -6200,6 +6217,14 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     outcome: "withdrawn",
     check: "record-reduced-generation",
   });
+  assert.deepEqual(
+    receipts.filter(({ event }) => event === "worker-restart-unconfirmed"),
+    restartStages.map((stage) => ({
+      kind: retentionKind,
+      event: "worker-restart-unconfirmed",
+      stage,
+    })),
+  );
   const unconfirmed = receipts.find(({ event }) => event === "git-expiry-unconfirmed");
   assert.deepEqual(unconfirmed.observations, captured);
   assert.equal(unconfirmed.namespaceIdHash, opaqueHash);

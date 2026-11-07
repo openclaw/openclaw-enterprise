@@ -278,6 +278,21 @@ const events = {
         }),
     ],
   },
+  "worker-restart-unconfirmed": {
+    stage: [
+      "stage",
+      choice(
+        "ready-worker",
+        "durable-before",
+        "rollout-restart",
+        "rollout-ready",
+        "replacement-worker",
+        "revision-maintenance",
+        "durable-after",
+        "durable-retention-assertion",
+      ),
+    ],
+  },
   "worker-restarted": {
     beforeUid: ["beforeUid", uuid],
     afterUid: ["afterUid", uuid],

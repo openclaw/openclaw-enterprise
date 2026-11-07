@@ -1191,35 +1191,49 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     }
   };
   const restartWorker = async (identity) => {
-    const before = await eventually("ready worker", worker);
-    const durable = await durableIdentity();
-    await kube(["rollout", "restart", "deployment/openclaw-enterprise-worker", "-n", platform]);
-    await kube(
-      [
-        "rollout",
-        "status",
-        "deployment/openclaw-enterprise-worker",
-        "-n",
-        platform,
-        "--timeout=180s",
-      ],
-      { timeout: 190_000 },
-    );
-    const after = await eventually("replacement worker", async () => {
-      const pod = await worker();
-      return pod?.metadata.uid !== before.metadata.uid ? pod : undefined;
-    });
-    await eventually("replacement worker revision maintenance", () =>
-      completedWork(after, identity, (event) =>
-        event.workId?.startsWith(`agent_revision:${identity.revisionId}:maintenance:`),
-      ),
-    );
-    assert.deepEqual(
-      await durableIdentity(),
-      durable,
-      "worker restart must retain PostgreSQL and custody",
-    );
-    return { beforeUid: before.metadata.uid, afterUid: after.metadata.uid, ...durable };
+    let stage = "ready-worker";
+    try {
+      const before = await eventually("ready worker", worker);
+      stage = "durable-before";
+      const durable = await durableIdentity();
+      stage = "rollout-restart";
+      await kube(["rollout", "restart", "deployment/openclaw-enterprise-worker", "-n", platform]);
+      stage = "rollout-ready";
+      await kube(
+        [
+          "rollout",
+          "status",
+          "deployment/openclaw-enterprise-worker",
+          "-n",
+          platform,
+          "--timeout=180s",
+        ],
+        { timeout: 190_000 },
+      );
+      stage = "replacement-worker";
+      const after = await eventually("replacement worker", async () => {
+        const pod = await worker();
+        return pod?.metadata.uid !== before.metadata.uid ? pod : undefined;
+      });
+      stage = "revision-maintenance";
+      await eventually("replacement worker revision maintenance", () =>
+        completedWork(after, identity, (event) =>
+          event.workId?.startsWith(`agent_revision:${identity.revisionId}:maintenance:`),
+        ),
+      );
+      stage = "durable-after";
+      const retained = await durableIdentity();
+      stage = "durable-retention-assertion";
+      assert.deepEqual(retained, durable, "worker restart must retain PostgreSQL and custody");
+      return { beforeUid: before.metadata.uid, afterUid: after.metadata.uid, ...durable };
+    } catch (error) {
+      try {
+        measurement("worker-restart-unconfirmed", { stage });
+      } catch {
+        // Diagnostic failures must not hide the original restart failure.
+      }
+      throw error;
+    }
   };
   return {
     request,
