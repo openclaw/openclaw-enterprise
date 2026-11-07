@@ -96,6 +96,28 @@ test(
     });
 
     await t.test(
+      "bundled proxy isolates Installations independently of private Gateway routing",
+      async () => {
+        for (const routing of [false, true]) {
+          await access.installGatewayProxy(routing);
+          const suffix = routing ? "routed" : "direct";
+          // These are TCP listeners under the real chart ingress policy, not a Gateway
+          // or CONNECT simulation. API reachability controls exclude a dead listener.
+          await access.verify({
+            source: `foreignproxy${suffix}`,
+            deny: ["bundledProxy"],
+            controlSource: "api",
+          });
+          await access.verify({
+            source: `ownproxy${suffix}`,
+            allow: ["bundledProxy"],
+            controlSource: "api",
+          });
+        }
+      },
+    );
+
+    await t.test(
       "the public OpenShell quickstart preserves scoped management access across tenants",
       async (t) => {
         // Real listeners, Services, renderer output and CNI enforce this boundary. These

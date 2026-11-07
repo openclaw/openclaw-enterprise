@@ -866,6 +866,10 @@ capabilities:
 {{- printf "http://%s.%s.svc:%v" (include "openclaw.gatewayProxy.serviceName" .) .Release.Namespace (int .Values.gatewayProxy.port) -}}
 {{- end -}}
 
+{{- define "openclaw.gatewayProxy.membershipLabel" -}}
+{{- printf "%s.%s.svc" (include "openclaw.gatewayProxy.serviceName" .) .Release.Namespace | sha256sum | trunc 12 -}}
+{{- end -}}
+
 {{- define "openclaw.gatewayRouting.gatewayName" -}}
 {{- default (printf "%s-agent-gateways" .Release.Name | trunc 63 | trimSuffix "-") .Values.gatewayRouting.gatewayName -}}
 {{- end -}}

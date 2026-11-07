@@ -13634,6 +13634,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     );
   }
 
+  private gatewayProxyMembershipLabels(): Record<string, string> {
+    const proxy = this.options.runtime?.proxy?.managedProxy;
+    return proxy === undefined
+      ? {}
+      : { "openclaw-enterprise.io/gateway-proxy": sha256Hex(proxy.hostname, 12) };
+  }
+
   private gatewayMembershipLabels(routing = this.options.gatewayRouting): Record<string, string> {
     if (routing === undefined) {
       return {};
@@ -16825,6 +16832,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               ...workloadMetadata.labels,
               ...revisionLabels,
               ...selector,
+              ...(role === "gateway" ? this.gatewayProxyMembershipLabels() : {}),
               "openclaw.dev/workload-role": role,
               [NETWORK_PROFILE_LABEL]: ORDINARY_NETWORK_PROFILE,
             },

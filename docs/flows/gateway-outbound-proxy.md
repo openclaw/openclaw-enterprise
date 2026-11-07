@@ -1,7 +1,7 @@
 ---
 created: 2026-11-05
-updated: "2026-11-06 10:19"
-last_updated_session: authoring-run/7e80bc76-2c25-4192-8252-a715554fc6bf
+updated: "2026-11-07 22:19"
+last_updated_session: authoring-run/e5566c73-7f62-474c-8b67-8afd15abb6af
 ---
 
 # Gateway outbound proxy flow
@@ -83,6 +83,15 @@ channel and native-worker qualification gates are unchanged.
 Embedded two-cluster Gateways reject a managed control-cluster proxy Service;
 that placement needs a reachable external endpoint.
 
+`deployment` adds `openclaw-enterprise.io/gateway-proxy` to Gateway Pods when
+Compute selects a managed proxy. `gatewayProxyMembershipLabels` hashes its
+namespace-qualified Service hostname. Helm's `openclaw.gatewayProxy.membershipLabel`
+derives the same value. `deploy/helm/openclaw-enterprise/templates/gateway-proxy.yaml`
+admits matching Gateway Pods only in Gateway namespaces, independently of
+`gatewayRouting.enabled`. Private-routing membership and namespace ownership
+remain unchanged. Another Installation's proxy Service produces a different
+selector; generic Gateway Pod labels alone do not grant access.
+
 ### 3. Connect and release internal transport
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:deployment`
@@ -134,6 +143,7 @@ prevents direct Internet fallback; this is not whole-Harness containment.
 
 ## Changelog
 
+- 2026-11-07 22:19: Separate bundled proxy membership from optional private Gateway routing (authoring-run/e5566c73-7f62-474c-8b67-8afd15abb6af - e0752e3bf2caf929ff4012a2b5572d0e8b508be0)
 - 2026-11-06 10:19: Retain the directory-only proxy override with shared-default routing and exact API egress (authoring-run/7e80bc76-2c25-4192-8252-a715554fc6bf - f4d2e15fc73f6ef43016e0ce959df010bd2be98c)
 - 2026-11-05 20:33: Preserve proxy-policy identity across endpoint changes, removal and retirement (authoring-run/7e915b47-503f-4c59-85b5-679cc43bd09f - 393028040769a3d0064b0bf74af7378b4ba07381)
 - 2026-11-05 20:13: Trace explicit all-hosts policy with unchanged port and address restrictions (authoring-run/e9bf9370-1230-46cf-a388-d218708b8969 - dc5024a57ef9a046e31b191295a379296309d5ff)
