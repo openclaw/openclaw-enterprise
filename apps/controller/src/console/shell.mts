@@ -551,9 +551,14 @@ export function createShell({
     const subpage = feature === "agents" && state.page ? state.page : null;
     // A page held during a navigation shows Namespace recovery only if it already did.
     const recovery = state.recovery ?? true;
+    const focused = document.activeElement;
+    // After admission the reader can Tab to the header's selector while the page read runs.
+    const focusedNamespace =
+      focused === namespaceSelect && namespaceSelect?.closest(".page-header")
+        ? namespaceSelect.value
+        : null;
     namespaceSelect = null;
     // Moving the retained menu into the new sidebar detaches it; give focus back afterwards.
-    const focused = document.activeElement;
     const menuFocus =
       focused instanceof HTMLElement && menuControls?.contains(focused) ? focused : null;
     // Like the menu, a mobile drawer opened between a page load's two renders stays open.
@@ -860,6 +865,12 @@ export function createShell({
       // If focus can't return (the menu is hidden), don't leave it open out of sight.
       if (document.activeElement !== menuFocus) {
         menuControls?.close();
+      }
+    }
+    if (focusedNamespace && document.activeElement === document.body) {
+      const replacement = scopeSelector?.querySelector("select");
+      if (replacement?.value === focusedNamespace && !replacement.disabled) {
+        replacement.focus({ preventScroll: true });
       }
     }
     return { view, refresh, diagnostics, scopeSelector, actions };
