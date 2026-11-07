@@ -111,6 +111,7 @@
     "tests/conformance/repository-credentials-custody.test.ts",
     "tests/conformance/repository-credentials-receive-pack.test.mjs",
     "tests/integration/runtime-assets.test.mjs",
+    "tests/integration/runtime-ai-package-relocation.test.ts",
     "tests/integration/openclaw-source.test.ts",
     "tests/conformance/repository-client-environment.test.mjs",
     "tests/conformance/repository-credentials-tool-evidence.test.mjs",
@@ -544,6 +545,12 @@
     },
     {
       "path": "tests/integration/runtime-assets.test.mjs"
+    },
+    {
+      "path": "tests/integration/runtime-ai-package-relocation.test.ts",
+      "expectedTests": [
+        "the runtime Dockerfile preserves AI dependency resolution when copying the workspace package"
+      ]
     },
     {
       "path": "tests/integration/openclaw-source.test.ts"
