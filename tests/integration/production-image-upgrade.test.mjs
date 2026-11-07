@@ -350,7 +350,12 @@ esac
   await writeCommand(
     bin,
     "yq",
-    `case "$*" in
+    `if [[ "$*" == *OCE_UPGRADE_ATTEMPT* ]]; then
+  PATH="$ORIGINAL_TOOL_PATH" exec yq -o=json "$@"
+elif [[ "$1" == -p=yaml && "\${!#}" == - ]]; then
+  PATH="$ORIGINAL_TOOL_PATH" exec yq "$@"
+fi
+case "$*" in
   *'-o=json '*)
     for path in "$@"; do :; done
     cat "$path"
@@ -368,7 +373,7 @@ esac
   await writeCommand(
     bin,
     "python3",
-    `if [[ "$1" == scripts/upgrade-dispatch-state.py ||
+    `if [[ "$1" == scripts/upgrade-dispatch-state.py || "$1" == scripts/upgrade-helm-state.py ||
       ( "$1" == - && "$4" == */oce-upgrade-preflight-* ) ||
       ( "$1" == - && ( "$2" == deploy/helm/openclaw-enterprise ||
         "$2" == "$UPGRADE_TEST_KUBECONFIG" || "$2" == */parameters.json ) ) ]]; then
@@ -523,14 +528,14 @@ fi
       env: environment,
     }),
     (error) => {
-      assert.equal(error.code, 47);
+      assert.equal(error.code, 47, error.stderr);
       assert.doesNotMatch(error.stderr, /must not grant group or other permissions/);
       assert.doesNotMatch(error.stderr, /contains no running Agents/);
       return true;
     },
   );
 
-  // This fixture's yq only cats JSON streams; jq's object validation is real.
+  // The baseline yq branch cats JSON streams; jq's object validation is real.
   // Explicit null is the JSON output real yq emits for a trailing empty document.
   // Preserve ordered mapping documents, but refuse non-mappings anywhere.
   const installationDocuments = `${installationDocument}\n${JSON.stringify({ name: "second" })}\n`;
@@ -543,7 +548,7 @@ fi
         env: environment,
       }),
       (error) => {
-        assert.equal(error.code, 47);
+        assert.equal(error.code, 47, error.stderr);
         return true;
       },
     );
@@ -594,18 +599,29 @@ fi
   const commandLog = join(directory, "commands.log");
   // The startup preflight reads each controller container's image and Installation
   // mount from the rendered chart; this stand-in renders only those fields.
+  // Accepted upgrades retain their submitted values and advance the revision;
+  // server dry-runs must leave both unchanged.
   await writeCommand(
     bin,
     "helm",
     `printf 'helm %s\\n' "$*" >>"$COMMAND_LOG"
+revision_file="$LIVE_VALUES_FILE.revision"
+revision=1
+[[ ! -f "$revision_file" ]] || revision=$(cat "$revision_file")
 if [[ "$1" == status ]]; then
   state=deployed
   if [[ -n "\${CURRENT_HELM_EVIDENCE:-}" && -f "$CURRENT_HELM_EVIDENCE/prepared" ]]; then
     state="$CURRENT_HELM_STATE"
   fi
-  printf '{"info":{"status":"%s"},"version":1}\\n' "$state"
+  printf '{"info":{"status":"%s"},"version":%s}\\n' "$state" "$revision"
 elif [[ "$*" == *'get values'* ]]; then
   cat "$LIVE_VALUES_FILE"
+elif [[ "$1" == upgrade && "$*" != *--dry-run=* ]]; then
+  while (($#)); do
+    if [[ "$1" == --values ]]; then cp "$2" "$LIVE_VALUES_FILE"; break; fi
+    shift
+  done
+  printf '%s\\n' "$((revision + 1))" >"$revision_file"
 elif [[ "$1" == template ]]; then
   printf -- '---\\n%s\\n' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-api"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"api","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-worker"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"worker","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}'
 fi
@@ -770,7 +786,7 @@ esac
   for (const [state, refusal] of [
     [
       "pending-upgrade",
-      /Helm reports pending-upgrade; resolve the in-progress or unknown release/u,
+      /Helm reports pending-upgrade; reconcile the interrupted client before recovery/u,
     ],
     ["failed", /the Helm release changed before this upgrade started/u],
   ]) {
@@ -850,6 +866,7 @@ esac
   });
   await writeFile(protectedFiles.values, valuesDocument, { mode: 0o600 });
   await writeFile(protectedFiles.installation, installationDocument, { mode: 0o600 });
+  await writeFile(liveValues, valuesDocument, { mode: 0o600 });
   await rm(commandLog, { force: true });
   await rm(readinessCounter, { force: true });
   await rm(runtimeCountCounter, { force: true });
