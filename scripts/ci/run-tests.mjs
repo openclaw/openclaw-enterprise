@@ -1879,10 +1879,34 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
     );
   }
 
-  const observedFiles = new Map(summary.files.map((file) => [file.path, file]));
+  const observedFiles = Map.groupBy(summary.files, (file) => file.path);
+  for (const [file, records] of observedFiles) {
+    if (records.length > 1) {
+      const expectedFile = lane.files.find((entry) => entry.path === file);
+      if (expectedFile) {
+        issues.push(
+          issue(
+            "duplicate-lane-file",
+            `lane ${laneName} has duplicate file evidence for ${expectedFile.path}`,
+            { lane: laneName, file: expectedFile.path },
+          ),
+        );
+      } else {
+        issues.push(
+          issue(
+            "duplicate-lane-file",
+            `lane ${laneName} has duplicate file evidence for an unregistered file`,
+            {
+              lane: laneName,
+            },
+          ),
+        );
+      }
+    }
+  }
   for (const expectedFile of lane.files) {
-    const observed = observedFiles.get(expectedFile.path);
-    if (!observed) {
+    const records = observedFiles.get(expectedFile.path);
+    if (!records) {
       issues.push(
         issue("missing-lane-evidence", `lane ${laneName} is missing file evidence`, {
           lane: laneName,
@@ -1891,37 +1915,44 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
       );
       continue;
     }
-    if (observed.status !== "passed") {
-      issues.push(
-        issue("lane-file-failed", `lane ${laneName} file did not pass`, {
-          lane: laneName,
-          file: expectedFile.path,
-          status: observed.status,
-        }),
-      );
-    }
-    if (
-      !observed.counts ||
-      !Number.isInteger(observed.counts.total) ||
-      observed.counts.total < 1 ||
-      !Array.isArray(observed.tests)
-    ) {
-      issues.push(
-        issue("missing-lane-evidence", `lane ${laneName} file has no test evidence`, {
-          lane: laneName,
-          file: expectedFile.path,
-        }),
-      );
-    } else {
-      validateExpectedTests(expectedFile.path, expectedFile.expectedTests, observed.tests, issues);
-    }
-    if (observed.cleanup != null && observed.cleanup.status !== "passed") {
-      issues.push(
-        issue("cleanup-failed", `lane ${laneName} file cleanup did not pass`, {
-          lane: laneName,
-          file: expectedFile.path,
-        }),
-      );
+    for (const observed of records) {
+      if (observed.status !== "passed") {
+        issues.push(
+          issue("lane-file-failed", `lane ${laneName} file did not pass`, {
+            lane: laneName,
+            file: expectedFile.path,
+            status: observed.status,
+          }),
+        );
+      }
+      if (
+        !observed.counts ||
+        !Number.isInteger(observed.counts.total) ||
+        observed.counts.total < 1 ||
+        !Array.isArray(observed.tests)
+      ) {
+        issues.push(
+          issue("missing-lane-evidence", `lane ${laneName} file has no test evidence`, {
+            lane: laneName,
+            file: expectedFile.path,
+          }),
+        );
+      } else {
+        validateExpectedTests(
+          expectedFile.path,
+          expectedFile.expectedTests,
+          observed.tests,
+          issues,
+        );
+      }
+      if (observed.cleanup != null && observed.cleanup.status !== "passed") {
+        issues.push(
+          issue("cleanup-failed", `lane ${laneName} file cleanup did not pass`, {
+            lane: laneName,
+            file: expectedFile.path,
+          }),
+        );
+      }
     }
   }
 }
