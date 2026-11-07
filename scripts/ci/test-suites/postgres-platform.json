@@ -64,7 +64,8 @@
     "tests/integration/credential-proxy-revision-currentness.test.ts",
     "tests/integration/postgres-egress-policy-transaction.test.ts",
     "tests/integration/postgres-credential-source-revision-owner.test.ts",
-    "tests/integration/postgres-worker-process-shutdown.test.ts"
+    "tests/integration/postgres-worker-process-shutdown.test.ts",
+    "tests/integration/postgres-harness-overrides.test.ts"
   ],
   "files": [
     {
@@ -458,7 +459,8 @@
       "expectedTests": [
         "one selected repository renews beyond its original session without replacing the execution and denies withdrawn approval",
         "an expired acknowledged launch refuses a pending successor after recipient changes",
-        "an expired acknowledged launch refuses a pending successor after approval changes"
+        "an expired acknowledged launch refuses a pending successor after approval changes",
+        "a cold worker persists redeploy-required standing Git status without renewing it"
       ]
     },
     {
@@ -626,6 +628,12 @@
       "path": "tests/integration/postgres-worker-process-shutdown.test.ts",
       "expectedTests": [
         "worker.mjs exits cleanly on SIGTERM after stopping the worker and its metrics listener"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-harness-overrides.test.ts",
+      "expectedTests": [
+        "PostgreSQL preserves Harness destinations across restart and default replacement"
       ]
     }
   ]

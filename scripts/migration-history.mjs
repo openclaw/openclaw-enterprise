@@ -167,6 +167,9 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preDefaultUsers";
   }
   if (count === 71 && completedCount > 71) {
+    return "preHarnessOverrides";
+  }
+  if (count === 72 && completedCount > 72) {
     return "preNamespacePluginReleases";
   }
   if (count === completedCount) {

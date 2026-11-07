@@ -52,9 +52,9 @@ Prepare:
   database state;
 - the production kubeconfig, Helm values, Installation YAML, OCC service key,
   and optional CA bundle in protected files;
-- Bash, Python 3, Node.js, Helm, kubectl, jq, yq, cmp and mktemp on the operator host. The Kubernetes identity must create and
-  delete Pods, Secrets and NetworkPolicies and read Pod logs in the release
-  namespace;
+- Bash, Python 3, Node.js, Helm, kubectl, jq, yq, cmp and mktemp on the operator host. The Kubernetes identity must
+  create and delete Jobs, Secrets and NetworkPolicies; get Jobs and Pods; list Pods;
+  read Pod logs; and get and patch Deployments in the release namespace;
 - for the bundled Collector, [refresh its config Secret](../observability.md#refresh-the-collector-configuration-on-upgrade)
   from the release checkout and restart the Collector, even for image-only
   releases. Helm leaves the Secret as is. The helper stops before mutation if
@@ -207,7 +207,10 @@ bootstrap record disagree.
 ## Rehearse before the maintenance window
 
 `--preflight-only` checks target inputs and applicable repository image pairs,
-runs a Helm server dry run, and checks startup in temporary API and worker Pods.
+runs a Helm server dry run, and checks startup in temporary API and worker Jobs.
+Their controller-owned Pods retain the chart's security settings and NetworkPolicy
+labels. The helper confirms Job and child cleanup before removing their Secret
+and policy; uncertain cleanup stops the upgrade before any writer is stopped.
 Add this flag to the controller or runtime command below. Use
 `--evidence-dir "${UPGRADE_EVIDENCE}-preflight"` for this run. Writers stay
 active. After [cleanup](production-upgrade-recovery.md#clean-up-preflight-resources),

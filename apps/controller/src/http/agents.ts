@@ -14,6 +14,7 @@ import {
   restrictionsRemovedWithAgent,
   type AgentProvisioningProgress,
   type CreateAgentInput,
+  type DeployAgentInput,
   type HarnessResolver,
   type ProvisionAgentInput,
   type UpdateAgentInput,
@@ -497,7 +498,11 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       try {
         const receipt = await controller.deployAgentFirst(
           context.actorId,
-          { namespaceId, agentId: params.agentId! },
+          {
+            namespaceId,
+            agentId: params.agentId!,
+            harnessOverrides: (request.body as FirstDeploymentIntent).harnessOverrides,
+          },
           request.body as FirstDeploymentIntent,
           options.resolveHarness,
           (admitted) =>
@@ -523,10 +528,19 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       params,
       namespaceId,
     }) {
+      let harnessOverrides: DeployAgentInput["harnessOverrides"];
+      const query = request.query as { harnessOverrides?: string };
+      if (query.harnessOverrides !== undefined) {
+        try {
+          harnessOverrides = JSON.parse(query.harnessOverrides);
+        } catch {
+          throw failure(400, "INVALID_REQUEST", "Harness overrides must be JSON.");
+        }
+      }
       reply.header("cache-control", "no-store");
       const receipt = await controller.recoverAgentFirstDeployment(
         context.actorId,
-        { namespaceId, agentId: params.agentId! },
+        { namespaceId, agentId: params.agentId!, harnessOverrides },
         {
           key: params.key!,
           expectedConfigurationId: params.expectedConfigurationId!,
@@ -540,7 +554,11 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       try {
         const admitted = await controller.deployAgentWithAuthorization(
           context.actorId,
-          { namespaceId, agentId },
+          {
+            namespaceId,
+            agentId,
+            harnessOverrides: (request.body as DeployAgentInput | undefined)?.harnessOverrides,
+          },
           options.resolveHarness,
           (admitted) =>
             mutationEvent(

@@ -44,7 +44,8 @@ type AgentDetailScenario = {
   rules?: Parameters<typeof createFixtureFetch>[0];
   nextStory?: string;
   deployed?: true;
-  auth?: "oauth" | "codex_pat" | null;
+  auth?: "oauth" | "codex_pat" | "api-source" | null;
+  harnessOverrides?: Record<string, unknown>;
   agentPlugins?: PluginDesiredState;
   agentPluginApprovers?: PluginApprovers;
   pluginCapabilities?: PluginFieldsOptions["capabilities"];
@@ -238,6 +239,41 @@ export function createAgentDetailScenarios({
     } satisfies Record<string, AgentDetailScenario>,
 
     configuration: {
+      harnessOverrides: {
+        group: "Pages/Agent detail",
+        name: "Harness destination override",
+        path: draft,
+        deployed: true,
+        auth: "api-source",
+        harnessOverrides: {
+          modelProvider: {
+            baseUrl: "https://evaluation.example.com/v1",
+            protocol: "openai-responses",
+            supportsStandaloneWebSearch: false,
+          },
+        },
+        description:
+          "Submit requested overrides and inspect the resolved settings after deployment.",
+        steps: [
+          "Read the requested destination beside the deployment checklist. Open Harness destination, choose Override model provider, enter an authorized HTTPS /v1 endpoint, then deploy and inspect requested and resolved settings.",
+        ],
+        gap: "Simulated UI proof only; source consent, persistence and inference routing require integration checks.",
+      },
+      harnessDeploymentPending: {
+        group: "Pages/Agent detail",
+        name: "Harness deployment pending",
+        path: draft,
+        description:
+          "The actual deployment request is pending; duplicate submission is unavailable.",
+        rules: [{ method: "POST", suffix: "/deploy", hold: true }],
+      },
+      harnessDeploymentDenied: {
+        group: "Pages/Agent detail",
+        name: "Harness deployment denied",
+        path: draft,
+        description: "Admission refuses the requested settings without creating a version.",
+        rules: [{ method: "POST", suffix: "/deploy", status: 403 }],
+      },
       draft: {
         group: "Pages/Agent detail",
         name: "First version",
@@ -1367,6 +1403,45 @@ export function createAgentDetailScenarios({
         steps: [
           "Open Deployment details with Enter to inspect the completed stages. Refresh deployment; your disclosure choice is preserved.",
         ],
+      },
+      repositoryAccessRedeployRequired: {
+        group: "Pages/Agent detail",
+        name: "Repository access needs redeployment after completion",
+        path: `${candidateVersion}&tab=deployment`,
+        deployed: true,
+        candidateDeploymentStatus: "succeeded",
+        candidateSelected: true,
+        rules: [
+          {
+            method: "GET",
+            suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+            skip: 1,
+            data: {
+              deploymentId: "rev_00000000-0000-4000-8000-000000000007",
+              namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+              agentId: "agt_00000000-0000-4000-8000-000000000001",
+              status: "succeeded",
+              cleanup: null,
+              error: null,
+              progress: null,
+              warnings: [],
+              repositoryAccess: {
+                state: "redeploy-required",
+                code: "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED",
+                message:
+                  "The controller can no longer renew this version's repository access on its current runtime. Deploy again to restore repository access.",
+              },
+            } satisfies AgentDeploymentStatusWire,
+          },
+        ],
+        description:
+          "A completed version acquires a repository access condition on refresh. The original deployment remains Completed and the API guidance appears beside it.",
+        steps: [
+          "Open Deployment and choose Refresh record. Both the version record and expanded Deployment activity show the repository access guidance while keeping Completed.",
+          "View v6 and open Deployment. Its record has no repository notice; Deployment activity still describes v7. Browsing and refreshing send no deployment request.",
+          "Return to v7 and choose Refresh deployment. The guidance stays with v7. Repeat at phone width and check the full message wraps without horizontal scrolling.",
+        ],
+        gap: "Simulated UI proof only; no repository renewal, deployment, or runtime is exercised. Absence of the condition does not establish healthy Git access.",
       },
       repositoryDraft: {
         group: "Pages/Agent detail",

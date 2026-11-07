@@ -62,7 +62,13 @@ export type CreatedRevision = {
   credentialSources: unknown;
   pluginApprovers?: unknown;
   plugins?: { driver: unknown; plugins: unknown };
-  harness: { id: unknown; version: string; mode: unknown };
+  harness: {
+    id: unknown;
+    version: string;
+    mode: unknown;
+    overrides: Record<string, unknown>;
+    configuration: Record<string, unknown>;
+  };
   compute: { id: string; implementation: string };
   sandboxDriverId?: string;
   servicePrincipalId: unknown;
@@ -86,6 +92,7 @@ type UnreadableRevision = Pick<
 };
 type StoredRevision = CreatedRevision | UnreadableRevision;
 type LifecycleScenario = Parameters<typeof createAgentRoutes>[0] & {
+  harnessOverrides?: Record<string, unknown>;
   candidateSuperseded?: boolean;
   candidateSelected?: boolean;
   agentId?: string;
@@ -307,7 +314,21 @@ export function createAgentLifecycle(
             },
           }
         : {}),
-      harness: { id: harnessId, version: "demo", mode: owner.executionMode },
+      harness: {
+        id: harnessId,
+        version: "demo",
+        mode: owner.executionMode,
+        overrides: structuredClone(scenario.harnessOverrides ?? {}),
+        configuration: {
+          modelProvider: structuredClone(
+            scenario.harnessOverrides?.modelProvider ?? {
+              baseUrl: "https://api.openai.com/v1",
+              protocol: "openai-responses",
+              supportsStandaloneWebSearch: false,
+            },
+          ),
+        },
+      },
       compute: { id: "kubernetes-demo", implementation: "kubernetes" },
       ...(scenario.policyState ? { sandboxDriverId: "sandbox-story" } : {}),
       servicePrincipalId: owner.servicePrincipalId,
@@ -584,6 +605,14 @@ export function createAgentLifecycle(
           .map((item) => item.revision),
       );
       const next = snapshot(saved, nextId("rev"), lastRevision + 1);
+      next.harness.overrides = spreadProperties(optionalProperty(body, "harnessOverrides") ?? {});
+      next.harness.configuration = {
+        modelProvider: next.harness.overrides.modelProvider ?? {
+          baseUrl: "https://api.openai.com/v1",
+          protocol: "openai-responses",
+          supportsStandaloneWebSearch: false,
+        },
+      };
       revisions.set(next.id, next);
       const stagedFiles = stagedWorkspaceFiles.get(id);
       for (const [filename, content] of Object.entries(stagedFiles ?? {})) {

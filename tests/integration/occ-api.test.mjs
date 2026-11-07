@@ -1344,6 +1344,7 @@ test("direct first-deployment captures scalars once for fresh admission and reco
           const pending = deploy(actor, input, body, ...rest);
           if (change !== "stateful key") {
             input.agentId = missingAgentId;
+            input.harnessOverrides = { unsupported: true };
             body.expectedGeneration = 2;
           }
           return pending;
@@ -7932,7 +7933,7 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
     assert.equal(invalidReplacement.status, 400);
   }
 
-  for (const body of [{ configuration: {} }, { draft_spec: {} }, {}]) {
+  for (const body of [{ configuration: {} }, { draft_spec: {} }]) {
     const invalidDeployment = await controller.request(
       "POST",
       `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
@@ -9436,6 +9437,8 @@ test("two Namespaces become independently ready and deletion tombstones only its
     id: "openclaw",
     version: "1.0.0",
     mode: "embedded",
+    overrides: {},
+    configuration: {},
   });
   assert.deepEqual(readyDeployment.data.compute, {
     id: "compute-integration",

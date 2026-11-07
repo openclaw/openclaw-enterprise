@@ -454,7 +454,6 @@ func TestK3dRegistryAttachmentOrdering(t *testing.T) {
 		"k3d cluster create " + cluster + " ",
 		"docker network connect k3d-" + cluster + " " + registryTestContainer,
 		"docker exec k3d-" + cluster + "-server-0 ctr -n k8s.io images pull --plain-http --platform linux/amd64 " + registryTestAddress + ":5000/oce-smoke/runtime@" + profileTestDigest,
-		"node scripts/prepare-development-codex-seccomp.mjs ",
 		"docker network disconnect k3d-" + cluster + " " + registryTestContainer,
 		"k3d cluster delete " + cluster,
 	} {
@@ -464,7 +463,15 @@ func TestK3dRegistryAttachmentOrdering(t *testing.T) {
 		}
 		previous = i
 	}
-	for _, call := range calls {
+	// The probe and controller import overlap; a probe failure can cancel that pull.
+	if probe := index("node scripts/prepare-development-codex-seccomp.mjs "); probe < 0 || probe >= index("k3d cluster delete "+cluster) {
+		t.Fatal("the Codex sandbox probe was not attempted before rollback")
+	}
+	disconnect := index("docker network disconnect k3d-" + cluster + " " + registryTestContainer)
+	for i, call := range calls {
+		if strings.HasPrefix(call, "docker exec k3d-"+cluster+"-server-0 ctr -n k8s.io images pull ") && i >= disconnect {
+			t.Fatalf("registry pull after disconnect: %s", call)
+		}
 		if strings.Contains(call, "image save") && !strings.Contains(call, staging) {
 			t.Fatalf("a registry image was exported: %s", call)
 		}

@@ -1,3 +1,4 @@
+import { deploymentRepositoryAccessStatus } from "./deployment-repository-access.ts";
 import { exchangeAuthorizationCode, startBrowserAuthorization } from "./browser-authorization.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import { isReducedCredentialPlan } from "./credential-policy-reduction.ts";
@@ -211,6 +212,8 @@ import type {
   Preset,
   PresetSummary,
   PresetTemplate,
+  PresetDraftTemplate,
+  PresetDraftDefinition,
   PermissionAction,
   PluginDesiredSelection,
   PluginDesiredState,
@@ -465,6 +468,7 @@ export type { OperationRefusalHintCode } from "./state/controller-work.ts";
 export {
   ActivationFailedError,
   ComputePreparationFailedError,
+  RepositoryExecutionRequiresRedeployError,
   ActivationPendingError,
   agentEntryMessage,
   AgentCredentialSourceBindingError,
@@ -846,7 +850,7 @@ export interface ControllerOptions {
   readonly state?: PlatformStateStore;
   readonly recordOperations?: boolean;
   readonly backends?: readonly BackendDefinition[];
-  readonly defaultPresets?: readonly Pick<Preset, "name" | "template">[];
+  readonly defaultPresets?: readonly PresetDraftDefinition[];
   /**
    * Every shipped version of the bundled default Presets, current and superseded, loaded
    * whether or not `presets.includeDefaults` seeds them. Startup refreshes Namespace copies
@@ -886,9 +890,7 @@ export interface ServiceAccountDeletion {
 }
 
 /** One shipped version of a bundled default Preset (`deploy/presets/archive/versions.json`). */
-export interface BundledPresetVersion {
-  readonly name: string;
-  readonly template: PresetTemplate;
+export interface BundledPresetVersion extends PresetDraftDefinition {
   /** Bundled file this version shipped as, for example `standard-codex.json`. */
   readonly file: string;
   /** Canonical-JSON digest that names this version in the archive. */
@@ -1205,6 +1207,7 @@ export interface UpdateConfigurationInput {
 }
 
 export interface DeployAgentInput {
+  readonly harnessOverrides?: Readonly<Record<string, unknown>> | undefined;
   readonly namespaceId: string;
   readonly agentId: string;
 }
@@ -2067,9 +2070,7 @@ function normalizeAgentPlugins(
   return normalizePluginDesiredState(plugins, invalidPluginRequest);
 }
 
-function normalizeAgentPluginApprovers(
-  approvers: PluginApprovers | undefined,
-): PluginApprovers | undefined {
+function normalizeAgentPluginApprovers(approvers: unknown): PluginApprovers | undefined {
   return normalizePluginApprovers(approvers, invalidPluginRequest);
 }
 
@@ -2288,7 +2289,7 @@ export class OpenClawController {
   private readonly selections = new Map<DriverCapability, RegisteredDriver>();
   private pluginRegistrations: readonly RegisteredDriver[] = [];
   private readonly backends: readonly BackendDefinition[];
-  private readonly defaultPresets: readonly Pick<Preset, "name" | "template">[];
+  private readonly defaultPresets: readonly PresetDraftDefinition[];
   private readonly bundledPresetVersions: readonly BundledPresetVersion[];
   private readonly refreshBundledDefaultPresets: boolean;
   private readonly loggingLevel: LoggingLevel;
@@ -6125,6 +6126,13 @@ export class OpenClawController {
         work.state === "queued" || work.state === "claimed"
           ? await state.operations.findWorkAttempt(idempotencyKey)
           : undefined;
+      const repositoryAccess = deploymentRepositoryAccessStatus(
+        await state.operations.hasRepositoryExecutionRedeployRequired({
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          revisionId: revision.id,
+        }),
+      );
       return Object.freeze({
         deploymentId: revision.id,
         namespaceId: revision.namespaceId,
@@ -6132,6 +6140,7 @@ export class OpenClawController {
         status: deploymentStatusForWork(work, attempt, this.clock()),
         cleanup: await this.deploymentCleanupStatus(state, revision),
         error: deploymentErrorForWork(work),
+        ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
         warnings: deploymentWarningsForWork(work),
         progress: deploymentProgressForWork(work, attempt),
       });
@@ -6738,7 +6747,7 @@ export class OpenClawController {
     state: PlatformUnitOfWork,
     principalId: string,
     namespace: Readonly<Namespace>,
-    seeded: Pick<Preset, "name" | "template">,
+    seeded: PresetDraftDefinition,
     copy: Readonly<Preset>,
     refresh: {
       readonly skip: DefaultPresetRefreshSkip;
@@ -7030,7 +7039,7 @@ export class OpenClawController {
     );
   }
 
-  private presetMatchesTemplate(preset: Readonly<Preset>, template: PresetTemplate): boolean {
+  private presetMatchesTemplate(preset: Readonly<Preset>, template: PresetDraftTemplate): boolean {
     try {
       return isDeepStrictEqual(
         normalizePresetTemplate(template, preset.namespaceId),
@@ -7042,7 +7051,7 @@ export class OpenClawController {
   }
 
   private async admitPresetTemplate(
-    input: PresetTemplate,
+    input: PresetDraftTemplate,
     namespaceId: string,
   ): Promise<PresetTemplate> {
     const template = normalizePresetTemplate(input, namespaceId);
@@ -7116,7 +7125,7 @@ export class OpenClawController {
     }
     if (literal("pluginApprovers") && this.pluginRegistrations.length > 0) {
       checked("pluginApprovers", () => {
-        const approvers = normalizeAgentPluginApprovers(agent.pluginApprovers as PluginApprovers);
+        const approvers = normalizeAgentPluginApprovers(agent.pluginApprovers);
         // The Harness can be filled in at launch. Reject a literal here only when
         // every enabled catalog would refuse it.
         let refusal: PluginPolicyValidationError | undefined;
@@ -7818,6 +7827,18 @@ export class OpenClawController {
       return deny("stale_configuration");
     }
     const provider = selectedProvider.receiver;
+    try {
+      const routes = Reflect.apply(selectedProvider.methods.routes, provider, [
+        source,
+        use.route.binding,
+        revision.harness.configuration,
+      ]);
+      if (!routes.some((route) => isDeepStrictEqual(route, use.route))) {
+        return deny("stale_configuration");
+      }
+    } catch {
+      return deny("stale_configuration");
+    }
     if (
       !isDeepStrictEqual(
         Reflect.apply(selectedProvider.methods.classify, provider, [use.route, use.request]),
@@ -8190,6 +8211,7 @@ export class OpenClawController {
     sandboxDriverId?: string,
     repositoryGit?: RepositoryRevisionState,
     harnessAuth?: HarnessAuthSnapshot,
+    harnessConfiguration?: Readonly<Record<string, unknown>>,
   ): Promise<ProxyPlan | undefined> {
     const sources: CredentialSource[] = [];
     let harnessCredentialSource: ProxyPlan["harnessCredentialSource"];
@@ -8328,14 +8350,18 @@ export class OpenClawController {
         // Preserve the contracts digest without dropping any Driver-supplied grant fields.
         digestGrant = canonical;
       }
-      return provider.routes(source, {
-        binding: { id: crypto.randomUUID(), generation: 1 },
-        execution,
-        source: admitted.key,
-        grant,
-        grantHash: createHash("sha256").update(JSON.stringify(digestGrant)).digest("hex"),
-        isolationId: agent.id,
-      });
+      return provider.routes(
+        source,
+        {
+          binding: { id: crypto.randomUUID(), generation: 1 },
+          execution,
+          source: admitted.key,
+          grant,
+          grantHash: createHash("sha256").update(JSON.stringify(digestGrant)).digest("hex"),
+          isolationId: agent.id,
+        },
+        harnessConfiguration,
+      );
     });
     return immutableCopy({
       id: crypto.randomUUID(),
@@ -12686,13 +12712,39 @@ export class OpenClawController {
     });
   }
 
+  private normalizedHarnessOverrides(value: unknown): Readonly<Record<string, unknown>> {
+    const overrides = value === undefined ? {} : asRecord(value);
+    if (overrides === undefined) {
+      throw new ConfigurationHarnessError("Harness overrides must be an object.");
+    }
+    let compute: ComputeDriver;
+    try {
+      compute = this.selectedDriver("compute");
+    } catch {
+      throw new DependencyUnavailableError("The selected compute Driver is unavailable.");
+    }
+    if (compute.normalizeHarnessOverrides === undefined) {
+      if (Object.keys(overrides).length !== 0) {
+        throw new ConfigurationHarnessError(
+          "The selected Compute does not support Harness overrides.",
+        );
+      }
+      return Object.freeze({});
+    }
+    return immutableCopy(compute.normalizeHarnessOverrides(overrides));
+  }
+
   private captureFirstDeploymentRequest(
     principalId: string,
     input: DeployAgentInput,
     intent: FirstDeploymentIntent,
   ) {
-    // Own only the request scalars, before validation or asynchronous work.
-    const target = { namespaceId: input.namespaceId, agentId: input.agentId };
+    // Own the normalized request and intent before asynchronous work.
+    const target = {
+      namespaceId: input.namespaceId,
+      agentId: input.agentId,
+      harnessOverrides: this.normalizedHarnessOverrides(input.harnessOverrides),
+    };
     const capturedIntent = intent && {
       key: intent.key,
       expectedConfigurationId: intent.expectedConfigurationId,
@@ -12722,6 +12774,7 @@ export class OpenClawController {
           capturedIntent.key,
           capturedIntent.expectedConfigurationId,
           capturedIntent.expectedGeneration,
+          canonicalProvisioningJson(target.harnessOverrides),
         ]),
       )
       .digest("hex");
@@ -13055,25 +13108,29 @@ export class OpenClawController {
     resolveHarness: HarnessResolver,
     auditEvent?: (result: Readonly<AuthorizedAgentDeployment>) => AuditEvent,
   ): Promise<Readonly<AuthorizedAgentDeployment>> {
-    return this.admitAgentDeployment(principalId, input, resolveHarness, auditEvent);
+    const captured = immutableCopy({
+      ...input,
+      harnessOverrides: this.normalizedHarnessOverrides(input.harnessOverrides),
+    });
+    return this.admitAgentDeployment(principalId, captured, resolveHarness, auditEvent);
   }
 
   private async admitAgentDeployment(
     principalId: string,
-    input: DeployAgentInput,
+    input: DeployAgentInput & { harnessOverrides: Readonly<Record<string, unknown>> },
     resolveHarness: HarnessResolver,
     auditEvent?: (result: Readonly<AuthorizedAgentDeployment>) => AuditEvent,
   ): Promise<Readonly<AuthorizedAgentDeployment>>;
   private async admitAgentDeployment(
     principalId: string,
-    input: DeployAgentInput,
+    input: DeployAgentInput & { harnessOverrides: Readonly<Record<string, unknown>> },
     resolveHarness: HarnessResolver,
     auditEvent: ((result: Readonly<AuthorizedAgentDeployment>) => AuditEvent) | undefined,
     first: FirstDeploymentGuard,
   ): Promise<Readonly<AuthorizedAgentDeployment> | Readonly<FirstDeploymentReceipt>>;
   private async admitAgentDeployment(
     principalId: string,
-    input: DeployAgentInput,
+    input: DeployAgentInput & { harnessOverrides: Readonly<Record<string, unknown>> },
     resolveHarness: HarnessResolver,
     auditEvent?: (result: Readonly<AuthorizedAgentDeployment>) => AuditEvent,
     first?: FirstDeploymentGuard,
@@ -13241,15 +13298,16 @@ export class OpenClawController {
       if (approvedHarness.id !== configuredHarnessId) {
         throw new ScopeViolationError("The approved Harness does not match the native runtime.");
       }
-      const revisionHarness = Object.freeze({
+      const requestedHarness = Object.freeze({
         ...approvedHarness,
         mode: lockedAgent.executionMode,
+        overrides: input.harnessOverrides,
       });
       // Capability refusals precede Agent principal grants: a grant cannot make an unsupported
       // topology deployable, so the refusal the operator can act on must surface first. A
       // missing Sandbox Driver is a permanent 409 here; provisioning handoff reaches this only
       // after fenceAgentProvisioning applied the stored-work check, which stays a retryable 503.
-      requireDedicatedNativeSupport(revisionHarness, sandbox, this.nativeWorkers, {
+      requireDedicatedNativeSupport(requestedHarness, sandbox, this.nativeWorkers, {
         configuration: configuration.values,
       });
       await this.grantDeployedAgentSources(
@@ -13263,6 +13321,15 @@ export class OpenClawController {
         principalId,
         lockedAgent,
       );
+      const revisionHarness = immutableCopy({
+        ...requestedHarness,
+        configuration:
+          compute.resolveHarnessConfiguration?.(
+            requestedHarness,
+            harnessAuth,
+            configuration.values,
+          ) ?? {},
+      });
       this.requireCredentialSourceDrivers(harnessAuth, sandbox);
       const driver =
         lockedAgent.plugins && Object.keys(lockedAgent.plugins).length
@@ -13291,6 +13358,8 @@ export class OpenClawController {
         sandbox,
         driver,
         pluginState?.importedReleases,
+        revisionHarness,
+        compute,
       );
       const secretBindings = this.bindings(metadata.secretBindings);
       const sources = await this.authorizeBindings(
@@ -13456,6 +13525,7 @@ export class OpenClawController {
         sandbox?.id,
         repositoryCredentials,
         harnessAuth,
+        revisionHarness.configuration,
       );
       let executionAdmission: ExecutionAdmission;
       if (egressPlan === undefined) {
@@ -15080,6 +15150,8 @@ export class OpenClawController {
     sandbox: SandboxDriver | undefined,
     driver: PluginDriver | undefined,
     releases: PluginRevisionState["importedReleases"],
+    harness: RevisionHarnessDescriptor,
+    compute: ComputeDriver,
   ): Promise<readonly CredentialSourceSnapshot[]> {
     const bindings = agent.credentialSources ?? [];
     if (bindings.length === 0) {
@@ -15120,6 +15192,7 @@ export class OpenClawController {
       if (source === undefined || source.state !== "ready") {
         throw new ScopeViolationError("The credential source is unavailable.");
       }
+      compute.validateHarnessCredentialSources?.(harness, [source]);
       const owner = this.credentialSourceOwner(source);
       if (owner.kind === "proxy") {
         if (!this.protectedSourceTypes().some((p) => p.type.type === source.type)) {

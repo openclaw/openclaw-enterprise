@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,101 @@ import (
 	"testing"
 	"time"
 )
+
+func TestDevelopmentRepository(t *testing.T) {
+	const declaration = "module github.com/openclaw/openclaw-enterprise"
+	const genericError = "run occ dev from an OpenClaw Enterprise source checkout"
+	for _, test := range []struct {
+		name       string
+		module     string
+		hasCompose bool
+		hasCRLF    bool
+		wantError  string
+	}{
+		{name: "LF ancestor", module: declaration + "\n", hasCompose: true},
+		{name: "CRLF marker", module: declaration + "\r\n", hasCompose: true, hasCRLF: true},
+		{name: "mixed line endings", module: declaration + "\n\r\ngo 1.27\r\n", hasCompose: true, hasCRLF: true},
+		{name: "other CRLF module", module: declaration + "-other\r\n", hasCompose: true, wantError: genericError},
+		{name: "CRLF without Compose", module: declaration + "\r\n", wantError: genericError},
+		{name: "no terminating newline", module: declaration, hasCompose: true, wantError: genericError},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := t.TempDir()
+			modulePath := filepath.Join(repository, "go.mod")
+			if err := os.WriteFile(modulePath, []byte(test.module), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if test.hasCompose {
+				if err := os.WriteFile(filepath.Join(repository, "compose.yaml"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			subdirectory := filepath.Join(repository, "subdirectory")
+			if err := os.Mkdir(subdirectory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(subdirectory)
+
+			got, err := developmentRepository()
+			wantError := test.wantError
+			if test.hasCRLF {
+				wantError = fmt.Sprintf("%q uses CRLF line endings; convert it to LF before running occ dev", modulePath)
+			}
+			if wantError != "" {
+				if got != "" || err == nil || err.Error() != wantError {
+					t.Fatalf("developmentRepository() = %q, %v; want no path and %q", got, err, wantError)
+				}
+				return
+			}
+			if err != nil || got != repository {
+				t.Fatalf("developmentRepository() = %q, %v; want %q", got, err, repository)
+			}
+		})
+	}
+}
+
+func TestDevRefusesNearestCRLFCheckout(t *testing.T) {
+	const declaration = "module github.com/openclaw/openclaw-enterprise"
+	for _, module := range []struct{ name, content string }{
+		{"CRLF", declaration + "\r\n"},
+		{"mixed endings", declaration + "\n\r\ngo 1.27.3\r\n"},
+	} {
+		for _, args := range [][]string{{"dev", "up"}, {"dev", "down", "--volumes"}} {
+			t.Run(module.name+"/"+args[1], func(t *testing.T) {
+				repository := t.TempDir()
+				nested := filepath.Join(repository, "nested")
+				if err := os.Mkdir(nested, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				// The outer checkout is valid, but must never receive the inner
+				// checkout's startup or destructive cleanup command.
+				for directory, content := range map[string]string{repository: declaration + "\n", nested: module.content} {
+					if err := os.WriteFile(filepath.Join(directory, "go.mod"), []byte(content), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(directory, "compose.yaml"), nil, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				t.Chdir(nested)
+				// Keep an accidental dispatch from reaching host tools. This
+				// does not replace repository discovery or the CLI command tree.
+				t.Setenv("PATH", t.TempDir())
+				t.Setenv("OCC_DEVELOPMENT_COMPUTE_DRIVER", "docker")
+				t.Setenv("OCC_DEVELOPMENT_SANDBOX_DRIVER", "none")
+				t.Setenv("OCC_DEVELOPMENT_CONTROL_PLANE", "")
+				var output bytes.Buffer
+				command := New(&output, &output)
+				command.SetArgs(args)
+				err := command.Execute()
+				want := fmt.Sprintf("%q uses CRLF line endings; convert it to LF before running occ dev", filepath.Join(nested, "go.mod"))
+				if err == nil || err.Error() != want {
+					t.Fatalf("%v: got %v; want nearest-checkout refusal %q", args, err, want)
+				}
+			})
+		}
+	}
+}
 
 func TestDevUpRejectsSandboxPolicyFlagsBeforeDockerStartup(t *testing.T) {
 	repository, err := developmentRepository()

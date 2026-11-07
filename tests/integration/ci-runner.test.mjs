@@ -225,6 +225,8 @@ test("run resolves lane documents relative to the manifest and preserves ordered
       "OCC_PROBE_BROKER_IMAGE",
       "OCC_PROBE_OLD_CONTROLLER_IMAGE",
       "OCC_PROBE_OLD_BROKER_IMAGE",
+      "OCC_TEST_RELEASED_CONTROLLER_IMAGE",
+      "OCC_TEST_CANDIDATE_CONTROLLER_IMAGE",
     ],
     files: [
       {
@@ -264,6 +266,8 @@ test("run resolves lane documents relative to the manifest and preserves ordered
       OCC_PROBE_BROKER_IMAGE: `private.example/current-broker@sha256:${"c".repeat(64)}`,
       OCC_PROBE_OLD_CONTROLLER_IMAGE: `private.example/old-controller@sha256:${"d".repeat(64)}`,
       OCC_PROBE_OLD_BROKER_IMAGE: `private.example/old-broker@sha256:${"e".repeat(64)}`,
+      OCC_TEST_RELEASED_CONTROLLER_IMAGE: `private.example/released-controller@sha256:${"f".repeat(64)}`,
+      OCC_TEST_CANDIDATE_CONTROLLER_IMAGE: `private.example/candidate-controller@sha256:${"1".repeat(64)}`,
     },
   );
 
@@ -290,6 +294,8 @@ test("run resolves lane documents relative to the manifest and preserves ordered
     pairBroker: `sha256:${"c".repeat(64)}`,
     pairOldController: `sha256:${"d".repeat(64)}`,
     pairOldBroker: `sha256:${"e".repeat(64)}`,
+    releasedController: `sha256:${"f".repeat(64)}`,
+    candidateController: `sha256:${"1".repeat(64)}`,
   };
   assert.deepEqual(summary.files[0].imageDigests, {
     controller: `sha256:${"a".repeat(64)}`,
@@ -788,7 +794,7 @@ test("run records failed, skipped, todo, and passed dispositions separately", as
   );
 });
 
-test("run clears inherited selectors and keep flags while preserving explicit lane inputs", async (t) => {
+test("run clears inherited selectors and keep flags while preserving explicit lane and file inputs", async (t) => {
   const root = await fixture(t);
 
   await writeFile(
@@ -801,6 +807,8 @@ test("run clears inherited selectors and keep flags while preserving explicit la
       '  assert.equal(process.env.OCC_TEST_LANE_SELECTOR, "lane");',
       '  assert.equal(process.env.OCC_TEST_OPTIONAL_SELECTOR, "selected");',
       '  assert.equal(process.env.OCC_TEST_OPTIONAL_EMPTY, "");',
+      '  assert.equal(process.env.OCC_TEST_FILE_SELECTOR, "file");',
+      "  assert.equal(process.env.OCC_TEST_FILE_ABSENT, undefined);",
       "  assert.equal(process.env.OCC_TEST_OPTIONAL_ABSENT, undefined);",
       "  assert.equal(process.env.OCC_TEST_LEAKED_SELECTOR, undefined);",
       '  assert.equal(process.env.OCC_PROBE_REQUIRED_SELECTOR, "required");',
@@ -825,13 +833,32 @@ test("run clears inherited selectors and keep flags while preserving explicit la
           "OCC_TEST_OPTIONAL_ABSENT",
           "OCC_TEST_LANE_SELECTOR",
         ],
-        files: [{ path: "tests/integration/env-isolation.test.mjs" }],
+        files: [
+          {
+            path: "tests/integration/env-isolation.test.mjs",
+            optionalEnv: ["OCC_TEST_FILE_SELECTOR", "OCC_TEST_FILE_ABSENT"],
+          },
+          { path: "tests/integration/env-sibling.test.mjs" },
+        ],
       },
     },
     groups: {
       ci: ["isolated"],
     },
   });
+
+  await writeFile(
+    join(root, "tests/integration/env-sibling.test.mjs"),
+    [
+      'import assert from "node:assert/strict";',
+      'import test from "node:test";',
+      'test("file selectors do not leak into siblings", () => {',
+      "  assert.equal(process.env.OCC_TEST_FILE_SELECTOR, undefined);",
+      '  assert.equal(process.env.OCC_TEST_OPTIONAL_SELECTOR, "selected");',
+      "});",
+      "",
+    ].join("\n"),
+  );
 
   const result = run(
     root,
@@ -853,6 +880,7 @@ test("run clears inherited selectors and keep flags while preserving explicit la
       OCC_TEST_LEAKED_SELECTOR: "1",
       OCC_TEST_REQUIRED_SELECTOR: "required",
       OCC_TEST_OPTIONAL_SELECTOR: "selected",
+      OCC_TEST_FILE_SELECTOR: "file",
       OCC_TEST_OPTIONAL_EMPTY: "",
       OCC_TEST_LANE_SELECTOR: "inherited",
       OCC_PROBE_LEAKED_SELECTOR: "1",
@@ -3257,6 +3285,15 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     cleanupCheck: "cleanup.restore-auth.helm-upgrade",
   };
   const nativeBothChecks = { ...nativeBodyCheck, cleanupCheck: nativeCleanupCheck.cleanupCheck };
+  const gatewayStatus = {
+    kind: "openshell-gateway-turn-failure",
+    checkpoint: "http-status",
+    turn: 1,
+    status: 503,
+  };
+  const gatewayRequest = { ...gatewayStatus, checkpoint: "turn-request", turn: 2, status: null };
+  const gatewayNative = { ...gatewayStatus, checkpoint: "native-evidence", turn: 0, status: null };
+  const gatewayUnknownStatus = { ...gatewayStatus, status: null };
   const phaseDiagnostics = [
     failedPhase,
     failedStage,
@@ -3270,6 +3307,16 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     { ...nativeBodyCheck, cleanupCheck: "fixture-opaque-phase-detail" },
     { ...nativeBodyCheck, stage: "fixture-opaque-phase-detail" },
     { ...nativeBodyCheck, primaryCheck: null },
+    gatewayStatus,
+    gatewayRequest,
+    gatewayNative,
+    gatewayUnknownStatus,
+    { ...gatewayStatus, checkpoint: "fixture-opaque-phase-detail" },
+    { ...gatewayStatus, turn: 3 },
+    { ...gatewayStatus, turn: "1" },
+    { ...gatewayStatus, status: 999 },
+    { ...gatewayRequest, status: 200 },
+    { ...gatewayNative, turn: 1 },
   ].map(
     (measurement) =>
       `openclaw-ci-measurement ${JSON.stringify({ ...measurement, detail: "fixture-opaque-phase-detail" })}`,
@@ -3341,6 +3388,10 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     nativeBodyCheck,
     nativeCleanupCheck,
     nativeBothChecks,
+    gatewayStatus,
+    gatewayRequest,
+    gatewayNative,
+    gatewayUnknownStatus,
     teardown,
   ]);
   assert.equal(await readFile(join(root, "teardown-completed"), "utf8"), "yes");

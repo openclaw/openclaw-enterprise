@@ -3870,7 +3870,7 @@ async function deployAdditionalCredentialAgent(topology, modelSourceId, toolSour
  * - a withdrawal is executed only on its own requester's authority, even on a shared claim;
  * - withdrawing a source from one Agent leaves another Agent's attachment of it in place;
  * - an Agent that loses a source grant after admission never has the revision provisioned;
- * - admission refuses a redeploy without the grant.
+ * - a caller who can operate the source restores the missing grant by redeploying.
  * The model source keeps working throughout.
  */
 async function assertNonModelCredentialSource(topology) {
@@ -4175,15 +4175,61 @@ async function assertNonModelCredentialSource(topology) {
   const kept = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
   assert.equal(kept.data.activeRevisionId, revision.id);
 
-  // Without the grant, admission refuses a further redeploy and admits no revision.
+  // This caller can operate toolB, so a new deploy restores the Agent's exact source grant.
   const revisionsBefore = await revisionCount();
-  const refused = await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/deploy`);
-  assert.equal(refused.status, 403, JSON.stringify(refused.error ?? refused.data));
-  assert.equal(
-    await revisionCount(),
-    revisionsBefore,
-    "a refused deployment must not admit a revision",
+  const restored = await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/deploy`);
+  assert.equal(restored.status, 202, JSON.stringify(restored.error ?? restored.data));
+  assert.equal(await revisionCount(), revisionsBefore + 1);
+  const bindingId = `binding_${agentId}_${toolB.id}_operate`;
+  const grant = await observerPool.query(
+    `SELECT binding.namespace_id, binding.identity_subject_id, binding.role_id,
+            binding.resource_kind, binding.resource_id, role.permissions
+       FROM occ.iam_access_bindings binding JOIN occ.iam_roles role ON role.id = binding.role_id
+      WHERE binding.id = $1`,
+    [bindingId],
   );
+  assert.deepEqual(grant.rows, [
+    {
+      namespace_id: namespaceId,
+      identity_subject_id: topology.agent.servicePrincipalId,
+      role_id: `role_${namespaceId}_agent_credential_source_operate`,
+      resource_kind: "credential_source",
+      resource_id: toolB.id,
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    },
+  ]);
+  const audit = await observerPool.query(
+    `SELECT actor_id, resource_kind, resource_id, outcome, details->>'agentId' AS agent_id
+       FROM occ.audit_events
+      WHERE namespace_id = $1 AND action = 'openclaw.iam.access_bindings.create'
+        AND details->>'bindingId' = $2 AND details->>'reason' = 'agent_deploy'`,
+    [namespaceId, bindingId],
+  );
+  assert.deepEqual(audit.rows, [
+    {
+      actor_id: actorId,
+      resource_kind: "credential_source",
+      resource_id: toolB.id,
+      outcome: "success",
+      agent_id: agentId,
+    },
+  ]);
+
+  // Finish replacement before the next phase scans the active Harness and its workspace.
+  await waitFor(`restored OpenShell revision ${restored.data.id} activation`, async () => {
+    const observed = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
+    assert.equal(observed.status, 200, JSON.stringify(observed.error));
+    if (observed.data.activeRevisionId === restored.data.id) {
+      return observed.data;
+    }
+    const deployment = await request(
+      "GET",
+      `/namespaces/${namespaceId}/agents/${agentId}/deployments/${restored.data.id}`,
+    );
+    assert.equal(deployment.status, 200, JSON.stringify(deployment.error));
+    assert.notEqual(deployment.data.status, "failed", JSON.stringify(deployment.data.error));
+    return undefined;
+  });
 }
 
 // Bounds the Harness file stream; the workspace holds session files, not bulk data.
@@ -4755,7 +4801,7 @@ async function readGatewayTurnFailureDiagnostic(
   return `\n${sections.join("\n")}`;
 }
 
-async function requestGatewayTurns(context, topology, harnessId) {
+async function requestGatewayTurns(context, topology, harnessId, recordCheckpoint) {
   const passwordSecret = await resource(
     "secret",
     `gateway-password-${hash(topology.agent.id)}`,
@@ -4770,6 +4816,7 @@ async function requestGatewayTurns(context, topology, harnessId) {
   const sessionKey = `openshell-gateway-${randomUUID()}`;
   const nonces = [];
   const requestTurn = async () => {
+    recordCheckpoint?.("turn-request", nonces.length + 1);
     const nonce = `OCC-OPENSHELL-GATEWAY-${randomUUID()}`;
     nonces.push(nonce);
     const prompt =
@@ -4799,9 +4846,12 @@ async function requestGatewayTurns(context, topology, harnessId) {
         `Agent Gateway turn request failed: ${error?.message ?? String(error)}${diagnostic}`,
       );
     }
+    recordCheckpoint?.("response-read", nonces.length);
     const body = await response.text();
+    recordCheckpoint?.("credential-absence", nonces.length);
     assert.equal(body.includes(modelCredential), false);
     assert.equal(body.includes(gatewayPassword), false);
+    recordCheckpoint?.("http-status", nonces.length, response.status);
     const failureDiagnostic =
       response.status === 200 ? "" : await gatewayTurnFailureDiagnostic(topology, gatewayPassword);
     assert.equal(
@@ -4809,6 +4859,7 @@ async function requestGatewayTurns(context, topology, harnessId) {
       200,
       `Gateway ${harnessId} turn ${nonces.length}: HTTP ${response.status}, expected 200.${failureDiagnostic}`,
     );
+    recordCheckpoint?.("response-nonce", nonces.length);
     assert.match(JSON.parse(body).choices?.[0]?.message?.content ?? "", new RegExp(nonce));
   };
 
@@ -4817,6 +4868,7 @@ async function requestGatewayTurns(context, topology, harnessId) {
   await requestTurn();
   await requestTurn();
   if (harnessId === "codex") {
+    recordCheckpoint?.("native-evidence", 0);
     // Inspect native, durable command records, not the model's claim that it ran printf.
     // The HTTP requests above must pass through the regular OpenClaw bridge.
     const claims = new Set(
@@ -9153,9 +9205,23 @@ export function registerProviderLifecycleTest(workflow) {
         process.stderr.write(
           "OpenShell integration: exposed Codex initialized; starting real shell turns through the Agent Gateway.\n",
         );
-        await measureOpenShellStage(testContext, "initial-model", () =>
-          requestGatewayTurns(context, topology, "codex"),
-        );
+        await measureOpenShellStage(testContext, "initial-model", async () => {
+          let failure = { checkpoint: "gateway-setup", turn: 0, status: null };
+          try {
+            await requestGatewayTurns(context, topology, "codex", (checkpoint, turn, status) => {
+              failure = {
+                checkpoint,
+                turn,
+                status: Number.isInteger(status) && status >= 100 && status <= 599 ? status : null,
+              };
+            });
+          } catch (error) {
+            testContext.diagnostic(
+              `openclaw-ci-measurement ${JSON.stringify({ kind: "openshell-gateway-turn-failure", ...failure })}`,
+            );
+            throw error;
+          }
+        });
         process.stderr.write("OpenShell integration: regular Gateway shell turns passed.\n");
         if (policyCase) {
           if (!networkPolicyOnly) {
