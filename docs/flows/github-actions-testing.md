@@ -131,8 +131,8 @@ and retry summaries by full UTC timestamp precision using locale-independent ASC
 `scripts/ci/run-tests.mjs:runFile` watches Compute-managed Pods and namespace
 events in ready k3d clusters before tests delete them. On pass or failure,
 `scripts/ci/k3d-diagnostics.mjs:projectAgentNamespaceActivity` records
-`agentNamespaces`: up to 200 Pod and 200 event records per file, retaining 40
-files. Messages are redacted and truncated; Pod specs are omitted. Raw watches
+`agentNamespaces`: up to 200 Pod and 200 event records per file and cluster, retaining 40
+entries. Messages are redacted and truncated; Pod specs are omitted. Raw watches
 use separate files in the cluster directory and are removed on completion.
 Cluster-wide watches can include sibling namespaces under `fileConcurrency`.
 Failed starts log `Agent namespace activity unavailable`. Each producing lane
