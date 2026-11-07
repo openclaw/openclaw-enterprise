@@ -2096,6 +2096,213 @@ test("Agent continuity rejects incomplete selection and intentional runtime repl
   assert.equal(f.commands.length, 0);
 });
 
+// Match the native runner's run summary, including another file from a full lane.
+// These receipts test the consumer; they do not claim PostgreSQL execution.
+function controllerCompatibilityResults() {
+  const path = "tests/integration/postgres-migration-compatibility.test.mjs";
+  const counts = { passed: 2, failed: 0, skipped: 0, todo: 0, total: 2 };
+  return {
+    version: 1,
+    command: "run",
+    sourceSha: "1".repeat(40),
+    lane: "postgres",
+    scope: "full",
+    status: "passed",
+    exitCode: 0,
+    counts: { ...counts, passed: 3, total: 3 },
+    issues: [],
+    files: [
+      {
+        path,
+        status: "passed",
+        nodeExitCode: 0,
+        signal: null,
+        counts,
+        tests: [
+          {
+            name: "Logical restore preserves reviewed canonical and Provider migration histories",
+            status: "passed",
+            file: path,
+          },
+          {
+            name: "Released controller remains usable across candidate database writes",
+            status: "passed",
+            file: path,
+          },
+        ],
+        issues: [],
+        cleanup: { status: "passed" },
+        imageDigests: {
+          releasedController: controller.split("@")[1],
+          candidateController: newController.split("@")[1],
+        },
+      },
+      {
+        path: "tests/integration/postgres-migration-version.test.ts",
+        status: "passed",
+        nodeExitCode: 0,
+        signal: null,
+        counts: { ...counts, passed: 1, total: 1 },
+        tests: [
+          {
+            name: "Migration refuses PostgreSQL 16 before first installation or upgrade without exposing credentials",
+            status: "passed",
+            file: "tests/integration/postgres-migration-version.test.ts",
+          },
+        ],
+        issues: [],
+        cleanup: { status: "passed" },
+      },
+    ],
+  };
+}
+
+test("controller compatibility preserves Agent continuity through interrupted upgrade recovery", async (t) => {
+  const f = await fixture(t, { controllerOnly: true, continuity: continuityFixture() });
+  const path = join(f.directory, "compatibility.json");
+  const contents = JSON.stringify(controllerCompatibilityResults());
+  await writeFile(path, contents);
+  const flags = ["--controller-compatibility-results", path, ...continuityFlags];
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(...flags), injectedFault);
+  const frozen = join(f.evidence, "controller-compatibility-results.json");
+  await assertPrivateReceipt(frozen, contents);
+  const continuityBefore = await readFile(join(f.evidence, "agent-continuity.json"), "utf8");
+  const before = await f.events();
+
+  // Neither a replacement nor deletion of prepared evidence can change the
+  // compatibility decision after a committed Helm submission.
+  await writeFile(frozen, "{}");
+  await assert.rejects(f.run(...flags, "--resume"), /prepared upgrade evidence changed/);
+  await rm(frozen);
+  await assert.rejects(f.run(...flags, "--resume"), /prepared upgrade evidence changed/);
+  assert.deepEqual(await f.events(), before);
+  await writeFile(frozen, contents, { mode: 0o600 });
+
+  // The original external file is no longer an input: only its frozen copy is.
+  await rm(path);
+  await f.run(...flags, "--resume");
+  await assertPrivateReceipt(frozen, contents);
+  assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+  assert.equal(await readFile(join(f.evidence, "agent-continuity.json"), "utf8"), continuityBefore);
+  const continuityAfter = JSON.parse(
+    await readFile(join(f.evidence, "agent-continuity-after.json")),
+  );
+  assert.equal(continuityAfter.revisionId, continuityRevision);
+  assert.ok(existsSync(join(f.evidence, "completed")));
+  assert.equal((await f.state()).dispatches, 0);
+  assert.equal((await f.state()).api, 1);
+  assert.equal((await f.state()).worker, 1);
+});
+
+test("controller compatibility rejects unqualified evidence before changing writers", async (t) => {
+  const changes = {
+    "unselected green": (r) => (r.files[0].tests[1].name = "Another migration case"),
+    "failed selected case": (r) => (r.files[0].tests[1].status = "failed"),
+    "skipped selected case": (r) => (r.files[0].tests[1].status = "skipped"),
+    "duplicate selected case": (r) => (r.files[0].tests[0].name = r.files[0].tests[1].name),
+    "wrong test file": (r) => (r.files[0].tests[1].file = r.files[1].path),
+    "duplicate matching file": (r) => (r.files[1].path = r.files[0].path),
+    "failed cleanup": (r) => (r.files[0].cleanup.status = "failed"),
+    "missing cleanup": (r) => (r.files[0].cleanup = null),
+    "skipped file case": (r) => (r.files[0].counts.skipped = 1),
+    "failed runner": (r) => (r.status = "failed"),
+    "aggregate summary": (r) => (r.command = "aggregate"),
+    "missing runner provenance": (r) => (r.sourceSha = null),
+    "reversed image roles": (r) => {
+      const images = r.files[0].imageDigests;
+      [images.releasedController, images.candidateController] = [
+        images.candidateController,
+        images.releasedController,
+      ];
+    },
+    "different platform or config digest": (r) =>
+      (r.files[0].imageDigests.candidateController = `sha256:${"d".repeat(64)}`),
+  };
+  for (const [name, change] of Object.entries(changes)) {
+    await t.test(name, async (subtest) => {
+      const f = await fixture(subtest, { controllerOnly: true });
+      const receipt = controllerCompatibilityResults();
+      change(receipt);
+      const path = join(f.directory, "compatibility.json");
+      await writeFile(path, JSON.stringify(receipt));
+      await assert.rejects(
+        f.run("--controller-compatibility-results", path),
+        /controller compatibility receipt must pass/,
+      );
+      assert.deepEqual(await f.events(), []);
+      assert.equal((await f.state()).api, 1);
+      assert.equal((await f.state()).worker, 1);
+      assert.equal(existsSync(join(f.evidence, "prepared")), false);
+    });
+  }
+});
+
+test("controller compatibility rejects contradictory runner summaries", async (t) => {
+  const changes = {
+    "failed unrelated test row": (r) => (r.files[0].tests[0].status = "failed"),
+    "failed sibling file": (r) => (r.files[1].status = "failed"),
+    "wrong total count": (r) => r.counts.total++,
+    "multiple files in focused run": (r) => (r.scope = "focused"),
+  };
+  for (const [name, change] of Object.entries(changes)) {
+    await t.test(name, async (subtest) => {
+      const f = await fixture(subtest, { controllerOnly: true });
+      const receipt = controllerCompatibilityResults();
+      change(receipt);
+      const path = join(f.directory, "compatibility.json");
+      await writeFile(path, JSON.stringify(receipt));
+      await assert.rejects(
+        f.run("--controller-compatibility-results", path),
+        /controller compatibility receipt must pass/,
+      );
+      assert.deepEqual(await f.events(), []);
+    });
+  }
+});
+
+test("controller compatibility rejects passing summaries with explicit failure evidence", async (t) => {
+  const changes = {
+    // The native producer recognizes marker presence, including false and empty
+    // values. A row carrying either marker cannot be a passed test.
+    "skip marker": (r) => (r.files[0].tests[1].skip = false),
+    "todo marker": (r) => (r.files[0].tests[1].todo = ""),
+    "root file failure": (r) => (r.files[1].fileFailure = { error: { message: "test failed" } }),
+    "empty sibling file": (r) => {
+      r.files[1].tests = [];
+      r.files[1].counts = { passed: 0, failed: 0, skipped: 0, todo: 0, total: 0 };
+      r.counts = { ...r.files[0].counts };
+    },
+  };
+  for (const [name, change] of Object.entries(changes)) {
+    await t.test(name, async (subtest) => {
+      const f = await fixture(subtest, { controllerOnly: true });
+      const receipt = controllerCompatibilityResults();
+      change(receipt);
+      const path = join(f.directory, "compatibility.json");
+      await writeFile(path, JSON.stringify(receipt));
+      await assert.rejects(
+        f.run("--controller-compatibility-results", path),
+        /controller compatibility receipt must pass/,
+      );
+      assert.deepEqual(await f.events(), []);
+    });
+  }
+});
+
+test("controller compatibility requires a value and an explicit controller selection", async (t) => {
+  const f = await fixture(t);
+  await assert.rejects(
+    f.run("--controller-compatibility-results", ""),
+    /requires a nonempty value/,
+  );
+  await assert.rejects(
+    f.run("--controller-compatibility-results", join(f.directory, "unused.json")),
+    /requires --controller-image/,
+  );
+  assert.deepEqual(await f.events(), []);
+});
+
 test("an image upgrade can select curated Codex while preserving both plugin registrations", async (t) => {
   const pluginDrivers = [
     { id: "occ-plugin", configuration: {} },
