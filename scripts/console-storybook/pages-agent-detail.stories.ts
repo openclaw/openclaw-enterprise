@@ -152,6 +152,7 @@ export const RuntimeLogsFailedRedeploy = story("runtimeLogsFailedRedeploy");
 export const RuntimeLogsFilteredDownload = story("runtimeLogsFilteredDownload");
 export const RuntimeLogsRateLimited = story("runtimeLogsRateLimited");
 export const RuntimeLogsRefreshRateLimited = story("runtimeLogsRefreshRateLimited");
+export const RuntimeLogsSourceSwitchAfterRateLimit = story("runtimeLogsSourceSwitchAfterRateLimit");
 export const RuntimeLogsDenied = story("runtimeLogsDenied");
 export const RuntimeLogPodReplaced = story("runtimeLogPodReplaced");
 export const RuntimeLogAccessLost = story("runtimeLogAccessLost");

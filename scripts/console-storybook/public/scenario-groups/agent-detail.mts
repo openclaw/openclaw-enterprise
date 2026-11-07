@@ -176,6 +176,16 @@ export function createAgentDetailScenarios({
     "group" | "path" | "deployed" | "candidateDeploymentStatus"
   >;
 
+  const candidateRuntimeLogs =
+    "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/runtime/logs";
+  const agentLogStream = {
+    source: "agent",
+    pod: "agent-9194e1800111-rev-997042d6ce64-6b5bbd9699-v5rcp",
+    podUid: "8d6b1c2e-3f4a-4b5c-9d6e-7f8a9b0c1d2e",
+    container: "agent",
+    restartCount: 0,
+  };
+
   // The current version, v8, which the viewer cannot read, opened on its Logs tab.
   const hiddenCurrentLogsPage = {
     group: "Pages/Agent detail",
@@ -2654,6 +2664,59 @@ export function createAgentDetailScenarios({
           "Wait 5 seconds. The message changes to 'Too many requests. You can try again now.' without another read.",
           "Select Include debug. That read is for another selection, so the old rows clear before its rate-limited answer.",
         ],
+      },
+      runtimeLogsSourceSwitchAfterRateLimit: {
+        ...runtimeLogsPage,
+        name: "Switch log sources after a rate-limited refresh",
+        runtimePod: "dedicatedPair",
+        rules: [
+          // The expected reads are Gateway, Agent, Agent refresh, then Gateway again.
+          // Check the last read's delay first so every earlier read advances its skip count.
+          { path: candidateRuntimeLogs, skip: 3, once: true, delayMs: 10_000 },
+          {
+            path: candidateRuntimeLogs,
+            skip: 2,
+            once: true,
+            status: 429,
+            code: "RUNTIME_LOGS_RATE_LIMITED",
+            retryAfter: 5,
+          },
+          {
+            path: candidateRuntimeLogs,
+            skip: 1,
+            once: true,
+            data: {
+              revisionId: "rev_00000000-0000-4000-8000-000000000007",
+              source: "agent",
+              stream: agentLogStream,
+              observedAt: "2026-09-27T12:00:00.000Z",
+              records: [
+                {
+                  type: "line",
+                  time: "2026-09-27T11:40:01.120Z",
+                  stream: agentLogStream,
+                  contentClass: "operational",
+                  kind: "text",
+                  level: "info",
+                  message: "Agent harness ready",
+                },
+              ],
+              withheld: 0,
+              truncated: false,
+              cursor: `v1.${"a".repeat(40)}.${"b".repeat(43)}`,
+            },
+          },
+        ],
+        description:
+          "An Agent (Harness) refresh is rate limited for five seconds. Switching to Gateway clears the old feedback while its read is pending.",
+        steps: [
+          "Wait for Gateway output, select Agent (Harness) under Source, and wait for “Agent harness ready.” Keep Follow off.",
+          "Choose Refresh logs. Check that the Agent output stays visible with “Too many requests. Try again in 5 seconds.”",
+          "Switch Source to Gateway while the message is visible. Check for “Reading output…” with neither the Agent output nor its rate-limit message.",
+          "After five seconds, confirm the retry message has not returned and the Gateway read is still pending. After about ten seconds from the switch, confirm “gateway listening” appears.",
+          "Reload the preview to repeat the sequence.",
+        ],
+        gap: "Storybook simulates the response and delay. The controller-backed Logs browser regression checks the same interaction through the Console API.",
       },
       runtimeLogsDenied: {
         group: "Pages/Agent detail",
