@@ -516,6 +516,16 @@ function retainedGitWithdrawal(removal: boolean) {
           max: 1,
         }),
       );
+      const admissionApplication = `finite-removal-admission-${randomUUID()}`;
+      const admissionState = new PostgresPlatformState(
+        testPool(t, {
+          connectionString: databaseUrl,
+          application_name: admissionApplication,
+          max: 1,
+        }),
+      );
+      const admission = sessionAttempt(revision, { createdAt: new Date().toISOString() });
+      let inserted: ReturnType<PostgresPlatformState["transact"]> | undefined;
       let adopted: ReturnType<PostgresOpenShellGitRouteStore["adopt"]> | undefined;
       try {
         await state.transact(async (unit) => {
@@ -531,14 +541,38 @@ function retainedGitWithdrawal(removal: boolean) {
             );
             return waiting.rowCount === 1 ? true : undefined;
           });
+          // INSERT begins before removal commits. Its admission trigger must reread
+          // withdrawal after obtaining these locks, not reuse its statement snapshot.
+          inserted = admissionState.transact((admissionUnit) =>
+            admissionUnit.repositorySessions.createAttempt(admission),
+          );
+          void inserted.catch(() => {});
+          await waitFor("session INSERT waits for the removal transaction", async () => {
+            const waiting = await pool.query(
+              `SELECT pid FROM pg_stat_activity WHERE application_name=$1
+               AND cardinality(pg_blocking_pids(pid)) > 0`,
+              [admissionApplication],
+            );
+            return waiting.rowCount === 1 ? true : undefined;
+          });
           await withdraw(unit, revision);
         });
+        await assert.rejects(
+          inserted!,
+          { name: "RepositorySessionWithdrawnError" },
+          "an INSERT started before removal must see withdrawal after its lock wait",
+        );
+        assert.equal(
+          await state.read((view) => view.repositorySessions.findAttempt(admission.admissionId)),
+          undefined,
+        );
         const result = await adopted;
         assert.equal(result?.blocked, "repository_expired");
         assert.equal(result?.fence, 2, "removal does not grant a new Git holder");
         assert.equal(result?.observed?.executionId, id);
       } finally {
         await adopted?.catch(() => {});
+        await inserted?.catch(() => {});
       }
 
       // Cleanup cannot be abandoned. Repeating removal while its work is claimed must

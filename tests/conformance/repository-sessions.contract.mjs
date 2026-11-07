@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { RepositorySessionWithdrawnError } from "../../packages/occ/src/errors.ts";
 import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import {
   repositoryBinding,
@@ -276,6 +277,34 @@ export async function verifyRepositorySessions(t, store) {
         await store.read((v) => v.operations.findWork(key)),
         work,
         "repeat removal retains original work custody",
+      );
+      // Disposal and a later editable re-add cannot revive the immutable admission.
+      await store.transact(async (unit) => {
+        await unit.repositorySessions.advanceAttempt({
+          admissionId: attempt.admissionId,
+          expectedPhase: "closing",
+          phase: "disposed",
+          sessionId: `session-${randomUUID()}`,
+          updatedAt: later,
+        });
+        await unit.agents.updateConfiguration(
+          namespace.id,
+          agent.id,
+          configuration.id,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          agent.repositoryBindings,
+        );
+      });
+      await assert.rejects(
+        store.transact((unit) => unit.repositorySessions.createAttempt(sessionAttempt(revision))),
+        RepositorySessionWithdrawnError,
+      );
+      assert.equal(
+        (await store.read((view) => view.repositorySessions.listRevisionAttempts(owner))).length,
+        1,
       );
     },
   );

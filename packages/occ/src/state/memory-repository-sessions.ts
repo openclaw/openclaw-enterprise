@@ -6,6 +6,7 @@ import {
   ResourceConflictError,
   ResourceStateConflictError,
   ScopeViolationError,
+  RepositorySessionWithdrawnError,
 } from "../errors.ts";
 import type {
   RepositoryStandingApproval,
@@ -56,6 +57,7 @@ export function memoryRepositorySessions(
   ownerAcceptsAdmission: (owner: RepositoryRevisionOwner) => boolean,
   executionAcceptsAdmission: (owner: RepositoryRevisionOwner) => boolean,
   recordFiniteWithdrawal: (owner: RepositoryRevisionOwner, at: string) => void,
+  admissionWithdrawn: (owner: RepositoryRevisionOwner) => boolean,
 ): RepositorySessionRepository {
   const list = (matches: (attempt: RepositorySessionAttempt) => boolean) =>
     Object.freeze(
@@ -337,6 +339,9 @@ export function memoryRepositorySessions(
     listNamespaceAttempts: async (namespaceId) =>
       list((attempt) => attempt.namespaceId === namespaceId),
     createAttempt: async (input) => {
+      if (admissionWithdrawn(input)) {
+        throw new RepositorySessionWithdrawnError();
+      }
       const revision = findRevision(input);
       const admitted = revision?.repositoryCredentials;
       const binding = admitted?.bindings.find(

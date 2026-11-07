@@ -87,6 +87,7 @@ import {
   type OperationRefusalHintCode,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
+  RepositorySessionWithdrawnError,
   SandboxRevisionUnsupportedError,
   SandboxRepositoryRecipientUnverifiedError,
   ScopeViolationError,
@@ -4511,6 +4512,16 @@ export class ControllerWorker {
         });
         return;
       }
+      const repositoryWithdrawal =
+        revision.repositoryCredentials !== undefined &&
+        agent.activeRevisionId === revision.id &&
+        agent.desiredRuntimeState === "running"
+          ? await this.queue.repositoryExpiryState({
+              namespaceId: revision.namespaceId,
+              agentId: revision.agentId,
+              revisionId: revision.id,
+            })
+          : undefined;
       if (claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`)) {
         const original = await this.queue.findWork(`agent_revision:${revision.id}:reconcile`);
         if (original === undefined) {
@@ -4521,7 +4532,9 @@ export class ControllerWorker {
           (original.state === "failed_permanent" &&
             // An existing Agent's version kept running without Git (continueRevisionWithoutGit)
             // is maintained: that failure queued this chain while the version was active.
-            !REVISION_KEPT_WITHOUT_GIT_CODES.has(original.reasonCode ?? "")) ||
+            !REVISION_KEPT_WITHOUT_GIT_CODES.has(original.reasonCode ?? "") &&
+            repositoryWithdrawal !== "removal" &&
+            repositoryWithdrawal !== "retiring") ||
           original.reasonCode === "REVISION_SUPERSEDED"
         ) {
           // Maintenance must never prepare or reactivate a terminally failed deployment.
@@ -4536,16 +4549,6 @@ export class ControllerWorker {
         });
         return;
       }
-      const repositoryWithdrawal =
-        revision.repositoryCredentials !== undefined &&
-        agent.activeRevisionId === revision.id &&
-        agent.desiredRuntimeState === "running"
-          ? await this.queue.repositoryExpiryState({
-              namespaceId: revision.namespaceId,
-              agentId: revision.agentId,
-              revisionId: revision.id,
-            })
-          : undefined;
       const withdrawnExecutionWork =
         repositoryWithdrawal !== undefined &&
         (claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`) ||
@@ -4874,6 +4877,7 @@ export class ControllerWorker {
           if (
             error instanceof WorkClaimLostError ||
             error instanceof RepositoryCredentialAuthorityError ||
+            error instanceof RepositorySessionWithdrawnError ||
             error instanceof ComputeStopYieldedError ||
             error instanceof ComputePreparationFailedError
           ) {
@@ -4971,6 +4975,23 @@ export class ControllerWorker {
     } catch (error) {
       if (error instanceof WorkClaimLostError) {
         throw error;
+      }
+      if (error instanceof RepositorySessionWithdrawnError) {
+        // Removal won the admission race. The next pass observes its durable cleanup
+        // work without exhausting retries or retiring the independently authorized runtime.
+        const code = "REPOSITORY_CLEANUP_PENDING";
+        await this.queue.defer(claim, { code }, { delayMs: this.repositoryCleanupRetryMs });
+        this.passOutcome = "pending";
+        this.emit({
+          event: "worker.completed",
+          ...workLogFields(claim),
+          namespaceId: claim.namespaceId,
+          agentId: claim.agentId,
+          revisionId: claim.revisionId,
+          outcome: "pending",
+          code,
+        });
+        return;
       }
       if (
         supervisedRevision !== undefined &&

@@ -4198,6 +4198,16 @@ function repositories(
         );
       }
     },
+    (owner) => {
+      const withdrawal = snapshot.repositoryWithdrawals.get(
+        repositoryRemovalWorkKey(owner.revisionId),
+      );
+      return (
+        withdrawal?.namespaceId === owner.namespaceId &&
+        withdrawal.agentId === owner.agentId &&
+        withdrawal.revisionId === owner.revisionId
+      );
+    },
   );
 
   const provisioningUnavailable = async (): Promise<never> => {

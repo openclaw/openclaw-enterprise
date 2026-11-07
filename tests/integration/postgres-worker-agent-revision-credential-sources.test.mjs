@@ -3008,6 +3008,27 @@ test(
   }),
 );
 
+test(
+  "finite removal and readdition during maintenance cannot open another repository session",
+  { ...requiresPostgres, timeout: 60_000 },
+  attachedGitExpires({
+    newHost: "inference.example.test",
+    removal: true,
+    removalDuringPreparation: true,
+  }),
+);
+
+test(
+  "finite Git removal maintenance survives exhausted original reconciliation",
+  { ...requiresPostgres, timeout: 60_000 },
+  attachedGitExpires({
+    newHost: "inference.example.test",
+    removal: true,
+    unacknowledgedActivation: true,
+    leaseExhaustion: true,
+  }),
+);
+
 function attachedGitExpires({
   newHost,
   platformProfile = false,
@@ -3015,6 +3036,8 @@ function attachedGitExpires({
   revokeActor = false,
   removalDuringFinalization = false,
   unacknowledgedActivation = false,
+  removalDuringPreparation = false,
+  leaseExhaustion = false,
 }) {
   return async (t) => {
     const backendId = "github-primary";
@@ -3027,7 +3050,18 @@ function attachedGitExpires({
     );
     const f = await setup(t, {
       repoDriver: repository.driver,
+      ...(leaseExhaustion && { maxAttempts: 1 }),
       driverSelections: { sandbox: protectedGit.sandboxConfiguration },
+      backends: removalDuringPreparation
+        ? [
+            {
+              id: backendId,
+              type: "github",
+              configuration: { registryPath: "/unused/controlled-registry.json" },
+              drivers: { repo: repository.driver.id },
+            },
+          ]
+        : [],
     });
     const gateway = new OpenShellCredentialGatewayDriver(
       { binaries: ["/usr/bin/codex"] },
@@ -3040,6 +3074,10 @@ function attachedGitExpires({
         },
       },
     );
+    if (removalDuringPreparation) {
+      f.controller.registerDriver(repository.driver);
+      f.controller.selectDriver("repo", repository.driver.id);
+    }
     f.controller.installDriver(protectedGit.owner, ["sandbox", "credential_proxy"]);
     f.controller.registerDriver(gateway);
     f.controller.selectDriver("credential_gateway", gateway.id);
@@ -3088,6 +3126,12 @@ function attachedGitExpires({
     let senderRuntime;
     let withdrawalCommitted = false;
     let activationCalls = 0;
+    let prepareCalls = 0;
+    let pauseBeforePreparation = false;
+    let preparing = false;
+    const resumePreparation = Promise.withResolvers();
+    t.after(() => resumePreparation.resolve());
+    let retainedObservations = 0;
     const bodies = await gitCommandBodies(t, pushRef);
     const { client: middleware, keys } = await openShellOnlineGitWire(t, {
       registrationName,
@@ -3225,7 +3269,20 @@ function attachedGitExpires({
         assert.equal(selected, protectedGit.owner.ref.id);
         kube.validateRepositoryCredentials(harness, selected);
       },
+      ...(removalDuringPreparation && {
+        async bindAgent(context) {
+          // This real Driver call occurs after the worker read the withdrawal marker,
+          // but before repository preparation enters its locked session transaction.
+          if (pauseBeforePreparation) {
+            pauseBeforePreparation = false;
+            preparing = true;
+            await resumePreparation.promise;
+          }
+          await f.compute.bindAgent?.(context);
+        },
+      }),
       async prepareRevision(r, context) {
+        prepareCalls++;
         assert.equal(r.id, revision.id);
         if (unacknowledgedActivation) {
           assert.deepEqual(context.workspaceSetup, pendingSetup);
@@ -3301,8 +3358,17 @@ function attachedGitExpires({
           await commitRemoval();
         },
       }),
-      retireExpiredRepositoryAccess: (r, signal) =>
-        runtime.retireExpiredRepositoryAccess(r, client, workspace, sandbox, continuity, signal),
+      retireExpiredRepositoryAccess: (r, signal) => {
+        retainedObservations++;
+        return runtime.retireExpiredRepositoryAccess(
+          r,
+          client,
+          workspace,
+          sandbox,
+          continuity,
+          signal,
+        );
+      },
       stopRevision(r) {
         stopped.push(r.id);
         return f.compute.stopRevision(r);
@@ -3415,6 +3481,29 @@ function attachedGitExpires({
       assert.equal(unacknowledged.outcome, "pending");
       await assertUnacknowledged();
       events.length = 0;
+      if (leaseExhaustion) {
+        const queue = new f.PostgresWorkQueue(f.observerPool, { maxAttempts: 1 });
+        // Simulate two lost workers through real claims and queue recovery. Only
+        // lease timestamps move; recovery owns the allowance, failure and audit.
+        for (let lost = 0; lost < 2; lost++) {
+          await makeWorkDue(f.observerPool, { key: revision.idempotencyKey, state: "queued" });
+          const claim = await queue.claim();
+          assert.equal(claim?.idempotencyKey, revision.idempotencyKey);
+          assert.equal(claim.attemptCount, 1);
+          assert.equal((await f.expireClaim(revision, claim.claimToken)).rowCount, 1);
+          const recovered = await queue.recoverStale();
+          assert.equal(recovered.recovered, 1);
+          assert.equal(recovered.failedPermanent, lost);
+          assert.ok(
+            await queue.findWorkAttempt(revision.idempotencyKey, "ACTIVE_REVISION_RECOVERY"),
+          );
+        }
+        const failed = await queue.findWork(revision.idempotencyKey);
+        assert.equal(failed.state, "failed_permanent");
+        assert.equal(failed.reasonCode, "LEASE_EXPIRED");
+        assert.equal((await f.currentAgent(agent)).activeRevisionId, revision.id);
+        await assertUnacknowledged();
+      }
     } else {
       await f.work(revision, "succeeded").catch(async (cause) => {
         const {
@@ -3443,6 +3532,81 @@ function attachedGitExpires({
     assert.deepEqual(approved, ["upload-pack"]);
     const remaining = deadlineWallMs - Date.now();
     assert.ok(remaining > 0, "use Git before its legitimately admitted deadline");
+    if (removalDuringPreparation) {
+      const [original] = await repositoryAttempts(f, revision);
+      await f.stop();
+      pauseBeforePreparation = true;
+      const due = await f.advanceMaintenance(revision);
+      assert.equal(due.rowCount, 1);
+      const maintenanceKey = due.rows[0].idempotency_key;
+      await start();
+      try {
+        await waitFor(
+          "maintenance to enter Compute binding before repository preparation",
+          async () => preparing || undefined,
+        );
+        await commitRemoval();
+        // Readding the same desired binding cannot revive the withdrawn admitted revision.
+        await f.controller.updateAgent(f.actor.id, {
+          namespaceId,
+          agentId: agent.id,
+          configurationId: agent.configurationId,
+          repositoryBindings: [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
+        });
+        // Let the in-flight pass finish first; only this real cleanup work's due time moves.
+        await deferWork(
+          f.observerPool,
+          {
+            revisionId: revision.id,
+            state: "queued",
+            keyLike: "%:repository_cleanup:%",
+          },
+          "1 day",
+        );
+        events.length = 0;
+      } finally {
+        resumePreparation.resolve();
+      }
+      const completed = await completion(
+        events,
+        "in-flight maintenance to finish",
+        (e) => e.event === "worker.completed" && e.workId === maintenanceKey,
+      );
+      await f.stop();
+      assert.deepEqual(
+        [completed.outcome, completed.code],
+        ["pending", "REPOSITORY_CLEANUP_PENDING"],
+      );
+      assert.equal((await f.currentAgent(agent)).activeRevisionId, revision.id);
+      assert.deepEqual(
+        stopped,
+        [],
+        "withdrawal admission refusal must not retire the running revision",
+      );
+      const pending = await f.observerPool.query(
+        "SELECT state, actor_id, attempt_count FROM occ.controller_work WHERE idempotency_key=$1",
+        [maintenanceKey],
+      );
+      assert.deepEqual(
+        pending.rows,
+        [
+          {
+            state: "queued",
+            actor_id: due.rows[0].actor_id,
+            attempt_count: due.rows[0].attempt_count,
+          },
+        ],
+        "the same maintenance work retains its actor and retry budget",
+      );
+      const attempts = await repositoryAttempts(f, revision);
+      assert.deepEqual(
+        attempts.map((a) => a.admissionId),
+        [original.admissionId],
+        "committed finite withdrawal must fence session creation even after binding readdition",
+      );
+      assert.equal(prepareCalls, 1, "stale maintenance must not reprepare the withdrawn revision");
+      return;
+    }
     if (removal && !removalDuringFinalization && !unacknowledgedActivation) {
       await f.stop();
       // Only the committed OCC mutation may authorize predeadline subtraction. Stop the
@@ -3477,7 +3641,7 @@ function attachedGitExpires({
         (e) =>
           e.event === "worker.completed" &&
           e.revisionId === revision.id &&
-          (unacknowledgedActivation
+          (unacknowledgedActivation && !leaseExhaustion
             ? e.workId === revision.idempotencyKey
             : e.workId?.includes(":repository_cleanup:")),
       );
@@ -3489,7 +3653,7 @@ function attachedGitExpires({
       events.length = 0;
     };
     const advanceWithdrawal = () =>
-      unacknowledgedActivation
+      unacknowledgedActivation && !leaseExhaustion
         ? makeWorkDue(f.observerPool, { key: revision.idempotencyKey, state: "queued" })
         : advanceCleanupRetries(f, revision);
     if (unacknowledgedActivation) {
@@ -3568,7 +3732,7 @@ function attachedGitExpires({
       return;
     }
     await nextExpiry("REPOSITORY_ACCESS_WITHDRAWN");
-    if (unacknowledgedActivation) {
+    if (unacknowledgedActivation && !leaseExhaustion) {
       await assertUnacknowledgedCompletion();
       // The separate durable removal work must converge on the same maintenance chain.
       await advanceCleanupRetries(f, revision);
@@ -3612,11 +3776,41 @@ function attachedGitExpires({
         ["READY", "OBSERVE"],
       ],
     );
+    const observationsBeforeMaintenance = retainedObservations;
     const advanced = await f.advanceMaintenance(revision);
     assert.equal(advanced.rowCount, 1, "withdrawal has one maintenance successor");
     const [next] = advanced.rows;
     const maintenance = { ...revision, idempotencyKey: next.idempotency_key };
-    await f.work(maintenance, "succeeded");
+    if (leaseExhaustion) {
+      const queue = new f.PostgresWorkQueue(f.observerPool, { maxAttempts: 1 });
+      const completed = await waitFor(
+        "maintenance after exhausted original reconciliation",
+        async () => {
+          const work = await queue.findWork(maintenance.idempotencyKey);
+          return work?.state === "succeeded" || work?.state === "failed_permanent"
+            ? work
+            : undefined;
+        },
+      );
+      assert.equal(
+        completed.state,
+        "succeeded",
+        `maintenance rejected before retained observation: ${completed.reasonCode}`,
+      );
+      assert.equal(
+        retainedObservations,
+        observationsBeforeMaintenance + 1,
+        "maintenance observes the retained runtime once",
+      );
+      await f.stop();
+      assert.equal((await f.workResult(revision)).rows[0].reason_code, "LEASE_EXPIRED");
+      await assertUnacknowledged();
+      const successors = await f.advanceMaintenance(revision);
+      assert.equal(successors.rowCount, 1, "one retained maintenance successor remains");
+      assert.notEqual(successors.rows[0].idempotency_key, maintenance.idempotencyKey);
+    } else {
+      await f.work(maintenance, "succeeded");
+    }
     assert.equal(
       (await f.workResult(maintenance)).rows[0].reason_code,
       "REPOSITORY_ACCESS_WITHDRAWN",
@@ -3635,6 +3829,9 @@ function attachedGitExpires({
       [1, 1],
       "no replay or replacement Git material",
     );
+    if (leaseExhaustion) {
+      return;
+    }
     // Losing the evidence for safe retention on the next ordinary maintenance retires this revision.
     if (platformProfile) {
       assert.deepEqual(

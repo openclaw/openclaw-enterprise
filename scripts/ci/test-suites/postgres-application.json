@@ -104,7 +104,9 @@
         "finite Git removal retires the revision when its original deploy actor loses authority",
         "removal after acknowledged activation and prior revision retirement preserves deployment completion",
         "unacknowledged activation with finite Git removal retains verified execution without completing deployment or setup",
-        "unacknowledged activation with finite Git removal retires unsafe execution without completing setup"
+        "unacknowledged activation with finite Git removal retires unsafe execution without completing setup",
+        "finite removal and readdition during maintenance cannot open another repository session",
+        "finite Git removal maintenance survives exhausted original reconciliation"
       ]
     },
     {
