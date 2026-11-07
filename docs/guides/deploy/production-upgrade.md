@@ -75,8 +75,10 @@ Active, desired-running Agents with a selected revision and no pending deploymen
 also require Agent `deploy` and selected-revision `read`. Runtime upgrades additionally
 require Configuration and replacement-revision `read`.
 
-Review saved Agent and Configuration drafts before a runtime upgrade. Each
-deployment takes a new snapshot of the current draft.
+Review runtime drafts; deployments snapshot current values.
+
+The serving API must support inventory and exact revision reads; controller-only
+upgrades cannot bootstrap an API missing either operation.
 
 Controller-only upgrades read each active revision with `occ agent revision`,
 refusing missing or unreadable Harness settings before stopping OCC. Plan an
