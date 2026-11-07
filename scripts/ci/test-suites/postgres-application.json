@@ -103,6 +103,7 @@
         "removing finite Git access before its deadline preserves the Agent through a lost detach reply and cold recovery",
         "finite Git removal retires the revision when its original deploy actor loses authority",
         "removal after acknowledged activation and prior revision retirement preserves deployment completion",
+        "finite Git removal and Stop before activation acknowledgment preserve completion without routine maintenance",
         "unacknowledged activation with finite Git removal retains verified execution without completing deployment or setup",
         "unacknowledged activation with finite Git removal retires unsafe execution without completing setup",
         "finite removal and readdition during maintenance cannot open another repository session",

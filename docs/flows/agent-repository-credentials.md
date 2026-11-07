@@ -337,9 +337,9 @@ or unsupported Git withdrawal. Model withdrawal precedes Gateway readiness.
 Failed reads stay pending unless independent facts prove authority loss. Optional withdrawals cannot justify retirement. `recoverPendingCredentialWithdrawals` recovers exhausted original/companion work, preserving manual-replay holds. The v7 reducer observes without reapplying.
 See [tests](../../tests/integration/postgres-standing-expiry-authority.test.ts).
 
-Under Namespace/Agent locks, `updateAgent` compares removals with finite admission. `withdrawFinite` atomically closes sessions and records irreversible cleanup under original deployment authority, leaving existing work untouched. The [withdrawal guard](../../migrations/0074_finite_repository_session_withdrawal.sql) rejects new sessions after locking, including blocked inserts. Re-add cannot revive admission.
+Under Namespace/Agent locks, `updateAgent` compares removals with finite admission. `withdrawFinite` atomically closes sessions, recording irreversible cleanup under original deployment authority, preserving existing work. The [withdrawal guard](../../migrations/0074_finite_repository_session_withdrawal.sql) rejects new sessions after locking, including blocked inserts. Re-add cannot revive admission.
 
-`PostgresWorkQueue.repositoryExpiryState` selects withdrawal before preparation, including after original-work exhaustion; retirement takes precedence. `completeActivatedRevision` defers stale maintenance; completed activation leaves removal pending. Incomplete activation can record `REPOSITORY_ACCESS_WITHDRAWN` without consuming setup or recording activation. Under Agent lock, `PostgresOpenShellGitRouteStore.adopt` blocks removed Git without replacing its recipient. `expire` requires committed removal before expiry; `worker_replaced` remains refused. Compute verifies withdrawal and independent readiness. V2 consumes closed sessions through `reduceCredentialPolicy`.
+`PostgresWorkQueue.repositoryExpiryState` selects withdrawal before preparation despite original-work exhaustion; retirement wins. `completeActivatedRevision` defers stale maintenance. New maintenance requires active, running Agents in ready Namespaces; activation leaves removal pending. Incomplete activation can record `REPOSITORY_ACCESS_WITHDRAWN` without setup or activation success. Under Agent lock, `PostgresOpenShellGitRouteStore.adopt` blocks removed Git without recipient replacement. `expire` requires committed removal before expiry; `worker_replaced` remains refused. Compute verifies withdrawal and independent readiness. V2 consumes closed sessions through `reduceCredentialPolicy`.
 
 `ControllerWorker.processAgentDeletion` retires Compute and queues version-keyed cleanup
 without waiting for sessions. `PostgresWorkQueue.completeAgentDeletion`
@@ -379,7 +379,7 @@ Verify live PR updates, denial before provider contact and continued chat separa
 
 ## Changelog
 
-- 2026-11-07 11:50: Trace finite removal and retained supervision. (authoring-run/631f2612-7e8d-438d-a2bf-6ab23999c345 - 21cfef232a9867661319800481eb42f27406fd52)
+- 2026-11-07 12:38: Trace removal, retention and Stop. (authoring-run/631f2612-7e8d-438d-a2bf-6ab23999c345 - 67b80c129342389e7f2c3a18d56869fd44306717)
 
 - 2026-11-07 03:14: Capture policy. (authoring-run/ca379ce8-200d-4822-9b71-87f49f7644dc - 8c600ad53844dca9d2f9eda87ba8733c628d28aa)
 - 2026-11-06 20:39: Distinguish terminal held-launch replacement from transient standing verification. (authoring-run/d966f693-ccc4-4b07-8fbc-f66738672284 - 21a933338904531c51a67f9aaf98c3401ceff025)

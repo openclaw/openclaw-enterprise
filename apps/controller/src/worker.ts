@@ -6882,7 +6882,14 @@ export class ControllerWorker {
         code: result.code,
         ...(result.resultData === undefined ? {} : { resultData: result.resultData }),
       });
-      if (this.revisionMaintenanceInterval(revision) !== undefined) {
+      // Acknowledgment can finish after Stop or deletion admission, but those
+      // operations own the remaining work; they do not need new routine maintenance.
+      if (
+        agent.status === "active" &&
+        agent.desiredRuntimeState === "running" &&
+        (await unit.namespaces.findNamespace(claim.namespaceId))?.status === "ready" &&
+        this.revisionMaintenanceInterval(revision) !== undefined
+      ) {
         await this.enqueueMaintenance(queue, claim, revision);
       }
       completed = true;
