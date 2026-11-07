@@ -633,9 +633,9 @@ function assertWorkspaceNodeMigratedOnce(outcome, phases, started, count) {
   assert.equal(current.output.match(started)?.length, count, current.output);
 }
 
-// Each case seeds its own state volume and starts its own containers: random
-// volume and container names, no shared port. All run at once.
-describe("runtime image released state migration", { concurrency: 4 }, () => {
+// Each case owns its state and containers. Keep one Doctor repair active here:
+// the CI lane already runs other native image files beside these scenarios.
+describe("runtime image released state migration", { concurrency: 1 }, () => {
   test(
     "runtime image migrates a released Gateway's agent database once before starting OpenClaw",
     imageTestOptions,
