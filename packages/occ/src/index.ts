@@ -13357,9 +13357,9 @@ export class OpenClawController {
         lockedAgent,
         sandbox,
         driver,
-        pluginState?.importedReleases,
         revisionHarness,
         compute,
+        pluginState?.importedReleases,
       );
       const secretBindings = this.bindings(metadata.secretBindings);
       const sources = await this.authorizeBindings(
@@ -15149,9 +15149,9 @@ export class OpenClawController {
     agent: Readonly<Agent>,
     sandbox: SandboxDriver | undefined,
     driver: PluginDriver | undefined,
-    releases: PluginRevisionState["importedReleases"],
     harness: RevisionHarnessDescriptor,
     compute: ComputeDriver,
+    releases?: PluginRevisionState["importedReleases"],
   ): Promise<readonly CredentialSourceSnapshot[]> {
     const bindings = agent.credentialSources ?? [];
     if (bindings.length === 0) {
