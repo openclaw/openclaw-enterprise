@@ -234,6 +234,7 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 - 2026-11-10 19:32: Explain when Create opens the first deployment and how it follows the job if the deployment read fails. (authoring-run/a1d8ded8-9b07-4489-a86a-3cf43cf3891b - fb0fb0f46331)
 - 2026-11-06 18:20: Add the Create Agent step meter, driven by the polled job's status and phase. (feat/create-agent-progress - a18e07d2c)
 - 2026-11-06 19:35: Pin the Create Agent step meter in the sticky action bar; a failure names its step and reason there, and Retry appears only once the request has ended. (feat/create-agent-progress - f13b519d8)
+- 2026-11-06 18:20: Add the Create Agent step meter, driven by the polled job's status and phase. (feat/create-agent-progress - a18e07d2c)
 
 - 2026-11-04 16:38: Explain how Create Agent handles malformed provisioning IDs and error messages. (authoring-run/03df9caf-3a28-496d-bb70-f5b0d838a028 - fe3f13a48d54e3ad3a0dc872f6e5313c783c1ed0)
 
@@ -259,12 +260,5 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 - 2026-10-25 03:30: Check a Secret binding's placement before the Compute plan check; Console runs the preflight first. (fix-postland-1025b - 2b1f510594)
 
 - 2026-10-17: Bound optional deployment details to the provisioning poll interval. (PR #2685)
-
-- 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
-
-- 2026-10-15 07:00: A later attempt retries a failed unrecorded-Configuration delete. (fix-1399)
-- 2026-10-15 06:30: Refused provisioning deletes its unrecorded Configuration. (fix-1395)
-- 2026-10-14 23:59: Name the Stop or deletion that cancelled provisioning. (fix-1375-1377)
-- 2026-10-14 20:21: Name a stopped initial deployment without changing its failed and non-retryable outcome. (authoring-run/b98d803a-436a-4437-84af-01be278a6460 - 8642bef0e3a39ff73459ef9e96a3404084135837)
 
 [Agent provisioning documentation history](agent-provisioning/history.md) preserves the older dated entries.

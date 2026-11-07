@@ -8,6 +8,12 @@ This record preserves the dated changes to the Agent provisioning flow. See the 
 
 ## Changelog
 
+- 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
+
+- 2026-10-15 07:00: A later attempt retries a failed unrecorded-Configuration delete. (fix-1399)
+- 2026-10-15 06:30: Refused provisioning deletes its unrecorded Configuration. (fix-1395)
+- 2026-10-14 23:59: Name the Stop or deletion that cancelled provisioning. (fix-1375-1377)
+- 2026-10-14 20:21: Name a stopped initial deployment without changing its failed and non-retryable outcome. (authoring-run/b98d803a-436a-4437-84af-01be278a6460 - 8642bef0e3a39ff73459ef9e96a3404084135837)
 - 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
 
 - 2026-10-12 22:30: Provisioning refuses undeliverable repository bindings and Sandbox workspace files before queueing. (fix-1144-1145b - d34b4a8f7)
