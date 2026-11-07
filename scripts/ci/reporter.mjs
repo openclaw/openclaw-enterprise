@@ -987,13 +987,10 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     safe.historyExecNestedExitCode = worker.historyExecNestedExitCode;
   }
   if (
+    safe.historyExecNestedExitCode > 0 &&
     ["write-session-file", "read-session-file", "read-workspace-file", "emit-proof"].includes(
       worker.historyExecFailureOperation,
-    )
-  ) {
-    safe.historyExecFailureOperation = worker.historyExecFailureOperation;
-  }
-  if (
+    ) &&
     [
       "EACCES",
       "EPERM",
@@ -1008,6 +1005,7 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
       "other",
     ].includes(worker.historyExecFailureCode)
   ) {
+    safe.historyExecFailureOperation = worker.historyExecFailureOperation;
     safe.historyExecFailureCode = worker.historyExecFailureCode;
   }
   return { ...diagnostic, worker: safe };

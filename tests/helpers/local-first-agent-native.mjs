@@ -1124,6 +1124,7 @@ export function nativeWorkerHistoryEvidence({
   );
   const nestedExitCodes = [];
   const nestedFailures = [];
+  let failureMarkerCount = 0;
   const envelopes = exec.map((message) => {
     try {
       const value = JSON.parse(text(message.content));
@@ -1135,7 +1136,11 @@ export function nativeWorkerHistoryEvidence({
         if (value.value.exitCode > 0 && value.value.exitCode <= 255) {
           for (const line of value.value.aggregated.split(/\r?\n/)) {
             const prefix = "FIRST_AGENT_NATIVE_FAILURE ";
-            if (!line.startsWith(prefix) || line.length > 256) {
+            if (!line.startsWith(prefix)) {
+              continue;
+            }
+            failureMarkerCount += 1;
+            if (line.length > 256) {
               continue;
             }
             try {
@@ -1210,7 +1215,7 @@ export function nativeWorkerHistoryEvidence({
       ...(nestedExitCodes.length === 1 && nestedExitCodes[0] >= 0 && nestedExitCodes[0] <= 255
         ? { historyExecNestedExitCode: nestedExitCodes[0] }
         : {}),
-      ...(nestedExitCodes.length === 1 && nestedFailures.length === 1
+      ...(nestedExitCodes.length === 1 && failureMarkerCount === 1 && nestedFailures.length === 1
         ? {
             historyExecFailureOperation: nestedFailures[0].operation,
             historyExecFailureCode: nestedFailures[0].code,

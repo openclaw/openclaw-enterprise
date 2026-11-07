@@ -1387,6 +1387,14 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     { encoding: "utf8", timeout: 10_000 },
   );
   assert.equal(failedProgram.status, 1);
+  const inconsistentNativeFailures = [
+    [0, "read-session-file", "ENOENT"],
+    [undefined, "read-session-file", "ENOENT"],
+    [1, undefined, "ENOENT"],
+    [1, "read-session-file", undefined],
+    [1, nativePrivate, "ENOENT"],
+    [1, "read-session-file", nativePrivate],
+  ];
   const nativeHistory = nativeWorkerHistoryEvidence({
     runId: "selected",
     toolPrefix: "proof ",
@@ -2105,6 +2113,18 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
             worker: { ...nativeHistory, transcript: nativePrivate },
           },
         },
+        ...inconsistentNativeFailures.map(([exitCode, operation, code], index) => ({
+          name: `rejects inconsistent native failure ${index}`,
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "model-history",
+            worker: {
+              historyExecNestedExitCode: exitCode,
+              historyExecFailureOperation: operation,
+              historyExecFailureCode: code,
+            },
+          },
+        })),
         {
           name: "rejects hostile native worker diagnostic fields",
           diagnostic: {
@@ -2450,6 +2470,14 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     ).error.diagnostic.worker,
     nativeHistory,
   );
+  for (const [index, [exitCode]] of inconsistentNativeFailures.entries()) {
+    assert.deepEqual(
+      summary.files[0].tests.find(
+        (entry) => entry.name === `rejects inconsistent native failure ${index}`,
+      ).error.diagnostic.worker,
+      exitCode === undefined ? {} : { historyExecNestedExitCode: exitCode },
+    );
+  }
   assert.deepEqual(
     summary.files[0].tests.find(
       (entry) => entry.name === "rejects hostile native worker diagnostic fields",
@@ -6977,6 +7005,9 @@ test("native history proof keeps exact run, explicit success and marker predicat
     [1, "FIRST_AGENT_NATIVE_FAILURE {invalid"],
     [1, "command: " + failureLine],
     [1, failureLine + "\n" + failureLine],
+    [1, failureLine + "\nFIRST_AGENT_NATIVE_FAILURE {invalid"],
+    [1, failureLine + '\nFIRST_AGENT_NATIVE_FAILURE {"operation":"private-path","code":"ENOENT"}'],
+    [1, failureLine + "\nFIRST_AGENT_NATIVE_FAILURE " + "x".repeat(256)],
     [0, failureLine],
     [256, failureLine],
     [-1, failureLine],
