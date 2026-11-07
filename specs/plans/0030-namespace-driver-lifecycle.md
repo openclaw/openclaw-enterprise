@@ -61,7 +61,9 @@ submitted at `91b1a51eb` before contract changes. Implementation is in progress
 on the same assigned branch. The RFC remains Proposed.
 
 The expanded `namespace-driver-openshell-k3d-real.test.ts` passed one real scenario
-with zero failures and zero skips on 2026-11-07. The registered Namespace-only
+with zero failures and zero skips on 2026-11-07. An additional 45 controller/API
+lifecycle checks passed after updating the foreign-scope result assertion to the
+RFC's permanent-failure contract. The registered Namespace-only
 QA entry point also passed two tests with zero failures and zero skips. It covers the Namespace outcomes
 above without creating an Agent. Two live cleanup failures were corrected:
 retry after asynchronous namespace removal must tolerate the lost tenant

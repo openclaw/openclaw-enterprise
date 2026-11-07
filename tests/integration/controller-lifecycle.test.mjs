@@ -1662,14 +1662,13 @@ test("incomplete and permanent lifecycle results preserve fail-closed Namespace 
     namespaceId: "namespace-foreign",
     namespaceReady: true,
   });
-  await assert.rejects(
-    controller.handleNamespaceLifecycle("principal-admin", invalid.id, "ready"),
-    DependencyUnavailableError,
-  );
+  // A foreign-scope observation is a permanent contract failure. Neither readiness nor
+  // the provider's foreign identifier can become the Namespace's persisted outcome.
   assert.equal(
-    (await controller.getNamespace("principal-admin", invalid.id)).status,
-    "provisioning",
+    (await controller.handleNamespaceLifecycle("principal-admin", invalid.id, "ready"))?.status,
+    "failed",
   );
+  assert.equal((await controller.getNamespace("principal-admin", invalid.id)).status, "failed");
 });
 
 test("a missing selected Compute Driver fails closed with attributable lifecycle audit", async () => {
