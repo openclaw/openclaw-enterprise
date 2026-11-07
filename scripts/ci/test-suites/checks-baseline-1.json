@@ -26,6 +26,7 @@
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/strands-box-driver.test.ts",
     "tests/conformance/strands-box-git.test.ts",
+    "tests/conformance/strands-box-harness-image.test.ts",
     "tests/conformance/strands-box-host.test.ts",
     "tests/conformance/strands-box-ingress.test.ts",
     "tests/conformance/strands-box-ordinary-chat.test.ts",
@@ -225,6 +226,9 @@
     },
     {
       "path": "tests/conformance/strands-box-git.test.ts"
+    },
+    {
+      "path": "tests/conformance/strands-box-harness-image.test.ts"
     },
     {
       "path": "tests/conformance/strands-box-host.test.ts"

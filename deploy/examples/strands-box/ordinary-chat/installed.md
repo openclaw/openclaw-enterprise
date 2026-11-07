@@ -79,12 +79,30 @@ workspace file staging.
 
 ## Prepare the original volume
 
+For this local Box setup, have the storage operator prepare two compatible
+local PersistentVolumes (PVs) once the stopped Agent and its execution
+namespace are known, before the first deployment. Compute creates the claims
+below; `<agent>` is the first 12 hex digits of the SHA-256 of the Agent ID.
+
+| Claim                   | Requested storage                     | Storage class                                               |
+| ----------------------- | ------------------------------------- | ----------------------------------------------------------- |
+| `gateway-state-<agent>` | `10Gi`, `Filesystem`, `ReadWriteOnce` | Explicit `runtime.gatewayStorageClassName`                  |
+| `workspace-<agent>`     | `40Gi`, `ReadWriteOnce`               | Omitted; Kubernetes uses the cluster default if configured. |
+
+The Box host runs the Harness directly, so no Kubernetes Pod consumes its
+claim to trigger `WaitForFirstConsumer`. For static local storage,
+[reserve each PV by claim name and namespace](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#reserving-a-persistentvolume)
+without a UID. Check the backing filesystem capacity and the PV's
+`kubernetes.io/hostname` affinity: the Harness volume must be on the original
+Box host, and the Gateway volume must match Gateway placement. Keep both
+volumes separate from the existing Worker control and bootstrap output claims
+that Helm references.
+
 After the empty export checks pass, [mount it read-only in one Worker](../driver/README.md#mount-the-empty-control-directory).
 Verify the actual Worker mount, then submit the stopped Agent's first
 deployment once through [the guarded OCE workflow](../../../../docs/guides/deploy/production-agents.md#prepare-transport-credentials-and-deploy). The Worker creates the
-Harness claim before it calls the Box host. Use a workspace volume that the
-original Box host can mount directly, such as a statically bound local
-volume on that host. A copy cannot serve the Agent's live file operations.
+Harness claim before it calls the Box host. A copy of the workspace volume
+cannot serve the Agent's live file operations.
 
 Track that deployment and revision through OCE. Continue only while the
 original deployment is still in progress, within its normal deadline. If
@@ -92,11 +110,12 @@ it fails or its outcome is unknown, stop and reconcile that exact revision.
 Do not submit another deployment, create a replacement revision, or assume
 the Worker will retry a terminal operation.
 
-Read the original Harness claim in the Agent's execution namespace.
-Match the Namespace and Agent to the original revision, then verify the
-Bound claim's UID and `spec.volumeName`. Check the original PV's UID,
-`claimRef`, and placement on the Box host. Record the claim and PV before
-binding the four subpaths of that volume as the nonroot runtime owner:
+After Compute creates the claims, let Kubernetes bind them. Match the Namespace
+and Agent to the original revision and check that both claims are `Bound`. For
+each, record the actual claim UID and `spec.volumeName`, then verify the named
+PV's UID, `claimRef` (including the claim UID), and node placement. Use the
+verified original Harness volume on the Box host to bind its four subpaths as
+the nonroot runtime owner:
 
 | Volume subpath                     | Host mount                           |
 | ---------------------------------- | ------------------------------------ |
