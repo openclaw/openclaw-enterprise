@@ -304,16 +304,22 @@ Standing succession can use a fresh expired-provider report only to confirm
 predecessor identity. New installations and post-detach model completion require
 ready credentials; model authorization remains independent.
 
-A transient observation failure closes access until the same installation verifies,
-with retry backoff from 1 s to 10 s. The held-launch paths (`github-repository`,
-protected `git-write`, and installation preview) cannot be adopted by a replacement
-worker: deploy a new revision after `worker_replaced` or terminal `bootstrap_failed`.
-For v5 held launches after verified replacement, deployment detail reports `repositoryAccess.state: redeploy-required`
-and `REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`, preserving history. OCE closes Git and checks
-withdrawal and model authority.
-Waiting cannot reopen this route. Other qualified paths may retry
-a pre-write read or re-observe durable delivery after restart. No path replays an
-uncertain provider write. Provider writes retain their own deadline. See
+After a transient observation failure, access stays closed until the same installation verifies;
+retries back off from 1 s to 10 s. A replacement worker cannot adopt held launches
+(`github-repository`, protected `git-write`, installation preview). Deploy a new revision after
+`worker_replaced` or terminal `bootstrap_failed`.
+
+For v5 held launches after verified replacement, inspect the affected revision:
+
+```bash
+occ agent deployment-status "$AGENT_ID" "$REVISION_ID" --output json
+```
+
+`repositoryAccess.state` of `redeploy-required` (`REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`) requires
+redeployment even if startup `succeeded`. Absence does not prove Git health. OCE closes Git and checks
+withdrawal and model authority. Waiting cannot reopen the route. Other qualified paths may retry
+pre-write reads or re-observe durable delivery after restart. Uncertain writes are never replayed;
+provider writes retain their deadline. See
 [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
 Prepared-material expiry, quarantine and retirement belong to
 [Token Service lifecycle](../repository-credentials.md#token-service-lifecycle) and
