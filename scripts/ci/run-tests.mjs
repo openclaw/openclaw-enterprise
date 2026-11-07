@@ -1192,18 +1192,17 @@ function openK3dCase2Directory(statePath) {
     }
     entry = mkdtempSync(`/proc/self/fd/${parentFd}/.k3d-case2-`);
     const path = join(parent, basename(entry));
-    identity = lstatSync(entry);
+    // Establish ownership from the opened descriptor before checking either name.
     fd = openSync(entry, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     const opened = fstatSync(fd);
-    if (
-      opened.uid !== uid ||
-      opened.dev !== identity.dev ||
-      opened.ino !== identity.ino ||
-      !sameDirectory(path, opened)
-    ) {
+    if (opened.uid !== uid || (opened.mode & 0o777) !== 0o700 || !sameDirectory(entry, opened)) {
       throw new Error("case-2 directory identity changed");
     }
-    const directory = { path, entry, parentFd, fd, identity: opened };
+    identity = opened;
+    if (!sameDirectory(path, identity)) {
+      throw new Error("case-2 directory identity changed");
+    }
+    const directory = { path, entry, parentFd, fd, identity };
     liveCase2Directories.add(directory);
     return directory;
   } catch {
