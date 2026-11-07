@@ -49,8 +49,10 @@ Prepare the pinned relay image and build the separate Box host helpers from
 this demo checkout using the
 [host build command](../README.md#prepare-the-host-and-verify-box). Prepare the
 [fixed workspace verifier](../workspace-verifier/README.md). For the original
-file-only Workspace Node, stage a separate unpacked root from the selected
-Harness image in a fresh mode-`0700` directory outside the Box grants. Check
+file-only Workspace Node, stage a separate unpacked root from an independently
+selected, compatible pinned file-node image (the selected Harness image can be
+reused if it also supplies the file-node runtime) in a fresh mode-`0700`
+directory outside the Box grants. Check
 its canonical digest and source labels before unpacking, and pin the installed
 file-node helper as described below. The nonroot runtime owner needs read and
 execute access to the shipped Node and OpenClaw files. The host mounts that
