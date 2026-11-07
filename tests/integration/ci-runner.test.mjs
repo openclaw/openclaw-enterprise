@@ -3285,6 +3285,15 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     cleanupCheck: "cleanup.restore-auth.helm-upgrade",
   };
   const nativeBothChecks = { ...nativeBodyCheck, cleanupCheck: nativeCleanupCheck.cleanupCheck };
+  const gatewayStatus = {
+    kind: "openshell-gateway-turn-failure",
+    checkpoint: "http-status",
+    turn: 1,
+    status: 503,
+  };
+  const gatewayRequest = { ...gatewayStatus, checkpoint: "turn-request", turn: 2, status: null };
+  const gatewayNative = { ...gatewayStatus, checkpoint: "native-evidence", turn: 0, status: null };
+  const gatewayUnknownStatus = { ...gatewayStatus, status: null };
   const phaseDiagnostics = [
     failedPhase,
     failedStage,
@@ -3298,6 +3307,16 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     { ...nativeBodyCheck, cleanupCheck: "fixture-opaque-phase-detail" },
     { ...nativeBodyCheck, stage: "fixture-opaque-phase-detail" },
     { ...nativeBodyCheck, primaryCheck: null },
+    gatewayStatus,
+    gatewayRequest,
+    gatewayNative,
+    gatewayUnknownStatus,
+    { ...gatewayStatus, checkpoint: "fixture-opaque-phase-detail" },
+    { ...gatewayStatus, turn: 3 },
+    { ...gatewayStatus, turn: "1" },
+    { ...gatewayStatus, status: 999 },
+    { ...gatewayRequest, status: 200 },
+    { ...gatewayNative, turn: 1 },
   ].map(
     (measurement) =>
       `openclaw-ci-measurement ${JSON.stringify({ ...measurement, detail: "fixture-opaque-phase-detail" })}`,
@@ -3369,6 +3388,10 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     nativeBodyCheck,
     nativeCleanupCheck,
     nativeBothChecks,
+    gatewayStatus,
+    gatewayRequest,
+    gatewayNative,
+    gatewayUnknownStatus,
     teardown,
   ]);
   assert.equal(await readFile(join(root, "teardown-completed"), "utf8"), "yes");
