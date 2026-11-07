@@ -2386,34 +2386,26 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   }
   secretApi = { ...secretApi, configuration: configuration.data };
   const persistedAgent = await storedAgent(observerPool, namespaceId, agent.data.id);
-  const { configuration: harnessConfiguration } = deployed.data.harness;
+  const fixtureProvider = apiConfiguration.drivers.compute.configuration.runtime.modelProvider ?? {
+    protocol: "openai-responses",
+    baseUrl: "https://api.openai.com/v1",
+  };
   assert.ok(
     isDeepStrictEqual(deployed.data.harness, {
       id: harnessId,
       version: "1.0.0",
       mode,
       overrides: {},
-      configuration: harnessConfiguration,
+      configuration: {
+        modelProvider: {
+          protocol: fixtureProvider.protocol,
+          baseUrl: normalizeOpenAiBaseUrl(fixtureProvider.baseUrl),
+          supportsStandaloneWebSearch: fixtureProvider.supportsStandaloneWebSearch === true,
+        },
+      },
     }),
-    "deployed Harness descriptor must match the fixture",
+    "deployed Harness descriptor must match the fixture's configured or default model provider",
   );
-  assert.ok(
-    harnessConfiguration &&
-      typeof harnessConfiguration === "object" &&
-      !Array.isArray(harnessConfiguration),
-  );
-  const fixtureProvider = apiConfiguration.drivers.compute.configuration.runtime.modelProvider;
-  if (fixtureProvider !== undefined) {
-    const modelProvider = {
-      protocol: fixtureProvider.protocol,
-      baseUrl: normalizeOpenAiBaseUrl(fixtureProvider.baseUrl),
-      supportsStandaloneWebSearch: fixtureProvider.supportsStandaloneWebSearch === true,
-    };
-    assert.ok(
-      isDeepStrictEqual(harnessConfiguration, { modelProvider }),
-      "deployed Harness configuration must match the fixture's configured model provider",
-    );
-  }
   assert.deepEqual(deployed.data.harnessAuth, agent.data.harnessAuth);
   assert.equal(Object.hasOwn(deployed.data, "serviceAccount"), false);
   for (const [description, response] of [
