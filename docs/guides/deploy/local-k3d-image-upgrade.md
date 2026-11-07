@@ -79,10 +79,9 @@ export OCC_CA_BUNDLE='/secure/occ/occ-ca.pem' # omit if the system trust store i
 export UPGRADE_EVIDENCE="/secure/occ/upgrades/$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
-If retained YAML is missing, set unused, protected `VALUES` and `INSTALLATION`
-paths. Recovery pauses tracing. Fix reported errors before retrying. Validate
-Installation separately. Compare files with operator records. Never substitute
-example templates.
+For missing YAML, recover to unused, protected `VALUES`/`INSTALLATION` paths.
+Resolve errors before retrying. Validate Installation
+separately. Compare both files with operator records; never use example templates.
 
 ```bash
 (
@@ -114,8 +113,10 @@ example templates.
       test("\\A[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*\\z"))' 2>/dev/null) &&
     INSTALLATION_KEY=$(setting '.installation.key' |
       jq -er 'if . == null then "installation.yaml" else . end |
+        select(. != "." and (startswith("..") | not)) |
         select(length > 0 and length <= 253 and
-        test("\\A[-._a-zA-Z0-9]+\\z"))' 2>/dev/null) ||
+        test("\\A[-._a-zA-Z0-9]+\\z"))' 2>/dev/null) &&
+    test -n "$INSTALLATION_SECRET" && test -n "$INSTALLATION_KEY" ||
     fail "Invalid Secret name/key; correct Helm values."
 
   secret_json=$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
@@ -135,7 +136,7 @@ example templates.
 )
 ```
 
-Record the Installation ID, Agent inventory, PVC UIDs and bound volume names:
+Record the Installation ID, Agents, PVC UIDs and bound volumes:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" get --raw=/readyz
