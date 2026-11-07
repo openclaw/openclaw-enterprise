@@ -225,7 +225,7 @@ before the maintenance window, run this from the candidate checkout:
 
 ```bash
 occ --output json installation get | node --input-type=module -e '
-import { isName, NAME_RULE } from "./packages/contracts/src/index.ts";
+import { isName, NAME_RULE } from "./packages/contracts/src/api/plain-text.ts";
 let s = ""; for await (const c of process.stdin) s += c;
 if (!isName(JSON.parse(s).name)) { console.error(NAME_RULE); process.exit(1); }'
 ```
