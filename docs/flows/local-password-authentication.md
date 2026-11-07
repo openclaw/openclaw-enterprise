@@ -91,29 +91,24 @@ startup does not expose the application until bootstrap succeeds.
 creates owner-only output exclusively and syncs it before OCC commit. The JSON
 contains the key response and attempt Installation ID; production also writes its
 password file on the same protected PVC, and development writes to its
-bootstrap-only volume or explicit direct-initialization path. No plaintext reaches logs, audit, HTTP
-bootstrap responses, or the worker.
+bootstrap-only volume or explicit direct-initialization path. No plaintext reaches logs, audit, bootstrap HTTP responses or the worker.
 
-Both modes commit Installation/IAM/audit in one controller transaction. The
-initializer owns one attempt across account creation, key issuance, output and
-commit. The API loads committed state without calling the human-session-only
+Both modes commit Installation/IAM/audit together after one attempt at account
+creation, key issuance and output. The API loads committed state without calling the human-session-only
 `POST /installation/bootstrap`. Singleton constraints permit one committed seed;
 a losing initializer fails.
 
-Any error ends the single attempt with `installation.bootstrap-failed`,
+Any error ends the attempt with `installation.bootstrap-failed`,
 available non-secret IDs and paths, and a nonzero exit; the Helm initialization
 Job uses `backoffLimit: 0`. Completed tracked accounts, keys, and files,
-including partial output, remain for inspection. One pre-return Better
-Auth failure is narrower: if password `linkAccount` fails inside
-`createAccount`, the helper attempts to delete the just-created user before
-rethrowing. That is not a general artifact-recovery path; the initializer never
+including partial output, remain for inspection. If password `linkAccount` fails before `createAccount` returns, the helper
+attempts to delete the new user before rethrowing. That is not a general artifact-recovery path; the initializer never
 automatically revokes, retries, repairs, or resets committed or uncertain state.
 
-An uncertain commit may have persisted the seed. The
-[recovery procedure](../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap)
-requires confirming transaction completion and exact attempt IDs before repair;
-file existence is insufficient. Reset requires identifying the disposable
-Installation and its storage. After success, import output and retain its IDs.
+The [recovery procedure](../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap)
+requires confirmed transaction completion and exact attempt IDs: an uncertain
+commit can persist the seed; file existence is insufficient. Reset requires identifying the disposable
+Installation and its storage. After success, import output, retaining its IDs.
 Lost output is never regenerated; [service-key management](service-api-keys.md)
 covers replacement and revocation.
 
@@ -152,9 +147,9 @@ a wrong password writes no unstructured console warning.
 
 `requireSessionKey` checks optional `x-occ-session-key` after cookie resolution in
 `ControllerAdmissionVerifier.verify`, `session`, `resolveSession`, and `signOut`.
-An absent header changes nothing; a malformed, duplicated, or foreign key returns
-`401` without revoking or clearing the session. The header narrows but never selects
-a session; the native admin proxy strips it upstream.
+Malformed, duplicated or foreign keys return `401` without revoking or clearing
+sessions. This optional header narrows but never selects a session; the native
+admin proxy strips it upstream.
 
 When GitHub is configured, `apps/controller/src/auth/github.ts:createHumanLogin`
 provides password, GitHub, and logout endpoints through a guarded Better Auth adapter.
@@ -205,7 +200,7 @@ Denials after `consumeAttempt` matches are audited as
 lookup and adds `MEMBERSHIP_REQUIRED` and `MEMBERSHIP_UNAVAILABLE`. The callback route turns
 the response code of those, `ACCOUNT_DISABLED` and `PROVIDER_UNAVAILABLE` into the Console's
 `authReason`, and a callback that fails inside OCE (5xx) into `authReason=unavailable`;
-State dependency failure or uncertain session completion is not a denial. Neither path retries.
+State dependency failures and uncertain session completion are not denials; neither retries.
 
 Google (and generic OIDC) reuses `apps/controller/src/auth/github.ts:externalProviderEndpoints` for
 start, callback, and result, with provider instance `google:<sha256(client ID)>`.
@@ -256,13 +251,18 @@ populations fail activation. See the
 
 Account routes enforce the
 [session and recovery controls](../reference/authentication/external-sign-in.md#session-and-recovery-controls):
-State locks actor and target, rechecks the actor session, and applies the
-caller's `expectedVersion`. Attachment, disablement, and account-wide revocation advance
-that version and invalidate target sessions and proofs without changing IAM.
-A guarded read returns current account and method state, not a prior operation
-receipt. Unknown completion returns an explicit dependency failure without
-replay or compensation; operators must resolve uncertainty before a new action.
-Without GitHub or Google, the composition supplies no account operations; the routes
+State locks actor and target and checks `expectedVersion`. After method/recovery locks,
+`human-authentication.ts:guardAuthority` holds all six IAM tables through commit
+using `0073_account_administration_policy.sql`, awaits the selected IAM Driver through
+the route's actor callback, then rechecks the session. `READ COMMITTED` sees grants changed
+during lock waits; `NOWAIT` contention returns retryable `503`. Denials roll back
+before HTTP audit.
+Attachment, disablement and account-wide revocation advance the version and invalidate
+target sessions and proofs without changing IAM.
+Guarded reads return current account and method state, not operation receipts.
+Unknown completion returns a dependency failure without replay or compensation; operators must
+resolve uncertainty before another action.
+Without an external sign-in provider, composition omits account operations; routes
 still authorize the caller, then return `409 RESOURCE_CONFLICT`.
 Logout commits deletion and audit before clearing the cookie. The [authentication reference](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
 owns configuration, recovery limits, and operator-visible behavior.
@@ -275,11 +275,10 @@ unsafe session requests before admission, including sign-out before revocation
 and the GitHub result exchange, which shares the GitHub admission lane, before
 reading. Explicit service API keys skip this check and never fall back to a cookie.
 
-`apps/controller/src/index.ts:createFastifyApp` validates the session, resolves
-its installation-owned issuer and user ID through the selected IAM Driver, and
-authorizes the exact resource through that same Driver. The Driver loads current
-policy separately for identity lookup and authorization, so account and
-permission changes are visible across controller instances. Missing or invalid
+`apps/controller/src/index.ts:createFastifyApp` validates the session and uses the
+selected IAM Driver to resolve its Installation-owned issuer/user ID and authorize
+the exact resource. Separate current-policy reads for lookup and authorization
+expose account and permission changes across controller instances. Missing or invalid
 sessions return `401`; denied permissions return `403`; dependency failures fail
 closed. Bearer credentials and caller-supplied identity headers are rejected.
 

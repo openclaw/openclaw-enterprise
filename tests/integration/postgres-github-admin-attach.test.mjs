@@ -341,7 +341,7 @@ test(
     );
 
     await t.test(
-      "two administrators attaching one GitHub identity to two accounts at once: one wins, one conflicts",
+      "concurrent GitHub attaches return retryable contention, then an identity conflict",
       async () => {
         const createReader = (email) =>
           createAccount(app, adminHeaders, { email, password, roleId: roles.reader.id });
@@ -363,10 +363,10 @@ test(
             async (target) => (await signedInHeaders(app, origin, target, address())).cookie,
           ),
         );
-        // An uncommitted row for the same identity hides from both existence checks and
-        // holds both inserts on the unique index, so the two attaches really overlap.
+        // Hold the first attach at the unique identity insert while it retains its
+        // authorization fence. A second administrator must retry rather than queue behind it.
         const blocker = await pool.connect();
-        let attaches;
+        let firstAttach;
         try {
           await blocker.query("BEGIN");
           const blockerPid = (await blocker.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
@@ -375,48 +375,52 @@ test(
              VALUES ('race-blocker', $1, $2, $3, clock_timestamp(), clock_timestamp(), true)`,
             [racedSubject, providerId, bystander.id],
           );
-          attaches = Promise.all([
+          firstAttach = Promise.resolve(
             attach(adminHeaders, member.id, racedSubject, before[0].version),
-            attach(secondHeaders, third.id, racedSubject, before[1].version),
-          ]);
-          // Only the two attaches run this INSERT, so at least two waiters means both.
-          await waitForLockWaiter(pool, blockerPid, "both attaches to reach the identity insert", {
-            count: 2,
-            queryLike: "INSERT INTO occ.account %",
-            timeoutMs: 10_000,
-          });
+          );
+          await waitForLockWaiter(
+            pool,
+            blockerPid,
+            "the first attach to reach the identity insert",
+            {
+              queryLike: "INSERT INTO occ.account %",
+              timeoutMs: 10_000,
+            },
+          );
+          const contended = await attach(secondHeaders, third.id, racedSubject, before[1].version);
+          assertApiError(contended, 503, "DEPENDENCY_UNAVAILABLE");
         } finally {
           await blocker.query("ROLLBACK");
           blocker.release();
         }
-        const responses = await attaches;
-        const winner = responses.findIndex(({ statusCode }) => statusCode === 200);
-        assert.notEqual(winner, -1, responses.map(({ body }) => body).join("\n"));
-        const loser = 1 - winner;
-        assert.equal(responses[loser].statusCode, 409, responses[loser].body);
-        assert.deepEqual(responses[loser].json().error, {
+        const attached = await firstAttach;
+        assert.equal(attached.statusCode, 200, attached.body);
+        // Once contention clears, the retry must observe the identity's committed owner.
+        const conflict = await attach(secondHeaders, third.id, racedSubject, before[1].version);
+        assert.equal(conflict.statusCode, 409, conflict.body);
+        assert.deepEqual(conflict.json().error, {
           code: "RESOURCE_CONFLICT",
           message: "The external identity is already assigned.",
         });
         // The losing account is untouched: same version, no identity, sessions intact.
-        assert.deepEqual(await readAccount(app, adminHeaders, targets[loser].id), before[loser]);
-        assert.ok(await currentSession(app, targetCookies[loser]));
-        assert.equal(await currentSession(app, targetCookies[winner]), null);
+        assert.deepEqual(await readAccount(app, adminHeaders, third.id), before[1]);
+        assert.ok(await currentSession(app, targetCookies[1]));
+        assert.equal(await currentSession(app, targetCookies[0]), null);
         const owners = await pool.query(
           "SELECT user_id FROM occ.account WHERE provider_id = $1 AND account_id = $2",
           [providerId, racedSubject],
         );
-        assert.deepEqual(owners.rows, [{ user_id: targets[winner].id }]);
+        assert.deepEqual(owners.rows, [{ user_id: member.id }]);
         const raceAudits = (await state.transact((unit) => unit.audit.list())).filter(
           ({ action, details }) =>
             action === "authentication.method.attach" &&
             targets.some(({ id }) => id === details.userId),
         );
         assert.deepEqual(
-          raceAudits.map(({ details }) => details.userId),
-          [targets[winner].id],
+          raceAudits.map(({ actorId, details }) => [actorId, details.userId]),
+          [[await accountPrincipalId(pool, admin.id), member.id]],
         );
-        await assertGitHubSignIn(racedSubject, targets[winner].id);
+        await assertGitHubSignIn(racedSubject, member.id);
       },
     );
   },
