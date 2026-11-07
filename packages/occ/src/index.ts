@@ -1,3 +1,4 @@
+export { recognizedRuntimeFailureValues } from "./runtime-failure-cause.ts";
 import { deploymentRepositoryAccessStatus } from "./deployment-repository-access.ts";
 import { exchangeAuthorizationCode, startBrowserAuthorization } from "./browser-authorization.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
