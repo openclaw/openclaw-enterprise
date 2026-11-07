@@ -29,11 +29,6 @@ import { isAbsolute } from "node:path";
 import { managedMcpProviderEndpoint } from "../sandbox/openshell-managed-mcp-policy.ts";
 import { managedMcpInstallForSourceConfig } from "../plugin/managed-catalog.ts";
 
-import {
-  modelProviderBaseUrl,
-  requireModelSourceDestination,
-  type ModelProviderConfiguration,
-} from "../compute/model-provider.ts";
 import { exactDnsName, validateOpenAiSourceBaseUrl } from "../credential-source-endpoint.ts";
 
 import {
@@ -73,7 +68,6 @@ export interface OpenShellCredentialGatewayOptions {
 }
 
 export interface OpenShellCredentialGatewaySelection {
-  readonly modelProvider?: ModelProviderConfiguration;
   readonly id?: string;
   readonly implementation?: string;
   readonly backend: Backend<OpenShellGateway>;
@@ -103,7 +97,6 @@ interface OpenShellSourceType {
     config: Readonly<Record<string, string>>,
     options: OpenShellCredentialGatewayOptions,
     gateway: () => OpenShellGatewayPlacement | undefined,
-    modelProvider?: ModelProviderConfiguration,
   ): Omit<OpenShellProviderProfile, "annotations">;
 }
 
@@ -483,7 +476,7 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
           name: OPENAI_AUTHORIZED_BASE_URL_CONFIG,
           required: false,
           description:
-            "Immutable destination authorization. Must match the Installation model provider; omission authorizes only the default OpenAI endpoint.",
+            "Immutable destination authorization. Must match the revision destination; omission authorizes only the default OpenAI endpoint.",
         }),
       ]),
       secrets: Object.freeze([
@@ -496,7 +489,7 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
       if (config.base_url !== undefined) {
         throw new CredentialSourceConfigError(
           "base_url",
-          "Set runtime.modelProvider on the Installation; source base_url is unsupported.",
+          "Select a Harness modelProvider at deployment or through the Installation default; source base_url is unsupported.",
         );
       }
       const written = config[OPENAI_AUTHORIZED_BASE_URL_CONFIG];
@@ -512,9 +505,17 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
         : Object.freeze({ ...config, [OPENAI_AUTHORIZED_BASE_URL_CONFIG]: baseUrl });
     },
     credentials: () => Object.freeze({ api_key: "OPENAI_API_KEY" }),
-    profile: (sourceId, config, options, _gateway, modelProvider) => {
-      requireModelSourceDestination(config, modelProvider);
-      const baseUrl = modelProviderBaseUrl(modelProvider);
+    profile: (sourceId, config, options) => {
+      if (config.base_url !== undefined) {
+        throw new StoredCredentialSourceConfigError("base_url");
+      }
+      const endpointResult = validateOpenAiSourceBaseUrl(
+        config.authorized_base_url ?? OPENAI_DEFAULT_BASE_URL,
+      );
+      if (endpointResult.error !== undefined) {
+        throw new StoredCredentialSourceConfigError("authorized_base_url");
+      }
+      const baseUrl = endpointResult.baseUrl;
       const endpoint = new URL(baseUrl);
       return {
         id: openShellProviderName(sourceId),
@@ -840,7 +841,6 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
   readonly capability = "credential_gateway" as const;
   readonly implementation: string;
   private readonly options: OpenShellCredentialGatewayOptions;
-  private readonly modelProvider: ModelProviderConfiguration | undefined;
   private readonly backend: Backend<OpenShellGateway>;
   /** Whether the Backend declares a Credential Refresh Driver for `refresh` types. */
   private readonly refresh: boolean;
@@ -870,35 +870,22 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         ? {}
         : { toolBinaries: Object.freeze([...options.toolBinaries]) }),
     });
-    this.modelProvider =
-      selection.modelProvider === undefined
-        ? undefined
-        : Object.freeze({
-            ...selection.modelProvider,
-            baseUrl: modelProviderBaseUrl(selection.modelProvider),
-          });
     this.backend = selection.backend;
     this.refresh = selection.backend.drivers.credential_refresh !== undefined;
     const attachmentOptions = this.options;
-    const modelProvider = this.modelProvider;
     const refresh = this.refresh;
-    this.attachments = new OpenShellCredentialAttachments(
-      this.id,
-      this.backend,
-      this.modelProvider,
-      {
-        sourceType: (name) => {
-          const type = sourceType(name, attachmentOptions, refresh);
-          return {
-            catalog: type.catalog,
-            credentials: type.credentials,
-            profile: (sourceId, config, gateway) =>
-              type.profile(sourceId, config, attachmentOptions, gateway, modelProvider),
-          };
-        },
-        requiredToolBinaries: (binary) => requiredToolBinaries(attachmentOptions, binary),
+    this.attachments = new OpenShellCredentialAttachments(this.id, this.backend, {
+      sourceType: (name) => {
+        const type = sourceType(name, attachmentOptions, refresh);
+        return {
+          catalog: type.catalog,
+          credentials: type.credentials,
+          profile: (sourceId, config, gateway) =>
+            type.profile(sourceId, config, attachmentOptions, gateway),
+        };
       },
-    );
+      requiredToolBinaries: (binary) => requiredToolBinaries(attachmentOptions, binary),
+    });
   }
 
   async listSourceTypes(
@@ -917,17 +904,6 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       this.options,
       () => this.backend.client.placement(),
     );
-    if (input.type === "openai") {
-      const authorized = validateOpenAiSourceBaseUrl(
-        input.config.authorized_base_url ?? OPENAI_DEFAULT_BASE_URL,
-      );
-      if (authorized.baseUrl !== modelProviderBaseUrl(this.modelProvider)) {
-        throw new CredentialSourceConfigError(
-          "authorized_base_url",
-          "Credential destination authorization must match the Installation model provider.",
-        );
-      }
-    }
     return normalized;
   }
 
@@ -947,9 +923,6 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         throw new CredentialSourceRegistrationConfigError(error.field, error.message);
       }
       throw error;
-    }
-    if (input.type === "openai") {
-      requireModelSourceDestination(input.config, this.modelProvider);
     }
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
@@ -1124,7 +1097,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     gateway: () => OpenShellGatewayPlacement | undefined,
     signal: AbortSignal,
   ): Promise<void> {
-    const base = type.profile(sourceId, config, this.options, gateway, this.modelProvider);
+    const base = type.profile(sourceId, config, this.options, gateway);
     await ensureOpenShellProviderProfile(client, workspace, base, signal);
   }
 }

@@ -6,7 +6,7 @@ author: kevinlin-openai
 
 # Proposal: Shared event contract and ownership
 
-- **ID:** RFC-0030
+- **ID:** RFC-0031
 - **Created:** 2026-11-06
 - **Last updated:** 2026-11-06
 - **Related:** [Platform audit](0013-platform-audit/index.md), [production observability](0012-production-observability.md), [platform design](../../docs/design.md#implementation-status).

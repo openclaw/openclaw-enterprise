@@ -83,7 +83,7 @@ const revision = (configuration, number = 1) => ({
   configurationKind: "agent",
   configurationGeneration: 1,
   configuration,
-  harness: { id: "openclaw", version: "1", mode: "embedded" },
+  harness: { id: "openclaw", version: "1", mode: "embedded", overrides: {}, configuration: {} },
   compute: { id: "k", implementation: "k" },
   plugins: {
     driver: { id: "plugins", implementation: "plugins" },

@@ -1819,7 +1819,7 @@ if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
   pids=()
   attempts=()
   for target in "${ready[@]}"; do
-    json_fields "$target" namespace_id=namespaceId agent_id=agentId
+    json_fields "$target" namespace_id=namespaceId agent_id=agentId baseline_revision=baselineRevisionId
     prefix=$(dispatch_prefix "$namespace_id" "$agent_id")
     attempt=$(mktemp -d "$evidence_dir/dispatch/.attempt.XXXXXXXX")
     attempts+=("$attempt")
@@ -1827,7 +1827,7 @@ if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
     # Once this record is durable, interruption at any point is an unknown
     # outcome until we have an acknowledgement or a definite refusal.
     dispatch_state send "$targets" "$namespace_id" "$agent_id"
-    "${occ_json[@]}" --namespace "$namespace_id" agent deploy "$agent_id" </dev/null \
+    "${occ_json[@]}" --namespace "$namespace_id" agent deploy "$agent_id" --retain-harness-overrides "$baseline_revision" </dev/null \
       >"$attempt/response" 2>"$attempt/error" &
     pids+=("$!")
   done

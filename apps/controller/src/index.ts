@@ -1939,6 +1939,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
       operation.operationId !== "deleteServiceAccount" &&
       operation.operationId !== "listAgentRevisions" &&
+      operation.operationId !== "recoverAgentFirstDeployment" &&
       operation !== connectionCallbackOperation
     ) {
       throw failure(
@@ -4634,6 +4635,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             request.body !== undefined ||
             Number(request.headers["content-length"] ?? 0) > 0 ||
             request.headers["transfer-encoding"] !== undefined;
+          if (operation.operationId === "deployAgent" && !hasRequestBody) {
+            request.body = {};
+          }
           if (!Object.hasOwn(operation.schema, "body") && hasRequestBody) {
             throw failure(
               400,

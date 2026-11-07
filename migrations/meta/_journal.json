@@ -498,6 +498,13 @@
       "when": 1787000000071,
       "tag": "0071_default_users",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1787000000072,
+      "tag": "0072_harness_revision_settings",
+      "breakpoints": true
     }
   ]
 }
