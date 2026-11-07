@@ -3563,10 +3563,14 @@ async function withSkillPolicyRestore(run, restore, combinedMessage) {
   try {
     result = await run();
   } catch (cause) {
+    let restoreFailure;
     try {
       await restore();
     } catch (error) {
-      throw new AggregateError([cause, error], combinedMessage, { cause });
+      restoreFailure = { error };
+    }
+    if (restoreFailure !== undefined) {
+      throw new AggregateError([cause, restoreFailure.error], combinedMessage, { cause });
     }
     throw cause;
   }
