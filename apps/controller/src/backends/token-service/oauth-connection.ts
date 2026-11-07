@@ -34,7 +34,7 @@ type OAuthMaterial = ApprovedGrant & {
   readonly sourceId: string;
   readonly namespaceId: string;
   readonly version: string;
-  readonly renewAt: string;
+  readonly renewAt?: string;
 } & (
     | { readonly phase: "ready" }
     | { readonly phase: ClientRetry }
@@ -87,10 +87,11 @@ function material(value: string, custody: OAuthConnectionCustody): StoredConnect
       "tokenEndpointAuthMethod",
       "tokenUrl",
       "accessToken",
-      "refreshToken",
       "expiresAt",
-      "renewAt",
     ].every((key) => isNonEmptyString(data[key])) ||
+    (data.refreshToken !== undefined && !isNonEmptyString(data.refreshToken)) ||
+    (data.renewAt !== undefined &&
+      (!isNonEmptyString(data.renewAt) || !Number.isFinite(Date.parse(data.renewAt as string)))) ||
     !Array.isArray(data.grantedScopes) ||
     !data.grantedScopes.every(isOAuthScopeToken) ||
     !Array.isArray(data.requestedScopes) ||
@@ -100,7 +101,6 @@ function material(value: string, custody: OAuthConnectionCustody): StoredConnect
     ) ||
     Object.hasOwn(data, "clientSecret") ||
     !Number.isFinite(Date.parse(data.expiresAt as string)) ||
-    !Number.isFinite(Date.parse(data.renewAt as string)) ||
     (data.phase === "renewing" &&
       (!isNonEmptyString(data.renewalDeadline) ||
         !Number.isFinite(Date.parse(data.renewalDeadline))))
@@ -119,8 +119,11 @@ function ready(
   if (!Number.isFinite(expires) || expires <= now) {
     throw new BrowserAuthorizationError("access_token_expired", "retry");
   }
+  const isRenewable = isNonEmptyString(grant.refreshToken);
   // Begin renewal a minute before expiry, or halfway through a shorter token's lifetime.
-  const renewAt = expires - Math.min(60_000, Math.ceil((expires - now) / 2));
+  const renewAt = isRenewable
+    ? expires - Math.min(60_000, Math.ceil((expires - now) / 2))
+    : undefined;
   return {
     issuer: grant.issuer,
     oauthClientId: grant.oauthClientId,
@@ -131,13 +134,14 @@ function ready(
     requestedScopes: grant.requestedScopes,
     grantedScopes: grant.grantedScopes,
     accessToken: grant.accessToken,
-    refreshToken: grant.refreshToken,
+    ...(isRenewable
+      ? { refreshToken: grant.refreshToken, renewAt: new Date(renewAt!).toISOString() }
+      : {}),
     expiresAt: grant.expiresAt,
     phase: "ready",
     sourceId: custody.sourceId,
     namespaceId: custody.secret.namespaceId,
     version: randomUUID(),
-    renewAt: new Date(renewAt).toISOString(),
   };
 }
 
@@ -147,7 +151,11 @@ function status(current: StoredConnection): OAuthConnectionStatus {
   }
   if (current.phase === "failed") {
     const failureCode = current.failureCode;
-    const recoveryAction = ["grant_refused", "refresh_outcome_unknown"].includes(failureCode)
+    const recoveryAction = [
+      "grant_refused",
+      "refresh_outcome_unknown",
+      "access_token_expired",
+    ].includes(failureCode)
       ? "reauthorize"
       : "fix_configuration";
     return { state: "failed", failureCode, recoveryAction };
@@ -156,15 +164,21 @@ function status(current: StoredConnection): OAuthConnectionStatus {
     // Only a persisted terminal CAS can retire downstream delivery and its renewal schedule.
     return { state: "pending", expiresAt: current.expiresAt };
   }
-  const schedule = {
-    nextRefreshAt: current.renewAt,
-    schedule: {
-      version: current.version,
-      nextRefreshAt: current.renewAt,
-      grantedScopes: current.grantedScopes,
-    },
-    expiresAt: current.expiresAt,
-  };
+  const isRenewable = isNonEmptyString(current.refreshToken) && isNonEmptyString(current.renewAt);
+  const isExpired = Date.now() >= Date.parse(current.expiresAt);
+  const schedule = isRenewable
+    ? {
+        nextRefreshAt: current.renewAt,
+        schedule: {
+          version: current.version,
+          nextRefreshAt: current.renewAt,
+          grantedScopes: current.grantedScopes,
+        },
+        expiresAt: current.expiresAt,
+      }
+    : {
+        expiresAt: current.expiresAt,
+      };
   if (current.phase !== "ready") {
     return {
       ...schedule,
@@ -173,7 +187,17 @@ function status(current: StoredConnection): OAuthConnectionStatus {
       recoveryAction: current.phase === "client_unavailable" ? "retry" : "fix_configuration",
     };
   }
-  return { ...schedule, state: Date.now() < Date.parse(current.expiresAt) ? "ready" : "pending" };
+  if (isExpired) {
+    return isRenewable
+      ? { ...schedule, state: "pending" }
+      : {
+          state: "failed",
+          failureCode: "access_token_expired",
+          recoveryAction: "reauthorize",
+          expiresAt: current.expiresAt,
+        };
+  }
+  return { ...schedule, state: "ready" };
 }
 
 function retryClient(current: OAuthMaterial, phase: ClientRetry): OAuthMaterial {
@@ -265,7 +289,10 @@ export class OAuthGrantStore {
           minimumValidityMs === undefined ? undefined : eligibleToken(stored, minimumValidityMs),
         phase: stored?.phase,
         version: stored && stored.phase !== "failed" ? stored.version : undefined,
-        renewAt: stored && stored.phase !== "failed" ? Date.parse(stored.renewAt) : undefined,
+        renewAt:
+          stored && stored.phase !== "failed" && stored.renewAt !== undefined
+            ? Date.parse(stored.renewAt)
+            : undefined,
         renewalDeadline:
           stored?.phase === "renewing" ? Date.parse(stored.renewalDeadline) : undefined,
       };
@@ -285,6 +312,18 @@ export class OAuthGrantStore {
     if (!current || current.phase === "failed") {
       return observed;
     }
+    if (!current.refreshToken) {
+      if (Date.now() >= Date.parse(current.expiresAt)) {
+        const expired = failure(custody, "access_token_expired");
+        const fenced = await driver.compareAndSwap!(
+          custody.secret,
+          previous,
+          JSON.stringify(expired),
+        );
+        return fenced ? status(expired) : (await this.observe(custody, signal)).status;
+      }
+      return observed;
+    }
     if (current.phase === "renewing") {
       if (Date.now() < Date.parse(current.renewalDeadline)) {
         return observed;
@@ -302,7 +341,7 @@ export class OAuthGrantStore {
     // Recover an already renewed grant before consuming its refresh token again.
     const renewAfter =
       scheduledVersion === undefined || current.phase !== "ready"
-        ? current.renewAt
+        ? (current.renewAt ?? current.expiresAt)
         : current.expiresAt;
     if (current.version !== scheduledVersion && Date.parse(renewAfter) > Date.now()) {
       return observed;
@@ -360,7 +399,7 @@ export class OAuthGrantStore {
     let next: OAuthMaterial | FailedRefresh;
     try {
       const issued = await this.refreshGrant(
-        current,
+        { ...current, refreshToken: current.refreshToken },
         AbortSignal.any([signal, AbortSignal.timeout(remaining)]),
         clientSecret,
       );
@@ -414,7 +453,7 @@ function eligibleToken(
     grantedScopes: stored.grantedScopes,
     expiresAt: stored.expiresAt,
     version: stored.version,
-    nextRefreshAt: stored.renewAt,
+    ...(stored.renewAt === undefined ? {} : { nextRefreshAt: stored.renewAt }),
   };
 }
 
@@ -503,7 +542,7 @@ export class OAuthAccountTokens implements OAuthRefreshTokenIssuer {
       {
         ...registration,
         accessToken: grant.accessToken,
-        refreshToken: grant.refreshToken,
+        ...(grant.refreshToken === undefined ? {} : { refreshToken: grant.refreshToken }),
         expiresAt: grant.expiresAt,
         requestedScopes: grant.requestedScopes,
         grantedScopes: grant.grantedScopes,
@@ -624,7 +663,11 @@ export class OAuthAccountTokens implements OAuthRefreshTokenIssuer {
         if (Date.parse(current.token.expiresAt) <= Date.now() + options.minimumValidityMs) {
           continue;
         }
-        if (current.phase === "ready" && current.renewAt! <= Date.now()) {
+        if (
+          current.phase === "ready" &&
+          current.renewAt !== undefined &&
+          current.renewAt <= Date.now()
+        ) {
           // A failed wake leaves the durable schedule available to the worker.
           void this.renew(ref, custody, current.version).catch(() => undefined);
         }
@@ -632,7 +675,10 @@ export class OAuthAccountTokens implements OAuthRefreshTokenIssuer {
       }
       if (
         (firstVersion !== undefined && current.version !== firstVersion) ||
-        (current.phase !== "ready" && current.phase !== "renewing" && current.renewAt! > Date.now())
+        (current.phase !== "ready" &&
+          current.phase !== "renewing" &&
+          current.renewAt !== undefined &&
+          current.renewAt > Date.now())
       ) {
         return undefined;
       }

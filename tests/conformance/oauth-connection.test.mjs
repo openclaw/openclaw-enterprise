@@ -459,3 +459,103 @@ test("disconnect fences an in-flight OAuth refresh response", async (t) => {
   await assert.rejects(refreshing, { message: "Secret does not exist." });
   assert.equal(driver.has(custody.secret), false);
 });
+
+test("access-token-only grants deliver usable tokens, omit renewal schedules, and guide reconnect on expiry", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-01-01T00:00:00Z") });
+  const requests = [];
+  const accessToken = randomUUID();
+  const server = createServer(async (req, res) => {
+    const body = [];
+    for await (const chunk of req) {
+      body.push(chunk);
+    }
+    requests.push(new URLSearchParams(Buffer.concat(body).toString()));
+    res.writeHead(200, { "Content-Type": "application/json" });
+    // Issuer returns an access token without a refresh token.
+    res.end(
+      JSON.stringify({
+        access_token: accessToken,
+        token_type: "Bearer",
+        expires_in: 120,
+        scope: "read",
+      }),
+    );
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+
+  const issuer = "http://127.0.0.1:" + server.address().port;
+  const request = {
+    issuer,
+    oauthClientId: "registration",
+    requestedScopes: ["read"],
+    tokenEndpointAuthMethod: "none",
+    clientId: "test-client",
+    scopes: ["read"],
+    resource: "https://mcp.example.test/mcp",
+    tokenUrl: issuer + "/token",
+    redirectUri: "https://oce.example.test/callback",
+  };
+
+  const grant = await exchangeAuthorizationCode(
+    request,
+    "test-verifier",
+    "test-code",
+    undefined,
+    t.signal,
+  );
+  assert.equal(grant.accessToken, accessToken);
+  assert.equal(grant.refreshToken, undefined);
+  assert.deepEqual(grant.grantedScopes, ["read"]);
+
+  const { driver, custody, service, worker } = await oauthCustody();
+  const resolveClient = async () => ({
+    registration: request,
+    readSecret: async () => assert.fail("public clients have no secret"),
+  });
+
+  await service.storeInitialGrant(custody, { ...request, ...grant }, t.signal);
+  const stored = JSON.parse(driver.valueFor(custody.secret));
+  assert.equal(Object.hasOwn(stored, "refreshToken"), false);
+  assert.equal(Object.hasOwn(stored, "renewAt"), false);
+
+  const initial = await worker.observe(custody, t.signal, 0);
+  assert.equal(initial.status.state, "ready");
+  assert.equal(initial.status.schedule, undefined);
+  assert.equal(initial.token.accessToken, accessToken);
+  assert.equal(initial.token.nextRefreshAt, undefined);
+  assert.deepEqual(Object.keys(initial.token).sort(), [
+    "accessToken",
+    "expiresAt",
+    "grantedScopes",
+    "version",
+  ]);
+
+  // Before expiry, renewal attempts make no issuer requests and preserve the ready status.
+  const beforeExpiry = await worker.renew(custody, t.signal, resolveClient);
+  assert.equal(beforeExpiry.state, "ready");
+  assert.equal(beforeExpiry.schedule, undefined);
+  assert.equal(requests.length, 1);
+
+  // Fast-forward past expiry: the token is no longer delivered and guides reconnect.
+  t.mock.timers.tick(130_000);
+  const expiredObservation = await worker.observe(custody, t.signal, 0);
+  assert.equal(expiredObservation.token, undefined);
+  assert.equal(expiredObservation.status.state, "failed");
+  assert.equal(expiredObservation.status.failureCode, "access_token_expired");
+  assert.equal(expiredObservation.status.recoveryAction, "reauthorize");
+
+  // Renewal after expiry records the failure in custody without sending upstream requests.
+  const expiredRenew = await service.renew(custody, t.signal, resolveClient);
+  assert.equal(expiredRenew.state, "failed");
+  assert.equal(expiredRenew.failureCode, "access_token_expired");
+  assert.equal(expiredRenew.recoveryAction, "reauthorize");
+  assert.equal(requests.length, 1, "no renewal request must be sent for non-renewable grants");
+
+  const postRenewObservation = await worker.observe(custody, t.signal, 0);
+  assert.equal(postRenewObservation.token, undefined);
+  assert.equal(postRenewObservation.status.state, "failed");
+  assert.equal(postRenewObservation.status.failureCode, "access_token_expired");
+  assert.equal(postRenewObservation.status.recoveryAction, "reauthorize");
+});
