@@ -32,6 +32,7 @@ import {
   productionGatewayMemoryLimitGi,
   withBoundedTeardown,
   withinDiagnosticDeadline,
+  waitForDeploymentAvailable,
 } from "../helpers/kubernetes-real.mjs";
 import {
   ensureEnvoyGatewayControllers,
@@ -740,13 +741,10 @@ async function startInClusterControllers(
   await applyManifest(JSON.stringify(manifests), {
     redactions: [databaseUrl, authSecret, workspaceGateway.apiKey],
   });
-  await kubectl(
-    "wait",
-    "--namespace",
-    platformNamespace,
-    "--for=condition=Available",
-    `deployment/${name}`,
-    "--timeout=180s",
+  await waitForDeploymentAvailable(
+    context,
+    { kubeconfigPath, kubernetesContext },
+    { namespace: platformNamespace, deployment: name, container: "api", labels },
   );
   const pods = await resources(
     "pods",
@@ -763,13 +761,15 @@ async function startInClusterControllers(
     `${controllerPort ?? 0}:18080`,
   );
   context.after(() => forwarding.stop());
-  await kubectl(
-    "wait",
-    "--namespace",
-    platformNamespace,
-    "--for=condition=Available",
-    `deployment/${workerName}`,
-    "--timeout=180s",
+  await waitForDeploymentAvailable(
+    context,
+    { kubeconfigPath, kubernetesContext },
+    {
+      namespace: platformNamespace,
+      deployment: workerName,
+      container: "worker",
+      labels: workerLabels,
+    },
   );
   const logs = spawn(
     "kubectl",
