@@ -201,7 +201,9 @@ function sandboxApp() {
       return current.sandboxName === undefined ? chunk : { ...chunk, sandbox: current.sandboxName };
     };
     return createRuntimeLogFixture({
-      computeDriver: createRuntimeLogComputeDriver({ sandboxNamespace: SANDBOX_NAMESPACE }),
+      computeDriver: createRuntimeLogComputeDriver({
+        sandboxNamespaceName: kubernetesNamespaceName,
+      }),
       sandboxDriver,
       driverConfigurations: driverConfigurations(sandboxDriver),
       agentRuntimeLogs: { enabled: true, cursorSecret: CURSOR_SECRET },
@@ -658,7 +660,9 @@ test("sandbox reads reject mixed Sandbox IDs, Pods and previous instances, and m
  */
 async function harnessFixture(label, checks) {
   const gateway = logOnlyGatewayClient();
-  const computeDriver = createRuntimeLogComputeDriver({ sandboxNamespace: SANDBOX_NAMESPACE });
+  const computeDriver = createRuntimeLogComputeDriver({
+    sandboxNamespaceName: kubernetesNamespaceName,
+  });
   computeDriver.diagnoseAgentDeployment = async (binding) => ({
     revisionId: binding.revision.id,
     observedAt: new Date().toISOString(),
@@ -855,7 +859,7 @@ test("an Agent reader sees a stopped OpenShell Sandbox; an unreadable record is 
   const placed = fixture.computeDriver;
   const replacement = createRuntimeLogComputeDriver({
     id: "replacement-compute",
-    sandboxNamespace: SANDBOX_NAMESPACE,
+    sandboxNamespaceName: kubernetesNamespaceName,
   });
   fixture.controller.registerDriver(replacement);
   fixture.controller.selectDriver("compute", replacement.id);

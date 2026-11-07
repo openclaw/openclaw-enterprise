@@ -1,3 +1,4 @@
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -99,7 +100,7 @@ export async function createPostgresAgentApp(
   const iamDriver = new NativeIAMDriver(state, { id: `${label}-pg-iam` });
   const computeDriver = createRuntimeLogComputeDriver({
     id: `${label}-pg-compute`,
-    ...(sandboxDriver === undefined ? {} : { sandboxNamespace: true }),
+    ...(sandboxDriver === undefined ? {} : { sandboxNamespaceName: kubernetesNamespaceName }),
   });
   const configurationDriver = createTestConfigurationDriver({ id: `${label}-pg-config` });
   const controller = new OpenClawController(installation, {
