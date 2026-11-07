@@ -5,7 +5,16 @@ import { fileURLToPath } from "node:url";
 import { run } from "node:test";
 import { tap, spec, dot } from "node:test/reporters";
 
-const usage = `Usage: node scripts/test-files.mjs [options] -- <file.test.mjs> [...]
+const reporters = { tap, spec, dot };
+type Reporter = keyof typeof reporters;
+type SelectionOptions = {
+  concurrency: number;
+  reporter: Reporter;
+  testNamePatterns?: RegExp;
+};
+type InterruptSignal = "SIGINT" | "SIGTERM";
+
+const usage = `Usage: node scripts/test-files.ts [options] -- <file.test.mjs> [...]
 Options (each at most once, before --):
   --test-concurrency=N          Positive integer; default 1
   --test-name-pattern=REGEXP    JavaScript regular expression
@@ -14,19 +23,19 @@ Options (each at most once, before --):
 Files are literal existing in-repository .test.{js,cjs,mjs,ts,cts,mts} paths.
 Selection validates files, not intended case coverage. No discovery or preparation.`;
 
-function selection(args) {
+function selection(args: string[]) {
   const separator = args.indexOf("--");
   if (separator < 0 || separator === args.length - 1) {
     throw new Error("Provide at least one explicit test file after --.");
   }
-  const options = { concurrency: 1, reporter: "tap" };
-  const seen = new Set();
+  const options: SelectionOptions = { concurrency: 1, reporter: "tap" };
+  const seen = new Set<string>();
   for (const option of args.slice(0, separator)) {
-    const match = /^--(test-concurrency|test-name-pattern|test-reporter)=(.*)$/s.exec(option);
-    if (!match || seen.has(match[1])) {
+    const [, name, value] =
+      /^--(test-concurrency|test-name-pattern|test-reporter)=(.*)$/s.exec(option) ?? [];
+    if (name === undefined || value === undefined || seen.has(name)) {
       throw new Error(`Unsupported or repeated option: ${option}`);
     }
-    const [, name, value] = match;
     seen.add(name);
     if (name === "test-concurrency") {
       if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) {
@@ -39,7 +48,7 @@ function selection(args) {
       }
       options.testNamePatterns = new RegExp(value);
     } else {
-      if (!["tap", "spec", "dot"].includes(value)) {
+      if (value !== "tap" && value !== "spec" && value !== "dot") {
         throw new Error(`Unsupported reporter: ${value}`);
       }
       options.reporter = value;
@@ -82,13 +91,14 @@ async function main() {
     `Selected ${options.files.length} test file(s); case coverage depends on tests and filters.`,
   );
   const controller = new AbortController();
-  let interrupted;
-  const interrupt = (signal) => {
+  let interrupted: InterruptSignal | undefined;
+  const interrupt = (signal: InterruptSignal) => {
     interrupted ??= signal;
     controller.abort();
   };
-  const handlers = new Map(
-    ["SIGINT", "SIGTERM"].map((signal) => [signal, () => interrupt(signal)]),
+  const signals: InterruptSignal[] = ["SIGINT", "SIGTERM"];
+  const handlers = new Map<InterruptSignal, () => void>(
+    signals.map((signal) => [signal, () => interrupt(signal)]),
   );
   for (const [signal, handler] of handlers) {
     process.on(signal, handler);
@@ -102,9 +112,9 @@ async function main() {
         process.exitCode = 1;
       }
     });
-    for await (const chunk of stream.compose({ tap, spec, dot }[reporter])) {
+    for await (const chunk of stream.compose(reporters[reporter])) {
       if (!process.stdout.write(chunk)) {
-        await new Promise((resolve) => process.stdout.once("drain", resolve));
+        await new Promise<void>((resolve) => process.stdout.once("drain", resolve));
       }
     }
   } finally {
@@ -113,13 +123,15 @@ async function main() {
     }
     // The stream can finish before child exit handles are reaped. Let Node drain
     // those handles before reporting actual signal termination to our caller.
-    if (interrupted) {
-      process.once("beforeExit", () => process.kill(process.pid, interrupted));
+    const signal = interrupted;
+    if (signal) {
+      process.once("beforeExit", () => process.kill(process.pid, signal));
     }
   }
 }
 
-main().catch((error) => {
-  console.error(`test-files: ${error.message}`);
+main().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : undefined;
+  console.error(`test-files: ${message}`);
   process.exitCode = 1;
 });
