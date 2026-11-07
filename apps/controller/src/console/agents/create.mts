@@ -618,9 +618,11 @@ async function waitForProvisioning({
     current,
     current?.status === "succeeded"
       ? "succeeded"
-      : neutralOutcome === "stopped" || neutralOutcome === "superseded"
+      : neutralOutcome === "stopped"
         ? "stopped"
-        : "failed",
+        : neutralOutcome === "superseded"
+          ? "superseded"
+          : "failed",
   );
   // A failed job's reason leads the form's error line, so its status line would only repeat
   // that it failed (finding 2423).

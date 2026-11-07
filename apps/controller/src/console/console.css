@@ -2359,7 +2359,8 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   border-color: var(--danger);
   background: var(--danger);
 }
-.provisioning-step[data-state="stopped"] .provisioning-step-marker {
+.provisioning-step[data-state="stopped"] .provisioning-step-marker,
+.provisioning-step[data-state="superseded"] .provisioning-step-marker {
   border-color: var(--muted);
   background: var(--muted);
 }
@@ -4614,8 +4615,10 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   flex: 1 1 100%;
   margin: 0 0 var(--space-3);
 }
-/* Keyboard focus scrolls a control into view above the taller bar while the meter is in it. */
-html:has(.form-actions > .provisioning-progress:not([hidden])) {
+/* Keyboard focus scrolls a control into view above the taller bar while the meter is in it.
+   The form ID keeps this rule ahead of the shorter base clearance on html:has(#create-agent-form)
+   whenever both match. */
+html:has(#create-agent-form ~ .form-actions > .provisioning-progress:not([hidden])) {
   scroll-padding-bottom: calc(2 * var(--control-h) + 2 * var(--space-3) + var(--space-4) + 16rem);
 }
 /* Keyboard focus scrolls a control into view above that row, not under it. Two rows of buttons
