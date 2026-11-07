@@ -1000,31 +1000,46 @@ async function repositoryGitJourney(
       );
       assert.equal(rows.length, 1);
       const heldCredential = state.installed;
-      await narrow({
-        pool: f.observerPool,
-        peer,
-        sandboxId: wire.world.id!,
-        pushRef: delivery.repository.pushRef,
-        grantId: binding.grant.grantId,
-        installed,
-        evaluate,
-        withLookupFault,
-        // Read-only provider observation; this is not a dispatch permit.
-        heldCredentialStatus: async () => (await peer.send(heldCredential, false)).status,
-        admissionId: rows[0].admission_id,
-        removeBinding: () =>
-          f.controller.updateAgent(f.actor.id, {
-            namespaceId: f.namespace.id,
-            agentId: agent.id,
-            configurationId: configuration.id,
-            repositoryBindings: [],
-          }),
-        withdraw: () => f.controller.stopAgent(f.actor.id, f.namespace.id, agent.id),
-      });
-      await peer.noBroker();
-      // Finish normal retirement before another fixture opens the same database
-      // with its own custody key. All authority and held-token checks are complete.
-      await peer.prepared.maintain();
+      const journeyErrors: unknown[] = [];
+      try {
+        await narrow({
+          pool: f.observerPool,
+          peer,
+          sandboxId: wire.world.id!,
+          pushRef: delivery.repository.pushRef,
+          grantId: binding.grant.grantId,
+          installed,
+          evaluate,
+          withLookupFault,
+          // Read-only provider observation; this is not a dispatch permit.
+          heldCredentialStatus: async () => (await peer.send(heldCredential, false)).status,
+          admissionId: rows[0].admission_id,
+          removeBinding: () =>
+            f.controller.updateAgent(f.actor.id, {
+              namespaceId: f.namespace.id,
+              agentId: agent.id,
+              configurationId: configuration.id,
+              repositoryBindings: [],
+            }),
+          withdraw: () => f.controller.stopAgent(f.actor.id, f.namespace.id, agent.id),
+        });
+        await peer.noBroker();
+      } catch (error) {
+        journeyErrors.push(error);
+      }
+      // Even a failed assertion must retire withdrawn material with its original
+      // custody key before the next fixture opens this shared database.
+      try {
+        await peer.prepared.maintain();
+      } catch (error) {
+        journeyErrors.push(error);
+      }
+      if (journeyErrors.length === 1) {
+        throw journeyErrors[0];
+      }
+      if (journeyErrors.length > 1) {
+        throw new AggregateError(journeyErrors, "Git journey and custody cleanup failed");
+      }
       return;
     }
     assert.equal(peer.gh.issuesOfTokens.length, 1, "one issuance for the selected set");
