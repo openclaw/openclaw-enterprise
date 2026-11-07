@@ -39,6 +39,7 @@ for (const { name, action, expectedDenial } of [
   test(name, { ...requiresPostgres, timeout: 90_000 }, async (t) => {
     await narrowOnlineGitJourney(
       t,
+      import.meta.url,
       async ({
         pool,
         peer,
@@ -273,6 +274,7 @@ test(
   async (t) => {
     await narrowOnlineGitJourney(
       t,
+      import.meta.url,
       async ({ pool, admissionId, evaluate, pushRef }) => {
         assert.equal(pushRef, "refs/heads/review/*");
         const receipts = async () =>

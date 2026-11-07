@@ -7,14 +7,14 @@ import { repositorySetJourney } from "../helpers/postgres-repository-set-journey
 test(
   "one selected repository renews beyond its original session without replacing the execution and denies withdrawn approval",
   { ...requiresPostgres, timeout: 180_000 },
-  (t) => repositorySetJourney(t, true),
+  (t) => repositorySetJourney(t, import.meta.url, true),
 );
 
 for (const change of ["recipient", "approval"] as const) {
   test(
     `an expired acknowledged launch refuses a pending successor after ${change} changes`,
     { ...requiresPostgres, timeout: 180_000 },
-    (t) => repositorySetJourney(t, true, change),
+    (t) => repositorySetJourney(t, import.meta.url, true, change),
   );
 }
 
@@ -23,5 +23,5 @@ for (const change of ["recipient", "approval"] as const) {
 test(
   "a cold worker persists redeploy-required standing Git status without renewing it",
   { ...requiresPostgres, timeout: 180_000 },
-  (t) => repositorySetJourney(t, true, "cold-worker"),
+  (t) => repositorySetJourney(t, import.meta.url, true, "cold-worker"),
 );
