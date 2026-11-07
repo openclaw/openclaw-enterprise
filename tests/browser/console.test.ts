@@ -28,6 +28,7 @@ import {
   holdRequests,
   login,
   loginThroughForm,
+  nativeValues,
   newPage,
   nextFrames,
   nonAuthWriteRequests,
@@ -43,6 +44,7 @@ import {
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-fetch-accounting.ts";
+import { nativeAdminComputeDriver, nativeAdminValues } from "./console-agents-test-support.ts";
 import { responseTo } from "./console-action-helpers.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
@@ -3427,11 +3429,21 @@ test("login ignores untrusted returns and resolves an opaque Agent key only afte
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(`**/console/agents/${agent.id}?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Shared Agent", exact: true }).waitFor();
+  assert.equal(await page.getByRole("heading", { name: "Native admin UI" }).count(), 0);
   assert.equal(lookups, 1);
+  expireSessions(fixture);
+  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  await page.getByText("Your session has expired.", { exact: true }).waitFor();
+  allow = false;
+  await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
+  await page.getByLabel("Password").fill(fixture.credentials.password);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByRole("heading", { name: "Shared Agent", exact: true }).waitFor();
+  assert.equal(lookups, 1, "a readable Agent return must not replay its opaque native key");
   await page.goto(`${fixture.origin}/console/`);
   await page.waitForURL(/\/console\/agents(?:\?|$)/);
   assert.equal(lookups, 1);
-  allow = false;
   await page.goto(`${fixture.origin}/console/#native-agent=${key}`);
   await page.waitForURL(/\/console\/agents(?:\?|$)/);
   assert.equal(lookups, 2);
@@ -3452,6 +3464,492 @@ test("login ignores untrusted returns and resolves an opaque Agent key only afte
   await page.goto(`${fixture.origin}/console/#native-agent=${key.toUpperCase()}`);
   await page.waitForURL(/\/console\/agents(?:\?|$)/);
   assert.equal(lookups, 2);
+});
+
+test("native recovery remains usable with exact Agent administer and no Namespace read", async (t) => {
+  const cookieDomain = "oce.example.test";
+  const consoleHost = `console.${cookieDomain}`;
+  const nativeDomain = `agents.${cookieDomain}`;
+  const fixture = await createBaseConsoleAppFixture(t, {
+    defaultPresets: [defaultCodexPreset],
+    originHost: consoleHost,
+    publicOrigin: true,
+    authCookieDomain: cookieDomain,
+    development: { enabled: false },
+    agentGatewayManagedMode: false,
+    https: true,
+    authSecureCookies: true,
+    nativeAdmin: { enabled: true, domain: nativeDomain, sharedCookieDomain: cookieDomain },
+    nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
+    computeDriver: nativeAdminComputeDriver(
+      "wss://private-gateway.example.invalid/native-recovery",
+    ),
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Native recovery", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Native recovery Agent",
+    nativeValues("native-recovery"),
+  );
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const unsupported = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+  );
+  assert.equal(unsupported.data.status, "unsupported");
+  await fixture.updateConfiguration(
+    namespace.id,
+    agent.configurationId,
+    nativeAdminValues("native-recovery", unsupported.data.origin),
+  );
+  await fixture.seedActiveAgentRevision(
+    namespace.id,
+    agent.id,
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).data
+      .activeRevisionId,
+  );
+  const native = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+  );
+  assert.equal(native.data.status, "available");
+  const key = native.data.host.match(/^agent-([a-f0-9]{32})\./)?.[1];
+  assert.ok(key);
+
+  const recoveryAccount = (label: string, readNamespace: boolean, readAgent = false) =>
+    fixture.createAccountWithPolicy(label, (principal) => {
+      const administerRoleId = `role-${label}-administer`;
+      fixture.policy.roles.push({
+        id: administerRoleId,
+        namespaceId: namespace.id,
+        permissions: [
+          { action: "administer", resourceKind: "agent" },
+          ...(readAgent ? [{ action: "read" as const, resourceKind: "agent" as const }] : []),
+        ],
+      });
+      fixture.policy.bindings.push({
+        id: `binding-${label}-administer`,
+        namespaceId: namespace.id,
+        subjectKind: "identity",
+        subjectId: principal.id,
+        roleId: administerRoleId,
+        resourceKind: "agent",
+        resourceId: agent.id,
+      });
+      if (!readNamespace) {
+        return;
+      }
+      const namespaceRoleId = `role-${label}-namespace-read`;
+      fixture.policy.roles.push({
+        id: namespaceRoleId,
+        namespaceId: namespace.id,
+        permissions: [{ action: "read", resourceKind: "namespace" }],
+      });
+      fixture.policy.bindings.push({
+        id: `binding-${label}-namespace-read`,
+        namespaceId: namespace.id,
+        subjectKind: "identity",
+        subjectId: principal.id,
+        roleId: namespaceRoleId,
+        resourceKind: "namespace",
+        resourceId: namespace.id,
+      });
+    });
+  const limited = await recoveryAccount("native-recovery-admin", false);
+  const namespaceReader = await recoveryAccount("native-recovery-namespace-reader", true);
+  const readableAgent = await recoveryAccount("native-recovery-readable-agent", true, true);
+
+  for (const [account, agentReadAttempted] of [
+    [limited, false],
+    [namespaceReader, true],
+  ] as const) {
+    const { page } = await newPage(t, fixture, {
+      args: [
+        ...fixture.browserArgs,
+        `--host-resolver-rules=MAP ${consoleHost} 127.0.0.1,MAP *.${nativeDomain} 127.0.0.1`,
+      ],
+    });
+    const requests = apiRequests(page, fixture.origin);
+    const namespaceAdmission = account === limited ? deferred() : null;
+    if (namespaceAdmission !== null) {
+      await page.route(
+        "**/namespaces",
+        async (route) => {
+          await namespaceAdmission.promise;
+          await route.continue();
+        },
+        { times: 1 },
+      );
+    }
+
+    await page.goto(`${fixture.origin}/console/#native-agent=${key}`);
+    await page.getByLabel("Email", { exact: true }).fill(account.credentials.email);
+    await page.getByLabel("Password").fill(account.credentials.password);
+    await page.getByRole("button", { name: "Sign in" }).click();
+
+    if (namespaceAdmission !== null) {
+      await page.waitForURL(`**/console/agents/${agent.id}?namespace=${namespace.id}`);
+      await page.getByText("Checking Namespace access.", { exact: true }).waitFor();
+      assert.equal(await page.getByRole("button", { name: "Copy Agent ID" }).count(), 0);
+      assert.equal(await page.getByText(agent.id, { exact: true }).count(), 0);
+      namespaceAdmission.resolve();
+    }
+
+    await page.getByRole("heading", { name: "Native admin UI" }).waitFor();
+    const launch = page.getByRole("link", { name: "Open Agent UI", exact: true });
+    await launch.waitFor();
+    assert.equal(await launch.getAttribute("href"), native.data.url);
+    assert.equal(await page.getByText("Namespace unavailable", { exact: true }).count(), 0);
+    assert.equal(
+      requests.some(
+        ({ method, path }) =>
+          method === "GET" && path === `/namespaces/${namespace.id}/agents/${agent.id}`,
+      ),
+      agentReadAttempted,
+    );
+    assert.equal(
+      requests.some(
+        ({ method, path }) =>
+          method === "GET" &&
+          path === `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+      ),
+      true,
+    );
+    if (account === limited) {
+      for (const gate of ["/api/auth/session", "/namespaces"]) {
+        const failures = gate === "/api/auth/session" ? 2 : 1;
+        await page.route(`**${gate}`, (route) => route.fulfill({ status: 503 }), {
+          times: failures,
+        });
+        await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+        const unavailable = page.getByRole("heading", {
+          name:
+            gate === "/api/auth/session" ? "Session unavailable" : "Namespace access unavailable",
+          exact: true,
+        });
+        for (let attempt = 0; attempt < failures; attempt += 1) {
+          await unavailable.waitFor();
+          await page.getByRole("button", { name: "Retry", exact: true }).click();
+        }
+        await launch.waitFor();
+      }
+      const statusPath = `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`;
+      const owner = await page.evaluate(() => {
+        const stored = JSON.parse(
+          globalThis.sessionStorage.getItem("occ.console.installationAccess") ?? "null",
+        );
+        return stored?.owner;
+      });
+      assert.equal(typeof owner, "string");
+      await page.evaluate(
+        ({ deniedOwner, deniedPath }) => {
+          globalThis.sessionStorage.setItem(
+            "occ.console.deniedReads",
+            JSON.stringify({ owner: deniedOwner, paths: [deniedPath] }),
+          );
+        },
+        { deniedOwner: owner, deniedPath: statusPath },
+      );
+      await page.goto(`${fixture.origin}/console/#native-agent=${key}`);
+      await page.waitForURL(`**/console/agents/${agent.id}?namespace=${namespace.id}`);
+      await launch.waitFor();
+
+      const bindingIndex = fixture.policy.bindings.findIndex(
+        (binding) => binding.id === "binding-native-recovery-admin-administer",
+      );
+      assert.notEqual(bindingIndex, -1);
+      const [administerBinding] = fixture.policy.bindings.splice(bindingIndex, 1);
+      assert.ok(administerBinding);
+      await page.getByRole("button", { name: "Refresh access", exact: true }).click();
+      await page
+        .getByText(
+          "Your account can no longer administer this Agent. Ask an administrator to restore access, then refresh.",
+          { exact: true },
+        )
+        .waitFor();
+      assert.equal(await launch.isVisible(), false);
+      fixture.policy.bindings.push(administerBinding);
+      await page.getByRole("button", { name: "Refresh access", exact: true }).click();
+      await launch.waitFor();
+
+      expireSessions(fixture);
+      await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+      await page.getByText("Your session has expired.", { exact: true }).waitFor();
+      await page.getByLabel("Email", { exact: true }).fill(account.credentials.email);
+      await page.getByLabel("Password").fill(account.credentials.password);
+      await page.getByRole("button", { name: "Sign in" }).click();
+      await launch.waitFor();
+      assert.equal(
+        requests.filter(
+          ({ method, path }) => method === "GET" && path === `/native-admin/return/${key}`,
+        ).length,
+        3,
+      );
+    }
+  }
+
+  {
+    const { page: expiryRevocationPage } = await newPage(t, fixture, {
+      args: [
+        ...fixture.browserArgs,
+        `--host-resolver-rules=MAP ${consoleHost} 127.0.0.1,MAP *.${nativeDomain} 127.0.0.1`,
+      ],
+    });
+    const expiryRequests = apiRequests(expiryRevocationPage, fixture.origin);
+    await expiryRevocationPage.goto(`${fixture.origin}/console/#native-agent=${key}`);
+    await expiryRevocationPage
+      .getByLabel("Email", { exact: true })
+      .fill(readableAgent.credentials.email);
+    await expiryRevocationPage.getByLabel("Password").fill(readableAgent.credentials.password);
+    await expiryRevocationPage.getByRole("button", { name: "Sign in" }).click();
+    await expiryRevocationPage
+      .getByRole("heading", { name: "Native recovery Agent", exact: true })
+      .waitFor();
+    const expiryRestriction: Restriction = {
+      id: "deny-native-return-agent-read-during-expiry",
+      namespaceId: namespace.id,
+      resourceKind: "agent",
+      resourceId: agent.id,
+      action: "read",
+      effect: "deny",
+    };
+    fixture.policy.restrictions.push(expiryRestriction);
+    expireSessions(fixture);
+    await expiryRevocationPage.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    await expiryRevocationPage.getByText("Your session has expired.", { exact: true }).waitFor();
+    await expiryRevocationPage
+      .getByLabel("Email", { exact: true })
+      .fill(readableAgent.credentials.email);
+    await expiryRevocationPage.getByLabel("Password").fill(readableAgent.credentials.password);
+    await expiryRevocationPage.route(
+      "**/api/auth/session",
+      (route) => route.fulfill({ status: 503 }),
+      { times: 1 },
+    );
+    await expiryRevocationPage.getByRole("button", { name: "Sign in" }).click();
+    await expiryRevocationPage
+      .getByRole("heading", { name: "Session unavailable", exact: true })
+      .waitFor();
+    await expiryRevocationPage.getByRole("button", { name: "Retry", exact: true }).click();
+    await expiryRevocationPage.getByRole("link", { name: "Open Agent UI", exact: true }).waitFor();
+    assert.equal(
+      expiryRequests.filter(
+        ({ method, path }) => method === "GET" && path === `/native-admin/return/${key}`,
+      ).length,
+      1,
+    );
+
+    fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(expiryRestriction), 1);
+    await expiryRevocationPage.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expiryRevocationPage
+      .getByRole("heading", { name: "Native recovery Agent", exact: true })
+      .waitFor();
+    fixture.policy.restrictions.push(expiryRestriction);
+    expireSessions(fixture);
+    await expiryRevocationPage.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expiryRevocationPage.getByText("Your session has expired.", { exact: true }).waitFor();
+    await expiryRevocationPage
+      .getByLabel("Email", { exact: true })
+      .fill(readableAgent.credentials.email);
+    await expiryRevocationPage.getByLabel("Password").fill(readableAgent.credentials.password);
+    await expiryRevocationPage.getByRole("button", { name: "Sign in" }).click();
+    await expiryRevocationPage.getByRole("link", { name: "Open Agent UI", exact: true }).waitFor();
+    assert.equal(
+      expiryRequests.filter(
+        ({ method, path }) => method === "GET" && path === `/native-admin/return/${key}`,
+      ).length,
+      1,
+    );
+
+    fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(expiryRestriction), 1);
+    await expiryRevocationPage.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expiryRevocationPage
+      .getByRole("heading", { name: "Native recovery Agent", exact: true })
+      .waitFor();
+    const providerAttemptId = "r".repeat(43);
+    const envelope = (data: unknown) => ({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data, meta: { requestId: "native-recovery-provider" } }),
+    });
+    let providerSessionKey: string | undefined;
+    await expiryRevocationPage.route("**/api/auth/providers", (route) =>
+      route.fulfill(envelope({ github: true, sessionBinding: true })),
+    );
+    await expiryRevocationPage.route("**/api/auth/providers/github/start", async (route) => {
+      providerSessionKey = await expiryRevocationPage.evaluate(
+        async ({ email, password }) => {
+          const signedIn = await fetch("/api/auth/sign-in/email", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ email, password }),
+          });
+          if (!signedIn.ok) {
+            throw new Error(`Provider sign-in failed: ${signedIn.status}`);
+          }
+          const session = await fetch("/api/auth/session");
+          const body = (await session.json()) as { data?: { sessionKey?: unknown } };
+          if (typeof body.data?.sessionKey !== "string") {
+            throw new Error("Provider session binding is missing");
+          }
+          return body.data.sessionKey;
+        },
+        {
+          email: readableAgent.credentials.email,
+          password: readableAgent.credentials.password,
+        },
+      );
+      await route.fulfill(
+        envelope({
+          url: "https://github.com/login/oauth/authorize?client_id=native-recovery",
+          attemptId: providerAttemptId,
+        }),
+      );
+    });
+    await expiryRevocationPage.route("https://github.com/**", async (route) => {
+      await route.fulfill({ status: 302, headers: { location: `${fixture.origin}/console/` } });
+    });
+    await expiryRevocationPage.route("**/api/auth/providers/github/result", (route) => {
+      assert.equal(typeof providerSessionKey, "string");
+      return route.fulfill(envelope({ sessionKey: providerSessionKey }));
+    });
+    fixture.policy.restrictions.push(expiryRestriction);
+    expireSessions(fixture);
+    await expiryRevocationPage.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    await expiryRevocationPage.getByText("Your session has expired.", { exact: true }).waitFor();
+    await expiryRevocationPage.getByRole("button", { name: "Continue with GitHub" }).click();
+    await expiryRevocationPage.getByRole("link", { name: "Open Agent UI", exact: true }).waitFor();
+    assert.equal(
+      expiryRequests.filter(
+        ({ method, path }) => method === "GET" && path === `/native-admin/return/${key}`,
+      ).length,
+      1,
+    );
+    fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(expiryRestriction), 1);
+    await expiryRevocationPage.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expiryRevocationPage
+      .getByRole("heading", { name: "Native recovery Agent", exact: true })
+      .waitFor();
+    fixture.policy.restrictions.push(expiryRestriction);
+    expireSessions(fixture);
+    await expiryRevocationPage.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    await expiryRevocationPage.getByText("Your session has expired.", { exact: true }).waitFor();
+    await expiryRevocationPage.getByLabel("Email", { exact: true }).fill(limited.credentials.email);
+    await expiryRevocationPage.getByLabel("Password").fill(limited.credentials.password);
+    await expiryRevocationPage.getByRole("button", { name: "Sign in" }).click();
+    await expiryRevocationPage.waitForURL(/\/console\/agents$/);
+    await expiryRevocationPage.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+    assert.equal(await expiryRevocationPage.getByText(agent.id, { exact: true }).count(), 0);
+    assert.equal(
+      await expiryRevocationPage.getByRole("button", { name: "Copy Agent ID" }).count(),
+      0,
+    );
+    assert.equal(
+      await expiryRevocationPage.getByRole("link", { name: "Open Agent UI", exact: true }).count(),
+      0,
+    );
+    assert.equal(
+      expiryRequests.filter(
+        ({ method, path }) => method === "GET" && path === `/native-admin/return/${key}`,
+      ).length,
+      1,
+    );
+    fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(expiryRestriction), 1);
+  }
+
+  for (const [resourceKind, transientGate] of [
+    ["agent", "/api/auth/session"],
+    ["namespace", "/namespaces"],
+  ] as const) {
+    const { page: revokedPage } = await newPage(t, fixture, {
+      args: [
+        ...fixture.browserArgs,
+        `--host-resolver-rules=MAP ${consoleHost} 127.0.0.1,MAP *.${nativeDomain} 127.0.0.1`,
+      ],
+    });
+    await revokedPage.goto(`${fixture.origin}/console/#native-agent=${key}`);
+    await revokedPage.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
+    await revokedPage.getByLabel("Password").fill(fixture.credentials.password);
+    await revokedPage.getByRole("button", { name: "Sign in" }).click();
+    await revokedPage
+      .getByRole("heading", { name: "Native recovery Agent", exact: true })
+      .waitFor();
+    await revokedPage.route(`**${transientGate}`, (route) => route.fulfill({ status: 503 }), {
+      times: 1,
+    });
+    await revokedPage.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    await revokedPage
+      .getByRole("heading", {
+        name:
+          transientGate === "/api/auth/session"
+            ? "Session unavailable"
+            : "Namespace access unavailable",
+        exact: true,
+      })
+      .waitFor();
+    await revokedPage.getByRole("button", { name: "Retry", exact: true }).click();
+    await revokedPage
+      .getByRole("heading", { name: "Native recovery Agent", exact: true })
+      .waitFor();
+    const restriction: Restriction = {
+      id: `deny-native-return-${resourceKind}-read`,
+      namespaceId: namespace.id,
+      resourceKind,
+      resourceId: resourceKind === "agent" ? agent.id : namespace.id,
+      action: "read",
+      effect: "deny",
+    };
+    fixture.policy.restrictions.push(restriction);
+    await revokedPage.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    await revokedPage.getByRole("heading", { name: "Native admin UI", exact: true }).waitFor();
+    await revokedPage.getByRole("link", { name: "Open Agent UI", exact: true }).waitFor();
+    assert.equal(await revokedPage.getByRole("heading", { name: "Access denied" }).count(), 0);
+    fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(restriction), 1);
+  }
+
+  for (const resourceKind of ["agent", "namespace"] as const) {
+    const { page: refreshedPage } = await newPage(t, fixture, {
+      args: [
+        ...fixture.browserArgs,
+        `--host-resolver-rules=MAP ${consoleHost} 127.0.0.1,MAP *.${nativeDomain} 127.0.0.1`,
+      ],
+    });
+    const refreshedRequests = apiRequests(refreshedPage, fixture.origin);
+    await refreshedPage.goto(`${fixture.origin}/console/#native-agent=${key}`);
+    await refreshedPage.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
+    await refreshedPage.getByLabel("Password").fill(fixture.credentials.password);
+    await refreshedPage.getByRole("button", { name: "Sign in" }).click();
+    await refreshedPage
+      .getByRole("heading", { name: "Native recovery Agent", exact: true })
+      .waitFor();
+    const fullLoadRestriction: Restriction = {
+      id: `deny-native-return-${resourceKind}-read-on-refresh`,
+      namespaceId: namespace.id,
+      resourceKind,
+      resourceId: resourceKind === "agent" ? agent.id : namespace.id,
+      action: "read",
+      effect: "deny",
+    };
+    fixture.policy.restrictions.push(fullLoadRestriction);
+    await refreshedPage.getByRole("button", { name: "Refresh", exact: true }).click();
+    await refreshedPage.getByRole("heading", { name: "Native admin UI", exact: true }).waitFor();
+    await refreshedPage.getByRole("link", { name: "Open Agent UI", exact: true }).waitFor();
+    expireSessions(fixture);
+    await refreshedPage.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    await refreshedPage.getByText("Your session has expired.", { exact: true }).waitFor();
+    await refreshedPage.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
+    await refreshedPage.getByLabel("Password").fill(fixture.credentials.password);
+    await refreshedPage.getByRole("button", { name: "Sign in" }).click();
+    await refreshedPage.getByRole("link", { name: "Open Agent UI", exact: true }).waitFor();
+    assert.equal(
+      refreshedRequests.filter(
+        ({ method, path }) => method === "GET" && path === `/native-admin/return/${key}`,
+      ).length,
+      2,
+    );
+    fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(fullLoadRestriction), 1);
+  }
 });
 
 test("a refused provider exchange discards its pending login destination", async (t) => {
