@@ -249,6 +249,46 @@ test("QA matrix summary refuses malformed evidence without printing its contents
   }
 });
 
+test("QA matrix summary distinguishes an initial snapshot from recorded outcomes", async (t) => {
+  const { createQaReport } = await import("../helpers/qa-report.mjs");
+  const directory = await temporaryDirectory(t, "qa-summary-");
+  const evidenceDirectory = join(directory, "qa-matrix-evidence");
+  const script = fileURLToPath(new URL("../../scripts/ci/qa-matrix-summary.mjs", import.meta.url));
+  await mkdir(evidenceDirectory);
+
+  async function summarize(name) {
+    const summary = join(directory, name);
+    const child = spawnSync(process.execPath, [script], {
+      encoding: "utf8",
+      env: { RUNNER_TEMP: directory, GITHUB_STEP_SUMMARY: summary },
+      timeout: 5_000,
+    });
+    assert.ifError(child.error);
+    assert.equal(child.status, 0);
+    assert.equal(child.stderr, "");
+    return readFile(summary, "utf8");
+  }
+
+  assert.match(await summarize("missing.md"), /No scenario results were produced/);
+
+  const { stage, save } = createQaReport(join(evidenceDirectory, "matrix.json"), {
+    scope: "partial",
+    selection: [{ cell: "compose/Codex", scenarios: ["model-ui"], unselected: [] }],
+  });
+  await save();
+  const initial = await summarize("initial.md");
+  assert.match(initial, /Scope: partial/);
+  assert.match(initial, /compose\/Codex \| model-ui \| none/);
+  assert.match(initial, /No stage outcomes were recorded/);
+  assert.doesNotMatch(initial, /Stages absent from this table/);
+  assert.doesNotMatch(initial, /\| Cell \| Scenario \| Stage \| Outcome \|/);
+
+  await stage(t, "compose/Codex", "synthetic stage", () => true, "model-ui");
+  const populated = await summarize("populated.md");
+  assert.match(populated, /compose\/Codex \| model-ui \| synthetic stage \| passed/);
+  assert.doesNotMatch(populated, /No stage outcomes were recorded/);
+});
+
 test("QA selection keeps prerequisite credentials and reports omitted coverage", async () => {
   const { selectQaMatrix, validateQaInputs } = await import("../helpers/qa-selection.mjs");
   const selected = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,console-secrets" });
