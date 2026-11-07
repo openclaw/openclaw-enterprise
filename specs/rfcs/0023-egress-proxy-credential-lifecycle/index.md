@@ -74,3 +74,7 @@ authenticates the Agent session and checks the Git operation and review ref befo
 using a separately granted, already prepared installation token. Creating a draft pull
 request requires an additional grant. Git verifies TLS to the broker. Qualify that
 path's admission and recipient separately from the OpenShell release requirements.
+
+## Proposed native Box extensions
+
+[Native supervisor enrollment](native-enrollment.md) defines the trusted receiver and held startup. [Codex credential forwarding](codex-box-forwarding.md) applies OCE-owned credential delivery to the admitted execution. Both require installed tests before enablement.
