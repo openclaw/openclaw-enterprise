@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-05
-last_updated_session: authoring-run/61309ab1-dd2a-4cb0-99b5-e2a9485fe91f
+updated: 2026-11-07
+last_updated_session: authoring-run/f3f07c2c-36eb-416a-8b1d-8f9a961c2459
 ---
 
 # Harness Execution Topology Flow
@@ -148,7 +148,7 @@ OpenShell delivers version-owned setup and Gateway CA files; startup combines
 trust, writes a private one-use target and reconnects with the saved device token.
 Renewal and cleanup preserve exact ownership.
 
-For provider-owned Codex workspaces, the Gateway authenticates the [pinned generation and origin](../reference/drivers/sandbox.md#harness-transport) before sending native frames.
+Provider-owned Codex [generation and origin authentication](../reference/drivers/sandbox.md#harness-transport) before native frames awaits the Gateway consumer. Enablement and merge require that consumer, authenticated provider responses, a reviewed image and installed verification.
 
 `internal/occdev/kubernetes.go:writeInstallation` permits Node and pinned Codex model egress. Native workers connect outbound without an app-server endpoint. Compute binds `dedicated-native` with `inference: "worker"`; a missing or disconnected Harness fails without Gateway inference. Exact callbacks and session admission scope transport to the Agent.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:nativeRuntimeConfiguration`
@@ -352,6 +352,7 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 
 ## Changelog
 
+- 2026-11-07 03:36: Mark consumer pending. (authoring-run/f3f07c2c-36eb-416a-8b1d-8f9a961c2459 - 84106ae99484dec818f15c896c65fb1b24247071)
 - 2026-11-05 21:24: Trace probe closure. (authoring-run/61309ab1-dd2a-4cb0-99b5-e2a9485fe91f - fdb3fbd93a5295e37ad7814a5197029f2b615346)
 
 - 2026-11-05 14:07: Trace helper specialization. (authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2 - 644b3f9)
