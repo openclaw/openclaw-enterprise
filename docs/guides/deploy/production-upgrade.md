@@ -1,11 +1,10 @@
 # Upgrade production images
 
-Run `scripts/upgrade-production-images` from the release checkout to change
-images in an existing Helm installation with Kubernetes Compute. Use the
-matching [OCC CLI](../cli.md#connect-to-your-installation). For a new
-installation, follow [install the production control plane](production-installation.md).
-For one Agent, see [production Agents](production-agents.md). Plan traffic handoff
-separately.
+Run `scripts/upgrade-production-images` from the release checkout with the
+matching [OCC CLI](../cli.md#connect-to-your-installation) to upgrade an existing
+Kubernetes Compute Helm installation. For installation, see
+[production installation](production-installation.md); for one Agent, see
+[production Agents](production-agents.md). Plan traffic handoff.
 
 1. [Select and prepare the release](#prepare-the-release). Record the live
    baseline and take the backups required by the [upgrade checklist](upgrade-checklist.md).
@@ -23,9 +22,8 @@ runtime image and redeploys every running Agent concurrently. Each upgrade
 stops the API and worker during migration and rollout. Allow capacity for old
 and replacement versions to overlap.
 
-The helper checks chart paths and bytes against the selected commit before
-contacting the cluster. Keep evidence and baselines outside the chart. Keep the
-checkout unchanged and under your exclusive control.
+Before cluster access, the helper checks chart paths and bytes against the commit.
+Keep evidence/baselines outside the chart and the unchanged checkout under exclusive control.
 
 For settings changes, [prepare reviewed candidate files](#include-reviewed-settings).
 For the experimental two-cluster profile, first
@@ -205,17 +203,15 @@ bootstrap record disagree.
 
 ## Rehearse before the maintenance window
 
-`--preflight-only` checks target inputs and applicable repository image pairs,
-runs a Helm server dry run, and checks startup in temporary API and worker Jobs.
-Their controller-owned Pods retain the chart's security settings and NetworkPolicy
-labels. The helper confirms Job and child cleanup before removing their Secret
-and policy; uncertain cleanup stops the upgrade before any writer is stopped.
-Add this flag to the controller or runtime command below. Use
-`--evidence-dir "${UPGRADE_EVIDENCE}-preflight"` for this run. Writers stay
-active. After [cleanup](production-upgrade-recovery.md#clean-up-preflight-resources),
-run the same command without `--preflight-only` and with the original, unused
-`"$UPGRADE_EVIDENCE"` directory.
-Live checks repeat. Keep writer and draft freezes through recovery.
+Add `--preflight-only --evidence-dir "${UPGRADE_EVIDENCE}-preflight"` to the
+controller or runtime command. This checks inputs and repository image pairs,
+runs Helm's server dry run, and checks startup in temporary API/worker Jobs.
+Their controller-owned Pods retain chart security and NetworkPolicy labels.
+Job and child cleanup must precede Secret/policy removal; uncertain cleanup
+stops the upgrade. Writers stay active.
+After [cleanup](production-upgrade-recovery.md#clean-up-preflight-resources),
+repeat without `--preflight-only`, using the original unused `"$UPGRADE_EVIDENCE"`.
+Live checks repeat; retain writer and draft freezes through recovery.
 
 Time upgrade and recovery interruptions on an isolated, populated installation.
 Use the same command, separate endpoints, a [protected baseline](upgrade-baseline.md),
@@ -231,20 +227,19 @@ Installation with
 [split-layout tenants](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations);
 check before the maintenance window.
 
-To require reviewed database compatibility evidence, add
-`--controller-compatibility-results /secure/occ/controller-results.json` with
-`--controller-image`. Supply the native PostgreSQL runner's `run` result from
+Add `--controller-compatibility-results /secure/occ/controller-results.json` with
+`--controller-image` to require the native PostgreSQL `run` result from
 [released-controller qualification](../../testing/postgresql.md#released-controller-compatibility).
-The selected case and cleanup must pass for the recorded incumbent release image
-and selected candidate image digests before startup Jobs or writer changes. Index, platform-manifest and configuration
-digests are not interchangeable.
+Before startup Jobs or writer changes, the selected case and cleanup must pass
+for the recorded incumbent release image and selected candidate image digests.
+Index, platform-manifest and configuration digests are not interchangeable.
 
-The copied receipt is [frozen through recovery](production-upgrade-recovery.md).
-This validates operator-supplied evidence, not authenticity. `sourceSha` identifies
-the runner checkout, not image revisions or a clean worktree. It establishes
-neither IAM startup compatibility nor online or rollback safety; writers still stop.
+The receipt stays [frozen through recovery](production-upgrade-recovery.md).
+Operators must establish authenticity. `sourceSha` identifies the runner checkout,
+not image revisions or worktree cleanliness. This proves neither IAM startup
+compatibility nor online or rollback safety; writers still stop.
 
-Set the controller image and run the command without `--runtime-image`:
+Set the controller image without `--runtime-image`:
 
 ```bash
 export CONTROLLER_IMAGE='<registry>/controller@sha256:<64-hex-digest>'
@@ -254,20 +249,31 @@ scripts/upgrade-production-images "${target[@]}" \
   --evidence-dir "$UPGRADE_EVIDENCE"
 ```
 
-For a repository-enabled release, set `BROKER_IMAGE` to the selected immutable
-broker reference and add `--broker-image "$BROKER_IMAGE"` to this command. Keep
-the protected values equal to live values; the helper preserves
-the running broker's exact hostname in the candidate. It qualifies the pair
-before cluster mutation and verifies the deployed pair and broker capability.
+For repository-enabled releases, add `--broker-image "$BROKER_IMAGE"` with the
+selected immutable broker reference. Keep protected values equal to live values;
+the helper preserves the broker hostname, qualifies the pair before mutation,
+and verifies the deployed pair and broker capability.
+
+Add `--verify-agent AGENT_ID --verify-agent-namespace NAMESPACE_ID` to check one
+running Agent. It requires enabled [runtime inspection](../../reference/cli.md#runtime-status-and-logs),
+exact Agent `read`/`operate` and active AgentRevision `read`, verified before shutdown.
+Freeze that Agent's deployment, stop and deletion through verification.
+This option cannot accompany `--runtime-image`, which changes revisions.
+
+Completion requires the original active revision, Ready workload roles and any
+observed provider Harness still running. Replacement Pod UIDs are allowed.
+This samples readiness, not routing, model or channel availability. A final-check failure leaves
+the upgraded control plane without `completed`; follow
+[recovery](production-upgrade-recovery.md#resume-an-unfinished-prepared-upgrade).
 
 If the startup preflight fails, the old release keeps serving. Inspect the
 API and worker preflight logs in the evidence directory. After a cleanup warning
 or interruption, preserve the evidence and lock and follow
 [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
 
-The helper stops the release's API and worker before updating the protected
-inputs and Installation Secret. Helm runs migration and bootstrap before it
-restores the Deployments. The helper then verifies rollout and OCC access.
+The helper stops API/worker before updating protected inputs and the Installation
+Secret. Helm migrates and bootstraps before restoring Deployments; the helper
+then verifies rollout and OCC access.
 
 Success looks like:
 
