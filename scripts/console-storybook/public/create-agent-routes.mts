@@ -32,6 +32,8 @@ type ProvisioningJob = Pick<AgentProvisioningStatusWire, "workId" | "status" | "
 
 type CreateScenario = {
   provisioningCancelledByStop?: boolean;
+  // The job fails before it hands off a revision, so its failure stays retryable.
+  provisioningFailsBeforeDeployment?: boolean;
   provisionedDeploymentStopped?: boolean;
   provisionedDeploymentStatus?: AgentDeploymentStatusWire["status"];
   provisionedDeploymentAttempt?: Omit<
@@ -219,9 +221,11 @@ export function createAgentRoutes(scenario: CreateScenario, dependencies: Create
         files.set(`${saved.id}/${filename}`, content);
       }
       // A Stop before the first revision cancels provisioning; the stopped Agent keeps its name.
-      const revision = scenario.provisioningCancelledByStop
-        ? null
-        : snapshot(saved, nextId("rev"), 1);
+      // A failure before handoff keeps the job retryable: no revision exists to recover.
+      const revision =
+        scenario.provisioningCancelledByStop || scenario.provisioningFailsBeforeDeployment
+          ? null
+          : snapshot(saved, nextId("rev"), 1);
       if (scenario.provisionedDeploymentStopped || scenario.provisioningCancelledByStop) {
         saved.desiredRuntimeState = "stopped";
       }
@@ -346,21 +350,26 @@ export function createAgentRoutes(scenario: CreateScenario, dependencies: Create
                         code: "PROVISIONING_CANCELLED",
                         message: "Provisioning was cancelled because the Agent was stopped.",
                       }
-                    : scenario.provisionedDeploymentStopped
+                    : scenario.provisioningFailsBeforeDeployment
                       ? {
-                          code: "REVISION_STOPPED",
-                          message: "The Agent was stopped before its first deployment finished.",
+                          code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
+                          message: "Agent provisioning could not complete.",
                         }
-                      : (scenario.provisionedDeploymentError ?? {
-                          code:
-                            scenario.provisionedDeploymentStatus === "failed"
-                              ? "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"
-                              : "PROVISIONING_FAILED",
-                          message:
-                            scenario.provisionedDeploymentStatus === "failed"
-                              ? deploymentFailureMessages.bootstrap
-                              : "The worker could not finish provisioning.",
-                        }),
+                      : scenario.provisionedDeploymentStopped
+                        ? {
+                            code: "REVISION_STOPPED",
+                            message: "The Agent was stopped before its first deployment finished.",
+                          }
+                        : (scenario.provisionedDeploymentError ?? {
+                            code:
+                              scenario.provisionedDeploymentStatus === "failed"
+                                ? "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"
+                                : "PROVISIONING_FAILED",
+                            message:
+                              scenario.provisionedDeploymentStatus === "failed"
+                                ? deploymentFailureMessages.bootstrap
+                                : "The worker could not finish provisioning.",
+                          }),
                 }
               : {}),
             ...(current.status === "succeeded" || current.reads > 1

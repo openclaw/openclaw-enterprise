@@ -2483,6 +2483,10 @@ function renderAgentForm(
     "div",
     { className: "form-actions" },
     repositoryDeploymentWarning,
+    // The meter shares the sticky action bar (finding 2098 keeps Create Agent in view there),
+    // so the reader who just selected it sees provisioning without scrolling: it pins above
+    // the buttons while the request runs and leaves the bar when it ends or is refused.
+    provisioningMeter.section,
     // Cancel is the explicit discard; other exits keep the draft (finding 1902).
     button("Cancel", () => {
       const configurationToKeep = savedAgent ? undefined : savedConfiguration;
@@ -3654,7 +3658,7 @@ function renderAgentForm(
     if (submitUnavailable && submitReason === null) {
       submit.disabled = true;
     }
-    retryProvisioning.hidden = !provisioningAttempt;
+    retryProvisioning.hidden = createPending || !provisioningAttempt;
     retryProvisioning.disabled = pending || !provisioningAttempt;
     retryCapabilityDiscovery.hidden = !capabilityDiscoveryFailed || capabilityDiscoveryDenied;
     retryCapabilityDiscovery.disabled = pending;
@@ -4812,9 +4816,6 @@ function renderAgentForm(
     form,
     channelEditor,
     networkProxySection,
-    // The meter leads the outcome lines while a request is in flight; the error line then
-    // leads with the reason (finding 1862), below the step the meter marks.
-    provisioningMeter.section,
     // The outcome leads; the saved-resources line identifies what was kept (finding 1862).
     feedback,
     savedStatus,
