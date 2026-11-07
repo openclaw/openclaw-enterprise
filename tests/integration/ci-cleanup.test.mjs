@@ -489,6 +489,10 @@ test("cleanup continues after a failed database drop and retains only the failed
   );
   const statePath = join(root, "state.json");
   const state = failedDropState(postgres.port);
+  const directory = join(root, `${state.resources[0].name}-bootstrap`);
+  await mkdir(directory);
+  await writeFile(join(directory, "init-local.sql"), "-- public bootstrap\n");
+  state.resources[0].directory = directory;
   await writeState(statePath, state);
 
   const result = await runAsync(statePath, { OCC_DOCKER_BIN: docker });
@@ -511,6 +515,24 @@ test("cleanup continues after a failed database drop and retains only the failed
     resources: state.resources.filter(({ id }) => id === "database-1"),
   });
   assert.equal((await stat(statePath)).mode & 0o777, 0o600);
+  await assert.rejects(stat(directory), { code: "ENOENT" });
+});
+
+test("cleanup rejects a PostgreSQL bootstrap directory outside its project", async (t) => {
+  const root = await fixture(t);
+  const directory = join(root, "unrelated-inputs");
+  await mkdir(directory);
+  const statePath = join(root, "state.json");
+  const state = failedDropState();
+  state.resources = [{ ...state.resources[0], directory }];
+  await writeState(statePath, state);
+
+  // Reject the foreign path before calling Docker or removing any local input.
+  const result = await runAsync(statePath, { OCC_DOCKER_BIN: join(root, "must-not-run") });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /outside the owned PostgreSQL directory/);
+  assert.equal((await stat(directory)).isDirectory(), true);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
 });
 
 test("cleanup drops a selected database before waiting for the CI state lock", async (t) => {

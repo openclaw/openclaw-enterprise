@@ -615,16 +615,22 @@ async function ensurePostgresServer(statePath, state) {
     throw new Error("Refusing to use the developer PostgreSQL port 55432.");
   }
   const project = ownedName("openclaw-ci-pg", state.prefix, { maxLength: 63, separator: "_" });
+  const directory = await mkdtemp(join(process.env.RUNNER_TEMP ?? tmpdir(), `${project}-`));
   const resource = addResource(state, "compose-postgres", {
     name: project,
+    directory,
     composeFile: composePostgresFile,
     port,
   });
   await writeState(statePath, state);
+  // PostgreSQL reads this public bootstrap as its container user, not the checkout owner.
+  const initSql = join(directory, "init-local.sql");
+  await writeFile(initSql, await readFile(join(repositoryRoot, "migrations/init-local.sql")));
+  await chmod(initSql, 0o644);
   await execFile(
     process.env.OCC_DOCKER_BIN ?? "docker",
     dockerArgsForPostgres(resource, "up", "-d", "--wait"),
-    { env: { OCC_POSTGRES_PORT: String(port) } },
+    { env: { OCC_POSTGRES_PORT: String(port), OPENCLAW_CI_POSTGRES_INIT_SQL: initSql } },
   );
   await postgresAdmin(resource, { statements: ciPostgresSettings, stage: "postgres-settings" });
   await markResourceReady(statePath, state, resource);

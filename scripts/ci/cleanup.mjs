@@ -278,6 +278,15 @@ function composeArgs(resource, state, ...args) {
     throw new Error(`Refusing cleanup with unexpected Compose file: ${resource.composeFile}`);
   }
   assertOwnedName("openclaw_ci_pg_", resource.name, "Compose PostgreSQL project");
+  if (
+    resource.directory !== undefined &&
+    (!isAbsolute(resource.directory) ||
+      !basename(resource.directory).startsWith(`${resource.name}-`))
+  ) {
+    throw new Error(
+      `Refusing cleanup outside the owned PostgreSQL directory: ${resource.directory}`,
+    );
+  }
   if (Number(resource.port) === 55432) {
     throw new Error("Refusing to clean developer PostgreSQL port 55432.");
   }
@@ -296,9 +305,17 @@ async function cleanupComposePostgres(resource, state) {
     process.env.OCC_DOCKER_BIN ?? "docker",
     composeArgs(resource, state, "down", "--volumes", "--remove-orphans"),
     {
-      env: { OCC_POSTGRES_PORT: String(resource.port) },
+      env: {
+        OCC_POSTGRES_PORT: String(resource.port),
+        ...(resource.directory === undefined
+          ? {}
+          : { OPENCLAW_CI_POSTGRES_INIT_SQL: join(resource.directory, "init-local.sql") }),
+      },
     },
   );
+  if (resource.directory !== undefined) {
+    await rm(resource.directory, { recursive: true, force: true });
+  }
 }
 
 async function cleanupDatabase(resource, state) {
