@@ -75,10 +75,14 @@ require its original worker.
 
 This operation must work from the API process. It may read existing owner
 metadata but must not adopt a route, take or advance a fence, issue or refresh
-material, contact a provider, enqueue work, impersonate the worker, or compare
+material, contact a credential provider or OpenShell to observe or adopt an
+execution, enqueue work, impersonate the worker, or compare
 the API process's instance ID as evidence of replacement. Return only the
 disposition, not worker IDs, fingerprints, provider data or secrets. Do not set
 `repositoryAccess.state=redeploy-required` before an actual terminal result.
+Kubernetes Compute retains its existing read-only Namespace ownership GET. The
+shared cancellation budget must cover that read and the delegated assessment;
+a missing or unverifiable ownership witness cannot yield a positive result.
 
 OCC authorizes the complete inventory and loads each selected active revision
 through State, rather than the Agent's mutable draft. It calls the selected
@@ -102,8 +106,14 @@ replacement is not evidence of continuity.
 Before the first stop, refresh the inventory and refuse changed selections.
 This read does not lock the fleet or fence concurrent operators: exclusive
 maintenance ownership remains required. On resume, repeat preflight if the
-worker stop still lies ahead. If it already happened, reconcile existing
-execution evidence without replaying the stop or claiming a prospective check.
+worker stop still lies ahead. Stopping the API first can leave API replicas at
+zero and the worker at one, making a fresh inventory unavailable. In that state,
+refuse to continue and leave the worker untouched; report the partial stop for
+reconciliation of the existing attempt. Do not reuse stale inventory, restart
+the API automatically, submit Helm or deploy an Agent. Reassess when the inventory
+is legitimately available again. If the worker stop already happened, reconcile
+existing execution evidence without replaying the stop or claiming a prospective
+check.
 
 The current inventory requires Installation `administer`, exact Namespace and
 Agent reads, and both `deploy` and revision `read` for eligible running Agents.
@@ -124,19 +134,20 @@ not silently extend RFC-0011's controller-first bootstrap guarantee.
 
 ## Delivery and required proof
 
-After submission for human review, implement through the existing owners and
-[production tooling work](../plans/0050-production-deployment-tooling.md), subject
-to the contract decision. That plan currently leaves Driver contracts unchanged
-and does not itself authorize this extension. Update current Driver references,
+The [linked implementation plan](../plans/0031-repository-worker-restart-preflight.md)
+records delivery through the existing owners after submission for human review,
+subject to the contract decision. The separate
+[production tooling plan](../plans/0050-production-deployment-tooling.md) leaves
+Driver contracts unchanged and does not itself authorize this extension. Update current Driver references,
 the coordinated-upgrade flow and guide, and generated OpenAPI with the eventual
 implementation. No renewal redesign, trust relaxation, database migration or
 second deployment mechanism is part of this proposal.
 
 Required integration evidence remains unrun:
 
-1. Extend the [selected-repository cold-worker journey](../../tests/integration/postgres-openshell-standing-selected-repository.test.ts): read authenticated inventory while the original worker and Git are healthy; identify its exact revision as requiring that worker. Prove the read changes no owner, fence, issuance, queued work or runtime. Then exercise the existing real replacement and terminal outcome, preserving the independent withdrawal and runtime decision.
+1. Extend the [selected-repository cold-worker journey](../../tests/integration/postgres-openshell-standing-selected-repository.test.ts): use separate API and worker instances over the same database to read authenticated inventory while the original worker and Git are healthy; identify its exact revision as requiring that worker. Prove the read changes no owner, fence, issuance, queued work or runtime. Then exercise the existing real replacement and terminal outcome, preserving the independent withdrawal and runtime decision.
 2. Extend the [standing-route cold-transfer case](../../tests/integration/postgres-openshell-standing-route.test.ts): report supported re-verification, then exercise actual predecessor verification after replacement. Cover the preview, missing evidence, no repository access and an unsupported delivery. Include similar public profile descriptions with different actual restart behavior; schema-only mocks cannot prove the classification.
-3. Extend the [upgrade recovery integration](../../tests/integration/production-image-upgrade-recovery.test.mjs): retained at-risk, unknown, missing-field and unauthorized inventories refuse before any scale, leaving both writer replica counts intact. A complete empty fleet and a positively assessed fleet proceed. Changed revisions cannot reuse stale assessments; resume adds no deployment or duplicate stop.
+3. Extend the [upgrade recovery integration](../../tests/integration/production-image-upgrade-recovery.test.mjs): retained at-risk, unknown, missing-field and unauthorized inventories refuse before any scale, leaving both writer replica counts intact. A complete empty fleet and a positively assessed fleet proceed. Changed revisions cannot reuse stale assessments. With API=0, worker=1 and inventory unavailable, resume leaves the worker untouched and adds no API restart, Helm submission or Agent deployment. An already stopped worker is not stopped again.
 
 Keeping the current post-replacement diagnostic alone is simpler but discovers
 risk after interruption. Inferring safety from profile names or warm Git success
