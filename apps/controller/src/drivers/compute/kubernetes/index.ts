@@ -575,9 +575,9 @@ interface ManagedKubernetesObject<Kind extends ReadableResourceKind = ManagedRes
   readonly status?: KubernetesRecord;
 }
 
-interface ReconcilePrecondition {
-  readonly serviceSelector?: Readonly<Record<string, string>>;
-}
+type ReconcilePrecondition =
+  | { readonly serviceSelector: Readonly<Record<string, string>> }
+  | { readonly requireExistingConfigMap: true };
 
 interface Ownership {
   readonly namespaceId: string;
@@ -7363,6 +7363,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
             // provider-endpoint rollout into a failed enrollment attempt.
             return incomplete();
           }
+        } else if (providerEndpoint !== undefined) {
+          // Observe the successor without changing its predecessor's shared Gateway. A missing
+          // owner declaration must also be checked against any binding from a previous pass.
+          await this.prepareRevisionStage("gateway_config_map", () =>
+            this.reconcileHarnessTrust(
+              revision,
+              providerEndpoint,
+              gatewayNamespace,
+              providerEndpoint.externalWorkspaceOwner === undefined ? "before-status" : "prepare",
+            ),
+          );
         }
         if (!(await this.providerHarnessReady(revision, namespace, requirements.labels))) {
           return incomplete();
@@ -8077,6 +8088,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
             "The selected SandboxDriver did not return its Harness endpoint.",
           );
         }
+        // Check the prepared generation before presenting the Gateway's token to the status callback.
+        await this.reconcileHarnessTrust(
+          revision,
+          providerEndpoint,
+          gatewayNamespace,
+          "before-status",
+        );
         // Preparation saw the Harness serving; activate only while it still is.
         if (
           sandboxDriver.harnessStatus !== undefined &&
@@ -8118,7 +8136,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayNamespace,
       gatewayOwnership,
     );
-    await this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace);
+    await this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace, "activate");
     await this.reconcile(
       this.deployment(
         gatewayName,
@@ -16155,6 +16173,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     revision: AgentRevision,
     endpoint: SandboxHarnessEndpoint | undefined,
     namespace: KubernetesNamespaceAddress,
+    phase: "prepare" | "before-status" | "activate" = "prepare",
   ): Promise<void> {
     const externalOwner = endpoint?.externalWorkspaceOwner;
     if (
@@ -16177,7 +16196,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         "An external workspace owner requires an ordinary dedicated Codex revision with verifier-only workload credentials, exact TLS trust and a pinned generation.",
       );
     }
-    if (endpoint?.tls === undefined) {
+    if (endpoint?.tls === undefined || (phase === "before-status" && externalOwner === undefined)) {
       // An endpoint without private trust is valid on first use, but cannot replace
       // an owner-bound endpoint for this revision. An absent endpoint here can also
       // be the initial Gateway render that prepares workspace-node enrollment.
@@ -16240,6 +16259,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       },
       ownership,
       namespace,
+      phase !== "prepare" && externalOwner !== undefined
+        ? { requireExistingConfigMap: true }
+        : undefined,
     );
   }
 
@@ -17178,7 +17200,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   ): Promise<void> {
     const clients = await this.clients(namespace.plane);
     const existing = await this.getOwned(desired.kind, desired.metadata.name, namespace, ownership);
-    if (precondition !== undefined && desired.kind !== "Service") {
+    if (precondition && "requireExistingConfigMap" in precondition) {
+      if (desired.kind !== "ConfigMap" || existing === undefined) {
+        throw new OwnershipFailure("The prepared immutable Kubernetes ConfigMap is missing.");
+      }
+    } else if (precondition !== undefined && desired.kind !== "Service") {
       throw new ConfigurationFailure(
         `Unsupported Kubernetes reconcile precondition for ${desired.kind}.`,
       );
@@ -17187,7 +17213,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       return;
     }
     if (existing !== undefined) {
-      if (precondition?.serviceSelector !== undefined) {
+      if (precondition && "serviceSelector" in precondition) {
         const selector = asRecord(existing.spec?.selector);
         if (
           Object.entries(precondition.serviceSelector).some(
