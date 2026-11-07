@@ -149,7 +149,7 @@ done <<< "$source_args"
 ```
 
 Keep this shell for the build. CI and development launchers resolve the manifest
-automatically. [Local checkout tests](../../docs/testing/openshell.md) use their selected source.
+automatically.
 
 ## Verify runtime source
 
