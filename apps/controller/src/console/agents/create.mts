@@ -2399,6 +2399,10 @@ function renderAgentForm(
     if (!provisioningAttempt || pending) {
       return;
     }
+    // A retried request is in flight like the first one: mark it busy so Retry hides for its
+    // run too, not only for the initial submission. submitProvisioningAttempt's finally
+    // clears it through endCreate.
+    createPending = true;
     void submitProvisioningAttempt(provisioningAttempt, provisioningAttempt.statusUrl);
   });
   // A refused Installation read stays refused: its access block offers a permission reread instead.
