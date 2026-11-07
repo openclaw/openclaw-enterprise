@@ -11,7 +11,7 @@ import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { waitForLockHolder } from "../helpers/postgres-lock-waits.mjs";
-import { within } from "../helpers/wait-for.mjs";
+import { waitUntil, within } from "../helpers/wait-for.mjs";
 
 function sessionRecord(userId) {
   const createdAt = new Date();
@@ -362,6 +362,63 @@ test(
         assert.equal((await persistence.readAccount(person.id, admin)).version, before.version + 1);
       },
     );
+
+    await context.test("expiry during authorization prevents the account mutation", async () => {
+      const proof = (await persistence.snapshotPassword(recoveryEmail)).proof;
+      const session = await persistence.issueSession(proof, sessionRecord(recoveryUser.id));
+      const expiring = administrativeActor(state, installation.id, {
+        ...admin,
+        sessionId: session.id,
+      });
+      const before = await persistence.readAccount(person.id, admin);
+      const auditsBefore = await state.transact((unit) => unit.audit.list());
+      // Seed an otherwise current session near its real deadline. No clock or
+      // authorization result is replaced; the database clock advances normally.
+      const deadline = (
+        await pool.query(
+          "UPDATE occ.session SET expires_at=clock_timestamp()+interval '2 seconds' WHERE id=$1 RETURNING expires_at",
+          [session.id],
+        )
+      ).rows[0].expires_at;
+      await assert.rejects(
+        persistence.changeAccount(
+          person.id,
+          "revoke",
+          {
+            ...expiring,
+            authorize: async (scope) => {
+              await expiring.authorize(scope);
+              assert.equal(
+                (
+                  await pool.query("SELECT clock_timestamp() < $1::timestamptz AS current", [
+                    deadline,
+                  ])
+                ).rows[0].current,
+                true,
+                "the session must still be current when authorization starts",
+              );
+              await waitUntil(
+                "the session expires during authorization",
+                async () =>
+                  (
+                    await pool.query("SELECT clock_timestamp() >= $1::timestamptz AS expired", [
+                      deadline,
+                    ])
+                  ).rows[0].expired,
+                { timeoutMs: 5000 },
+              );
+            },
+          },
+          before.version,
+        ),
+        {
+          name: "AuthorizationDeniedError",
+          message: "The human administrator session is no longer current.",
+        },
+      );
+      assert.deepEqual(await persistence.readAccount(person.id, admin), before);
+      assert.deepEqual(await state.transact((unit) => unit.audit.list()), auditsBefore);
+    });
 
     await context.test(
       "after activation unbound sessions fail at COMMIT and bound issuance still commits",

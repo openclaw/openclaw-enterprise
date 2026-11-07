@@ -1061,8 +1061,6 @@ export class PostgresHumanAuthentication {
     await this.query(unit, "SELECT occ.hold_account_administration_policy($1)", [
       this.installationId,
     ]);
-    // A method or recovery lock may have waited past the earlier session expiry check.
-    await this.guardActor(unit, actor, []);
     if (typeof actor.authorize !== "function") {
       throw new CallerStateDeniedError("The account operation has no authorization guard.");
     }
@@ -1070,6 +1068,8 @@ export class PostgresHumanAuthentication {
       ...(targetPrincipalId === undefined ? {} : { targetPrincipalId }),
       ...(successorPrincipalId === undefined ? {} : { successorPrincipalId }),
     });
+    // Method locks and the asynchronous IAM decision can outlast the session.
+    await this.guardActor(unit, actor, []);
   }
 
   /** Retains the guarded actor on the caller's original State transaction. */

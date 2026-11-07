@@ -174,6 +174,50 @@ test(
           member,
         }),
     );
+    await t.test("a recovery successor losing eligibility returns a conflict", async () => {
+      const target = await readAccount(app, adminHeaders, limited.id);
+      const before = await recoveryHolder();
+      const auditsBefore = await state.transact((unit) => unit.audit.list());
+      const locker = await pool.connect();
+      let pending;
+      try {
+        await locker.query("BEGIN");
+        const held = (
+          await locker.query(
+            'SELECT pg_backend_pid() AS pid FROM occ."user" WHERE id=$1 FOR UPDATE',
+            [limited.id],
+          )
+        ).rows[0];
+        pending = fetch(`http://127.0.0.1:${app.server.address().port}/api/auth/recovery`, {
+          method: "POST",
+          headers: { ...adminHeaders, "content-type": "application/json" },
+          body: JSON.stringify({
+            userId: limited.id,
+            expectedCurrentUserId: before,
+            expectedVersion: target.version,
+          }),
+        });
+        await waitForLockWaiter(pool, held.pid, "recovery replacement reached the successor lock", {
+          timeoutMs: 3000,
+        });
+        // A database policy writer removes only the successor's grant after the
+        // real HTTP preflight. The initiating administrator remains authorized.
+        const removed = await pool.query(
+          "DELETE FROM occ.iam_access_bindings WHERE identity_subject_id=$1 RETURNING id",
+          [target.principalId],
+        );
+        assert.equal(removed.rowCount, 1);
+      } finally {
+        await locker.query("ROLLBACK");
+        locker.release();
+      }
+      const response = await pending;
+      assert.equal(response.status, 409, await response.text());
+      assert.equal(await recoveryHolder(), before);
+      // Ineligible successor is a resource conflict, not a false denial of
+      // the initiating administrator's authority or a successful replacement.
+      assert.deepEqual(await state.transact((unit) => unit.audit.list()), auditsBefore);
+    });
   },
 );
 

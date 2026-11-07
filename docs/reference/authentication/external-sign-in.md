@@ -263,11 +263,11 @@ require every IAM grant of the target account's Principal (else `403`, audited a
 `ACCOUNT_PRINCIPAL_GRANTS_NOT_COVERED` with the target `userId` and `principalId`, the current
 holder's for a recovery move); Agent `administer`
 counts for a delegated Agent `read_logs` grant, as for [service keys](service-api-keys.md#issuance).
-After lock waits, State rechecks the session, administrator authority, target coverage
-and any proposed recovery successor. Policy stays stable through commit. Account-lock
-timeouts or concurrent policy writes return retryable `503`; lost authority returns
-`403` without changing the account. A stale
-`expectedVersion` or disabled target returns `409 RESOURCE_CONFLICT`.
+After locking, State rechecks caller authority, target coverage and the
+recovery successor, then the session. Policy stays stable through commit.
+Lock contention returns retryable `503`; lost caller authority or target coverage
+returns `403` without mutation. Stale `expectedVersion`, disabled targets or
+successors lacking Installation `administer` return `409 RESOURCE_CONFLICT`.
 
 Send the version just read, such as `{"expectedVersion":1}`:
 

@@ -63,6 +63,7 @@ import {
   DeviceAuthorizationStartError,
   NoActiveAgentRevisionError,
   ResourceConflictError,
+  ResourceStateConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   UserAlreadyExistsError,
@@ -3865,11 +3866,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               throw dependencyUnavailable();
             }
             if (!successor.allowed) {
-              throw new AuthorizationDeniedError(
+              throw new ResourceStateConflictError(
                 "The recovery account must administer the Installation.",
-                successor.evidence,
-                { action: "administer", resource },
-                scope.successorPrincipalId,
               );
             }
           }
