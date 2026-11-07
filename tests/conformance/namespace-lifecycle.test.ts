@@ -4,7 +4,7 @@ import type { Namespace, NamespaceLifecycleHooks } from "@openclaw-enterprise/co
 import {
   reconcileNamespaceLifecycle,
   selectedNamespaceLifecycle,
-} from "../../packages/occ/src/index.ts";
+} from "../../packages/occ/src/namespace-lifecycle.ts";
 import { createReadyComputeDriver } from "../helpers/development.ts";
 
 const namespace: Namespace = {

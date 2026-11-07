@@ -4370,7 +4370,8 @@ test("OpenShell Namespace steps fail at once when OpenShell refuses the controll
   // by the separate Namespace bootstrap integration, not by these refusal responses.
   const { sandboxNamespaceLifecycleBinding } =
     await import("../../apps/controller/src/composition/namespace-lifecycle.ts");
-  const { reconcileNamespaceLifecycle } = await import("../../packages/occ/src/index.ts");
+  const { reconcileNamespaceLifecycle } =
+    await import("../../packages/occ/src/namespace-lifecycle.ts");
   const tenant = namespaceContext().namespace;
   const placement = { name: tenant.name, plane: "execution" };
   const compute = (gatewayClient) => {

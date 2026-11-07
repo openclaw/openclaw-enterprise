@@ -5375,7 +5375,8 @@ test("Kubernetes namespace deletion waits for Sandbox namespace cleanup", async 
 
   const { sandboxNamespaceLifecycleBinding } =
     await import("../../apps/controller/src/composition/namespace-lifecycle.ts");
-  const { reconcileNamespaceLifecycle } = await import("../../packages/occ/src/index.ts");
+  const { reconcileNamespaceLifecycle } =
+    await import("../../packages/occ/src/namespace-lifecycle.ts");
   const binding = sandboxNamespaceLifecycleBinding(driver, sandboxDriver);
   const remove = () =>
     reconcileNamespaceLifecycle(

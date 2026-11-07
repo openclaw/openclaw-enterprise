@@ -5,7 +5,6 @@ import {
   type NamespaceLifecycleEvidence,
 } from "./namespace-lifecycle.ts";
 
-export { reconcileNamespaceLifecycle, selectedNamespaceLifecycle } from "./namespace-lifecycle.ts";
 export type {
   NamespaceLifecycleBinding,
   NamespaceLifecycleEvidence,
