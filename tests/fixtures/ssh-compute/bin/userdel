@@ -5,4 +5,13 @@ name=${1:-}
 file="$OCC_SSH_FIXTURE_STATE/accounts/users/$name"
 [ -f "$file" ] || exit 1
 rm -f "$file"
+# Model USERGROUPS_ENAB: userdel can also remove the same-named private group.
+if [ -f "$OCC_SSH_FIXTURE_STATE/userdel.remove-group" ]; then
+  rm -f "$OCC_SSH_FIXTURE_STATE/accounts/groups/$name"
+fi
 printf 'userdel %s\n' "$name" >> "$OCC_SSH_FIXTURE_STATE/accounts.log"
+# Fail the next local lookup after cleanup, leaving its result uncertain.
+if [ -f "$OCC_SSH_FIXTURE_STATE/userdel.lookup-fail" ]; then
+  rm -f "$OCC_SSH_FIXTURE_STATE/userdel.lookup-fail"
+  printf 'once\n' > "$OCC_SSH_FIXTURE_STATE/getent.fail"
+fi
