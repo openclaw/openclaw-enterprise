@@ -1,13 +1,13 @@
 ---
-rfc: ../rfcs/0030-durable-namespace-cleanup.md
+rfc: ../rfcs/0031-durable-namespace-cleanup.md
 ---
 
 # Implementation plan: durable Namespace cleanup
 
-- **ID:** RFC-0030
+- **ID:** RFC-0031
 - **Delivery status:** In progress
 - **Owner:** @russellb
-- **Authority:** [RFC-0030](../rfcs/0030-durable-namespace-cleanup.md)
+- **Authority:** [RFC-0031](../rfcs/0031-durable-namespace-cleanup.md)
 - **Source baseline:** PR #4088 at `bfef7f0d5f8091390d5ec8296d0be4cd5bb5faaa` and main `330073017`.
 
 ## Outcome and scope
@@ -194,6 +194,8 @@ and closed-Installation custody 1/1. RFC, security and genuine-provider proof ho
 remain.
 
 ## Delivery record
+
+- 2026-11-07: Main assigns RFC-0030 to Harness overrides and migrations 72/73 to saved Harness settings and account-administration policy. This proposal moves to RFC-0031; journal SQL moves unchanged to 74. PostgreSQL passes 50 canonical/restore cases (49 leaves plus one parent), six journal cases and one Harness restart/default-replacement case. The additional human-authentication suite has 23 passing leaves and two failures plus its parent: the database clock is about 25 hours behind the host, so inherited timestamp checks reject password updates. Its three new policy-lock/currentness cases pass. No clock, constraint or fixture was changed; owned resources were removed. Cleanup controls retain older revisions without execution settings. Original submissions, Proposed status and historical records remain unchanged.
 
 - 2026-11-06: Main reserves migration 71 for Default users. The unchanged Namespace journal SQL moves to 72. Actual PostgreSQL 18.6 passes 48 canonical/restore cases (47 leaves plus one parent), six journal cases and five API/State/IAM default-user cases, without failures or skips. Native/direct/prefix fingerprints were measured under separate migrator and limited application roles; the owned fixture was cleaned. The journal-owned OpenShell verifier retains upstream normalization of configured and observed NetworkPolicy specs. Its actual SDK-deserialization regression fails before integration and passes afterward, including changed-policy refusal controls. This proves schema and component composition, not genuine provider cleanup.
 

@@ -573,8 +573,24 @@
     {
       "idx": 72,
       "version": "7",
+      "when": 1787000000072,
+      "tag": "0072_harness_revision_settings",
+      "breakpoints": true,
+      "sha256": "bb7a1b4480f0566ecf56f47f5789ba681994ffa2a5cba5eda14d38be8973eb7c"
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1787000000073,
+      "tag": "0073_account_administration_policy",
+      "breakpoints": true,
+      "sha256": "7c27834941b7a38bc8537fffd1a59cb98dba98f3e32e16c639bec9d4829d910a"
+    },
+    {
+      "idx": 74,
+      "version": "7",
       "when": 1793365038662,
-      "tag": "0072_namespace_lifecycle",
+      "tag": "0074_namespace_lifecycle",
       "breakpoints": true,
       "sha256": "72efd102f74ab146f093557bb8de2207acaf003e66cf6004d7296579dbf770d7"
     }
@@ -647,6 +663,14 @@
       "165f0af55446f21086a75defc11d8451bc06500493d3241db50dc19d3d93f486",
       "3fcb47801057d81e978101111e1cc921b39e075c97b12e891aea3fc26de49a57"
     ],
+    "c1e2e44e89e14f9408c939d4e2caf72d49dabc200df617f52b11a7050c36828c": [
+      "9f1eb723dcad8f8641d7944efd0ddc2b498f763d1e0b3dc0bc69d4e73ce37b48",
+      "87764896563ff43de259eacd2a28427738f5554f664a98dd5b130b4b1f47a21f"
+    ],
+    "c806edfa92f7889a92783f40ea6d0dbed281250ebdc632a363d724f12a2d1d33": [
+      "5c4f9b4c567040dd3cad250cccc2e5513971a6de45b4e165c7045a2f20d843ac",
+      "a66ee595b09ad279b59d53f39461675e433dfb37f2854ea2776a4c45b9bffbd1"
+    ],
     "4d102ec8439d039d8a0cdae400d8cd6990509a4787416471bb48a38e2c526b7a": [
       "81c13a7acd9939a09c9e0aa91da6494cf3d33c532e5ce3240a7fae1f6ce546b0",
       "46381596aed1129e57f9b1d29fa1cf8baf75e6969e580c503ba6509845a6309b"
@@ -678,6 +702,10 @@
     "596a6747f288290e15968e0cf23959c95ef288e095240a7e33946838a2d11251": [
       "0db0cecff9ada8b4d9181bf5752fd227b65af6fbef554d05ec6f4abcb591f9bf",
       "f07b952be5e57a846837c868e40acaf8adf17020213a3ea92dd13506720e3c16"
+    ],
+    "f482cde1e445950b63d8811a07db69fce236943e55ed9d5b313acf01eac45d12": [
+      "ab7d0b1ca6976d14c731bf36683955804cb8622567fd0e40c7c51f56876c5797",
+      "e9db665ed551776ce77cae2e1d0397163dcf28c2b8675657fb40b41fb65e8b9b"
     ]
   },
   "catalogs": {
@@ -686,7 +714,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "596a6747f288290e15968e0cf23959c95ef288e095240a7e33946838a2d11251",
+    "completed": "f482cde1e445950b63d8811a07db69fce236943e55ed9d5b313acf01eac45d12",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -728,7 +756,9 @@
     "preConnectionTemplates": "8fc3e20bcb36ad9b2afe8ab96077139b12b50c825dd18ff323603d0e0540b250",
     "preSavedConnections": "1989ad2291a59e5d15e7f35fd008677449cac6cd11e653605b3d48675655dba9",
     "preDefaultUsers": "b3d9b0b499a4ea4a0cab68cd2836ab6ceba96be82c3f2bb6faac5e7fcb2a06c4",
-    "preNamespaceLifecycle": "451fc5103dcacb194c7decfd419da6444995d78ddbd4f44ee4f69217b4cb6c5b"
+    "preHarnessOverrides": "451fc5103dcacb194c7decfd419da6444995d78ddbd4f44ee4f69217b4cb6c5b",
+    "preAccountAdministrationPolicy": "c1e2e44e89e14f9408c939d4e2caf72d49dabc200df617f52b11a7050c36828c",
+    "preNamespaceLifecycle": "c806edfa92f7889a92783f40ea6d0dbed281250ebdc632a363d724f12a2d1d33"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",
@@ -737,7 +767,7 @@
   "catalogEvidence": {
     "postgres": "18.6",
     "drizzleOrm": "0.45.4",
-    "method": "Historical catalogs retain their recorded qualification. The completed catalog and logical restore were measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator and effective occ_app privileges."
+    "method": "Historical catalogs retain their recorded qualification. The completed catalog was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for completed canonical and Provider histories and an upgraded historical canonical restore."
   },
   "compatibleLineages": {
     "providerCompleted": {

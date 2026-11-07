@@ -502,8 +502,22 @@
     {
       "idx": 72,
       "version": "7",
+      "when": 1787000000072,
+      "tag": "0072_harness_revision_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1787000000073,
+      "tag": "0073_account_administration_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
       "when": 1793365038662,
-      "tag": "0072_namespace_lifecycle",
+      "tag": "0074_namespace_lifecycle",
       "breakpoints": true
     }
   ]

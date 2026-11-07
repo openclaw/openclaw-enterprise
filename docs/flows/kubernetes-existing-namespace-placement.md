@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: 2026-11-06
-last_updated_session: authoring-run/6c1f8605-73d6-448e-a544-8da049a5f928
+updated: 2026-11-07
+last_updated_session: authoring-run/a4580ce4-b86e-43f7-8685-0357493912db
 ---
 
 # Existing Kubernetes Namespace Placement Flow
@@ -79,7 +79,7 @@ with its generated platform Namespace ID before queuing worker provisioning.
 Partial database uniqueness prevents simultaneous active claims for the same name.
 
 `packages/occ/src/state/postgres-schema.ts:namespaceLifecycle` and
-`migrations/0072_namespace_lifecycle.sql:reserve_namespace_lifecycle` reserve a
+`migrations/0074_namespace_lifecycle.sql:reserve_namespace_lifecycle` reserve a
 stable lifecycle UUID with the Namespace insertion, before any dispatch. The
 initial revision-zero record proves no effect was attempted. The worker's
 `ControllerWorker.namespaceLifecycle` locks work before Namespace, rechecks its
@@ -278,6 +278,8 @@ path exists for missing original identity or permanently lost provider evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-07 09:20: Preserve journal authority and update its pointer after Harness settings/account-policy schema integration. (authoring-run/a4580ce4-b86e-43f7-8685-0357493912db - 938e83dcf3489eb896c152f1f5761c0dd84103cc)
 
 - 2026-11-06 14:00: Preserve admitted empty policy comparison in the journal-owned verifier and update its schema pointer after default-user schema integration. (authoring-run/6c1f8605-73d6-448e-a544-8da049a5f928 - 8bf06182f7d3b29db9a281e0c698a759d57b9e34)
 

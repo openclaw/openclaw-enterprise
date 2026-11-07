@@ -1,7 +1,7 @@
 import type { Agent } from "@openclaw-enterprise/contracts";
 import { imageReferenceProblem } from "../../packages/occ/src/index.ts";
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { rename, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -301,6 +301,7 @@ type ExternalRequest = (
 export async function measureUpgradeAvailability<T>(
   request: ExternalRequest,
   installationId: string,
+  directory: string,
   upgrade: () => Promise<T>,
   record: (details: object) => Promise<void>,
 ) {
@@ -315,7 +316,17 @@ export async function measureUpgradeAvailability<T>(
     status: number | undefined;
   }[] = [];
   let previousFinish: number | undefined;
-  const sample = async (phase: (typeof samples)[number]["phase"]) => {
+  const evidenceErrors: unknown[] = [];
+  const evidence = (upgradeSucceeded: boolean | null) => ({
+    requestTimeoutMs: 5_000,
+    intervalAfterResponseMs: 1_000,
+    upgradeSucceeded,
+    samples: samples.map((observation) => ({ ...observation })),
+  });
+  const sample = async (
+    phase: (typeof samples)[number]["phase"],
+    upgradeSucceeded: boolean | null = null,
+  ) => {
     const startedAt = new Date().toISOString();
     const start = performance.now();
     const signal = AbortSignal.timeout(5_000);
@@ -358,6 +369,20 @@ export async function measureUpgradeAvailability<T>(
       status,
     });
     previousFinish = finish;
+    try {
+      // A killed runner leaves the last complete snapshot, never a truncated one.
+      // Null means the action has not been recorded as settled.
+      const path = join(directory, "forward-api-availability.json");
+      await writeFile(`${path}.tmp`, JSON.stringify(evidence(upgradeSucceeded)) + "\n", {
+        mode: 0o600,
+      });
+      await rename(`${path}.tmp`, path);
+    } catch (error) {
+      // Keep observing without rejecting in parallel with the running upgrade.
+      if (evidenceErrors.length === 0) {
+        evidenceErrors.push(error);
+      }
+    }
   };
   await sample("before");
   const stopped = new AbortController();
@@ -378,30 +403,27 @@ export async function measureUpgradeAvailability<T>(
   stopped.abort();
   // Join the final bounded request before taking the post-upgrade observation.
   await observing;
-  await sample("after");
-  let recordFailure: { error: unknown } | undefined;
+  await sample("after", outcome.succeeded);
   try {
-    await record({
-      requestTimeoutMs: 5_000,
-      intervalAfterResponseMs: 1_000,
-      upgradeSucceeded: outcome.succeeded,
-      samples,
-    });
+    await record(evidence(outcome.succeeded));
   } catch (error) {
-    recordFailure = { error };
+    evidenceErrors.push(error);
   }
   if (!outcome.succeeded) {
-    if (recordFailure) {
+    if (evidenceErrors.length > 0) {
       throw new AggregateError(
-        [outcome.error, recordFailure.error],
+        [outcome.error, ...evidenceErrors],
         "Upgrade failed and API availability observations could not be recorded",
         { cause: outcome.error },
       );
     }
     throw outcome.error;
   }
-  if (recordFailure) {
-    throw recordFailure.error;
+  if (evidenceErrors.length === 1) {
+    throw evidenceErrors[0];
+  }
+  if (evidenceErrors.length > 1) {
+    throw new AggregateError(evidenceErrors, "API availability observations could not be recorded");
   }
   return outcome.value;
 }
@@ -878,6 +900,7 @@ export async function rehearsePopulatedReturn({
     await measureUpgradeAvailability(
       externalRequest,
       installationId,
+      directory,
       async () => {
         await upgrade(["--evidence-dir", join(directory, "forward")]);
         await verifyInstallation();

@@ -16,6 +16,11 @@ during an image upgrade. Run these commands from a checkout of the installed
 controller's source commit, not the release checkout, and keep the image
 references in `values.yaml` unchanged:
 
+Run the setup once for each reviewed change. If
+`/secure/occ/installation.yaml.before` already exists, preserve it and reconcile
+the previous change before continuing. During recovery, use that original backup;
+do not repeat the backup command after editing `installation.yaml`.
+
 ```bash
 set -euo pipefail
 cd /secure/src/openclaw-enterprise-installed # checkout of the deployed source revision

@@ -244,13 +244,21 @@ test(
           .replaceAll(`"occ"."${table}".`, `"${table}".`);
         await client.query(temporaryDdl);
         const checks = await client.query(
-          `SELECT pg_get_constraintdef(oid) AS definition
+          `SELECT pg_get_constraintdef(oid) AS definition, convalidated, conrelid=$3::regclass AS stored
              FROM pg_constraint
             WHERE conname = $1 AND conrelid IN ($2::regclass, $3::regclass)`,
           [constraint, `pg_temp.${table}`, `occ.${table}`],
         );
         assert.equal(checks.rowCount, 2, `Both tables must have ${constraint}`);
-        assert.equal(checks.rows[0].definition, checks.rows[1].definition);
+        const generated = checks.rows.find((row) => !row.stored);
+        const stored = checks.rows.find((row) => row.stored);
+        // Existing snapshots remain available for cleanup; new writes need resolved settings.
+        const retainedUnsupportedSnapshots = constraint === "agent_revisions_admitted_snapshot";
+        assert.equal(stored.convalidated, !retainedUnsupportedSnapshots);
+        assert.equal(
+          stored.definition,
+          generated.definition + (retainedUnsupportedSnapshots ? " NOT VALID" : ""),
+        );
         await client.query(`DROP TABLE pg_temp."${table}"`);
       }
     } finally {
@@ -1383,6 +1391,7 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.close_repository_standing_execution()", false],
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
+      ["occ.hold_account_administration_policy(text)", true],
       ["occ.record_repository_standing_execution(text,text,text,text,text)", true],
       ["occ.remove_sandbox_policy_access()", false, "search_path=pg_catalog, occ"],
       // Only the Namespace insert trigger can reserve a fresh no-effects lifecycle.
@@ -1415,7 +1424,12 @@ function receiptsMatchEntries(receipts, entries) {
 
 async function seedCanonicalData(
   db,
-  { preset = false, computeAdmission = false, executionAdmission = false } = {},
+  {
+    preset = false,
+    computeAdmission = false,
+    executionAdmission = false,
+    harnessSettings = false,
+  } = {},
 ) {
   const installation = `ins_${randomUUID()}`;
   const namespace = `ns_${randomUUID()}`;
@@ -1458,7 +1472,12 @@ async function seedCanonicalData(
           configuration_kind: "agent",
           configuration_generation: 1,
           draft_spec: {},
-          harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+          harness: {
+            id: "codex",
+            version: "1.0.0",
+            mode: "dedicated",
+            ...(harnessSettings ? { overrides: {}, configuration: {} } : {}),
+          },
           harness_auth: { method: "runtime" },
           ...(executionAdmission
             ? { execution_admission: { version: 2, mode: "unprotected" } }
@@ -1823,6 +1842,8 @@ async function assertUpgradedRevisionReadable(db) {
   // New rows still fail closed: no snapshot may omit its decision, and a decision that
   // claims protection without the protected plan and reader marker is inconsistent.
   const revisionId = `rev_${randomUUID()}`;
+  // A new writer supplies the current Harness shape while the old row stays unchanged.
+  const currentSpec = `jsonb_set(admitted_spec, '{harness}', (admitted_spec->'harness') || '{"overrides":{},"configuration":{}}'::jsonb)`;
   const insertRevision = (rewrite, ...parameters) =>
     db.app.query(
       `INSERT INTO occ.agent_revisions(id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at)
@@ -1832,8 +1853,8 @@ async function assertUpgradedRevisionReadable(db) {
   const invalidAdmission = (error) =>
     error.code === "23514" && error.constraint === "agent_revisions_execution_admission";
   for (const rewrite of [
-    "admitted_spec - 'execution_admission'",
-    `admitted_spec || '{"execution_admission":{"version":2,"mode":"protected"}}'::jsonb`,
+    `${currentSpec} - 'execution_admission'`,
+    `${currentSpec} || '{"execution_admission":{"version":2,"mode":"protected"}}'::jsonb`,
   ]) {
     await assert.rejects(insertRevision(rewrite), invalidAdmission);
   }
@@ -1842,7 +1863,7 @@ async function assertUpgradedRevisionReadable(db) {
   const plan = { execution: { namespaceId, agentId, revisionId }, routes: [] };
   const insertProtectedV2 = (egressPlan) =>
     insertRevision(
-      `jsonb_set(admitted_spec, '{harness_auth,protectedExecutionVersion}', '2'::jsonb)
+      `jsonb_set(${currentSpec}, '{harness_auth,protectedExecutionVersion}', '2'::jsonb)
        || jsonb_build_object('execution_admission', '{"version":2,"mode":"protected"}'::jsonb,
                              'egress_plan', $3::jsonb)`,
       egressPlan,
@@ -2016,7 +2037,9 @@ test(
       [68, "preConnectionTemplates"],
       [69, "preSavedConnections"],
       [70, "preDefaultUsers"],
-      [71, "preNamespaceLifecycle"],
+      [71, "preHarnessOverrides"],
+      [72, "preAccountAdministrationPolicy"],
+      [73, "preNamespaceLifecycle"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2025,6 +2048,8 @@ test(
           computeAdmission: prefix >= 55,
           // 0060 requires an execution admission on every revision written after it.
           executionAdmission: prefix >= 62,
+          // 0072 requires settings on new rows; earlier prefixes retain their historical shape.
+          harnessSettings: prefix >= 72,
         });
         const assertSourceOwners =
           prefix === 59
@@ -2056,6 +2081,8 @@ test(
             "preConnectionTemplates",
             "preSavedConnections",
             "preDefaultUsers",
+            "preHarnessOverrides",
+            "preAccountAdministrationPolicy",
             "preNamespaceLifecycle",
           ].includes(history)
         ) {
@@ -2110,7 +2137,8 @@ test(
           await db.app.query(
             `INSERT INTO occ.agent_revisions
                (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
-             SELECT $1, namespace_id, agent_id, revision_number + 1, backend_id, admitted_spec, now()
+             SELECT $1, namespace_id, agent_id, revision_number + 1, backend_id,
+               jsonb_set(admitted_spec, '{harness}', (admitted_spec->'harness') || '{"overrides":{},"configuration":{}}'::jsonb), now()
              FROM occ.agent_revisions`,
             [`rev_${randomUUID()}`],
           );
@@ -2250,7 +2278,16 @@ test(
       history: "preCanonicalHarnessAuth",
     });
     await assertCompletedHistory(db, receipts);
-    executionAdmission = { execution_admission: { version: 2, mode: "unprotected" } };
+    const originalHarness = (
+      await db.app.query(
+        "SELECT admitted_spec->'harness' AS harness FROM occ.agent_revisions WHERE namespace_id=$1 AND revision_number=1",
+        [namespaceId],
+      )
+    ).rows[0].harness;
+    executionAdmission = {
+      execution_admission: { version: 2, mode: "unprotected" },
+      harness: { ...originalHarness, overrides: {}, configuration: {} },
+    };
     assert.deepEqual((await insertSnapshot(binding)).rows, [{ auth: binding }]);
     const apiKey = { ...binding, loginMode: "api_key" };
     assert.deepEqual((await insertSnapshot(apiKey)).rows, [{ auth: apiKey }]);
@@ -2606,8 +2643,9 @@ test(
       const accepted = await logicalRestoreSnapshot(restored);
       const restoredDigest = catalogDigest(accepted.occ);
       context.diagnostic(
-        `Catalog qualification: native=${catalogDigest(native.occ)} restored=${restoredDigest}`,
+        `Catalog qualification: lineage=${lineage} native=${catalogDigest(native.occ)} restored=${restoredDigest}`,
       );
+
       assert.notEqual(restoredDigest, catalogDigest(native.occ));
       assert.deepEqual(accepted.receipts, native.receipts);
       assert.deepEqual(accepted.drizzle, native.drizzle);
@@ -2631,6 +2669,7 @@ test(
           await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
         );
         const upgraded = await logicalRestoreSnapshot(restored);
+        context.diagnostic(`Upgraded restore: ${catalogDigest(upgraded.occ)}`);
         assert.deepEqual(upgraded.identities, native.identities);
         assert.deepEqual(upgraded.receipts.slice(0, 51), native.receipts);
         assert.deepEqual(

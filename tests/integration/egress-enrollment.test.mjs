@@ -140,7 +140,10 @@ test(
     const modelPort = model.address().port;
     const callsPath = join(directory, "calls.jsonl");
     const script = join(directory, "entrypoint.cjs");
-    assert.equal(f.revision.compute.admission, "protected-codex-no-connection-retry:v1");
+    assert.match(
+      f.revision.compute.admission,
+      /^model-provider:v1:[a-f0-9]{64}:protected-codex-no-connection-retry:v1$/,
+    );
     const legacy = { ...f.revision, compute: { ...f.revision.compute, admission: undefined } };
     assert.equal(compute.pluginRuntimeSnapshot(legacy).entrypoint, AGENT_RUNTIME_ENTRYPOINT);
     const ordinary = {
@@ -149,7 +152,7 @@ test(
       egressPlan: undefined,
       sandboxDriverId: undefined,
     };
-    assert.equal(compute.admitRevision(ordinary), undefined);
+    assert.match(compute.admitRevision(ordinary), /^model-provider:v1:[a-f0-9]{64}:$/);
     for (const revision of [
       { ...ordinary, compute: f.revision.compute },
       { ...legacy, compute: { ...legacy.compute, admission: "unknown:v1" } },

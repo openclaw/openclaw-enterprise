@@ -1,17 +1,29 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
+import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   collectNativeWorkerFailure,
   nativePlacementReadRetryable,
   nativeWorkerHistoryEvidence,
+  nativeWorkerProofProgram,
   nativeWorkerPlacementObservation,
   nativeWorkerTurnObservation,
 } from "../helpers/local-first-agent-native.mjs";
@@ -1362,6 +1374,27 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   // This marker is deliberately absent from the redactor's environment secrets.
   // The native projector and reporter must remove it themselves.
   const nativePrivate = "private-native-observation-marker";
+  const failedProgram = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      nativeWorkerProofProgram({
+        sessionFile: { path: join(root, nativePrivate) },
+        createSessionFile: false,
+        toolPrefix: "proof ",
+      }),
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(failedProgram.status, 1);
+  const inconsistentNativeFailures = [
+    [0, "read-session-file", "ENOENT"],
+    [undefined, "read-session-file", "ENOENT"],
+    [1, undefined, "ENOENT"],
+    [1, "read-session-file", undefined],
+    [1, nativePrivate, "ENOENT"],
+    [1, "read-session-file", nativePrivate],
+  ];
   const nativeHistory = nativeWorkerHistoryEvidence({
     runId: "selected",
     toolPrefix: "proof ",
@@ -1377,14 +1410,19 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
         role: "toolResult",
         toolName: "exec",
         isError: false,
-        content: JSON.stringify({ value: { aggregated: nativePrivate, exitCode: 0 } }),
+        content: JSON.stringify({
+          value: { aggregated: failedProgram.stderr, exitCode: failedProgram.status },
+        }),
         __openclaw: { runId: "selected" },
       },
     ],
   }).observation;
   assert.equal(nativeHistory.historyExecCodeStringCount, 1);
   assert.equal(nativeHistory.historyExecCommandStringCount, 0);
-  assert.equal(nativeHistory.historyExecNestedExitZeroCount, 1);
+  assert.equal(nativeHistory.historyExecNestedExitNonzeroCount, 1);
+  assert.equal(nativeHistory.historyExecNestedExitCode, 1);
+  assert.equal(nativeHistory.historyExecFailureOperation, "read-session-file");
+  assert.equal(nativeHistory.historyExecFailureCode, "ENOENT");
   assert.equal(nativeHistory.historyToolProofPresent, false);
   assert.equal(nativeHistory.historyFinalProofPresent, false);
   const nativeWorker = nativeWorkerPlacementObservation({
@@ -2075,6 +2113,18 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
             worker: { ...nativeHistory, transcript: nativePrivate },
           },
         },
+        ...inconsistentNativeFailures.map(([exitCode, operation, code], index) => ({
+          name: `rejects inconsistent native failure ${index}`,
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "model-history",
+            worker: {
+              historyExecNestedExitCode: exitCode,
+              historyExecFailureOperation: operation,
+              historyExecFailureCode: code,
+            },
+          },
+        })),
         {
           name: "rejects hostile native worker diagnostic fields",
           diagnostic: {
@@ -2420,6 +2470,14 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     ).error.diagnostic.worker,
     nativeHistory,
   );
+  for (const [index, [exitCode]] of inconsistentNativeFailures.entries()) {
+    assert.deepEqual(
+      summary.files[0].tests.find(
+        (entry) => entry.name === `rejects inconsistent native failure ${index}`,
+      ).error.diagnostic.worker,
+      exitCode === undefined ? {} : { historyExecNestedExitCode: exitCode },
+    );
+  }
   assert.deepEqual(
     summary.files[0].tests.find(
       (entry) => entry.name === "rejects hostile native worker diagnostic fields",
@@ -3030,8 +3088,14 @@ test("the redactor removes URL userinfo of any shape and multi-line private keys
 });
 
 test("the redactor removes secrets inside escaped JSON and keys from filtered log lines", async () => {
-  const { failureSecrets, newestMatchingLogLines, redactFailureDetail, redactLogLine } =
-    await import("../../scripts/ci/failure-redaction.mjs");
+  const {
+    failureSecrets,
+    maskPrivateKeyLines,
+    newestMatchingLogLines,
+    redactOutputLine,
+    redactFailureDetail,
+    redactLogLine,
+  } = await import("../../scripts/ci/failure-redaction.mjs");
   const secrets = failureSecrets([{}]);
   // A JSON document embedded in a log string escapes its quotes, once or more (finding 1551).
   // Synthetic values only; none is in the env or has a known token shape.
@@ -3078,6 +3142,8 @@ test("the redactor removes secrets inside escaped JSON and keys from filtered lo
     "syntheticBodyLineTwoBBBBBBBB",
     "-----END RSA PRIVATE KEY-----",
     "worker turn failed: ECONNRESET",
+    // Structured events stay private even when an arbitrary field matches the log filter.
+    '2026-11-07T00:00:00Z OCSF-JSON {"message":"worker failed","detail":"private-value"}',
     "debug noise",
   ].join("\n");
   const shown = newestMatchingLogLines(logs, secrets, {
@@ -3087,6 +3153,16 @@ test("the redactor removes secrets inside escaped JSON and keys from filtered lo
     lineChars: 400,
   });
   assert.equal(shown, "worker start\nworker turn failed: ECONNRESET");
+  for (const structured of [
+    'OCSF-JSON {"early":"private payload","message":"worker failed"}',
+    'OCSF-JSON {"message":"worker failed","late":"private payload"}',
+    'OCSF-JSON {"message":"worker failed","truncated":"private payload',
+  ]) {
+    assert.deepEqual(maskPrivateKeyLines(["before", structured, "after"]), ["before", "", "after"]);
+    assert.equal(redactLogLine(structured, secrets, 12), "");
+    assert.equal(redactOutputLine(structured, secrets, "/repo", 12), "");
+  }
+
   // Newest lines win the budget, and each kept line is clipped after redaction.
   assert.equal(
     newestMatchingLogLines("turn one\nturn two\nturn three", secrets, {
@@ -3285,6 +3361,15 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     cleanupCheck: "cleanup.restore-auth.helm-upgrade",
   };
   const nativeBothChecks = { ...nativeBodyCheck, cleanupCheck: nativeCleanupCheck.cleanupCheck };
+  const gatewayStatus = {
+    kind: "openshell-gateway-turn-failure",
+    checkpoint: "http-status",
+    turn: 1,
+    status: 503,
+  };
+  const gatewayRequest = { ...gatewayStatus, checkpoint: "turn-request", turn: 2, status: null };
+  const gatewayNative = { ...gatewayStatus, checkpoint: "native-evidence", turn: 0, status: null };
+  const gatewayUnknownStatus = { ...gatewayStatus, status: null };
   const phaseDiagnostics = [
     failedPhase,
     failedStage,
@@ -3298,6 +3383,16 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     { ...nativeBodyCheck, cleanupCheck: "fixture-opaque-phase-detail" },
     { ...nativeBodyCheck, stage: "fixture-opaque-phase-detail" },
     { ...nativeBodyCheck, primaryCheck: null },
+    gatewayStatus,
+    gatewayRequest,
+    gatewayNative,
+    gatewayUnknownStatus,
+    { ...gatewayStatus, checkpoint: "fixture-opaque-phase-detail" },
+    { ...gatewayStatus, turn: 3 },
+    { ...gatewayStatus, turn: "1" },
+    { ...gatewayStatus, status: 999 },
+    { ...gatewayRequest, status: 200 },
+    { ...gatewayNative, turn: 1 },
   ].map(
     (measurement) =>
       `openclaw-ci-measurement ${JSON.stringify({ ...measurement, detail: "fixture-opaque-phase-detail" })}`,
@@ -3324,7 +3419,13 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
       '  t.diagnostic("phase timings 1234 ms");',
       `  for (const message of ${JSON.stringify(phaseDiagnostics)}) t.diagnostic(message);`,
-      '  assert.fail(`password="fixture,\\nprivate-tail" phase=after ${"stage line\\n".repeat(80)}decisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
+      '  assert.fail(`password="fixture,\\nprivate-tail" phase=after\\nOCSF-JSON {"payload":"structured-private-early"}\\n${"stage line\\n".repeat(80)}OCSF-JSON {"payload":"structured-private-late"\\ndecisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
+      "});",
+      'test("clipped failure", () => {',
+      '  const clipped = (prefix, tail) => prefix.padEnd(16_384 - 9, "x") + "\\n" + tail;',
+      '  const error = new Error(clipped("OCSF-JSON ", process.env.CI_RUNNER_FIXTURE_CREDENTIAL));',
+      '  error.stack = "Error: clipped\\n    " + clipped("at OCSF-JSON ", "at " + process.env.CI_RUNNER_FIXTURE_CREDENTIAL).replace("\\n", "\\n    ");',
+      "  throw error;",
       "});",
       "",
     ].join("\n"),
@@ -3369,6 +3470,10 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     nativeBodyCheck,
     nativeCleanupCheck,
     nativeBothChecks,
+    gatewayStatus,
+    gatewayRequest,
+    gatewayNative,
+    gatewayUnknownStatus,
     teardown,
   ]);
   assert.equal(await readFile(join(root, "teardown-completed"), "utf8"), "yes");
@@ -3385,6 +3490,19 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
   assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123|private-tail|passing output/);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${text}`, /fixture-opaque-phase-detail/);
+  assert.doesNotMatch(
+    `${JSON.stringify(summary)}\n${result.stdout}\n${result.stderr}\n${text}`,
+    /structured-private|OCSF-JSON/,
+  );
+  // Removing a structured line must not hide the reporter's cut through a secret.
+  assert.equal(
+    summary.files[0].tests.find(({ name }) => name === "clipped failure").status,
+    "failed",
+  );
+  assert.doesNotMatch(
+    `${JSON.stringify(summary)}\n${result.stdout}\n${result.stderr}\n${text}`,
+    /secretau|at secre/,
+  );
   const report = JSON.parse(text);
   assert.equal(report.lane, "details");
   assert.equal(report.failures.length, 1);
@@ -3403,6 +3521,121 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     "stdout: progress before the failure",
   ]);
   assert.equal(record.output.omittedLines, 0);
+});
+
+test("Skill policy restore preserves failures that cannot be formatted", async () => {
+  const { withSkillPolicyRestore } = await import("../helpers/skill-policy-restore.mjs");
+  const original = Object.create(null);
+  const restoration = new Error("synthetic restoration failure");
+  let restoreCalls = 0;
+
+  await assert.rejects(
+    withSkillPolicyRestore(
+      async () => {
+        throw original;
+      },
+      async () => {
+        restoreCalls += 1;
+        throw restoration;
+      },
+      "Synthetic exercise and restoration failed.",
+    ),
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.cause, original);
+      assert.equal(error.errors.length, 2);
+      assert.equal(error.errors[0], original);
+      assert.equal(error.errors[1], restoration);
+      assert.match(error.message, /^Exercise: Failure details unavailable$/m);
+      assert.match(error.message, /^Restoration: synthetic restoration failure$/m);
+      return true;
+    },
+  );
+  assert.equal(restoreCalls, 1);
+});
+
+test("run retains redacted Skill exercise and restoration failures within its message limit", async (t) => {
+  const root = await fixture(t);
+  const resultsPath = join(root, "results/restoration.json");
+  const statePath = join(root, "state/restoration.json");
+  await writeFile(
+    join(root, "tests/integration/restoration.test.mjs"),
+    [
+      'import test from "node:test";',
+      'import { execFileSync } from "node:child_process";',
+      `import { withSkillPolicyRestore } from ${JSON.stringify(new URL("../helpers/skill-policy-restore.mjs", import.meta.url).href)};`,
+      `import { registerQaSecret } from ${JSON.stringify(new URL("../helpers/qa-secrets.mjs", import.meta.url).href)};`,
+      'registerQaSecret("fixture-private-restore-value");',
+      'for (const kind of ["short", "long", "multiline", "key-tail"]) {',
+      "  test(`${kind} nested failures`, async () => {",
+      '    const tail = kind === "long" ? "x".repeat(20000) + "beyond-limit" : "";',
+      "    const fail = async (message) => {",
+      '      const key = ["-----BEGIN PRIVATE KEY-----", "synthetic-key-body-must-not-appear", "-----END PRIVATE KEY-----"].join("\\n");',
+      '      if (kind === "multiline") {',
+      '        execFileSync(process.execPath, ["-e", "throw new Error(process.argv[1])", `${message}\\n${key}`], { stdio: "pipe" });',
+      "      }",
+      '      throw new Error(kind === "key-tail" ? `${message}\\n${key.split("\\n").slice(0, -1).join("\\n")}` : message);',
+      "    };",
+      "    await withSkillPolicyRestore(() => withSkillPolicyRestore(",
+      "      () => fail(`original operation failed ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL} ${tail}`),",
+      "      () => fail(`enabled restoration failed fixture-private-restore-value ${tail}`),",
+      '      "Denied node-write test failed and enabled Skill policy restoration failed."),',
+      "      () => fail(`original policy restoration failed password=synthetic-restore-value ${tail}`),",
+      '      "Skill source lifecycle failed and original Skill policy restoration failed.");',
+      "  });",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { restoration: { files: [{ path: "tests/integration/restoration.test.mjs" }] } },
+    groups: { ci: ["restoration"] },
+  });
+
+  // Run the real helper through Node's serialization, the unchanged reporter, and both outputs.
+  const result = run(root, [
+    "run",
+    "restoration",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    statePath,
+    "--results",
+    resultsPath,
+  ]);
+  assert.equal(result.status, 1, result.stderr);
+  const summaryText = await readFile(resultsPath, "utf8");
+  const detailText = await readFile(`${statePath}.diagnostics.json`, "utf8");
+  const summary = JSON.parse(summaryText);
+  const details = JSON.parse(detailText).failures[0].tests;
+  for (const name of [
+    "short nested failures",
+    "long nested failures",
+    "multiline nested failures",
+    "key-tail nested failures",
+  ]) {
+    const failure = summary.files[0].tests.find((entry) => entry.name === name);
+    const detail = details.find((entry) => entry.name === name);
+    for (const message of [failure.error.message, detail.message]) {
+      assert.match(message, /original operation failed/);
+      assert.match(message, /enabled restoration failed/);
+      assert.match(message, /original policy restoration failed password=\[redacted\]/);
+      assert.ok(message.length <= 600);
+      if (name === "multiline nested failures") {
+        assert.equal(message.match(/Node\.js v/g).length, 3);
+      }
+    }
+  }
+  assert.match(result.stderr, /original operation failed/);
+  assert.match(result.stderr, /enabled restoration failed/);
+  assert.match(result.stderr, /original policy restoration failed password=\[redacted\]/);
+  assert.doesNotMatch(
+    `${summaryText}\n${detailText}\n${result.stdout}\n${result.stderr}`,
+    /secretauthvalue|fixture-private-restore-value|synthetic-restore-value|synthetic-key-body-must-not-appear|beyond-limit/,
+  );
 });
 
 test("the reporter sends interrupted tests and the output tail, newest first, on a timeout", async () => {
@@ -5496,6 +5729,75 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     outcome: "passed",
     elapsedMs: 39_000,
   };
+  // Observation metadata can survive unavailable probes; payloads and raw identities cannot.
+  const unavailableTurnover = {
+    kind: "openshell-initial-turnover",
+    request: 1,
+    clockOffsetMinMs: -1,
+    clockOffsetMaxMs: 1,
+    startedAtMs: 1_800_000_000_000,
+    finishedAtMs: 1_800_000_010_000,
+    requestOutcome: "failed",
+    httpStatus: null,
+    nonceMatched: false,
+    observation: "unavailable",
+    qualification: "failed",
+    durableCommands: false,
+    nodeIdSha256: null,
+    connectedBeforeMs: null,
+    connectedAfterMs: null,
+    providerEnvBeforeSha256: null,
+    providerEnvAfterSha256: null,
+    configBeforeSha256: null,
+    configAfterSha256: null,
+    policyBeforeSha256: null,
+    policyAfterSha256: null,
+    turnoverAtMs: null,
+    staleTunnelAtMs: null,
+    harness1006LogObserved: false,
+    capturedGeneration: null,
+    currentGeneration: null,
+    configUnchanged: false,
+    policyUnchanged: false,
+    providerEnvChanged: false,
+    settingsConsistent: false,
+    stableRuntime: false,
+  };
+  const unexercisedTurnover = {
+    ...unavailableTurnover,
+    requestOutcome: "passed",
+    httpStatus: 200,
+    nonceMatched: true,
+    observation: "complete",
+    qualification: "unexercised",
+    durableCommands: true,
+    nodeIdSha256: "a".repeat(64),
+    connectedBeforeMs: 1_799_999_999_000,
+    connectedAfterMs: 1_799_999_999_000,
+    providerEnvBeforeSha256: "b".repeat(64),
+    providerEnvAfterSha256: "b".repeat(64),
+    configBeforeSha256: "c".repeat(64),
+    configAfterSha256: "c".repeat(64),
+    policyBeforeSha256: "d".repeat(64),
+    policyAfterSha256: "d".repeat(64),
+    configUnchanged: true,
+    policyUnchanged: true,
+    settingsConsistent: true,
+    stableRuntime: true,
+  };
+  const turnContinuity = {
+    ...unexercisedTurnover,
+    request: 2,
+    qualification: "turn-continuity",
+    connectedAfterMs: 1_800_000_003_000,
+    providerEnvAfterSha256: "e".repeat(64),
+    turnoverAtMs: 1_800_000_001_000,
+    staleTunnelAtMs: 1_800_000_002_000,
+    harness1006LogObserved: true,
+    capturedGeneration: 1,
+    currentGeneration: 2,
+    providerEnvChanged: true,
+  };
   const runtimeFailure = {
     kind: "local-first-agent-command",
     phase: "setup",
@@ -5503,6 +5805,34 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     count: 4,
     failed: 3,
     elapsedMs: 200,
+  };
+  // These records exercise the same consistency decision used by the real observer.
+  // Contradiction stays incomplete even when each field is well-typed.
+  const conflictingSettings = {
+    ...turnContinuity,
+    settingsConsistent: false,
+    qualification: "incomplete",
+  };
+  const unchangedProvider = {
+    ...turnContinuity,
+    providerEnvAfterSha256: turnContinuity.providerEnvBeforeSha256,
+    qualification: "incomplete",
+  };
+  const missingTurnoverEvent = {
+    ...unexercisedTurnover,
+    providerEnvAfterSha256: "e".repeat(64),
+    qualification: "incomplete",
+  };
+  const changedGateway = { ...turnContinuity, stableRuntime: false, qualification: "incomplete" };
+  const earlyRelay = {
+    ...turnContinuity,
+    staleTunnelAtMs: 1_799_999_999_999,
+    qualification: "incomplete",
+  };
+  const lateTurnover = {
+    ...turnContinuity,
+    turnoverAtMs: 1_800_000_010_001,
+    qualification: "incomplete",
   };
   await writeFile(
     join(root, "tests/integration/measurements.test.mjs"),
@@ -5711,6 +6041,45 @@ test("run records only allowlisted measurements from test diagnostics", async (t
         measurement({ ...openshellPhase, outcome: "secretauthvalue-phase-outcome" }),
         measurement({ ...openshellPhase, elapsedMs: 2_400_001 }),
         measurement({ ...openshellPhase, elapsedMs: 0.5 }),
+        ...[unavailableTurnover, unexercisedTurnover, turnContinuity].map((value) =>
+          measurement({
+            ...value,
+            detail: "secretauthvalue-turnover-detail",
+            nodeId: "secretauthvalue-node-id",
+            provider: { config: "secretauthvalue-provider-config" },
+          }),
+        ),
+        ...[
+          { request: 3 },
+          { startedAtMs: -1 },
+          { finishedAtMs: Number.MAX_SAFE_INTEGER + 1 },
+          { requestOutcome: "secretauthvalue-request-outcome" },
+          { httpStatus: 600 },
+          { observation: "secretauthvalue-observation" },
+          { qualification: "secretauthvalue-qualification" },
+          { nodeIdSha256: "secretauthvalue-node-id" },
+          { providerEnvAfterSha256: "A".repeat(64) },
+          { configBeforeSha256: "a".repeat(63) },
+          { policyAfterSha256: undefined },
+          { connectedAfterMs: 0.5 },
+          { turnoverAtMs: "secretauthvalue-time" },
+          { currentGeneration: -1 },
+          { nonceMatched: "secretauthvalue-matched" },
+          { durableCommands: 1 },
+          { stableRuntime: undefined },
+          { harness1006LogObserved: "secretauthvalue-close" },
+        ].map((invalid) => measurement({ ...turnContinuity, ...invalid })),
+        ...[
+          conflictingSettings,
+          unchangedProvider,
+          missingTurnoverEvent,
+          changedGateway,
+          earlyRelay,
+          lateTurnover,
+        ].flatMap((value) => [
+          measurement(value),
+          measurement({ ...value, qualification: "turn-continuity" }),
+        ]),
         "openclaw-ci-measurement secretauthvalue-not-json",
         "secretauthvalue-plain-diagnostic",
       ].map((message) => `  t.diagnostic(${JSON.stringify(message)});`),
@@ -5815,6 +6184,15 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       budgetMs: 15_000,
     },
     openshellPhase,
+    unavailableTurnover,
+    unexercisedTurnover,
+    turnContinuity,
+    conflictingSettings,
+    unchangedProvider,
+    missingTurnoverEvent,
+    changedGateway,
+    earlyRelay,
+    lateTurnover,
   ]);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
 });
@@ -6172,6 +6550,8 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
     "2026-10-08T07:43:53.3Z request Authorization: Bearer do-not-publish-header",
     "2026-10-08T07:43:53.4Z provider token=do-not-publish-assignment refreshed",
     "2026-10-08T07:43:53.5Z parent value secretauthvalue-parent seen",
+    '2026-10-08T07:43:53.5Z OCSF-JSON {"detail":"private-structured-early","message":"failure"}',
+    '2026-10-08T07:43:53.5Z OCSF-JSON {"message":"failure","detail":"private-structured-truncated',
   ];
   // Only the lane gives the child this value; the runner's own env never has it.
   const childSecret = "childonlysecret-1754";
@@ -6188,6 +6568,9 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
       'if (args.includes("logs")) {',
       `  process.stdout.write(${JSON.stringify(`${logLines.join("\n")}\n`)});`,
       "  process.stdout.write(`2026-10-08T07:43:53.6Z child value ${process.env.OCC_TEST_CHILD_ONLY}\\n`);",
+      // Split one structured record across actual pipe writes; neither fragment may persist.
+      '  process.stdout.write(\'2026-10-08T07:43:53.7Z OCSF-JSON {"detail":"private-structured-split\');',
+      "  setTimeout(() => process.stdout.write('-tail\"}\\n'), 100);",
       "  process.stderr.write('follow note\\nGET https://api Authorization: Bearer do-not-publish-verbose');",
       "  setTimeout(() => process.stdout.write('2026-10-08T07:44:22.0Z [gateway] exit 0'), 300);",
       '} else if (args.includes("get") && args.includes("pods")) {',
@@ -6337,10 +6720,337 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
   );
 });
 
+for (const earlyLogExit of [false, true]) {
+  test(`run retains controller readiness evidence before its fixture namespace is deleted (early log exit: ${earlyLogExit})`, async (t) => {
+    const root = await fixture(t);
+    const clusterDirectory = join(root, "cluster");
+    const bin = join(root, "bin");
+    await mkdir(clusterDirectory);
+    await mkdir(bin);
+    const statePath = join(root, "state/k3d.json");
+    const resultsPath = join(root, "results/k3d.json");
+    const deleted = join(root, "namespace-deleted");
+    const calls = join(root, "kubectl-calls.jsonl");
+    await writeJson(statePath, {
+      lane: "k3d-lane",
+      resources: [
+        {
+          kind: "k3d-cluster",
+          status: "ready",
+          name: "owned-cluster",
+          directory: clusterDirectory,
+          kubeconfig: join(clusterDirectory, "kubeconfig"),
+          context: "k3d-owned-cluster",
+        },
+      ],
+    });
+    // These are the controller fixture's real labels, without Compute's managed-by label.
+    // The Agent watch sees no Pod; only the startup wait's capture can retain this failure.
+    const labels = {
+      "app.kubernetes.io/name": "openclaw-enterprise",
+      "app.kubernetes.io/instance": "fixture",
+      "app.kubernetes.io/component": "api",
+    };
+    const namespace = "occ-controller-failed";
+    const pod = {
+      metadata: { namespace, name: "api-0", uid: "api-uid", labels },
+      spec: { containers: [{ name: "api", env: [{ name: "TOKEN", value: "private-env" }] }] },
+      status: {
+        phase: "Running",
+        containerStatuses: [
+          {
+            name: "api",
+            ready: false,
+            restartCount: 2,
+            state: { waiting: { reason: "CrashLoopBackOff" } },
+          },
+        ],
+      },
+    };
+    const eventValue = "opaque-long-value-" + "z".repeat(600);
+    const event = {
+      metadata: { namespace, name: "api-backoff", uid: "event-uid" },
+      involvedObject: { kind: "Pod", name: "api-0", namespace },
+      type: "Warning",
+      reason: "BackOff",
+      message: [
+        "Back-off restarting failed container api",
+        "-----BEGIN " + "PRIVATE KEY-----",
+        "synthetic-pem-body-marker",
+        "-----END " + "PRIVATE KEY-----",
+        eventValue,
+      ].join("\n"),
+    };
+    const kubectl = join(bin, "kubectl");
+    await writeFile(
+      kubectl,
+      [
+        `#!${process.execPath}`,
+        'const fs = require("node:fs");',
+        'const path = require("node:path");',
+        "const args = process.argv.slice(2);",
+        `const root = ${JSON.stringify(root)};`,
+        `fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");`,
+        'const deployment = args.find((arg) => arg.startsWith("deployment/"));',
+        'const ready = deployment && path.join(root, deployment.replace("/", "-") + ".ready");',
+        'if (args.includes("logs")) {',
+        `  if (${earlyLogExit} && args.includes("--follow=true")) {`,
+        '    fs.writeFileSync(ready, "ready");',
+        '    process.stderr.write("container is waiting to start: ContainerCreating");',
+        "    process.exit(1);",
+        "  }",
+        '  process.stdout.write("startup: configured role still has bindings\\nAuthorization: Bearer private-header\\n");',
+        '  fs.writeFileSync(ready, "ready");',
+        '  if (args.includes("--follow=true")) setTimeout(() => {}, 60000);',
+        '} else if (args.includes("wait")) {',
+        "  const deadline = Date.now() + 5000;",
+        "  const check = () => {",
+        "    if (!fs.existsSync(ready) && Date.now() < deadline) return setTimeout(check, 10);",
+        '    if (deployment === "deployment/healthy") return process.exit(0);',
+        '    process.stderr.write("error: timed out waiting for the condition on deployments/openclaw-enterprise-api\\n");',
+        "    process.exit(1);",
+        "  };",
+        "  check();",
+        '} else if (args.includes("--raw")) {',
+        "  setTimeout(() => {}, 60000);",
+        "} else {",
+        `  if (fs.existsSync(${JSON.stringify(deleted)}) || (${earlyLogExit} && args.includes("events"))) process.exit(1);`,
+        `  const items = args.includes("pods") ? [${JSON.stringify(pod)}] : [${JSON.stringify(event)}];`,
+        "  process.stdout.write(JSON.stringify({ items }));",
+        "}",
+      ].join("\n"),
+    );
+    await chmod(kubectl, 0o755);
+    const helper = join(repositoryRoot, "tests/helpers/kubernetes-real.mjs");
+    await writeFile(
+      join(root, "tests/integration/startup.test.mjs"),
+      [
+        'import test from "node:test";',
+        'import { rm, writeFile } from "node:fs/promises";',
+        `import { waitForDeploymentAvailable } from ${JSON.stringify(helper)};`,
+        'test("controller startup fails", async (t) => {',
+        `  await rm(${JSON.stringify(join(root, "deployment-healthy.ready"))}, { force: true });`,
+        `  await rm(${JSON.stringify(join(root, "deployment-openclaw-enterprise-api.ready"))}, { force: true });`,
+        `  t.after(() => writeFile(${JSON.stringify(deleted)}, "deleted"));`,
+        `  const selection = { kubeconfigPath: ${JSON.stringify(join(clusterDirectory, "kubeconfig"))}, kubernetesContext: "k3d-owned-cluster" };`,
+        `  const target = { namespace: ${JSON.stringify(namespace)}, container: "api", labels: ${JSON.stringify(labels)} };`,
+        '  await waitForDeploymentAvailable(t, selection, { ...target, deployment: "healthy" });',
+        '  await waitForDeploymentAvailable(t, selection, { ...target, deployment: "openclaw-enterprise-api" });',
+        "});",
+      ].join("\n"),
+    );
+    await writeJson(join(root, "scripts/ci/k3d-lane.json"), {
+      files: [
+        { path: "tests/integration/startup.test.mjs", expectedTests: ["controller startup fails"] },
+      ],
+    });
+    await writeJson(join(root, "scripts/ci/suites.json"), {
+      version: 1,
+      lanes: { "k3d-lane": "./k3d-lane.json" },
+      groups: {},
+    });
+    const result = run(
+      root,
+      [
+        "run",
+        "k3d-lane",
+        "--manifest",
+        join(root, "scripts/ci/suites.json"),
+        "--root",
+        root,
+        "--state",
+        statePath,
+        "--results",
+        resultsPath,
+      ],
+      {
+        OCC_KUBECTL_BIN: kubectl,
+        PATH: `${bin}:${process.env.PATH}`,
+        OCC_TEST_EVENT_VALUE: eventValue,
+      },
+    );
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(
+      result.stderr,
+      /timed out waiting for the condition on deployments\/openclaw-enterprise-api/,
+    );
+    assert.equal(await readFile(deleted, "utf8"), "deleted");
+    const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
+    const report = JSON.parse(text);
+    assert.equal(report.agentNamespaces, undefined);
+    assert.ok(
+      Array.isArray(report.containerLogs),
+      "failed controller startup must retain diagnostics",
+    );
+    assert.equal(
+      report.containerLogs.length,
+      1,
+      "a successful wait must not publish a failure record",
+    );
+    const [log] = report.containerLogs;
+    assert.equal(log.namespace, namespace);
+    assert.equal(log.pod, undefined);
+    assert.equal(log.container, "api");
+    assert.equal(log.reason, "deployment/openclaw-enterprise-api readiness");
+    assert.deepEqual(log.lines, [
+      "startup: configured role still has bindings",
+      "[redacted credential-bearing line]",
+    ]);
+    assert.equal(log.snapshots[0].pods[0].uid, "api-uid");
+    assert.equal(log.snapshots[0].pods[0].containers[0].waitingReason, "CrashLoopBackOff");
+    if (earlyLogExit) {
+      assert.equal(log.snapshots[0].unavailable, true);
+      assert.deepEqual(log.snapshots[0].events, []);
+      assert.match(log.stream.error, /ContainerCreating/);
+    } else {
+      assert.equal(log.snapshots[0].events[0].reason, "BackOff");
+    }
+    assert.doesNotMatch(
+      text,
+      /private-env|private-header|synthetic-pem-body-marker|opaque-long-value-/,
+    );
+    const commands = (await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse);
+    for (const args of commands.filter((args) => !args.includes("--raw"))) {
+      assert.equal(args[args.indexOf("--namespace") + 1], namespace);
+    }
+    const recovered = commands.filter(
+      (args) => args.includes("logs") && !args.includes("--follow=true"),
+    );
+    assert.equal(recovered.length, earlyLogExit ? 1 : 0);
+    const reads = commands.filter((args) => args.includes("pods"));
+    assert.equal(reads.length, 2);
+    for (const args of reads) {
+      assert.equal(
+        args[args.indexOf("-l") + 1],
+        Object.entries(labels)
+          .map(([k, v]) => `${k}=${v}`)
+          .join(","),
+      );
+    }
+    assert.deepEqual(
+      (await readdir(clusterDirectory)).filter((name) => name.startsWith("container-logs-")),
+      [],
+    );
+    // A direct local run has no CI record directory. Its diagnostic must be just as
+    // redacted, and failed diagnostic reads must not replace the readiness error.
+    if (!earlyLogExit) {
+      await rm(deleted);
+    }
+    const directEnv = runnerEnv({
+      PATH: `${bin}:${process.env.PATH}`,
+      OCC_TEST_EVENT_VALUE: eventValue,
+    });
+    delete directEnv.NODE_TEST_CONTEXT;
+    delete directEnv.OPENCLAW_CI_CONTAINER_LOG_DIR;
+    const direct = spawnSync(
+      process.execPath,
+      ["--test", join(root, "tests/integration/startup.test.mjs")],
+      {
+        cwd: root,
+        env: directEnv,
+        encoding: "utf8",
+        timeout: 15_000,
+      },
+    );
+    assert.equal(direct.status, 1, direct.stderr);
+    assert.match(
+      direct.stdout,
+      /timed out waiting for the condition on deployments\/openclaw-enterprise-api/,
+    );
+    if (earlyLogExit) {
+      assert.match(direct.stdout, /"unavailable":true/);
+    } else {
+      assert.match(direct.stdout, /Back-off restarting failed container api/);
+    }
+    assert.match(direct.stdout, /startup: configured role still has bindings/);
+    assert.doesNotMatch(
+      direct.stdout + direct.stderr,
+      /private-env|private-header|synthetic-pem-body-marker|opaque-long-value-/,
+    );
+  });
+}
+
 describe("tests that wait out real runner limits, side by side", { concurrency: true }, () => {
   for (const args of waitingTests) {
     test(...args);
   }
+});
+
+test("native proof diagnoses real file failures without disclosing program output", async (t) => {
+  const directory = await temporaryDirectory(t, "native-proof-diagnostic-");
+  const toolPrefix = "FIRST_AGENT_NATIVE_TOOL ";
+  const privateName = "private-native-proof-file";
+  const workspaceFile = { path: join(directory, privateName) };
+  await writeFile(workspaceFile.path, "private-workspace-content");
+  for (const [name, createSessionFile, operation, errorCode] of [
+    ["duplicate", true, "write-session-file", "EEXIST"],
+    ["missing-session", false, "read-session-file", "ENOENT"],
+    ["missing-workspace", true, "read-workspace-file", "ENOENT"],
+    ["success", true, undefined, undefined],
+    ["reuse", false, undefined, undefined],
+  ]) {
+    const sessionFile = { path: join(directory, name) };
+    if (name === "duplicate") {
+      await writeFile(sessionFile.path, "keep-existing-session");
+    } else if (name === "reuse") {
+      await writeFile(sessionFile.path, "private-session-content");
+    }
+    // Run the same generated program as the native model prompt against actual
+    // files. Only the recorded Code Mode envelope is supplied to the decoder.
+    const result = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        nativeWorkerProofProgram({
+          sessionFile,
+          sessionFileContent: "private-session-content",
+          toolPrefix,
+          createSessionFile,
+          workspaceFile:
+            name === "missing-workspace" ? { path: workspaceFile.path + "-absent" } : workspaceFile,
+        }),
+      ],
+      { encoding: "utf8", timeout: 10_000 },
+    );
+    assert.equal(result.status, operation ? 1 : 0, name);
+    const evidence = nativeWorkerHistoryEvidence({
+      runId: "selected",
+      toolPrefix,
+      marker: "expected-final",
+      messages: [
+        {
+          role: "toolResult",
+          toolName: "exec",
+          isError: false,
+          content: JSON.stringify({
+            value: { aggregated: result.stdout + result.stderr, exitCode: result.status },
+          }),
+          __openclaw: { runId: "selected" },
+        },
+      ],
+    });
+    const diagnostic = nativeFirstAgentProofDiagnostic("model-history", evidence.observation);
+    assert.equal(diagnostic.worker.historyExecNestedExitCode, result.status, name);
+    assert.equal(diagnostic.worker.historyExecFailureOperation, operation, name);
+    assert.equal(diagnostic.worker.historyExecFailureCode, errorCode, name);
+    assert.equal(Boolean(evidence.tool), !operation, name);
+    assert.equal(Boolean(evidence.final), false, name);
+    assert.doesNotMatch(JSON.stringify(diagnostic), /private-|keep-existing|Error:|\bat /);
+    if (operation) {
+      assert.doesNotMatch(result.stdout + result.stderr, /private-|keep-existing|Error:|\bat /);
+    } else {
+      const proof = JSON.parse(result.stdout.slice(toolPrefix.length));
+      assert.equal(
+        proof.sessionFileSha256,
+        createHash("sha256").update("private-session-content").digest("hex"),
+      );
+      assert.equal(
+        proof.workspaceFileSha256,
+        createHash("sha256").update("private-workspace-content").digest("hex"),
+      );
+    }
+  }
+  assert.equal(await readFile(join(directory, "duplicate"), "utf8"), "keep-existing-session");
 });
 
 test("native history proof keeps exact run, explicit success and marker predicates", () => {
@@ -6470,6 +7180,40 @@ test("native history proof keeps exact run, explicit success and marker predicat
     assert.equal(evidence.observation.historyToolProofPresent, false);
     assert.equal(evidence.observation.historyFinalProofPresent, false);
     assert.doesNotMatch(JSON.stringify(evidence.observation), /private-|FIRST_AGENT_NATIVE/);
+  }
+  // Only a single recognized failing result may contribute bounded categories.
+  // Unmarked pre-Node failures and hostile/ambiguous markers remain unclassified.
+  const failureLine =
+    'FIRST_AGENT_NATIVE_FAILURE {"operation":"read-session-file","code":"ENOENT"}';
+  for (const [exitCode, aggregated] of [
+    [1, "private-shell-error"],
+    [1, 'FIRST_AGENT_NATIVE_FAILURE {"operation":"private-path","code":"ENOENT"}'],
+    [1, 'FIRST_AGENT_NATIVE_FAILURE {"operation":"read-session-file","code":"private-error"}'],
+    [1, "FIRST_AGENT_NATIVE_FAILURE {invalid"],
+    [1, "command: " + failureLine],
+    [1, failureLine + "\n" + failureLine],
+    [1, failureLine + "\nFIRST_AGENT_NATIVE_FAILURE {invalid"],
+    [1, failureLine + '\nFIRST_AGENT_NATIVE_FAILURE {"operation":"private-path","code":"ENOENT"}'],
+    [1, failureLine + "\nFIRST_AGENT_NATIVE_FAILURE " + "x".repeat(256)],
+    [0, failureLine],
+    [256, failureLine],
+    [-1, failureLine],
+  ]) {
+    const evidence = nativeWorkerHistoryEvidence({
+      messages: [{ ...tool, content: JSON.stringify({ value: { exitCode, aggregated } }) }],
+      runId: "selected",
+      toolPrefix: prefix,
+      marker,
+    });
+    const diagnostic = nativeFirstAgentProofDiagnostic("model-history", evidence.observation);
+    assert.equal(diagnostic.worker.historyExecFailureOperation, undefined);
+    assert.equal(diagnostic.worker.historyExecFailureCode, undefined);
+    assert.equal(
+      diagnostic.worker.historyExecNestedExitCode,
+      exitCode >= 0 && exitCode <= 255 ? exitCode : undefined,
+    );
+    assert.equal(Boolean(evidence.tool), false);
+    assert.doesNotMatch(JSON.stringify(diagnostic), /private-|FIRST_AGENT_NATIVE/);
   }
   // Peer-supplied part names and command arguments must not become diagnostic values.
   const command = "private-command";

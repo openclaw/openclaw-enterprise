@@ -24,6 +24,7 @@ import {
   routeFailedDeployment,
   AGENT_READ,
   apiRequests,
+  writeRequests,
   asksBeforeUnload,
   consoleViewports,
   denyRevisionRead,
@@ -206,7 +207,7 @@ test("an individual Agent keeps its fallback heading through a failed read and k
   await page.getByRole("heading", { level: 1, name: agent.name, exact: true }).waitFor();
   assert.equal(await heading.evaluate((node) => node.matches(":focus")), true);
   assert.deepEqual(
-    requests.filter((request) => !["GET", "HEAD"].includes(request.method)),
+    writeRequests(requests).filter((request) => request.method !== "HEAD"),
     [],
   );
 });
@@ -4274,7 +4275,7 @@ for (const viewport of [
     assert.deepEqual(steps, [
       ["done", "Done: ", `Saved · Configuration ${agent.configurationId} · generation 1`],
       ["done", "Done: ", "Saved · API key · Secret configured"],
-      ["pending", "Not done: ", "Creates an immutable version from the saved draft"],
+      ["pending", "Not done: ", "Use the Installation default at deployment."],
     ]);
 
     // Deploy is the page's one primary.

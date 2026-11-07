@@ -75,9 +75,10 @@ defines its permitted endpoints and authentication limits.
 
 Register an API-key Secret as an `openai` credential source:
 
-Configure the Installation's [shared model provider](../../reference/drivers/kubernetes-compute/model-provider.md)
-first. For a custom endpoint, set `MODEL_AUTHORIZED_BASE_URL` to the same URL
-when registering the source. This authorizes the destination; it cannot select it.
+Choose the [revision model provider](../../reference/drivers/kubernetes-compute/model-provider.md)
+through an Installation default or a deployment override. For a custom endpoint,
+set `MODEL_AUTHORIZED_BASE_URL` to that URL when registering the source.
+Registration authorizes the destination; it does not select the Agent's route.
 Keep `models.providers.codex.baseUrl` at the fail-closed `http://127.0.0.1:9`
 shown below for the Gateway's transport bridge.
 The current source profile uses Bearer authorization; an endpoint requiring
