@@ -2547,7 +2547,13 @@ test("the lane matrix runs every lane in full mode and only selected lanes in te
     // NetworkPolicy proofs need a runner kernel shown to enforce them.
     const netfilter = row.lane.startsWith("k3d-fixture-") || row.lane === "k3d-observability";
     if (netfilter) {
-      assert.equal(row.runner, "blacksmith-8vcpu-ubuntu-2404", row.lane);
+      assert.equal(
+        row.runner,
+        row.lane === "k3d-observability"
+          ? "blacksmith-4vcpu-ubuntu-2404"
+          : "blacksmith-8vcpu-ubuntu-2404",
+        row.lane,
+      );
     }
   }
   const valid = [
