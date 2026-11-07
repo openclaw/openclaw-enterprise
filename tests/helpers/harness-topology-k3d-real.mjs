@@ -3558,6 +3558,22 @@ async function gatewayCall(topology, method, params, timeoutMs = 180_000) {
   return result;
 }
 
+async function withSkillPolicyRestore(run, restore, combinedMessage) {
+  let result;
+  try {
+    result = await run();
+  } catch (cause) {
+    try {
+      await restore();
+    } catch (error) {
+      throw new AggregateError([cause, error], combinedMessage, { cause });
+    }
+    throw cause;
+  }
+  await restore();
+  return result;
+}
+
 async function assertDedicatedSkillSources(topology) {
   const configurationPath = `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`;
   const original = await topology.request("GET", configurationPath);
@@ -3595,9 +3611,9 @@ async function assertDedicatedSkillSources(topology) {
       ),
     );
   }
-  try {
+  const exercise = async () => {
     await deploy(enabled);
-    return await assertDedicatedSkillSourceLifecycle({
+    return assertDedicatedSkillSourceLifecycle({
       callGateway: (method, params) => gatewayCall(topology, method, params),
       readHarnessFile: (path) =>
         readFileOrMissing(topology.placement, topology.harnessPod.metadata.name, path),
@@ -3616,17 +3632,22 @@ async function assertDedicatedSkillSources(topology) {
         (transfer.config ??= {}).nodes = {
           "*": { ...structuredClone(policy), allowWritePaths: [] },
         };
-        try {
-          await deploy(denied);
-          await run();
-        } finally {
-          await deploy(enabled);
-        }
+        await withSkillPolicyRestore(
+          async () => {
+            await deploy(denied);
+            await run();
+          },
+          () => deploy(enabled),
+          "Denied node-write test failed and enabled Skill policy restoration failed.",
+        );
       },
     });
-  } finally {
-    await deploy(original.data.values);
-  }
+  };
+  return withSkillPolicyRestore(
+    exercise,
+    () => deploy(original.data.values),
+    "Skill source lifecycle failed and original Skill policy restoration failed.",
+  );
 }
 
 async function assertGatewayEffectiveDefaultModel(context, topology, expectedModel) {
