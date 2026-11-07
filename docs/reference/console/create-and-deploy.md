@@ -51,11 +51,10 @@ as the reason Dedicated OpenClaw is disabled.
    Reselect unlisted IDs when you return.
 4. Check Installation, credential, and runtime model support. Primary and
    fallback models must share a supported provider and Harness. Model changes keep
-   unrelated JSON edits. **Advanced settings** → **Reset template** replaces them.
+   unrelated JSON and authored `plugins.allow`/`plugins.deny`. **Advanced settings** → **Reset template** replaces them.
    If a malformed provider list, malformed Codex `plugins.allow`, or a number
    outside JavaScript's finite range blocks a JSON rewrite, the form keeps the draft
-   and focuses **Configuration JSON**. Fix or remove the malformed field, or replace
-   a number such as `1e400` with a value closer to zero. Then retry.
+   and focuses **Configuration JSON**. Fix or remove the malformed field, or replace `1e400` with a finite value; retry.
    Provider lists take model objects with string `id` values in an array.
    `plugins.allow` takes a string array.
 5. Under **Repository access**, optionally select up to 16 approved repositories

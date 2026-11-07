@@ -2036,6 +2036,157 @@ test("API-key Presets keep their credential provider fixed while allowing model 
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
 });
 
+test("Harness switches preserve unrestricted and explicit native plugin allowlists through Agent creation", async (t) => {
+  for (const allow of [undefined, [], ["knowledge"], ["knowledge", "codex"], ["codex"]]) {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Native plugin settings", { ready: true });
+    const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "preset-model-key");
+    const harnessAuth = { method: "api_key", source: secret.ref };
+    const values: ReturnType<typeof nativeValues> & {
+      plugins: { allow?: string[]; deny?: string[] };
+    } = nativeValues("preserved-native-plugin");
+    values.plugins.deny = ["blocked-plugin"];
+    if (allow !== undefined) {
+      values.plugins.allow = allow;
+    }
+    const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+      body: {
+        name: "Native plugins",
+        template: {
+          agent: { name: "Native plugin Agent", executionMode: "embedded", harnessAuth },
+          configuration: { values },
+        },
+      },
+    });
+    assert.equal(preset.status, 201);
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template", { exact: true }).selectOption(preset.data.id);
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    await openAdvancedSettings(page);
+    const configuration = page.getByLabel("Configuration JSON", { exact: true });
+    const harness = page.getByLabel("Harness", { exact: true });
+
+    // Harness wiring changes must neither grant plugins nor erase an authored restriction.
+    await harness.selectOption("codex");
+    const dedicated = JSON.parse(await configuration.inputValue());
+    assert.deepEqual(dedicated.plugins.allow, allow);
+    assert.deepEqual(dedicated.plugins.deny, values.plugins.deny);
+    assert.deepEqual(dedicated.plugins.entries.knowledge, values.plugins.entries.knowledge);
+    assert.equal(dedicated.plugins.entries.codex.enabled, true);
+    await harness.selectOption("openclaw");
+    assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, values.plugins);
+
+    // Save through the ordinary Agent form and read its owned Configuration back from the API.
+    const createdResponse = page.waitForResponse(
+      (response) =>
+        response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+        response.request().method() === "POST",
+    );
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    const response = await createdResponse;
+    assert.equal(response.status(), 201);
+    const created = (await response.json()).data;
+    assert.equal(created.executionMode, "embedded");
+    assert.deepEqual(created.harnessAuth, harnessAuth);
+    const saved = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+    );
+    assert.equal(saved.status, 200);
+    assert.deepEqual(saved.data.values.plugins, values.plugins);
+  }
+});
+
+test("Default Codex policy survives Harness switches, explicit edits and restored drafts", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Codex policy round-trip", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const starter = await defaultPresetSummary(fixture, namespace.id);
+  // Explicit Preset selection supports restored drafts; the starter shortcut deliberately discards them.
+  await page.getByLabel("Preset template", { exact: true }).selectOption(starter.id);
+  await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+  await openAdvancedSettings(page);
+  const configuration = page.getByLabel("Configuration JSON", { exact: true });
+  const harness = page.getByLabel("Harness", { exact: true });
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, ["codex"]);
+  await harness.selectOption("openclaw");
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, ["codex"]);
+  await harness.selectOption("codex");
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, ["codex"]);
+
+  // An operator's explicit unrestricted policy replaces the preset restriction, even after navigation.
+  const edited = JSON.parse(await configuration.inputValue());
+  edited.plugins.allow = [];
+  await openAdvancedSettings(page);
+  await configuration.fill(JSON.stringify(edited));
+  await page.goBack();
+  await page.goForward();
+  await openAdvancedSettings(page);
+  await harness.selectOption("openclaw");
+  await harness.selectOption("codex");
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, []);
+});
+
+test("A disabled Codex entry survives Harness switches and saves through existing admission", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Disabled Codex entry", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Model key", "synthetic-model-key");
+  const base = nativeValues("disabled-codex-entry");
+  // A saved disable need not include the runtime-owned transport configuration.
+  const values = {
+    ...base,
+    plugins: {
+      ...base.plugins,
+      allow: ["codex"],
+      entries: { ...base.plugins.entries, codex: { enabled: false } },
+    },
+  };
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Disabled Codex entry",
+      template: {
+        agent: {
+          name: "Disabled entry Agent",
+          executionMode: "embedded",
+          harnessAuth: { method: "api_key", source: secret.ref },
+        },
+        configuration: { values },
+      },
+    },
+  });
+  assert.equal(preset.status, 201);
+  const { page } = await newPage(t, fixture);
+  // Ordinary draft creation exercises real API admission without provisioning a workload.
+  await routeInstallationWithoutProvisioning(page, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template", { exact: true }).selectOption(preset.data.id);
+  await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+  await openAdvancedSettings(page);
+  const configuration = page.getByLabel("Configuration JSON", { exact: true });
+  const harness = page.getByLabel("Harness", { exact: true });
+  for (const selection of ["codex", "openclaw", "codex"]) {
+    await harness.selectOption(selection);
+    const current = JSON.parse(await configuration.inputValue());
+    assert.deepEqual(current.plugins.allow, ["codex"]);
+    assert.equal(current.plugins.entries.codex.enabled, false);
+  }
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
+  assert.equal(created.executionMode, "dedicated");
+  const saved = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+  );
+  assert.equal(saved.status, 200);
+  assert.equal(saved.data.values.plugins.entries.codex.enabled, false);
+  assert.deepEqual(saved.data.values.plugins.allow, ["codex"]);
+});
+
 test("Dedicated OpenClaw Presets preserve custom provider transport across execution mode changes", async (t) => {
   const fixture = await createConsoleAppFixture(t, {
     modelProvider: { protocol: "openai-completions", baseUrl: "https://models.example.test/v1" },

@@ -67,6 +67,14 @@ none before any answer.
 
 ### 2. Choose a model and starter Configuration
 
+`create.mts:updateModelConfiguration` preserves authored `plugins.allow` and
+`plugins.deny` while changing Codex runtime wiring. Missing and empty allowlists
+remain unrestricted. An explicit `plugins.entries.codex.enabled: false` survives
+a round trip; the Dedicated Codex runtime overlay enables that required plugin
+at startup. The form uses the existing server preflight and provisioning admission
+rather than imposing a separate browser policy. A refusal leaves the editable
+Configuration unchanged. See [runtime admission](../../reference/harness-execution.md#native-runtime-selection).
+
 `create.mts:MODEL_CHOICES` supplies unauthenticated static lists and manual entry.
 `renderAgentForm` toggles `manualModel`, invoking `updateModelConfiguration` and
 `updateControls`. Manual mode preserves `model.value` and clears the dropdown.
@@ -77,7 +85,7 @@ sets the button label, visibility, and required input; the toggle moves focus.
 Returning preserves credentials and unrelated Configuration. Saved Configuration
 and pending requests lock the toggle.
 
-If a change needs to update `plugins.allow` for Codex and the field is malformed,
+If Codex model, provider or Harness controls encounter malformed `plugins.allow`,
 the form keeps the JSON as typed and focuses **Configuration JSON**. Use an
 array of strings or remove the field. A refused model selection, provider change,
 or Harness change keeps the last applied model, provider, Harness, and execution
@@ -117,6 +125,8 @@ or `meta.notConfigured` (no `repository` settings) permits creation without bind
 failures block submission.
 
 ### 4. Submit provisioning or an ordinary draft
+
+`apps/controller/src/console/agents/create.mts:renderAgentForm`
 
 Supported Dedicated runtimes submit inline Configuration, optional repository
 access, and Secret references to [provisioning](../agent-provisioning.md), even after
@@ -205,6 +215,9 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 - 2026-11-05: A member reads the Namespace's Agent capabilities after a refused Installation read, registers a model Secret with a Credential Gateway, and opens the draft without an IAM request. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
 - 2026-11-05 18:37: Explain the Configuration number range refusal on Create. (authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9 - 5fd3fde4911e1640c354d69bb09f6f3d72445a05)
+- 2026-11-05 13:00: Retain upstream malformed-policy guards while preserving authored allow/deny lists through Harness changes. (authoring-run/e403cb92-13a9-40b8-a636-6922c2747638 - 71d3a9d7a5385839159672c5152ee42848e9a46c)
+
+- 2026-11-05 08:55: Preserve Harness-switch permissions and use existing server admission, including disabled Codex entry acceptance. (authoring-run/878b2a70-223a-4813-9763-0f2a7051f8bd - 65dc3e90e)
 - 2026-11-04 22:06: Explain which Create Agent settings stay in place when an invalid plugin list blocks a Codex change. (authoring-run/386aa943-15cf-49cd-b53e-05831b4a7da0 - e109eba64ea0e81c02513f81f9c892a832dc1b69)
 - 2026-10-25: The per-Secret `operate` remedy names an exact-Secret grant; the Agents list gives Create Agent's next step when Agent create is denied. (findings 2507, 2508)
 - 2026-10-25: Refuse a typed model key, and disable the Preset's **Create new Secret**, where `operate` is denied on a readable Secret. (fix-2492, finding 2492)
@@ -217,5 +230,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 - 2026-10-25 00:55: Name "no Sandbox Driver selected" as the reason Dedicated OpenClaw is disabled when the Installation lists Embedded. (finding 2384)
 - 2026-10-25 00:30: Treat repository options with `meta.notConfigured` like the fixed-composition 503. (finding 2387)
 - 2026-10-24 19:00: Check the Agent name and initial workspace files with the API's rules before any write. (fix-2339-2341)
+- 2026-10-24 10:33: Preserve an explicit Codex disable through Harness switches and explain the required repair before creation. (authoring-run/01899543-402d-43ab-86e0-b54e3afdd9ad - e699c55f8)
 - 2026-10-22 10:56: Confirm creation responses before granting access or continuing provisioning. (console-create-delivery-20261022 - eef3442ff)
+- 2026-10-21 16:25: Preserve authored native plugin permissions across Harness selection and explain explicit repairs for conflicts refused before writes. (Codex/01a12fe8-d0c6-7df1-937d-364a1301566a - bac4fdd4f)
 - 2026-10-20 05:00: Split from the platform console flow's step 3. (docs-split-1020)
