@@ -3039,8 +3039,14 @@ test("the redactor removes URL userinfo of any shape and multi-line private keys
 });
 
 test("the redactor removes secrets inside escaped JSON and keys from filtered log lines", async () => {
-  const { failureSecrets, newestMatchingLogLines, redactFailureDetail, redactLogLine } =
-    await import("../../scripts/ci/failure-redaction.mjs");
+  const {
+    failureSecrets,
+    maskPrivateKeyLines,
+    newestMatchingLogLines,
+    redactOutputLine,
+    redactFailureDetail,
+    redactLogLine,
+  } = await import("../../scripts/ci/failure-redaction.mjs");
   const secrets = failureSecrets([{}]);
   // A JSON document embedded in a log string escapes its quotes, once or more (finding 1551).
   // Synthetic values only; none is in the env or has a known token shape.
@@ -3087,6 +3093,8 @@ test("the redactor removes secrets inside escaped JSON and keys from filtered lo
     "syntheticBodyLineTwoBBBBBBBB",
     "-----END RSA PRIVATE KEY-----",
     "worker turn failed: ECONNRESET",
+    // Structured events stay private even when an arbitrary field matches the log filter.
+    '2026-11-07T00:00:00Z OCSF-JSON {"message":"worker failed","detail":"private-value"}',
     "debug noise",
   ].join("\n");
   const shown = newestMatchingLogLines(logs, secrets, {
@@ -3096,6 +3104,16 @@ test("the redactor removes secrets inside escaped JSON and keys from filtered lo
     lineChars: 400,
   });
   assert.equal(shown, "worker start\nworker turn failed: ECONNRESET");
+  for (const structured of [
+    'OCSF-JSON {"early":"private payload","message":"worker failed"}',
+    'OCSF-JSON {"message":"worker failed","late":"private payload"}',
+    'OCSF-JSON {"message":"worker failed","truncated":"private payload',
+  ]) {
+    assert.deepEqual(maskPrivateKeyLines(["before", structured, "after"]), ["before", "", "after"]);
+    assert.equal(redactLogLine(structured, secrets, 12), "");
+    assert.equal(redactOutputLine(structured, secrets, "/repo", 12), "");
+  }
+
   // Newest lines win the budget, and each kept line is clipped after redaction.
   assert.equal(
     newestMatchingLogLines("turn one\nturn two\nturn three", secrets, {
@@ -6446,6 +6464,8 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
     "2026-10-08T07:43:53.3Z request Authorization: Bearer do-not-publish-header",
     "2026-10-08T07:43:53.4Z provider token=do-not-publish-assignment refreshed",
     "2026-10-08T07:43:53.5Z parent value secretauthvalue-parent seen",
+    '2026-10-08T07:43:53.5Z OCSF-JSON {"detail":"private-structured-early","message":"failure"}',
+    '2026-10-08T07:43:53.5Z OCSF-JSON {"message":"failure","detail":"private-structured-truncated',
   ];
   // Only the lane gives the child this value; the runner's own env never has it.
   const childSecret = "childonlysecret-1754";
@@ -6462,6 +6482,9 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
       'if (args.includes("logs")) {',
       `  process.stdout.write(${JSON.stringify(`${logLines.join("\n")}\n`)});`,
       "  process.stdout.write(`2026-10-08T07:43:53.6Z child value ${process.env.OCC_TEST_CHILD_ONLY}\\n`);",
+      // Split one structured record across actual pipe writes; neither fragment may persist.
+      '  process.stdout.write(\'2026-10-08T07:43:53.7Z OCSF-JSON {"detail":"private-structured-split\');',
+      "  setTimeout(() => process.stdout.write('-tail\"}\\n'), 100);",
       "  process.stderr.write('follow note\\nGET https://api Authorization: Bearer do-not-publish-verbose');",
       "  setTimeout(() => process.stdout.write('2026-10-08T07:44:22.0Z [gateway] exit 0'), 300);",
       '} else if (args.includes("get") && args.includes("pods")) {',

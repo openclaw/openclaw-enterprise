@@ -16,6 +16,7 @@ import { withEnvironment } from "../helpers/environment.ts";
 import { prependPath } from "../helpers/fake-commands.ts";
 import {
   assertGatewayPolicyRunSucceeded,
+  openShellStaleRelay,
   observeSandboxProbe,
 } from "../helpers/k3d-failure-diagnostics.mjs";
 import { listen } from "../helpers/listen.mjs";
@@ -43,6 +44,43 @@ function ownedCluster(root, name = "openclaw-k8s-openshell-test") {
     context: `k3d-${name}`,
   };
 }
+
+test("OpenShell turnover accepts established relay failures, not connection admission denials", () => {
+  const domain = "gateway.fixture.svc.cluster.local";
+  const stale = "policy generation is stale [captured_generation:7 current_generation:8]";
+  // Serialized shapes follow the pinned supervisor NetworkActivity producer. This proves
+  // parsing and projection only, not that a live supervisor emitted the event.
+  const event = {
+    class_uid: 4001,
+    activity_id: 4,
+    status_id: 2,
+    dst_endpoint: { domain, port: 443 },
+    message: `TLS relay error: ${stale}`,
+    privateDetail: "private payload",
+  };
+  const line = (value) => `2026-11-07T00:00:00Z OCSF-JSON ${JSON.stringify(value)}`;
+  for (const protocol of ["TLS", "L7", "HTTP"]) {
+    assert.deepEqual(
+      openShellStaleRelay(line({ ...event, message: `${protocol} relay error: ${stale}` }), domain),
+      { capturedGeneration: 7, currentGeneration: 8 },
+    );
+  }
+  for (const rejected of [
+    { ...event, activity_id: 1, action_id: 2 },
+    { ...event, message: stale },
+    { ...event, class_uid: 6003 },
+    { ...event, status_id: 1 },
+    { ...event, dst_endpoint: { domain: "other.fixture.svc.cluster.local", port: 443 } },
+    { ...event, dst_endpoint: { domain, port: 80 } },
+  ]) {
+    assert.equal(openShellStaleRelay(line(rejected), domain), null);
+  }
+  assert.equal(
+    openShellStaleRelay(`2026-11-07T00:00:00Z NET: ${domain}:443 DENIED ${stale}`, domain),
+    null,
+  );
+  assert.equal(openShellStaleRelay('2026-11-07T00:00:00Z OCSF-JSON {"message":', domain), null);
+});
 
 test("a failed protected update reports its stored job state without disclosing Gateway text", async (t) => {
   const attempt = "cross-agent-session-target";

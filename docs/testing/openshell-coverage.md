@@ -71,6 +71,9 @@ and privileges, source withdrawal, replacement, and cleanup remain required.
 Missing prerequisites fail rather than skip.
 
 The refresh case's initial Codex turns also emit `openshell-initial-turnover` measurements.
+The fixture enables structured supervisor logs and waits for the configuration to be
+installed before measuring requests. Setup failure leaves the observation incomplete;
+the original turns still run. Full structured events stay out of raw failure diagnostics.
 Bounded reads before and after each original request use Compute's Agent-owned
 `workspace-node.json` binding and authenticated `node.list` to identify the same
 node and its connection timestamp. The measurements retain metadata fingerprints,
@@ -79,10 +82,11 @@ Harness event times. They contain no request payloads, raw node identifiers,
 credentials, or raw logs.
 
 `turn-continuity` requires an in-request provider-environment change with unchanged
-configuration and policy, the Agent Gateway's stale-generation tunnel closure,
+configuration and policy, a structured failure from the Agent Gateway's established
+relay reporting a stale generation,
 a 1006 disconnect, the same node reconnecting, and a successful original response.
 Gateway boot identity and Gateway, Harness, and supervisor container identities
-must remain unchanged. Provider snapshots must show a revision change, and all
+must remain unchanged. Provider snapshots must be ready with all installation flags and show a revision change; all
 settings-change events must corroborate unchanged configuration and policy.
 Missing or contradictory observations cannot qualify.
 `durableCommands: true` additionally records both existing native command checks.

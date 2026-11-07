@@ -59,6 +59,7 @@ export function followContainerLog({ args, env, target, snapshot, recoverLogs })
   const lines = [];
   const markers = [];
   let partial = "";
+  let structuredPartial = false;
   let bufferedChars = 0;
   let omittedLines = 0;
   const stream = { startedAt: new Date().toISOString() };
@@ -82,11 +83,16 @@ export function followContainerLog({ args, env, target, snapshot, recoverLogs })
   child.stdout.on("error", () => {});
   function appendLogs(chunk) {
     const parts = (partial + chunk).split("\n");
-    partial = parts.pop().slice(-maxBufferedChars);
+    const tail = parts.pop();
     for (const line of parts) {
-      lines.push(line);
-      bufferedChars += line.length;
+      if (!structuredPartial && !line.includes("OCSF-JSON")) {
+        lines.push(line);
+        bufferedChars += line.length;
+      }
+      structuredPartial = false;
     }
+    structuredPartial ||= tail.includes("OCSF-JSON");
+    partial = structuredPartial ? "" : tail.slice(-maxBufferedChars);
     while (
       (bufferedChars > maxBufferedChars || lines.length > maxBufferedLines) &&
       lines.length > 0

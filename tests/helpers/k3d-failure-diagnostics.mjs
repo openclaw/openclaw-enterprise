@@ -17,6 +17,36 @@ const maxPods = 5;
 const maxLogContainers = 6;
 const credentialLineMarker = "[redacted credential-bearing line]";
 
+// Only established relay failures carry both this event type and message.
+// Open/DENIED events can instead describe a new connection refused at admission.
+export function openShellStaleRelay(line, domain) {
+  const json = /\bOCSF-JSON (\{.*\})$/.exec(line);
+  let event;
+  try {
+    event = json && JSON.parse(json[1]);
+  } catch {
+    return null;
+  }
+  if (
+    event?.class_uid !== 4001 ||
+    event.activity_id !== 4 ||
+    event.status_id !== 2 ||
+    event.dst_endpoint?.domain !== domain ||
+    event.dst_endpoint.port !== 443 ||
+    typeof event.message !== "string" ||
+    !/^(TLS|L7|HTTP) relay error: /.test(event.message)
+  ) {
+    return null;
+  }
+  const match =
+    /policy generation is stale \[captured_generation:(\d+) current_generation:(\d+)\]/.exec(
+      event.message,
+    );
+  return match
+    ? { capturedGeneration: Number(match[1]), currentGeneration: Number(match[2]) }
+    : null;
+}
+
 export async function assertGatewayPolicyRunSucceeded(client, outcome, protectedUpdate) {
   if (outcome.status === "ok") {
     return;

@@ -1,4 +1,9 @@
 import { openShellTurnoverQualification } from "../../scripts/ci/reporter.mjs";
+import {
+  openShellGatewayGrpcChannel,
+  openShellGatewayGrpcMetadata,
+} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { fileURLToPath } from "node:url";
 import { isWorkspaceNodeDeviceId } from "../../packages/utils/src/index.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
@@ -60,6 +65,7 @@ import {
 } from "../helpers/kubernetes-real.mjs";
 import {
   assertGatewayPolicyRunSucceeded,
+  openShellStaleRelay,
   observeSandboxProbe,
   tokenEchoDigest,
   tokenEchoReply,
@@ -1911,6 +1917,18 @@ function createIntegrationSandboxDriverFactory(
     }
     return clientForEndpoint(state.endpoint);
   };
+  createDriver.enableTurnoverLogging = (namespaceName, sandbox, provider, signal) => {
+    const state = gatewayState.get(namespaceName);
+    assert.ok(state, "The observation requires the existing Namespace gateway.");
+    return enableTurnoverLogging(
+      { endpoint: state.endpoint },
+      clientForEndpoint(state.endpoint),
+      namespaceName,
+      sandbox,
+      provider,
+      signal,
+    );
+  };
   // After the Namespace gateway Pod is replaced, its port-forward has ended. A new one keeps the
   // gateway's Sandbox ServiceAccount; Backend clients resolve the endpoint at call time.
   createDriver.restartGatewayForward = async (namespaceName) => {
@@ -2914,6 +2932,13 @@ async function prepareProductionInstallation(
     policyWrites: createSandboxDriver.policyWrites,
     setPolicyWriteBarrier: createSandboxDriver.setPolicyWriteBarrier,
     gatewayClient: (auth) => createSandboxDriver.gatewayClientForNamespace(placement, auth),
+    enableTurnoverLogging: (signal) =>
+      createSandboxDriver.enableTurnoverLogging(
+        placement,
+        sandbox.metadata.name,
+        openShellProviderName(agent.data.harnessAuth.sourceId),
+        signal,
+      ),
     restartGatewayForward: () => createSandboxDriver.restartGatewayForward(placement),
     closeGatewayForward: () => createSandboxDriver.closeGatewayForward(placement),
     observerPool,
@@ -4727,6 +4752,79 @@ async function readGatewayTurnFailureDiagnostic(
   return `\n${sections.join("\n")}`;
 }
 
+// Configure only the disposable fixture, before the measured requests. The existing
+// SDK intentionally has no setting API; use the supplier's supported wire contract.
+async function enableTurnoverLogging(options, gateway, workspace, sandbox, provider, parentSignal) {
+  const signal = AbortSignal.any([parentSignal, AbortSignal.timeout(45_000)]);
+  const grpc = controllerRequire("@grpc/grpc-js");
+  const loader = controllerRequire("@grpc/proto-loader");
+  const definition = loader.loadSync(
+    fileURLToPath(
+      new URL(
+        "../../apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto",
+        import.meta.url,
+      ),
+    ),
+    { keepCase: true, longs: String, enums: String, oneofs: true },
+  );
+  const { OpenShell } = grpc.loadPackageDefinition(definition).openshell.v1;
+  const { target, credentials } = openShellGatewayGrpcChannel(grpc, options);
+  const client = new OpenShell(target, credentials, { "grpc.enable_retries": 0 });
+  try {
+    const selected = await gateway.getSandbox({ workspace, name: sandbox }, signal);
+    assert.ok(selected && /^[1-9]\d*$/.test(selected.resourceVersion));
+    const metadata = await openShellGatewayGrpcMetadata(grpc, options.auth);
+    signal.throwIfAborted();
+    await new Promise((resolve, reject) => {
+      const call = client.UpdateConfig(
+        {
+          workspace_scope: { workspace },
+          sandbox,
+          setting_key: "ocsf_json_enabled",
+          setting_value: { bool_value: true },
+          expected_resource_version: selected.resourceVersion,
+          request_id: randomUUID(),
+        },
+        metadata,
+        { deadline: Date.now() + 10_000 },
+        (error, response) => {
+          signal.removeEventListener("abort", abort);
+          if (error) {
+            reject(error);
+          } else {
+            resolve(response);
+          }
+        },
+      );
+      const abort = () => call.cancel();
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) {
+        abort();
+      }
+    });
+    const config = await gateway.getSandboxConfig(workspace, sandbox, signal);
+    assert.ok(typeof config.config_revision === "string" && config.config_revision.length > 0);
+    // settings_revision is a different counter. Wait for this actual config identity.
+    await waitFor(
+      "structured log configuration to be installed",
+      async () => {
+        const status = await gateway.getSandboxProviderStatus(workspace, sandbox, provider, signal);
+        return (
+          status.state === "PROVIDER_READINESS_STATE_READY" &&
+          status.observed?.configRevision === config.config_revision &&
+          status.observed.credentialsInstalled &&
+          status.observed.policyActive &&
+          status.observed.launchEnvironmentInstalled
+        );
+      },
+      30_000,
+    );
+    return true;
+  } finally {
+    client.close();
+  }
+}
+
 // These are observations of the existing requests, not another model probe. An absent
 // snapshot is unavailable evidence and must never become a successful recovery receipt.
 async function readTurnObservation(operation) {
@@ -4766,6 +4864,11 @@ async function gatewayTurnSnapshot(topology) {
       assert.equal(read.status, "fulfilled");
       return read.value;
     });
+    // Failed installation reports can retain the requested revision identity.
+    assert.equal(provider.state, "PROVIDER_READINESS_STATE_READY");
+    assert.equal(provider.observed?.credentialsInstalled, true);
+    assert.equal(provider.observed?.policyActive, true);
+    assert.equal(provider.observed?.launchEnvironmentInstalled, true);
     const bindings = gateway.spec.volumes.filter((volume) =>
       volume.configMap?.items?.some(({ key }) => key === "workspace-node.json"),
     );
@@ -4933,7 +5036,10 @@ async function gatewayTurnObservation(topology, before, request) {
     timestamp(line) <= request.finishedAtMs + clockOffsetMaxMs;
   const supervisorLines = (logs?.[0] ?? []).filter(couldOverlap);
   const settings = supervisorLines
-    .filter((line) => line.includes("Settings poll: config change detected"))
+    .filter(
+      (line) =>
+        !line.includes("OCSF-JSON") && line.includes("Settings poll: config change detected"),
+    )
     .map((line) => ({
       line,
       match:
@@ -4950,22 +5056,15 @@ async function gatewayTurnObservation(topology, before, request) {
       createHash("sha256").update(event.match[1]).digest("hex") === before?.config &&
       createHash("sha256").update(event.match[2]).digest("hex") === after?.config,
   );
-  const target = `${openShellGatewayName(topology.agent.id)}.${topology.gatewayPlacement}.svc.cluster.local:443`;
+  const target = `${openShellGatewayName(topology.agent.id)}.${topology.gatewayPlacement}.svc.cluster.local`;
   const stale = supervisorLines
-    .map((line) => ({
-      line,
-      match:
-        /policy generation is stale \[captured_generation:(\d+) current_generation:(\d+)\]/.exec(
-          line,
-        ),
-    }))
+    .map((line) => ({ line, relay: openShellStaleRelay(line, target) }))
     .find(
-      ({ line, match }) =>
-        line.includes(target) &&
-        match &&
+      ({ line, relay }) =>
+        relay &&
         turnover &&
         timestamp(line) >= timestamp(turnover.line) &&
-        Number(match[2]) === Number(match[1]) + 1,
+        relay.currentGeneration === relay.capturedGeneration + 1,
     );
   const disconnected = (logs?.[1] ?? []).find(
     (line) =>
@@ -4997,8 +5096,8 @@ async function gatewayTurnObservation(topology, before, request) {
     turnoverAtMs: turnover ? timestamp(turnover.line) : null,
     staleTunnelAtMs: stale ? timestamp(stale.line) : null,
     disconnectedAtMs: disconnected ? timestamp(disconnected) : null,
-    capturedGeneration: stale ? Number(stale.match[1]) : null,
-    currentGeneration: stale ? Number(stale.match[2]) : null,
+    capturedGeneration: stale?.relay.capturedGeneration ?? null,
+    currentGeneration: stale?.relay.currentGeneration ?? null,
     configUnchanged: Boolean(before && after && before.config === after.config),
     policyUnchanged: Boolean(before && after && before.policy === after.policy),
     providerEnvChanged: Boolean(turnover),
@@ -5009,6 +5108,9 @@ async function gatewayTurnObservation(topology, before, request) {
 }
 
 async function requestGatewayTurns(context, topology, harnessId, recordCheckpoint, testContext) {
+  const observationReady = testContext
+    ? await topology.enableTurnoverLogging(testContext.signal).catch(() => false)
+    : false;
   const passwordSecret = await resource(
     "secret",
     `gateway-password-${hash(topology.agent.id)}`,
@@ -5034,7 +5136,7 @@ async function requestGatewayTurns(context, topology, harnessId, recordCheckpoin
       harnessId === "codex"
         ? `Use the shell exec tool to run exactly printf '%s' '${nonce}'. Reply with its output.`
         : `Reply with exactly ${nonce}.`;
-    const before = testContext ? await gatewayTurnSnapshot(topology) : null;
+    const before = observationReady ? await gatewayTurnSnapshot(topology) : null;
     const request = {
       request: nonces.length,
       startedAtMs: Date.now(),
@@ -5169,6 +5271,8 @@ async function requestGatewayTurns(context, topology, harnessId, recordCheckpoin
       );
       durableCommands = true;
     }
+    // Reporting errors after this point do not mean the original checks failed.
+    recordCheckpoint?.(null);
   } finally {
     for (const observation of observations) {
       try {
@@ -8939,6 +9043,10 @@ export function registerProviderLifecycleTest(workflow) {
               topology,
               "codex",
               (checkpoint, turn, status) => {
+                if (checkpoint === null) {
+                  failure = null;
+                  return;
+                }
                 failure = {
                   checkpoint,
                   turn,
@@ -8949,9 +9057,11 @@ export function registerProviderLifecycleTest(workflow) {
               workflow === "refresh" ? testContext : undefined,
             );
           } catch (error) {
-            testContext.diagnostic(
-              `openclaw-ci-measurement ${JSON.stringify({ kind: "openshell-gateway-turn-failure", ...failure })}`,
-            );
+            if (failure) {
+              testContext.diagnostic(
+                `openclaw-ci-measurement ${JSON.stringify({ kind: "openshell-gateway-turn-failure", ...failure })}`,
+              );
+            }
             throw error;
           }
         });
