@@ -3,9 +3,7 @@
 Development uses [`v0.1.6`](https://github.com/NVIDIA/OpenShell/tree/v0.1.6) for dedicated Codex/native
 OpenClaw with [Kubernetes Compute](kubernetes-compute.md) and the
 [Credential Gateway](openshell-credential-gateway.md). OCC owns Agents, revisions,
-Namespaces, routing, credentials and authorization. The pinned runtime declares
-native Dedicated support. Embedded OpenClaw is unsupported; these APIs remain
-unqualified for production. See [containment](#openshell-containment-facets) and
+Namespaces, routing, credentials and authorization. Embedded OpenClaw is unsupported; production qualification remains incomplete. See [containment](#openshell-containment-facets) and
 [qualification](#qualification-contract).
 
 ## Ownership model
@@ -155,43 +153,23 @@ revision to change artifact authority. Live Agent policy apply remains unavailab
 
 ### Gateway readiness and workspace
 
-Optional readiness observes a Service and Pods in the OCC namespace (paired
-Gateways normally use Backend `endpoint`). It needs positive `timeoutMs`;
-`pollIntervalMs` (default 1000) is at most `2147483647`. Development uses Harness readiness with optional `startupDelayMs` unset.
+Optional readiness observes an OCC-namespace Service and Pods; paired Gateways normally use Backend `endpoint`. Require positive `timeoutMs` and `pollIntervalMs` (default 1000, maximum `2147483647`). Development uses Harness readiness without `startupDelayMs`.
 
-Install OpenShell's gateway separately. Required `gateway.workspaceMode`
-accepts `operator` or `managed`; deferred managed mode fails before Kubernetes
-mutations or Gateway calls. Configure the Gateway's Kubernetes driver with `workspaceMode: operator`, a
-namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels`
-listing `openclaw.dev/*`, `app.kubernetes.io/name`, and
-`app.kubernetes.io/managed-by`; otherwise deployment fails with
-`SANDBOX_POD_LABELS_NOT_PERMITTED`. An OpenShell Workspace
-name must equal its pre-provisioned Kubernetes namespace: `oce-` plus a
-15-character digest, within the 19-character limit.
+Install the Gateway separately. Required `gateway.workspaceMode` accepts `operator`; `managed` refuses before Kubernetes mutations or Gateway calls. Configure its Kubernetes driver with `workspaceMode: operator`, a namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels` containing `openclaw.dev/*`, `app.kubernetes.io/name`, and `app.kubernetes.io/managed-by`. Missing labels cause `SANDBOX_POD_LABELS_NOT_PERMITTED`. Workspace names must match their pre-provisioned namespace: `oce-` plus a 15-character digest (19 characters maximum).
 
-The [development profile](../../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile)
-installs one Gateway with workspace resources disabled in `oce-system`
-(Kubernetes-only) or `openshell-system` (Compose), and Agent Sandbox in
-`agent-sandbox-system`. The launcher renders `openshell-workspace` into trusted
-Installation configuration; the Driver creates each Namespace's resources before
-its Workspace, without per-Namespace Helm releases.
+The [development profile](../../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile) installs a Gateway with workspace resources disabled in `oce-system` (Kubernetes-only) or `openshell-system` (Compose), and Agent Sandbox in `agent-sandbox-system`. The launcher renders `openshell-workspace` into trusted Installation configuration; the Driver prepares each Namespace's resources before its Workspace, without per-Namespace Helm releases.
 
-Kubernetes-only installations enable Gateway TLS, mTLS and authentication. Static
-inference requires explicit opt-in. The Compose-backed profile permits unauthenticated
-Gateway access. Its shared port exposes both control-plane RPCs and Harness traffic;
-NetworkPolicies cannot give Agent Gateways service-only authority. Use that mode
-only in owned disposable development clusters, never production.
+Kubernetes-only installations enable Gateway TLS, mTLS and authentication; static inference requires explicit opt-in. Compose permits unauthenticated Gateway access. Its port shares control-plane RPCs and Harness traffic; NetworkPolicies cannot give Agent Gateways service-only authority. Use only owned disposable development clusters.
 
 `gateway.operatorWorkspaceResources` takes workspace-chart ServiceAccount, Role,
-RoleBinding, and NetworkPolicy manifests;
-`gateway.networkPolicyResources` takes namespaced provider networking manifests.
-In `operator` mode, `ensureNamespace` adds the Compute-owned namespace, OCC
-ownership metadata and a saved creation nonce. It binds each created UID before
-ready; later server-side apply uses UID and `resourceVersion` preconditions.
-With [preprovisioned placement](kubernetes-compute/preprovisioned-namespace.md),
-it compares declared resources and binds their UIDs without changing them.
-Startup rejects Secrets, ingress `_from` (write `from`), and fields the Kubernetes
-client drops or changes, such as misspelled selector keys or LimitRange `default`. Keep credentials and cluster-scoped objects out of both lists.
+RoleBinding and NetworkPolicy manifests; `gateway.networkPolicyResources` takes
+namespaced provider policies. `ensureNamespace` adds Compute's namespace, OCC
+ownership and creation nonce; it binds each resource UID before ready. Subsequent
+server-side apply requires saved UID/current `resourceVersion` preconditions.
+[Preprovisioned placement](kubernetes-compute/preprovisioned-namespace.md) compares
+declared resources and binds UIDs without mutation. Startup rejects Secrets,
+ingress `_from` (use `from`) and fields the SDK drops or changes (misspelled selector
+keys, LimitRange `default`). Keep credentials and cluster-scoped objects out of both lists.
 
 `kubernetes.sandboxDataMount` must match exactly one approved dedicated Harness
 workspace mount. It may not mount the PVC root or use `..`, and must mount
@@ -387,11 +365,25 @@ becomes `RUNTIME_LOGS_SANDBOX_NOT_FOUND`. See
   below `/sandbox/.openclaw-runtime`; a Landlock write grant does not
   override Unix ownership on the image layer.
 
+### Private CAs for Gateway peers
+
+For a Gateway without issuer trust and with both `pkiInitJob.enabled` and `certManager.enabled` false, set:
+
+```yaml
+server:
+  extraEnv:
+    - name: OPENSHELL_PEER_TLS_CA_FILE
+      value: /etc/openshell-tls/server/ca.crt
+```
+
+Include public `ca.crt` in the `server.tls.certSecretName` Secret. Middleware separately uses `tls_ca_cert_path`.
+
 ### Gateway identity and removal
 
-For `SANDBOX_GATEWAY_UNAUTHORIZED`, check `sandbox-gateway-identity`. Restore
-the Workspace role, controller authentication or gateway signing-key refresh
-before retrying. Transient failures retry within the worker's attempt budget.
+For `SANDBOX_GATEWAY_UNAUTHORIZED` during stop, deletion or credential withdrawal,
+check `sandbox-gateway-identity`. Restore the original Workspace role. For authentication
+failures, check the controller token file and Gateway signing-key refresh. Transient
+failures retry within the worker's attempt budget; restore access before retrying.
 
 OpenShell can return `NOT_FOUND` for hidden resources. Confirming absence requires
 a controller-authorized Workspace read and another resource read. If a delete returns `NOT_FOUND` immediately after

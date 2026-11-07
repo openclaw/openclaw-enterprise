@@ -29,6 +29,7 @@ export const DEPLOYMENT_FAILURE_STEPS: Readonly<Record<string, DeploymentFailure
     REPOSITORY_DRIVER_MISMATCH: "deploy-again",
     REPOSITORY_EXECUTION_CHANGED: "deploy-again",
     REPOSITORY_EXECUTION_CLOSED: "deploy-again",
+    REPOSITORY_EXECUTION_REDEPLOY_REQUIRED: "deploy-again",
     REPOSITORY_EXECUTION_REPLACED: "deploy-again",
     REPOSITORY_EXECUTION_UNVERIFIED: "deploy-again",
     REPOSITORY_GIT_ROUTE_BLOCKED: "deploy-again",

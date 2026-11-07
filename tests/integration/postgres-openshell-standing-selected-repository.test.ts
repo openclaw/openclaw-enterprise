@@ -17,3 +17,11 @@ for (const change of ["recipient", "approval"] as const) {
     (t) => repositorySetJourney(t, true, change),
   );
 }
+
+// A worker-loop restart keeps the in-memory launch acknowledgment. A real process
+// restart must instead recover durable route ownership and withdraw this Git grant.
+test(
+  "a cold worker persists redeploy-required standing Git status without renewing it",
+  { ...requiresPostgres, timeout: 180_000 },
+  (t) => repositorySetJourney(t, true, "cold-worker"),
+);

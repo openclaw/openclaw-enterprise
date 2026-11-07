@@ -188,6 +188,8 @@ the registry attachment for `occ dev down` to detach. Kubernetes-only uses its
 owned k3d network; Compose uses its exact recorded Compose network and selects
 only a runtime image with the current checkout label. Both detach after imports
 and on rollback, including recovery after interrupted startup.
+State rewrites set mode `0600` before writing so recovery can read
+`state.json` under a restrictive umask.
 For Kubernetes-only OpenShell, runtime import follows PostgreSQL/repository imports
 in their existing concurrent branch. OpenShell asset preparation follows those
 imports while network probes finish. This installs the Agent Sandbox controller
