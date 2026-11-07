@@ -4,11 +4,10 @@ Resume from the original checkout and private
 [upgrade evidence directory](production-upgrade.md). Directory aliases share its
 lock; a different directory identity stops resume before live access.
 
-For a runtime upgrade, also keep the original private dispatch journal. It is
-`<evidence-directory>.dispatch-state`, beside the resolved evidence directory. Keep the current journal separate from evidence
-backups. A missing or invalid journal stops runtime resume before live access.
-If the journal may have been restored, stop and reconcile from OCC history and
-audit records before starting another run.
+For runtime upgrades, preserve the private `<evidence-directory>.dispatch-state`
+journal beside the resolved directory, separately from evidence backups. Missing
+or invalid journals stop resume before live access. If possibly restored,
+reconcile OCC history and audit records first.
 
 `--preflight-only` leaves writers serving without a freeze. It cannot resume;
 reconcile its resources before deploying with fresh evidence and checks.
@@ -19,6 +18,10 @@ Afterward, reconcile processes, release, migration, rollout and dispatch, then
 add `--resume` with unchanged arguments, protected paths, kubeconfig contents,
 OCC URL, scripts, flow and chart. Keep candidates semantically unchanged.
 The helper rechecks the pair, nodes and live state against baseline or candidate.
+
+When selected, `controller-compatibility-results.json` is immutable prepared
+evidence. Resume uses this copy, not the external file; changing its bytes or
+presence refuses recovery.
 
 After verified completion, clean up only: no Helm, Agent rollout, Doctor,
 `--resume` or renewed freeze. The helper writes `completed` after its final

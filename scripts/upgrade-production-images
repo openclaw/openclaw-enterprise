@@ -8,6 +8,7 @@ Usage: scripts/upgrade-production-images \
   --values FILE --installation FILE \
   [--candidate-values FILE] [--candidate-installation FILE] \
   [--controller-image IMAGE@sha256:DIGEST] \
+  [--controller-compatibility-results FILE] \
   [--broker-image IMAGE@sha256:DIGEST] \
   [--runtime-image IMAGE@sha256:DIGEST] \
   --source-revision FULL_GIT_SHA --evidence-dir DIRECTORY \
@@ -321,6 +322,7 @@ installation=
 requested_values=
 requested_installation=
 controller_image=
+controller_compatibility_results=
 broker_image=
 runtime_image=
 source_revision=
@@ -335,7 +337,7 @@ collector_config_reviewed=0
 
 while (($#)); do
   case "$1" in
-    --kubeconfig | --context | --namespace | --release | --values | --installation | --candidate-values | --candidate-installation | --controller-image | --broker-image | --runtime-image | --source-revision | --evidence-dir | --occ | --timeout-seconds | --doctor-heap-mib)
+    --kubeconfig | --context | --namespace | --release | --values | --installation | --candidate-values | --candidate-installation | --controller-image | --controller-compatibility-results | --broker-image | --runtime-image | --source-revision | --evidence-dir | --occ | --timeout-seconds | --doctor-heap-mib)
       (($# >= 2)) || die "$1 requires a value."
       case "$1" in
         --kubeconfig) kubeconfig=$2 ;;
@@ -347,6 +349,10 @@ while (($#)); do
         --candidate-values) requested_values=$2 ;;
         --candidate-installation) requested_installation=$2 ;;
         --controller-image) controller_image=$2 ;;
+        --controller-compatibility-results)
+          [[ -n "$2" ]] || die "$1 requires a nonempty value."
+          controller_compatibility_results=$2
+          ;;
         --broker-image) broker_image=$2 ;;
         --runtime-image) runtime_image=$2 ;;
         --source-revision) source_revision=$2 ;;
@@ -391,6 +397,8 @@ for input in kubeconfig context namespace release values installation source_rev
 done
 [[ -n "$controller_image" || -n "$broker_image" || -n "$runtime_image" ]] ||
   die "select a controller, broker, or runtime image."
+[[ -z "$controller_compatibility_results" || -n "$controller_image" ]] ||
+  die "--controller-compatibility-results requires --controller-image."
 positive_integer "$timeout_seconds" || die "--timeout-seconds must be positive."
 # Each phase's wait gets the whole timeout; a day is far beyond any of them, so a
 # larger value is likely a unit mistake. Compare lengths before arithmetic, which
@@ -589,13 +597,13 @@ trap 'interrupted_upgrade 143' TERM
 # Bind resume to the original physical directory, inputs and chart. The
 # separate dispatch journal protects against restoring stale evidence in place.
 # Kubeconfig bytes bind the context to the same cluster if the file is replaced.
-parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$OCC_URL" "$occ" "${OCC_CA_BUNDLE:-}" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" <<'PYTHON'
+parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$OCC_URL" "$occ" "${OCC_CA_BUNDLE:-}" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" "$controller_compatibility_results" <<'PYTHON'
 import hashlib, json, os, sys
 def digest(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
 evidence = os.stat(sys.argv[16])
-print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.mjs"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
+print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "controllerCompatibilityResults": sys.argv[18], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.mjs"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
 PYTHON
 )
 if ((resume)); then
@@ -1055,6 +1063,15 @@ No OCC writer was stopped; the old release keeps serving. Correct each draft as 
   touch "$evidence_dir/startup-preflight-passed"
 }
 
+validate_controller_compatibility() {
+  [[ -n "$controller_compatibility_results" ]] || return 0
+  require_private_file "$evidence_dir/controller-compatibility-results.json"
+  require_immutable_image "released controller image" "$current_controller"
+  python3 scripts/upgrade-evidence.py compatibility \
+    "$evidence_dir/controller-compatibility-results.json" "$current_controller" "$selected_controller" ||
+    die "controller compatibility receipt must pass for the exact released and candidate images; no new writer changes were made."
+}
+
 prepare_upgrade() {
 if [[ -n "$runtime_image" ]]; then
   mkdir -m 700 "$evidence_dir/inventory" "$evidence_dir/dispatch" "$evidence_dir/status"
@@ -1221,6 +1238,11 @@ if [[ -n "$controller_image" && -z "$runtime_image" && "$controller_image" == "$
   fi
 fi
 selected_controller=${controller_image:-$current_controller}
+if [[ -n "$controller_compatibility_results" ]]; then
+  require_regular_file "$controller_compatibility_results"
+  cp "$controller_compatibility_results" "$evidence_dir/controller-compatibility-results.json"
+  validate_controller_compatibility
+fi
 
 candidate_values="$evidence_dir/candidate-values.yaml"
 candidate_installation="$evidence_dir/candidate-installation.yaml"
@@ -1451,6 +1473,7 @@ installation_id=$(cat "$evidence_dir/installation-id")
 installation_secret=$(cat "$evidence_dir/installation-secret-name")
 installation_key=$(cat "$evidence_dir/installation-secret-key")
 selected_controller=$(cat "$evidence_dir/selected-controller")
+validate_controller_compatibility
 if [[ -n "$requested_values" ]]; then
   matches_yaml "$requested_values" "$evidence_dir/requested-values.yaml" || die "reviewed candidate values changed after preparation."
 fi

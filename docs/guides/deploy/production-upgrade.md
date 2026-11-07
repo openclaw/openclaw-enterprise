@@ -4,8 +4,8 @@ Run `scripts/upgrade-production-images` from the release checkout to change
 images in an existing Helm installation with Kubernetes Compute. Use the
 matching [OCC CLI](../cli.md#connect-to-your-installation). For a new
 installation, follow [install the production control plane](production-installation.md).
-For one Agent, follow [deploy and verify production Agents](production-agents.md).
-Plan any traffic handoff separately from this in-place upgrade.
+For one Agent, see [production Agents](production-agents.md). Plan traffic handoff
+separately.
 
 1. [Select and prepare the release](#prepare-the-release). Record the live
    baseline and take the backups required by the [upgrade checklist](upgrade-checklist.md).
@@ -33,9 +33,8 @@ For the experimental two-cluster profile, first
 
 ## Prepare the release
 
-If you retain conversations, send a unique nonsecret marker in a test
-conversation through the approved interface. Privately record its Agent and
-location.
+For retained conversations, send a unique nonsecret test marker through the
+approved interface; privately record its Agent and location.
 
 Prepare:
 
@@ -231,6 +230,19 @@ Releases with the shared tenant namespace refuse to start on a single-cluster
 Installation with
 [split-layout tenants](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations);
 check before the maintenance window.
+
+To require reviewed database compatibility evidence, add
+`--controller-compatibility-results /secure/occ/controller-results.json` with
+`--controller-image`. Supply the native PostgreSQL runner's `run` result from
+[released-controller qualification](../../testing/postgresql.md#released-controller-compatibility).
+The selected case and cleanup must pass for the recorded incumbent release image
+and selected candidate image digests before startup Jobs or writer changes. Index, platform-manifest and configuration
+digests are not interchangeable.
+
+The copied receipt is [frozen through recovery](production-upgrade-recovery.md).
+This validates operator-supplied evidence, not authenticity. `sourceSha` identifies
+the runner checkout, not image revisions or a clean worktree. It establishes
+neither IAM startup compatibility nor online or rollback safety; writers still stop.
 
 Set the controller image and run the command without `--runtime-image`:
 

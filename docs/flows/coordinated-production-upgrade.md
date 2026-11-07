@@ -1,16 +1,15 @@
 ---
 created: 2026-09-23
 updated: "2026-11-07"
-last_updated_session: "authoring-run/a2f2f4b1-8e0e-4f19-8ce3-11d6e118a054"
+last_updated_session: "authoring-run/4adaf10b-d7e7-46e1-8f30-65993c797458"
 ---
 
 # Production image upgrade flow
 
 ## Overview
 
-`scripts/upgrade-production-images` updates the OpenClaw Control Plane (OCC),
-Agent runtimes, or both. Controller-only upgrades stop after API/worker recovery.
-Runtime upgrades redeploy initially running Agents, then check ready Pods and
+`scripts/upgrade-production-images` updates the OpenClaw Control Plane (OCC)
+and/or Agent runtimes, recovers API/worker, and checks redeployed Agents' Pods and
 read-only Doctor lint.
 
 ## Entry Points
@@ -27,7 +26,8 @@ read-only Doctor lint.
 
 ```mermaid
 graph TD
-    A["Validate inputs"] --> Q{"Repository broker enabled?"}
+    A["Validate inputs"] --> DB["Validate selected compatibility receipt"]
+    DB --> Q{"Repository broker enabled?"}
     Q -->|Yes| P["Check image protocol and node architectures"]
     Q -->|No| B["Render and check candidate startup with Jobs"]
     P --> B
@@ -68,31 +68,37 @@ graph TD
 
 Before protected reads, evidence writes or cluster access, `HEAD` must match
 `--source-revision`. Changed, extra, missing or symlinked chart files and
-baseline/evidence aliases inside the chart are rejected. Keep the checkout
-unchanged; other edits and image provenance remain unchecked.
+baseline/evidence aliases inside the chart are rejected. Other edits and image provenance remain unchecked.
 
 Resume binds the evidence directory's path, device and inode; aliases share its
 lock. Any `completed` entry refuses resume before live calls or evidence changes.
 Runtime upgrades lock the private sibling dispatch journal, separate from restored
 evidence.
 
-Candidates match the [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
-as ordered YAML mappings, including images. Validate both candidates before
-protected-setting projections. `scripts/upgrade-production-images:matches_yaml`
-compares checked conversions and exits on unusable inputs or unwritable
-evidence with `Cannot compare upgrade YAML`. Only the Slack directory proxy and
-curated Codex PluginDriver selection may change before image selection. An explicit
-candidate may also wrap the installed single plugin registration in an array.
-The comparison preserves configuration, except for the curated
-catalog choice; it does not rewrite the baseline. Startup checks still validate
-the candidate against the selected controller. Broker
-checks compare references, not ConfigMap or Secret contents.
+`scripts/upgrade-production-images:matches_yaml` validates both candidate YAML
+mappings against the [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration),
+including images, before protected-setting projections. Unusable inputs or
+unwritable evidence report `Cannot compare upgrade YAML`. Only the Slack directory
+proxy, curated Codex PluginDriver selection, and wrapping an installed single
+plugin registration in an array may change before image selection. Other
+configuration and the baseline are preserved. Startup checks validate the
+candidate against the selected controller; broker checks compare references,
+not ConfigMap or Secret contents.
 
 Runtime upgrades require a complete authorized inventory and baseline versions.
 Nonterminal deployments, missing versions or unready Namespaces stop preparation.
 Stopped or deleting Agents are excluded; pending repository cleanup does not block.
 
-Repository-enabled releases require explicit immutable controller and broker images.
+`prepare_upgrade` copies the PostgreSQL `run` result;
+`validate_controller_compatibility` calls
+`scripts/upgrade-evidence.py:validate_compatibility` to check runner/file
+consistency, passing selected case and cleanup, and recorded incumbent release
+and selected candidate digests before preflight. Preparation hashes freeze the
+receipt for resume, which rereads only that copy. Runner SHA cannot verify
+image source. This does not authenticate execution or permit online migration
+or rollback; see [qualification limits](../guides/deploy/production-upgrade.md#upgrade-the-control-plane).
+
+Repository-enabled releases require immutable controller and broker images.
 All nodes matching the control plane selector, even unready or cordoned nodes,
 must share one architecture. `scripts/upgrade-image-identity.py:read_platform`
 verifies the selected platform and blob hashes in Docker's OCI export
@@ -104,14 +110,12 @@ This verifies the Driver and broker protocol; Kubernetes image availability,
 receipt durability and disposal remain unverified. The broker hostname
 stays fixed. For restart recovery, see the [broker procedure](../guides/repository-credentials/installation.md#install-and-verify).
 
-After the Helm server dry run,
-[`scripts/upgrade-startup-preflight.mjs`](../../scripts/upgrade-startup-preflight.mjs)
-copies API/worker images, environment, mounts and service accounts into Jobs,
-substituting the candidate Installation Secret. Each Job allows one completion,
-one parallel Pod, no retry, and the selected deadline. `preflight_startup` verifies
-the Job UID and child controller reference. Missing children wait; replacements
-or multiple children refuse preparation. Success requires Job completion; Job
-failure overrides a successful child.
+After Helm's server dry run, `scripts/upgrade-startup-preflight.mjs` copies
+API/worker images, environment, mounts and service accounts into single-completion,
+single-Pod Jobs with the candidate Installation Secret, no retries and the selected
+deadline. `preflight_startup` verifies Job UID and child ownership: missing children
+wait; replacements or multiple children refuse preparation. Job completion is
+required; Job failure overrides child success.
 
 An API Pod with a theme first calls
 `apps/controller/src/composition/console-theme.ts:loadConsoleTheme`. Invalid bundles
@@ -171,7 +175,7 @@ drafts per the [production guide](../guides/deploy/production-upgrade.md).
 
 ### 2. Reconcile a prior attempt
 
-`scripts/upgrade-production-images:1450`
+`scripts/upgrade-production-images:1486`
 
 Resume requires prepared evidence; otherwise reconcile preflight resources and
 use fresh evidence per [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
@@ -179,7 +183,6 @@ It binds directory identity, kubeconfig contents, inputs, OCC URL, scripts, flow
 chart and pair evidence; requalifies the pair; and rejects changed eligible nodes.
 Ineligible Helm states stop before values/Secret reads. Values must match baseline
 or candidate; Secret UID, Installation annotation and other data must match baseline.
-Only saved reviewed candidates apply.
 
 Skip Helm only at the submission's expected deployed revision with candidate
 values. Revisions outside its prior/expected pair or invalid intents refuse
@@ -209,7 +212,7 @@ reconciliation; restarting old images cannot undo committed migrations.
 
 ### 4. Verify control-plane recovery
 
-`scripts/upgrade-production-images:1666`
+`scripts/upgrade-production-images:1689`
 
 The script waits for both OCC Deployments and checks controller images,
 replica counts, and changed Installation checksums. Each component needs
@@ -295,20 +298,19 @@ uses `scripts/split-layout-tenants.mjs`. Its `createOccApi.expect` rejects
 malformed JSON, empty bodies and missing data envelopes before export writes a
 bundle. Empty collections, 204 deletes and explicitly accepted 404s remain valid.
 
-`importTenants` resolves unsaved targets by live name and rejects shared
-destinations before mutation or ID-map writes. Saved destination IDs remain
-reserved for skipped sources; unsaved skipped sources reserve nothing. Use
-distinct `--rename` targets, skip a source or correct the map before retrying.
-Validated saved mappings resume; previously merged resources stay merged.
-Rename keys, including `constructor` and `__proto__`, are literal. Without a
-saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
+`importTenants` resolves unsaved targets by live name, rejecting shared destinations
+before mutations or ID-map writes. Saved destination IDs stay reserved, including
+skipped sources; unsaved skipped sources reserve nothing. Correct the map, use
+distinct `--rename` targets or skip a source. Validated mappings resume without
+undoing prior merges. Rename keys are literal, including `constructor` and
+`__proto__`. Without saved mappings, exact-name reuse requires no Agents or Secrets.
 
 ## Debugging and Verification
 
-- Read stderr for chart, output path or Helm dry-run errors. `server-dry-run.txt`
-  contains Helm's standard output. For rejected candidates, inspect `preflight-<api|worker>.log` and `-status.json`.
-- For native scale, Helm upgrade, or rollout status failures, inspect
-  `native-command-failures.tsv`; see [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
+- Inspect stderr and `server-dry-run.txt` for preparation errors;
+  `preflight-<api|worker>.log` and `-status.json` for rejected candidates.
+- For scale, Helm or rollout failures, inspect `native-command-failures.tsv`;
+  see [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
 - Before retrying runtime failures, inspect `dispatch/*.error`, `dispatch/*.rejected`,
   version history, and `status/*.json`. Doctor failures: `status/*.doctor.json` and `status/*.doctor.error`.
 - Compare `before-workloads.json` and `after-workloads.json` for unexpected
@@ -334,6 +336,8 @@ saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-07 03:01: Freeze reviewed controller compatibility evidence. (authoring-run/4adaf10b-d7e7-46e1-8f30-65993c797458 - ada47832cb112f255f6c51d34dae37acce9760cd)
 
 - 2026-11-07 02:27: Validate both writers before stopping either. (authoring-run/a2f2f4b1-8e0e-4f19-8ce3-11d6e118a054 - 7f5489fe39ba84a34987bd22d905e942cf65a8ee)
 
