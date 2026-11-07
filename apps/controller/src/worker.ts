@@ -6845,16 +6845,15 @@ export class ControllerWorker {
       const agent = await this.lockClaimAgent(unit, claim);
       if (
         agent === undefined ||
-        agent.status !== "active" ||
         agent.id !== revision.agentId ||
         agent.servicePrincipalId !== revision.servicePrincipalId ||
-        agent.activeRevisionId !== revision.id ||
-        agent.desiredRuntimeState !== "running" ||
-        (await unit.namespaces.findNamespace(claim.namespaceId))?.status !== "ready"
+        agent.activeRevisionId !== revision.id
       ) {
         await queue.retry(claim, { code: "ACTIVE_REVISION_CHANGED" });
         return;
       }
+      // Activation has completed under this claim. A later stop waits for its
+      // acknowledgement instead of making this work repeat the stop itself.
       const repositoryWithdrawal = await queue.repositoryExpiryState({
         namespaceId: revision.namespaceId,
         agentId: revision.agentId,
