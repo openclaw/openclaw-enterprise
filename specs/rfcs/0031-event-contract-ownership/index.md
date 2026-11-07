@@ -9,7 +9,8 @@ author: kevinlin-openai
 - **ID:** RFC-0031
 - **Created:** 2026-11-06
 - **Last updated:** 2026-11-06
-- **Related:** [Platform audit](0013-platform-audit/index.md), [production observability](0012-production-observability.md), [platform design](../../docs/design.md#implementation-status).
+- **RFC PR:** [#4974](https://github.com/openclaw/openclaw-enterprise/pull/4974)
+- **Related:** [Platform audit](../0013-platform-audit/index.md), [production observability](../0012-production-observability.md), [platform design](../../../docs/design.md#implementation-status).
 
 ## Summary
 
@@ -24,14 +25,14 @@ the contract for later implementation without enabling new collection or access.
 
 An operator must be able to follow an API request or channel message through an
 Agent turn, tool invocation, policy decision and external outcome. Today,
-[OpenClaw Control Plane (OCC) audit](../../docs/guides/topics/audit-log.md) records selected administrative
-facts in PostgreSQL. [Operational logging](../../docs/guides/observability.md)
+[OpenClaw Control Plane (OCC) audit](../../../docs/guides/topics/audit-log.md) records selected administrative
+facts in PostgreSQL. [Operational logging](../../../docs/guides/observability.md)
 exports selected diagnostics through an optional Collector. Neither establishes
 a complete execution history.
 
-The current [AuditEvent](../../packages/contracts/src/index.ts) is scoped to OCC;
-the [Collector](../../deploy/logging/collector.yaml) filters runtime payloads and
-replaces bodies with approved text. The [audit repository](../../docs/flows/audit-ledger.md)
+The current [AuditEvent](../../../packages/contracts/src/index.ts) is scoped to OCC;
+the [Collector](../../../deploy/logging/collector.yaml) filters runtime payloads and
+replaces bodies with approved text. The [audit repository](../../../docs/flows/audit-ledger.md)
 has no public search boundary. Broadening these independently would produce
 inconsistent identities, retention and claims about completeness.
 
@@ -110,16 +111,10 @@ boundary. An uninstrumented path cannot inherit a completeness claim.
 Use one logical envelope, with typed payloads rather than arbitrary log fields.
 These names describe the proposed contract, not an existing public wire format.
 
-| Fields                                                                        | Contract                                                                                                                          |
-| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `eventId`, `eventType`, `schemaVersion`                                       | Stable retry identity; catalog-selected payload schema.                                                                           |
-| `source`, `sourceInstanceId`, `producerVersion`                               | Distinguish OCC, runtime and imported assertions; identify the configured producer.                                               |
-| `occurredAt`, `ingestedAt`                                                    | Preserve source time separately from receiver time. Neither establishes global ordering.                                          |
-| `installationId`, `namespaceId`, `resource`                                   | Receiver-established ownership. Namespace/resource are present when applicable; never inferred from a display name.               |
-| `actor`, `authentication`                                                     | Verified identity and nonsecret method/key reference, or explicitly unresolved. Actor and observing producer are different roles. |
-| `sessionId`, `turnId`, `operationId`, `invocationId`, `attemptId`, `parentId` | Type-specific correlation. Retrying an operation creates an attempt, not another logical operation.                               |
-| `phase`, `outcome`, `reasonCode`, `policyRef`                                 | Separate admission, execution and settlement. Policy reference identifies the evaluated version.                                  |
-| `providerRef`, `receiptRef`, `contentRef`, `capturePolicyVersion`             | Link external identities, authoritative receipts and separately controlled content.                                               |
+[Appendix A: event field glossary](event-fields.md) defines each field, its
+producer, applicability and relationship to the current `AuditEvent`. It also
+names the revision, ordering, payload and content-status fields required by the
+rules below. The appendix is part of this proposal.
 
 Execution events also identify the Agent revision used, so later configuration
 changes do not change the recorded context. Required fields vary by type: an anonymous malformed request has no fabricated
@@ -149,7 +144,7 @@ in platform core, and no new Driver capability is introduced by this RFC.
 Runtime records require authenticated, execution-bound producer identity. Pod
 labels or user-supplied event fields are insufficient to authorize a write or
 assert an IAM decision. General workload authentication remains
-[pending architecture work](../../docs/design.md#remaining-design-work); M2 must
+[pending architecture work](../../../docs/design.md#remaining-design-work); M2 must
 resolve that dependency before enabling runtime ingestion. A runtime may report
 its observations, but only the enforcement owner can assert its policy result.
 
