@@ -191,12 +191,13 @@ already-correct `openclaw.dev/installation-id` annotation:
   set -o pipefail
   OCC_INSTALLATION_ID=$(jq -ser '
     select(length == 1) | .[0].meta.installationId | select(type == "string") |
-    select(test("^ins_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\z"))
+    select(test("\\Ains_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\z"))
   ' "$OCC_BOOTSTRAP_KEY_FILE") &&
   OCC_INSTALLATION_SECRET=$(yq -o=json '.' /secure/occ/values.yaml | jq -ser '
     select(length == 1) | .[0] | objects | .installation.secretName |
     if . == null then "occ-installation-startup" else . end |
-    select(type == "string" and length > 0) | select(test("\\s") | not)
+    select(type == "string" and length <= 253) |
+    select(test("\\A[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*\\z"))
   ') || { printf '%s\n' 'Invalid inputs; annotation unchanged.' >&2; exit 1; }
   kubectl --kubeconfig /secure/occ/kubeconfig \
     --context '<reviewed-context>' --namespace openclaw-system \
