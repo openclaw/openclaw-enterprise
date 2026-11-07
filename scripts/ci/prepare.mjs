@@ -645,7 +645,10 @@ async function ensurePostgresServer(statePath, state) {
   await writeState(statePath, state);
   // PostgreSQL reads this public bootstrap as its container user, not the checkout owner.
   const initSql = join(directory, "init-local.sql");
-  await writeFile(initSql, await readFile(join(repositoryRoot, "migrations/init-local.sql")));
+  await writeFile(initSql, await readFile(join(repositoryRoot, "migrations/init-local.sql")), {
+    flag: "wx",
+    mode: 0o600,
+  });
   await chmod(initSql, 0o644);
   await execFile(
     process.env.OCC_DOCKER_BIN ?? "docker",

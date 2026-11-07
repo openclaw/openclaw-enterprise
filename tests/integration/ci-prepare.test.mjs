@@ -291,6 +291,70 @@ if (process.argv[1] === ${JSON.stringify(preparePath)}) {
   );
 }
 
+test(
+  "PostgreSQL staging refuses an existing SQL symlink without changing its target",
+  {
+    skip: process.platform === "win32" ? "Requires POSIX symlinks." : false,
+  },
+  async (t) => {
+    const root = await fixture(t);
+    const statePath = join(root, "state.json");
+    const target = join(root, "unrelated.sql");
+    await writeFile(target, "unrelated content");
+    const preload = join(root, "competing-symlink.mjs");
+    const docker = join(root, "docker.mjs");
+    await writeFile(
+      docker,
+      `#!${process.execPath}
+if (process.argv.includes("up")) process.exit(17);
+console.log("29.9.2");
+`,
+      { mode: 0o700 },
+    );
+    // Insert a real symlink only at the staged write boundary, then call the original writer.
+    // The fixture controls scheduling, not writeFile's flags or filesystem result.
+    await writeFile(
+      preload,
+      `
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { join } from "node:path";
+if (process.argv[1] === ${JSON.stringify(preparePath)}) {
+  const writeFile = fs.writeFile;
+  fs.writeFile = async (path, data, options) => {
+    const state = await fs.readFile(${JSON.stringify(statePath)}, "utf8")
+      .then(JSON.parse, (error) => { if (error.code === "ENOENT") return undefined; throw error; });
+    const resource = state?.resources.find((entry) => entry.kind === "compose-postgres");
+    if (resource?.directory && path === join(resource.directory, "init-local.sql")) {
+      await fs.symlink(${JSON.stringify(target)}, path);
+    }
+    return writeFile(path, data, options);
+  };
+  syncBuiltinESMExports();
+}
+`,
+    );
+
+    const result = await runPrepare(["--lane", "postgres-auth", "--state", statePath], {
+      OCC_DOCKER_BIN: docker,
+      NODE_OPTIONS: `--import=${preload}`,
+    });
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    const cleanup = await spawnResult(
+      process.execPath,
+      [join(repositoryRoot, "scripts/ci/cleanup.mjs"), "--state", statePath],
+      { env: { ...process.env, OCC_DOCKER_BIN: docker } },
+    );
+
+    assert.equal(await readFile(target, "utf8"), "unrelated content");
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /EEXIST/);
+    assert.equal(cleanup.status, 1);
+    assert.match(cleanup.stderr, /unexpected PostgreSQL bootstrap contents/);
+    assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+  },
+);
+
 // Most cases wait on preparation children: fake engines, deliberate command timeouts
 // and retry backoff, so a few run at once: two per CPU, at most four. With four copies
 // of this file on one CPU, four at once still passed, while all at once missed the 3 s
