@@ -1681,10 +1681,9 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
           gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
         },
   );
-  if (options.defaultUser === true) {
-    // Default users create Agents in default and own what they create (RFC-0026).
-    workerConfiguration.iam = defaultUsersIAM();
-  }
+  // Cases share an Installation, so keep its policy after the Default user case
+  // creates durable Owner bindings. Kubernetes cleanup does not remove those grants.
+  workerConfiguration.iam = defaultUsersIAM();
   const publicGithubRead =
     options.publicGithubRead !== true
       ? undefined
