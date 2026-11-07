@@ -11,6 +11,23 @@ packages:
 minimumReleaseAge: 10080
 minimumReleaseAgeStrict: true
 minimumReleaseAgeIgnoreMissingTime: false
+# CVE-2026-121802: better-auth 1.7.16 (with its same-day plugin line and
+# pinned better-call) fixes a critical account takeover released 2026-11-03.
+# Take that security line now despite the seven-day wait: admit the exact
+# pinned versions only, so the wait policy still covers every later release.
+# TODO: remove this whole stanza on/after 2026-11-10 (~21:25 UTC), when
+# better-auth 1.7.16 passes the seven-day window.
+minimumReleaseAgeExclude:
+  - better-auth@1.7.16
+  - "@better-auth/api-key@1.7.16"
+  - "@better-auth/core@1.7.16"
+  - "@better-auth/drizzle-adapter@1.7.16"
+  - "@better-auth/kysely-adapter@1.7.16"
+  - "@better-auth/memory-adapter@1.7.16"
+  - "@better-auth/mongo-adapter@1.7.16"
+  - "@better-auth/prisma-adapter@1.7.16"
+  - "@better-auth/telemetry@1.7.16"
+  - better-call@1.4.5
 verifyDepsBeforeRun: error
 
 allowBuilds:
