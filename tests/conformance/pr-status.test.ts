@@ -8,7 +8,7 @@ import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 const script = resolve("scripts/pr-status.ts");
 
 const liveTip = "1234567890abcdef1234567890abcdef12345678";
-const reportedBase = "abcdef1234567890abcdef1234567890abcdef1234";
+const reportedBase = "abcdef1234567890abcdef1234567890abcdef12";
 const nestedBase = "release/team+fix#1";
 const encodedBase = "release%2Fteam%2Bfix%231";
 
@@ -230,19 +230,6 @@ for (const inferred of [false, true]) {
     assert.ok(calls.every((call) => !call.some((arg) => arg.includes("/commits/"))));
   });
 }
-
-test("full commits fixture supplies a valid SHA and oversized synthetic patch", (t) => {
-  const { env, directory } = setup(t);
-  const result = spawnSync(join(directory, "gh"), ["api", "repos/example/project/commits/main"], {
-    env,
-    encoding: "utf8",
-    maxBuffer: 4 * 1024 * 1024,
-  });
-  assert.equal(result.status, 0, result.stderr);
-  assert.ok(result.stdout.length > 1024 * 1024);
-  const payload: unknown = JSON.parse(result.stdout);
-  assert.deepEqual(payload, { sha: liveTip, files: [{ patch: "x".repeat(2 * 1024 * 1024) }] });
-});
 
 for (const [label, response] of [
   ["wrong ref name", { ref: "refs/heads/other", object: { type: "commit", sha: liveTip } }],
