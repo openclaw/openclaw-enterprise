@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { requiresPostgres, setup } from "../helpers/compute-singleton-worker.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import { PostgresMetricsSnapshot } from "../../packages/occ/src/index.ts";
 
@@ -486,6 +487,35 @@ for (const failure of ["observation", "binding"]) {
       let available = false;
       let maintenanceAttempts = 0;
       let bindingAttempts = 0;
+      const evidence = {
+        component: "agent",
+        check: "repository-git-route",
+        checkedAt: new Date().toISOString(),
+        code: "REPOSITORY_ROUTE_BLOCKED",
+      };
+      // Compute supplies controlled observations here; this proves worker logging,
+      // not recovery of an installed Git route. Valid unknown codes stay private.
+      // Malformed and absent evidence still produce the ordinary pending completion.
+      const runtimeFailures = [
+        evidence,
+        { ...evidence, code: "PRIVATE_RUNTIME_SENTINEL" },
+        { ...evidence, code: "invalid runtime identifier" },
+        undefined,
+        {
+          ...evidence,
+          check: "model-probe",
+          code: "MODEL_PROBE_FAILED",
+          cause: { kind: "PROBE_STATUS", detail: "billing" },
+        },
+      ];
+      const events = [];
+      const lines = [];
+      const emit = createWorkerLogEmitter(
+        createOccLogger({
+          component: "occ-worker",
+          destination: { write: (line) => lines.push(line) },
+        }),
+      );
 
       await fixture.start(
         {
@@ -506,7 +536,12 @@ for (const failure of ["observation", "binding"]) {
             if ((await fixture.activeRevision(owner)) === revision.id) {
               maintenanceAttempts += 1;
               if (!available) {
-                return { ...observation, ready: false };
+                return {
+                  ...observation,
+                  ready: false,
+                  runtimeFailure:
+                    runtimeFailures[(maintenanceAttempts - 1) % runtimeFailures.length],
+                };
               }
             }
             return observation;
@@ -515,6 +550,11 @@ for (const failure of ["observation", "binding"]) {
         },
         30_000,
         40,
+        "production",
+        (event) => {
+          events.push(event);
+          emit(event);
+        },
       );
       await fixture.work(candidate);
 
@@ -533,7 +573,44 @@ for (const failure of ["observation", "binding"]) {
       });
       if (failure === "binding") {
         assert.equal(maintenanceAttempts, 0);
+      } else {
+        const isMaintenance = (event) =>
+          event.event === "worker.completed" &&
+          event.workId?.startsWith(`agent_revision:${candidate.id}:maintenance:`);
+        const expected = [
+          "REPOSITORY_ROUTE_BLOCKED",
+          "UNRECOGNIZED",
+          undefined,
+          undefined,
+          "MODEL_PROBE_FAILED",
+        ];
+        // Both the producer and the serialized operational log retain only the code.
+        // The real worker still closes each observation as pending and reschedules it.
+        for (const records of [events, lines.map((line) => JSON.parse(line))]) {
+          const completions = records.filter(isMaintenance).slice(0, runtimeFailures.length);
+          assert.equal(completions.length, runtimeFailures.length);
+          assert.deepEqual(
+            completions.map((event) => event.failure),
+            expected,
+          );
+          assert.ok(
+            completions.every(
+              (event) => event.outcome === "pending" && event.code === "REVISION_INCOMPLETE",
+            ),
+          );
+          for (const completion of completions) {
+            assert.notEqual(completion.component, evidence.component);
+            for (const field of ["runtimeFailure", "check", "checkedAt", "cause"]) {
+              assert.equal(Object.hasOwn(completion, field), false);
+            }
+          }
+        }
+        assert.doesNotMatch(
+          lines.join(""),
+          /PRIVATE_RUNTIME_SENTINEL|invalid runtime identifier|billing/,
+        );
       }
+      assert.equal(await fixture.activeRevision(owner), candidate.id);
       available = true;
 
       await waitFor("active runtime recovery after a prolonged provider outage", async () => {
