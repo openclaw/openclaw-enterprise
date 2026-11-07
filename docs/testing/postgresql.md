@@ -21,7 +21,8 @@ exit. Its PostgreSQL server is disposable, so preparation turns off `fsync`,
 `synchronous_commit` and `full_page_writes` there; keep no data in it. Each run
 needs its own state file. Preparation stages a container-readable copy of the public
 bootstrap SQL, so restrictive checkout permissions do not need changing. Cleanup
-removes this copy with the disposable server. With Docker Compose available, run:
+removes this copy with the disposable server; unexpected files in its directory
+are preserved and reported as a cleanup failure. With Docker Compose available, run:
 
 ```sh
 (

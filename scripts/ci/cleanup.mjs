@@ -4,7 +4,17 @@ import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.mjs";
 import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.ts";
 import { fork, spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, chmod, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  lstat,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  rmdir,
+  writeFile,
+} from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withStateLock } from "./state-lock.ts";
@@ -278,15 +288,6 @@ function composeArgs(resource, state, ...args) {
     throw new Error(`Refusing cleanup with unexpected Compose file: ${resource.composeFile}`);
   }
   assertOwnedName("openclaw_ci_pg_", resource.name, "Compose PostgreSQL project");
-  if (
-    resource.directory !== undefined &&
-    (!isAbsolute(resource.directory) ||
-      !basename(resource.directory).startsWith(`${resource.name}-`))
-  ) {
-    throw new Error(
-      `Refusing cleanup outside the owned PostgreSQL directory: ${resource.directory}`,
-    );
-  }
   if (Number(resource.port) === 55432) {
     throw new Error("Refusing to clean developer PostgreSQL port 55432.");
   }
@@ -300,7 +301,15 @@ function quoteIdentifier(value) {
   return `"${value.replaceAll('"', '""')}"`;
 }
 
-async function cleanupComposePostgres(resource, state) {
+async function cleanupComposePostgres(resource, state, statePath) {
+  if (
+    resource.directory !== undefined &&
+    resource.directory !== join(dirname(statePath), `${resource.name}-bootstrap`)
+  ) {
+    throw new Error(
+      `Refusing cleanup outside the owned PostgreSQL directory: ${resource.directory}`,
+    );
+  }
   await execFile(
     process.env.OCC_DOCKER_BIN ?? "docker",
     composeArgs(resource, state, "down", "--volumes", "--remove-orphans"),
@@ -314,7 +323,23 @@ async function cleanupComposePostgres(resource, state) {
     },
   );
   if (resource.directory !== undefined) {
-    await rm(resource.directory, { recursive: true, force: true });
+    let entries;
+    try {
+      if (!(await lstat(resource.directory)).isDirectory()) {
+        throw new Error(`Refusing unexpected PostgreSQL bootstrap contents: ${resource.directory}`);
+      }
+      entries = await readdir(resource.directory, { withFileTypes: true });
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        return;
+      }
+      throw error;
+    }
+    if (entries.some((entry) => entry.name !== "init-local.sql" || !entry.isFile())) {
+      throw new Error(`Refusing unexpected PostgreSQL bootstrap contents: ${resource.directory}`);
+    }
+    await rm(join(resource.directory, "init-local.sql"), { force: true });
+    await rmdir(resource.directory);
   }
 }
 
@@ -528,7 +553,7 @@ async function cleanupFirstAgentImages(resource, state) {
   }
 }
 
-async function cleanupResource(resource, state) {
+async function cleanupResource(resource, state, statePath) {
   switch (resource.kind) {
     case "first-agent-image-registry":
       await cleanupFirstAgentImages(resource, state);
@@ -541,7 +566,7 @@ async function cleanupResource(resource, state) {
       await cleanupDatabase(resource, state);
       break;
     case "compose-postgres":
-      await cleanupComposePostgres(resource, state);
+      await cleanupComposePostgres(resource, state, statePath);
       break;
     case "k3d-image":
       await cleanupK3dImage(resource, state);
@@ -651,7 +676,7 @@ async function cleanupLockedResourceIds(path, resourceIds, dropped = new Map()) 
     }
     try {
       if (!dropped.has(resource.id)) {
-        await cleanupResource(resource, state);
+        await cleanupResource(resource, state, path);
       } else if ("error" in dropped.get(resource.id)) {
         throw dropped.get(resource.id).error;
       }

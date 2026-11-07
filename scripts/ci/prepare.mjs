@@ -6,6 +6,7 @@ import { createServer, isIPv4 } from "node:net";
 import {
   appendFile,
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -615,7 +616,15 @@ async function ensurePostgresServer(statePath, state) {
     throw new Error("Refusing to use the developer PostgreSQL port 55432.");
   }
   const project = ownedName("openclaw-ci-pg", state.prefix, { maxLength: 63, separator: "_" });
-  const directory = await mkdtemp(join(process.env.RUNNER_TEMP ?? tmpdir(), `${project}-`));
+  const directory = join(dirname(statePath), `${project}-bootstrap`);
+  try {
+    await lstat(directory);
+    throw new Error(`Refusing existing PostgreSQL bootstrap directory: ${directory}`);
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+  }
   const resource = addResource(state, "compose-postgres", {
     name: project,
     directory,
@@ -623,6 +632,7 @@ async function ensurePostgresServer(statePath, state) {
     port,
   });
   await writeState(statePath, state);
+  await mkdir(directory, { mode: 0o700 });
   // PostgreSQL reads this public bootstrap as its container user, not the checkout owner.
   const initSql = join(directory, "init-local.sql");
   await writeFile(initSql, await readFile(join(repositoryRoot, "migrations/init-local.sql")));

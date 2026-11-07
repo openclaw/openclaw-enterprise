@@ -171,6 +171,50 @@ function runPrepare(args, env = {}) {
   });
 }
 
+test(
+  "PostgreSQL preparation records staging before creating its directory",
+  {
+    skip:
+      process.platform === "win32" || process.getuid?.() === 0
+        ? "Requires POSIX permission enforcement for a non-root caller."
+        : false,
+  },
+  async (t) => {
+    const root = await fixture(t);
+    const stateDirectory = join(root, "state");
+    const runnerTemp = join(root, "runner-temp");
+    await mkdir(stateDirectory);
+    await mkdir(runnerTemp);
+    const statePath = join(stateDirectory, "state.json");
+    const docker = join(root, "docker.mjs");
+    await writeFile(
+      docker,
+      `#!${process.execPath}
+import { chmodSync } from "node:fs";
+// The initial state exists, but its next durable write must fail.
+chmodSync(process.env.CI_TEST_STATE_DIRECTORY, 0o500);
+console.log("29.9.2");
+`,
+      { mode: 0o700 },
+    );
+    let result;
+    try {
+      result = await runPrepare(["--lane", "postgres-auth", "--state", statePath], {
+        OCC_DOCKER_BIN: docker,
+        RUNNER_TEMP: runnerTemp,
+        CI_TEST_STATE_DIRECTORY: stateDirectory,
+      });
+    } finally {
+      await chmod(stateDirectory, 0o700);
+    }
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /EACCES/);
+    assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")).resources, []);
+    assert.deepEqual(await readdir(stateDirectory), ["state.json"]);
+    assert.deepEqual(await readdir(runnerTemp), []);
+  },
+);
+
 // Most cases wait on preparation children: fake engines, deliberate command timeouts
 // and retry backoff, so a few run at once: two per CPU, at most four. With four copies
 // of this file on one CPU, four at once still passed, while all at once missed the 3 s

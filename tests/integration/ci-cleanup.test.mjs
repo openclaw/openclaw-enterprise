@@ -518,20 +518,48 @@ test("cleanup continues after a failed database drop and retains only the failed
   await assert.rejects(stat(directory), { code: "ENOENT" });
 });
 
-test("cleanup rejects a PostgreSQL bootstrap directory outside its project", async (t) => {
+for (const location of ["unrelated-name", "matching-name-under-other-parent"]) {
+  test(`cleanup rejects a PostgreSQL bootstrap directory at ${location}`, async (t) => {
+    const root = await fixture(t);
+    const statePath = join(root, "state.json");
+    const state = failedDropState();
+    const directory =
+      location === "unrelated-name"
+        ? join(root, "unrelated-inputs")
+        : join(root, "other-parent", `${state.resources[0].name}-bootstrap`);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "sentinel"), "unrelated content");
+    state.resources = [{ ...state.resources[0], directory }];
+    await writeState(statePath, state);
+    const docker = await writeCommand(join(root, "bin"), "docker", "exit 0\n");
+
+    // A matching basename does not grant ownership of another directory.
+    const result = await runAsync(statePath, { OCC_DOCKER_BIN: docker });
+    assert.equal(await readFile(join(directory, "sentinel"), "utf8"), "unrelated content");
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /outside the owned PostgreSQL directory/);
+    assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+  });
+}
+
+test("cleanup preserves unexpected PostgreSQL bootstrap contents and state", async (t) => {
   const root = await fixture(t);
-  const directory = join(root, "unrelated-inputs");
-  await mkdir(directory);
   const statePath = join(root, "state.json");
   const state = failedDropState();
+  const directory = join(root, `${state.resources[0].name}-bootstrap`);
+  await mkdir(directory);
+  await writeFile(join(directory, "init-local.sql"), "-- public bootstrap\n");
+  await writeFile(join(directory, "sentinel"), "unrelated content");
   state.resources = [{ ...state.resources[0], directory }];
   await writeState(statePath, state);
+  const docker = await writeCommand(join(root, "bin"), "docker", "exit 0\n");
 
-  // Reject the foreign path before calling Docker or removing any local input.
-  const result = await runAsync(statePath, { OCC_DOCKER_BIN: join(root, "must-not-run") });
+  // Even an owned directory cannot authorize deleting files preparation did not create.
+  const result = await runAsync(statePath, { OCC_DOCKER_BIN: docker });
+  assert.equal(await readFile(join(directory, "sentinel"), "utf8"), "unrelated content");
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /outside the owned PostgreSQL directory/);
-  assert.equal((await stat(directory)).isDirectory(), true);
+  assert.match(result.stderr, /unexpected PostgreSQL bootstrap contents/);
+  assert.equal(await readFile(join(directory, "init-local.sql"), "utf8"), "-- public bootstrap\n");
   assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
 });
 
