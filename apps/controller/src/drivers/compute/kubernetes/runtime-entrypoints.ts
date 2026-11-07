@@ -56,6 +56,10 @@ export const SETUP_WRAPPER_COMMAND: readonly string[] = Object.freeze([
   "-e",
 ]);
 export const MANAGED_CONFIGURATION_DIRECTORY = "/etc/openclaw-managed";
+export const CODEX_WORKSPACE_NODE_COMMANDS =
+  "file.fetch,file.stat,file.write,file.create,dir.list,workspace.memory,workspace.skills";
+export const EXTERNAL_WORKSPACE_OWNER_ENV = "OPENCLAW_CODEX_REMOTE_WORKSPACE_BINDING";
+export const EXTERNAL_WORKSPACE_OWNER_DIRECTORY = "/etc/openclaw-box-owner";
 // Under the Harness HOME; Compute renders the same path into the Gateway's relay config.
 export const NATIVE_HOOK_CREDENTIAL_DIRECTORY = ".oce-native-hooks";
 
@@ -2716,6 +2720,16 @@ function installGatewayPlugins(runtime, failures, installs) {
   return result;
 }
 
+function hasExternalWorkspaceOwner() {
+  const directory = process.env[${JSON.stringify(EXTERNAL_WORKSPACE_OWNER_ENV)}];
+  if (directory === undefined) return false;
+  if (directory !== ${JSON.stringify(EXTERNAL_WORKSPACE_OWNER_DIRECTORY)} ||
+      !existsSync(directory + "/binding.json") || !existsSync(directory + "/ca.pem")) {
+    throw new Error("The selected external workspace binding is unavailable.");
+  }
+  return true;
+}
+
 // Every change this makes is under plugins.*, which OpenClaw hot-applies.
 function configureWorkspaceNodePlugins(config, workspaceNodeId) {
   requireWorkspaceNodePlugins(config);
@@ -2734,6 +2748,20 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
   }
   // The path is known at startup. Pairing supplies only the node identity, so
   // loading file-transfer should not also replace the Codex plugin.
+  const externalWorkspace = hasExternalWorkspaceOwner();
+  if (externalWorkspace) {
+    const fileConfig = entries["file-transfer"]?.config ?? {};
+    if (remoteRoot !== "/home/node/workspace" ||
+        Object.keys(fileConfig).some((key) => !["nodes", "workspaces", "policyVersion"].includes(key)) ||
+        Object.keys(fileConfig.nodes ?? {}).some((id) => id !== workspaceNodeId) ||
+        Object.keys(fileConfig.workspaces ?? {}).some((name) => name !== "main") ||
+        (fileConfig.policyVersion !== undefined && fileConfig.policyVersion !== 2) ||
+        (fileConfig.workspaces?.main !== undefined &&
+          (workspaceNodeId === undefined ||
+            !pluginDeepEqual(fileConfig.workspaces.main, { nodeId: workspaceNodeId, remoteRoot })))) {
+      throw new Error("An external workspace requires the original root and enrolled file node only.");
+    }
+  }
   if (workspaceNodeId === undefined) return;
   if (Array.isArray(plugins.allow)) {
     plugins.allow = [...new Set([...plugins.allow, "file-transfer"])];
@@ -2754,18 +2782,20 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
     "/home/node/openclaw-runtime-assets/plugin-skills", "/app/extensions/*/skills",
   ];
   const nodes = fileConfig.nodes ??= {};
-  if (nodes[workspaceNodeId] === undefined && nodes["*"] === undefined) {
+  if (externalWorkspace || (nodes[workspaceNodeId] === undefined && nodes["*"] === undefined)) {
     // Native workspace.skills checks the source root for discovery, the skill directory for
     // resources and the instruction file for reads. This release needs exactly those paths.
-    const managedSkillPaths = managedPluginInstallations().flatMap(({ skills, skill }) =>
-      skill ? [skills, skill.directory, skill.instructions] : []);
-    nodes[workspaceNodeId] = {
+    const managedSkillPaths = externalWorkspace ? [] : managedPluginInstallations().flatMap(
+      ({ skills, skill }) => skill ? [skills, skill.directory, skill.instructions] : []);
+    const grant = {
       ask: "off",
       allowReadPaths: [
         remoteRoot,
         remoteRoot + "/**",
-        "/home/node/.openclaw",
-        ...skillRoots.flatMap((root) => [root, root + "/**"]),
+        ...(externalWorkspace ? [] : [
+          "/home/node/.openclaw",
+          ...skillRoots.flatMap((root) => [root, root + "/**"]),
+        ]),
         ...managedSkillPaths,
       ],
       allowWritePaths: [
@@ -2780,6 +2810,10 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
       ],
       followSymlinks: false,
     };
+    if (externalWorkspace && nodes[workspaceNodeId] !== undefined && !pluginDeepEqual(nodes[workspaceNodeId], grant)) {
+      throw new Error("The external workspace file node has conflicting grants.");
+    }
+    nodes[workspaceNodeId] = grant;
   }
   fileConfig.policyVersion ??= 2;
   (fileConfig.workspaces ??= {}).main = { nodeId: workspaceNodeId, remoteRoot };
@@ -3159,9 +3193,13 @@ function configureGateway(peerStatus) {
     // The first pairing records its command grant before a node ID is available.
     // gateway.* changes restart OpenClaw, so this is written only before a spawn.
     const commands = ((config.gateway ??= {}).nodes ??= {}).commands ??= {};
+    const workspaceCommands = ${JSON.stringify(CODEX_WORKSPACE_NODE_COMMANDS.split(","))};
+    if (hasExternalWorkspaceOwner() &&
+        (managedMcpGatewayTools.length || (commands.allow ?? []).some((command) => !workspaceCommands.includes(command)))) {
+      throw new Error("An external workspace permits only file node commands.");
+    }
     commands.allow = [...new Set([
-      ...(commands.allow ?? []), "file.fetch", "file.stat", "file.write", "file.create",
-      "dir.list", "workspace.memory", "workspace.skills",
+      ...(commands.allow ?? []), ...workspaceCommands,
       ...(managedMcpGatewayTools.length ? ["mcp.tools.call.v1"] : []),
     ])];
     if (environmentWorkspaceNodeId !== undefined || workspaceNodeBindingPath !== undefined) {
@@ -4649,6 +4687,9 @@ function completeSetupCode(payload) {
 }
 `;
 
+/** Stock Codex program when a provider runs the file-only node separately. */
+export const PROVIDER_CODEX_ONLY_ENTRYPOINT = agentRuntimeEntrypoint(false, false, false);
+
 // Kubernetes Codex implementation: this file-only node is not an OpenClaw
 // execution worker; its explicit command allowlist disables worker hosting.
 // It serves files while Codex restarts. Reuse Codex login/plugin initialization
@@ -4889,7 +4930,7 @@ delete codexEnv.OPENCLAW_NODE_DISPLAY_NAME;
 const nodeDisplayName = process.env.OPENCLAW_NODE_DISPLAY_NAME;
 const nodeCommands = [
   ...(nodeDisplayName ? ["--display-name", nodeDisplayName] : []),
-  "--commands", "file.fetch,file.stat,file.write,file.create,dir.list,workspace.memory,workspace.skills",
+  "--commands", ${JSON.stringify(CODEX_WORKSPACE_NODE_COMMANDS)},
 ];
 // The kubelet swaps Secret volume contents atomically, but an empty, truncated
 // or otherwise undecodable code is treated as absent and never started.
@@ -5111,9 +5152,7 @@ for (const slot of [...processes].reverse()) start(slot);
 `;
 }
 
-export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  agentRuntimeEntrypoint(false, false, false),
-);
+export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(PROVIDER_CODEX_ONLY_ENTRYPOINT);
 export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   agentRuntimeEntrypoint(true, false, false),
 );

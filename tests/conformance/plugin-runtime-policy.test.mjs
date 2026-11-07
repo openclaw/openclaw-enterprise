@@ -1526,6 +1526,103 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
   }
 });
 
+test("the Gateway binds an external workspace to file commands on its enrolled node only", async () => {
+  const options = {
+    env: { OPENCLAW_CODEX_REMOTE_WORKSPACE_BINDING: "/etc/openclaw-box-owner" },
+    files: [
+      ["/etc/openclaw-box-owner/binding.json", "{}"],
+      ["/etc/openclaw-box-owner/ca.pem", "test file"],
+    ],
+    workspaceNodeId: "enrolled-node",
+  };
+  for (const changed of [
+    { files: [] },
+    { files: options.files.slice(0, 1) },
+    { env: { OPENCLAW_CODEX_REMOTE_WORKSPACE_BINDING: "/tmp/foreign" } },
+  ]) {
+    await assert.rejects(
+      () => runOpenClawRuntimeHelper(undefined, [], { ...options, ...changed, baseConfig: {} }),
+      /selected external workspace binding is unavailable/,
+    );
+  }
+  const { files } = await runOpenClawRuntimeHelper(undefined, [], { ...options, baseConfig: {} });
+  const config = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+  const transfer = config.plugins.entries["file-transfer"].config;
+  assert.deepEqual(Object.keys(transfer.nodes), ["enrolled-node"]);
+  assert.deepEqual(transfer.nodes["enrolled-node"].allowReadPaths, [
+    "/home/node/workspace",
+    "/home/node/workspace/**",
+  ]);
+  assert.equal(transfer.nodes["enrolled-node"].followSymlinks, false);
+  assert.ok(
+    transfer.nodes["enrolled-node"].allowWritePaths.every((path) =>
+      path.startsWith("/home/node/workspace/"),
+    ),
+  );
+  assert.deepEqual(config.gateway.nodes.commands.allow, [
+    "file.fetch",
+    "file.stat",
+    "file.write",
+    "file.create",
+    "dir.list",
+    "workspace.memory",
+    "workspace.skills",
+  ]);
+  for (const unsafe of [
+    { nodes: { "*": {} } },
+    { nodes: { other: {} } },
+    { workspaces: { main: { nodeId: "enrolled-node", remoteRoot: "/etc" } } },
+    { policyVersion: 1 },
+    { literalGrants: [{ path: "/etc" }] },
+    { workspaces: { other: { nodeId: "other", remoteRoot: "/etc" } } },
+  ]) {
+    await assert.rejects(
+      () =>
+        runOpenClawRuntimeHelper(undefined, [], {
+          ...options,
+          baseConfig: { plugins: { entries: { "file-transfer": { config: unsafe } } } },
+        }),
+      /original root and enrolled file node only/,
+    );
+  }
+  await assert.rejects(
+    () =>
+      runOpenClawRuntimeHelper(undefined, [], {
+        ...options,
+        baseConfig: {
+          plugins: {
+            entries: {
+              "file-transfer": {
+                config: {
+                  nodes: { "enrolled-node": { ask: "always", allowWritePaths: [] } },
+                },
+              },
+            },
+          },
+        },
+      }),
+    /conflicting grants/,
+  );
+  const replay = await runOpenClawRuntimeHelper(undefined, [], {
+    ...options,
+    baseConfig: { plugins: { entries: { "file-transfer": { config: transfer } } } },
+  });
+  assert.deepEqual(
+    JSON.parse(replay.files.get("/home/node/.openclaw/openclaw.json")).plugins.entries[
+      "file-transfer"
+    ].config,
+    transfer,
+  );
+  await assert.rejects(
+    () =>
+      runOpenClawRuntimeHelper(undefined, [], {
+        ...options,
+        baseConfig: { gateway: { nodes: { commands: { allow: ["system.run"] } } } },
+      }),
+    /only file node commands/,
+  );
+});
+
 test("deployment admission and the Gateway entrypoint agree on the workspace node's plugins", async () => {
   // The entrypoint exits at every start on a plugin shape a workspace node cannot use, so a
   // dedicated deployment that admitted one crash-looped after its predecessor stopped

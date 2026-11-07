@@ -275,6 +275,8 @@ import {
   COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   COMPUTE_AGENT_WITH_NODE_ENTRYPOINT,
   COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+  EXTERNAL_WORKSPACE_OWNER_DIRECTORY,
+  EXTERNAL_WORKSPACE_OWNER_ENV,
   AGENT_WITH_NODE_ENTRYPOINT,
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
@@ -1166,6 +1168,8 @@ const CONFIGURATION_VOLUME = "openclaw-configuration";
 const HARNESS_TRUST_VOLUME = "harness-trust";
 const HARNESS_TRUST_DIRECTORY = "/etc/openclaw-harness-trust";
 const HARNESS_TRUST_FILE = "ca-bundle.pem";
+const EXTERNAL_WORKSPACE_OWNER_BINDING = "binding.json";
+const EXTERNAL_WORKSPACE_OWNER_CA = "ca.pem";
 const PLUGIN_RUNTIME_VOLUME = "openclaw-plugin-runtime";
 export const PLUGIN_RUNTIME_STATUS_PORT = 18_791;
 const PLUGIN_RUNTIME_STATUS_PATH = "/openclaw/plugin-runtime/status";
@@ -4848,6 +4852,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
   ): void {
     enabledChannelProviders(configuration, CHANNEL_PROVIDERS, callerSettingError);
     requireHarnessCredentialBinding(configuration, callerSettingError, options);
+    const environment = asRecord(configuration.env);
+    for (const [path, values] of [
+      ["env", environment],
+      ["env.vars", asRecord(environment?.vars)],
+    ] as const) {
+      if (values && Object.hasOwn(values, EXTERNAL_WORKSPACE_OWNER_ENV)) {
+        throw callerSettingError(
+          `${path}.${EXTERNAL_WORKSPACE_OWNER_ENV}`,
+          "must be set only by Compute",
+        );
+      }
+    }
     // Every OpenClaw topology applies the tool policy, embedded too (findings 2688, 2689), and the
     // plugin entry key rule (finding 3077). Preparation and activation skip them: an active
     // revision saved before these rules keeps its maintenance and recovery passes until a
@@ -6860,10 +6876,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // A provider-owned Harness gets the transport token's verifier only: Codex
         // authenticates its app-server with it, and both Codex and the dedicated
         // OpenClaw worker serve a held startup failure to the token holder.
-        (revision.egressPlan !== undefined || sandboxDriver?.implementation === "openshell") &&
-          (revision.harness.id === "codex" || revision.harness.id === "openclaw")
-          ? "verifier"
-          : "secret",
+        this.deliversHarnessTransportVerifier(revision, sandboxDriver) ? "verifier" : "secret",
       ),
     );
     const gatewaySecretEnvironment = await this.prepareRevisionStage(
@@ -7329,6 +7342,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
             : await this.prepareRevisionStage("sandbox_provision", () =>
                 sandboxDriver.harnessEndpoint!(harnessContext),
               );
+        if (
+          nativeRuntime === undefined &&
+          sandboxDriver.harnessEndpoint !== undefined &&
+          !providerEndpoint
+        ) {
+          throw new ConfigurationFailure(
+            "The selected SandboxDriver did not return its Harness endpoint.",
+          );
+        }
         if (
           providerEndpoint !== undefined &&
           (existingGateway === undefined || existingGatewayRevisionId === revision.id)
@@ -7923,17 +7945,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       throw new Error("The exact AgentRevision workspace node is not enrolled.");
     }
-    const activatedHarnessAuth =
-      (revision.egressPlan !== undefined || sandboxDriver?.implementation === "openshell") &&
-      (revision.harness.id === "codex" || revision.harness.id === "openclaw")
-        ? {
-            ...harnessAuth,
-            environment: [
-              ...harnessAuth.environment,
-              await this.sandboxTransportVerifier(admittedRevision),
-            ],
-          }
-        : harnessAuth;
+    const activatedHarnessAuth = this.deliversHarnessTransportVerifier(revision, sandboxDriver)
+      ? {
+          ...harnessAuth,
+          environment: [
+            ...harnessAuth.environment,
+            await this.sandboxTransportVerifier(admittedRevision),
+          ],
+        }
+      : harnessAuth;
     const renderAgentDeployment = (environment: Readonly<Record<string, string>>) =>
       this.deployment(
         revisionName,
@@ -8052,6 +8072,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
           revision,
           requirements,
         });
+        if (!providerEndpoint) {
+          throw new ConfigurationFailure(
+            "The selected SandboxDriver did not return its Harness endpoint.",
+          );
+        }
         // Preparation saw the Harness serving; activate only while it still is.
         if (
           sandboxDriver.harnessStatus !== undefined &&
@@ -10502,6 +10527,30 @@ export class KubernetesComputeDriver implements ComputeDriver {
       this.sandboxDriverForRevision(revision)?.provisionHarness !== undefined
       ? PROVIDER_FENCED_NETWORK_PROFILE
       : ORDINARY_NETWORK_PROFILE;
+  }
+
+  private deliversHarnessTransportVerifier(
+    revision: AgentRevision,
+    sandboxDriver: SandboxDriver | undefined,
+  ): boolean {
+    const nativeHarness = revision.harness.id === "codex" || revision.harness.id === "openclaw";
+    if (sandboxDriver?.harnessTransportCredential === "verifier") {
+      if (
+        !nativeHarness ||
+        revision.harness.mode !== "dedicated" ||
+        sandboxDriver.provisionHarness === undefined ||
+        sandboxDriver.harnessEndpoint === undefined
+      ) {
+        throw new ConfigurationFailure(
+          "Verifier-only Harness credentials require dedicated native provisioning and a provider-owned endpoint.",
+        );
+      }
+      return true;
+    }
+    return (
+      nativeHarness &&
+      (revision.egressPlan !== undefined || sandboxDriver?.implementation === "openshell")
+    );
   }
 
   private sandboxDriverForRevision(revision: AgentRevision): SandboxDriver | undefined {
@@ -16107,7 +16156,42 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     endpoint: SandboxHarnessEndpoint | undefined,
     namespace: KubernetesNamespaceAddress,
   ): Promise<void> {
+    const externalOwner = endpoint?.externalWorkspaceOwner;
+    if (
+      externalOwner !== undefined &&
+      (endpoint?.tls === undefined ||
+        this.sandboxDriverForRevision(revision)?.harnessTransportCredential !== "verifier" ||
+        endpoint.workspaceRoot !== "/home/node/workspace" ||
+        asRecord(externalOwner) === undefined ||
+        Object.keys(externalOwner).length !== 1 ||
+        typeof externalOwner.generationSha256 !== "string" ||
+        !/^[a-f0-9]{64}$/.test(externalOwner.generationSha256) ||
+        revision.harness.id !== "codex" ||
+        revision.harness.mode !== "dedicated" ||
+        revision.executionAdmission.mode !== "unprotected" ||
+        revision.egressPlan !== undefined ||
+        revision.repositoryCredentials !== undefined ||
+        endpoint.codexPermissionProfile !== undefined)
+    ) {
+      throw new ConfigurationFailure(
+        "An external workspace owner requires an ordinary dedicated Codex revision with verifier-only workload credentials, exact TLS trust and a pinned generation.",
+      );
+    }
     if (endpoint?.tls === undefined) {
+      // An endpoint without private trust is valid on first use, but cannot replace
+      // an owner-bound endpoint for this revision. An absent endpoint here can also
+      // be the initial Gateway render that prepares workspace-node enrollment.
+      if (revision.sandboxDriverId !== undefined) {
+        const previous = await this.getOwned(
+          "ConfigMap",
+          this.harnessTrustName(revision.agentId, revision.id),
+          namespace,
+          this.pluginRuntimeOwnership(revision),
+        );
+        if (previous?.data?.[EXTERNAL_WORKSPACE_OWNER_BINDING] !== undefined) {
+          throw new OwnershipFailure("The external workspace owner lost its pinned TLS binding.");
+        }
+      }
       return;
     }
     const network = this.options.network.providerHarness;
@@ -16116,7 +16200,15 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         "SandboxDriver Harness endpoint requires an exact provider network route.",
       );
     }
-    providerHarnessUrl(endpoint, network, this.sandboxDriver?.harnessHome ?? HARNESS_HOME);
+    const url = providerHarnessUrl(
+      endpoint,
+      network,
+      this.sandboxDriver?.harnessHome ?? HARNESS_HOME,
+    );
+    if (externalOwner !== undefined && url.href !== endpoint.url) {
+      throw new ConfigurationFailure("The external workspace owner URL must be canonical.");
+    }
+    const ca = publicCaBundle(endpoint.tls.caBundle);
     // The endpoint arrives after the configuration snapshot. Keep its public
     // trust separately revision-owned and immutable; drift requires a new revision.
     const ownership = this.pluginRuntimeOwnership(revision);
@@ -16131,12 +16223,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         ),
         immutable: true,
         data: {
-          [HARNESS_TRUST_FILE]: [
-            publicCaBundle(endpoint.tls.caBundle),
-            this.options.executionCluster?.caBundle,
-          ]
+          [HARNESS_TRUST_FILE]: [ca, this.options.executionCluster?.caBundle]
             .filter((bundle) => bundle !== undefined)
             .join("\n"),
+          ...(externalOwner === undefined
+            ? {}
+            : {
+                [EXTERNAL_WORKSPACE_OWNER_BINDING]: JSON.stringify({
+                  url: url.href,
+                  workspaceRoot: endpoint.workspaceRoot,
+                  generationSha256: externalOwner.generationSha256,
+                }),
+                [EXTERNAL_WORKSPACE_OWNER_CA]: ca,
+              }),
         },
       },
       ownership,
@@ -16252,6 +16351,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           "SandboxDriver TLS trust belongs only to its dedicated Agent Gateway.",
         );
       }
+      const workspaceOwner = providerEndpoint.externalWorkspaceOwner;
       volumes.push({
         name: HARNESS_TRUST_VOLUME,
         configMap: {
@@ -16259,7 +16359,16 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             required(ownership.agentId, "Harness trust Agent ID"),
             configuration.revisionId,
           ),
-          items: [{ key: HARNESS_TRUST_FILE, path: HARNESS_TRUST_FILE }],
+          items: [
+            { key: HARNESS_TRUST_FILE, path: HARNESS_TRUST_FILE },
+            ...(workspaceOwner === undefined
+              ? []
+              : [EXTERNAL_WORKSPACE_OWNER_BINDING, EXTERNAL_WORKSPACE_OWNER_CA].map((name) => ({
+                  key: name,
+                  path: name,
+                  mode: 0o444,
+                }))),
+          ],
           optional: false,
         },
       });
@@ -16268,6 +16377,22 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         mountPath: HARNESS_TRUST_DIRECTORY,
         readOnly: true,
       });
+      if (workspaceOwner !== undefined) {
+        variables.push({
+          name: EXTERNAL_WORKSPACE_OWNER_ENV,
+          value: EXTERNAL_WORKSPACE_OWNER_DIRECTORY,
+        });
+        // The reader pins regular file identities and refuses projected symlinks.
+        // subPath mounts the immutable ConfigMap files as root-owned regular files.
+        volumeMounts.push(
+          ...[EXTERNAL_WORKSPACE_OWNER_BINDING, EXTERNAL_WORKSPACE_OWNER_CA].map((name) => ({
+            name: HARNESS_TRUST_VOLUME,
+            mountPath: `${EXTERNAL_WORKSPACE_OWNER_DIRECTORY}/${name}`,
+            subPath: name,
+            readOnly: true,
+          })),
+        );
+      }
       variables.push({
         name: "NODE_EXTRA_CA_CERTS",
         value: `${HARNESS_TRUST_DIRECTORY}/${HARNESS_TRUST_FILE}`,
@@ -16814,6 +16939,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
     const names = new Set<string>();
     for (const variable of variables) {
+      if (
+        variable.name === EXTERNAL_WORKSPACE_OWNER_ENV &&
+        providerEndpoint?.externalWorkspaceOwner === undefined
+      ) {
+        throw new ConfigurationFailure("Only Compute may select a provider workspace binding.");
+      }
       if (names.has(variable.name)) {
         throw new ConfigurationFailure(
           `Workload environment variable ${variable.name} is duplicated.`,
