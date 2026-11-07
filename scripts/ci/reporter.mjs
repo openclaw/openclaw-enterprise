@@ -1,4 +1,8 @@
 import { failureInputLimit } from "./failure-redaction.mjs";
+import {
+  openShellGitRetentionKind,
+  projectOpenShellGitRetention,
+} from "./openshell-git-retention.mjs";
 
 const safeOccErrorCodes = new Set([
   "INVALID_REQUEST",
@@ -170,6 +174,9 @@ function parseMeasurement(message) {
 }
 
 function safeMeasurement(value) {
+  if (isRecord(value) && value.kind === openShellGitRetentionKind) {
+    return projectOpenShellGitRetention(value);
+  }
   if (isRecord(value) && value.kind === openShellGatewayTurnFailureKind) {
     const { kind, checkpoint, turn, status } = value;
     const outsideTurn = checkpoint === "gateway-setup" || checkpoint === "native-evidence";
@@ -1499,9 +1506,18 @@ export default async function* jsonLinesReporter(source) {
         continue;
       }
       const value = parseMeasurement(message);
+      // A truncated JSON receipt must not turn into raw failure output either.
+      const retentionReceipt =
+        value?.kind === openShellGitRetentionKind ||
+        (message.startsWith(measurementPrefix) &&
+          /"kind"\s*:\s*"openshell-git-retention"/.test(message));
       // Per-test diagnostics name their file; the run summary counts do not.
-      // OpenShell measurements belong only in the projected record, even on failure.
-      if (typeof event.data.file === "string" && !openShellMeasurementKinds.has(value?.kind)) {
+      // Invalid or truncated retention receipts must not escape through the raw tail.
+      if (
+        typeof event.data.file === "string" &&
+        !openShellMeasurementKinds.has(value?.kind) &&
+        !retentionReceipt
+      ) {
         output.diagnostic(message);
       }
       // Node diagnostics can quote thrown errors; retain only this fixed failure category.

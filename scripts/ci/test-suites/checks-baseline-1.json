@@ -125,6 +125,7 @@
     "tests/integration/harness-egress-probe-diagnostics.test.ts",
     "tests/conformance/openshell-prepared-git-provider.test.mjs",
     "tests/conformance/openshell-git-runtime.test.mjs",
+    "tests/conformance/openshell-git-denial.test.mjs",
     "tests/integration/openshell-observed-request-hook.test.ts",
     "tests/integration/credential-free-online-grant.test.mjs",
     "tests/integration/credential-free-metadata-grant.test.ts",
@@ -632,6 +633,18 @@
         "an observed Git route (2) rotates only after its challenge in the original worker",
         "an observed Git route (3) rotates only after its challenge in the original worker",
         "the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access"
+      ]
+    },
+    {
+      "path": "tests/conformance/openshell-git-denial.test.mjs",
+      "expectedTests": [
+        "Git denial receipt requires fresh evidence and retains the final millisecond bucket",
+        "Git denial receipt requires the adjacent endpoint-not-admitted warning",
+        "Git denial receipt refuses stale and differently attributed log records",
+        "Git denial receipt tolerates ring rollover only with unchanged retained history",
+        "Git denial receipt refuses foreign, incomplete, and ambiguous log histories",
+        "Git denial receipt rejects normalized or noncanonical event dates",
+        "Git denial receipt refuses a replaced supervisor before or during the read"
       ]
     },
     {

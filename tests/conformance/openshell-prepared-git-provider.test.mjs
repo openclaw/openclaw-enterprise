@@ -48,6 +48,13 @@ async function wire(t) {
     "message ProviderMutationReceipt {\n  ProviderDesiredIdentity desired = 6;",
   );
   proto = proto.replace(
+    "message SandboxStatus {",
+    `message SandboxStatus {
+  string main_process_instance_id = 8;
+  SandboxConfigurationAdmission configuration_admission = 11;
+  optional bool configuration_activated = 12;`,
+  );
+  proto = proto.replace(
     "message ProviderReadinessStatus {",
     `message ProviderReadinessStatus {
   ConfigUpdateOperation operation = 8;
@@ -71,6 +78,14 @@ async function wire(t) {
 `,
   );
   proto += `
+    message SandboxConfigurationAdmission {
+      string instance_id = 1;
+      int32 state = 2;
+      uint32 policy_version = 3;
+      string policy_hash = 4;
+      uint64 config_revision = 5;
+      uint64 provider_env_revision = 6;
+    }
     message ConfigUpdateOperation {
       string operation_id = 1;
       int32 state = 5;
@@ -120,6 +135,8 @@ async function wire(t) {
     workspaceId: scope.workspaceId,
     workspaceReads: 0,
     status: undefined,
+    mainProcessInstanceId: "network-instance",
+    sandboxPhase: "SANDBOX_PHASE_READY",
     // Runs as each recorded request arrives, before the server answers it.
     onRequest: undefined,
     // Holds the provider write's answer this long (a slow but healthy gateway).
@@ -136,6 +153,28 @@ async function wire(t) {
       ? setTimeout(() => callback(...answer), state.writeDelayMs)
       : callback(...answer);
   server.addService(OpenShell.service, {
+    GetSandbox(call, callback) {
+      record(call);
+      assert.equal(call.request.name, scope.sandbox);
+      callback(null, {
+        sandbox: {
+          metadata: { id: "sandbox-id", name: scope.sandbox, workspace: scope.workspace },
+          status: {
+            phase: state.sandboxPhase,
+            main_process_instance_id: state.mainProcessInstanceId,
+            configuration_activated: true,
+            configuration_admission: {
+              instance_id: "configuration-instance",
+              state: 2,
+              policy_version: 1,
+              policy_hash: "policy-hash",
+              config_revision: "202",
+              provider_env_revision: "101",
+            },
+          },
+        },
+      });
+    },
     GetSandboxProviderStatus(call, callback) {
       record(call);
       assert.equal(call.request.sandbox, scope.sandbox);
@@ -485,6 +524,8 @@ function installedStatus(binding) {
     state: "PROVIDER_READINESS_STATE_READY",
     reason: "PROVIDER_READINESS_REASON_UNSPECIFIED",
     receipt: {
+      receipt_id: "current-observation",
+      kind: "PROVIDER_MUTATION_KIND_OBSERVE",
       workspace: scope.workspace,
       provider: binding.provider,
       desired: {
@@ -569,6 +610,70 @@ test("prepared Git bootstraps without privilege and distinguishes accepted rotat
     [state.workspaceReads, state.requests.length],
     requestCounts,
     "restore and expired observation make no gateway requests",
+  );
+
+  // Standing succession may identify expired material, but never use it as live access.
+  // The stock Gateway reports expiry before checking the supervisor's observation lease.
+  const predecessor = installedStatus(standing);
+  predecessor.state = "PROVIDER_READINESS_STATE_WITHHELD";
+  predecessor.reason = "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED";
+  predecessor.observed.reason = "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED";
+  predecessor.observed.credentials_installed = false;
+  predecessor.observed.launch_environment_installed = false;
+  state.status = predecessor;
+  assert.equal(await binding.observePredecessor(standing, installed, signal()), true);
+  assert.equal(await binding.observe(standing, "sandbox-id", signal()), undefined);
+  state.status = structuredClone(predecessor);
+  state.status.observed_time = {
+    ...predecessor.evaluated_time,
+    seconds: String(Number(predecessor.evaluated_time.seconds) - 14),
+  };
+  assert.equal(await binding.observePredecessor(standing, installed, signal()), true);
+  // Fractional wire timestamps cross a second boundary, with time for two real RPCs.
+  state.status = structuredClone(predecessor);
+  state.status.evaluated_time.nanos = 100_000;
+  state.status.observed_time = {
+    seconds: String(Number(predecessor.evaluated_time.seconds) - 2),
+    nanos: 900_000,
+  };
+  assert.equal(await binding.observePredecessor(standing, installed, signal()), true);
+  for (const mutate of [
+    (status) => {
+      status.reason = "PROVIDER_READINESS_REASON_CREDENTIALS_WITHHELD";
+    },
+    (status) => {
+      status.observed_time = {
+        ...status.evaluated_time,
+        seconds: String(Number(status.evaluated_time.seconds) - 15),
+      };
+    },
+    (status) => {
+      status.evaluated_time.nanos = 100_000;
+      status.observed_time = { ...status.evaluated_time, nanos: 900_000 };
+    },
+    (status) => {
+      status.observed.process_instance_id = "replacement-process";
+    },
+  ]) {
+    state.status = structuredClone(predecessor);
+    mutate(state.status);
+    await assert.rejects(
+      binding.observePredecessor(standing, installed, signal()),
+      /cannot retain this execution/,
+    );
+  }
+  // A recent report may still name the old session after stock accepts a replacement.
+  state.status = predecessor;
+  state.mainProcessInstanceId = "replacement-network-instance";
+  await assert.rejects(
+    binding.observePredecessor(standing, installed, signal()),
+    /cannot retain this execution/,
+  );
+  state.mainProcessInstanceId = "network-instance";
+  state.sandboxPhase = "SANDBOX_PHASE_STOPPING";
+  await assert.rejects(
+    binding.observePredecessor(standing, installed, signal()),
+    /cannot retain this execution/,
   );
 });
 
