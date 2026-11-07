@@ -1,11 +1,11 @@
 {
-  "title": "02 Who sends a protected request?",
+  "title": "Who sends a protected request?",
   "width": 1180,
   "height": 640,
   "items": [
     {
       "kind": "text",
-      "text": "02 Who sends a protected request?",
+      "text": "Who sends a protected request?",
       "x": 20,
       "y": 33,
       "size": 28,
@@ -324,7 +324,7 @@
     },
     {
       "kind": "text",
-      "text": "The sender releases the approved reply to the original caller. Stock OpenShell lacks this sender guarantee. Git uses the separate worker path in 01.",
+      "text": "The sender releases the approved reply to the original caller. Stock OpenShell lacks this sender guarantee. Git requests use a separate worker path.",
       "x": 20,
       "y": 584,
       "size": 14,
