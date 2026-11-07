@@ -62,6 +62,7 @@ export interface NodeLaunch {
   readonly displayName: string;
   readonly setupCode?: string;
   readonly expiresAt?: number;
+  readonly mountinfo?: () => string;
 }
 
 export function mountIdentity(value: unknown): MountIdentity {
@@ -124,10 +125,14 @@ export function nodeInstallation(value: unknown): NodeInstallation {
   };
 }
 
-export function splitStockCommand(program: Buffer): readonly string[] {
+export function assertStockCombinedCommand(program: Buffer): void {
   if (!program.equals(Buffer.from(withoutLineComments(AGENT_WITH_NODE_ENTRYPOINT)))) {
     throw new Error("unrecognized_combined_workspace_node_command");
   }
+}
+
+export function splitStockCommand(program: Buffer): readonly string[] {
+  assertStockCombinedCommand(program);
   return [...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(PROVIDER_CODEX_ONLY_ENTRYPOINT)];
 }
 
@@ -156,12 +161,12 @@ export function assertNodeTrust(route: EgressRoute, ca: string | undefined, pin?
   }
 }
 
-function mountedDirectories() {
+function mountedDirectories(mountinfo?: string) {
   const unescape = (path: string) =>
     path.replace(/\\([0-7]{3})/gu, (_escape, octal: string) =>
       String.fromCharCode(Number.parseInt(octal, 8)),
     );
-  return readFileSync("/proc/self/mountinfo", "utf8")
+  return (mountinfo ?? readFileSync("/proc/self/mountinfo", "utf8"))
     .trim()
     .split("\n")
     .map((line) => {
@@ -175,7 +180,7 @@ function mountedDirectories() {
 
 export function assertNodeInputs(input: NodeLaunch): void {
   assertPinnedDirectory(input.installation.rootfs, input.installation.rootfsIdentity);
-  const observed = mountedDirectories();
+  const observed = mountedDirectories(input.mountinfo?.());
   const writable = new Set([
     input.installation.rootfs,
     ...input.volumeMounts.map(({ path }) => path),
