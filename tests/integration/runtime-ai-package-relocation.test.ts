@@ -59,7 +59,7 @@ test(
       "utf8",
     );
     const materialize = dockerfile.match(
-      /^    && (if \[ -L node_modules\/@openclaw\/ai \]; then[\s\S]*?^    fi)/m,
+      /^ {4}&& (if \[ -L node_modules\/@openclaw\/ai \]; then[\s\S]*?^ {4}fi)/m,
     )?.[1];
     assert.ok(materialize, "the runtime build materializes the @openclaw/ai package");
     execFileSync("sh", ["-ec", materialize], { cwd: sourceAlias });
