@@ -86,30 +86,44 @@ Managed MCP plugins require the worker Node executable to be allowed in the Cred
 
 ### Set up the credential source
 
-Register the bearer token Secret and credential source using the OCC API:
+Register the bearer token Secret and credential source using the OCC CLI:
 
-1. Create a Secret in the Agent's namespace containing the Slack user or bot token:
+1. Create a Secret in the Agent's namespace containing the Slack user or bot token using a protected JSON file:
 
    ```bash
-   occ secret create --namespace "$NAMESPACE_ID" --name slack-mcp-token --value "$SLACK_USER_TOKEN"
+   (umask 077; cat <<EOF > secret.json
+   {
+     "name": "slack-mcp-token",
+     "value": "$SLACK_USER_TOKEN"
+   }
+   EOF
+   )
+
+   occ secret create --namespace "$NAMESPACE_ID" --file secret.json --output json > secret-created.json
+   rm secret.json
+   SECRET_ID="$(node -p "require('./secret-created.json').id")"
+   rm secret-created.json
    ```
 
-2. Register the `bearer-token` credential source referencing `secrets.token`:
+2. Register the `bearer-token` credential source referencing the captured Secret ID in `secrets.token`, with endpoint settings placed under `config`:
 
    ```bash
    cat <<EOF > slack-source.json
    {
+     "name": "slack-mcp",
      "type": "bearer-token",
-     "protocol": "mcp",
-     "host": "mcp.slack.com",
-     "port": "443",
-     "path": "/mcp",
-     "envVar": "SLACK_MCP_TOKEN",
+     "config": {
+       "protocol": "mcp",
+       "host": "mcp.slack.com",
+       "port": "443",
+       "path": "/mcp",
+       "env_var": "SLACK_MCP_TOKEN"
+     },
      "secrets": {
        "token": {
          "kind": "secret",
          "namespaceId": "$NAMESPACE_ID",
-         "id": "slack-mcp-token"
+         "id": "$SECRET_ID"
        }
      }
    }
