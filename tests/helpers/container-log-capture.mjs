@@ -55,7 +55,7 @@ function podSummary({ metadata = {}, spec = {}, status }) {
  * events, lets the log run to the container's exit (bounded), and writes one
  * record. Diagnostics never fail the test or replace its error.
  */
-export function followContainerLog({ args, env, target, snapshot }) {
+export function followContainerLog({ args, env, target, snapshot, recoverLogs }) {
   const lines = [];
   const markers = [];
   let partial = "";
@@ -80,7 +80,7 @@ export function followContainerLog({ args, env, target, snapshot }) {
   });
   child.stdout.setEncoding("utf8");
   child.stdout.on("error", () => {});
-  child.stdout.on("data", (chunk) => {
+  function appendLogs(chunk) {
     const parts = (partial + chunk).split("\n");
     partial = parts.pop().slice(-maxBufferedChars);
     for (const line of parts) {
@@ -94,7 +94,8 @@ export function followContainerLog({ args, env, target, snapshot }) {
       bufferedChars -= lines.shift().length;
       omittedLines += 1;
     }
-  });
+  }
+  child.stdout.on("data", appendLogs);
 
   async function stop() {
     if (stream.endedAt !== undefined || child.pid === undefined) {
@@ -109,8 +110,14 @@ export function followContainerLog({ args, env, target, snapshot }) {
 
   async function takeSnapshot(label) {
     try {
-      const { pods = [], events = [] } = await snapshot();
-      return { label, at: new Date().toISOString(), pods: pods.map(podSummary), events };
+      const { pods = [], events = [], unavailable } = await snapshot();
+      return {
+        label,
+        at: new Date().toISOString(),
+        pods: pods.map(podSummary),
+        events,
+        ...(unavailable ? { unavailable: true } : {}),
+      };
     } catch {
       return { label, at: new Date().toISOString(), unavailable: true };
     }
@@ -121,6 +128,13 @@ export function followContainerLog({ args, env, target, snapshot }) {
     // The stream ends when the container exits: keep its shutdown lines.
     stream.ended = await settlesWithin(ended, waitForExitMs);
     await stop();
+    // An early ContainerCreating failure can end the follower before there are logs.
+    // The caller may supply one bounded read after the failed readiness wait.
+    if (stream.ended && stream.exitCode !== 0 && recoverLogs) {
+      await recoverLogs()
+        .then(appendLogs)
+        .catch(() => {});
+    }
     snapshots.push(await takeSnapshot("after-log"));
     const record = {
       test: t.fullName ?? t.name,

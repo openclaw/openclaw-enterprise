@@ -149,36 +149,54 @@ export async function waitForDeploymentAvailable(
     ]),
     env: process.env,
     target: { namespace, container },
-    snapshot: () =>
+    recoverLogs: () =>
       withinDiagnosticDeadline(
-        async () => ({
-          pods: JSON.parse(
-            await kubectlFor(selection, [
-              "get",
-              "pods",
-              ...scope,
-              "-l",
-              Object.entries(labels)
-                .map(([key, value]) => `${key}=${value}`)
-                .join(","),
-              "-o",
-              "json",
-              diagnosticRequestTimeout,
-            ]),
-          ).items,
-          events: JSON.parse(
-            await kubectlFor(selection, [
-              "get",
-              "events",
-              ...scope,
-              "-o",
-              "json",
-              diagnosticRequestTimeout,
-            ]),
-          ).items,
-        }),
-        { timeoutMs: 20_000, timedOut: null },
+        () =>
+          kubectlFor(selection, [
+            "logs",
+            ...scope,
+            `deployment/${deployment}`,
+            "--container",
+            container,
+            "--timestamps=true",
+            "--tail=1500",
+            "--pod-running-timeout=5s",
+            diagnosticRequestTimeout,
+          ]),
+        { timeoutMs: 20_000, timedOut: "" },
       ),
+    snapshot: async () => {
+      const read = (resource, extra = []) =>
+        withinDiagnosticDeadline(
+          async () =>
+            JSON.parse(
+              await kubectlFor(selection, [
+                "get",
+                resource,
+                ...scope,
+                ...extra,
+                "-o",
+                "json",
+                diagnosticRequestTimeout,
+              ]),
+            ).items,
+          { timeoutMs: 20_000, timedOut: null },
+        ).catch(() => null);
+      const [pods, events] = await Promise.all([
+        read("pods", [
+          "-l",
+          Object.entries(labels)
+            .map(([key, value]) => `${key}=${value}`)
+            .join(","),
+        ]),
+        read("events"),
+      ]);
+      return {
+        pods: pods ?? [],
+        events: events ?? [],
+        unavailable: pods === null || events === null,
+      };
+    },
   });
   try {
     return await log.attachOnFailure(
