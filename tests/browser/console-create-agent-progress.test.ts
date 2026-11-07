@@ -7,6 +7,7 @@ import { CreatePresetBody, JsonValue } from "../../packages/contracts/src/api/co
 import { Check } from "typebox/value";
 import type { PresetTemplate } from "../../packages/contracts/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { PROVISIONING_NOT_COMPLETED } from "../helpers/refusal-text.mjs";
 import { trackSettledFetches } from "./console-fetch-accounting.ts";
 import { fileBrowser, login, newPage } from "./console-agents-browser-helpers.ts";
 import { routeInstallationProvisioning } from "./console-agents-test-support.ts";
@@ -79,7 +80,7 @@ async function openCreateForm(t: TestContext, fixture: ConsoleFixture, namespace
   return page;
 }
 
-// The meter's live answer: the current step line and each step's state, as the page shows them.
+// The meter's live answer: the current step line, its failure reason and each step's state.
 function meterState(page: Page) {
   return page.evaluate(() => {
     const section = globalThis.document.querySelector(".provisioning-progress");
@@ -90,7 +91,10 @@ function meterState(page: Page) {
       hidden: section.hidden,
       label: section.getAttribute("aria-label"),
       outcome: section.dataset.outcome ?? null,
+      inActionBar: section.closest(".form-actions") !== null,
       phase: section.querySelector(".provisioning-phase")?.textContent ?? null,
+      reason: section.querySelector(".provisioning-reason")?.textContent ?? null,
+      reasonHidden: section.querySelector(".provisioning-reason")?.hasAttribute("hidden") ?? null,
       phaseRole: section.querySelector(".provisioning-phase")?.getAttribute("role"),
       elapsed: section.querySelector(".provisioning-elapsed")?.textContent ?? null,
       elapsedRole: section.querySelector(".provisioning-elapsed")?.getAttribute("role"),
@@ -99,6 +103,36 @@ function meterState(page: Page) {
         current: item.getAttribute("aria-current"),
         label: item.querySelector(".provisioning-step-label")?.textContent ?? null,
       })),
+    };
+  });
+}
+
+// The sticky bar's answer for a finished request: whether the meter, its reason and the Retry
+// button all sit inside the same bar, on screen without scrolling.
+function barState(page: Page) {
+  return page.evaluate(() => {
+    const meter = globalThis.document.querySelector(".provisioning-progress");
+    const bar = meter?.closest(".form-actions");
+    const reason = meter?.querySelector(".provisioning-reason");
+    const retry = [...globalThis.document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Retry provisioning request",
+    );
+    const rect = (node?: Element | null) => {
+      if (!(node instanceof HTMLElement)) {
+        return null;
+      }
+      const box = node.getBoundingClientRect();
+      return { top: box.top, bottom: box.bottom };
+    };
+    const inBar = (node?: Element | null) =>
+      node instanceof Element ? bar?.contains(node) === true : false;
+    return {
+      viewportHeight: globalThis.window.innerHeight,
+      meter: rect(meter),
+      reason: rect(reason),
+      retry: rect(retry),
+      reasonInBar: inBar(reason),
+      retryInBar: inBar(retry),
     };
   });
 }
@@ -262,13 +296,31 @@ test("a failed provisioning job marks its step failed and a retry starts the met
   assert.equal(failed.hidden, false);
   assert.equal(failed.label, "Agent provisioning progress");
   assert.equal(failed.outcome, "failed");
-  assert.equal(failed.phase, "Creating runtime credentials");
+  // The meter stays in the sticky action bar, where the reader selected Create Agent, and its
+  // heading names the failure and the step it failed on, with the job's own reason beside it.
+  assert.equal(failed.inActionBar, true);
+  assert.equal(failed.phase, "Failed while creating runtime credentials.");
+  assert.equal(failed.reason, PROVISIONING_NOT_COMPLETED);
+  assert.equal(failed.reasonHidden, false);
   assert.equal(failed.phaseRole, "status");
   assert.equal(failed.elapsedRole, null);
   assert.match(failed.elapsed ?? "", /^Elapsed \d+:\d\d$/u);
   assert.deepEqual(failed.steps, stepStates(["done", "done", "failed", "pending", "pending"]));
+  // The reason and the Retry button sit in the same sticky bar, on screen without scrolling.
+  const bar = await barState(page);
+  assert.equal(bar.reasonInBar, true);
+  assert.equal(bar.retryInBar, true);
+  assert.ok(bar.reason && bar.retry && bar.meter, "Expected the meter, reason and Retry");
+  assert.ok(bar.reason.top >= 0 && bar.reason.bottom <= bar.viewportHeight, "reason off screen");
+  assert.ok(bar.retry.top >= 0 && bar.retry.bottom <= bar.viewportHeight, "Retry off screen");
+  assert.ok(bar.meter.top >= 0 && bar.meter.bottom <= bar.viewportHeight, "meter off screen");
 
   // The retry resets the meter to its first step before the job fails again on the next read.
+  // Retry itself is offered only now that the request ended; it stayed hidden in flight.
+  assert.equal(
+    await page.getByRole("button", { name: "Retry provisioning request" }).isVisible(),
+    true,
+  );
   await runProvisioningPolls(
     page,
     () => page.getByRole("button", { name: "Retry provisioning request" }).click(),
@@ -326,6 +378,19 @@ test("the meter's throbber is static under reduced motion", async (t) => {
   const state = await meterState(page);
   assert.equal(state.phaseRole, "status");
   assert.equal(state.elapsedRole, null);
+  // The meter pins in the sticky action bar (the bar the reader selected Create Agent from),
+  // and Retry stays hidden while the request is still in flight.
+  assert.equal(state.inActionBar, true);
+  const bar = await page.evaluate(() => {
+    const meter = globalThis.document.querySelector(".provisioning-progress");
+    const bar = meter?.closest(".form-actions");
+    return bar instanceof HTMLElement ? globalThis.getComputedStyle(bar).position : null;
+  });
+  assert.equal(bar, "sticky");
+  assert.equal(
+    await page.getByRole("button", { name: "Retry provisioning request" }).isVisible(),
+    false,
+  );
   assert.deepEqual(state.steps, stepStates(["done", "current", "pending", "pending", "pending"]));
   // prefers-reduced-motion keeps the current step's marker a static ring, not a spin.
   const animation = await page.evaluate(() => {
