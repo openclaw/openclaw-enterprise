@@ -77,8 +77,8 @@ require Configuration and replacement-revision `read`.
 
 Review runtime drafts; deployments snapshot current values.
 
-The serving API must support inventory and exact revision reads; controller-only
-upgrades cannot bootstrap an API missing either operation.
+Every upgrade needs the serving API’s inventory endpoint; controller-only upgrades
+also need exact revision reads for retained running Agents.
 
 Controller-only upgrades read each active revision with `occ agent revision`,
 refusing missing or unreadable Harness settings before stopping OCC. Plan an
@@ -296,7 +296,7 @@ Upgraded controller image; no Agent deployments were requested.
 
 ## Upgrade Agent runtimes
 
-Set the runtime image and run the command:
+Run:
 
 ```bash
 export RUNTIME_IMAGE='<registry>/runtime@sha256:<64-hex-digest>'
