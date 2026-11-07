@@ -4687,8 +4687,8 @@ function completeSetupCode(payload) {
 }
 `;
 
-/** Stock Codex program when a provider runs the file-only node separately. */
-export const PROVIDER_CODEX_ONLY_ENTRYPOINT = agentRuntimeEntrypoint(false, false, false);
+/** Run the complete standalone Codex program when the provider hosts the file node separately. */
+export const PROVIDER_CODEX_ONLY_ENTRYPOINT = AGENT_RUNTIME_ENTRYPOINT;
 
 // Kubernetes Codex implementation: this file-only node is not an OpenClaw
 // execution worker; its explicit command allowlist disables worker hosting.
@@ -5152,7 +5152,9 @@ for (const slot of [...processes].reverse()) start(slot);
 `;
 }
 
-export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(PROVIDER_CODEX_ONLY_ENTRYPOINT);
+export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  agentRuntimeEntrypoint(false, false, false),
+);
 export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   agentRuntimeEntrypoint(true, false, false),
 );
