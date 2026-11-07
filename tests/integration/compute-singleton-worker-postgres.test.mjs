@@ -486,6 +486,9 @@ for (const failure of ["observation", "binding"]) {
       let available = false;
       let maintenanceAttempts = 0;
       let bindingAttempts = 0;
+      let holdRecoveredPass = false;
+      let recoveredPassHeld = false;
+      const resumeRecoveredPass = Promise.withResolvers();
 
       await fixture.start(
         {
@@ -493,8 +496,12 @@ for (const failure of ["observation", "binding"]) {
           activationOrder: "beforeCommit",
           maintenanceIntervalMs: 75,
           async preflight() {},
-          async bindAgent() {
-            if ((await fixture.activeRevision(owner)) === candidate.id) {
+          async bindAgent(binding) {
+            if (
+              binding.namespace.id === fixture.namespace.id &&
+              binding.agent.id === owner.id &&
+              (await fixture.activeRevision(owner)) === candidate.id
+            ) {
               bindingAttempts += 1;
               if (failure === "binding" && !available) {
                 throw new Error("Binding lookup unavailable");
@@ -507,6 +514,11 @@ for (const failure of ["observation", "binding"]) {
               maintenanceAttempts += 1;
               if (!available) {
                 return { ...observation, ready: false };
+              }
+              if (holdRecoveredPass) {
+                holdRecoveredPass = false;
+                recoveredPassHeld = true;
+                await resumeRecoveredPass.promise;
               }
             }
             return observation;
@@ -549,28 +561,45 @@ for (const failure of ["observation", "binding"]) {
       });
       assert.equal(await fixture.activeRevision(owner), candidate.id);
 
-      // Revoking the original actor must halt the chain before another provider
-      // effect; maintenance never grants an Agent permission to deploy itself.
-      await fixture.observerPool.query(
-        `INSERT INTO occ.iam_restrictions
-         (id, namespace_id, action, resource_kind, resource_id, effect)
-       VALUES ($1, $2, 'deploy', 'agent', $3, 'deny')`,
-        [`restriction-${randomUUID()}`, fixture.namespace.id, owner.id],
-      );
-      const effectsBeforeDenial = maintenanceAttempts;
-      const bindingsBeforeDenial = bindingAttempts;
-      await waitFor("the denied maintenance pass to stop without a successor", async () => {
-        const result = await fixture.observerPool.query(
-          `SELECT COUNT(*)::integer AS pending
-         FROM occ.controller_work
-         WHERE namespace_id = $1 AND revision_id = $2
-           AND idempotency_key LIKE $3 AND state IN ('queued', 'claimed')`,
-          [fixture.namespace.id, candidate.id, `agent_revision:${candidate.id}:maintenance:%`],
+      // Account for the already-authorized pass before revoking deploy. Other
+      // Agents may still have maintenance in the shared fixture database.
+      try {
+        holdRecoveredPass = true;
+        await waitFor("a recovered target pass to reach Compute", () =>
+          recoveredPassHeld ? true : undefined,
         );
-        return result.rows[0].pending === 0 ? result.rows[0] : undefined;
-      });
-      assert.equal(maintenanceAttempts, effectsBeforeDenial);
-      assert.equal(bindingAttempts, bindingsBeforeDenial);
+        await fixture.observerPool.query(
+          `INSERT INTO occ.iam_restrictions
+           (id, namespace_id, action, resource_kind, resource_id, effect)
+         VALUES ($1, $2, 'deploy', 'agent', $3, 'deny')`,
+          [`restriction-${randomUUID()}`, fixture.namespace.id, owner.id],
+        );
+        const effectsBeforeDenial = maintenanceAttempts;
+        const bindingsBeforeDenial = bindingAttempts;
+        resumeRecoveredPass.resolve();
+        await waitFor("the denied maintenance pass to stop without a successor", async () => {
+          const result = await fixture.observerPool.query(
+            `SELECT COUNT(*) FILTER (WHERE state IN ('queued', 'claimed'))::integer AS pending,
+                    COUNT(*) FILTER (WHERE state = 'failed_permanent'
+                      AND reason_code = 'AUTHORIZATION_DENIED' AND actor_id = $4)::integer AS denied
+             FROM occ.controller_work
+             WHERE namespace_id = $1 AND revision_id = $2 AND idempotency_key LIKE $3`,
+            [
+              fixture.namespace.id,
+              candidate.id,
+              `agent_revision:${candidate.id}:maintenance:%`,
+              fixture.actor.id,
+            ],
+          );
+          return result.rows[0].pending === 0 && result.rows[0].denied > 0
+            ? result.rows[0]
+            : undefined;
+        });
+        assert.equal(maintenanceAttempts, effectsBeforeDenial);
+        assert.equal(bindingAttempts, bindingsBeforeDenial);
+      } finally {
+        resumeRecoveredPass.resolve();
+      }
     },
   );
 }
