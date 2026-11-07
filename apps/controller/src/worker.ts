@@ -6882,13 +6882,15 @@ export class ControllerWorker {
         code: result.code,
         ...(result.resultData === undefined ? {} : { resultData: result.resultData }),
       });
-      // Acknowledgment can finish after Stop or deletion admission, but those
-      // operations own the remaining work; they do not need new routine maintenance.
+      // Removal owns follow-through if Stop or deletion intervenes. Without it,
+      // preserve maintenance: a later deployment can supersede Stop without replacing
+      // this active revision, leaving no other owner to resume its observation.
       if (
-        agent.status === "active" &&
-        agent.desiredRuntimeState === "running" &&
-        (await unit.namespaces.findNamespace(claim.namespaceId))?.status === "ready" &&
-        this.revisionMaintenanceInterval(revision) !== undefined
+        this.revisionMaintenanceInterval(revision) !== undefined &&
+        (repositoryWithdrawal !== "removal" ||
+          (agent.status === "active" &&
+            agent.desiredRuntimeState === "running" &&
+            (await unit.namespaces.findNamespace(claim.namespaceId))?.status === "ready"))
       ) {
         await this.enqueueMaintenance(queue, claim, revision);
       }
