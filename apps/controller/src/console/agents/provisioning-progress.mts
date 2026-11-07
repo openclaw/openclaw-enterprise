@@ -22,8 +22,9 @@ export interface ProvisioningProgressView {
   /** Reports one poll's answer, advancing steps only as far as the job's own phase does. */
   report(job: ProvisioningJob): void;
   /**
-   * Reports the terminal answer and stops the meter. The form's error line owns the failure
-   * reason and the recovery action (finding 2423), so the meter only marks where it ended.
+   * Reports the terminal answer and stops the meter. A failure names the step it failed on
+   * and the job's own safe reason, so the sticky bar shows the outcome without scrolling; the
+   * form's error line below keeps the recovery action and its links (finding 2423).
    */
   finish(job: ProvisioningJob, outcome: ProvisioningProgressOutcome): void;
   /** Hides the meter when no job answer can drive it. */
@@ -38,6 +39,13 @@ function elapsedText(ms: number) {
 
 function stepLabel(step: number) {
   return STEP_LABELS[step] ?? STEP_LABELS.at(-1) ?? "";
+}
+
+// A terminal heading names the outcome and the step it happened on, so the bar the reader
+// selected Create Agent from says what ended without waiting for the form's error line.
+function outcomeHeading(label: string, outcome: "failed" | "stopped") {
+  const step = `${label.charAt(0).toLowerCase()}${label.slice(1)}`;
+  return `${outcome === "failed" ? "Failed" : "Stopped"} while ${step}.`;
 }
 
 // The step the job is on. `phase` names the last completed phase, so the step after it is
@@ -75,6 +83,9 @@ export function createProvisioningProgress(): ProvisioningProgressView {
   );
   const phase = element("p", { className: "provisioning-phase", role: "status" });
   const elapsed = element("p", { className: "provisioning-elapsed", "aria-hidden": "true" });
+  // The job's own safe reason for a failure. Not a live region: the form's error line already
+  // announces it, and the heading above says that provisioning failed.
+  const reason = element("p", { className: "provisioning-reason", hidden: true });
   const section = element(
     "section",
     {
@@ -83,6 +94,7 @@ export function createProvisioningProgress(): ProvisioningProgressView {
       hidden: true,
     },
     element("div", { className: "provisioning-progress-head" }, phase, elapsed),
+    reason,
     element("ol", { className: "provisioning-steps" }, ...steps),
   );
   let startedAt = 0;
@@ -114,6 +126,7 @@ export function createProvisioningProgress(): ProvisioningProgressView {
       startedAt = Date.now();
       section.removeAttribute("data-outcome");
       setHidden(section, false);
+      setHidden(reason, true);
       paint(0);
       setText(phase, `${stepLabel(0)}…`);
       setText(elapsed, elapsedText(0));
@@ -130,12 +143,17 @@ export function createProvisioningProgress(): ProvisioningProgressView {
       if (outcome === "succeeded") {
         paint(steps.length);
         setText(phase, stepLabel(steps.length - 1));
-      } else {
-        // Keep the step the terminal job reached, without the in-progress ellipsis.
-        const step = stepOf(job);
-        paint(step, outcome);
-        setText(phase, stepLabel(step));
+        setHidden(reason, true);
+        return;
       }
+      const step = stepOf(job);
+      paint(step, outcome);
+      setText(phase, outcomeHeading(stepLabel(step), outcome));
+      // Only a failure carries its reason in the bar; a stop is the owner's choice, and the
+      // form's line below already says what to do next.
+      const message = outcome === "failed" ? job.error?.message : undefined;
+      setText(reason, message ?? "");
+      setHidden(reason, !message);
     },
     reset() {
       setHidden(section, true);
