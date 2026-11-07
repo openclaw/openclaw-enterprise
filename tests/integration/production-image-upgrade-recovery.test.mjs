@@ -1997,6 +1997,14 @@ test("repository restart preflight refuses unsafe or incomplete retained fleets 
       JSON.stringify(restartInventory()) + "\n" + JSON.stringify(restartInventory()),
       /inventory is incomplete/u,
     ],
+    // A later valid document must not hide an earlier ownership mismatch.
+    [
+      "invalid inventory followed by valid inventory",
+      JSON.stringify({ installationId: "ins_other", namespaces: [] }) +
+        "\n" +
+        JSON.stringify(restartInventory()),
+      /inventory is incomplete/u,
+    ],
     ["missing namespaces", { installationId: "ins_test" }, /inventory is incomplete/u],
     ["missing field", malformed, /inventory is incomplete/u],
   ]) {

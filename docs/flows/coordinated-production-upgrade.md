@@ -72,11 +72,11 @@ graph TD
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
-`read_restart_inventory` requires complete authorized inventory without active
-deployments. Retained running revisions need a positive
+`read_restart_inventory` requires one complete authorized inventory JSON document
+without active deployments. Retained running revisions need a positive
 [repository restart disposition](../reference/repository-credentials/worker-replacement.md).
-Controller-only preparation also reads each snapshot through `occ agent revision`;
-wrong ownership or missing Harness overrides/configuration refuses preparation.
+Controller-only preparation requires one JSON document per `occ agent revision`
+snapshot; wrong ownership or missing Harness overrides/configuration refuses preparation.
 Runtime replacement keeps its draft validation and dispatch journal.
 
 `OpenClawController.getInstallationDeploymentInventory` loads immutable revisions,
@@ -307,16 +307,15 @@ use [`verifyConsoleRelease`](../release/container-promotion.md#verify-the-served
 
 ### Read-only export after a split-layout refusal
 
-In the [split-layout fallback](../guides/deploy/split-layout-upgrade.md#export-and-re-create),
+For [split-layout export](../guides/deploy/split-layout-upgrade.md#export-and-re-create),
 `scripts/split-layout-tenants.mjs:createOccApi.expect` rejects malformed JSON,
-empty bodies and missing envelopes before export. Empty collections, 204 deletes
-and explicitly accepted 404s remain valid.
+empty bodies and missing envelopes. Empty collections, 204 deletes and explicitly
+accepted 404s remain valid.
 
-`importTenants` resolves unsaved targets by live name and rejects shared destinations
-before writes. Saved IDs remain reserved even for skipped sources; unsaved skipped
-sources reserve nothing. Correct maps or rename/skip sources without undoing prior
-merges. Rename keys are literal. Without saved mappings, exact-name reuse requires
-no Agents or Secrets.
+`importTenants` resolves unsaved targets by live name, rejecting shared destinations
+before writes. Skipped sources reserve saved IDs only. Correct maps or rename/skip
+sources without undoing prior merges. Rename keys are literal. Unsaved exact-name
+reuse requires no Agents or Secrets.
 
 ## Debugging and Verification
 
@@ -349,6 +348,8 @@ no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-07 08:18: Require single-document responses. (authoring-run/f5d332f5-a699-45b8-82ec-07b982cab516 - 0aa6334cace7c272c3b1eb69e456292a068a2c1a)
 
 - 2026-11-07 08:06: Assess repository worker replacement before stopping writers. (authoring-run/dc361ab2-8dc2-4ed3-872d-220eb9cce3c1 - d84756d04bec6aa6499364548cd21a07bbbc86d7)
 
