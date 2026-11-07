@@ -602,28 +602,33 @@ test(
       const witness = async (stage: string) => {
         phase = stage;
         let status: number | undefined;
+        const checkpoint = async () => {
+          let outcome = status === undefined ? "unconfirmed" : "refused";
+          if (status === 200) {
+            outcome = "accepted";
+          }
+          await fixture.checkpoint("withdrawal-origin-witness", {
+            stage,
+            outcome,
+            status: status ?? null,
+            targetedRetirementRefusals: origin.snapshot().targetedRetirementRefusals,
+          });
+        };
         try {
           inTime();
           assert.ok(remaining() > 5_000, "insufficient time for the bounded origin witness");
           status = await origin.probeIssuedGit(indexA);
           assert.equal(status, 200, "A's original credential must still allow discovery");
           inTime();
-        } finally {
+        } catch (error) {
           try {
-            let outcome = status === undefined ? "unconfirmed" : "refused";
-            if (status === 200) {
-              outcome = "accepted";
-            }
-            await fixture.checkpoint("withdrawal-origin-witness", {
-              stage,
-              outcome,
-              status: status ?? null,
-              targetedRetirementRefusals: origin.snapshot().targetedRetirementRefusals,
-            });
+            await checkpoint();
           } catch {
             // Preserve the witness failure if diagnostic retention also fails.
           }
+          throw error;
         }
+        await checkpoint();
       };
       const verify = async (mode: "live" | "replacement", expectedWorker?: string) => {
         const step = phases[mode];
@@ -697,6 +702,30 @@ test(
       await verify("live");
       phase = "after chat";
       previousReply = await conversation.turn(previousReply, remaining());
+      // The live denial does not wait for cleanup. The restart must follow the actual
+      // issuer refusal so the replacement cannot pass before retirement was attempted.
+      phase = "retirement refusal before restart";
+      await observeUntil(
+        "A's targeted retirement refusal",
+        finiteSignal,
+        async () => {
+          inTime();
+          const snapshot = origin.snapshot();
+          assert.ok(snapshot.targetedRetirementRefusals <= 1, "retirement must not replay");
+          if (snapshot.targetedRetirementRefusals === 0) {
+            return undefined;
+          }
+          assert.equal(
+            snapshot.tokens.find((token: OriginToken & { index: number }) => token.index === indexA)
+              ?.revoked,
+            false,
+            "the issuer must not revoke A's original credential",
+          );
+          return true;
+        },
+        Math.min(180_000, remaining()),
+      );
+      inTime();
       phase = "restart invocation";
       const restart = await fixture.restartWorker({
         agentId: a.agent.id,

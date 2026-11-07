@@ -278,7 +278,7 @@ const events = {
   "withdrawal-retirement-refused": {
     outcome: ["outcome", choice("passed")],
     status: ["status", choice(503)],
-    targetedRetirementRefusals: ["targetedRetirementRefusals", count],
+    targetedRetirementRefusals: ["targetedRetirementRefusals", choice(1)],
   },
   "git-policy-denied": {
     stage: ["stage", choice("after-expiry", "after-worker-restart")],
@@ -424,6 +424,17 @@ export function projectOpenShellGitRetention(value) {
     return undefined;
   }
   const selected = project(value, events[value.event]);
+  if (
+    selected !== undefined &&
+    value.event === "withdrawal-origin-witness" &&
+    !(
+      (selected.outcome === "accepted" && selected.status === 200) ||
+      (selected.outcome === "refused" && [401, 403].includes(selected.status)) ||
+      (selected.outcome === "unconfirmed" && selected.status === null)
+    )
+  ) {
+    return undefined;
+  }
   return selected === undefined
     ? undefined
     : { kind: openShellGitRetentionKind, event: value.event, ...selected };

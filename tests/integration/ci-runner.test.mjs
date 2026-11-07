@@ -5672,12 +5672,12 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     ["live witness after denial", "refused", 401],
     ["replacement witness before denial", "refused", 403],
     ["replacement witness after denial", "unconfirmed", null],
-  ].map(([stage, outcome, status]) => ({
+  ].map(([stage, outcome, status], index) => ({
     event: "withdrawal-origin-witness",
     stage,
     outcome,
     status,
-    targetedRetirementRefusals: 1,
+    targetedRetirementRefusals: index,
   }));
   const withdrawalRetirement = {
     event: "withdrawal-retirement-refused",
@@ -5861,7 +5861,21 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       [field]: forbidden,
     })),
     { ...withdrawalWitnesses[0], targetedRetirementRefusals: -1 },
+    ...[
+      ["accepted", 401],
+      ["accepted", 403],
+      ["accepted", null],
+      ["refused", 200],
+      ["refused", null],
+      ["unconfirmed", 200],
+      ["unconfirmed", 401],
+      ["unconfirmed", 403],
+    ].map(([outcome, status]) => ({ ...withdrawalWitnesses[0], outcome, status })),
     { ...withdrawalRetirement, status: 204 },
+    ...[0, 2].map((targetedRetirementRefusals) => ({
+      ...withdrawalRetirement,
+      targetedRetirementRefusals,
+    })),
     { ...withdrawalRetirement, outcome: forbidden },
     { ...withdrawalRetirement, targetedRetirementRefusals: forbidden },
     ...[

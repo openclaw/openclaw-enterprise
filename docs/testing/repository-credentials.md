@@ -229,8 +229,11 @@ and after each denied workload request. The case requires the signed
 `access_withdrawn` decision, no unauthorized origin traffic or new issuance, B's
 original Git credential, and unchanged execution and conversation identity.
 It also requires exactly one targeted retirement refusal and no successful
-revocation of A's token. Before/after witness receipts retain fixed outcomes,
-status and the targeted refusal count, without credentials or raw errors.
+revocation of A's token. The live denial does not wait for retirement. Before
+restarting the worker, the case waits within the original grant deadline for
+the issuer's refusal; the replacement must not replay it. Before/after witness
+receipts retain fixed outcomes, status and the targeted refusal count, without
+credentials or raw errors.
 
 The [private-origin fixture test](../../tests/integration/skipper-private-git-origin.test.mjs)
 checks this HTTP 503 response and subsequent HTTP 200 discovery over real HTTPS,
