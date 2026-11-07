@@ -2,7 +2,8 @@
 
 Start with the [production installation](../../../../docs/guides/deploy/production-installation.md)
 and [build and select the example Driver](../driver/README.md#build-and-select).
-Use the same checkout to build the Controller, Worker, Gateway, and Box helper.
+Use a compatible pinned chart and Controller image. The API and Worker must
+load the same selected example Driver package and configuration.
 Use a dedicated Codex Agent with the normal Gateway authentication and a scoped
 operator. Leave connectors, Git, repository access, and protected credentials
 disabled. The installed chat and file checks below are pending.
@@ -22,16 +23,40 @@ the empty owner-only export directory on that Node. This control claim
 carries the Unix socket. The Worker will create a separate workspace claim
 after deployment starts.
 
-Prepare the pinned Controller, Gateway and relay images, host helpers, and
-[fixed workspace verifier](../workspace-verifier/README.md) before rollout.
-Stage the unpacked root filesystem of the exact selected public runtime image
-in a fresh mode-`0700` directory outside the Box grants. Use the image's
-canonical digest and check its source labels before unpacking. The nonroot
-runtime owner needs read and execute access to the shipped Node and OpenClaw
-files. The host mounts that image read-only for the file node. The host needs
-stock Bubblewrap with `--bind-fd`, unprivileged user namespaces, and network
-namespaces enabled. Compile the helpers with the
-[host build command](../README.md#prepare-the-host-and-verify-box).
+Before rollout, set the image references under
+`drivers.compute.configuration.images` in the Installation. Merge this
+fragment into the existing Compute configuration and replace both placeholders
+with the exact image references approved for the target:
+
+```yaml
+drivers:
+  compute:
+    configuration:
+      images:
+        gateway: "<gateway-image>@sha256:<gateway-manifest-digest>"
+        agent: "<harness-image>@sha256:<harness-manifest-digest>"
+        requireImmutableDigest: true
+```
+
+`gateway` selects the Kubernetes Gateway workload image. Compute forwards
+`agent` as the Box Harness image in `requirements.image`; use that same
+reference in the installed host's `image` field. A combined image can fill both
+slots if it supplies both runtimes. Never use a Gateway-only image for `agent`.
+To run Box from the selected Harness filesystem, follow
+[the prepared Harness image profile](../README.md#select-a-prepared-harness-image-for-an-installed-host).
+
+Prepare the pinned relay image and build the separate Box host helpers from
+this demo checkout using the
+[host build command](../README.md#prepare-the-host-and-verify-box). Prepare the
+[fixed workspace verifier](../workspace-verifier/README.md). For the original
+file-only Workspace Node, stage a separate unpacked root from the selected
+Harness image in a fresh mode-`0700` directory outside the Box grants. Check
+its canonical digest and source labels before unpacking, and pin the installed
+file-node helper as described below. The nonroot runtime owner needs read and
+execute access to the shipped Node and OpenClaw files. The host mounts that
+root read-only for the file node, which will use the original workspace volume.
+The host needs stock Bubblewrap with `--bind-fd`, unprivileged user namespaces,
+and network namespaces enabled.
 
 In that Agent Namespace, use steps 1–2 in
 [Connect one Agent Gateway to the Box host](../ingress/README.md) to allocate
