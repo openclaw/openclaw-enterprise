@@ -5739,6 +5739,8 @@ test("first-Agent command timing pairs runtime outcomes before CI projection", a
     outcome + "signaled",
     "[occ-dev-timing] stage=controller-build elapsed_ms=5 failed=true",
     outcome + "signaled",
+    "[occ-dev-timing] stage=openshell-workspace-render elapsed_ms=7 failed=true",
+    "[occ-dev-timing] stage=private-outcome-canary elapsed_ms=9 failed=true",
   ];
   await writeFile(
     join(root, "bin/occ"),
@@ -5776,6 +5778,7 @@ test("a failed local setup reports only paired outcomes", async (t) => {
   delete process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
   delete process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
   await assert.rejects(localFirstAgentStack(t), /Start Local Setup exited with status 23/);
+  throw new Error("setup failed");
 });
 `,
   );
@@ -5796,7 +5799,7 @@ test("a failed local setup reports only paired outcomes", async (t) => {
     "--results",
     resultsPath,
   ]);
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 1, result.stderr);
   const artifact = await readFile(resultsPath, "utf8");
   const measurements = JSON.parse(artifact).files[0].measurements;
   assert.deepEqual(
@@ -5820,9 +5823,24 @@ test("a failed local setup reports only paired outcomes", async (t) => {
         failed: 1,
         elapsedMs: 5,
       },
+      {
+        kind: "local-first-agent-command",
+        phase: "setup",
+        stage: "openshell-workspace-render",
+        count: 1,
+        failed: 1,
+        elapsedMs: 7,
+      },
     ],
   );
-  assert.doesNotMatch(artifact, /private-outcome-canary|invented-fixture-input/);
+  const diagnostics = await readFile(
+    join(root, "state/runtime-outcomes.jsonl.diagnostics.json"),
+    "utf8",
+  );
+  assert.match(diagnostics, /setup failed/);
+  for (const text of [artifact, diagnostics]) {
+    assert.doesNotMatch(text, /private-outcome-canary|invented-fixture-input/);
+  }
 });
 
 test("run records only allowlisted measurements from test diagnostics", async (t) => {

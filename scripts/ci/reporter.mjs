@@ -112,15 +112,6 @@ const nativePolicyCleanupChecks = new Set([
   "cleanup.remove-directory",
   "cleanup.resume-worker",
 ]);
-const openShellMeasurementKinds = new Set([
-  openShellStageMeasurementKind,
-  openShellSandboxMeasurementKind,
-  openShellPolicyCheckKind,
-  openShellFixtureTeardownKind,
-  openShellGatewayTurnFailureKind,
-  openShellNativePolicyCheckKind,
-  openShellInitialTurnoverKind,
-]);
 const openShellPolicyChecks = new Set([
   "installation-discovery",
   "cluster-target-reachability",
@@ -322,6 +313,19 @@ function safeMeasurement(value) {
         "k3d-image-import",
         "kubernetes-readiness",
         "helm-install",
+        "openshell-image-selection",
+        "openshell-image-validation",
+        "openshell-assets-directory",
+        "openshell-charts",
+        "openshell-agent-sandbox-manifest",
+        "openshell-runtime-class",
+        "openshell-agent-sandbox-apply",
+        "openshell-agent-sandbox-rollout",
+        "openshell-workspace-render",
+        "openshell-gateway-import",
+        "openshell-sandbox-import",
+        "openshell-supervisor-import",
+        "openshell-prepare",
       ].includes(value.stage) ||
       !Number.isInteger(value.count) ||
       value.count < 1 ||
@@ -1687,18 +1691,9 @@ export default async function* jsonLinesReporter(source) {
         continue;
       }
       const value = parseMeasurement(message);
-      // A truncated JSON receipt must not turn into raw failure output either.
-      const retentionReceipt =
-        value?.kind === openShellGitRetentionKind ||
-        (message.startsWith(measurementPrefix) &&
-          /"kind"\s*:\s*"openshell-git-retention"/.test(message));
-      // Per-test diagnostics name their file; the run summary counts do not.
-      // Invalid or truncated retention receipts must not escape through the raw tail.
-      if (
-        typeof event.data.file === "string" &&
-        !openShellMeasurementKinds.has(value?.kind) &&
-        !retentionReceipt
-      ) {
+      // Structured receipts, including malformed or unknown kinds, belong only
+      // to safeMeasurement. Never duplicate their raw text into failure output.
+      if (typeof event.data.file === "string" && !message.startsWith(measurementPrefix)) {
         output.diagnostic(message);
       }
       // Node diagnostics can quote thrown errors; retain only this fixed failure category.
