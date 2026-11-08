@@ -14,7 +14,8 @@ export function waitForWorkspaceReconnect(read, timeoutMs = 60_000) {
         if (
           failure?.type !== "gateway_request_error" ||
           failure.code !== "UNAVAILABLE" ||
-          failure.message !== "node not connected"
+          (failure.message !== "node not connected" &&
+            failure.message !== "GatewayClientRequestError: node not connected: code=UNAVAILABLE")
         ) {
           throw error;
         }
