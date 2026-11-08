@@ -1394,7 +1394,10 @@ test("full-integration uses ordinary CI runners for kernel, sandbox, and image l
       : runner;
   };
   const ciRunners = new Map(laneTable().map((row) => [row.lane, row.runner]));
-  const lanes = job.strategy.matrix.include.map((entry) => entry.lane);
+  assert.equal(job.strategy.matrix.include, "${{ fromJSON(needs.ci-reuse.outputs.matrix) }}");
+  const lanes = JSON.parse(read("scripts/ci/full-integration-lanes.json")).map(
+    (entry) => entry.lane,
+  );
   const pinned = lanes.filter(
     (lane) =>
       lane === "postgres-auth" || lane.startsWith("k3d-fixture-") || lane === "k3d-observability",
@@ -1683,7 +1686,7 @@ test("lane lists outside the lane table name every lane they must", async (t) =>
   assert.deepEqual(
     [...sameSha].sort(),
     [
-      ...fullIntegration.jobs["pr-safe-same-sha"].strategy.matrix.include,
+      ...JSON.parse(read("scripts/ci/full-integration-lanes.json")),
       ...fullIntegration.jobs["image-lanes-same-sha"].strategy.matrix.include,
     ]
       .map((entry) => entry.lane)
@@ -1731,7 +1734,10 @@ test("every lane job stops its test files before its own timeout", (t) => {
         assert.equal(String(step.with["job-timeout-minutes"]), String(timeout), `${name} ${id}`);
         let minutes = [timeout];
         if (timeout === "${{ matrix.timeout }}") {
-          const rows = job.strategy.matrix.include;
+          const rows =
+            name === "full-integration.yml" && id === "pr-safe-same-sha"
+              ? JSON.parse(read("scripts/ci/full-integration-lanes.json"))
+              : job.strategy.matrix.include;
           minutes = (Array.isArray(rows) ? rows : laneTable()).map((row) => row.timeout);
         }
         for (const value of minutes) {
