@@ -92,6 +92,21 @@ export function createOpenShellGitApi({ origin, key, signal, after }) {
   };
 }
 
+// A terminal decision cannot later satisfy this scenario's same-runtime retention.
+// Keep the failure fixed even when the supplier record contains private details.
+export function assertOpenShellGitExpiryRetained(event, identity) {
+  if (
+    event.event === "worker.openshell-git-expiry" &&
+    event.outcome === "retire-runtime" &&
+    event.namespaceId === identity.namespaceId &&
+    event.agentId === identity.agentId &&
+    event.revisionId === identity.revisionId &&
+    event.repositoryRef === identity.repositoryRef
+  ) {
+    throw new Error("Git expiry required runtime retirement; same-runtime retention failed.");
+  }
+}
+
 async function waitUntil(description, operation, timeout, signal) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
@@ -1144,14 +1159,21 @@ async function installOpenShellGit(t, witnessIssuedGit) {
             outcome: event.outcome,
             check: event.check,
             failure: event.failure,
+            grpcStatus: event.grpcStatus,
             code: event.code,
             cause: event.cause,
             workerUid: pod.metadata.uid,
             namespaceMatches: event.namespaceId === namespace.id,
             repository,
           });
+          const expiryIdentity = {
+            namespaceId: namespace.id,
+            ...identity,
+            repositoryRef: origin.repositoryRef,
+          };
           if (!observation) {
             diagnostics.rejectedEventReads++;
+            assertOpenShellGitExpiryRetained(event, expiryIdentity);
             continue;
           }
           if (
@@ -1182,6 +1204,7 @@ async function installOpenShellGit(t, witnessIssuedGit) {
             diagnostics.observations.shift();
             diagnostics.observationsTruncated = true;
           }
+          assertOpenShellGitExpiryRetained(event, expiryIdentity);
         }
         // This bundled Driver event follows the retained-provider profile read and
         // recording of the reduced generation. A generic cleanup acknowledgement

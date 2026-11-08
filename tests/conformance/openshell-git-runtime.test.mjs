@@ -67,13 +67,18 @@ const restorations = (f) =>
 const warnings = (f) =>
   f.events.filter((event) => event.event === "worker.openshell-git-route-warning");
 const retained = (f) => warnings(f).filter((event) => event.status === "retained");
-// Each Git expiry pass logs the revision identity, its outcome and step, and for a pending
-// pass one constant failure. Nothing else: no error text, Sandbox name or gateway detail.
+// Each Git expiry pass logs identity, outcome and step, plus a fixed failure and optional
+// numeric status when unconfirmed. No error text, Sandbox name or gateway detail.
 const expiries = (f) => {
   const events = f.events.filter((event) => event.event === "worker.openshell-git-expiry");
   const identity = ["event", "namespaceId", "agentId", "revisionId", "repositoryRef"];
   for (const event of events) {
-    const fields = ["outcome", "check", ...(event.outcome === "pending" ? ["failure"] : [])];
+    const fields = [
+      "outcome",
+      "check",
+      ...(event.outcome !== "withdrawn" ? ["failure"] : []),
+      ...(event.grpcStatus === undefined ? [] : ["grpcStatus"]),
+    ];
     assert.deepEqual(Object.keys(event).sort(), [...identity, ...fields].sort());
   }
   return events;
@@ -2331,6 +2336,17 @@ test("Git expiry observes the original model in the reduced stock installation, 
         "model rotates during profile check": ["unconfirmed"],
       }[fault] ?? [];
     if (expectedFirst === "retire-runtime") {
+      const event = expiries(f).at(-1);
+      assert.equal(
+        event.failure,
+        ["Sandbox moved before send", "unimplemented detach"].includes(fault)
+          ? "failed"
+          : "unconfirmed",
+      );
+      assert.equal(
+        event.grpcStatus,
+        { "Sandbox moved before send": 10, "unimplemented detach": 12 }[fault],
+      );
       assert.deepEqual(failures(), expectedFailures);
       if (
         [

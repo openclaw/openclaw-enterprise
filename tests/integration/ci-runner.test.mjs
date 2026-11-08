@@ -6205,6 +6205,8 @@ test("run records only allowlisted measurements from test diagnostics", async (t
         namespaceMatches: false,
         repository: "mismatch",
         outcome: "retire-runtime",
+        failure: "failed",
+        grpcStatus: 10,
       },
       {
         ...expiryObservation,
@@ -6253,6 +6255,14 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   );
   const captured = expiryDiagnostic.observations.map(projectOpenShellGitExpiryObservation);
   assert.ok(!JSON.stringify(captured).includes(forbidden));
+  assert.equal(captured[1].failure, "failed");
+  assert.equal(captured[1].grpcStatus, 10);
+  for (const grpcStatus of [-1, 0, 17, 1.5, "10", forbidden]) {
+    assert.equal(
+      projectOpenShellGitExpiryObservation({ ...expiryObservation, grpcStatus }),
+      undefined,
+    );
+  }
   assert.equal(captured[4].code, "unrecognized");
   assert.equal(captured[5].cause, "unrecognized");
   for (const field of [

@@ -158,10 +158,16 @@ export function projectOpenShellGitExpiryObservation(value) {
     case "worker.openshell-git-expiry":
       fields.outcome = ["outcome", choice("withdrawn", "pending", "retire-runtime")];
       fields.check = ["check", expiryCheck];
-      if (value.outcome === "pending") {
+      if (value.outcome === "pending" || value.failure !== undefined) {
         fields.failure = [
           "failure",
           choice("unconfirmed", "admission_limit", "gateway_unavailable", "timeout", "failed"),
+        ];
+      }
+      if (value.grpcStatus !== undefined) {
+        fields.grpcStatus = [
+          "grpcStatus",
+          choice(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16),
         ];
       }
       break;
