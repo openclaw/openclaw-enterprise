@@ -107,6 +107,14 @@ select_linux_artifact() {
   case "${platform}" in
     Linux-x86_64) printf '%s\n' "${amd64_artifact}" ;;
     Linux-aarch64|Linux-arm64) printf '%s\n' "${arm64_artifact}" ;;
+    Linux-*)
+      if [[ "${tool}" == yq || "${tool}" == k3d ]]; then
+        echo "No supported checksum pin for ${tool} v${version} on ${platform}." >&2
+      else
+        echo "Install ${tool} v${version} manually on ${platform}." >&2
+      fi
+      return 1
+      ;;
     *)
       echo "Install ${tool} v${version} manually on ${platform}." >&2
       return 1
@@ -136,7 +144,7 @@ install_kubectl() {
 
 install_k3d() {
   local version="5.8.3"
-  if k3d_version_matches "${version}"; then
+  if [[ "${platform}" != Linux-* ]] && k3d_version_matches "${version}"; then
     k3d version
     return
   fi
@@ -149,9 +157,11 @@ install_k3d() {
   download_file \
     "https://github.com/k3d-io/k3d/releases/download/v${version}/k3d-linux-${arch}" \
     "${binary}" \
-    "${checksum}"
-  chmod 0755 "${binary}"
-  k3d version
+    "${checksum}" \
+    "${CI_PINNED_TOOL_CACHE:-}" \
+    "$(type -P k3d || true)" \
+    0755
+  "${binary}" version
 }
 
 install_helm() {
@@ -179,7 +189,7 @@ install_helm() {
 
 install_yq() {
   local version="4.48.1"
-  if yq_version_matches "${version}"; then
+  if [[ "${platform}" != Linux-* ]] && yq_version_matches "${version}"; then
     yq --version
     return
   fi
@@ -192,9 +202,11 @@ install_yq() {
   download_file \
     "https://github.com/mikefarah/yq/releases/download/v${version}/yq_linux_${arch}" \
     "${binary}" \
-    "${checksum}"
-  chmod 0755 "${binary}"
-  yq --version
+    "${checksum}" \
+    "${CI_PINNED_TOOL_CACHE:-}" \
+    "$(type -P yq || true)" \
+    0755
+  "${binary}" --version
 }
 
 install_actionlint() {
