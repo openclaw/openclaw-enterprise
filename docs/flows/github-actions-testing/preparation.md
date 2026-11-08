@@ -8,6 +8,16 @@ Prepare the resources for the selected source commit and test lane. See the [par
 
 `scripts/ci/prepare.mjs:prepareFile`, `scripts/ci/prepare.mjs:ensureK3dCluster`
 
+The shared lane action restores only yq and k3d downloads outside `PATH`. On Linux,
+`scripts/ci/setup-tools.sh` selects the checked-in platform checksum before any
+execution. `scripts/ci/download-pinned.sh` copies an installed PATH candidate or
+cached bytes to private staging,
+verifies that checksum, then atomically publishes the executable with mode 0755. Missing or corrupt entries
+use the existing pinned downloader; unavailable cache storage or service does not
+fail setup; verified cache hits do not rewrite the cache. PostgreSQL, image and
+Kubernetes profiles share the cache. Keys include OS, architecture and installer
+source. Direct callers can reuse verified installed bytes without a cache.
+
 The PR advisory OpenShell job uses Ubuntu 24.04 for Landlock and selects packaged Google Chrome through `OCC_TEST_BROWSER_EXECUTABLE`. The OpenShell manifest lists this optional input so test children receive it. Before image builds, `scripts/ci/setup-tools.sh:install_browser_dependencies` checks a headless sandboxed renderer and logs its version; errors fail setup. The browser inherits only `PATH`, with private `HOME` and `TMPDIR`. Ubuntu’s existing AppArmor profile permits its user namespaces. Without an override, Playwright uses its default headless shell.
 
 `scripts/ci/prepare.mjs:validateLaneInputsBeforeSideEffects` requires the optional
