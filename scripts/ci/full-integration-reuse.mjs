@@ -22,7 +22,7 @@ async function reusableRows() {
     readFile(join(root, ".github/workflows/full-integration.yml"), "utf8"),
   ]);
   const table = JSON.parse(ci.match(/LANE_TABLE: \|\n\s*(\[[\s\S]*?\n\s*\])/)[1]);
-  const node = (source) => source.match(/^  NODE_VERSION: (.+)$/m)?.[1];
+  const node = (source) => source.match(/^ {2}NODE_VERSION: (.+)$/m)?.[1];
   if (!node(ci) || node(ci) !== node(full)) {
     return [];
   }
