@@ -6,6 +6,7 @@ import { createServer, isIPv4 } from "node:net";
 import {
   appendFile,
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -615,16 +616,47 @@ async function ensurePostgresServer(statePath, state) {
     throw new Error("Refusing to use the developer PostgreSQL port 55432.");
   }
   const project = ownedName("openclaw-ci-pg", state.prefix, { maxLength: 63, separator: "_" });
+  const directory = join(dirname(statePath), `${project}-bootstrap`);
+  try {
+    await lstat(directory);
+    throw new Error(`Refusing existing PostgreSQL bootstrap directory: ${directory}`);
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+  }
   const resource = addResource(state, "compose-postgres", {
     name: project,
+    directory,
+    directoryCreated: false,
+    initSqlCreated: false,
     composeFile: composePostgresFile,
     port,
   });
   await writeState(statePath, state);
+  try {
+    await mkdir(directory, { mode: 0o700 });
+  } catch (error) {
+    state.resources = state.resources.filter(({ id }) => id !== resource.id);
+    await writeState(statePath, state);
+    throw error;
+  }
+  // Cleanup must not claim a competing directory if creation or this save fails.
+  resource.directoryCreated = true;
+  await writeState(statePath, state);
+  // PostgreSQL reads this public bootstrap as its container user, not the checkout owner.
+  const initSql = join(directory, "init-local.sql");
+  await writeFile(initSql, await readFile(join(repositoryRoot, "migrations/init-local.sql")), {
+    flag: "wx",
+    mode: 0o600,
+  });
+  resource.initSqlCreated = true;
+  await writeState(statePath, state);
+  await chmod(initSql, 0o644);
   await execFile(
     process.env.OCC_DOCKER_BIN ?? "docker",
     dockerArgsForPostgres(resource, "up", "-d", "--wait"),
-    { env: { OCC_POSTGRES_PORT: String(port) } },
+    { env: { OCC_POSTGRES_PORT: String(port), OPENCLAW_CI_POSTGRES_INIT_SQL: initSql } },
   );
   await postgresAdmin(resource, { statements: ciPostgresSettings, stage: "postgres-settings" });
   await markResourceReady(statePath, state, resource);
@@ -2642,6 +2674,10 @@ async function prepareK3dRuntimeImages(
   for (const [name, value] of Object.entries(inputs)) {
     const image = await registerImageInK3d(statePath, state, cluster, value, name);
     env[name] = image.reference;
+    if (name === "OCC_TEST_KUBERNETES_GATEWAY_IMAGE") {
+      // Host relays need the Docker image, not the cluster's imported manifest reference.
+      env.OCC_DOCKER_RUNTIME_IMAGE = image.hostImageId;
+    }
   }
   if (buildController) {
     const controller = await registerImageInK3d(

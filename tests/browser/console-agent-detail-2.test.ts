@@ -1,10 +1,25 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import test from "node:test";
+import type { Locator } from "playwright";
+import { Check } from "typebox/value";
+
+import {
+  AgentCallerPermissionsResponse,
+  AgentListResponse,
+  AgentReadResponse,
+  IAMAccessBindingListResponse,
+  IAMAccessBindingResponse,
+  IAMRoleResponse,
+  NamespaceListResponse,
+} from "../../packages/contracts/src/api/resources.ts";
+import { OpenClawController } from "../../packages/occ/src/index.ts";
+import { createFixtureResponse } from "../helpers/console-fixture-response.ts";
 
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 
-import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
+import { fileConsoleApp } from "../helpers/console-app.mjs";
+import { createNativeConsoleFixture, nativeBrowserSupported } from "./console-native-ingress.ts";
 
 import {
   apiRequests,
@@ -38,6 +53,16 @@ import {
   registerSharingCredentialsAndChannelsCases,
 } from "./console-agent-detail-cases.mts";
 
+function assertRecord(
+  value: unknown,
+  description: string,
+): asserts value is Record<string, unknown> {
+  assert.ok(
+    typeof value === "object" && value !== null && !Array.isArray(value),
+    `${description} must be an object`,
+  );
+}
+
 // The Console Browser lane runs the two Agent detail test files in parallel.
 
 // Tests that need no app of their own share one (fileConsoleApp); each makes its own Namespace.
@@ -50,6 +75,9 @@ const detailApp = fileConsoleApp();
 registerDeletionAndNavigationCases(detailApp);
 
 test("Agent detail opens native admin UI only after real API access checks pass", async (t) => {
+  if (!nativeBrowserSupported(t)) {
+    return;
+  }
   const disabledFixture = await detailApp(t);
   const disabledNamespace = await disabledFixture.createNamespace("Native admin disabled", {
     ready: true,
@@ -76,23 +104,26 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await disabledPage.getByRole("heading", { name: "Disabled native admin Agent" }).waitFor();
   await expectNativeAdminHidden(disabledPage);
 
-  const cookieDomain = "oce.example.test";
-  const consoleHost = `console.${cookieDomain}`;
-  const nativeDomain = `agents.${cookieDomain}`;
   const gatewayEndpoint =
     "wss://private-gateway.example.invalid/namespaces/native-admin/agents/agent";
-  const fixture = await createConsoleAppFixture(t, {
-    originHost: consoleHost,
-    publicOrigin: true,
-    authCookieDomain: cookieDomain,
-    development: { enabled: false },
-    https: true,
-    authSecureCookies: true,
-    nativeAdmin: { enabled: true, domain: nativeDomain, sharedCookieDomain: cookieDomain },
-    nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
-    agentGatewayManagedMode: false,
-    computeDriver: nativeAdminComputeDriver(gatewayEndpoint),
-  });
+  const {
+    fixture,
+    nativePage,
+    browserOptions,
+    consoleHost,
+    nativeDomain,
+    cookieDomain,
+    untrustedBrowserOptions,
+  } = await createNativeConsoleFixture(
+    t,
+    {
+      nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
+      agentGatewayManagedMode: false,
+      computeDriver: nativeAdminComputeDriver(gatewayEndpoint),
+    },
+    { serveAgentPage: true },
+  );
+  assert.ok(nativePage);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Native admin access", { ready: true });
   const agent = await fixture.createAgent(
@@ -100,12 +131,25 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     "Native admin Agent",
     nativeValues("unsupported-ui"),
   );
-  let { page } = await newPage(t, fixture, {
-    args: [
-      ...fixture.browserArgs,
-      `--host-resolver-rules=MAP ${consoleHost} 127.0.0.1,MAP *.${nativeDomain} 127.0.0.1`,
-    ],
-  });
+  const nativeProbe = `https://probe.${nativeDomain}/`;
+  const untrusted = await newPage(t, fixture, untrustedBrowserOptions);
+  await assert.rejects(untrusted.page.goto(nativeProbe), /ERR_CERT_AUTHORITY_INVALID/);
+  await untrusted.page.close();
+  let { page } = await newPage(t, fixture, browserOptions);
+  const wrongHost = await page.context().newPage();
+  await assert.rejects(
+    wrongHost.goto(`https://wrong.${cookieDomain}/`),
+    /ERR_CERT_COMMON_NAME_INVALID/,
+  );
+  await wrongHost.close();
+  assert.equal(nativePage.requests.length, 0, "TLS rejections must precede the Agent HTTP handler");
+  const response = await page.goto(nativeProbe);
+  assert.equal(response?.status(), 200);
+  assert.ok(
+    await response?.securityDetails(),
+    "the Agent wildcard must complete a real TLS handshake",
+  );
+  assert.deepEqual(nativePage.requests, [{ host: `probe.${nativeDomain}`, cookie: "" }]);
   let requests = apiRequests(page, fixture.origin);
   const draftDetail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
 
@@ -166,8 +210,11 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
   );
   assert.equal(initialNativeAccess.status, 200);
-  assert.equal(initialNativeAccess.data.status, "unsupported");
-  assert.equal(new URL(initialNativeAccess.data.origin).protocol, "https:");
+  const initialAccess: unknown = initialNativeAccess.data;
+  assertRecord(initialAccess, "Initial native admin access");
+  assert.equal(initialAccess.status, "unsupported");
+  assert.ok(typeof initialAccess.origin === "string", "Native admin origin must be a string");
+  assert.equal(new URL(initialAccess.origin).protocol, "https:");
   const detail = () =>
     detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
   await page.goto(detail().href);
@@ -206,9 +253,15 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   );
   assert.equal(stopped.status, 202);
   // Reproduce the state after the worker clears the revision, while this historical URL remains open.
-  const cleared = await fixture.controller.transact((state) =>
+  const controller: unknown = fixture.controller;
+  assert.ok(
+    controller instanceof OpenClawController,
+    "Bootstrap must create an OpenClawController",
+  );
+  const cleared = await controller.transact((state) =>
     state.agents.compareAndClearActiveRevision(namespace.id, agent.id, active.revision.id),
   );
+  assert.ok(cleared, "The stopped Agent must have its active revision cleared");
   assert.equal(cleared.activeRevisionId, undefined);
   await page.reload();
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
@@ -219,11 +272,9 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     false,
   );
 
-  await fixture.updateConfiguration(
-    namespace.id,
-    agent.configurationId,
-    nativeAdminValues("supported-ui", initialNativeAccess.data.origin),
-  );
+  const supportedValues: unknown = nativeAdminValues("supported-ui", initialAccess.origin);
+  assertRecord(supportedValues, "Native admin Configuration values");
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, supportedValues);
   active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   await page.goto(detail().href);
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
@@ -233,11 +284,15 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
   );
   assert.equal(expectedAccess.status, 200);
-  assert.equal(expectedAccess.data.status, "available");
-  assert.equal(expectedAccess.data.activeRevisionId, active.revision.id);
-  assert.equal(expectedAccess.data.bootstrapUrl, undefined);
-  assert.equal(new URL(expectedAccess.data.url).origin, expectedAccess.data.origin);
-  assert.match(new URL(expectedAccess.data.url).hostname, new RegExp(`\\.${nativeDomain}$`));
+  const access: unknown = expectedAccess.data;
+  assertRecord(access, "Available native admin access");
+  assert.equal(access.status, "available");
+  assert.ok(typeof access.origin === "string", "Native admin origin must be a string");
+  assert.ok(typeof access.url === "string", "Native admin URL must be a string");
+  assert.equal(access.activeRevisionId, active.revision.id);
+  assert.equal(access.bootstrapUrl, undefined);
+  assert.equal(new URL(access.url).origin, access.origin);
+  assert.match(new URL(access.url).hostname, new RegExp(`\\.${nativeDomain}$`));
 
   // Viewing an older configuration snapshot must still open the current active gateway.
   await page.getByLabel("Viewing version").selectOption(historicalRevisionId);
@@ -245,26 +300,19 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assertRevisionUrl(page, historicalRevisionId);
   assert.equal(
     await page.getByRole("link", { name: "Open Agent UI" }).getAttribute("href"),
-    expectedAccess.data.url,
+    access.url,
   );
-  const sharedCookies = await page.context().cookies(expectedAccess.data.origin);
+  const sharedCookies = await page.context().cookies(access.origin);
   const sessionCookies = sharedCookies.filter((cookie) =>
     cookie.name.endsWith("openclaw_occ_shared.session_token"),
   );
   assert.equal(sessionCookies.length, 1);
-  assert.equal(sessionCookies[0].domain, `.${cookieDomain}`);
-  assert.equal(sessionCookies[0].httpOnly, true);
-  assert.equal(sessionCookies[0].sameSite, "Lax");
-
-  let nativeRequestCookie = "";
-  await page.context().route(`${expectedAccess.data.origin}/**`, async (route) => {
-    nativeRequestCookie = (await route.request().allHeaders()).cookie ?? "";
-    return route.fulfill({
-      status: 200,
-      contentType: "text/html; charset=utf-8",
-      body: "<!doctype html><title>Native admin UI</title>",
-    });
-  });
+  const sessionCookie = sessionCookies[0];
+  assert.ok(sessionCookie, "The Agent origin must receive the shared session cookie");
+  assert.equal(sessionCookie.domain, `.${cookieDomain}`);
+  assert.equal(sessionCookie.httpOnly, true);
+  assert.equal(sessionCookie.secure, true);
+  assert.equal(sessionCookie.sameSite, "Lax");
 
   await page.context().addCookies([
     {
@@ -284,7 +332,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     ),
     "the migration fixture must contain the legacy host-only console cookie",
   );
-  const agentCookies = await page.context().cookies(expectedAccess.data.origin);
+  const agentCookies = await page.context().cookies(access.origin);
   assert.equal(
     agentCookies.some((cookie) => cookie.value === "legacy-host-only"),
     false,
@@ -295,26 +343,32 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await page.getByRole("link", { name: "Open Agent UI" }).click();
   const popup = await popupPromise;
   await popup.waitForLoadState("domcontentloaded");
-  assert.equal(popup.url(), expectedAccess.data.url);
+  assert.equal(popup.url(), access.url);
   assert.equal(await popup.evaluate(() => globalThis.opener === null), true);
-  assert.match(nativeRequestCookie, /(?:__Secure-)?openclaw_occ_shared\.session_token=/);
-  assert.doesNotMatch(nativeRequestCookie, /legacy-host-only/);
+  assert.equal(await popup.title(), "Native admin UI");
+  assert.equal(nativePage.requests.length, 2);
+  const nativeRequest = nativePage.requests[1];
+  assert.ok(nativeRequest, "The Agent HTTPS handler must receive the popup request");
+  assert.equal(nativeRequest.host, new URL(access.url).host);
+  const names = nativeRequest.cookie.split("; ").map((pair) => pair.split("=", 1)[0]);
+  assert.ok(
+    names.includes(sessionCookie.name),
+    "the Agent HTTPS handler receives the shared session cookie",
+  );
+  assert.equal(
+    names.includes("openclaw_occ.session_token"),
+    false,
+    "the host-only cookie stays on the Console",
+  );
 
   assert.deepEqual([...deniedTabWrites, ...nonAuthWriteRequests(requests)], []);
 });
 
 test("Agent detail rereads native admin access once when a pending deployment activates, and Refresh access keeps keyboard focus", async (t) => {
-  const cookieDomain = "oce.example.test";
-  const consoleHost = `console.${cookieDomain}`;
-  const nativeDomain = `agents.${cookieDomain}`;
-  const fixture = await createConsoleAppFixture(t, {
-    originHost: consoleHost,
-    publicOrigin: true,
-    authCookieDomain: cookieDomain,
-    development: { enabled: false },
-    https: true,
-    authSecureCookies: true,
-    nativeAdmin: { enabled: true, domain: nativeDomain, sharedCookieDomain: cookieDomain },
+  if (!nativeBrowserSupported(t)) {
+    return;
+  }
+  const { fixture, browserOptions } = await createNativeConsoleFixture(t, {
     nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
     agentGatewayManagedMode: false,
     computeDriver: nativeAdminComputeDriver(
@@ -331,9 +385,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   // The first deployment requests running before any version is selected for service.
   const pending = await fixture.deployAgent(namespace.id, agent.id);
   const nativeAdminPath = `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`;
-  const { page } = await newPage(t, fixture, {
-    args: [...fixture.browserArgs, `--host-resolver-rules=MAP ${consoleHost} 127.0.0.1`],
-  });
+  const { page } = await newPage(t, fixture, browserOptions);
   const requests = apiRequests(page, fixture.origin);
   // Deployment activity reads a recorded status the worker would write; the native admin
   // reads stay on the real API so the card reflects the Agent's actual active revision.
@@ -403,7 +455,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   // A keyboard reader who refreshes access keeps focus on the button through the read: a second
   // Enter while it reads sends nothing, and the next Tab continues from the card (issue 3311).
   const reload = card.getByRole("button", { name: "Refresh access" });
-  const isFocused = (locator) =>
+  const isFocused = (locator: Locator) =>
     locator.evaluate((node) => node === node.ownerDocument.activeElement);
   const readSettled = async () => {
     await waitForEnabled(reload);
@@ -435,26 +487,17 @@ test("Agent detail rereads native admin access once when a pending deployment ac
 registerSettingsRefocusAndTabsCases(detailApp);
 
 test("Agent sharing grants existing people exact discovery and native access, then removes only the selected binding", async (t) => {
-  const cookieDomain = "oce.example.test";
-  const consoleHost = `console.${cookieDomain}`;
-  const fixture = await createConsoleAppFixture(t, {
+  if (!nativeBrowserSupported(t)) {
+    return;
+  }
+  const { fixture, browserOptions } = await createNativeConsoleFixture(t, {
     provisionedPeople: ["shared-person"],
-    originHost: consoleHost,
-    publicOrigin: true,
-    authCookieDomain: cookieDomain,
-    development: { enabled: false },
-    https: true,
-    authSecureCookies: true,
-    nativeAdmin: {
-      enabled: true,
-      domain: `agents.${cookieDomain}`,
-      sharedCookieDomain: cookieDomain,
-    },
     nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
     agentGatewayManagedMode: false,
     computeDriver: nativeAdminComputeDriver("wss://private-gateway.example.invalid/shared"),
   });
   await fixture.bootstrap();
+  const fixtureResponse = createFixtureResponse(fixture.app.getSchemas());
   const namespace = await fixture.createNamespace("Shared workspace", { ready: true });
   const agent = await fixture.createAgent(
     namespace.id,
@@ -471,18 +514,26 @@ test("Agent sharing grants existing people exact discovery and native access, th
     "GET",
     `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
   );
-  await fixture.updateConfiguration(
-    namespace.id,
-    agent.configurationId,
-    nativeAdminValues("shared", native.data.origin),
-  );
+  const nativeAccess: unknown = native.data;
+  assertRecord(nativeAccess, "Shared Agent native admin access");
+  assert.ok(typeof nativeAccess.origin === "string", "Native admin origin must be a string");
+  const sharedValues: unknown = nativeAdminValues("shared", nativeAccess.origin);
+  assertRecord(sharedValues, "Shared Agent native admin Configuration values");
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, sharedValues);
+  const currentAgent = fixtureResponse(
+    await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`),
+    200,
+    AgentReadResponse,
+    "Read shared Agent before revision activation",
+  ).data;
+  assert.ok(currentAgent.activeRevisionId, "The shared Agent must have an active revision");
   const active = await fixture.seedActiveAgentRevision(
     namespace.id,
     agent.id,
-    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).data
-      .activeRevisionId,
+    currentAgent.activeRevisionId,
   );
   const person = fixture.provisionedAccounts[0];
+  assert.ok(person, "The shared person must be provisioned");
   const session = await fixture.signIn(person.credentials);
   assert.deepEqual((await fixture.request("GET", "/namespaces", { session })).data, []);
   const policyPath = `/namespaces/${namespace.id}/iam`;
@@ -493,10 +544,12 @@ test("Agent sharing grants existing people exact discovery and native access, th
       permissions: [{ action: "delete", resourceKind: "agent" }],
     },
   });
-  assert.equal(misleadingRole.status, 201);
-  const browserOptions = {
-    args: [...fixture.browserArgs, `--host-resolver-rules=MAP ${consoleHost} 127.0.0.1`],
-  };
+  const misleadingRoleData = fixtureResponse(
+    misleadingRole,
+    201,
+    IAMRoleResponse,
+    "Create misleading native administration Role",
+  ).data;
   const { page, artifacts } = await newPage(t, fixture, browserOptions);
   const detail = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "access");
   await login(page, fixture, detail);
@@ -506,24 +559,44 @@ test("Agent sharing grants existing people exact discovery and native access, th
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
   await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
   await panel.screenshot({ path: join(artifacts, "agent-sharing-granted.png") });
-  const bindings = await fixture.addedAccessBindings(namespace.id);
+  const bindings: unknown = await fixture.addedAccessBindings(namespace.id);
+  assert.ok(
+    Check(IAMAccessBindingListResponse.properties.data, bindings),
+    "Shared access bindings must match the Controller contract",
+  );
   assert.equal(bindings.length, 2);
   assert.equal(
-    bindings.some((binding) => binding.roleId === misleadingRole.data.id),
+    bindings.some((binding) => binding.roleId === misleadingRoleData.id),
     false,
   );
-  assert.deepEqual(bindings.map((binding) => [binding.resourceKind, binding.resourceId]).sort(), [
-    ["agent", agent.id],
-    ["namespace", namespace.id],
-  ]);
   assert.deepEqual(
-    (await fixture.request("GET", "/namespaces", { session })).data.map((item) => item.id),
+    bindings
+      .map((binding) => {
+        assert.ok("resourceKind" in binding, "Shared access bindings must target exact resources");
+        return [binding.resourceKind, binding.resourceId];
+      })
+      .sort(),
+    [
+      ["agent", agent.id],
+      ["namespace", namespace.id],
+    ],
+  );
+  assert.deepEqual(
+    fixtureResponse(
+      await fixture.request("GET", "/namespaces", { session }),
+      200,
+      NamespaceListResponse,
+      "List Namespaces visible to the recipient",
+    ).data.map((item) => item.id),
     [namespace.id],
   );
   assert.deepEqual(
-    (await fixture.request("GET", `/namespaces/${namespace.id}/agents`, { session })).data.map(
-      (item) => item.id,
-    ),
+    fixtureResponse(
+      await fixture.request("GET", `/namespaces/${namespace.id}/agents`, { session }),
+      200,
+      AgentListResponse,
+      "List Agents visible to the recipient",
+    ).data.map((item) => item.id),
     [agent.id],
   );
   assert.equal(
@@ -542,14 +615,13 @@ test("Agent sharing grants existing people exact discovery and native access, th
     403,
   );
   assert.equal((await fixture.request("GET", `${policyPath}/roles`, { session })).status, 403);
-  assert.equal(
-    (
-      await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`, {
-        session,
-      })
-    ).data.status,
-    "available",
-  );
+  const recipientAccess: unknown = (
+    await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`, {
+      session,
+    })
+  ).data;
+  assertRecord(recipientAccess, "Recipient native admin access");
+  assert.equal(recipientAccess.status, "available");
 
   const recipient = (await newPage(t, fixture, browserOptions)).page;
   const recipientRequests = apiRequests(recipient, fixture.origin);
@@ -595,16 +667,27 @@ test("Agent sharing grants existing people exact discovery and native access, th
   const operateRole = await fixture.request("POST", `${policyPath}/roles`, {
     body: { permissions: [{ action: "operate", resourceKind: "agent" }] },
   });
+  const operateRoleData = fixtureResponse(
+    operateRole,
+    201,
+    IAMRoleResponse,
+    "Create Agent operate Role",
+  ).data;
   const operateBinding = await fixture.request("POST", `${policyPath}/access-bindings`, {
     body: {
       subjectKind: "identity",
       subjectId: person.principal.id,
-      roleId: operateRole.data.id,
+      roleId: operateRoleData.id,
       resourceKind: "agent",
       resourceId: agent.id,
     },
   });
-  assert.equal(operateBinding.status, 201);
+  const operateBindingData = fixtureResponse(
+    operateBinding,
+    201,
+    IAMAccessBindingResponse,
+    "Grant Agent operate permission",
+  ).data;
   // Stop was granted independently; reloading obtains the new advice without granting version read.
   const refreshedAdvice = recipient.waitForResponse((response) =>
     response.url().endsWith(`/namespaces/${namespace.id}/agents/${agent.id}/permissions`),
@@ -612,7 +695,12 @@ test("Agent sharing grants existing people exact discovery and native access, th
   await recipient.reload();
   const advice = await refreshedAdvice;
   assert.equal(advice.status(), 200);
-  assert.equal((await advice.json()).data.operate, true);
+  const adviceBody: unknown = await advice.json();
+  assert.ok(
+    Check(AgentCallerPermissionsResponse, adviceBody),
+    "Refreshed Agent permissions must match the Controller contract",
+  );
+  assert.equal(adviceBody.data.operate, true);
   await recipient
     .getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true })
     .waitFor();
@@ -627,16 +715,26 @@ test("Agent sharing grants existing people exact discovery and native access, th
   await panel.getByRole("button", { name: "Remove binding", exact: true }).click();
   await panel.getByText("Binding removed.", { exact: false }).waitFor();
   await panel.screenshot({ path: join(artifacts, "agent-sharing-removed.png") });
-  const after = await fixture.addedAccessBindings(namespace.id);
+  const after: unknown = await fixture.addedAccessBindings(namespace.id);
+  assert.ok(
+    Check(IAMAccessBindingListResponse.properties.data, after),
+    "Remaining access bindings must match the Controller contract",
+  );
+  const namespaceBinding = bindings.find(
+    (binding) => "resourceKind" in binding && binding.resourceKind === "namespace",
+  );
+  assert.ok(namespaceBinding, "Sharing must retain the Namespace discovery binding");
   assert.deepEqual(
     after.map((binding) => binding.id).sort(),
-    [
-      bindings.find((binding) => binding.resourceKind === "namespace").id,
-      operateBinding.data.id,
-    ].sort(),
+    [namespaceBinding.id, operateBindingData.id].sort(),
   );
   assert.deepEqual(
-    (await fixture.request("GET", "/namespaces", { session })).data.map((item) => item.id),
+    fixtureResponse(
+      await fixture.request("GET", "/namespaces", { session }),
+      200,
+      NamespaceListResponse,
+      "List Namespaces visible to the recipient",
+    ).data.map((item) => item.id),
     [namespace.id],
   );
   assert.deepEqual(

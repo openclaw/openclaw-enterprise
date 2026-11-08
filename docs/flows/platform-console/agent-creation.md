@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
 updated: 2026-11-05
-last_updated_session: authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9
+last_updated_session: claude/session_01HzmRt1DGB79VEnEWHt7PRy
 ---
 
 # Console Agent creation
@@ -173,11 +173,16 @@ Agent/Configuration for [workspace setup](../workspace-files.md).
 
 `create.mts:grantConfigurationSecretAccess` grants exact Secret `operate` for final
 same-Namespace `env` bindings. Failure retains the Agent; **Retry credential access**
-rereads grants without duplication. Grants are Installation administration: a session
-known not to administer the Installation sends no IAM request and names the administrator
-step, and a member's refused grant offers no retry. After a refused Installation read, the
-"Your access" status block above the form gives the permission answer: create allowed,
-refused, or not checked. A failed permission read adds **Retry permission check**, which
+rereads grants without duplication. A session known not to administer the Installation sends
+no IAM request and opens the saved draft: the member's
+[deploy writes these grants](../namespace-iam-policy.md#6-default-users-owners-and-deploy-time-grants).
+After a refused Installation read, the "Your access" status block above the form gives the
+permission answer: create allowed, refused, or not checked. When create is allowed,
+`create.mts:loadNamespaceCapabilities` reads `GET /namespaces/:namespaceId/agent-capabilities`
+and applies it as `applyCapabilities` applies the Installation's. Its credential source types let
+the form register a model Secret with a Credential Gateway, as step 4 does. It omits
+`agentProvisioning` and `nativeAdmin`, so the form saves a draft and disables
+**Enable Native admin UI**. A failed permission read adds **Retry permission check**, which
 rereads only that answer. A retry that refuses create shows the refusal a fresh load shows,
 without the form. Failed Agent writes retain Configuration ID
 and lock JSON/Harness for explicit reuse. Writes never retry automatically; drafts
@@ -208,6 +213,9 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-08 09:34: Preserve authored plugin permissions and the disabled Codex entry while merging Namespace capability discovery. (authoring-run/f474f795-758c-4b42-8835-1bdcf14162fa - 7db5638975981ec1400f1a4ba52da77d5fd33dce)
+
+- 2026-11-05: A member reads the Namespace's Agent capabilities after a refused Installation read, registers a model Secret with a Credential Gateway, and opens the draft without an IAM request. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
 - 2026-11-05 18:37: Explain the Configuration number range refusal on Create. (authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9 - 5fd3fde4911e1640c354d69bb09f6f3d72445a05)
 - 2026-11-05 13:00: Retain upstream malformed-policy guards while preserving authored allow/deny lists through Harness changes. (authoring-run/e403cb92-13a9-40b8-a636-6922c2747638 - 71d3a9d7a5385839159672c5152ee42848e9a46c)
 

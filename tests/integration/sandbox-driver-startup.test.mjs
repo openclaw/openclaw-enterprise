@@ -1,3 +1,4 @@
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.mjs";
 import { runDocker, image, imageTestOptions } from "../helpers/runtime-image-startup.mjs";
 import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
@@ -528,7 +529,13 @@ function runtimeSandboxFixture(
     id: "rev_00000000-0000-4000-8000-000000000003",
     namespaceId: context.namespace.id,
     agentId: "agt_00000000-0000-4000-8000-000000000003",
-    harness: { id: harnessId, version: "1.0.0", mode: "dedicated" },
+    harness: {
+      id: harnessId,
+      version: "1.0.0",
+      mode: "dedicated",
+      overrides: {},
+      configuration: {},
+    },
     sandboxDriverId: driver.id,
   };
   const nodeSetup = {
@@ -1885,7 +1892,15 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
   const withdraw = (recheck) =>
     driver.withdraw({
       namespace,
-      revision: { harness: { id: "codex", mode: "dedicated" } },
+      revision: {
+        harness: {
+          id: "codex",
+          version: "1.0.0",
+          mode: "dedicated",
+          overrides: {},
+          configuration: {},
+        },
+      },
       sandbox: { resourceName: sandbox },
       sourceId,
       signal,
@@ -5095,7 +5110,15 @@ function credentialGatewayOverProviders({
     context: (id) => ({ namespace, source: source(id), signal }),
     revisionContext: (sources) => ({
       namespace,
-      revision: { harness: { id: "codex", mode: "dedicated" } },
+      revision: {
+        harness: {
+          id: "codex",
+          version: "1.0.0",
+          mode: "dedicated",
+          overrides: {},
+          configuration: {},
+        },
+      },
       sources,
       signal,
     }),
@@ -5704,7 +5727,9 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
   await driver.registerSource(context(second), tokenInput(endpoint));
   const bearer = (id) => ({ ...context(id).source, type: "bearer-token", config: endpoint });
   const { namespace, signal } = context(first);
-  const revision = { harness: { id: "codex", mode: "dedicated" } };
+  const revision = {
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {}, configuration: {} },
+  };
   await assert.rejects(
     driver.attachForRevision({
       namespace,
@@ -5767,7 +5792,15 @@ function bearerTokenSources(gateway) {
   });
   const revisionContext = (sources) => ({
     namespace,
-    revision: { harness: { id: "codex", mode: "dedicated" } },
+    revision: {
+      harness: {
+        id: "codex",
+        version: "1.0.0",
+        mode: "dedicated",
+        overrides: {},
+        configuration: {},
+      },
+    },
     sources,
     signal,
   });
@@ -7050,6 +7083,37 @@ test("OpenShell verifies operator NetworkPolicy from actual KubernetesObjectApi 
       message: "Name NetworkPolicy ingress sources with the Kubernetes field from.",
     },
   ]);
+
+  // Match the API server's omission of empty rule lists without admitting an
+  // allow-all rule or a change to which Pods/directions the policy isolates.
+  const denyConfiguration = structuredClone(configuration);
+  const denyPolicy = {
+    ...policy,
+    spec: { podSelector: {}, policyTypes: ["Ingress", "Egress"], ingress: [], egress: [] },
+  };
+  denyConfiguration.gateway.networkPolicyResources = [denyPolicy];
+  const denyDriver = new OpenShellSandboxDriver(denyConfiguration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+    operatorOwnedKubernetesResources: true,
+  });
+  wire = { ...structuredClone(denyPolicy), metadata };
+  delete wire.spec.ingress;
+  delete wire.spec.egress;
+  await denyDriver.ensureNamespace(context);
+  for (const changed of [
+    { ingress: [{}] },
+    { egress: [{}] },
+    { policyTypes: ["Ingress"] },
+    { podSelector: { matchLabels: { app: "other" } } },
+  ]) {
+    wire = { ...denyPolicy, metadata, spec: { ...denyPolicy.spec, ...changed } };
+    await assert.rejects(
+      denyDriver.ensureNamespace(context),
+      /Operator workspace resource does not match/,
+    );
+  }
 });
 
 /**
@@ -7895,11 +7959,17 @@ test(
           egressPlan: plan,
           executionAdmission: { version: 5, mode: "protected" },
         };
+        rev.configuration = createHarnessConfiguration("codex", "gpt-5");
+        rev.harness.configuration = protectedGit.computeDriver.resolveHarnessConfiguration(
+          rev.harness,
+          auth,
+          rev.configuration,
+        );
         const ctx = { ...context, plan, revision: rev };
         protectedGit.computeDriver.validateExecutionAdmission(rev, owner);
-        assert.equal(
+        assert.match(
           protectedGit.computeDriver.admitRevision(rev),
-          "protected-codex-no-connection-retry:v1",
+          /^model-provider:v1:[a-f0-9]{64}:protected-codex-no-connection-retry:v1$/,
         );
         protectedGit.computeDriver.validateRepositoryCredentials(rev.harness, sandbox.id);
         // Preparation accepts the configured facilities independently of the release label.

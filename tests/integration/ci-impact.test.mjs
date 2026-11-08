@@ -1024,6 +1024,107 @@ function laneTable() {
   return JSON.parse(match[1]);
 }
 
+const mainPushEnvironment = {
+  GITHUB_EVENT_NAME: "push",
+  GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
+  GITHUB_REF: "refs/heads/main",
+};
+
+function mainPushEvent(f, overrides = {}) {
+  f.writeEvent({
+    before: f.base,
+    after: f.tested,
+    ref: "refs/heads/main",
+    repository: { full_name: "openclaw/openclaw-enterprise" },
+    forced: false,
+    deleted: false,
+    created: false,
+    ...overrides,
+  });
+}
+
+test("main push uses the before-tree policy to select and verify documentation", async (t) => {
+  const [f, shallow] = await policyFixture(t, docsChange);
+  mainPushEvent(f);
+  await f.expect("docs", mainPushEnvironment, "docs_only");
+  await shallow.expect("docs", mainPushEnvironment, "docs_only");
+  for (const changed of [
+    { forced: true },
+    { created: true },
+    { deleted: true },
+    { forced: null },
+  ]) {
+    mainPushEvent(f, changed);
+    await f.expectReason("invalid_event", mainPushEnvironment);
+    await shallow.expectReason("invalid_event", mainPushEnvironment);
+  }
+  mainPushEvent(f, { after: f.head });
+  await f.expectReason("checkout_mismatch", mainPushEnvironment);
+  await shallow.expectReason("bootstrap_checkout_mismatch", mainPushEnvironment);
+  mainPushEvent(f, { before: "0".repeat(40) });
+  await f.expectReason("checkout_mismatch", mainPushEnvironment);
+  await shallow.expect("full", mainPushEnvironment);
+  mainPushEvent(f);
+  for (const changed of [
+    { GITHUB_REPOSITORY: "another/repository" },
+    { GITHUB_REF: "refs/heads/another" },
+    { GITHUB_EVENT_NAME: "workflow_dispatch" },
+  ]) {
+    await f.expectReason("non_pr_event", { ...mainPushEnvironment, ...changed });
+    await shallow.expectReason("bootstrap_non_pr_event", { ...mainPushEnvironment, ...changed });
+  }
+});
+
+test("main push compares every commit since before, not just the last commit", async (t) => {
+  const [f, shallow] = await policyFixture(t, docsChange, {
+    moveMain: ({ put }) => put("src/main.ts", "export const changed = true;\n"),
+  });
+  mainPushEvent(f);
+  await f.expectReason("ineligible_change", mainPushEnvironment);
+  // A shallow checkout lacking the before commit must fail closed.
+  await shallow.expect("full", mainPushEnvironment);
+});
+
+test("main push keeps tests, policy changes, symlinks and executable docs in full mode", async (t) => {
+  for (const change of [
+    ({ put }) => put("tests/integration/ci-impact.test.mjs"),
+    ({ put }) => put(".github/workflows/ci.yml"),
+    ({ put }) => put("scripts/ci/impact.mjs", policy + "\n// changed\n"),
+    ({ put, repo }) => {
+      put("docs/executable.md");
+      chmodSync(join(repo, "docs/executable.md"), 0o755);
+    },
+    ({ repo }) => {
+      mkdirSync(join(repo, "docs"));
+      symlinkSync("../base.txt", join(repo, "docs/link.md"));
+    },
+  ]) {
+    const [f, shallow] = await policyFixture(t, change);
+    mainPushEvent(f);
+    await f.expect("full", mainPushEnvironment);
+    await shallow.expect("full", mainPushEnvironment);
+  }
+});
+
+test("main push cannot execute its new policy or narrow with an old policy", async (t) => {
+  const marker = join(temporaryDirectorySync(t, "ci-push-marker-"), "untrusted-marker");
+  const [f, shallow] = await policyFixture(t, ({ put }) => {
+    put("scripts/ci/impact.mjs", untrustedSelector(marker, "mode=docs\\n"));
+    put("docs/change.md");
+  });
+  mainPushEvent(f);
+  await shallow.expectReason("ineligible_change", mainPushEnvironment);
+  assert.equal(existsSync(marker), false);
+  const old = await fixture(t, docsChange, {
+    "scripts/ci/impact.mjs": `import { appendFileSync } from "node:fs";
+if (process.argv[2] === "--github-output") appendFileSync(process.argv[3], "mode=full\\nreason=non_pr_event\\n");
+else if (process.argv[3] !== "full") process.exit(1);
+`,
+  });
+  mainPushEvent(old);
+  await (await shallowBootstrap(old)).expectReason("non_pr_event", mainPushEnvironment);
+});
+
 test("the checked-in policy can select a documentation-only pull request", async (t) => {
   // Use the actual Git mode so a policy the bootstrap rejects cannot pass by
   // being recreated with a different mode in the fixture.
@@ -1277,19 +1378,26 @@ test("full-integration lanes read NODE_BASE_IMAGE from a variable their environm
   }
 });
 
-test("full-integration runs kernel- and sandbox-sensitive same-SHA lanes on ci.yml's runner", () => {
+test("full-integration uses ordinary CI runners for kernel, sandbox, and image lanes", () => {
   // Hosted ubuntu-24.04 refuses Chromium's sandbox, which PostgreSQL Authentication's
   // sign-in cases turn on (finding 1383), and the k3d lanes need a kernel that enforces
   // NetworkPolicy. These lanes must run where ci.yml runs them.
-  const job = loadYaml(".github/workflows/full-integration.yml").jobs["pr-safe-same-sha"];
-  const expression = job["runs-on"].replace(/^\$\{\{\s*|\s*\}\}$/g, "");
-  const runnerFor = (lane) =>
-    runInNewContext(expression, {
-      matrix: { lane },
-      startsWith: (value, prefix) => value.startsWith(prefix),
-    });
+  const jobs = loadYaml(".github/workflows/full-integration.yml").jobs;
+  const job = jobs["pr-safe-same-sha"];
+  const runnerFor = (target, lane) => {
+    const runner = target["runs-on"];
+    return runner.startsWith("${{")
+      ? runInNewContext(runner.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), {
+          matrix: { lane },
+          startsWith: (value, prefix) => value.startsWith(prefix),
+        })
+      : runner;
+  };
   const ciRunners = new Map(laneTable().map((row) => [row.lane, row.runner]));
-  const lanes = job.strategy.matrix.include.map((entry) => entry.lane);
+  assert.equal(job.strategy.matrix.include, "${{ fromJSON(needs.ci-reuse.outputs.matrix) }}");
+  const lanes = JSON.parse(read("scripts/ci/full-integration-lanes.json")).map(
+    (entry) => entry.lane,
+  );
   const pinned = lanes.filter(
     (lane) =>
       lane === "postgres-auth" || lane.startsWith("k3d-fixture-") || lane === "k3d-observability",
@@ -1298,7 +1406,11 @@ test("full-integration runs kernel- and sandbox-sensitive same-SHA lanes on ci.y
     assert.ok(pinned.includes(lane), lane);
   }
   for (const lane of pinned) {
-    assert.equal(runnerFor(lane), ciRunners.get(lane), lane);
+    assert.equal(runnerFor(job, lane), ciRunners.get(lane), lane);
+  }
+  const images = jobs["image-lanes-same-sha"];
+  for (const { lane } of images.strategy.matrix.include) {
+    assert.equal(runnerFor(images, lane), ciRunners.get(lane), lane);
   }
 });
 
@@ -1320,7 +1432,7 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
       "pnpm lint",
       "pnpm format:check",
       "pnpm openapi:check",
-      "pnpm docs:install && pnpm openapi:lint && pnpm docs:check && pnpm docs:build",
+      "pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check && pnpm docs:build",
     ],
   );
   // A check moved out of the lanes must still gate CI Required in every mode.
@@ -1574,7 +1686,7 @@ test("lane lists outside the lane table name every lane they must", async (t) =>
   assert.deepEqual(
     [...sameSha].sort(),
     [
-      ...fullIntegration.jobs["pr-safe-same-sha"].strategy.matrix.include,
+      ...JSON.parse(read("scripts/ci/full-integration-lanes.json")),
       ...fullIntegration.jobs["image-lanes-same-sha"].strategy.matrix.include,
     ]
       .map((entry) => entry.lane)
@@ -1622,7 +1734,10 @@ test("every lane job stops its test files before its own timeout", (t) => {
         assert.equal(String(step.with["job-timeout-minutes"]), String(timeout), `${name} ${id}`);
         let minutes = [timeout];
         if (timeout === "${{ matrix.timeout }}") {
-          const rows = job.strategy.matrix.include;
+          const rows =
+            name === "full-integration.yml" && id === "pr-safe-same-sha"
+              ? JSON.parse(read("scripts/ci/full-integration-lanes.json"))
+              : job.strategy.matrix.include;
           minutes = (Array.isArray(rows) ? rows : laneTable()).map((row) => row.timeout);
         }
         for (const value of minutes) {
@@ -1741,6 +1856,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
   assert.deepEqual(
     [
       "runtime-image-fixture",
+      ...JSON.parse(read("scripts/ci/full-integration-lanes.json")).map((row) => row.lane),
       ...matrixLanes(read(".github/workflows/full-integration.yml")),
     ].sort(),
     [...expectedFullLanes, "k3d-observability-demo"].sort(),
@@ -2531,6 +2647,10 @@ async function buildMatrix(t, mode, lanes) {
 
 test("the lane matrix runs every lane in full mode and only selected lanes in tests mode", async (t) => {
   const table = laneTable();
+  assert.equal(
+    table.find((row) => row.lane === "checks-baseline-1").runner,
+    "blacksmith-4vcpu-ubuntu-2404",
+  );
   // A runner label nobody provides leaves the job queued until it times out.
   // Every lane must use a self-hosted label that actionlint knows (the only
   // list in .github/actionlint.yaml).
@@ -2547,7 +2667,16 @@ test("the lane matrix runs every lane in full mode and only selected lanes in te
     // NetworkPolicy proofs need a runner kernel shown to enforce them.
     const netfilter = row.lane.startsWith("k3d-fixture-") || row.lane === "k3d-observability";
     if (netfilter) {
-      assert.equal(row.runner, "blacksmith-32vcpu-ubuntu-2404", row.lane);
+      assert.equal(
+        row.runner,
+        row.lane === "k3d-observability" ||
+          row.lane === "k3d-fixture-network" ||
+          row.lane === "k3d-fixture-plugins" ||
+          row.lane === "k3d-fixture-configuration"
+          ? "blacksmith-4vcpu-ubuntu-2404"
+          : "blacksmith-8vcpu-ubuntu-2404",
+        row.lane,
+      );
     }
   }
   const valid = [
