@@ -8,6 +8,11 @@ import sys
 import time
 
 
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
 def process(pid):
     try:
         fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
@@ -35,7 +40,7 @@ if Path(sys.argv[0]).name == "helm":
 
 receipt = json.loads(Path(sys.argv[1]).read_text())
 action = sys.argv[2]
-assert action in ("stop", "kill", "absent")
+require(action in ("stop", "kill", "absent"), "unsupported client action")
 pid = receipt["pid"]
 # Pin the process before reading /proc; PID reuse after validation must never
 # redirect either signal to an unrelated process. This fixture is Linux-only.
@@ -49,7 +54,7 @@ if action == "kill" and (not same_process or observed[0] == "Z"):
     print(json.dumps({"pid": pid, "startTicks": receipt["startTicks"], "alreadyExited": True}))
     sys.exit(0)
 if action == "absent":
-    assert not same_process, "the original Helm client has not been reaped"
+    require(not same_process, "the original Helm client has not been reaped")
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit():
             continue
@@ -57,15 +62,15 @@ if action == "absent":
             fields = (entry / "stat").read_text().rsplit(") ", 1)[1].split()
         except FileNotFoundError:
             continue
-        assert int(fields[2]) != receipt["processGroup"], "an owned helper process is still running"
+        require(int(fields[2]) != receipt["processGroup"], "an owned helper process is still running")
     print(json.dumps({"pid": pid, "startTicks": receipt["startTicks"],
                       "processGroup": receipt["processGroup"], "reaped": True}))
     sys.exit(0)
-assert same_process, "the owned Helm client exited before interruption"
-assert descriptor is not None, "the owned Helm client exited before interruption"
-assert os.path.realpath(f"/proc/{pid}/exe") == receipt["executable"], "Helm executable changed"
+require(same_process, "the owned Helm client exited before interruption")
+require(descriptor is not None, "the owned Helm client exited before interruption")
+require(os.path.realpath(f"/proc/{pid}/exe") == receipt["executable"], "Helm executable changed")
 arguments = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-assert [arg.decode() for arg in arguments[1:-1]] == receipt["arguments"], "Helm arguments changed"
+require([arg.decode() for arg in arguments[1:-1]] == receipt["arguments"], "Helm arguments changed")
 try:
     signal.pidfd_send_signal(descriptor, signal.SIGSTOP if action == "stop" else signal.SIGKILL)
 except ProcessLookupError:
@@ -79,7 +84,8 @@ if action == "stop":
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         observed = process(pid)
-        assert observed is not None and observed[1] == receipt["startTicks"]
+        require(observed is not None and observed[1] == receipt["startTicks"],
+                "the owned Helm client exited while stopping")
         if observed[0] == "T":
             break
         time.sleep(0.01)

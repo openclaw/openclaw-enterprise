@@ -194,15 +194,105 @@ def predecessor_matches(directory):
 ATTEMPT_ANNOTATION = "openclaw.dev/upgrade-attempt"
 
 
-def resource_key(value):
+def resource_key(value, namespace=""):
     metadata = value["metadata"]
-    return value["apiVersion"], value["kind"], metadata.get("namespace", ""), metadata["name"]
+    return value["apiVersion"], value["kind"], metadata.get("namespace", namespace), metadata["name"]
 
 
 def resource_map(values):
     result = {resource_key(value): value for value in values}
     require(len(result) == len(values), "duplicate Helm resources")
     return result
+
+
+def predecessor_only(submission, candidate, namespace):
+    previous = documents(submission["predecessor"]["manifest"].encode())
+    current = documents(candidate["manifest"].encode())
+    current_keys = {resource_key(item, namespace) for item in current}
+    return [item for item in previous if resource_key(item, namespace) not in current_keys]
+
+
+def get_resource(resource, kubeconfig, context, namespace):
+    result = json.loads(command([
+        "kubectl", "--kubeconfig", kubeconfig, "--context", context,
+        "--namespace", resource["metadata"].get("namespace", namespace),
+        "get", "--filename", "-", "--output", "json",
+    ], input=json.dumps(resource).encode()))
+    require(result.get("kind") == "List" and len(result.get("items", [])) == 1,
+            "expected exactly one live recovery resource")
+    return result["items"][0]
+
+
+def require_absent(resources, kubeconfig, context, namespace):
+    for resource in resources:
+        output = command([
+            "kubectl", "--kubeconfig", kubeconfig, "--context", context,
+            "--namespace", resource["metadata"].get("namespace", namespace),
+            "get", "--filename", "-", "--ignore-not-found", "--output", "name",
+        ], input=json.dumps(resource).encode())
+        require(not output.strip(),
+                "a predecessor-only resource still exists; reconcile its removal before recovery")
+
+
+def changed_custom_specs(submission, candidate, namespace):
+    previous = {resource_key(item, namespace): item for item in
+                documents(submission["predecessor"]["manifest"].encode())}
+    # These are the chart's native groups. Unknown groups fail closed: Helm's
+    # unstructured two-way patch cannot reconcile arbitrary live spec drift.
+    native_groups = {"v1", "apps", "batch", "networking.k8s.io", "rbac.authorization.k8s.io"}
+    return [item for item in documents(candidate["manifest"].encode())
+            if item["apiVersion"].split("/")[0] not in native_groups
+            and resource_key(item, namespace) in previous
+            and item.get("spec") != previous[resource_key(item, namespace)].get("spec")]
+
+
+def verify_custom_specs(resources, kubeconfig, context, namespace):
+    for resource in resources:
+        actual = get_resource(resource, kubeconfig, context, namespace)
+        # Deliberately exact, including admission-added defaults. This recovery
+        # path does not claim schema-aware custom-resource normalization.
+        require(actual.get("spec") == resource.get("spec"),
+                "changed custom-resource spec is not reconciled to the candidate")
+
+
+def environment_changes(submission, candidate, namespace):
+    previous = {resource_key(item, namespace): item for item in
+                documents(submission["predecessor"]["manifest"].encode())}
+    changes = []
+    for resource in documents(candidate["manifest"].encode()):
+        old = previous.get(resource_key(resource, namespace), {})
+        for field in ("containers", "initContainers"):
+            old_containers = old.get("spec", {}).get("template", {}).get("spec", {}).get(field, [])
+            new_containers = resource.get("spec", {}).get("template", {}).get("spec", {}).get(field, [])
+            for container in new_containers:
+                prior = next((item for item in old_containers if item["name"] == container["name"]), None)
+                if prior is None:
+                    continue
+                before = {item["name"]: item for item in prior.get("env", [])}
+                after = {item["name"]: item for item in container.get("env", [])}
+                require(len(before) == len(prior.get("env", []))
+                        and len(after) == len(container.get("env", [])), "duplicate environment selections")
+                selected = {name: after.get(name) for name in before.keys() | after.keys()
+                            if before.get(name) != after.get(name)}
+                if selected:
+                    changes.append((resource, field, container["name"], selected))
+    return changes
+
+
+def verify_environment(changes, kubeconfig, context, namespace, retired_only=False):
+    for resource, field, container_name, selections in changes:
+        selected = {name: value for name, value in selections.items() if not retired_only or value is None}
+        if not selected:
+            continue
+        actual_resource = get_resource(resource, kubeconfig, context, namespace)
+        containers = actual_resource.get("spec", {}).get("template", {}).get("spec", {}).get(field, [])
+        matches = [item for item in containers if item["name"] == container_name]
+        require(len(matches) == 1, "changed environment container is missing or ambiguous")
+        entries = matches[0].get("env", [])
+        actual = {item["name"]: item for item in entries}
+        require(len(actual) == len(entries), "duplicate live environment selections")
+        require(all(actual.get(name) == value for name, value in selected.items()),
+                "live environment differs from a changed candidate selection; reconcile before recovery")
 
 
 def contains(actual, expected):
@@ -304,19 +394,19 @@ def recover(directory, release, kubeconfig, context, namespace):
         return json.loads(command(["helm", "status", release, *helm_args, "--output", "json"]))
 
     def get(manifest):
-        selected_namespace = manifest["metadata"].get("namespace", namespace)
-        result = json.loads(command([*kube, "--namespace", selected_namespace,
-                                     "get", "--filename", "-", "--output", "json"],
-                                    input=json.dumps(manifest).encode()))
-        require(result.get("kind") == "List" and len(result.get("items", [])) == 1,
-                "expected exactly one live recovery resource")
-        return result["items"][0]
+        return get_resource(manifest, kubeconfig, context, namespace)
 
     before = status()
     require(before["version"] == submission["expectedRevision"]
             and before["info"]["status"] in ("pending-upgrade", "failed"),
             "only the original interrupted candidate can be recovered")
     ordinary, hooks = release_matches(before, root / "rendered.yaml", root / "values.yaml", release, namespace)
+    removed = predecessor_only(submission, before, namespace)
+    changed_env = environment_changes(submission, before, namespace)
+    custom_specs = changed_custom_specs(submission, before, namespace)
+    require_absent(removed, kubeconfig, context, namespace)
+    verify_custom_specs(custom_specs, kubeconfig, context, namespace)
+    verify_environment(changed_env, kubeconfig, context, namespace, retired_only=True)
     observed = []
     for desired in [*ordinary, *hooks]:
         actual = get(desired)
@@ -396,6 +486,9 @@ def recover(directory, release, kubeconfig, context, namespace):
                 and current["metadata"]["resourceVersion"] == actual["metadata"]["resourceVersion"]
                 and not current["metadata"].get("deletionTimestamp"),
                 "a recovery resource changed during admission; reconcile without replay")
+    require_absent(removed, kubeconfig, context, namespace)
+    verify_custom_specs(custom_specs, kubeconfig, context, namespace)
+    verify_environment(changed_env, kubeconfig, context, namespace, retired_only=True)
     # Stock rollback runs rollback-event hooks only. release_matches refused
     # those events, so this exact candidate has no hooks to suppress or rerun.
     with (target / "rollback.log").open("xb") as output:
@@ -416,6 +509,9 @@ def recover(directory, release, kubeconfig, context, namespace):
         require(current["metadata"]["uid"] == actual["metadata"]["uid"]
                 and not current["metadata"].get("deletionTimestamp"),
                 "a recovery resource was replaced; reconcile manually")
+    require_absent(removed, kubeconfig, context, namespace)
+    verify_custom_specs(custom_specs, kubeconfig, context, namespace)
+    verify_environment(changed_env, kubeconfig, context, namespace)
     write_json(target / "acknowledged.json", {"intentSha256": sha(read(target / "intent.json")),
                                                "release": after})
 
@@ -440,6 +536,17 @@ def verify_recovery(directory, release, kubeconfig, context, namespace):
             and current["info"]["status"] == "deployed",
             "live Helm revision differs from the acknowledged recovery")
     release_matches(current, root / "rendered.yaml", root / "values.yaml", release, namespace)
+    require_absent(predecessor_only(submission, before, namespace), kubeconfig, context, namespace)
+    verify_environment(environment_changes(submission, before, namespace), kubeconfig, context, namespace)
+    verify_custom_specs(changed_custom_specs(submission, before, namespace), kubeconfig, context, namespace)
+    for observed in intent["observedResources"]:
+        api_version, kind, resource_namespace, name = observed["key"]
+        manifest = {"apiVersion": api_version, "kind": kind,
+                    "metadata": {"name": name, "namespace": resource_namespace or namespace}}
+        actual = get_resource(manifest, kubeconfig, context, namespace)
+        require(actual["metadata"]["uid"] == observed["uid"]
+                and not actual["metadata"].get("deletionTimestamp"),
+                "a recovery resource identity changed after acknowledgement")
     print(current["version"])
 
 

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { chmod, copyFile, lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { ProductionTuiRequestError } from "./production-tui-request.ts";
 import {
@@ -790,6 +791,18 @@ export async function rehearsePopulatedReturn({
     assert.equal(await candidateConnections(), "0");
   };
   const baselineRelease = await helmStatus();
+  const retiredPolicyName = "openclaw-enterprise-api-channel-directory-egress";
+  const retiredPolicy = await get(`networkpolicy/${retiredPolicyName}`);
+  assert.equal(retiredPolicy.metadata.annotations["meta.helm.sh/release-name"], release);
+  assert.equal(retiredPolicy.metadata.annotations["meta.helm.sh/release-namespace"], namespace);
+  const candidateValuesPath = join(directory, "return-candidate-values.json");
+  const candidateValues = JSON.parse(await readFile(join(directory, "values.json"), "utf8"));
+  assert.equal(candidateValues.api.channelDirectoryProxyUrl, "http://198.51.100.25:3128");
+  candidateValues.api.channelDirectoryProxyUrl = "";
+  await writeFile(candidateValuesPath, JSON.stringify(candidateValues), {
+    mode: 0o600,
+    flag: "wx",
+  });
   assert.equal(baselineRelease.info.status, "deployed");
   assert.ok(Number.isSafeInteger(baselineRelease.version) && baselineRelease.version > 0);
   await custody.assertRelease();
@@ -954,6 +967,8 @@ export async function rehearsePopulatedReturn({
     join(directory, "values.json"),
     "--installation",
     join(directory, "installation.json"),
+    "--candidate-values",
+    candidateValuesPath,
     "--controller-image",
     candidate.reference,
     "--source-revision",
@@ -963,16 +978,23 @@ export async function rehearsePopulatedReturn({
     "--timeout-seconds",
     "300",
   ];
-  const upgrade = async (args: string[], env = occEnv) => {
+  const upgrade = async (args: string[], env = occEnv, stderrPath?: string) => {
     await localCluster.assertCluster();
     await custody.assertPostgres();
     await custody.assertRelease();
-    return run("bash", ["scripts/upgrade-production-images", ...upgradeArgs, ...args], {
-      cwd: candidate.checkout,
-      env,
-      protectedInput: true,
-      timeout: 720_000,
-    });
+    const command = ["scripts/upgrade-production-images", ...upgradeArgs, ...args];
+    return run(
+      "bash",
+      stderrPath
+        ? ["-c", 'output=$1; shift; exec bash "$@" 2>"$output"', "recovery", stderrPath, ...command]
+        : command,
+      {
+        cwd: candidate.checkout,
+        env,
+        protectedInput: true,
+        timeout: 720_000,
+      },
+    );
   };
   await phase("Check the candidate without stopping writers", () =>
     upgrade(["--preflight-only", "--evidence-dir", join(directory, "preflight")]),
@@ -1153,9 +1175,8 @@ export async function rehearsePopulatedReturn({
             job: await get(`job/${release}-initialization`),
             pod: completedPod,
           });
-          assert.deepEqual(
-            await helmStatus(),
-            pending,
+          assert.ok(
+            isDeepStrictEqual(await helmStatus(), pending),
             "pending Helm state changed during initialization",
           );
         } finally {
@@ -1202,24 +1223,137 @@ export async function rehearsePopulatedReturn({
           check: "completed",
         });
 
-        await upgrade([
+        const recoveryArgs = [
           "--evidence-dir",
           evidence,
           "--resume",
           "--recover-helm",
           "--migration-history-checked",
           "--recovery-reviewed",
-        ]);
+        ];
+        // The interrupted pre-upgrade hook has not retired the old egress grant.
+        // Automatic recovery must refuse, rather than leave it outside Helm's inventory.
+        assert.deepEqual(await get(`networkpolicy/${retiredPolicyName}`), retiredPolicy);
+        const refusalPath = join(directory, "retired-policy-refusal.stderr");
+        await writeFile(refusalPath, "", { mode: 0o600, flag: "wx" });
+        await assert.rejects(upgrade(recoveryArgs, occEnv, refusalPath), /failed \(1\)/u);
+        assert.ok(
+          /predecessor-only resource still exists/u.test(await readFile(refusalPath, "utf8")),
+          "recovery did not report the retained policy; inspect the private refusal log",
+        );
+        assert.ok(isDeepStrictEqual(await helmStatus(), pending), "pending Helm release changed");
+        await assert.rejects(lstat(join(evidence, "helm-recovery")), { code: "ENOENT" });
+        assert.deepEqual(await get(`networkpolicy/${retiredPolicyName}`), retiredPolicy);
+        // This is explicit fixture-owned reconciliation, not product deletion.
+        // Refuse a replacement or intervening edit rather than deleting by name.
+        await run(
+          "kubectl",
+          [
+            ...kubeArgs,
+            "delete",
+            `--raw=/apis/networking.k8s.io/v1/namespaces/${namespace}/networkpolicies/${retiredPolicyName}`,
+            "-f",
+            "-",
+          ],
+          {
+            input: JSON.stringify({
+              apiVersion: "v1",
+              kind: "DeleteOptions",
+              preconditions: {
+                uid: retiredPolicy.metadata.uid,
+                resourceVersion: retiredPolicy.metadata.resourceVersion,
+              },
+            }),
+            protectedInput: true,
+          },
+        );
+        await waitFor(
+          "the retired proxy policy to disappear",
+          async () =>
+            !(
+              await kube(
+                "get",
+                `networkpolicy/${retiredPolicyName}`,
+                "--ignore-not-found",
+                "-o",
+                "json",
+              )
+            ).trim(),
+          30_000,
+        );
+        await save("retired-policy-reconciled.json", {
+          uid: retiredPolicy.metadata.uid,
+          resourceVersion: retiredPolicy.metadata.resourceVersion,
+          removed: true,
+        });
+        // Removing the policy alone is insufficient: an identical Helm candidate
+        // also cannot prune the old named environment entry from the live template.
+        const envRefusalPath = join(directory, "retired-env-refusal.stderr");
+        await writeFile(envRefusalPath, "", { mode: 0o600, flag: "wx" });
+        await assert.rejects(upgrade(recoveryArgs, occEnv, envRefusalPath), /failed \(1\)/u);
+        assert.ok(
+          /live environment differs/u.test(await readFile(envRefusalPath, "utf8")),
+          "recovery did not report the retained environment; inspect the private refusal log",
+        );
+        assert.ok(isDeepStrictEqual(await helmStatus(), pending), "pending Helm release changed");
+        await assert.rejects(lstat(join(evidence, "helm-recovery")), { code: "ENOENT" });
+        const stoppedAPI = await get("deployment/openclaw-enterprise-api");
+        const quiescedAPI = JSON.parse(
+          await readFile(join(evidence, "quiescence-api-deployment.json"), "utf8"),
+        );
+        assert.equal(stoppedAPI.metadata.uid, quiescedAPI.metadata.uid);
+        assert.equal(stoppedAPI.spec.replicas, 0);
+        const containerIndex = stoppedAPI.spec.template.spec.containers.findIndex(
+          (item: { name: string }) => item.name === "api",
+        );
+        assert.ok(containerIndex >= 0);
+        const envIndex = stoppedAPI.spec.template.spec.containers[containerIndex].env.findIndex(
+          (item: { name: string }) => item.name === "OCC_CHANNEL_DIRECTORY_PROXY_URL",
+        );
+        assert.ok(envIndex >= 0);
+        const envPointer = `/spec/template/spec/containers/${containerIndex}/env/${envIndex}`;
+        await kube(
+          "patch",
+          "deployment/openclaw-enterprise-api",
+          "--type=json",
+          "-p",
+          JSON.stringify([
+            { op: "test", path: "/metadata/uid", value: stoppedAPI.metadata.uid },
+            {
+              op: "test",
+              path: "/metadata/resourceVersion",
+              value: stoppedAPI.metadata.resourceVersion,
+            },
+            { op: "test", path: "/spec/replicas", value: 0 },
+            {
+              op: "test",
+              path: envPointer,
+              value: {
+                name: "OCC_CHANNEL_DIRECTORY_PROXY_URL",
+                value: "http://198.51.100.25:3128",
+              },
+            },
+            { op: "remove", path: envPointer },
+          ]),
+        );
+        await save("retired-env-reconciled.json", {
+          uid: stoppedAPI.metadata.uid,
+          resourceVersion: stoppedAPI.metadata.resourceVersion,
+          removed: true,
+        });
+        await upgrade(recoveryArgs);
         const recovered = await helmStatus();
         assert.equal(recovered.version, baselineRelease.version + 2);
         assert.equal(recovered.info.status, "deployed");
         assert.equal(recovered.info.description, `Rollback to ${baselineRelease.version + 1}`);
         for (const field of ["manifest", "config", "hooks"]) {
-          assert.deepEqual(recovered[field], pending[field], `recovery changed candidate ${field}`);
+          assert.ok(
+            isDeepStrictEqual(recovered[field], pending[field]),
+            `recovery changed candidate ${field}`,
+          );
         }
-        assert.equal(
-          await readFile(join(evidence, "helm-started"), "utf8"),
-          intent,
+        assert.ok(
+          (await readFile(join(evidence, "helm-started"), "utf8")) === intent,
           "recovery rewrote the original submission",
         );
         assert.equal(
@@ -1229,9 +1363,8 @@ export async function rehearsePopulatedReturn({
         );
         const retainedPod = await get(`pod/${completedPod.metadata.name}`);
         assert.equal(retainedPod.metadata.uid, completedPod.metadata.uid);
-        assert.deepEqual(
-          retainedPod.status,
-          completedPod.status,
+        assert.ok(
+          isDeepStrictEqual(retainedPod.status, completedPod.status),
           "recovery changed the completed initializer",
         );
         assert.equal(
@@ -1249,9 +1382,8 @@ export async function rehearsePopulatedReturn({
   await custody.bindRelease(candidateRelease.version);
   const recoveredStartupSecret = await startupSecret();
   assert.equal(recoveredStartupSecret.metadata.uid, initialStartupSecret.metadata.uid);
-  assert.deepEqual(
-    recoveredStartupSecret.data,
-    initialStartupSecret.data,
+  assert.ok(
+    isDeepStrictEqual(recoveredStartupSecret.data, initialStartupSecret.data),
     "recovery changed the retained Installation configuration",
   );
   const candidatePods = await controlPlane(candidate, originalDatabase);

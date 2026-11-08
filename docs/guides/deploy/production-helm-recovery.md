@@ -62,6 +62,28 @@ UID throughout the interruption. The attempt UUID does not detect a privileged
 actor copying the same values and annotations; exclusive ownership remains
 required.
 
+Resources present only in the recorded predecessor must be absent, including
+resources marked `helm.sh/resource-policy: keep`. For example, clearing
+`api.channelDirectoryProxyUrl` retires its egress NetworkPolicy and API container
+environment entry. Recovery refuses while either remains. Reconcile removals
+explicitly while writers are stopped; the recovery command does not delete them.
+It checks absence before recording recovery, immediately before rollback, after
+rollback and on resume. Read failures do not count as absence.
+
+For same-name init/main containers, retired environment entries must be absent
+before rollback. Changed entries that remain may still have their old values:
+Helm can update those. After rollback and on resume, all changed environment
+selections must match the candidate. These checks cover whole-resource and
+environment removals; they do not implement arbitrary future chart merge rules.
+Review other structural chart changes during resource reconciliation.
+
+Changed ordinary resource specs outside the chart's native groups (`v1`, `apps`,
+`batch`, `networking.k8s.io` and `rbac.authorization.k8s.io`) must already match
+the candidate exactly at all four boundaries. This includes EnvoyProxy placement.
+Additional admission defaults also refuse recovery: this path does not normalize
+custom-resource schemas. Reconcile through the resource owner or use manual
+recovery when exact matching is unavailable.
+
 Only one initializer Job and its ServiceAccount/NetworkPolicy companions are
 supported, with pre-install/pre-upgrade events. Post-upgrade or rollback hooks
 refuse this recovery path. The command uses stock Helm rollback against the
@@ -88,7 +110,9 @@ publication, resume refuses them. Reconcile that file with the published
 `helm-recovery/` retains the original release, recovery intent, command output,
 result and acknowledged successor. If rollback returns successfully but a later
 acceptance check fails, ordinary `--resume` verifies that acknowledged revision
-and continues without submitting Helm again.
+and all recorded resource UIDs, refusing missing, replaced or deleting objects.
+Resource-version changes from normal reconciliation are allowed. Acceptance
+then continues without submitting Helm again.
 
 An interrupted or failed rollback without acknowledgement is not automatically
 replayed, even if a later revision looks healthy. Preserve the evidence and

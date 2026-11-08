@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-08"
-last_updated_session: "authoring-run/0e1589f2-ec9d-455e-bd57-8c7c7eac4f41"
+last_updated_session: "authoring-run/453b61bd-c21e-4f98-a7a8-3fdfbb549103"
 ---
 
 # Production image upgrade flow
@@ -200,6 +200,11 @@ completed Job and owned Pod, including exact security contexts. `pod_matches`
 uses Compute's `resource-quantities.ts` comparator for declared requests/limits.
 Reads use manifest namespaces; ownership stays bound to the release. Durable
 exclusive intent precedes identity rechecks and rollback with hooks enabled.
+`require_absent` rejects remaining predecessor-only resources before intent,
+before rollback, after rollback and on resume. `verify_environment` requires
+retired entries absent before rollback; afterward all changed selections must
+match. Neither check deletes resources. Changed nonnative resource specs require exact
+candidate matches. Resume rechecks recorded UIDs without pinning old versions.
 Only pre-upgrade hooks are supported. Resume requires an acknowledged successor.
 Client shutdown, exclusive ownership, resource reconciliation and database history
 remain operator attestations.
@@ -348,6 +353,8 @@ undoing prior merges. Rename keys are literal, including `constructor` and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 15:25: Refuse unreconciled resource and environment removals during recovery. (authoring-run/453b61bd-c21e-4f98-a7a8-3fdfbb549103 - d4333fb16c)
 
 - 2026-11-08 15:13: Integrate attributed recovery with current upgrade safeguards. (authoring-run/0e1589f2-ec9d-455e-bd57-8c7c7eac4f41 - 0447571733)
 

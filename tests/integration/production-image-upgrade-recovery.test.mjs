@@ -114,7 +114,13 @@ const yqOr = (value, alternative) =>
 
 // Unless a case selects the real chart, a stand-in renders only what the startup
 // preflight reads: each controller container's image and Installation mount.
-async function standInChart(file, policy, recoveryHooks = false, initializationResources) {
+async function standInChart(
+  file,
+  policy,
+  recoveryHooks = false,
+  initializationResources,
+  ordinary = [],
+) {
   const values = await yamlFile(file);
   const secretName = yqRaw(yqOr(values?.installation?.secretName, "occ-installation-startup"));
   const key = yqRaw(yqOr(values?.installation?.key, "installation.yaml"));
@@ -139,6 +145,14 @@ async function standInChart(file, policy, recoveryHooks = false, initializationR
               image,
               env: [
                 { name: "OCC_CONFIG_PATH", value: "/etc/openclaw/installation/installation.yaml" },
+                ...(component === "api" && values.api?.channelDirectoryProxyUrl
+                  ? [
+                      {
+                        name: "OCC_CHANNEL_DIRECTORY_PROXY_URL",
+                        value: values.api.channelDirectoryProxyUrl,
+                      },
+                    ]
+                  : []),
               ],
               volumeMounts: [
                 {
@@ -157,6 +171,7 @@ async function standInChart(file, policy, recoveryHooks = false, initializationR
   return [
     deployment("api", "containers"),
     deployment("worker", repository ? "initContainers" : "containers"),
+    ...ordinary,
     ...(recoveryHooks
       ? [
           {
@@ -444,6 +459,15 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
               name: state.release,
               namespace: "system",
               config: await yamlFile(join(root, "live-values")),
+              ...(state.recoveryHooks && !state.recoveryRelease
+                ? {
+                    manifest:
+                      (await standInChart(join(root, "live-values"), false)) +
+                      (state.recoveryBaselineResources ?? [])
+                        .map((item) => "---\n" + JSON.stringify(item) + "\n")
+                        .join(""),
+                  }
+                : {}),
               ...state.recoveryRelease,
               version: state.version,
               info: { ...state.recoveryRelease?.info, status: state.helmStatus },
@@ -467,6 +491,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
           state.preflightPolicy,
           state.recoveryHooks,
           state.initializationResources,
+          state.recoveryCandidateResources,
         ),
       );
     } else if (args[0] === "rollback") {
@@ -521,6 +546,19 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
     if (state.recoveryResources && args.includes("get") && args.includes("--filename")) {
       const requested = JSON.parse(await io.readInput());
       const key = `${requested.kind}/${requested.metadata.name}`;
+      if (args.includes("--ignore-not-found")) {
+        state.retiredResourceReads = (state.retiredResourceReads ?? 0) + 1;
+        if (state.retiredResourceAppearsAt === state.retiredResourceReads) {
+          state.recoveryResources[key] = state.recoveryBaselineResources[0];
+        }
+        save();
+        if (state.retiredResourceReadError) {
+          return fail(1, "Forbidden: cannot read selected retired resource");
+        }
+        assert.equal(fileArg("--output"), "name");
+        out(state.recoveryResources[key] ? `${requested.kind}/${requested.metadata.name}\n` : "");
+        return io.exit(0);
+      }
       const actual = requested.kind === "Secret" ? state.secret : state.recoveryResources[key];
       assert.ok(actual, `known recovery resource ${key}`);
       out({ apiVersion: "v1", kind: "List", items: [actual] });
@@ -6110,6 +6148,190 @@ const recoverHelm = [
   "--recovery-reviewed",
 ];
 
+// Clearing this proxy is an allowed candidate-values change. Stock Helm can
+// leave its old NetworkPolicy behind when interrupted before ordinary updates.
+async function interruptedProxyRemoval(t, selectedProxy = "") {
+  const f = await fixture(t, { recoveryHooks: true });
+  const values = await yamlFile(join(f.directory, "values.json"));
+  values.api = { ...values.api, channelDirectoryProxyUrl: "http://198.51.100.25:3128" };
+  for (const file of ["values.json", "live-values"]) {
+    await writeFile(join(f.directory, file), JSON.stringify(values));
+  }
+  const candidate = structuredClone(values);
+  candidate.api.channelDirectoryProxyUrl = selectedProxy;
+  const candidatePath = join(f.directory, "remove-proxy.json");
+  await writeFile(candidatePath, JSON.stringify(candidate));
+  const policy = {
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: {
+      name: "openclaw-enterprise-api-channel-directory-egress",
+      namespace: "system",
+      uid: "old-egress-policy",
+      resourceVersion: "1",
+    },
+    spec: {
+      podSelector: { matchLabels: { "app.kubernetes.io/component": "api" } },
+      policyTypes: ["Egress"],
+      egress: [
+        {
+          to: [{ ipBlock: { cidr: "198.51.100.25/32" } }],
+          ports: [{ protocol: "TCP", port: 3128 }],
+        },
+      ],
+    },
+  };
+  const state = await f.state();
+  state.recoveryBaselineResources = selectedProxy ? [] : [policy];
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  const run = (...args) => f.run("--candidate-values", candidatePath, ...args);
+  await f.failNext("lost-helm-response");
+  await assert.rejects(run(), injectedFault);
+  const pending = await completedHookInPendingRelease(f);
+  return { f, run, pending, policy, key: `${policy.kind}/${policy.metadata.name}` };
+}
+
+test("same-candidate recovery refuses retained predecessor resources and checks their absence on resume", async (t) => {
+  const { f, run, pending, policy, key } = await interruptedProxyRemoval(t);
+  const originalIntent = await readFile(join(f.evidence, "helm-started"), "utf8");
+  for (const mode of ["live", "deleting", "keep", "forbidden"]) {
+    await t.test(mode, async () => {
+      const state = structuredClone(pending);
+      state.recoveryResources[key] = structuredClone(policy);
+      if (mode === "deleting") {
+        state.recoveryResources[key].metadata.deletionTimestamp = "2026-01-01T00:00:00Z";
+      } else if (mode === "keep") {
+        state.recoveryResources[key].metadata.annotations = { "helm.sh/resource-policy": "keep" };
+      } else if (mode === "forbidden") {
+        delete state.recoveryResources[key];
+        state.retiredResourceReadError = true;
+      }
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      await assert.rejects(
+        run(...recoverHelm),
+        mode === "forbidden"
+          ? /Helm evidence command failed/
+          : /predecessor-only resource still exists/,
+      );
+      assert.equal((await f.state()).rollbackSubmissions, undefined);
+      assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+    });
+  }
+  const withRetiredEnv = structuredClone(pending);
+  const oldEnv = { name: "OCC_CHANNEL_DIRECTORY_PROXY_URL", value: "http://198.51.100.25:3128" };
+  withRetiredEnv.recoveryResources[
+    "Deployment/openclaw-enterprise-api"
+  ].spec.template.spec.containers[0].env.push(oldEnv);
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(withRetiredEnv));
+  await assert.rejects(run(...recoverHelm), /live environment differs/);
+  assert.equal((await f.state()).rollbackSubmissions, undefined);
+  assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+  // Explicit operator reconciliation removes the retired policy and env entry. If a later
+  // acceptance step fails, its recreation must also block ordinary resume.
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
+  await f.failNext("fail-rollout-api");
+  await assert.rejects(run(...recoverHelm), injectedFault);
+  assert.ok(existsSync(join(f.evidence, "helm-recovery", "acknowledged.json")));
+  const recovered = await f.state();
+  recovered.recoveryResources[key] = policy;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(recovered));
+  await assert.rejects(run("--resume"), /predecessor-only resource still exists/);
+  assert.equal(existsSync(join(f.evidence, "completed")), false);
+  delete recovered.recoveryResources[key];
+  const apiEnv =
+    recovered.recoveryResources["Deployment/openclaw-enterprise-api"].spec.template.spec
+      .containers[0].env;
+  apiEnv.push(oldEnv);
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(recovered));
+  await assert.rejects(run("--resume"), /live environment differs/);
+  assert.equal(existsSync(join(f.evidence, "completed")), false);
+  apiEnv.pop();
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(recovered));
+  await run("--resume");
+  assert.equal((await f.state()).rollbackSubmissions, 1);
+  assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+  assert.equal(await readFile(join(f.evidence, "helm-started"), "utf8"), originalIntent);
+});
+
+test("same-candidate recovery verifies a changed retained environment selection after rollback", async (t) => {
+  const { f, run, pending } = await interruptedProxyRemoval(t, "http://198.51.100.26:3128");
+  // A retained scalar can legitimately differ before rollback. This protocol
+  // fault keeps its old value afterward; it must not receive acknowledgement.
+  const entries =
+    pending.recoveryResources["Deployment/openclaw-enterprise-api"].spec.template.spec.containers[0]
+      .env;
+  entries.find((entry) => entry.name === "OCC_CHANNEL_DIRECTORY_PROXY_URL").value =
+    "http://198.51.100.25:3128";
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
+  await assert.rejects(run(...recoverHelm), /live environment differs/);
+  assert.equal((await f.state()).rollbackSubmissions, 1);
+  assert.equal(existsSync(join(f.evidence, "helm-recovery", "acknowledged.json")), false);
+});
+
+for (const [stage, read, rollbacks] of [
+  ["before dispatch", 2, 0],
+  ["after rollback", 3, 1],
+]) {
+  test(`same-candidate recovery refuses a predecessor resource recreated ${stage}`, async (t) => {
+    const { f, run, pending } = await interruptedProxyRemoval(t);
+    pending.retiredResourceAppearsAt = read;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
+    await assert.rejects(run(...recoverHelm), /predecessor-only resource still exists/);
+    assert.equal((await f.state()).rollbackSubmissions ?? 0, rollbacks);
+    assert.ok(existsSync(join(f.evidence, "helm-recovery", "intent.json")));
+    assert.equal(existsSync(join(f.evidence, "helm-recovery", "acknowledged.json")), false);
+    assert.equal(existsSync(join(f.evidence, "completed")), false);
+  });
+}
+
+test("same-candidate recovery requires changed custom-resource specs already reconciled", async (t) => {
+  const f = await fixture(t, { recoveryHooks: true });
+  // The real EnvoyProxy shape added node placement in chart change 78131ffa33.
+  // This controlled protocol proves admission, not a running Envoy controller.
+  const previous = {
+    apiVersion: "gateway.envoyproxy.io/v1alpha1",
+    kind: "EnvoyProxy",
+    metadata: { name: "gateway", namespace: "system" },
+    spec: {
+      provider: {
+        type: "Kubernetes",
+        kubernetes: { envoyService: { name: "gateway", type: "ClusterIP" } },
+      },
+    },
+  };
+  const candidate = structuredClone(previous);
+  candidate.spec.provider.kubernetes.envoyDeployment = {
+    pod: { nodeSelector: { "oce-role": "control" } },
+  };
+  const initial = await f.state();
+  initial.recoveryBaselineResources = [previous];
+  initial.recoveryCandidateResources = [candidate];
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(initial));
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  const pending = await completedHookInPendingRelease(f);
+  pending.recoveryResources["EnvoyProxy/gateway"].metadata.uid = "envoy-proxy-uid";
+  for (const spec of [previous.spec, { ...candidate.spec, admissionDefault: true }]) {
+    const state = structuredClone(pending);
+    state.recoveryResources["EnvoyProxy/gateway"].spec = spec;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    await assert.rejects(f.run(...recoverHelm), /changed custom-resource spec is not reconciled/);
+    assert.equal((await f.state()).rollbackSubmissions, undefined);
+    assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+  }
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
+  await f.failNext("fail-rollout-api");
+  await assert.rejects(f.run(...recoverHelm), injectedFault);
+  const acknowledged = await f.state();
+  acknowledged.recoveryResources["EnvoyProxy/gateway"].spec = previous.spec;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(acknowledged));
+  await assert.rejects(f.run("--resume"), /changed custom-resource spec is not reconciled/);
+  acknowledged.recoveryResources["EnvoyProxy/gateway"].spec = candidate.spec;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(acknowledged));
+  await f.run("--resume");
+  assert.equal((await f.state()).rollbackSubmissions, 1);
+});
+
 test("same-candidate recovery uses completed attempt-bound hooks and never repeats an acknowledged rollback", async (t) => {
   const f = await fixture(t, { recoveryHooks: true });
   // Recovery cannot act before the operator supplies both required attestations.
@@ -6128,6 +6350,28 @@ test("same-candidate recovery uses completed attempt-bound hooks and never repea
   await f.failNext("fail-rollout-api");
   await assert.rejects(f.run(...recoverHelm), injectedFault);
   assert.equal((await f.state()).version, 3);
+  const acknowledged = await f.state();
+  for (const resource of [
+    "Deployment/openclaw-enterprise-api",
+    "Deployment/openclaw-enterprise-worker",
+    "Job/oce-initialization",
+    "Pod/initializer-pod",
+  ]) {
+    const changed = structuredClone(acknowledged);
+    const actual = resource.startsWith("Secret/")
+      ? changed.secret
+      : changed.recoveryResources[resource];
+    actual.metadata.uid += "-replacement";
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(changed));
+    await assert.rejects(f.run("--resume"), /recovery resource identity changed/);
+    assert.equal((await f.state()).rollbackSubmissions, 1);
+    assert.equal(existsSync(join(f.evidence, "completed")), false);
+  }
+  // Rollout changes resource versions without replacing the acknowledged objects.
+  for (const resource of Object.values(acknowledged.recoveryResources)) {
+    resource.metadata.resourceVersion = "later-version";
+  }
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(acknowledged));
   await f.run("--resume");
   assert.equal(await readFile(join(f.evidence, "helm-started"), "utf8"), original);
   assert.equal((await f.state()).rollbackSubmissions, 1);

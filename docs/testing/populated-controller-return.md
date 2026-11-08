@@ -79,6 +79,11 @@ Job. Kubernetes finishes the real initialization while Helm remains pending.
 The test terminates and reaps that client, checks the committed PostgreSQL
 history with the candidate's migrator, and runs the supported
 `--resume --recover-helm --migration-history-checked --recovery-reviewed` path.
+The baseline selects an unused documentation-range directory proxy; the candidate
+clears it. Recovery must first refuse the retained egress NetworkPolicy, then
+refuse the retained API environment entry. The fixture explicitly reconciles
+those two removals with UID/resource-version guards while writers remain stopped,
+then retries the same recovery command. Product recovery performs no deletion.
 Recovery must advance exactly one revision without replacing the completed
 initializer Job or Pod or changing the committed migration history. The test
 does not edit Helm storage or disable hooks. If Helm finishes before the
