@@ -1,7 +1,9 @@
 import {
-  harnessCredentialOwnerMatches,
-  projectHarnessCredentialSource,
-} from "./drivers/harness-credential-reader.ts";
+  resolveEnvironmentProjections,
+  resolveModelHarnessAuth,
+  resolveAttachedCredentialSources,
+} from "./worker/revision-credentials.ts";
+import { revisionEgressInstallation } from "./worker/egress-installation.ts";
 import { reduceCredentialPolicy } from "@openclaw-enterprise/occ";
 import {
   assertExecutionReleaseAllowed,
@@ -10,7 +12,6 @@ import {
   revisionCredentialSourceSnapshot,
 } from "@openclaw-enterprise/contracts";
 import type { CredentialProxyDriver } from "@openclaw-enterprise/contracts";
-import { isDeepStrictEqual } from "node:util";
 import { closeResources } from "./composition/close-resources.ts";
 import { installationDriverConfigurations } from "./composition/installation-config.ts";
 import {
@@ -34,7 +35,6 @@ import type {
   AgentRevision,
   AgentRevisionMetadata,
   CredentialSource,
-  CredentialSourceSnapshot,
   AuditEvent,
   AuthorizationDecision,
   AuthorizationRequest,
@@ -62,9 +62,7 @@ import type {
   CredentialRefreshDriver,
   SecretBindings,
   SecretDriver,
-  ResolvedHarnessAuth,
   RuntimeFailureEvidence,
-  SecretEnvironmentProjection,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -5610,31 +5608,6 @@ export class ControllerWorker {
     }
   }
 
-  private async resolveRevisionCredentialSource(
-    revision: Readonly<AgentRevision>,
-    snapshot: CredentialSourceSnapshot,
-  ) {
-    const { namespaceId, id: revisionId } = revision;
-    const { sourceId } = snapshot;
-    return this.state.read(async (view) => {
-      const source = await view.credentialSources.findCredentialSource(namespaceId, sourceId);
-      const withdrawal = await view.credentialSources.findCredentialWithdrawal(
-        namespaceId,
-        revisionId,
-        sourceId,
-      );
-      return {
-        source:
-          withdrawal === undefined &&
-          source?.state === "ready" &&
-          credentialSourceMatchesSnapshot(source, snapshot)
-            ? source
-            : undefined,
-        withdrawal,
-      };
-    });
-  }
-
   private async resolveRevisionSecretContext(
     revision: Readonly<AgentRevision>,
   ): Promise<
@@ -5657,108 +5630,36 @@ export class ControllerWorker {
       return { result: { outcome: "permanent", code: "SECRET_DRIVER_MISMATCH" } };
     }
 
-    const resolved = await this.state.read(async (view) => {
-      const projections: SecretEnvironmentProjection[] = [];
-      for (const [name, binding] of Object.entries(bindings.bindings)) {
-        const secret = await view.secrets.findSecret(binding.source.namespaceId, binding.source.id);
-        if (
-          secret === undefined ||
-          secret.namespaceId !== revision.namespaceId ||
-          secret.driverId !== secretDriverId ||
-          secret.backendRef.namespaceName.trim().length === 0 ||
-          secret.backendRef.name.trim().length === 0 ||
-          secret.backendRef.key.trim().length === 0 ||
-          secret.backendRef.uid.trim().length === 0
-        ) {
-          return undefined;
-        }
-        projections.push({
-          name,
-          secretId: secret.id,
-          namespaceId: secret.namespaceId,
-          agentId: revision.agentId,
-          backendRef: secret.backendRef,
-        });
-      }
-      return projections;
-    });
-
+    const resolved = await resolveEnvironmentProjections(
+      this.state,
+      revision,
+      bindings.bindings,
+      secretDriverId,
+    );
     if (resolved === undefined) {
       return { result: { outcome: "permanent", code: "SECRET_BINDING_UNAVAILABLE" } };
     }
-
-    let harnessAuth: ResolvedHarnessAuth;
-    if (isSecretHarnessAuth(revision.harnessAuth)) {
-      const auth = revision.harnessAuth;
-      if (typeof secretDriverId !== "string" || auth.secretDriverId !== secretDriverId) {
-        return { result: { outcome: "permanent", code: "SECRET_DRIVER_MISMATCH" } };
-      }
-      const secret = await this.state.read((view) =>
-        view.secrets.findSecret(auth.source.namespaceId, auth.source.id),
-      );
-      if (
-        secret === undefined ||
-        secret.namespaceId !== revision.namespaceId ||
-        secret.namespaceId !== auth.source.namespaceId ||
-        secret.id !== auth.source.id ||
-        secret.driverId !== secretDriverId ||
-        secret.backendRef.namespaceName.trim().length === 0 ||
-        secret.backendRef.name.trim().length === 0 ||
-        secret.backendRef.key.trim().length === 0 ||
-        secret.backendRef.uid.trim().length === 0
-      ) {
-        return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
-      }
-      // Admission verifies the physical source. Workers project authoritative
-      // OCC metadata without requiring permission to read backend Secret values.
-      harnessAuth = { ...auth, backendRef: secret.backendRef };
-    } else if (revision.harnessAuth.method === "credential_source") {
-      const auth = revision.harnessAuth;
-      if (!harnessCredentialOwnerMatches(auth, this.credentialGateway, this.proxyDriver)) {
-        return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
-      }
-      const { source, withdrawal } = await this.resolveRevisionCredentialSource(revision, auth);
-      // A withdrawn source never re-attaches to its revision, for example after Pod loss.
-      if (withdrawal !== undefined) {
-        return { result: { outcome: "permanent", code: "CREDENTIAL_WITHDRAWN" } };
-      }
-      // A deleting source can no longer be attached, even to an admitted revision.
-      if (source === undefined) {
-        return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
-      }
-      const projected = projectHarnessCredentialSource(auth, source, revision, this.proxyDriver);
-      if (projected === undefined) {
-        return { result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" } };
-      }
-      harnessAuth = { ...auth, source: projected };
-    } else {
-      harnessAuth = revision.harnessAuth;
+    const model = await resolveModelHarnessAuth(
+      this.state,
+      revision,
+      secretDriverId,
+      this.credentialGateway,
+      this.proxyDriver,
+    );
+    if ("result" in model) {
+      return model;
     }
-    const credentialSources: Readonly<CredentialSource>[] = [];
-    for (const snapshot of revision.credentialSources ?? []) {
-      // The Harness source is listed too; it resolves above through the Harness binding.
-      if (snapshot.sourceId === revisionHarnessSourceId(revision)) {
-        continue;
-      }
-      const sourceOwner = snapshot.credentialProxyId ?? snapshot.credentialGatewayId;
-      if (
-        sourceOwner !==
-        (snapshot.credentialProxyId === undefined
-          ? this.credentialGateway?.id
-          : this.proxyDriver?.id)
-      ) {
-        return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
-      }
-      const { source, withdrawal } = await this.resolveRevisionCredentialSource(revision, snapshot);
-      // A withdrawn non-model source stays detached; the revision keeps running without it.
-      if (withdrawal !== undefined) {
-        continue;
-      }
-      if (source === undefined) {
-        return { result: { outcome: "permanent", code: "CREDENTIAL_SOURCE_UNAVAILABLE" } };
-      }
-      credentialSources.push(source);
+    const attached = await resolveAttachedCredentialSources(
+      this.state,
+      revision,
+      this.credentialGateway,
+      this.proxyDriver,
+    );
+    if ("result" in attached) {
+      return attached;
     }
+    const { harnessAuth } = model;
+    const { credentialSources } = attached;
     const workspaceSetup = await this.state.read((view) =>
       view.workspaceSetups.find(revision.namespaceId, revision.agentId),
     );
@@ -5767,102 +5668,7 @@ export class ControllerWorker {
     }
     return {
       context: {
-        ...(revision.egressPlan === undefined
-          ? {}
-          : {
-              recordEgressInstallation: async (installation) => {
-                await this.state.transact(async (state) => {
-                  await state.agents.lockAgent(revision.namespaceId, revision.agentId);
-                  const current = await state.credentialSources.findRevisionEgressInstallation(
-                    revision.namespaceId,
-                    revision.id,
-                  );
-                  // Re-observing the same installation may advance its timestamp, not its authority.
-                  if (
-                    current &&
-                    isDeepStrictEqual(current, {
-                      ...installation,
-                      installedAt: current.installedAt,
-                    })
-                  ) {
-                    return;
-                  }
-                  if (
-                    current ||
-                    !isDeepStrictEqual(installation.plan, revision.egressPlan) ||
-                    (
-                      await state.credentialSources.listCredentialWithdrawals(
-                        revision.namespaceId,
-                        revision.id,
-                      )
-                    ).some(({ credentialSourceId }) =>
-                      revision.egressPlan?.routes.some(
-                        (route) => route.binding.source.source.id === credentialSourceId,
-                      ),
-                    )
-                  ) {
-                    throw new Error("Egress receipt does not match the current admitted policy.");
-                  }
-                  await state.credentialSources.recordEgressInstallation(installation);
-                });
-              },
-              currentEgressInstallation: () =>
-                this.state.read(async (view) => {
-                  const { namespaceId, agentId, servicePrincipalId, id } = revision;
-                  const namespace = await view.namespaces.findNamespace(namespaceId);
-                  const agent = await view.agents.findAgent(namespaceId, agentId);
-                  const newest = (
-                    await view.revisions.listRevisionMetadata(namespaceId, agentId)
-                  ).at(-1);
-                  const current = await view.revisions.findRevision(namespaceId, agentId, id);
-                  if (
-                    namespace?.status !== "ready" ||
-                    agent?.status !== "active" ||
-                    agent.desiredRuntimeState !== "running" ||
-                    agent.servicePrincipalId !== servicePrincipalId ||
-                    newest?.id !== id ||
-                    current?.executionAdmission.mode !== "protected" ||
-                    !isDeepStrictEqual(current.egressPlan, revision.egressPlan)
-                  ) {
-                    if (revision.egressPlan?.policyReductionVersion !== undefined) {
-                      throw new DependencyUnavailableError(
-                        "The protected execution is no longer current.",
-                      );
-                    }
-                    return undefined;
-                  }
-                  const withdrawals = await view.credentialSources.listCredentialWithdrawals(
-                    namespaceId,
-                    id,
-                  );
-                  const reductions = await view.credentialSources.listCredentialPolicyReductions(
-                    namespaceId,
-                    id,
-                  );
-                  if (
-                    reductions.some((reduction) => !reduction.observed) ||
-                    (revision.egressPlan?.policyReductionVersion &&
-                      withdrawals.some(
-                        (withdrawal) =>
-                          revision.egressPlan?.routes.some(
-                            (route) =>
-                              route.binding.source.source.id === withdrawal.credentialSourceId,
-                          ) &&
-                          !reductions.some(
-                            (reduction) =>
-                              reduction.bindingId ===
-                                `policy:source:${withdrawal.credentialSourceId}` &&
-                              reduction.observed,
-                          ),
-                      ))
-                  ) {
-                    throw new DependencyUnavailableError(
-                      "Credential policy reduction is not observed.",
-                    );
-                  }
-                  return view.credentialSources.findRevisionEgressInstallation(namespaceId, id);
-                }),
-            }),
+        ...revisionEgressInstallation(this.state, revision),
         secretEnvironment: Object.freeze(resolved),
         harnessAuth,
         ...(credentialSources.length === 0

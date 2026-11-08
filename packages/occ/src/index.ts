@@ -59,6 +59,8 @@ import type {
   StaticEgressSource,
   ProxyPlan,
   EgressBinding,
+  EgressExecution,
+  CredentialProxyDriver,
   EgressRefusal,
   EgressRoute,
   EgressSelectionEvidence,
@@ -2212,6 +2214,97 @@ type InstallationRepositoryAdmission = Readonly<{
   };
   backendId: string;
 }>;
+
+type EgressCredentialSource = CredentialSource & { readonly egress: ProtectedEgressSource };
+
+function isEgressCredentialSource(
+  source: CredentialSource | undefined,
+): source is EgressCredentialSource {
+  return source?.egress !== undefined;
+}
+
+async function negotiateProxyRepositoryPolicy(
+  driver: CredentialProxyDriver,
+  repositoryGit: RepositoryRevisionState | undefined,
+  sourceCount: number,
+) {
+  const gitProfile = repositoryGitDeliveryProfile(repositoryGit);
+  if (repositoryGit !== undefined && gitProfile === undefined) {
+    // Finding 2204: protected admission v4-v7 requires a mapped delivery profile, so
+    // git-read, git-full or several bindings could never start. Refuse them by name before
+    // reading the counterpart; its non-Git check would answer a generic 503 or admit a plan
+    // that assertExecutionAdmission then rejects as an internal error.
+    throw new RepositoryGitProfileUnsupportedError(repositoryGit.bindings.length);
+  }
+  const gitAuthorization = await repositoryGitAuthorization(
+    driver.sourceControl,
+    AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+    gitProfile,
+  );
+  if (gitAuthorization === "unavailable") {
+    throw new DependencyUnavailableError(
+      "The selected Credential Proxy did not confirm installation-wide repository access.",
+    );
+  }
+  const reducibleGit =
+    gitProfile !== undefined &&
+    gitAuthorization === "exact-dispatch" &&
+    driver.policyReduction?.version === 2;
+  if (repositoryGit && sourceCount && !reducibleGit) {
+    throw new CredentialProxyAdmissionError("gitAlone");
+  }
+  if (reducibleGit && driver.policyReduction?.version === 2) {
+    await driver.policyReduction.assertAvailable(
+      AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+    );
+  }
+  let policyReductionVersion: ProxyPlan["policyReductionVersion"] = reducibleGit ? 2 : undefined;
+  if (!repositoryGit && sourceCount > 0 && driver.policyReduction?.version === 1) {
+    policyReductionVersion = 1;
+  }
+  return { gitAuthorization, policyReductionVersion };
+}
+
+function admitSourceRoutes(
+  sources: readonly EgressCredentialSource[],
+  driver: CredentialProxyDriver,
+  execution: EgressExecution,
+  modelId: string,
+  harnessConfiguration: Readonly<Record<string, unknown>> | undefined,
+): EgressRoute[] {
+  const isolationId = execution.agentId;
+  return sources.flatMap((source) => {
+    const admitted = source.egress;
+    const provider = driver.sourceControl.providers.find((entry) =>
+      isDeepStrictEqual(entry.ref, admitted.key.provider),
+    );
+    if (!provider || !isDeepStrictEqual(driver.sourceControl.backend, admitted.key.backend)) {
+      throw new DependencyUnavailableError("The admitted egress composition is unavailable.");
+    }
+    const grant = provider.normalizeGrant([modelId], source.config);
+    let digestGrant = grant;
+    if (source.type === credentialFreeMetadataType && admitted.adoption === "credential_free") {
+      const canonical = credentialFreeMetadataGrant(source.config);
+      if (!isDeepStrictEqual(grant, canonical)) {
+        throw new ScopeViolationError("Credential-free metadata grant does not match the source.");
+      }
+      // Preserve the contracts digest without dropping any Driver-supplied grant fields.
+      digestGrant = canonical;
+    }
+    return provider.routes(
+      source,
+      {
+        binding: { id: crypto.randomUUID(), generation: 1 },
+        execution,
+        source: admitted.key,
+        grant,
+        grantHash: createHash("sha256").update(JSON.stringify(digestGrant)).digest("hex"),
+        isolationId,
+      },
+      harnessConfiguration,
+    );
+  });
+}
 
 export class OpenClawController {
   private installationRepositoryAdmission?: InstallationRepositoryAdmission;
@@ -8178,26 +8271,24 @@ export class OpenClawController {
     });
   }
 
-  private async admitProxyPlan(
-    state: PlatformUnitOfWork,
-    agent: Readonly<Agent>,
-    revisionId: string,
-    configuration: OpenClawConfigurationDocument,
-    sandboxDriverId?: string,
-    repositoryGit?: RepositoryRevisionState,
-    harnessAuth?: HarnessAuthSnapshot,
-    harnessConfiguration?: Readonly<Record<string, unknown>>,
-  ): Promise<ProxyPlan | undefined> {
-    const sources: CredentialSource[] = [];
+  private async collectProxyPlanSources(
+    reader: Pick<PlatformUnitOfWork["credentialSources"], "findCredentialSource">,
+    agent: Pick<Agent, "namespaceId" | "credentialSources">,
+    repositoryGit: RepositoryRevisionState | undefined,
+    harnessAuth: HarnessAuthSnapshot | undefined,
+  ): Promise<{
+    sources: EgressCredentialSource[];
+    harnessCredentialSource: ProxyPlan["harnessCredentialSource"];
+  }> {
+    const sources: EgressCredentialSource[] = [];
     let harnessCredentialSource: ProxyPlan["harnessCredentialSource"];
     for (const binding of agent.credentialSources ?? []) {
-      const source = await state.credentialSources.findCredentialSource(
-        agent.namespaceId,
-        binding.sourceId,
-      );
-      if (source?.egress !== undefined) {
+      const source = await reader.findCredentialSource(agent.namespaceId, binding.sourceId);
+      if (isEgressCredentialSource(source)) {
         sources.push(source);
-      } else if (
+        continue;
+      }
+      if (
         repositoryGit &&
         source?.state === "ready" &&
         harnessAuth?.method === "credential_source" &&
@@ -8210,6 +8301,25 @@ export class OpenClawController {
         harnessCredentialSource = harnessAuth;
       }
     }
+    return { sources, harnessCredentialSource };
+  }
+
+  private async admitProxyPlan(
+    state: PlatformUnitOfWork,
+    agent: Readonly<Agent>,
+    revisionId: string,
+    configuration: OpenClawConfigurationDocument,
+    sandboxDriverId?: string,
+    repositoryGit?: RepositoryRevisionState,
+    harnessAuth?: HarnessAuthSnapshot,
+    harnessConfiguration?: Readonly<Record<string, unknown>>,
+  ): Promise<ProxyPlan | undefined> {
+    const { sources, harnessCredentialSource } = await this.collectProxyPlanSources(
+      state.credentialSources,
+      agent,
+      repositoryGit,
+      harnessAuth,
+    );
     // Each refusal below is an Installation property or the Agent's saved bindings, after the
     // deploy grant and the authorization of every bound source: a retry never helps, so each is a
     // 409 with fixed text that names no source or repository (finding 2536).
@@ -8251,40 +8361,11 @@ export class OpenClawController {
     if (installationAccess) {
       owner.requireRepositoryGitTransport();
     }
-    const gitProfile = repositoryGitDeliveryProfile(repositoryGit);
-    if (repositoryGit !== undefined && gitProfile === undefined) {
-      // Finding 2204: protected admission v4-v7 requires a mapped delivery profile, so
-      // git-read, git-full or several bindings could never start. Refuse them by name before
-      // reading the counterpart; its non-Git check would answer a generic 503 or admit a plan
-      // that assertExecutionAdmission then rejects as an internal error.
-      throw new RepositoryGitProfileUnsupportedError(repositoryGit.bindings.length);
-    }
-    const gitAuthorization = await repositoryGitAuthorization(
-      driver.sourceControl,
-      AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-      gitProfile,
+    const { gitAuthorization, policyReductionVersion } = await negotiateProxyRepositoryPolicy(
+      driver,
+      repositoryGit,
+      sources.length,
     );
-    if (gitAuthorization === "unavailable") {
-      throw new DependencyUnavailableError(
-        "The selected Credential Proxy did not confirm installation-wide repository access.",
-      );
-    }
-    const reducibleGit =
-      gitProfile !== undefined &&
-      gitAuthorization === "exact-dispatch" &&
-      driver.policyReduction?.version === 2;
-    if (repositoryGit && sources.length && !reducibleGit) {
-      throw new CredentialProxyAdmissionError("gitAlone");
-    }
-    if (reducibleGit && driver.policyReduction?.version === 2) {
-      await driver.policyReduction.assertAvailable(
-        AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-      );
-    }
-    let policyReductionVersion: ProxyPlan["policyReductionVersion"] = reducibleGit ? 2 : undefined;
-    if (!repositoryGit && sources.length > 0 && driver.policyReduction?.version === 1) {
-      policyReductionVersion = 1;
-    }
     const selection = asRecord(asRecord(configuration.agents)?.defaults)?.model;
     const model = typeof selection === "string" ? selection : asRecord(selection)?.primary;
     if (
@@ -8306,39 +8387,7 @@ export class OpenClawController {
       revisionId,
       executionId: repositoryGit ? randomBytes(24).toString("base64url") : crypto.randomUUID(),
     };
-    const routes = sources.flatMap((source) => {
-      const admitted = source.egress!;
-      const provider = driver.sourceControl.providers.find((entry) =>
-        isDeepStrictEqual(entry.ref, admitted.key.provider),
-      );
-      if (!provider || !isDeepStrictEqual(driver.sourceControl.backend, admitted.key.backend)) {
-        throw new DependencyUnavailableError("The admitted egress composition is unavailable.");
-      }
-      const grant = provider.normalizeGrant([modelId], source.config);
-      let digestGrant = grant;
-      if (source.type === credentialFreeMetadataType && admitted.adoption === "credential_free") {
-        const canonical = credentialFreeMetadataGrant(source.config);
-        if (!isDeepStrictEqual(grant, canonical)) {
-          throw new ScopeViolationError(
-            "Credential-free metadata grant does not match the source.",
-          );
-        }
-        // Preserve the contracts digest without dropping any Driver-supplied grant fields.
-        digestGrant = canonical;
-      }
-      return provider.routes(
-        source,
-        {
-          binding: { id: crypto.randomUUID(), generation: 1 },
-          execution,
-          source: admitted.key,
-          grant,
-          grantHash: createHash("sha256").update(JSON.stringify(digestGrant)).digest("hex"),
-          isolationId: agent.id,
-        },
-        harnessConfiguration,
-      );
-    });
+    const routes = admitSourceRoutes(sources, driver, execution, modelId, harnessConfiguration);
     return immutableCopy({
       id: crypto.randomUUID(),
       generation: 1,

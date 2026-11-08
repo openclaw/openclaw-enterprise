@@ -16,8 +16,8 @@ type HarnessCredentialSnapshot = Extract<HarnessAuthSnapshot, { method: "credent
 /** Check the recorded pairing without treating malformed Proxy snapshots as Gateway ones. */
 export function harnessCredentialOwnerMatches(
   auth: HarnessCredentialSnapshot,
-  gateway: CredentialGatewayDriver | undefined,
-  proxy: CredentialProxyDriver | undefined,
+  gateway: Pick<CredentialGatewayDriver, "id"> | undefined,
+  proxy: Pick<CredentialProxyDriver, "id"> | undefined,
 ): boolean {
   if (auth.credentialProxyId !== undefined) {
     return (
@@ -45,7 +45,7 @@ export function harnessCredentialTypeMatches(
 export function resolveProxyHarnessBinding(
   auth: Extract<HarnessCredentialSnapshot, { credentialProxyId: string }>,
   source: Readonly<CredentialSource>,
-  revision: Readonly<AgentRevision>,
+  revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
   control: CredentialSourceControl | undefined,
 ):
   | {
@@ -81,8 +81,8 @@ export function resolveProxyHarnessBinding(
 export function projectHarnessCredentialSource(
   auth: HarnessCredentialSnapshot,
   source: Readonly<CredentialSource>,
-  revision: Readonly<AgentRevision>,
-  proxy: CredentialProxyDriver | undefined,
+  revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+  proxy: Pick<CredentialProxyDriver, "sourceControl"> | undefined,
 ): Readonly<CredentialSource> | undefined {
   if (source.egress === undefined) {
     return auth.credentialProxyId === undefined ? source : undefined;
