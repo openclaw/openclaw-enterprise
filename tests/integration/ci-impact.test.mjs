@@ -2550,8 +2550,8 @@ test("the lane matrix runs every lane in full mode and only selected lanes in te
       assert.equal(
         row.runner,
         row.lane === "k3d-observability" ||
-        row.lane === "k3d-fixture-network" ||
-        row.lane === "k3d-fixture-plugins"
+          row.lane === "k3d-fixture-network" ||
+          row.lane === "k3d-fixture-plugins"
           ? "blacksmith-4vcpu-ubuntu-2404"
           : "blacksmith-8vcpu-ubuntu-2404",
         row.lane,
