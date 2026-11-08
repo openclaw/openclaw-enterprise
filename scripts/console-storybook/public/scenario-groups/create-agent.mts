@@ -410,6 +410,12 @@ export const createAgentFormScenarios = {
     ],
     description:
       "Invalid JSON is reported once, under the field, with its line and column. Nothing is saved.",
+    steps: [
+      "Check the initial syntax error, then select Reset template and confirm discarding the edited launch settings. Expand Advanced settings and keep the restored Configuration JSON.",
+      'Set plugins.entries.knowledge to {"enabled":true,"config":{"thresholds":[1,1e400,3]}}, preserving the other entries and model settings. This is valid JSON syntax with an out-of-range number. Select Create Agent.',
+      "Read the error under the editor: A number is too large or too small to save. Use a number closer to zero. Check that Configuration JSON has focus, its exact text is unchanged, and neither an Agent nor a Configuration is written.",
+      "If the form shows a model list, select Enter model ID manually. Change Model ID and leave the field. Check that the range error focuses Configuration JSON and the rejected draft is not rewritten. Restore the original Model ID, change only 1e400 to 2, and select Create Agent. Inspect the created Agent's Configuration for [1,2,3]. All saves and deployment state in this story are simulated.",
+    ],
   },
   createPluginsUnavailable: {
     group: "Pages/Create Agent",
@@ -2168,6 +2174,43 @@ export const createAgentProvisioningScenarios = {
     description:
       "The Preset API saves launch-field errors such as an unknown execution mode. Use Preset names the first field the form cannot use and keeps the chooser open.",
     gap: "The fixture edits a simulated Preset; Preset CRUD has no console page.",
+  },
+  createPresetNonTextPrimary: {
+    group: "Pages/Create Agent",
+    name: "Preset with a non-text primary",
+    path: create,
+    rules: [
+      {
+        // Only this stored default is malformed; the other Preset remains a usable fallback.
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/presets/pre_default_codex",
+        method: "GET",
+        data: {
+          id: "pre_default_codex",
+          namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+          name: "default-codex",
+          template: {
+            variables: { marker: { type: "string" } },
+            agent: { name: "{{ vars.marker }}", executionMode: "dedicated" },
+            configuration: {
+              values: { agents: { defaults: { model: { primary: 42 } } } },
+            },
+          },
+        },
+      },
+    ],
+    actions: [
+      click("Start with default Preset"),
+      { selector: "#preset-variable-marker", value: "Retained chooser draft" },
+      click("Use Preset"),
+    ],
+    description:
+      "An older stored Preset has a numeric primary that the current Controller refuses to save. The production form explains that the primary must be text and keeps the chooser and entered Marker intact.",
+    steps: [
+      "Confirm the refusal says the primary model must be text and offers another Preset or a template fix. No Agent form opens and Marker still reads Retained chooser draft.",
+      "Select the Agents link, then Create Agent. Confirm Marker is retained. Choose Research assistant, enter a Name, and select Use Preset: the normal Agent form opens.",
+      "Reset the story. Choose Research assistant, then default-codex in Preset template. Enter a Marker and select Use Preset to check the same refusal through explicit selection.",
+    ],
+    gap: "The exact Preset GET is simulated; this preview does not save invalid data through the Controller. The owning console-agent-presets browser case covers the current PATCH 400, legacy stored value, both entry paths, and fallback recovery.",
   },
   createCapabilitiesDenied: {
     group: "Pages/Create Agent",

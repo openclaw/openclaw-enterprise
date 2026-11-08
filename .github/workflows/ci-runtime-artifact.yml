@@ -1,0 +1,74 @@
+name: CI Runtime Artifact
+
+on:
+  workflow_call:
+    outputs:
+      artifact-id:
+        value: ${{ jobs.build.outputs.artifact-id }}
+      archive-sha256:
+        value: ${{ jobs.build.outputs.archive-sha256 }}
+      source-sha:
+        value: ${{ jobs.build.outputs.source-sha }}
+      run-id:
+        value: ${{ jobs.build.outputs.run-id }}
+      producer-attempt:
+        value: ${{ jobs.build.outputs.producer-attempt }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ordinary CI runtime
+    runs-on: blacksmith-32vcpu-ubuntu-2404
+    # Provisional cold-build measurement envelope; the helper bounds the build
+    # subprocess to 180 minutes. Consumers keep their own shorter test budgets.
+    timeout-minutes: 240
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      archive-sha256: ${{ steps.build.outputs.archive-sha256 }}
+      source-sha: ${{ steps.build.outputs.source-sha }}
+      run-id: ${{ steps.build.outputs.run-id }}
+      producer-attempt: ${{ steps.build.outputs.producer-attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify checkout source
+        run: test "$(git rev-parse --verify 'HEAD^{commit}')" = "$GITHUB_SHA"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - name: Expose image cache inputs
+        id: image-cache
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const token = process.env.ACTIONS_RUNTIME_TOKEN;
+            const url = process.env.ACTIONS_RESULTS_URL;
+            if (!token || !url) {
+              throw new Error('GitHub Actions cache credentials are unavailable');
+            }
+            core.setSecret(token);
+            core.setOutput('token', token);
+            core.setOutput('url', url);
+      - name: Build runtime artifact
+        id: build
+        env:
+          OCC_CI_IMAGE_CACHE: "1"
+          ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
+          ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
+        run: node scripts/ci/runtime-artifact.mjs build --output "$RUNNER_TEMP/runtime-artifact"
+      - name: Upload runtime artifact
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: ci-runtime-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/runtime-artifact/runtime.tar
+            ${{ runner.temp }}/runtime-artifact/receipt.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1

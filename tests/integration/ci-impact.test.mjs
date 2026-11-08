@@ -29,7 +29,7 @@ import { checkArguments, classify, respond } from "../../scripts/ci/impact.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const selector = join(repositoryRoot, "scripts/ci/impact.mjs");
-const pnpmImpact = join(repositoryRoot, "scripts/ci/pnpm-impact.mjs");
+const pnpmImpact = join(repositoryRoot, "scripts/ci/pnpm-impact.ts");
 const gate = join(repositoryRoot, "scripts/ci/impact-gate.mjs");
 const runner = join(repositoryRoot, "scripts/ci/run-tests.mjs");
 const read = (path) => readFileSync(join(repositoryRoot, path), "utf8");
@@ -528,6 +528,20 @@ test("pnpm impact reports unavailable without exposing a failed tool's output", 
     "#!/bin/sh\nprintf 'not valid json with private text\\n'\n",
   ]) {
     const path = shim(join(f.dir, "bin"), "pnpm", body);
+    assert.deepEqual(await affectedPackages(f, path), unavailable("inspection_failed"));
+  }
+});
+
+test("pnpm impact safely handles non-record JSON values from the event and pnpm", async (t) => {
+  const f = await fixture(t, sharedChange, workspaceFiles());
+  for (const event of [null, false, "text", { pull_request: { base: null, head: 1 } }]) {
+    f.writeEvent(JSON.stringify(event));
+    assert.deepEqual(await affectedPackages(f), unavailable("invalid_identity"));
+  }
+  f.writeEvent();
+  for (const value of [null, false, 1, "text", [], { name: 7, path: "/" }]) {
+    const json = JSON.stringify([value]);
+    const path = shim(join(f.dir, "json-bin"), "pnpm", `#!/bin/sh\nprintf '%s' '${json}'\n`);
     assert.deepEqual(await affectedPackages(f, path), unavailable("inspection_failed"));
   }
 });
@@ -1381,6 +1395,88 @@ test("every formatting check provisions pinned Bun and scans without a formatter
   }
 });
 
+test("failed lane summary preserves the first unsuccessful step", (t) => {
+  const steps = loadYaml(".github/actions/run-ci-lane/action.yml").runs.steps;
+  const summary = steps.at(-1);
+  assert.equal(summary.name, "Summarize first lane failure");
+  assert.equal(summary.if, "failure() || cancelled()");
+  assert.equal(summary["continue-on-error"], true);
+  const order = steps
+    .slice(0, -1)
+    .filter((step) => step["continue-on-error"] !== true)
+    .map((step) => step.id);
+  assert.ok(order.every(Boolean));
+  assert.equal(new Set(order).size, order.length);
+  assert.deepEqual(
+    summary.env.CI_LANE_CONCLUSIONS.trimEnd().split("\n"),
+    order.map((id) => `${id}=\${{ steps.${id}.conclusion }}`),
+  );
+
+  const root = temporaryDirectorySync(t, "lane-failure-summary-");
+  const cases = [
+    {
+      name: "pre-run",
+      outcomes: {
+        "static-lint": "failure",
+        "run-lane": "skipped",
+        "cleanup-lane": "failure",
+        "aggregate-results": "failure",
+        "attempt-results": "success",
+      },
+      first: "static-lint (failure)",
+      run: "skipped",
+    },
+    {
+      name: "runner",
+      outcomes: { "run-lane": "failure", "cleanup-lane": "failure" },
+      first: "run-lane (failure)",
+      run: "failure",
+    },
+    {
+      name: "retention",
+      outcomes: { "run-lane": "success", "aggregate-results": "failure" },
+      first: "aggregate-results (failure)",
+      run: "success",
+    },
+    {
+      name: "cancelled",
+      outcomes: { "run-lane": "cancelled" },
+      first: "run-lane (cancelled)",
+      run: "cancelled",
+    },
+    { name: "missing", outcomes: {}, first: "unavailable", run: "unavailable" },
+  ];
+  for (const { name, outcomes, first, run } of cases) {
+    const output = join(root, name);
+    const env = Object.fromEntries(
+      Object.entries(summary.env).map(([key, value]) => [
+        key,
+        value.replace(/\$\{\{ steps\.([\w-]+)\.conclusion \}\}/g, (_, id) => outcomes[id] ?? ""),
+      ]),
+    );
+    const result = spawnSync("bash", ["-euo", "pipefail", "-c", summary.run], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, GITHUB_STEP_SUMMARY: output, ...env },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const receipt = readFileSync(output, "utf8");
+    assert.equal(
+      receipt,
+      [
+        "",
+        "### CI lane failure",
+        "",
+        `- First unsuccessful step: \`${first}\``,
+        `- Run lane: \`${run}\``,
+        `- Cleanup lane: \`${outcomes["cleanup-lane"] ?? "unavailable"}\``,
+        `- Aggregate result upload: \`${outcomes["aggregate-results"] ?? "unavailable"}\``,
+        `- Attempt result upload: \`${outcomes["attempt-results"] ?? "unavailable"}\``,
+        "",
+      ].join("\n"),
+    );
+  }
+});
+
 test("lane lists outside the lane table name every lane they must", async (t) => {
   const suiteIndex = JSON.parse(read("scripts/ci/test-suites.json"));
   // The lane action exposes the cache credentials and sets OCC_CI_IMAGE_CACHE for
@@ -1397,13 +1493,16 @@ test("lane lists outside the lane table name every lane they must", async (t) =>
   const root = temporaryDirectorySync(t, "cache-lane-selection-");
   const output = join(root, "outputs");
   const openshell = JSON.parse(read("scripts/ci/test-suites/openshell.json"));
-  const firstAgentFiles = new Set([
-    "tests/integration/local-first-agent-openshell-real.test.mjs",
-    "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
-  ]);
+  const installation = JSON.parse(read("scripts/ci/test-suites/dev-up-k3d.json"));
+  const qaMatrix = JSON.parse(read("scripts/ci/test-suites/qa-matrix.json"));
   const observed = new Set();
   for (const lane of Object.keys(suiteIndex.lanes)) {
-    const files = lane === "openshell" ? ["", ...openshell.files.map(({ path }) => path)] : [""];
+    const files = [
+      "",
+      ...({ openshell, "dev-up-k3d": installation, "qa-matrix": qaMatrix }[lane]?.files ?? []).map(
+        ({ path }) => path,
+      ),
+    ];
     for (const file of files) {
       writeFileSync(output, "");
       const selection = spawnSync("bash", ["-c", mode.run], {
@@ -1419,6 +1518,8 @@ test("lane lists outside the lane table name every lane they must", async (t) =>
       assert.equal(selection.status, 0, selection.stderr);
       const firstAgent = /^first-agent=(true|false)$/m.exec(readFileSync(output, "utf8"))?.[1];
       assert.ok(firstAgent);
+      const sourceBuild = /^source-build=(true|false)$/m.exec(readFileSync(output, "utf8"))?.[1];
+      assert.ok(sourceBuild);
       const evaluate = (expression) =>
         runInNewContext(
           expression
@@ -1426,13 +1527,23 @@ test("lane lists outside the lane table name every lane they must", async (t) =>
             .replaceAll(
               "steps.image-mode.outputs.first-agent",
               'steps["image-mode"].outputs["first-agent"]',
+            )
+            .replaceAll(
+              "steps.image-mode.outputs.source-build",
+              'steps["image-mode"].outputs["source-build"]',
             ),
           {
             inputs: { lane },
-            steps: { "image-mode": { outputs: { "first-agent": firstAgent } } },
+            steps: {
+              "image-mode": { outputs: { "first-agent": firstAgent, "source-build": sourceBuild } },
+            },
           },
         );
-      const expected = lane === "openshell" ? firstAgentFiles.has(file) : cached.includes(lane);
+      const expected = ["dev-up-k3d", "qa-matrix"].includes(lane)
+        ? { "dev-up-k3d": installation, "qa-matrix": qaMatrix }[
+            lane
+          ].prepare.sourceBuildFiles.includes(file)
+        : cached.includes(lane);
       assert.equal(evaluate(exposeStep.if), expected, `${lane}: ${file}: cache credentials`);
       assert.equal(
         evaluate(prepareStep.env.OCC_CI_IMAGE_CACHE),
@@ -1462,11 +1573,20 @@ test("lane lists outside the lane table name every lane they must", async (t) =>
   const [sameSha, ownJobs] = lists;
   assert.deepEqual(
     [...sameSha].sort(),
-    fullIntegration.jobs["pr-safe-same-sha"].strategy.matrix.include
+    [
+      ...fullIntegration.jobs["pr-safe-same-sha"].strategy.matrix.include,
+      ...fullIntegration.jobs["image-lanes-same-sha"].strategy.matrix.include,
+    ]
       .map((entry) => entry.lane)
       .sort(),
   );
-  for (const job of ["pr-safe-same-sha", "runtime-image-fixture", ...ownJobs]) {
+  for (const job of [
+    "pr-safe-same-sha",
+    "image-lanes-same-sha",
+    "runtime-artifact",
+    "runtime-image-fixture",
+    ...ownJobs,
+  ]) {
     assert.ok(aggregate.needs.includes(job), `full-aggregate needs ${job}`);
   }
   assert.deepEqual(
@@ -1660,7 +1780,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     // The inventory checks above still require every production CI lane.
     assert.deepEqual(
       Object.keys(selectedNeeds).sort(),
-      ["impact", "static-checks", ...expectedFullLanes].sort(),
+      ["impact", "static-checks", "runtime-artifact", ...expectedFullLanes].sort(),
     );
     for (const lane of expectedFullLanes) {
       assert.equal(selectedNeeds[lane].result, "success", lane);
@@ -2399,7 +2519,14 @@ async function buildMatrix(t, mode, lanes) {
       .filter(Boolean)
       .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
   );
-  return { ...result, matrix: values.matrix && JSON.parse(values.matrix), fixture: values.fixture };
+  return {
+    ...result,
+    matrix: values.matrix && JSON.parse(values.matrix),
+    images: values["image-matrix"] && JSON.parse(values["image-matrix"]),
+    hasMatrix: values["has-matrix"],
+    hasImages: values["has-images"],
+    fixture: values.fixture,
+  };
 }
 
 test("the lane matrix runs every lane in full mode and only selected lanes in tests mode", async (t) => {
@@ -2428,6 +2555,12 @@ test("the lane matrix runs every lane in full mode and only selected lanes in te
     ["docs", "", table, "true"],
     [
       "tests",
+      '["images-runtime-startup-2"]',
+      table.filter((row) => row.lane === "images-runtime-startup-2"),
+      "false",
+    ],
+    [
+      "tests",
       '["checks-baseline-1","k3d-fixture-state"]',
       table.filter((row) => ["checks-baseline-1", "k3d-fixture-state"].includes(row.lane)),
       "false",
@@ -2453,7 +2586,16 @@ test("the lane matrix runs every lane in full mode and only selected lanes in te
     ...valid.map(async ([mode, lanes, matrix, withFixture]) => {
       const result = await buildMatrix(t, mode, lanes);
       assert.equal(result.status, 0, result.stderr);
-      assert.deepEqual(result.matrix, matrix);
+      assert.deepEqual(
+        result.matrix,
+        matrix.filter((row) => !row.lane.startsWith("images-")),
+      );
+      assert.deepEqual(
+        result.images,
+        matrix.filter((row) => row.lane.startsWith("images-")),
+      );
+      assert.equal(result.hasMatrix, String(result.matrix.length > 0));
+      assert.equal(result.hasImages, String(result.images.length > 0));
       assert.equal(result.fixture, withFixture);
     }),
     ...invalid.map(async (lanes) => {
@@ -2503,7 +2645,7 @@ test("workflow runs selected lanes in tests mode and gates them by the verified 
   const prSafe = job("pr-safe");
   assert.match(
     prSafe,
-    /if: \$\{\{ needs\.impact\.outputs\.mode == 'full' \|\| needs\.impact\.outputs\.mode == 'tests' \}\}/,
+    /if: \$\{\{ \(needs\.impact\.outputs\.mode == 'full' \|\| needs\.impact\.outputs\.mode == 'tests'\) && needs\.impact\.outputs\.has-matrix == 'true' \}\}/,
   );
   assert.match(prSafe, /include: \$\{\{ fromJSON\(needs\.impact\.outputs\.matrix\) \}\}/);
   assert.match(
@@ -2546,6 +2688,8 @@ async function gatedTestLanes(t, change, expected) {
     impact: { result: "success", outputs: { mode: "tests", lanes } },
     "static-checks": { result: "success", outputs: {} },
     "pr-safe": { result: "success", outputs: {} },
+    "image-lanes": { result: "skipped", outputs: {} },
+    "runtime-artifact": { result: "skipped", outputs: {} },
     "runtime-image-fixture": { result: "skipped", outputs: {} },
   };
   const gated = await runGate(root, needs, "tests", lanes);
@@ -2635,4 +2779,120 @@ test("the checked-in suite index and manifests support test-only selection", asy
   const handoffShallow = await shallowBootstrap(handoff);
   const handoffLanes = ["checks-baseline-2", "k3d-fixture-configuration"];
   await settled([handoff.expectTests(handoffLanes), handoffShallow.expectTests(handoffLanes)]);
+});
+
+test("shared runtime DAG selects only image consumers while other checks stay independent", async (t) => {
+  const workflow = loadYaml(".github/workflows/ci.yml");
+  const selected = (name, mode, matrix) =>
+    runInNewContext(
+      workflow.jobs[name].if
+        .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+        .replaceAll("outputs.has-matrix", 'outputs["has-matrix"]')
+        .replaceAll("outputs.has-images", 'outputs["has-images"]'),
+      {
+        needs: {
+          impact: {
+            outputs: {
+              mode,
+              "has-matrix": matrix.hasMatrix,
+              "has-images": matrix.hasImages,
+            },
+          },
+        },
+      },
+    );
+  assert.equal(workflow.jobs["pr-safe"].needs, "impact");
+  assert.deepEqual(workflow.jobs["image-lanes"].needs, ["impact", "runtime-artifact"]);
+  assert.deepEqual(workflow.jobs["first-agent-smoke"].needs, ["impact", "runtime-artifact"]);
+  assert.ok(!workflow.jobs["ci-required"].needs.includes("first-agent-smoke"));
+  for (const [mode, lanes, expected] of [
+    ["docs", "", [false, false, false, false]],
+    ["full", "", [true, true, true, true]],
+    ["tests", '["postgres"]', [true, false, false, false]],
+    ["tests", '["images-packaging"]', [false, true, true, false]],
+    ["tests", '["postgres","images-runtime-startup-2"]', [true, true, true, false]],
+  ]) {
+    const matrix = await buildMatrix(t, mode, lanes);
+    assert.equal(matrix.status, 0, matrix.stderr);
+    assert.deepEqual(
+      ["pr-safe", "image-lanes", "runtime-artifact", "first-agent-smoke"].map((name) =>
+        selected(name, mode, matrix),
+      ),
+      expected,
+      `${mode}: ${lanes}`,
+    );
+  }
+});
+
+test("full aggregate attributes image coverage to its consumer and producer jobs", (t) => {
+  const workflow = loadYaml(".github/workflows/full-integration.yml");
+  // This workflow uses !cancelled(), which disables GitHub's implicit success()
+  // guard. A failed producer must therefore be rejected explicitly.
+  const condition = workflow.jobs["image-lanes-same-sha"].if
+    .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+    .replaceAll("needs.runtime-artifact", 'needs["runtime-artifact"]');
+  for (const producer of ["success", "failure", "cancelled", "skipped"]) {
+    for (const runAll of ["true", "false"]) {
+      assert.equal(
+        runInNewContext(condition, {
+          cancelled: () => false,
+          github: {
+            repository: "openclaw/openclaw-enterprise",
+            ref: "refs/heads/main",
+            ref_type: "branch",
+            event_name: "push",
+          },
+          needs: {
+            preflight: { result: "success", outputs: { run_all: runAll } },
+            "runtime-artifact": { result: producer },
+          },
+        }),
+        producer === "success" && runAll === "true",
+      );
+    }
+  }
+  const script = workflow.jobs["full-aggregate"].steps.find(
+    (step) => step.name === "Write selected job state",
+  ).run;
+  const directory = temporaryDirectorySync(t, "full-shared-runtime-gate-");
+  const execute = (lane, updates) => {
+    const needs = Object.fromEntries(
+      workflow.jobs["full-aggregate"].needs.map((name) => [name, { result: "success" }]),
+    );
+    Object.assign(needs, updates);
+    const result = spawnSync("bash", ["-e", "-c", script], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        RUNNER_TEMP: directory,
+        SELECTED_LANE: lane,
+        NEEDS_JSON: JSON.stringify(needs),
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(readFileSync(join(directory, "needs.json"), "utf8"));
+  };
+  // Failed or cancelled compilation skips image tests; unrelated passing tests
+  // cannot replace their results when the aggregate checks coverage.
+  for (const result of ["failure", "cancelled"]) {
+    const output = execute("all", {
+      "runtime-artifact": { result },
+      "image-lanes-same-sha": { result: "skipped" },
+    });
+    assert.equal(output["runtime-artifact"].result, result);
+    assert.equal(output["images-runtime-startup-2"].result, "skipped");
+    assert.equal(output.postgres.result, "success");
+  }
+  const imageFailure = execute("all", { "image-lanes-same-sha": { result: "failure" } });
+  assert.equal(imageFailure["images-packaging"].result, "failure");
+  assert.equal(imageFailure["checks-baseline-1"].result, "success");
+  const unrelatedFailure = execute("all", { "pr-safe-same-sha": { result: "failure" } });
+  assert.equal(unrelatedFailure["images-packaging"].result, "success");
+  assert.equal(unrelatedFailure.postgres.result, "failure");
+  const targeted = execute("docker-model", {
+    "runtime-artifact": { result: "skipped" },
+    "image-lanes-same-sha": { result: "skipped" },
+    "pr-safe-same-sha": { result: "skipped" },
+  });
+  assert.deepEqual(Object.keys(targeted).sort(), ["docker-model", "preflight"]);
 });

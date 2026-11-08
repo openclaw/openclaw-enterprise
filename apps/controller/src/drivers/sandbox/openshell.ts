@@ -3775,6 +3775,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       if (result.status === 200) {
         return result.json;
       }
+      // Keep refusal details separate from a successful observation transcript.
+      return { probeFailure: result.json };
     });
   }
 

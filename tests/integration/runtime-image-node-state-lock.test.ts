@@ -7,7 +7,7 @@ import {
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
-import { followContainer } from "../helpers/docker-follow.mjs";
+import { followContainer } from "../helpers/docker-follow.ts";
 import { cpuScaledImageTimeoutMs } from "../helpers/image-smoke-timeout.mjs";
 import { image, imageTestOptions, runDocker } from "../helpers/runtime-image-startup.mjs";
 

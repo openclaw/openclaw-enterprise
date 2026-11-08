@@ -652,13 +652,15 @@ p {
   padding: var(--space-6) var(--space-4) var(--space-4);
   display: flex;
   flex-direction: column;
-  position: relative;
-  min-height: 100dvh;
-  align-self: stretch;
+  position: sticky;
+  top: 0;
+  height: 100dvh;
+  min-height: 0;
+  align-self: start;
+  overflow-y: auto;
   z-index: 3;
-  /* The account row sits at the bottom of the stretched sidebar. As the browser's scroll anchor
-     it pinned the page to its end, so content that grew anywhere moved the reader's view
-     (finding 3012). The anchor comes from the page content instead. */
+  /* Keep the account control in the viewport as the document scrolls. Page content,
+     rather than the navigation, supplies the browser's scroll anchor. */
   overflow-anchor: none;
 }
 .sidebar .brand,
@@ -1406,7 +1408,7 @@ p {
   font-size: var(--text-sm);
   overflow-wrap: anywhere;
 }
-/* Settings (UX spec 3.10): an account card and a session card in one 720 px column. */
+/* Settings cards share one 720 px column. */
 .settings-page {
   display: grid;
   gap: var(--space-6);
@@ -1417,6 +1419,14 @@ p {
   font-size: var(--text-xl);
   line-height: var(--text-xl--line-height);
 }
+.settings-debug-control {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--control-h);
+  cursor: pointer;
+}
+
 .settings-account {
   display: flex;
   align-items: center;
@@ -2920,7 +2930,8 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   display: flex;
   gap: var(--space-2);
 }
-.resource-row-actions .icon-button {
+.resource-row-actions .icon-button,
+.connection-destination-table .icon-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2929,7 +2940,8 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   padding: 0;
   color: var(--muted);
 }
-.resource-row-actions .icon-button:not(:disabled, [aria-disabled="true"]):hover {
+.resource-row-actions .icon-button:not(:disabled, [aria-disabled="true"]):hover,
+.connection-destination-table .icon-button:not(:disabled):hover {
   border-color: var(--danger);
   background: var(--danger-subtle);
   color: var(--danger);
@@ -2984,6 +2996,7 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .agent-list-feedback > .status {
   margin: 0 0 var(--space-5);
 }
+.credential-tabs,
 .agent-tabs {
   display: flex;
   overflow-x: auto;
@@ -2992,16 +3005,25 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   border-bottom: 1px solid var(--line);
   margin-bottom: var(--space-5);
 }
+.credential-tabs a {
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text);
+  text-decoration: none;
+}
+.credential-tabs a:hover {
+  text-decoration: underline;
+}
+.credential-tabs [aria-current="page"],
+.agent-tabs [aria-selected="true"] {
+  border-bottom: 2px solid var(--accent);
+  color: var(--accent);
+  font-weight: var(--weight-semibold);
+}
 .agent-tabs button {
   flex: 0 0 auto;
   border: 0;
   border-radius: 0;
   background: transparent;
-}
-.agent-tabs [aria-selected="true"] {
-  border-bottom: 2px solid var(--accent);
-  color: var(--accent);
-  font-weight: var(--weight-semibold);
 }
 /* An edge with more tabs past it fades (detail.mts sets the attributes as the strip scrolls).
    A mask reads only alpha, so the opaque stop may be any opaque colour. */
@@ -3211,6 +3233,234 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 .dialog--framed {
   width: min(38rem, calc(100% - 2 * var(--space-4)));
+}
+.connection-template-dialog {
+  width: min(46rem, calc(100% - 2 * var(--space-4)));
+}
+.connection-template-fields {
+  min-inline-size: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+.connection-template-fields legend {
+  font-weight: var(--weight-semibold);
+  margin-block-start: var(--space-4);
+}
+.connection-destinations {
+  margin-block: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.connection-destinations > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  cursor: pointer;
+  list-style: none;
+  border-radius: var(--radius-sm);
+  padding: var(--space-1);
+  font-weight: var(--weight-semibold);
+}
+.connection-destinations > summary::-webkit-details-marker {
+  display: none;
+}
+.connection-destinations > summary::after {
+  content: "";
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-inline-end: var(--space-1);
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+}
+.connection-destinations[open] > summary::after {
+  transform: rotate(225deg);
+}
+.connection-destinations > .hint {
+  margin-block: var(--space-2);
+}
+.connection-destination-scroll {
+  max-height: 18rem;
+  overflow: auto;
+  margin-bottom: var(--space-2);
+}
+.connection-destination-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+.connection-destination-table :is(th, td) {
+  padding: var(--space-1) var(--space-2) var(--space-1) 0;
+  vertical-align: middle;
+}
+.connection-destination-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--color-surface);
+  text-align: start;
+}
+.connection-destination-table :is(th, td):nth-child(2) {
+  width: 5.5rem;
+}
+.connection-destination-table :is(th, td):last-child {
+  width: 2.5rem;
+  padding-inline-end: 0;
+  text-align: end;
+}
+.connection-destination-table input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-h-sm);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-surface);
+  color: inherit;
+  font: inherit;
+}
+@media (max-width: 38rem) {
+  .connection-destination-table thead {
+    display: none;
+  }
+  .connection-destination-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 5rem;
+    gap: var(--space-1) var(--space-2);
+    padding-block: var(--space-2);
+    border-bottom: 1px solid var(--color-border);
+  }
+  .connection-destination-table td,
+  .connection-destination-table td:nth-child(2),
+  .connection-destination-table td:last-child {
+    width: auto;
+    padding: 0;
+  }
+  .connection-destination-table td[data-label]::before {
+    display: block;
+    color: var(--muted);
+    font-size: var(--text-sm);
+    content: attr(data-label);
+    text-transform: capitalize;
+  }
+  .connection-destination-table td:last-child {
+    align-self: end;
+    text-align: start;
+  }
+}
+.oauth-catalog {
+  container: oauth-catalog / inline-size;
+}
+.oauth-catalog-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-4);
+}
+.oauth-catalog-heading h2,
+.oauth-catalog-notice {
+  margin: 0;
+}
+.oauth-catalog-notice:not(:empty),
+.oauth-catalog-list > button {
+  margin: var(--space-3) var(--space-4);
+}
+.oauth-catalog-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+.oauth-catalog-table :is(td, th) {
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--color-border);
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+.oauth-catalog-table thead th {
+  padding-block: var(--space-2);
+  background: var(--color-surface-2);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+.oauth-catalog-table tbody th {
+  color: var(--color-text-strong);
+  font-weight: var(--weight-semibold);
+}
+.oauth-catalog-table td {
+  font-size: var(--text-md);
+}
+.oauth-catalog-table code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.oauth-catalog-table :is(th, td):last-child {
+  text-align: end;
+  white-space: nowrap;
+}
+.oauth-catalog-table thead th:last-child {
+  width: 6rem;
+}
+.connection-template-catalog .oauth-catalog-table thead th:nth-last-child(2) {
+  width: 6rem;
+}
+.connection-template-catalog .oauth-catalog-table thead th:last-child {
+  width: 9rem;
+}
+.oauth-catalog-table .resource-row-actions {
+  width: max-content;
+  margin-inline-start: auto;
+  align-items: center;
+}
+
+@container oauth-catalog (max-width: 46rem) {
+  .oauth-catalog-table,
+  .oauth-catalog-table tbody {
+    display: block;
+  }
+  .oauth-catalog-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .oauth-catalog-table tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-2) var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border-top: 1px solid var(--color-border);
+  }
+  .oauth-catalog-table tbody :is(th, td) {
+    min-width: 0;
+    padding: 0;
+    border: 0;
+  }
+  .oauth-catalog-table td:last-child {
+    grid-area: 1 / 2;
+    width: auto;
+  }
+  .oauth-catalog-table td[data-label] {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: minmax(6rem, 38%) minmax(0, 1fr);
+    align-items: baseline;
+    gap: var(--space-3);
+  }
+  .oauth-catalog-table td[data-label]::before {
+    content: attr(data-label) / "";
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+  }
 }
 .dialog--drawer {
   --dialog-open-from: translateX(var(--space-6));

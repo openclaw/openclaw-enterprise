@@ -140,9 +140,81 @@ Stores Secret metadata and backend references; Secret values are kept by the sel
 - `backend_uid`
 - `created_at`
 
+### `connection_templates`
+
+Stores the scope and current version of each OAuth connection template.
+
+- `id`
+- `namespace_id`
+- `display_name`
+- `current_version`
+- `created_at`
+
+### `oauth_connection_template_versions`
+
+Pins the approved OAuth configuration and the HTTPS destinations that can receive the credential. A discovered version also retains the MCP metadata observed when the administrator saved it.
+
+- `template_id`, `version`, `oauth_client_id`, `mode`
+- `issuer`, `authorization_url`, `token_url`, `revocation_url`
+- `scopes`, `authorization_parameters`, `observed_metadata`
+- `destinations` (exact host, port, and path for each approved HTTPS destination)
+- `created_at`
+
+### `oauth_clients`
+
+Identifies an independently managed OAuth client and its approved credential destinations. OCC uses the registration ID to locate a confidential client’s private value on the owning Secret Driver. A cleanup deadline keeps an unpublished or deleted client hidden until private cleanup completes.
+
+- `id`, `namespace_id`, `display_name`, `issuer`, `client_id`
+- `token_url`, `revocation_url`, `token_endpoint_auth_method`
+- `secret_driver_id`, `cleanup_after`, `created_at`
+
+### `saved_connections`
+
+Records the Namespace, consenting principal, approved template version and revocation status of a saved account.
+
+- `namespace_id`
+- `credential_source_id`
+- `owner_principal_id`
+- `oauth_client_id`, `client_id`, `issuer`, `token_url`
+- `recipient`, `mcp_server_url`, `resource`
+- `requested_scopes`, `granted_scopes`
+- `connection_template_id`
+- `connection_template_version`
+- `created_at`
+- `revocation_requested_by`
+- `revoked_at`
+
+### `connection_sessions`
+
+Stores the private, single-use OAuth attempt for the initiating principal and browser session.
+
+- `state_hash`
+- `namespace_id`
+- `credential_source_id`
+- `pkce_verifier`
+- `selected_scopes`
+- `issuer_required`
+- `session_id`
+- `redirect_uri`
+- `actor_id`
+- `connection_template_id`
+- `connection_template_version`
+- `created_at`
+- `expires_at`
+
+### `connection_token_custody`
+
+Tracks the Token Service secret reference, the published access token version and the next refresh time.
+
+- `namespace_id`
+- `credential_source_id`
+- `secret_ref`
+- `scheduled_version`
+- `next_refresh_at`
+
 ### `credential_sources`
 
-Records which Credential Gateway or Credential Proxy admitted each source. The capability and Driver ID are immutable; the table holds no credential values.
+Records the owner of each source. A Credential Gateway or Credential Proxy source identifies its admitting Driver. The Token Service owns saved account sources.
 
 - `id`
 - `namespace_id`
@@ -150,8 +222,8 @@ Records which Credential Gateway or Credential Proxy admitted each source. The c
 - `type`
 - `config`
 - `egress` (optional admitted source and versioned resolver references)
-- `owner_capability` (`credential_gateway` or `credential_proxy`)
-- `driver_id`
+- `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service` for a saved account)
+- `driver_id` (Gateway and Proxy sources)
 - `state`
 - `created_at`
 

@@ -17,6 +17,26 @@ inputs:
   artifact-prefix:
     description: Prefix for the uploaded result artifact.
     required: true
+  runtime-artifact-id:
+    description: Exact same-run artifact ID from the shared runtime producer.
+    required: false
+    default: ""
+  runtime-artifact-sha256:
+    description: Producer archive SHA-256.
+    required: false
+    default: ""
+  runtime-artifact-source-sha:
+    description: Producer tested Git source SHA.
+    required: false
+    default: ""
+  runtime-artifact-run-id:
+    description: Producer workflow run ID.
+    required: false
+    default: ""
+  runtime-artifact-attempt:
+    description: Producer attempt (may precede a consumer rerun).
+    required: false
+    default: ""
   static-checks:
     description: >-
       Whether checks-baseline-1 runs the workspace boundary, lint, format, OpenAPI
@@ -41,23 +61,29 @@ runs:
       shell: bash
       env:
         JOB_TIMEOUT_MINUTES: ${{ inputs.job-timeout-minutes }}
+        QA_TIMING: ${{ inputs.lane == 'qa-matrix' }}
       run: |
         if [[ ! "$JOB_TIMEOUT_MINUTES" =~ ^[1-9][0-9]{0,3}$ ]] || (( JOB_TIMEOUT_MINUTES <= 5 )); then
           echo "::error::job-timeout-minutes must be the calling job's timeout-minutes, above 5." >&2
           exit 1
         fi
         printf 'ms=%s\n' "$(( $(date +%s%3N) + (JOB_TIMEOUT_MINUTES - 5) * 60000 ))" >> "$GITHUB_OUTPUT"
+        if [[ "$QA_TIMING" == true ]]; then
+          node scripts/ci/qa-phase-timing.ts entry 2>/dev/null >> "$GITHUB_OUTPUT" || true
+        fi
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      id: setup-node
       with:
         node-version: ${{ inputs.node-version }}
     - name: Validate focused test selection
+      id: validate-selection
       if: inputs.test-file != ''
       shell: bash
       env:
         CI_SELECTED_LANE: ${{ inputs.lane }}
         CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
       run: node scripts/ci/run-tests.mjs check-selection "$CI_SELECTED_LANE" --file "$CI_SELECTED_TEST_FILE"
-    - name: Select first-Agent image preparation
+    - name: Select installer image preparation
       id: image-mode
       shell: bash
       env:
@@ -68,8 +94,12 @@ runs:
         import { appendFileSync } from 'node:fs';
         import { loadTestSuites } from './scripts/ci/test-suites.mjs';
         const lanes = loadTestSuites('scripts/ci/test-suites.json').lanes;
+        const lane = lanes[process.env.CI_SELECTED_LANE];
+        const file = process.env.CI_SELECTED_TEST_FILE;
+        const sourceBuild = lane.prepare?.sourceBuildFiles?.includes(file);
         const selected = process.env.CI_SELECTED_LANE === 'openshell' &&
-          lanes.openshell.prepare.selfProvisionedFiles.includes(process.env.CI_SELECTED_TEST_FILE);
+          lane.prepare.selfProvisionedFiles.includes(file) && !sourceBuild;
+        appendFileSync(process.env.GITHUB_OUTPUT, `source-build=${Boolean(sourceBuild)}\n`);
         appendFileSync(process.env.GITHUB_OUTPUT, `first-agent=${selected}\n`);
         NODE
     - id: pnpm-store
@@ -109,17 +139,23 @@ runs:
         # First-Agent image exports target only their job-owned loopback registry.
         driver-opts: |
           ${{ steps.image-mode.outputs.first-agent == 'true' && 'network=host' || '' }}
+          ${{ steps.image-mode.outputs.source-build == 'true' && 'default-load=true' || '' }}
     - name: Set up CI tools
+      id: setup-ci-tools
       shell: bash
       run: bash scripts/ci/setup-tools.sh "${{ inputs.profile }}"
-    - name: Install registry transport for image publication test
-      if: inputs.lane == 'images-packaging'
+    - name: Install registry transport for image tests
+      id: install-registry-transport
+      if: inputs.lane == 'images-packaging' || inputs.runtime-artifact-id != ''
       shell: bash
       run: |
         sudo apt-get -o Acquire::Retries=3 update
         sudo apt-get -o Acquire::Retries=3 install --no-install-recommends -y skopeo
-        skopeo --version | grep -Fx 'skopeo version 1.13.3'
+        if [[ '${{ inputs.lane }}' == images-packaging ]]; then
+          skopeo --version | grep -Fx 'skopeo version 1.13.3'
+        fi
     - name: Enable Kubernetes bridge packet filtering
+      id: kubernetes-bridge
       if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || inputs.lane == 'openshell' || startsWith(inputs.lane, 'k3d-fixture-') || startsWith(inputs.lane, 'k3d-observability')
       shell: bash
       run: |
@@ -147,56 +183,68 @@ runs:
         LOGGING_SETUP_OUTCOME: ${{ steps.install-dependencies.outcome }}
       run: node scripts/ci/logging-setup-timing.ts finish pnpm-install
     - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      id: save-pnpm-store
       if: success() && steps.pnpm-store.outputs.store-cache-hit != 'true'
       with:
         path: ${{ steps.pnpm-store.outputs.store-path }}
         key: ${{ steps.pnpm-store.outputs.store-cache-primary-key }}
     - name: Install browser dependencies
+      id: install-browser
       if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-observability-demo' || inputs.lane == 'postgres-auth' || inputs.lane == 'keycloak-oidc'
       shell: bash
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
+      id: setup-go
       if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell' || inputs.lane == 'k3d-fixture-configuration'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
         cache: true
     - name: Run workspace boundary check
+      id: workspace-check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
       run: pnpm check:workspace
     - name: Run lint check
+      id: static-lint
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
       run: pnpm lint
     - name: Set up formatter
+      id: setup-formatter
       if: inputs.lane == 'checks-baseline-1'
       uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
       with:
         bun-version-file: .bun-version
     - name: Run format check
+      id: format-check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
       run: pnpm format:check
     - name: Run OpenAPI check
+      id: openapi-check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
       run: pnpm openapi:check
     - name: Run docs check
+      id: docs-check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
       run: pnpm docs:install && pnpm openapi:lint && pnpm docs:check && pnpm docs:build
     - name: Install documentation browser dependencies
+      id: install-docs-browser
       # Only browser part 1 runs docs-compute-matrix. Baseline part 1's docs-site
       # test needs Pagefind; the docs check above installs it otherwise.
       if: inputs.lane == 'checks-browser' || (inputs.lane == 'checks-baseline-1' && inputs.static-checks == 'false')
       shell: bash
       run: pnpm docs:install
     - name: Check Go CLI
+      id: check-go-cli
       if: inputs.lane == 'checks-baseline-1'
       shell: bash
-      run: pnpm cli:check && node scripts/ci/go-test.mjs
+      run: pnpm cli:check && node scripts/ci/go-test.ts
     - name: Typecheck and build workspace output
+      id: typecheck-workspace
       # This one compiler run builds the workspace (some part 2 tests read
       # apps/controller/dist) and checks TypeScript tests without emitting them.
       # CI Impact also selects part 2 for a change confined to a TypeScript test.
@@ -204,10 +252,12 @@ runs:
       shell: bash
       run: pnpm typecheck
     - name: Build Go CLI for development installation proof
+      id: build-go-cli
       if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell' || inputs.lane == 'qa-matrix'
       shell: bash
       run: pnpm cli:build
     - name: Precompile controller route schemas
+      id: precompile-route-schemas
       # Most of these lanes' test files build the API in process. Each build then loads the
       # route validators and serializers from apps/controller/dist/route-compilers.cjs instead
       # of compiling every schema (http/route-compilers.ts). Other lanes build too few apps
@@ -216,6 +266,7 @@ runs:
       shell: bash
       run: node apps/controller/src/precompile-route-schemas.mjs
     - name: Prepare hosted platform disk capacity
+      id: prepare-disk
       if: (startsWith(inputs.lane, 'k3d-observability') || inputs.lane == 'openshell') && runner.environment == 'github-hosted'
       shell: bash
       env:
@@ -223,7 +274,7 @@ runs:
       run: node scripts/ci/repository-platform-headroom.mjs
     - name: Expose image cache credentials
       id: image-cache
-      if: steps.image-mode.outputs.first-agent == 'true' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3'
+      if: inputs.lane == 'openshell' || steps.image-mode.outputs.source-build == 'true' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3'
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       with:
         script: |
@@ -235,17 +286,31 @@ runs:
           core.setSecret(token);
           core.setOutput('token', token);
           core.setOutput('url', url);
+    - name: Download shared runtime image
+      id: download-runtime-artifact
+      if: inputs.runtime-artifact-id != ''
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      with:
+        artifact-ids: ${{ inputs.runtime-artifact-id }}
+        path: ${{ runner.temp }}/runtime-artifact
+        merge-multiple: true
     - name: Prepare lane
       id: prepare-lane
       shell: bash
       env:
         # Image builds keep a few minutes of it for the lane's tests (prepare.mjs).
         CI_RUNNER_DEADLINE_MS: ${{ steps.deadline.outputs.ms }}
-        OCC_CI_IMAGE_CACHE: ${{ (steps.image-mode.outputs.first-agent == 'true' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3') && '1' || '' }}
+        OCC_CI_IMAGE_CACHE: ${{ (inputs.lane == 'openshell' || steps.image-mode.outputs.source-build == 'true' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3') && '1' || '' }}
+        BUILDX_BUILDER: ${{ steps.image-mode.outputs.source-build == 'true' && steps.builder.outputs.name || '' }}
         OCC_CI_FIRST_AGENT_BUILDER: ${{ steps.image-mode.outputs.first-agent == 'true' && steps.builder.outputs.name || '' }}
         ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
         ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
         CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
+        OCC_CI_RUNTIME_ARTIFACT_DIRECTORY: ${{ inputs.runtime-artifact-id != '' && format('{0}/runtime-artifact', runner.temp) || '' }}
+        OCC_CI_RUNTIME_ARTIFACT_SHA256: ${{ inputs.runtime-artifact-sha256 }}
+        OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA: ${{ inputs.runtime-artifact-source-sha }}
+        OCC_CI_RUNTIME_ARTIFACT_RUN_ID: ${{ inputs.runtime-artifact-run-id }}
+        OCC_CI_RUNTIME_ARTIFACT_ATTEMPT: ${{ inputs.runtime-artifact-attempt }}
       run: |
         selection=()
         if [[ -n "$CI_SELECTED_TEST_FILE" ]]; then
@@ -260,6 +325,7 @@ runs:
         LOGGING_SETUP_OUTCOME: skipped
       run: node scripts/ci/logging-setup-timing.ts finish image-pulls
     - name: Install trusted browser certificate tooling
+      id: install-browser-certificates
       if: inputs.lane == 'qa-matrix' || inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell'
       shell: bash
       run: |
@@ -267,7 +333,16 @@ runs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libnss3-tools
         fi
+    # The QA caller has already set up Node. All observers use this runner's
+    # monotonic clock and leave the lane and cleanup commands in their own steps.
+    - name: Mark QA run start
+      id: qa-run-start
+      if: inputs.lane == 'qa-matrix'
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Run lane
+      id: run-lane
       shell: bash
       env:
         # Each file's timeout is CI_RUNNER_TEST_TIMEOUT_MS (60 minutes when unset), cut to what
@@ -309,16 +384,30 @@ runs:
       continue-on-error: true
       shell: bash
       run: tail -n 120 "$RUNNER_TEMP/memory/${{ inputs.lane }}.log" || true
+    - name: Mark QA cleanup start
+      id: qa-cleanup-start
+      if: always() && inputs.lane == 'qa-matrix'
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Cleanup lane
+      id: cleanup-lane
       if: always()
       shell: bash
       run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json"
+    - name: Mark QA cleanup end
+      id: qa-cleanup-end
+      if: always() && inputs.lane == 'qa-matrix'
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Export image cleanup reconciliation
       id: image_reconciliation
       if: always() && inputs.lane == 'images-packaging'
       shell: bash
       run: node scripts/ci/export-image-reconciliation.mjs "$RUNNER_TEMP/state/${{ inputs.lane }}.json" "$RUNNER_TEMP/image-reconciliation"
     - name: Retain image cleanup reconciliation
+      id: retain-image-reconciliation
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       if: always() && inputs.lane == 'images-packaging' && steps.image_reconciliation.outcome == 'success'
       with:
@@ -328,6 +417,7 @@ runs:
         if-no-files-found: error
         retention-days: 7
     - name: Retain runtime image fixture receipt
+      id: retain-runtime-fixture
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       if: always() && inputs.lane == 'runtime-image-fixture'
       with:
@@ -336,6 +426,7 @@ runs:
         if-no-files-found: error
         retention-days: 7
     - name: Upload cluster diagnostics
+      id: upload-cluster-diagnostics
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       # Setup failures, failed files' details and every k3d file's Agent
       # namespace activity; a lane with none writes no report. One per attempt,
@@ -357,6 +448,7 @@ runs:
         if-no-files-found: ignore
         retention-days: 7
     - name: Upload browser failure diagnostics
+      id: upload-browser-diagnostics
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       # Screenshots and console/network logs for failed browser tests;
       # passing runs write nothing.
@@ -368,6 +460,7 @@ runs:
         if-no-files-found: ignore
         retention-days: 3
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      id: aggregate-results
       if: always()
       with:
         name: ${{ inputs.artifact-prefix }}-${{ inputs.lane }}
@@ -377,6 +470,7 @@ runs:
         if-no-files-found: error
         retention-days: 7
     - name: Retain this attempt's results
+      id: attempt-results
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       # The aggregated artifact above is replaced by a rerun; this copy keeps a
       # failed attempt's cases. The name must not match `<prefix>-*` patterns.
@@ -386,3 +480,84 @@ runs:
         path: ${{ runner.temp }}/results/${{ inputs.lane }}.json
         if-no-files-found: ignore
         retention-days: 7
+    - name: Summarize QA phase timing
+      if: always() && inputs.lane == 'qa-matrix'
+      continue-on-error: true
+      shell: bash
+      env:
+        QA_ENTRY_NS: ${{ steps.deadline.outputs.qa-start-ns }}
+        QA_RUN_NS: ${{ steps.qa-run-start.outputs.ns }}
+        QA_CLEANUP_NS: ${{ steps.qa-cleanup-start.outputs.ns }}
+        QA_CLEANUP_END_NS: ${{ steps.qa-cleanup-end.outputs.ns }}
+        QA_RUN_OUTCOME: ${{ steps.run-lane.outcome }}
+        QA_CLEANUP_OUTCOME: ${{ steps.cleanup-lane.outcome }}
+        QA_SELECTION: ${{ inputs.test-file == '' && 'full' || 'focused' }}
+      run: node scripts/ci/qa-phase-timing.ts summarize 2>/dev/null
+    - name: Summarize first lane failure
+      if: failure() || cancelled()
+      continue-on-error: true
+      shell: bash
+      env:
+        # Ordered hard-step conclusions exclude tolerated failures and all step outputs.
+        CI_LANE_CONCLUSIONS: |-
+          deadline=${{ steps.deadline.conclusion }}
+          setup-node=${{ steps.setup-node.conclusion }}
+          validate-selection=${{ steps.validate-selection.conclusion }}
+          image-mode=${{ steps.image-mode.conclusion }}
+          pnpm-store=${{ steps.pnpm-store.conclusion }}
+          test-docker=${{ steps.test-docker.conclusion }}
+          builder=${{ steps.builder.conclusion }}
+          setup-ci-tools=${{ steps.setup-ci-tools.conclusion }}
+          install-registry-transport=${{ steps.install-registry-transport.conclusion }}
+          kubernetes-bridge=${{ steps.kubernetes-bridge.conclusion }}
+          install-dependencies=${{ steps.install-dependencies.conclusion }}
+          save-pnpm-store=${{ steps.save-pnpm-store.conclusion }}
+          install-browser=${{ steps.install-browser.conclusion }}
+          setup-go=${{ steps.setup-go.conclusion }}
+          workspace-check=${{ steps.workspace-check.conclusion }}
+          static-lint=${{ steps.static-lint.conclusion }}
+          setup-formatter=${{ steps.setup-formatter.conclusion }}
+          format-check=${{ steps.format-check.conclusion }}
+          openapi-check=${{ steps.openapi-check.conclusion }}
+          docs-check=${{ steps.docs-check.conclusion }}
+          install-docs-browser=${{ steps.install-docs-browser.conclusion }}
+          check-go-cli=${{ steps.check-go-cli.conclusion }}
+          typecheck-workspace=${{ steps.typecheck-workspace.conclusion }}
+          build-go-cli=${{ steps.build-go-cli.conclusion }}
+          precompile-route-schemas=${{ steps.precompile-route-schemas.conclusion }}
+          prepare-disk=${{ steps.prepare-disk.conclusion }}
+          image-cache=${{ steps.image-cache.conclusion }}
+          download-runtime-artifact=${{ steps.download-runtime-artifact.conclusion }}
+          prepare-lane=${{ steps.prepare-lane.conclusion }}
+          install-browser-certificates=${{ steps.install-browser-certificates.conclusion }}
+          run-lane=${{ steps.run-lane.conclusion }}
+          cleanup-lane=${{ steps.cleanup-lane.conclusion }}
+          image_reconciliation=${{ steps.image_reconciliation.conclusion }}
+          retain-image-reconciliation=${{ steps.retain-image-reconciliation.conclusion }}
+          retain-runtime-fixture=${{ steps.retain-runtime-fixture.conclusion }}
+          upload-cluster-diagnostics=${{ steps.upload-cluster-diagnostics.conclusion }}
+          upload-browser-diagnostics=${{ steps.upload-browser-diagnostics.conclusion }}
+          aggregate-results=${{ steps.aggregate-results.conclusion }}
+          attempt-results=${{ steps.attempt-results.conclusion }}
+      run: |
+        declare -A conclusions
+        first=unavailable
+        while IFS='=' read -r step conclusion; do
+          case "$conclusion" in
+            success|failure|cancelled|skipped) ;;
+            *) conclusion=unavailable ;;
+          esac
+          conclusions["$step"]=$conclusion
+          if [[ "$first" == unavailable && ( "$conclusion" == failure || "$conclusion" == cancelled ) ]]; then
+            first="$step ($conclusion)"
+          fi
+        done <<< "$CI_LANE_CONCLUSIONS"
+
+        {
+          printf '\n### CI lane failure\n\n'
+          printf -- '- First unsuccessful step: `%s`\n' "$first"
+          printf -- '- Run lane: `%s`\n' "${conclusions[run-lane]:-unavailable}"
+          printf -- '- Cleanup lane: `%s`\n' "${conclusions[cleanup-lane]:-unavailable}"
+          printf -- '- Aggregate result upload: `%s`\n' "${conclusions[aggregate-results]:-unavailable}"
+          printf -- '- Attempt result upload: `%s`\n' "${conclusions[attempt-results]:-unavailable}"
+        } >> "$GITHUB_STEP_SUMMARY"

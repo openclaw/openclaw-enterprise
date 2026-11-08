@@ -198,27 +198,25 @@ test(
 
 test("QA selection keeps prerequisite credentials and reports omitted coverage", async () => {
   const { selectQaMatrix, validateQaInputs } = await import("../helpers/qa-selection.mjs");
-  const selected = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,calendar" });
+  const selected = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,console-secrets" });
   assert.equal(selected.scope, "partial:selected");
   assert.deepEqual(
     selected.cells.map(({ cell, scenarios }) => ({ cell, scenarios })),
     [
-      { cell: "compose/OpenClaw", scenarios: ["model-ui"] },
-      { cell: "compose/Codex", scenarios: ["model-ui", "calendar"] },
-      { cell: "kubernetes/OpenClaw", scenarios: ["model-ui"] },
-      { cell: "kubernetes/Codex", scenarios: ["model-ui", "calendar"] },
+      { cell: "compose/OpenClaw", scenarios: ["model-ui", "console-secrets"] },
+      { cell: "compose/Codex", scenarios: ["console-secrets"] },
+      { cell: "kubernetes/OpenClaw", scenarios: ["model-ui", "console-secrets"] },
+      { cell: "kubernetes/Codex", scenarios: ["console-secrets"] },
     ],
   );
   assert.deepEqual(selected.cells[1].unselected, [
     "codex-search-config",
-    "console-secrets",
     "git-write",
     "git-push-denied",
     "slack",
   ]);
   assert.deepEqual(selected.cells[0].notApplicable, [
     "codex-search-config",
-    "calendar",
     "git-write",
     "git-push-denied",
     "slack",
@@ -230,15 +228,9 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   );
   assert.throws(() => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "" }), /invalid QA scenario/);
   assert.throws(
-    () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "calendar", OCC_TEST_QA_PRESET: "OpenClaw" }),
+    () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui", OCC_TEST_QA_PRESET: "Codex" }),
     /not applicable/,
   );
-  const calendar = selectQaMatrix({
-    OCC_TEST_QA_SCENARIOS: "calendar",
-    OCC_TEST_QA_INSTALLATION: "compose",
-  });
-  assert.ok(!calendar.requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE"));
-  assert.deepEqual(calendar.cells[0].scenarios, []);
   const openclaw = selectQaMatrix({ OCC_TEST_QA_PRESET: "OpenClaw" });
   assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "console-secrets"]);
   assert.equal(openclaw.repository, false);
@@ -346,11 +338,9 @@ test("hosted QA materializes only selected credentials and rejects missing selec
     env: {
       RUNNER_TEMP: directory,
       GITHUB_ENV: githubEnv,
-      OCC_TEST_QA_SCENARIOS: "model-ui,calendar",
+      OCC_TEST_QA_SCENARIOS: "model-ui,console-secrets",
       OPENAI_API_KEY: "synthetic-model-key",
       CODEX_ACCESS_TOKEN: "synthetic-codex-token",
-      OCC_TEST_CODEX_CALENDAR_TOOL_NAME: "test.calendar.read",
-      OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: "email",
       // Even if a caller supplies unrelated credentials, do not write them.
       SLACK_APP_TOKEN: "unselected-secret",
       REPOSITORY_APP_KEY: "unselected-secret",
@@ -378,13 +368,12 @@ test("hosted QA materializes only selected credentials and rejects missing selec
     env: {
       RUNNER_TEMP: directory,
       GITHUB_ENV: githubEnv,
-      OCC_TEST_QA_SCENARIOS: "calendar",
-      CODEX_ACCESS_TOKEN: "synthetic-codex-token",
-      OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: "email",
+      OCC_TEST_QA_SCENARIOS: "console-secrets",
+      OCC_TEST_QA_PRESET: "Codex",
     },
   });
   assert.notEqual(missing.status, 0);
-  assert.match(missing.stderr, /CALENDAR_TOOL_NAME is required/);
+  assert.match(missing.stderr, /CODEX_ACCESS_TOKEN is required/);
   await assert.rejects(readFile(githubEnv), { code: "ENOENT" });
 });
 
@@ -608,6 +597,184 @@ test("the QA command runner records a failed image build step as redacted eviden
   assert.deepEqual(
     (await readdir(artifacts)).filter((file) => file.includes("image-build-failure")),
     files,
+  );
+});
+
+// Real children distinguish an elapsed command deadline from an ordinary signal exit.
+// Neither private output nor argv may escape through the added timing diagnostics.
+test("QA command failures distinguish deadlines from signal exits without disclosing output", async (t) => {
+  const { runQaCommand } = await import("../helpers/qa-installation.mjs");
+  const directory = await temporaryDirectory(t, "qa-command-timeout-");
+  const f = {
+    directory,
+    stateDirectory: join(directory, "state"),
+    env: { PATH: process.env.PATH },
+  };
+  for (const scenario of [
+    {
+      name: "deadline",
+      command: process.execPath,
+      args: [
+        "-e",
+        "process.on('SIGTERM', () => process.exit(0)); console.error('private-timeout-canary'); setInterval(() => {}, 1000)",
+      ],
+      timeout: 1000,
+      timedOut: true,
+      // A graceful zero exit (or signal before the handler starts) cannot hide a timeout.
+      allowExitCodes: [0, null],
+    },
+    {
+      name: "signal",
+      command: "/bin/sh",
+      args: ["-c", "echo private-timeout-canary >&2; kill -PIPE $$"],
+      timeout: 5000,
+      timedOut: false,
+      signal: "SIGPIPE",
+    },
+  ]) {
+    await t.test(scenario.name, async () => {
+      await assert.rejects(
+        runQaCommand(f, scenario.command, scenario.args, {
+          timeout: scenario.timeout,
+          allowExitCodes: scenario.allowExitCodes,
+          privateFailureOutput: true,
+        }),
+        (error) => {
+          assert.equal(error.timedOut, scenario.timedOut);
+          assert.equal(error.timeoutMs, scenario.timeout);
+          assert.ok(Number.isInteger(error.elapsedMs) && error.elapsedMs >= 0);
+          assert.ok(
+            error.message.includes(`after ${error.elapsedMs} ms (limit ${scenario.timeout} ms)`),
+          );
+          if (scenario.timedOut) {
+            assert.ok(error.elapsedMs >= scenario.timeout);
+            assert.match(error.message, /timed out/);
+          } else {
+            assert.equal(error.signal, scenario.signal);
+            assert.doesNotMatch(error.message, /timed out/);
+          }
+          assert.doesNotMatch(
+            JSON.stringify(error),
+            /private-timeout-canary|process\.on|kill -PIPE/,
+          );
+          assert.doesNotMatch(error.message, /private-timeout-canary|process\.on|kill -PIPE/);
+          assert.equal(error.stdout, undefined);
+          assert.equal(error.stderr, undefined);
+          assert.equal(error.cmd, undefined);
+          return true;
+        },
+      );
+    });
+  }
+  // Explicitly allowed ordinary exits still succeed; timeout classification must not
+  // turn a supported nonzero exit into a failure when no deadline fired.
+  assert.equal(
+    await runQaCommand(
+      f,
+      process.execPath,
+      ["-e", "process.stdout.write('allowed'); process.exit(7)"],
+      {
+        timeout: 5000,
+        allowExitCodes: [7],
+      },
+    ),
+    "allowed",
+  );
+});
+
+test("failed QA startup retains only bounded timing records and respects output protection", async (t) => {
+  const { runQaCommand } = await import("../helpers/qa-installation.mjs");
+  const directory = await temporaryDirectory(t, "qa-startup-timings-");
+  const artifacts = await mkdtemp(join(directory, "artifacts-"));
+  const f = {
+    directory,
+    stateDirectory: join(directory, "state"),
+    env: { PATH: process.env.PATH, OCC_TEST_PRIVATE_INPUT: "private-startup-canary" },
+    async record(name, value) {
+      const file = `kubernetes-${name}.json`;
+      await writeFile(join(artifacts, file), JSON.stringify(value), { flag: "wx" });
+      return file;
+    },
+  };
+  // Only exact records from the CLI's timing protocol may cross into uploaded evidence.
+  // Unknown stages, extra fields, malformed numbers and ordinary output stay private.
+  const lines = [
+    ...Array.from(
+      { length: 65 },
+      (_, i) => `[occ-dev-timing] stage=runtime-build elapsed_ms=${i} failed=false`,
+    ),
+    "[occ-dev-timing] stage=private-startup-canary elapsed_ms=1 failed=false",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=1 failed=false token=private-startup-canary",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=-1 failed=false",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=1.5 failed=false",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=9007199254740992 failed=false",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=1 failed=unknown",
+    "prefix [occ-dev-timing] stage=runtime-build elapsed_ms=1 failed=false",
+    "[occ-dev-timing] stage=kubernetes-readiness elapsed_ms=80 failed=true",
+  ];
+  const write = `process.stdout.write(process.env.OCC_TEST_PRIVATE_INPUT + '\\n' + ${JSON.stringify(lines.join("\n") + "\n")});`;
+  const run = (end, options = {}, installation = f) =>
+    runQaCommand(installation, process.execPath, ["-e", write + end], options);
+
+  // A real child emits timing records, then reaches the command deadline. The evidence
+  // must survive timeout teardown even when the child handles SIGTERM with exit zero.
+  await assert.rejects(
+    run("process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000)", {
+      timeout: 1000,
+      captureStartupTimings: true,
+    }),
+    (error) => {
+      assert.equal(error.timedOut, true);
+      assert.match(error.message, /startup timings: kubernetes-startup-timings-\d+\.json/);
+      assert.doesNotMatch(error.message, /private-startup-canary|process\.stdout/);
+      assert.equal(error.stdout, undefined);
+      return true;
+    },
+  );
+  const files = await readdir(artifacts);
+  assert.equal(files.length, 1);
+  const evidence = await readFile(join(artifacts, files[0]), "utf8");
+  const { records, omittedRecords } = JSON.parse(evidence);
+  assert.equal(records.length, 64);
+  assert.equal(omittedRecords, 2);
+  assert.deepEqual(records[0], { stage: "runtime-build", elapsedMs: 2, failed: false });
+  assert.deepEqual(records.at(-1), { stage: "kubernetes-readiness", elapsedMs: 80, failed: true });
+  assert.ok(Buffer.byteLength(evidence) < 6_000);
+  assert.doesNotMatch(
+    evidence,
+    /private-startup-canary|process\.stdout|token=|prefix|9007199254740992/,
+  );
+
+  // Neither a protected command, an ordinary command, nor an allowed exit writes evidence.
+  for (const options of [{ captureStartupTimings: true, privateFailureOutput: true }, {}]) {
+    await assert.rejects(run("process.exit(7)", options), (error) => {
+      assert.equal(error.code, 7);
+      assert.doesNotMatch(error.message, /startup timings|private-startup-canary/);
+      return true;
+    });
+  }
+  await run("process.exit(7)", { captureStartupTimings: true, allowExitCodes: [7] });
+  assert.deepEqual(await readdir(artifacts), files);
+
+  // Evidence is best effort: a storage failure cannot replace the original command failure
+  // or disclose a storage error's potentially private details.
+  await assert.rejects(
+    run(
+      "process.exit(7)",
+      { captureStartupTimings: true },
+      {
+        ...f,
+        async record() {
+          throw new Error("private-startup-canary");
+        },
+      },
+    ),
+    (error) => {
+      assert.equal(error.code, 7);
+      assert.match(error.message, /startup timings: unavailable/);
+      assert.doesNotMatch(error.message, /private-startup-canary/);
+      return true;
+    },
   );
 });
 
@@ -3401,93 +3568,63 @@ test("a failed reviewed read names the review outcome before the evidence", asyn
   }
 });
 
-test("an automatically reviewed Calendar read runs again once, only after a reviewer error", async (t) => {
-  const { automaticallyReviewedRead } = await import("../helpers/calendar-review.mjs");
-  const reviewerError = Object.assign(
-    new assert.AssertionError({ message: "reviewer errored: {}" }),
-    {
-      automaticReviewerErrored: true,
-      approvalReviewSummary: "reviewer-error: Automatic approval review failed: eof",
+test("QA model failure evidence preserves the failure and its admitted revision", async () => {
+  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const secret = `qa-log-secret-${randomUUID()}`;
+  registerQaSecret(secret);
+  const agent = { namespaceId: "namespace", id: "agent", revision: { id: "original" } };
+  const reads = [];
+  const evidence = [];
+  const failure = new Error("original model assertion");
+  const native = createNativePluginAssertions({
+    // These pages stand in for OCC's already-redacted response. This verifies
+    // the QA collector's additional redaction, not the runtime log API.
+    async readRuntimeLogs(target) {
+      reads.push(target);
+      if (target.source === "agent") {
+        throw new Error("log source unavailable");
+      }
+      return {
+        records: [{ type: "line", level: "error", message: `failure ${secret}`, private: secret }],
+      };
     },
+    async recordRuntimeLogs(record) {
+      evidence.push(record);
+    },
+  });
+  assert.equal(await native.withRuntimeFailureLogs(agent, async () => "passed"), "passed");
+  assert.deepEqual(reads, [], "successful assertions do not collect failure evidence");
+  await assert.rejects(
+    native.withRuntimeFailureLogs(agent, async () => {
+      agent.revision = { id: "replacement" };
+      throw failure;
+    }),
+    (error) => error === failure,
   );
-  const judged = Object.assign(new assert.AssertionError({ message: "judged deny: {}" }), {
-    automaticReviewerErrored: false,
-  });
-  const success = { approvedReviewIds: ["review-ok"] };
-  function fixture(outcomes) {
-    const turns = [];
-    const checks = [];
-    return {
-      turns,
-      checks,
-      async normalGatewayTurn(turn) {
-        turns.push(turn);
-      },
-      async assertSessionToolCallEvidence(agent, options) {
-        checks.push(options);
-        const outcome = outcomes.shift();
-        if (outcome instanceof Error) {
-          throw outcome;
-        }
-        return outcome;
-      },
-    };
-  }
-  const read = (f, logs) =>
-    automaticallyReviewedRead(f, {
-      agent: { id: "agt" },
-      gatewayPassword: "pw",
-      sessionKey: "agent:main:codex-calendar-automatic-fixture",
-      prompt: "read",
-      toolName: "calendar_read",
-      resultPattern: "x",
-      secrets: [],
-      log: (line) => logs.push(line),
-    });
+  assert.deepEqual(reads, [
+    { namespaceId: "namespace", agentId: "agent", revisionId: "original", source: "gateway" },
+    { namespaceId: "namespace", agentId: "agent", revisionId: "original", source: "agent" },
+  ]);
+  assert.equal(evidence.length, 1);
+  assert.equal(evidence[0].revisionId, "original");
+  assert.match(evidence[0].sources[0].lines[0], /failure/);
+  assert.equal(JSON.stringify(evidence).includes(secret), false);
+  assert.equal(JSON.stringify(evidence).includes("private"), false);
+  assert.deepEqual(evidence[0].sources[1], { source: "agent", unavailable: true });
 
-  await t.test("first read passes: one turn", async () => {
-    const f = fixture([success]);
-    const logs = [];
-    assert.equal(await read(f, logs), success);
-    assert.equal(f.turns.length, 1);
-    assert.deepEqual(logs, []);
-    assert.equal(f.checks[0].requireAutomaticReview, true);
+  // Failure to save diagnostics must not replace the original model assertion.
+  const unavailable = createNativePluginAssertions({
+    async readRuntimeLogs() {
+      throw new Error("logs unavailable");
+    },
+    async recordRuntimeLogs() {
+      throw new Error("artifact write failed");
+    },
   });
-  await t.test("reviewer error, then pass: a second turn in the same session", async () => {
-    const f = fixture([reviewerError, success]);
-    const logs = [];
-    assert.equal(await read(f, logs), success);
-    assert.equal(f.turns.length, 2);
-    assert.equal(new Set(f.turns.map((turn) => turn.sessionKey)).size, 1);
-    assert.notEqual(
-      f.checks[0].turnMarker,
-      f.checks[1].turnMarker,
-      "each turn needs a fresh marker",
-    );
-    assert.ok(f.checks.every((check) => check.requireAutomaticReview === true));
-    assert.equal(logs.length, 1);
-    assert.match(
-      logs[0],
-      /automatic reviewer errored .* running the read once more: reviewer-error: Automatic approval review failed: eof$/,
-    );
-  });
-  await t.test("deny judgement: fails without another turn", async () => {
-    const f = fixture([judged, success]);
-    await assert.rejects(read(f, []), (error) => error === judged);
-    assert.equal(f.turns.length, 1);
-  });
-  await t.test("reviewer error twice: the second failure stands", async () => {
-    const second = Object.assign(new assert.AssertionError({ message: "again: {}" }), {
-      automaticReviewerErrored: true,
-    });
-    const f = fixture([reviewerError, second, success]);
-    await assert.rejects(read(f, []), (error) => error === second);
-    assert.equal(f.turns.length, 2);
-  });
-  await t.test("other failures: no retry", async () => {
-    const other = new Error("transcript missing");
-    const f = fixture([other, success]);
-    await assert.rejects(read(f, []), (error) => error === other);
-    assert.equal(f.turns.length, 1);
-  });
+  await assert.rejects(
+    unavailable.withRuntimeFailureLogs(agent, async () => {
+      throw failure;
+    }),
+    (error) => error === failure,
+  );
 });

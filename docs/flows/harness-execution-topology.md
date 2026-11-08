@@ -180,7 +180,11 @@ Sandbox receives projections and login mode through `HarnessWorkloadRequirements
 Compute templates, allow policies and peers require the
 [network profile](../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles); readiness rejects its absence.
 
-For provider-owned Harnesses, `providerHarnessReady` requires exactly one nonterminating `Ready=True` Pod matching the active Service's Agent, Agent revision ID, and role labels. Malformed observations enter cleanup; activation rechecks before routing changes. The [readiness contract](../reference/drivers/kubernetes-compute.md#requirements) owns candidate rules and observation limits.
+`providerHarnessReady` requires one nonterminating `Ready=True` Pod matching the active Service's Agent, revision and role labels. Malformed observations trigger cleanup; activation rechecks before routing. See [candidate rules and observation limits](../reference/drivers/kubernetes-compute.md#requirements).
+
+After authenticated HTTP 101 and accept-key validation,
+`apps/controller/src/drivers/sandbox/openshell-service-transport.ts:serviceWebSocketHandshake`
+sends a masked normal-close frame without a Harness request. Cleanup is bounded.
 
 ### 3. Publish safely and complete activation once
 
@@ -354,6 +358,7 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 ## Changelog
 
 - 2026-11-05 19:30: Link proxy routing (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 324fbad6f248bce4606e175fbb67ac506cd824ff)
+- 2026-11-05 21:24: Trace probe closure. (authoring-run/61309ab1-dd2a-4cb0-99b5-e2a9485fe91f - fdb3fbd93a5295e37ad7814a5197029f2b615346)
 
 - 2026-11-05 14:07: Trace helper specialization. (authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2 - 644b3f9)
 

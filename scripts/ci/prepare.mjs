@@ -20,6 +20,11 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
+import {
+  assertRuntimeArtifactTagAvailable,
+  loadRuntimeArtifact,
+  runtimeArtifactSelection,
+} from "./runtime-artifact.mjs";
 import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
 import { withStateLock } from "./state-lock.ts";
 import { runPostgresAdmin } from "./postgres-admin.mjs";
@@ -804,8 +809,14 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   if (prepare.k3d && name !== "openshell" && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
     assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
   }
-  const openShellGatewayFile =
-    file === "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";
+  const openShellGatewayFile = [
+    "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+    "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+    "tests/integration/openshell-refresh-real.test.ts",
+    "tests/integration/openshell-upstream-real.test.ts",
+    "tests/integration/openshell-credentials-real.test.ts",
+    "tests/integration/openshell-withdrawal-real.test.ts",
+  ].includes(file);
   const openShellApiKey =
     name === "openshell" &&
     ((effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
@@ -860,6 +871,8 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
 // (ci-image-cache.yml) exports it, building with images-packaging's state.
 const imageCacheLanes = new Map([
   ["openshell", { localStore: false }],
+  ["dev-up-k3d", { localStore: false }],
+  ["qa-matrix", { localStore: false }],
   ["images-packaging", { localStore: false }],
   ["images-runtime-startup", { localStore: false }],
   ["images-runtime-startup-2", { localStore: false }],
@@ -1150,10 +1163,12 @@ async function buildRuntimeImages(
     nodeBaseImage = process.env.NODE_BASE_IMAGE,
     localStore = false,
     cacheWarm = false,
+    reuseEngineImages = true,
     revision,
     controllerTarget = "runtime",
     buildConcurrency,
     registryOutput,
+    runtimeArtifact,
   } = {},
 ) {
   // Plain BuildKit progress shows each step's cache hit or duration. The warm job
@@ -1254,6 +1269,9 @@ async function buildRuntimeImages(
   const tagBase =
     registryOutput ?? `localhost/${ownedName("openclaw-ci-image", label, { maxLength: 48 })}`;
   const openclawSource = runtime ? process.env.OCC_K3D_OPENCLAW_SOURCE : undefined;
+  if (runtimeArtifact && (!runtime || registryOutput || cacheWarm || openclawSource)) {
+    throw new Error("A selected runtime artifact requires ordinary runtime image preparation.");
+  }
   if (controller) {
     assertNodeBaseImage(nodeBaseImage);
   }
@@ -1289,47 +1307,62 @@ async function buildRuntimeImages(
   }
   if (runtime) {
     const tag = `${tagBase}/runtime:local`;
-    const sourceArguments =
-      openclawSource === undefined ? openclawBuildArguments(await readOpenclawSource()) : [];
-    builds.push({
-      role: "runtime",
-      tag,
-      args:
-        openclawSource === undefined
-          ? [
-              ...imageBuildArgs(state, "runtime", localStore),
-              ...plainProgress,
-              ...revisionArgs,
-              ...sourceArguments,
-              "--pull=false",
-              "-f",
-              runtimeDockerfile,
-              "-t",
-              tag,
-              repositoryRoot,
-            ]
-          : [
-              "build",
-              ...(localStore && basename(process.env.OCC_DOCKER_BIN ?? "docker") !== "podman"
-                ? ["--builder", "default", "--load"]
-                : []),
-              "--build-arg",
-              "OPENCLAW_DOCKER_BUILD_SKIP_DTS=1",
-              "-t",
-              tag,
-              openclawSource,
-            ],
-      env: {
-        OCC_TEST_RUNTIME_IMAGE: tag,
-        OCC_DOCKER_RUNTIME_IMAGE: tag,
-        OCC_DOCKER_GATEWAY_IMAGE: tag,
-        OCC_DOCKER_AGENT_IMAGE: tag,
-        OCC_TEST_KUBERNETES_RUNTIME_IMAGE: tag,
-        ...(openclawSource === undefined
-          ? {}
-          : { OCC_K3D_OPENCLAW_COMMIT: process.env.OCC_K3D_OPENCLAW_COMMIT }),
-      },
-    });
+    const runtimeEnv = {
+      OCC_TEST_RUNTIME_IMAGE: tag,
+      OCC_DOCKER_RUNTIME_IMAGE: tag,
+      OCC_DOCKER_GATEWAY_IMAGE: tag,
+      OCC_DOCKER_AGENT_IMAGE: tag,
+      OCC_TEST_KUBERNETES_RUNTIME_IMAGE: tag,
+      ...(openclawSource === undefined
+        ? {}
+        : { OCC_K3D_OPENCLAW_COMMIT: process.env.OCC_K3D_OPENCLAW_COMMIT }),
+    };
+    if (runtimeArtifact) {
+      assertRuntimeArtifactTagAvailable(tag);
+      const resource = addResource(state, "image-tag", { name: tag, owner: state.prefix });
+      resources.push(resource);
+      await writeState(statePath, state);
+      const loaded = await loadRuntimeArtifact({ ...runtimeArtifact, tag });
+      try {
+        await markResourceReady(statePath, state, resource);
+        Object.assign(env, runtimeEnv);
+      } finally {
+        await loaded.cleanup();
+      }
+    } else {
+      const sourceArguments =
+        openclawSource === undefined ? openclawBuildArguments(await readOpenclawSource()) : [];
+      builds.push({
+        role: "runtime",
+        tag,
+        args:
+          openclawSource === undefined
+            ? [
+                ...imageBuildArgs(state, "runtime", localStore),
+                ...plainProgress,
+                ...revisionArgs,
+                ...sourceArguments,
+                "--pull=false",
+                "-f",
+                runtimeDockerfile,
+                "-t",
+                tag,
+                repositoryRoot,
+              ]
+            : [
+                "build",
+                ...(localStore && basename(process.env.OCC_DOCKER_BIN ?? "docker") !== "podman"
+                  ? ["--builder", "default", "--load"]
+                  : []),
+                "--build-arg",
+                "OPENCLAW_DOCKER_BUILD_SKIP_DTS=1",
+                "-t",
+                tag,
+                openclawSource,
+              ],
+        env: runtimeEnv,
+      });
+    }
   }
   // Registry output reuses compressed cached layers directly, without loading
   // and recompressing them through the host engine.
@@ -1363,7 +1396,11 @@ async function buildRuntimeImages(
         await rm(entry.metadataFile, { force: true });
       } else {
         // The warm job builds every step so its export has them all.
-        if (cacheWarm || !(await reuseEngineImage(state, entry.role, entry.args, entry.tag))) {
+        if (
+          cacheWarm ||
+          !reuseEngineImages ||
+          !(await reuseEngineImage(state, entry.role, entry.args, entry.tag))
+        ) {
           await build(entry.role, entry.args);
         }
         await markResourceReady(statePath, state, entry.resource);
@@ -2813,6 +2850,22 @@ async function prepareLane({ lane, statePath, file }) {
   ) {
     throw new Error("Selected file must belong to the lane manifest.");
   }
+  const runtimeArtifact = runtimeArtifactSelection(process.env);
+  if (runtimeArtifact) {
+    if (
+      ![
+        "images-packaging",
+        "images-runtime-startup",
+        "images-runtime-startup-2",
+        "images-runtime-startup-3",
+      ].includes(name)
+    ) {
+      throw new Error("Runtime artifacts are supported only by the ordinary image lanes.");
+    }
+    if (process.env.OCC_K3D_OPENCLAW_SOURCE) {
+      throw new Error("A runtime artifact cannot be combined with OCC_K3D_OPENCLAW_SOURCE.");
+    }
+  }
   await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
   const resolvedStatePath = normalizeStatePath(statePath);
   const existingState = await readState(resolvedStatePath);
@@ -2825,6 +2878,32 @@ async function prepareLane({ lane, statePath, file }) {
   state.selectedFile = relativeFile;
   const env = baseEnv(resolvedStatePath, state);
   await writeState(resolvedStatePath, state);
+
+  if (
+    process.env.OCC_CI_IMAGE_CACHE === "1" &&
+    lanePrepare(name).sourceBuildFiles?.includes(relativeFile)
+  ) {
+    // Prime the selected builder, but keep the installer's actual source-build path.
+    // Cache credentials remain in preparation; tests inherit only the builder name.
+    const builder = process.env.BUILDX_BUILDER;
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]+$/.test(builder ?? "")) {
+      throw new Error("Installer image preparation requires its selected job builder.");
+    }
+    await timedPreparation(name, "installer-source-images", () =>
+      buildRuntimeImages(resolvedStatePath, state, {
+        controller: true,
+        runtime: true,
+        nodeBaseImage: effectiveLaneEnv(name, env).NODE_BASE_IMAGE,
+        // These callers build from source next; an engine tag does not populate
+        // the selected builder's layer cache, even if it holds an identical image.
+        reuseEngineImages: false,
+      }),
+    );
+    env.BUILDX_BUILDER = builder;
+    // WORKDIR cache keys include this value; match the preparation build so the
+    // installer reuses its layers instead of rebuilding with an unset epoch.
+    env.SOURCE_DATE_EPOCH = "0";
+  }
 
   switch (name) {
     case "postgres":
@@ -2854,7 +2933,7 @@ async function prepareLane({ lane, statePath, file }) {
         prepareTogether([
           () =>
             timedPreparation(name, "runtime-image-build", () =>
-              buildRuntimeImages(resolvedStatePath, state, { runtime: true }),
+              buildRuntimeImages(resolvedStatePath, state, { runtime: true, runtimeArtifact }),
             ),
           ...(codexSeccomp
             ? [
@@ -2887,6 +2966,7 @@ async function prepareLane({ lane, statePath, file }) {
             buildRuntimeImages(resolvedStatePath, state, {
               controller: true,
               runtime: true,
+              runtimeArtifact,
               nodeBaseImage: effectiveLaneEnv(name, env).NODE_BASE_IMAGE,
             }),
           )
@@ -3188,7 +3268,10 @@ async function prepareLane({ lane, statePath, file }) {
       // These files exercise the installer in their own Local Setup. Preparing a
       // second stack here builds the same images and installs unused services.
       if (lanePrepare(name).selfProvisionedFiles.includes(relativeFile)) {
-        if (process.env.OCC_CI_IMAGE_CACHE === "1") {
+        if (
+          process.env.OCC_CI_IMAGE_CACHE === "1" &&
+          !lanePrepare(name).sourceBuildFiles?.includes(relativeFile)
+        ) {
           await prepareFirstAgentImages(resolvedStatePath, state, env, relativeFile);
         }
         break;
@@ -3421,6 +3504,11 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
       [
         "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
         "tests/integration/openshell-plugin-install-real.test.ts",
+        "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+        "tests/integration/openshell-refresh-real.test.ts",
+        "tests/integration/openshell-upstream-real.test.ts",
+        "tests/integration/openshell-credentials-real.test.ts",
+        "tests/integration/openshell-withdrawal-real.test.ts",
       ].includes(relativeFile)
     ) {
       env.OCC_TEST_OPENSHELL_POLICY_MIGRATION_DATABASE_URL = database.migrationUrl;

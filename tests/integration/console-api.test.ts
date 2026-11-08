@@ -452,6 +452,16 @@ test("the Agent readLogs answer matches what the runtime log read checks", async
   assertApiError(await logRead(), 403, "FORBIDDEN");
   assertApiError(await logRead(readerSession), 403, "FORBIDDEN");
   assert.equal(denials().length, 3);
+  const family = /runtime_logs\.view$/g;
+  family.lastIndex = 7;
+  assert.deepEqual(authorizationDenials(fixture.auditSink, family), denials());
+  assert.equal(family.lastIndex, 7);
+
+  // Sticky patterns must still start at the beginning of each action.
+  const suffix = /runtime_logs\.view$/y;
+  suffix.lastIndex = "openclaw.agents.".length;
+  assert.deepEqual(authorizationDenials(fixture.auditSink, suffix), []);
+  assert.equal(suffix.lastIndex, "openclaw.agents.".length);
 });
 
 test("caller permission summaries report primary IAM decisions without authorizing a later operation", async (t) => {

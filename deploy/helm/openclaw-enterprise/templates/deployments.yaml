@@ -350,6 +350,8 @@ spec:
             {{- include "openclaw.resourceRequirements" (dict "name" "resources" "requirements" $.Values.resources) }}
             {{- toYaml $.Values.resources | nindent 12 }}
           env:
+            - name: OCC_INSTALLATION_SECRET_NAMESPACE
+              value: {{ include "openclaw.installationSecretNamespace" $ | quote }}
             - name: NODE_ENV
               value: production
             {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
