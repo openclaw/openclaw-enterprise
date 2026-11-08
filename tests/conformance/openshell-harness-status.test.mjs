@@ -15,6 +15,8 @@ import {
   NATIVE_WORKER_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellServiceTransportError } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { refusingPort } from "../helpers/available-port.mjs";
@@ -33,6 +35,200 @@ const started = { type: "thread.started", thread_id: "thread" };
 const turnStarted = { type: "turn.started" };
 const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };
 const completed = { type: "turn.completed" };
+
+test("OpenShell PAT readiness requires the serving process's authentication through its exact service", async (t) => {
+  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
+  const directory = temporaryDirectorySync(t, "openshell-pat-status-");
+  const certificate = await selfSigned(directory);
+  const peers = new WebSocketServer({ noServer: true });
+  const requests = [];
+  let answer = { authMethod: null, authToken: null, requiresOpenaiAuth: true };
+  let hold = false;
+  let heldRequest;
+  const gateway = createSecureServer(
+    { key: certificate.key, cert: certificate.cert },
+    (_request, response) => {
+      assert.fail("an upgraded Harness must not receive a plain status request");
+      response.end();
+    },
+  );
+  gateway.on("upgrade", (request, socket, head) => {
+    assert.equal(request.headers.host, "codex.example.test:9443");
+    assert.equal(request.headers.authorization, `Bearer ${TOKEN}`);
+    peers.handleUpgrade(request, socket, head, (peer) => {
+      peers.emit("connection", peer);
+      peer.on("message", (data) => {
+        const message = JSON.parse(data.toString());
+        requests.push(message);
+        if (message.method === "initialize") {
+          peer.send(
+            JSON.stringify({
+              id: message.id,
+              result: {
+                userAgent: "codex/0.164.0",
+                codexHome: "/synthetic",
+                platformFamily: "unix",
+                platformOs: "linux",
+              },
+            }),
+          );
+        } else if (message.method === "getAuthStatus") {
+          if (hold) {
+            heldRequest?.(peer);
+          } else {
+            peer.send(JSON.stringify({ id: message.id, result: answer }));
+          }
+        }
+      });
+    });
+  });
+  const port = await listen(gateway);
+  t.after(async () => {
+    for (const peer of peers.clients) {
+      peer.terminate();
+    }
+    await new Promise((resolve) => peers.close(resolve));
+    await close(gateway);
+  });
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: `https://127.0.0.1:${port}`,
+    rootCertificatePath: certificate.certPath,
+    requestTimeoutMs: 1_000,
+  });
+  t.after(() => client.close());
+  const untrusted = new GrpcOpenShellGatewayClient({
+    endpoint: `https://127.0.0.1:${port}`,
+    requestTimeoutMs: 1_000,
+  });
+  t.after(() => untrusted.close());
+  assert.equal(
+    await untrusted.serviceCodexPatStatus(
+      "https://codex.example.test:9443/",
+      TOKEN,
+      AbortSignal.timeout(5_000),
+    ),
+    "unavailable",
+  );
+  assert.equal(requests.length, 0, "an untrusted peer must receive no RPC");
+  // Only service discovery is controlled. The actual Driver, TLS routing, bearer,
+  // WebSocket codec and native JSON-RPC exchange determine readiness.
+  client.getService = async (_workspace, sandbox, name) => ({
+    sandbox,
+    name,
+    targetPort: 8080,
+    authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
+    url: "https://codex.example.test:9443/",
+    advertisedUrl: "https://codex.example.test:9443/",
+  });
+  const driver = new OpenShellSandboxDriver(
+    {
+      gateway: { workspaceMode: "operator" },
+      kubernetes: {
+        runtimeClassName: "openshell-sandbox",
+        serviceAccount: { mode: "gatewayConfigured" },
+        sandboxDataMount: {
+          subPath: "workspace",
+          mountPath: "/sandbox/enterprise",
+          readOnly: false,
+        },
+      },
+      policy: {
+        process: { runAsUser: "1000", runAsGroup: "1000" },
+        networkPolicies: [
+          {
+            name: "model-egress",
+            endpoints: [{ host: "chatgpt.com", ports: [443] }],
+            binaries: [{ path: "/app/bin/model-client" }],
+          },
+        ],
+      },
+    },
+    {
+      id: "openshell-sandbox",
+      implementation: "openshell",
+      backend: {
+        id: "openshell",
+        drivers: { sandbox: "openshell-sandbox" },
+        client: new OpenShellGateway(
+          { serviceName: "openshell-gateway" },
+          { gatewayClient: client },
+        ),
+      },
+    },
+  );
+  const context = {
+    namespace: {
+      id: "ns_00000000-0000-4000-8000-000000000001",
+      name: "tenant-auth",
+      status: "ready",
+    },
+    revision: {
+      id: "rev_00000000-0000-4000-8000-000000000003",
+      agentId: "agt_00000000-0000-4000-8000-000000000003",
+      sandboxDriverId: driver.id,
+      harness: { id: "codex", mode: "dedicated" },
+      harnessAuth: {
+        method: "credential_source",
+        loginMode: "codex_pat",
+        sourceId: "cs_00000000-0000-4000-8000-000000000001",
+        credentialGatewayId: "openshell-credentials",
+        sourceType: "codex-pat",
+      },
+    },
+    requirements: {
+      loginMode: "codex_pat",
+      environment: [{ name: "APP_SERVER_PORT", value: "8080" }],
+    },
+    transportToken: TOKEN,
+    signal: AbortSignal.timeout(15_000),
+  };
+  // The released process can initialize while PAT hydration has failed. Neither
+  // null auth nor a different/malformed credential status may activate that revision.
+  for (const status of [
+    answer,
+    { ...answer, authMethod: "apiKey" },
+    { ...answer, extra: "x".repeat(20_000) },
+    { authMethod: "personalAccessToken" },
+    { ...answer, authMethod: "personalAccessToken", authToken: "unexpected" },
+  ]) {
+    answer = status;
+    assert.deepEqual(await driver.harnessStatus(context), { state: "starting" });
+  }
+  answer = { authMethod: "personalAccessToken", authToken: null, requiresOpenaiAuth: true };
+  assert.deepEqual(await driver.harnessStatus(context), { state: "serving" });
+  assert.equal(requests.filter(({ method }) => method === "getAuthStatus").length, 6);
+  assert.ok(
+    requests
+      .filter(({ method }) => method === "getAuthStatus")
+      .every(({ params }) => params.includeToken === false && params.refreshToken === false),
+  );
+  assert.ok(
+    requests.every(({ method }) => ["initialize", "initialized", "getAuthStatus"].includes(method)),
+  );
+
+  // A connected but unresponsive process must retain the existing bounded read
+  // and caller cancellation semantics, without spending a model request.
+  hold = true;
+  await assert.rejects(
+    driver.harnessStatus(context),
+    (error) =>
+      error.cause instanceof OpenShellServiceTransportError && error.cause.reason === "timeout",
+  );
+  const cancelled = new AbortController();
+  const reason = new Error("cancelled readiness");
+  const received = new Promise((resolve) => {
+    heldRequest = resolve;
+  });
+  const reading = driver.harnessStatus({ ...context, signal: cancelled.signal });
+  const rejected = assert.rejects(reading, (error) => error === reason);
+  const peer = await received;
+  const closed = once(peer, "close", { signal: context.signal });
+  cancelled.abort(reason);
+  await rejected;
+  const [code] = await closed;
+  assert.equal(code, 1000);
+});
 
 function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
   const directory = mkdtempSync(join(tmpdir(), "openshell-held-failure-"));

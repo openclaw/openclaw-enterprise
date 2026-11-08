@@ -198,9 +198,11 @@ DEPLOYMENT_ID="$(./bin/occ agent deploy "$AGENT_ID" -o json | jq -r .id)"
 Expected result: OCC accepts the deployment and freezes
 `{"method": "credential_source", "sourceId": "cs_…"}` in the version. Compute
 starts the Agent Gateway, then OpenShell creates the Sandbox, and the version
-becomes active once the Harness workspace node connects to the Gateway. Startup
-can take several minutes. Without the access binding, the deploy request fails
-with `403`.
+becomes active after Harness readiness and workspace-node connection. For
+`codex-pat`, readiness also requires [PAT authentication in the serving process](../../reference/drivers/openshell-sandbox/harness-providers.md#harness-observation);
+a successful earlier login check is insufficient. Startup can take several minutes.
+Without the access binding, the deploy request fails with `403`. After activation,
+[verify a real model response](../operate/model-verification.md); readiness does not prove inference.
 
 ## Rotate the key
 
