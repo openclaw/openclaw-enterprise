@@ -4,6 +4,30 @@ import { isDeepStrictEqual } from "node:util";
 import { verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
 import { createNativePluginAssertions } from "./plugin-driver-real.mjs";
 
+const conversationStages = [
+  "execution identity",
+  "target discovery",
+  "gateway identity",
+  "model turn",
+  "persisted reply",
+] as const;
+type ConversationStage = (typeof conversationStages)[number];
+
+class FiniteGitConversationError extends Error {
+  readonly stage: ConversationStage;
+
+  constructor(stage: ConversationStage) {
+    super(`Finite Git conversation verification failed (${stage}).`);
+    this.stage = stage;
+  }
+}
+
+export function finiteGitConversationFailureStage(error: unknown) {
+  return error instanceof FiniteGitConversationError && conversationStages.includes(error.stage)
+    ? error.stage
+    : undefined;
+}
+
 type Agent = { id: string; namespaceId: string; revision: { id: string } };
 type Tuple = { sessionId: string; threadId: string; userSeq: number; assistantSeq: number };
 type Options = { input?: string; timeout?: number };
@@ -48,8 +72,9 @@ export function createFiniteGitConversation({
   const revisionMap = `gateway-${hash(selected.id)}-rev-${hash(selected.revision.id)}`;
   let pinned: ReturnType<typeof identity> | undefined;
   let deadline = 0;
+  let stage: ConversationStage = "execution identity";
   function fail(): never {
-    throw new Error("Finite Git conversation verification failed.");
+    throw new FiniteGitConversationError(stage);
   }
   function remaining() {
     signal.throwIfAborted();
@@ -154,6 +179,8 @@ export function createFiniteGitConversation({
     };
   }
   async function guard(target: ReturnType<typeof identity>) {
+    const previousStage = stage;
+    stage = "gateway identity";
     const pod = JSON.parse(
       await command(["get", "pod", target.name, "--namespace", target.namespace, "-o", "json"]),
     ) as Pod;
@@ -162,6 +189,7 @@ export function createFiniteGitConversation({
       fail();
     }
     pinned = current;
+    stage = previousStage;
   }
   async function exec(target: ReturnType<typeof identity>, args: string[], options?: Options) {
     await guard(target);
@@ -196,6 +224,7 @@ export function createFiniteGitConversation({
     },
   });
   async function checkExecution() {
+    stage = "execution identity";
     remaining();
     if (!isDeepStrictEqual((await readExecution()).identity, originalIdentity)) {
       fail();
@@ -208,6 +237,7 @@ export function createFiniteGitConversation({
     try {
       await checkExecution();
       let observed: ReturnType<typeof identity> | undefined;
+      stage = "target discovery";
       const proof = await verifyFirstAgentModel(
         async (...arguments_: (string | Options)[]) => {
           try {
@@ -256,6 +286,7 @@ export function createFiniteGitConversation({
             ) {
               return fail();
             }
+            stage = "model turn";
             return await exec(observed, args, options);
           } catch {
             // Discovery normally retries errors. Abort this proof instead of hiding a bad target.
@@ -274,6 +305,7 @@ export function createFiniteGitConversation({
           signal: AbortSignal.any([signal, stopped.signal, AbortSignal.timeout(remaining())]),
         },
       );
+      stage = "persisted reply";
       const reply = await reader.readConversationReply(selected, {
         sessionKey: key,
         turnMarker: proof.nonce,
@@ -293,6 +325,7 @@ export function createFiniteGitConversation({
       const alternate = `agent:main:git-withdrawal-${randomUUID()}`;
       const fresh = await turn(alternate, undefined, timeout);
       // Validate the new conversation first, then require the original identity to mismatch.
+      stage = "persisted reply";
       try {
         await reader.readConversationReply(selected, {
           sessionKey: alternate,

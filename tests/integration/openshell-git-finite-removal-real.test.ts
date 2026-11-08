@@ -6,7 +6,10 @@ import { isDeepStrictEqual } from "node:util";
 import type { OpenShellSandboxProviderStatus } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
 import { deployFiniteAgent, observeUntil } from "../helpers/finite-git-agent.ts";
-import { createFiniteGitConversation } from "../helpers/finite-git-conversation.ts";
+import {
+  createFiniteGitConversation,
+  finiteGitConversationFailureStage,
+} from "../helpers/finite-git-conversation.ts";
 import { createOpenShellGitDenial } from "../helpers/openshell-git-denial.mjs";
 import { createOpenShellGitInstallation } from "../helpers/openshell-git-installation.mjs";
 
@@ -542,9 +545,13 @@ test(
         sandboxAbsent: true,
         agentPodsAbsent: true,
       });
-    } catch {
-      // Tool and provider errors can contain private output; retain only the phase.
-      throw new Error(`Finite Git removal acceptance failed (${phase}).`);
+    } catch (error) {
+      // Keep only our fixed stage labels; command errors can contain private data.
+      const stage = finiteGitConversationFailureStage(error);
+      // eslint-disable-next-line preserve-caught-error -- Raw tool errors may contain credentials.
+      throw new Error(
+        `Finite Git removal acceptance failed (${phase}${stage ? `: ${stage}` : ""}).`,
+      );
     }
   },
 );

@@ -3638,6 +3638,112 @@ test("run retains redacted Skill exercise and restoration failures within its me
   );
 });
 
+test("finite conversation failures retain safe stages through the reporter", async (t) => {
+  const root = await fixture(t);
+  const resultsPath = join(root, "results/conversation.json");
+  const statePath = join(root, "state/conversation.json");
+  const helper = new URL("../helpers/finite-git-conversation.ts", import.meta.url).href;
+  // Scripted command responses exercise the real diagnostic producer, not a model or cluster.
+  // The last case reaches the real reply reader only after accepting a synthetic probe result.
+  await writeFile(
+    join(root, "tests/integration/conversation.test.mjs"),
+    `import test from "node:test";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { createFiniteGitConversation, finiteGitConversationFailureStage } from ${JSON.stringify(helper)};
+const agent = { id: "agent", namespaceId: "namespace", revision: { id: "revision" } };
+const hash = (s) => createHash("sha256").update(s).digest("hex").slice(0, 12);
+const pod = {
+  metadata: {
+    name: "gateway", namespace: "tenant", uid: "pod-uid",
+    labels: {
+      "app.kubernetes.io/managed-by": "openclaw-enterprise",
+      "openclaw.dev/workload-role": "gateway",
+      "openclaw.dev/namespace": agent.namespaceId,
+      "openclaw.dev/agent": agent.id,
+    },
+  },
+  spec: {
+    containers: [{ name: "gateway" }],
+    volumes: [{ configMap: { name: "gateway-" + hash(agent.id) + "-rev-" + hash(agent.revision.id) } }],
+  },
+  status: {
+    phase: "Running", conditions: [{ type: "Ready", status: "True" }],
+    containerStatuses: [{ name: "gateway", containerID: "container", imageID: "image", restartCount: 0,
+      state: { running: { startedAt: "2026-01-01T00:00:00Z" } } }],
+  },
+};
+const privateFailure = () => { throw Object.assign(new Error("private-command-data"), {
+  stdout: "private-command-stdout", stderr: "private-command-stderr",
+  cause: new Error("private-command-cause"),
+}); };
+for (const stage of ["execution identity", "target discovery", "gateway identity", "model turn", "persisted reply"]) {
+  test(stage, async () => {
+    const conversation = createFiniteGitConversation({
+      agent, signal: new AbortController().signal, originalIdentity: "original",
+      readExecution: async () => stage === "execution identity" ? privateFailure() : { identity: "original" },
+      kube: async (args, options) => {
+        if (args[0] === "get") {
+          if (stage === "target discovery") return privateFailure();
+          if (args[1] === "namespaces") return JSON.stringify({ items: [{ metadata: { name: "tenant" } }] });
+          if (args[1] === "pods") return JSON.stringify({ items: [pod] });
+          if (stage === "gateway identity") return privateFailure();
+          return JSON.stringify(pod);
+        }
+        if (args[1] === "-i" && stage === "persisted reply") {
+          return JSON.stringify({ nonce: options.input.match(/FIRST_AGENT_[0-9a-f-]+/)[0] });
+        }
+        return privateFailure();
+      },
+    });
+    try { await conversation.turn(undefined, 1000); }
+    catch (error) {
+      assert.equal(finiteGitConversationFailureStage(error), stage);
+      assert.equal(finiteGitConversationFailureStage({ stage, message: error.message }), undefined);
+      assert.equal(finiteGitConversationFailureStage(new Error(error.message)), undefined);
+      assert.equal(error.cause, undefined);
+      throw error;
+    }
+    assert.fail("Expected the selected diagnostic boundary to fail");
+  });
+}
+`,
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { conversation: { files: [{ path: "tests/integration/conversation.test.mjs" }] } },
+    groups: { ci: ["conversation"] },
+  });
+  const result = run(root, [
+    "run",
+    "conversation",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    statePath,
+    "--results",
+    resultsPath,
+  ]);
+  assert.equal(result.status, 1, result.stderr);
+  const summaryText = await readFile(resultsPath, "utf8");
+  const detailText = await readFile(`${statePath}.diagnostics.json`, "utf8");
+  const summary = JSON.parse(summaryText);
+  const details = JSON.parse(detailText).failures[0].tests;
+  assert.equal(summary.files[0].tests.length, 5);
+  for (const failure of summary.files[0].tests) {
+    const message = `Finite Git conversation verification failed (${failure.name}).`;
+    assert.equal(failure.status, "failed");
+    assert.equal(failure.error.message, message);
+    assert.equal(details.find((entry) => entry.name === failure.name).message, message);
+  }
+  assert.doesNotMatch(
+    `${summaryText}\n${detailText}\n${result.stdout}\n${result.stderr}`,
+    /private-command-/,
+  );
+});
+
 test("the reporter sends interrupted tests and the output tail, newest first, on a timeout", async () => {
   const { default: reporter } = await import("../../scripts/ci/reporter.mjs");
   const render = async (events) => {

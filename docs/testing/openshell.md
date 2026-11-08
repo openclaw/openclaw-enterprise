@@ -84,6 +84,12 @@ Agent's authorized Git use after worker replacement. Local fixture, receipt and
 source checks do not establish installed acceptance: retain the selected image
 digests, case result and cleanup evidence from an actual matched-image run.
 
+Conversation failures in the finite-removal and two-Agent cases identify the
+failed check: `execution identity`, `target discovery`, `gateway identity`,
+`model turn`, or `persisted reply`. These fixed labels identify where verification
+stopped, not its root cause. Raw command arguments, output, and error causes
+remain withheld.
+
 ## Codex plugin installation
 
 The `plugin-install` QA scenario deploys a dedicated Codex Agent with the selected

@@ -11,7 +11,10 @@ import { verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
 import { deployFiniteAgent, observeUntil } from "../helpers/finite-git-agent.ts";
 import { createOpenShellGitInstallation } from "../helpers/openshell-git-installation.mjs";
-import { createFiniteGitConversation } from "../helpers/finite-git-conversation.ts";
+import {
+  createFiniteGitConversation,
+  finiteGitConversationFailureStage,
+} from "../helpers/finite-git-conversation.ts";
 import { createOpenShellGitDenial } from "../helpers/openshell-git-denial.mjs";
 
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
@@ -572,9 +575,13 @@ test(
         status: 503,
         targetedRetirementRefusals: finalOrigin.targetedRetirementRefusals,
       });
-    } catch {
-      // Command failures can contain private argv, HTTP data, or workload output.
-      throw new Error(`Finite Git withdrawal verification failed (${phase}).`);
+    } catch (error) {
+      // Keep only our fixed stage labels; command errors can contain private data.
+      const stage = finiteGitConversationFailureStage(error);
+      // eslint-disable-next-line preserve-caught-error -- Raw tool errors may contain credentials.
+      throw new Error(
+        `Finite Git withdrawal verification failed (${phase}${stage ? `: ${stage}` : ""}).`,
+      );
     }
   },
 );
