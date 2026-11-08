@@ -280,12 +280,13 @@ intended protected directory containing your prepared `values.yaml`,
 
 Run this block before provisioning the password profile. If it fails, correct the
 named check before continuing. After the directory check, each run invalidates
-the previous render. Image, claim, and manifest-path exports are set only after
-every check succeeds:
+the previous render. Image, claim, database CA, and manifest-path exports are set
+only after every check succeeds:
 
 ```bash
 {
   unset CONTROLLER_IMAGE BOOTSTRAP_CLAIM OCC_RENDERED_MANIFEST
+  unset DATABASE_CA_SECRET DATABASE_CA_KEY
   OCC_RENDER_TEMP=
   if
     OCC_VALIDATION_STEP='input directory setup: set OCC_INPUT_DIRECTORY to the intended existing directory with all three prepared YAML files' &&
@@ -328,6 +329,10 @@ every check succeeds:
       >"$OCC_RENDER_TEMP" &&
     OCC_VALIDATION_STEP='controller image extraction' &&
     CONTROLLER_IMAGE="$(yq e -e -r '.images.controller' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
+    OCC_VALIDATION_STEP='database CA Secret extraction' &&
+    DATABASE_CA_SECRET="$(yq e -r '.database.caSecretName // ""' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
+    OCC_VALIDATION_STEP='database CA key extraction' &&
+    DATABASE_CA_KEY="$(yq e -r '.database.caKey // "ca.pem"' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
     OCC_VALIDATION_STEP='bootstrap claim extraction' &&
     OCC_BOOTSTRAP_CLAIM_JSON="$(yq e -e -o=json -I=0 '.bootstrap.password.claimName | select(tag == "!!str" and length > 0)' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
     OCC_VALIDATION_STEP='bootstrap claim match' &&
@@ -342,9 +347,11 @@ every check succeeds:
   then
     OCC_RENDERED_MANIFEST="$OCC_INPUT_DIRECTORY/rendered.yaml"
     export CONTROLLER_IMAGE BOOTSTRAP_CLAIM OCC_RENDERED_MANIFEST
+    export DATABASE_CA_SECRET DATABASE_CA_KEY
     unset OCC_VALIDATION_STEP OCC_BOOTSTRAP_CLAIM_JSON OCC_EXPECTED_BOOTSTRAP_CLAIM OCC_RENDER_TEMP
   else
     unset CONTROLLER_IMAGE BOOTSTRAP_CLAIM OCC_RENDERED_MANIFEST
+    unset DATABASE_CA_SECRET DATABASE_CA_KEY
     if [ -n "$OCC_RENDER_TEMP" ]; then rm -f -- "$OCC_RENDER_TEMP"; fi
     printf 'Installation check failed: %s; stop before provisioning.\n' "$OCC_VALIDATION_STEP" >&2
     unset OCC_VALIDATION_STEP OCC_BOOTSTRAP_CLAIM_JSON OCC_EXPECTED_BOOTSTRAP_CLAIM OCC_RENDER_TEMP
@@ -384,8 +391,6 @@ chmod 600 /secure/occ/occ-application-url /secure/occ/occ-migration-url \
   /secure/occ/occ-auth-secret
 test -s /secure/occ/occ-application-url
 test -s /secure/occ/occ-migration-url
-export DATABASE_CA_SECRET="$(yq e -r '.database.caSecretName // ""' "$OCC_INPUT_DIRECTORY/values.yaml")"
-export DATABASE_CA_KEY="$(yq e -r '.database.caKey // "ca.pem"' "$OCC_INPUT_DIRECTORY/values.yaml")"
 if [ -n "$DATABASE_CA_SECRET" ]; then
   chmod 600 /secure/occ/occ-database-ca.pem
   test -s /secure/occ/occ-database-ca.pem
@@ -421,9 +426,9 @@ both files to use the generated Service DNS name.
 Run this whole block only if you have not attempted any of the Secret creates
 below. If you have already attempted a create, follow the recovery instructions
 after the block. Use the Bash shell where validation succeeded and the Secret
-inputs were prepared. In a new shell, restore the input-directory setup, rerun
-validation, and reload `DATABASE_CA_SECRET` and `DATABASE_CA_KEY` from the intended
-`values.yaml` using the two exports above. Recheck the prepared protected inputs,
+inputs were prepared. In a new shell, restore the input-directory setup and rerun
+validation, which also loads `DATABASE_CA_SECRET` and `DATABASE_CA_KEY` from the
+intended `values.yaml`. Recheck the prepared protected inputs,
 including the CA file when configured. Keep the existing auth secret. Both server
 dry runs must succeed before the block creates Secrets.
 
@@ -461,9 +466,9 @@ unknown, verify which Secrets exist in `openclaw-system` on the reviewed cluster
 Resolve uncertain writes before resuming. Do not repeat confirmed successful
 creates.
 
-If you change any of the three prepared YAML files, rerun validation and reload
-`DATABASE_CA_SECRET` and `DATABASE_CA_KEY` from the intended `values.yaml` using
-the two exports above. Recheck the protected inputs, including the CA file when
+If you change any of the three prepared YAML files, rerun validation before
+continuing; it reloads the CA settings from the intended `values.yaml`. Do not
+reuse the previous CA selection. Recheck the protected inputs, including the CA file when
 its settings change. Keep the existing auth secret. Before repeating dry runs or
 any remaining creates, verify that previously created Secrets match the intended
 inputs and resolve any mismatch within the authorized change scope. When resuming
