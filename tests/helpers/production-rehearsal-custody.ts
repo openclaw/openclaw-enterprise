@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 type CommandOptions = {
   cwd?: string;
@@ -272,6 +273,11 @@ export function writeFixtureObject(
     input: JSON.stringify(object),
     protectedInput: object.kind === "Secret",
   });
+}
+
+export function assertProtectedEqual(actual: unknown, expected: unknown, label: string) {
+  // Node's deep assertion errors retain both operands, including nested secrets.
+  assert.ok(isDeepStrictEqual(actual, expected), label);
 }
 
 export function protectedJSON<T>(text: string): T {

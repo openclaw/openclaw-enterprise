@@ -70,11 +70,12 @@ explicitly while writers are stopped; the recovery command does not delete them.
 It checks absence before recording recovery, immediately before rollback, after
 rollback and on resume. Read failures do not count as absence.
 
-For same-name init/main containers, retired environment entries must be absent
-before rollback. Changed entries that remain may still have their old values:
+Retired regular/init container placements and environment entries in retained
+containers must be absent before rollback. Changed entries that remain may still have their old values:
 Helm can update those. After rollback and on resume, all changed environment
 selections must match the candidate. These checks cover whole-resource and
-environment removals; they do not implement arbitrary future chart merge rules.
+environment or container-placement removals; they do not implement arbitrary
+future chart merge rules.
 Review other structural chart changes during resource reconciliation.
 
 Changed ordinary resource specs outside the chart's native groups (`v1`, `apps`,

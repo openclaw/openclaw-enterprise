@@ -6284,6 +6284,51 @@ for (const [stage, read, rollbacks] of [
   });
 }
 
+test("same-candidate recovery refuses a retired regular worker placement", async (t) => {
+  const f = await fixture(t, { recoveryHooks: true });
+  // Chart change 24ae029557 moves the broker-enabled worker to a restartable
+  // init container. A same-candidate patch cannot remove its old placement.
+  const worker = { name: "worker", image: controller, args: ["apps/controller/src/worker.mjs"] };
+  const previous = {
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: { name: "broker-worker", namespace: "system" },
+    spec: { template: { spec: { containers: [worker] } } },
+  };
+  const candidate = structuredClone(previous);
+  candidate.spec.template.spec = {
+    initContainers: [{ ...worker, restartPolicy: "Always" }],
+    containers: [{ name: "repository-credentials", image: controller }],
+  };
+  const initial = await f.state();
+  initial.recoveryBaselineResources = [previous];
+  initial.recoveryCandidateResources = [candidate];
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(initial));
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  const pending = await completedHookInPendingRelease(f);
+  const podSpec = pending.recoveryResources["Deployment/broker-worker"].spec.template.spec;
+  podSpec.containers.push(worker);
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
+  await assert.rejects(f.run(...recoverHelm), /retired container placement still exists/);
+  assert.equal((await f.state()).rollbackSubmissions, undefined);
+  assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+  podSpec.containers.pop();
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
+  await f.failNext("fail-rollout-api");
+  await assert.rejects(f.run(...recoverHelm), injectedFault);
+  const acknowledged = await f.state();
+  const live = acknowledged.recoveryResources["Deployment/broker-worker"].spec.template.spec;
+  live.containers.push(worker);
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(acknowledged));
+  await assert.rejects(f.run("--resume"), /retired container placement still exists/);
+  assert.equal(existsSync(join(f.evidence, "completed")), false);
+  live.containers.pop();
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(acknowledged));
+  await f.run("--resume");
+  assert.equal((await f.state()).rollbackSubmissions, 1);
+});
+
 test("same-candidate recovery requires changed custom-resource specs already reconciled", async (t) => {
   const f = await fixture(t, { recoveryHooks: true });
   // The real EnvoyProxy shape added node placement in chart change 78131ffa33.

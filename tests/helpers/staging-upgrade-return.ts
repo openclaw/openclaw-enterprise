@@ -4,10 +4,10 @@ import assert from "node:assert/strict";
 import { chmod, copyFile, lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isDeepStrictEqual } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { ProductionTuiRequestError } from "./production-tui-request.ts";
 import {
+  assertProtectedEqual,
   protectedJSON,
   type FixtureRun,
   type LocalRehearsalCluster,
@@ -1175,8 +1175,9 @@ export async function rehearsePopulatedReturn({
             job: await get(`job/${release}-initialization`),
             pod: completedPod,
           });
-          assert.ok(
-            isDeepStrictEqual(await helmStatus(), pending),
+          assertProtectedEqual(
+            await helmStatus(),
+            pending,
             "pending Helm state changed during initialization",
           );
         } finally {
@@ -1241,7 +1242,7 @@ export async function rehearsePopulatedReturn({
           /predecessor-only resource still exists/u.test(await readFile(refusalPath, "utf8")),
           "recovery did not report the retained policy; inspect the private refusal log",
         );
-        assert.ok(isDeepStrictEqual(await helmStatus(), pending), "pending Helm release changed");
+        assertProtectedEqual(await helmStatus(), pending, "pending Helm release changed");
         await assert.rejects(lstat(join(evidence, "helm-recovery")), { code: "ENOENT" });
         assert.deepEqual(await get(`networkpolicy/${retiredPolicyName}`), retiredPolicy);
         // This is explicit fixture-owned reconciliation, not product deletion.
@@ -1295,7 +1296,7 @@ export async function rehearsePopulatedReturn({
           /live environment differs/u.test(await readFile(envRefusalPath, "utf8")),
           "recovery did not report the retained environment; inspect the private refusal log",
         );
-        assert.ok(isDeepStrictEqual(await helmStatus(), pending), "pending Helm release changed");
+        assertProtectedEqual(await helmStatus(), pending, "pending Helm release changed");
         await assert.rejects(lstat(join(evidence, "helm-recovery")), { code: "ENOENT" });
         const stoppedAPI = await get("deployment/openclaw-enterprise-api");
         const quiescedAPI = JSON.parse(
@@ -1347,13 +1348,15 @@ export async function rehearsePopulatedReturn({
         assert.equal(recovered.info.status, "deployed");
         assert.equal(recovered.info.description, `Rollback to ${baselineRelease.version + 1}`);
         for (const field of ["manifest", "config", "hooks"]) {
-          assert.ok(
-            isDeepStrictEqual(recovered[field], pending[field]),
+          assertProtectedEqual(
+            recovered[field],
+            pending[field],
             `recovery changed candidate ${field}`,
           );
         }
-        assert.ok(
-          (await readFile(join(evidence, "helm-started"), "utf8")) === intent,
+        assertProtectedEqual(
+          await readFile(join(evidence, "helm-started"), "utf8"),
+          intent,
           "recovery rewrote the original submission",
         );
         assert.equal(
@@ -1363,8 +1366,9 @@ export async function rehearsePopulatedReturn({
         );
         const retainedPod = await get(`pod/${completedPod.metadata.name}`);
         assert.equal(retainedPod.metadata.uid, completedPod.metadata.uid);
-        assert.ok(
-          isDeepStrictEqual(retainedPod.status, completedPod.status),
+        assertProtectedEqual(
+          retainedPod.status,
+          completedPod.status,
           "recovery changed the completed initializer",
         );
         assert.equal(
@@ -1382,8 +1386,9 @@ export async function rehearsePopulatedReturn({
   await custody.bindRelease(candidateRelease.version);
   const recoveredStartupSecret = await startupSecret();
   assert.equal(recoveredStartupSecret.metadata.uid, initialStartupSecret.metadata.uid);
-  assert.ok(
-    isDeepStrictEqual(recoveredStartupSecret.data, initialStartupSecret.data),
+  assertProtectedEqual(
+    recoveredStartupSecret.data,
+    initialStartupSecret.data,
     "recovery changed the retained Installation configuration",
   );
   const candidatePods = await controlPlane(candidate, originalDatabase);

@@ -255,7 +255,7 @@ def verify_custom_specs(resources, kubeconfig, context, namespace):
                 "changed custom-resource spec is not reconciled to the candidate")
 
 
-def environment_changes(submission, candidate, namespace):
+def workload_changes(submission, candidate, namespace):
     previous = {resource_key(item, namespace): item for item in
                 documents(submission["predecessor"]["manifest"].encode())}
     changes = []
@@ -264,6 +264,9 @@ def environment_changes(submission, candidate, namespace):
         for field in ("containers", "initContainers"):
             old_containers = old.get("spec", {}).get("template", {}).get("spec", {}).get(field, [])
             new_containers = resource.get("spec", {}).get("template", {}).get("spec", {}).get(field, [])
+            for container in old_containers:
+                if not any(item["name"] == container["name"] for item in new_containers):
+                    changes.append((resource, field, container["name"], None))
             for container in new_containers:
                 prior = next((item for item in old_containers if item["name"] == container["name"]), None)
                 if prior is None:
@@ -279,14 +282,18 @@ def environment_changes(submission, candidate, namespace):
     return changes
 
 
-def verify_environment(changes, kubeconfig, context, namespace, retired_only=False):
+def verify_workload_changes(changes, kubeconfig, context, namespace, retired_only=False):
     for resource, field, container_name, selections in changes:
-        selected = {name: value for name, value in selections.items() if not retired_only or value is None}
-        if not selected:
+        selected = None if selections is None else {
+            name: value for name, value in selections.items() if not retired_only or value is None}
+        if selected == {}:
             continue
         actual_resource = get_resource(resource, kubeconfig, context, namespace)
         containers = actual_resource.get("spec", {}).get("template", {}).get("spec", {}).get(field, [])
         matches = [item for item in containers if item["name"] == container_name]
+        if selected is None:
+            require(not matches, "retired container placement still exists; reconcile before recovery")
+            continue
         require(len(matches) == 1, "changed environment container is missing or ambiguous")
         entries = matches[0].get("env", [])
         actual = {item["name"]: item for item in entries}
@@ -402,11 +409,11 @@ def recover(directory, release, kubeconfig, context, namespace):
             "only the original interrupted candidate can be recovered")
     ordinary, hooks = release_matches(before, root / "rendered.yaml", root / "values.yaml", release, namespace)
     removed = predecessor_only(submission, before, namespace)
-    changed_env = environment_changes(submission, before, namespace)
+    changed_workloads = workload_changes(submission, before, namespace)
     custom_specs = changed_custom_specs(submission, before, namespace)
     require_absent(removed, kubeconfig, context, namespace)
     verify_custom_specs(custom_specs, kubeconfig, context, namespace)
-    verify_environment(changed_env, kubeconfig, context, namespace, retired_only=True)
+    verify_workload_changes(changed_workloads, kubeconfig, context, namespace, retired_only=True)
     observed = []
     for desired in [*ordinary, *hooks]:
         actual = get(desired)
@@ -488,7 +495,7 @@ def recover(directory, release, kubeconfig, context, namespace):
                 "a recovery resource changed during admission; reconcile without replay")
     require_absent(removed, kubeconfig, context, namespace)
     verify_custom_specs(custom_specs, kubeconfig, context, namespace)
-    verify_environment(changed_env, kubeconfig, context, namespace, retired_only=True)
+    verify_workload_changes(changed_workloads, kubeconfig, context, namespace, retired_only=True)
     # Stock rollback runs rollback-event hooks only. release_matches refused
     # those events, so this exact candidate has no hooks to suppress or rerun.
     with (target / "rollback.log").open("xb") as output:
@@ -511,7 +518,7 @@ def recover(directory, release, kubeconfig, context, namespace):
                 "a recovery resource was replaced; reconcile manually")
     require_absent(removed, kubeconfig, context, namespace)
     verify_custom_specs(custom_specs, kubeconfig, context, namespace)
-    verify_environment(changed_env, kubeconfig, context, namespace)
+    verify_workload_changes(changed_workloads, kubeconfig, context, namespace)
     write_json(target / "acknowledged.json", {"intentSha256": sha(read(target / "intent.json")),
                                                "release": after})
 
@@ -537,7 +544,7 @@ def verify_recovery(directory, release, kubeconfig, context, namespace):
             "live Helm revision differs from the acknowledged recovery")
     release_matches(current, root / "rendered.yaml", root / "values.yaml", release, namespace)
     require_absent(predecessor_only(submission, before, namespace), kubeconfig, context, namespace)
-    verify_environment(environment_changes(submission, before, namespace), kubeconfig, context, namespace)
+    verify_workload_changes(workload_changes(submission, before, namespace), kubeconfig, context, namespace)
     verify_custom_specs(changed_custom_specs(submission, before, namespace), kubeconfig, context, namespace)
     for observed in intent["observedResources"]:
         api_version, kind, resource_namespace, name = observed["key"]
