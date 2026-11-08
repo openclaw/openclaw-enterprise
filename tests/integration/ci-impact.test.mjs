@@ -1856,6 +1856,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
   assert.deepEqual(
     [
       "runtime-image-fixture",
+      ...JSON.parse(read("scripts/ci/full-integration-lanes.json")).map((row) => row.lane),
       ...matrixLanes(read(".github/workflows/full-integration.yml")),
     ].sort(),
     [...expectedFullLanes, "k3d-observability-demo"].sort(),
