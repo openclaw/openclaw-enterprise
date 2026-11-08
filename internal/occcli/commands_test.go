@@ -1756,7 +1756,7 @@ func TestFirstDeploymentRecoveryMissWithClosedStderr(t *testing.T) {
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"data":null,"meta":{"requestId":"test"}}`))
+				_, _ = w.Write([]byte(`{"data":null,"meta":{"requestId":"req_00000000-0000-4000-8000-000000000001"}}`))
 			}))
 			t.Cleanup(server.Close)
 			caBundle := filepath.Join(t.TempDir(), "ca.pem")
