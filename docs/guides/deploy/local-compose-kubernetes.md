@@ -88,6 +88,8 @@ gatewayRouting:
     - "<k3d node IP>/32"
 ```
 
+List only the remote source addresses. The chart refuses a range with a `/0` prefix, such as `0.0.0.0/0`.
+
 Render and inspect the resource kinds before applying. There must be no OCC Deployment or PostgreSQL workload in this output:
 
 ```bash
