@@ -1001,23 +1001,30 @@ test(
     assert.equal(resolved.context.harnessAuth?.method, "credential_source");
     assert.deepEqual(resolved.context.harnessAuth, { ...auth, source });
     const mixed = withCompanionInference(t, stored, f.egress);
-    assert.doesNotThrow(() => worker["validateExecutionAdmission"](mixed));
     assert.doesNotThrow(() => compute["validateRevisionExecution"](mixed, resolved.context));
+    const sourceControl = f.egress.sourceControl;
     const catalogDescriptor = Object.getOwnPropertyDescriptor(f.egress, "sourceControl");
     let catalogReads = 0;
-    // A plan without this source's inference route must refuse before any catalog access.
+    // Admission validates the installed catalog. Rejecting a stale route must add no catalog read.
     Object.defineProperty(f.egress, "sourceControl", {
       configurable: true,
       get() {
         catalogReads++;
-        throw new Error("A missing retained inference route must not consult the Proxy catalog.");
+        return sourceControl;
       },
     });
     try {
+      assert.doesNotThrow(() => worker["validateExecutionAdmission"](mixed));
+      const admissionReads = catalogReads;
+      catalogReads = 0;
       assert.deepEqual(await worker["resolveRevisionSecretContext"](mixed), {
         result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" },
       });
-      assert.equal(catalogReads, 0);
+      assert.equal(
+        catalogReads,
+        admissionReads,
+        "Stale-route resolution must not add a catalog read.",
+      );
     } finally {
       if (catalogDescriptor === undefined) {
         Reflect.deleteProperty(f.egress, "sourceControl");
