@@ -5698,6 +5698,7 @@ test("first-Agent command timing pairs runtime outcomes before CI projection", a
     outcome + "signaled",
     "[occ-dev-timing] stage=controller-build elapsed_ms=5 failed=true",
     outcome + "signaled",
+    "[occ-dev-startup] primary_stage=routing cleanup_failed=true parent_context_done=false",
   ];
   await writeFile(
     join(root, "bin/occ"),
@@ -5735,6 +5736,11 @@ test("a failed local setup reports only paired outcomes", async (t) => {
   delete process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
   delete process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
   await assert.rejects(localFirstAgentStack(t), /Start Local Setup exited with status 23/);
+  t.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ kind: "local-first-agent-startup-failure", primaryStage: "private-outcome-canary", cleanupFailed: true, parentContextDone: false }));
+  t.diagnostic('openclaw-ci-measurement {"kind":"local-first-agent-startup-failure","private-outcome-canary":');
+  t.diagnostic('openclaw-ci-measurement private-outcome-canary');
+  t.diagnostic("ordinary setup diagnostic survives");
+  throw new Error("setup failed");
 });
 `,
   );
@@ -5755,7 +5761,7 @@ test("a failed local setup reports only paired outcomes", async (t) => {
     "--results",
     resultsPath,
   ]);
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 1, result.stderr);
   const artifact = await readFile(resultsPath, "utf8");
   const measurements = JSON.parse(artifact).files[0].measurements;
   assert.deepEqual(
@@ -5781,7 +5787,123 @@ test("a failed local setup reports only paired outcomes", async (t) => {
       },
     ],
   );
-  assert.doesNotMatch(artifact, /private-outcome-canary|invented-fixture-input/);
+  assert.deepEqual(
+    measurements.filter(({ kind }) => kind === "local-first-agent-startup-failure"),
+    [
+      {
+        kind: "local-first-agent-startup-failure",
+        primaryStage: "routing",
+        cleanupFailed: true,
+        parentContextDone: false,
+      },
+    ],
+  );
+  const diagnostics = await readFile(
+    join(root, "state/runtime-outcomes.jsonl.diagnostics.json"),
+    "utf8",
+  );
+  assert.doesNotMatch(artifact + diagnostics, /private-outcome-canary|invented-fixture-input/);
+  assert.match(diagnostics, /ordinary setup diagnostic survives/);
+});
+
+test("startup observations require one terminal record from a failed dev-up", async (t) => {
+  const root = await fixture(t);
+  await mkdir(join(root, "bin"));
+  await mkdir(join(root, "tests/helpers"));
+  await writeFile(
+    join(root, "tests/helpers/local-first-agent-stack.mjs"),
+    await readFile(join(repositoryRoot, "tests/helpers/local-first-agent-stack.mjs")),
+  );
+  const record =
+    "[occ-dev-startup] primary_stage=routing cleanup_failed=true parent_context_done=false\n";
+  await writeFile(
+    join(root, "bin/occ"),
+    `#!${process.execPath}
+const record = ${JSON.stringify(record)};
+const scenario = process.env.OCC_FIXTURE_STARTUP_CASE;
+if (process.argv[3] === "down") {
+  process.stdout.write(record);
+  process.exit(1);
+}
+if (scenario === "stderr") process.stderr.write(record);
+else if (scenario === "duplicate") process.stdout.write(record + record);
+else if (scenario === "malformed") process.stdout.write(record + "[occ-dev-startup] invalid\\n");
+else if (scenario === "early") process.stdout.write(record + "later operation\\n");
+else if (scenario === "truncated") process.stdout.write("[occ-dev-startup\\n" + record);
+else if (scenario === "incomplete") process.stdout.write(record.trimEnd());
+else if (scenario === "overflow") process.stdout.write("x".repeat(4097) + "\\n" + record);
+else process.stdout.write(record);
+if (scenario === "signal") process.kill(process.pid, "SIGTERM");
+else process.exitCode = scenario === "success" ? 0 : 23;
+`,
+    { mode: 0o700 },
+  );
+  const path = "tests/integration/startup-intake.test.mjs";
+  // Real subprocesses exercise both the streaming runner and execFile's error
+  // envelope, used by the installed refusal caller. No cluster is started.
+  await writeFile(
+    join(root, path),
+    `
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { syncBuiltinESMExports } from "node:module";
+import net from "node:net";
+import test from "node:test";
+net.createServer = () => ({ once() {}, listen(_address, ready) { ready(); }, address() { return { port: 3000 }; }, close(done) { done(); } });
+syncBuiltinESMExports();
+const { localFirstAgentStack, startupFailureObservation } = await import("../helpers/local-first-agent-stack.mjs");
+test("reject ambiguous or non-failure startup records", async (t) => {
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL = "1";
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "compose";
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "none";
+  process.env.OPENAI_API_KEY = "invented-fixture-input";
+  delete process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
+  delete process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
+  for (const scenario of ["stderr", "duplicate", "malformed", "early", "truncated", "incomplete", "overflow", "signal", "success"]) {
+    process.env.OCC_FIXTURE_STARTUP_CASE = scenario;
+    if (scenario === "success") await localFirstAgentStack(t);
+    else await assert.rejects(localFirstAgentStack(t), /Start Local Setup/);
+  }
+  process.env.OCC_FIXTURE_STARTUP_CASE = "valid";
+  await assert.rejects(promisify(execFile)(${JSON.stringify(join(root, "bin/occ"))}, ["dev", "up"]), (error) => {
+    const observation = startupFailureObservation();
+    // Deliberately split the genuine stdout across every boundary.
+    for (const character of error.stdout) observation.write(character);
+    assert.deepEqual(observation.finish(error.code, error.signal, error.killed), {
+      kind: "local-first-agent-startup-failure", primaryStage: "routing", cleanupFailed: true, parentContextDone: false,
+    });
+    return true;
+  });
+});
+`,
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { intake: { files: [{ path }] } },
+    groups: { ci: ["intake"] },
+  });
+  const results = join(root, "results/intake.json");
+  const result = run(root, [
+    "run",
+    "intake",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    "state/intake.jsonl",
+    "--results",
+    results,
+  ]);
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const artifact = JSON.parse(await readFile(results, "utf8"));
+  assert.deepEqual(
+    artifact.files[0].measurements.filter(
+      ({ kind }) => kind === "local-first-agent-startup-failure",
+    ),
+    [],
+  );
 });
 
 test("run records only allowlisted measurements from test diagnostics", async (t) => {

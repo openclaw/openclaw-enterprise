@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
 updated: 2026-11-08
-last_updated_session: authoring-run/303c3a8b-1e62-44ed-b31f-e7ab26a94c0f
+last_updated_session: authoring-run/47fd7930-a5df-419c-91d9-0d56b7476cc0
 ---
 
 # Container publication flow
@@ -134,8 +134,14 @@ can use stale indexes.
 digest. `scripts/build-runtime-assets.mjs:inventory` verifies that digest against
 its running executable before adding `node` to final runtime provenance. The
 startup image test compares this record with the selected checkout and the
-installed executable. Native image qualification still includes the packaged
-Gateway restart tests; a standalone Node regression does not replace them.
+installed executable. Native qualification also requires packaged Gateway restart tests.
+
+`deploy/runtime/Dockerfile` and
+`deploy/runtime/repository-credentials/Dockerfile.client` retry pinned GitHub CLI
+archive and manifest downloads at most six times, including partial transfers
+and permanent errors; exhaustion fails the build. Curl resets partial files.
+Both checksums must pass before extraction or execution: the pinned manifest
+digest, then its archive checksum. Checksum failures are not retried.
 
 Publication builds use the default package registries. Operators building from
 source can [configure a package registry mirror](../guides/deploy/production-installation.md#build-through-a-package-registry-mirror)
@@ -305,6 +311,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-08 11:56: Retry partial GitHub CLI downloads without weakening checksum verification. (authoring-run/47fd7930-a5df-419c-91d9-0d56b7476cc0 - 4566d20b8ef66a3268e27bceac946765ecd5d336)
 
 - 2026-11-08 10:25: Integrate Node termination repair with current source verification and strict package-index refresh. (authoring-run/303c3a8b-1e62-44ed-b31f-e7ab26a94c0f - 0d828be256d49c5cad9f57a25d716e472347ec6b)
 
