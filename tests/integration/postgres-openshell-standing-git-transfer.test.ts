@@ -30,7 +30,7 @@ import {
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
 import { invoke, token } from "../helpers/openshell-online-wire.mjs";
-import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
 import { clockBehind, preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
 import {
@@ -94,12 +94,11 @@ test(
   { ...requiresPostgres, timeout: 385_000 },
   async (t) => {
     let peer!: Awaited<ReturnType<typeof preparedStandingGitPeer>>;
-    const issuanceReader = testPool(t, { connectionString: databaseUrl, max: 1 });
     const activeAtIssuance: (string | null)[] = [];
     // Observe each token POST at the supplier boundary, including the interval between
     // Compute returning ready and activation committing. Never use the worker's transaction.
     const beforeIssue = async () => {
-      const { rows } = await issuanceReader.query(
+      const { rows } = await f.observerPool.query(
         "SELECT active_revision_id FROM occ.agents WHERE namespace_id=$1 AND id=$2",
         [revision.namespaceId, revision.agentId],
       );
