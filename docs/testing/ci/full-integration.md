@@ -17,7 +17,8 @@ clusters, and provider services. The workflow collects the selected results in
 
 ## Trigger
 
-Pushes to `main` select `all`. Manual dispatch selects one supported `lane` or
+Verified documentation-only main pushes select no runtime lanes. Other pushes
+to `main` select `all`. Missing history or uncertain impact retains full execution. Manual dispatch selects one supported `lane` or
 `all` on `main` and requires the dispatcher's [team approval](configuration.md#environments).
 A scheduled advisory run does not run the Full Integration workflow.
 

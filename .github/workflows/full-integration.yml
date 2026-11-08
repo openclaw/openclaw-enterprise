@@ -64,6 +64,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 2
           persist-credentials: false
       - name: Validate lane and environment policy
         id: select
@@ -620,7 +621,7 @@ jobs:
       - qa-matrix
       - dev-up-k3d
       - skipper-prepared-git-installed
-    if: always()
+    if: ${{ always() && needs.preflight.outputs.selected_lane != 'docs' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

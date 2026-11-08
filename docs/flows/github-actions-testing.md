@@ -83,23 +83,14 @@ source. Docs mode produces no test artifacts. The impact summary shows mode, fix
 and accepted lanes; it omits paths and raw output. Selector errors fail the job, and missing
 evidence is reported as unavailable.
 
-For full-mode PRs, `affected-packages` verifies merge identity and checkout cleanliness, then reports workspace dependents. This advisory neither selects tests nor gates `CI Required`.
+For full-mode PRs, `affected-packages` verifies the checkout and reports dependents; it does not select tests or gate CI. Base-loaded policy cannot prevent PR changes to the workflow itself.
 
-A PR can change the workflow loaded from its merge checkout despite base-loaded
-policy. Separately trusted enforcement is a deployment decision, not an
-established source property.
-
-Full Integration checks out `github.sha`. Main pushes select `all`; manual dispatches
+Full Integration checks out `github.sha`. Verified docs-only main pushes omit runtime lanes; other pushes select `all`. Manual dispatches
 require `integration-main-approval` and verified dispatcher, team and environment policy.
 A push may reuse same-SHA CI results after the [bounded admission and publication checks](../testing/ci/full-integration.md#results-and-limits);
 otherwise it runs fresh. Credentialed lanes do not wait for reuse.
 
-Main pushes share a queue. Each dispatch waits separately for approval.
-Slack Live serializes access to its channel and app. Local Kubernetes Installation
-and installed Skipper Git each serialize per branch across pushes and dispatches.
-All three queues retain waiting jobs. Test jobs verify repository, main branch
-and event. Push retries use the original commit. Manual retries require a fresh
-approved dispatch. See [approval setup](../testing/ci/configuration.md#environments).
+Main pushes share a queue; dispatches await approval separately. Slack Live serializes channel/app access. Installation and installed Skipper Git serialize per branch. These queues retain waiting jobs. Jobs verify repository, branch and event. Push retries retain their source; manual retries require a new [approved dispatch](../testing/ci/configuration.md#environments).
 
 `all` selects every suite. QA waits for Slack even after failure. Cancellation
 stops QA. Aggregation requires the selected results.

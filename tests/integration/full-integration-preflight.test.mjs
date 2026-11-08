@@ -683,6 +683,74 @@ test("integration environment policy rejects broad, incomplete or bypassable rul
   }
 });
 
+test("verified docs pushes omit runtime lanes while keeping environment policy checks", async () => {
+  const fetched = [];
+  assert.deepEqual(
+    await validateFullIntegrationPreflight({
+      env: mainRun,
+      github: approvalApi({}, fetched),
+      impactMode: "docs",
+    }),
+    { selectedLane: "docs", runAll: false },
+  );
+  assert.deepEqual(fetched, [
+    "/environments/integration-main",
+    "/environments/integration-main/deployment-branch-policies",
+  ]);
+  await assert.rejects(
+    validateFullIntegrationPreflight({
+      env: mainRun,
+      github: approvalApi({
+        "/environments/integration-main": { ...integrationEnvironment(), can_admins_bypass: true },
+      }),
+      impactMode: "docs",
+    }),
+    /disable administrator bypass/,
+  );
+  assert.equal(
+    selectLane({ eventName: "workflow_dispatch", inputLane: "all", impactMode: "docs" }),
+    "all",
+  );
+  assert.equal(
+    selectLane({ eventName: "push", ref: "refs/heads/main", impactMode: "tests" }),
+    "all",
+  );
+  const workflow = await readFile(
+    new URL("../../.github/workflows/full-integration.yml", import.meta.url),
+    "utf8",
+  );
+  const jobs = workflow
+    .slice(workflow.indexOf("\njobs:\n") + 7)
+    .split(/\n(?= {2}[a-z][a-z0-9-]+:)/);
+  for (const block of jobs) {
+    const name = /^ {2}([a-z][a-z0-9-]+):/.exec(block)?.[1];
+    const condition = /^ {4}if: (.+)$/m.exec(block)?.[1];
+    assert.ok(name && condition, "every Full Integration job has an explicit selection condition");
+    assert.equal(
+      workflowCondition(condition, {
+        github: {
+          repository: mainRun.GITHUB_REPOSITORY,
+          ref: mainRun.GITHUB_REF,
+          ref_type: "branch",
+          event_name: "push",
+          run_attempt: "1",
+        },
+        needs: {
+          preflight: { result: "success", outputs: { selected_lane: "docs", run_all: "false" } },
+          "manual-approval": { result: "skipped" },
+          "runtime-artifact": { result: "skipped" },
+          slack: { result: "skipped" },
+        },
+        inputs: {},
+        always: () => true,
+        cancelled: () => false,
+      }),
+      name === "preflight",
+      `docs push: ${name}`,
+    );
+  }
+});
+
 test("main pushes and retries require no manual approval or team credential", async () => {
   for (const attempt of ["1", "2"]) {
     const fetched = [];
