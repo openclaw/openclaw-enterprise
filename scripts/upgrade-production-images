@@ -401,6 +401,13 @@ while (($#)); do
   esac
 done
 
+# Helm reads these independently of --kubeconfig/--kube-context. Keep its
+# endpoint and TLS settings bound to the same selected file as kubectl.
+for variable in HELM_KUBEAPISERVER HELM_KUBECAFILE HELM_KUBETLS_SERVER_NAME HELM_KUBEINSECURE_SKIP_TLS_VERIFY; do
+  [[ -z "${!variable:-}" ]] ||
+    die "unset $variable; configure the endpoint and TLS settings in the selected kubeconfig before starting or resuming an upgrade."
+done
+
 [[ -z "$verify_agent" && -z "$verify_agent_namespace" || -n "$verify_agent" && -n "$verify_agent_namespace" ]] ||
   die "--verify-agent and --verify-agent-namespace must be supplied together."
 [[ -z "$verify_agent" || -z "$runtime_image" ]] ||
