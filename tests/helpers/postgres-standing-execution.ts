@@ -35,12 +35,17 @@ export async function standingExecutionFixture(
 ) {
   const f = await standingExecutionPlatform(t, testUrl, driverSelections);
   const external = await setupRepository?.(f.observerPool, f.namespace.id);
-  if (external?.modelProvider) {
+  if (external?.modelProvider || external?.credentialGateway) {
     // Preserve production admission while the fixture supplies unrelated infrastructure.
     const admission = createTestKubernetesComputeDriver(f.compute.id, {
-      modelProvider: external.modelProvider,
+      gatewayRuntime: true,
+      ...(external.modelProvider ? { modelProvider: external.modelProvider } : {}),
     });
-    Object.assign(f.compute, { admitRevision: admission.admitRevision.bind(admission) });
+    Object.assign(f.compute, {
+      normalizeHarnessOverrides: admission.normalizeHarnessOverrides.bind(admission),
+      resolveHarnessConfiguration: admission.resolveHarnessConfiguration.bind(admission),
+      admitRevision: admission.admitRevision.bind(admission),
+    });
   }
   const registry =
     external?.registry ??

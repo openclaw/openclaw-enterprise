@@ -60,6 +60,12 @@ backend persistence or deployment.
    Check **Pages / Agent detail / Deployment snapshot unavailable**. The viewed
    version's error and **Retry** appear inside Deployment. Retry restores its
    record and diagnostics without changing the viewed version or tab.
+   In **Repository Access Redeploy Required**, choose **Refresh
+   record**: both Completed outcomes remain and the repository guidance appears.
+   View v6 and open Deployment: its record has no notice, while activity still
+   identifies v7. Return to v7 and use **Refresh deployment**. No browsing or
+   refresh action sends a deployment request. Repeat at phone width. This is
+   simulated presentation proof; no notice does not establish healthy Git access.
 3. Open **Pages / Agent detail / Long version history**. Load older pages. The
    viewed version stays selected; the last page returns focus to its picker.
 4. Open **Components / Native admin / Available**. **Open Agent UI** opens the

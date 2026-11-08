@@ -253,7 +253,8 @@ generates, and, with `controlPlane.loggingCollector.enabled`, from
 `occ-otel-collector-config` and `occ-otel-collector-exporter`.
 
 `github`, `google` and `oidc` also accept `secretName`, `clientIdKey`, `clientSecretKey`
-and `egressCidrs`; `github` also accepts `allowedOrgs` and `allowedTeams`
+and `egressCidrs`; `github` also accepts `allowedOrgs`, `allowedTeams` and
+[`autoEnrollGroupId`](../../reference/authentication/team-enrollment.md)
 ([allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist));
 `oidc` also accepts `tokenAuth` and `displayName`;
 `trustedProxy` accepts `clientAddressHeader`, required for the `generic` preset.
@@ -297,7 +298,7 @@ letter or digit. The chart refuses any other spelling too.
 
 ## Render files
 
-Run the renderer from the repository root with Node.js 24.22.1 or newer. With native
+Run the renderer from the repository root with Node.js satisfying `engines.node` in the release checkout's `package.json`. With native
 admin, run `pnpm install` first: the public suffix check uses the API's list.
 
 ```sh

@@ -413,6 +413,10 @@ spec:
             - name: OCC_AUTH_GITHUB_ALLOWED_TEAMS
               value: {{ join "," $.Values.auth.github.allowedTeams | quote }}
             {{- end }}
+            {{- if $.Values.auth.github.autoEnrollGroupId }}
+            - name: OCC_AUTH_GITHUB_AUTO_ENROLL_GROUP_ID
+              value: {{ $.Values.auth.github.autoEnrollGroupId | quote }}
+            {{- end }}
             {{- end }}
             {{- if and $.Values.auth.google $.Values.auth.google.enabled }}
             {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_GOOGLE_CLIENT_ID" "secretName" $.Values.auth.google.secretName "key" $.Values.auth.google.clientIdKey) | nindent 12 }}

@@ -163,7 +163,7 @@ Kubernetes older than 1.35 is unsupported; the API and worker emit
 ### Recommended: generate profile configuration
 
 Choose `openclaw` or `codex` from the [profile options](installation-profiles.md#choose-a-profile).
-Generation requires Node.js 24.22.1+ on the operator host (and `pnpm install` with
+Generation requires Node.js satisfying `engines.node` in the selected release checkout's `package.json` on the operator host (and `pnpm install` with
 native admin). Without Node.js on the operator host, use the manual YAML examples.
 
 Create `$OCC_INPUT_DIRECTORY/profile-input.json` from the schema in
@@ -273,35 +273,91 @@ sandboxing, follow [Codex sandbox setup](codex-sandbox.md).
 
 `images.controller` must be an immutable reference `prepare-bootstrap-volume --image` accepts: a letter or digit, then only letters, digits, `.`, `_`, `:`, `/`, and `-`, and a lowercase `sha256` digest.
 
-Run every check below before provisioning the password profile:
+Before running this block, confirm that `OCC_INPUT_DIRECTORY` points to the
+intended protected directory containing your prepared `values.yaml`,
+`installation.yaml`, and `bootstrap-pvc.yaml`. In a new shell, restore that
+[setup](#configure-the-installation) first.
+
+Run this block before provisioning the password profile. If it fails, correct the
+named check before continuing. After the directory check, each run invalidates
+the previous render. Image, claim, database CA, and manifest-path exports are set
+only after every check succeeds:
 
 ```bash
-yq e -e '.images.controller | test("@sha256:[a-f0-9]{64}$")' \
-  "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null
-yq e -e '.auth.baseUrl != "" and .bootstrap.adminEmail != "" and
-  (.database.cidrs | length > 0) and (.cluster.cidrs | length > 0) and
-  (.controlPlane.nodeSelector | length > 0) and
-  (.api.clients | length > 0) and .gatewayRouting.enabled == true and
-  .gatewayRouting.gatewayClassName != "" and
-  .gatewayRouting.apiKeySecretName != "" and (.agentNativeAdmin.enabled == true or
-  .auth.github.enabled == true or .auth.google.enabled == true or
-  .auth.oidc.enabled == true)' \
-  "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null
-yq e -e '.drivers.compute.configuration.images.requireImmutableDigest == true and
-  (.drivers.compute.configuration.images.gateway | test("@sha256:[a-f0-9]{64}$")) and
-  (.drivers.compute.configuration.images.agent | test("@sha256:[a-f0-9]{64}$")) and
-  .drivers.compute.configuration.runtime.gatewayStorageClassName != "" and
-  (.drivers.compute.configuration.runtime.gatewayNodeSelector | length > 0) and
-  (.drivers.compute.configuration.runtime.nodeSelector | length > 0)' \
-  "$OCC_INPUT_DIRECTORY/installation.yaml" >/dev/null
-yq e -e '.metadata.namespace == "openclaw-system" and .spec.storageClassName != ""' \
-  "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml" >/dev/null
-helm template oce deploy/helm/openclaw-enterprise \
-  --namespace openclaw-system -f "$OCC_INPUT_DIRECTORY/values.yaml" \
-  >/tmp/oce-rendered.yaml
-export CONTROLLER_IMAGE="$(yq e -r '.images.controller' "$OCC_INPUT_DIRECTORY/values.yaml")"
-export BOOTSTRAP_CLAIM="$(yq e -r '.bootstrap.password.claimName' "$OCC_INPUT_DIRECTORY/values.yaml")"
-test "$BOOTSTRAP_CLAIM" = "$(yq e -r '.metadata.name' "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml")"
+{
+  unset CONTROLLER_IMAGE BOOTSTRAP_CLAIM OCC_RENDERED_MANIFEST
+  unset DATABASE_CA_SECRET DATABASE_CA_KEY
+  OCC_RENDER_TEMP=
+  if
+    OCC_VALIDATION_STEP='input directory setup: set OCC_INPUT_DIRECTORY to the intended existing directory with all three prepared YAML files' &&
+    test -n "${OCC_INPUT_DIRECTORY:-}" &&
+    test -d "$OCC_INPUT_DIRECTORY" &&
+    test -f "$OCC_INPUT_DIRECTORY/values.yaml" &&
+    test -f "$OCC_INPUT_DIRECTORY/installation.yaml" &&
+    test -f "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml" &&
+    OCC_VALIDATION_STEP='previous render invalidation' &&
+    rm -f -- "$OCC_INPUT_DIRECTORY/rendered.yaml" &&
+    OCC_VALIDATION_STEP='controller image digest' &&
+    yq e -e '.images.controller | test("@sha256:[a-f0-9]{64}$")' \
+      "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null &&
+    OCC_VALIDATION_STEP='control-plane settings' &&
+    yq e -e '.auth.baseUrl != "" and .bootstrap.adminEmail != "" and
+      (.database.cidrs | length > 0) and (.cluster.cidrs | length > 0) and
+      (.controlPlane.nodeSelector | length > 0) and
+      (.api.clients | length > 0) and .gatewayRouting.enabled == true and
+      .gatewayRouting.gatewayClassName != "" and
+      .gatewayRouting.apiKeySecretName != "" and (.agentNativeAdmin.enabled == true or
+      .auth.github.enabled == true or .auth.google.enabled == true or
+      .auth.oidc.enabled == true)' \
+      "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null &&
+    OCC_VALIDATION_STEP='runtime settings' &&
+    yq e -e '.drivers.compute.configuration.images.requireImmutableDigest == true and
+      (.drivers.compute.configuration.images.gateway | test("@sha256:[a-f0-9]{64}$")) and
+      (.drivers.compute.configuration.images.agent | test("@sha256:[a-f0-9]{64}$")) and
+      .drivers.compute.configuration.runtime.gatewayStorageClassName != "" and
+      (.drivers.compute.configuration.runtime.gatewayNodeSelector | length > 0) and
+      (.drivers.compute.configuration.runtime.nodeSelector | length > 0)' \
+      "$OCC_INPUT_DIRECTORY/installation.yaml" >/dev/null &&
+    OCC_VALIDATION_STEP='bootstrap PVC' &&
+    yq e -e '.metadata.namespace == "openclaw-system" and .spec.storageClassName != ""' \
+      "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml" >/dev/null &&
+    OCC_VALIDATION_STEP='render temporary file' &&
+    OCC_RENDER_TEMP="$(mktemp "$OCC_INPUT_DIRECTORY/.rendered.XXXXXXXX")" &&
+    OCC_VALIDATION_STEP='Helm render' &&
+    helm template oce deploy/helm/openclaw-enterprise \
+      --namespace openclaw-system -f "$OCC_INPUT_DIRECTORY/values.yaml" \
+      >"$OCC_RENDER_TEMP" &&
+    OCC_VALIDATION_STEP='controller image extraction' &&
+    CONTROLLER_IMAGE="$(yq e -e -r '.images.controller' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
+    OCC_VALIDATION_STEP='database CA Secret extraction' &&
+    DATABASE_CA_SECRET="$(yq e -r '.database.caSecretName // ""' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
+    OCC_VALIDATION_STEP='database CA key extraction' &&
+    DATABASE_CA_KEY="$(yq e -r '.database.caKey // "ca.pem"' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
+    OCC_VALIDATION_STEP='bootstrap claim extraction' &&
+    OCC_BOOTSTRAP_CLAIM_JSON="$(yq e -e -o=json -I=0 '.bootstrap.password.claimName | select(tag == "!!str" and length > 0)' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
+    OCC_VALIDATION_STEP='bootstrap claim match' &&
+    OCC_EXPECTED_BOOTSTRAP_CLAIM="$(yq e -e -o=json -I=0 '.metadata.name | select(tag == "!!str" and length > 0)' "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml")" &&
+    test "$OCC_BOOTSTRAP_CLAIM_JSON" = "$OCC_EXPECTED_BOOTSTRAP_CLAIM" &&
+    OCC_VALIDATION_STEP='bootstrap claim export' &&
+    BOOTSTRAP_CLAIM="$(yq e -e -r '.bootstrap.password.claimName + "."' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
+    BOOTSTRAP_CLAIM="${BOOTSTRAP_CLAIM%.}" &&
+    test "$(BOOTSTRAP_CLAIM="$BOOTSTRAP_CLAIM" yq e -n -o=json -I=0 'strenv(BOOTSTRAP_CLAIM)')" = "$OCC_BOOTSTRAP_CLAIM_JSON" &&
+    OCC_VALIDATION_STEP='validated render publication' &&
+    mv -- "$OCC_RENDER_TEMP" "$OCC_INPUT_DIRECTORY/rendered.yaml"
+  then
+    OCC_RENDERED_MANIFEST="$OCC_INPUT_DIRECTORY/rendered.yaml"
+    export CONTROLLER_IMAGE BOOTSTRAP_CLAIM OCC_RENDERED_MANIFEST
+    export DATABASE_CA_SECRET DATABASE_CA_KEY
+    unset OCC_VALIDATION_STEP OCC_BOOTSTRAP_CLAIM_JSON OCC_EXPECTED_BOOTSTRAP_CLAIM OCC_RENDER_TEMP
+  else
+    unset CONTROLLER_IMAGE BOOTSTRAP_CLAIM OCC_RENDERED_MANIFEST
+    unset DATABASE_CA_SECRET DATABASE_CA_KEY
+    if [ -n "$OCC_RENDER_TEMP" ]; then rm -f -- "$OCC_RENDER_TEMP"; fi
+    printf 'Installation check failed: %s; stop before provisioning.\n' "$OCC_VALIDATION_STEP" >&2
+    unset OCC_VALIDATION_STEP OCC_BOOTSTRAP_CLAIM_JSON OCC_EXPECTED_BOOTSTRAP_CLAIM OCC_RENDER_TEMP
+    false
+  fi
+}
 ```
 
 `$KUBECONFIG_FILE` must select the same cluster as `$CONTEXT`.
@@ -335,8 +391,6 @@ chmod 600 /secure/occ/occ-application-url /secure/occ/occ-migration-url \
   /secure/occ/occ-auth-secret
 test -s /secure/occ/occ-application-url
 test -s /secure/occ/occ-migration-url
-export DATABASE_CA_SECRET="$(yq e -r '.database.caSecretName // ""' "$OCC_INPUT_DIRECTORY/values.yaml")"
-export DATABASE_CA_KEY="$(yq e -r '.database.caKey // "ca.pem"' "$OCC_INPUT_DIRECTORY/values.yaml")"
 if [ -n "$DATABASE_CA_SECRET" ]; then
   chmod 600 /secure/occ/occ-database-ca.pem
   test -s /secure/occ/occ-database-ca.pem
@@ -369,25 +423,58 @@ both files to use the generated Service DNS name.
 
 ## Provision system Secrets and install
 
-Create system Secrets from protected files:
+Run this whole block only if you have not attempted any of the Secret creates
+below. If you have already attempted a create, follow the recovery instructions
+after the block. Use the Bash shell where validation succeeded and the Secret
+inputs were prepared. In a new shell, restore the input-directory setup and rerun
+validation, which also loads `DATABASE_CA_SECRET` and `DATABASE_CA_KEY` from the
+intended `values.yaml`. Recheck the prepared protected inputs,
+including the CA file when configured. Keep the existing auth secret. Both server
+dry runs must succeed before the block creates Secrets.
 
 ```bash
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  apply --dry-run=server -f /tmp/oce-rendered.yaml
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  apply --dry-run=server -f "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-  create secret generic occ-installation-startup --from-file=installation.yaml="$OCC_INPUT_DIRECTORY/installation.yaml"
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-  create secret generic occ-database --from-file=application-url=/secure/occ/occ-application-url --from-file=migration-url=/secure/occ/occ-migration-url
-if [ -n "$DATABASE_CA_SECRET" ]; then
+(
+  if [ -z "${OCC_RENDERED_MANIFEST:-}" ]; then
+    printf 'Run validation successfully in this Bash shell before provisioning.\n' >&2
+    exit 1
+  fi
+  if ! kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+    apply --dry-run=server -f "$OCC_RENDERED_MANIFEST" ||
+    ! kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+      apply --dry-run=server -f "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
+  then
+    printf 'Server dry run failed; correct the error before provisioning Secrets.\n' >&2
+    exit 1
+  fi
   kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-    create secret generic "$DATABASE_CA_SECRET" \
-    --from-file="$DATABASE_CA_KEY=/secure/occ/occ-database-ca.pem"
-fi
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-  create secret generic occ-auth --from-file=secret=/secure/occ/occ-auth-secret
+    create secret generic occ-installation-startup --from-file=installation.yaml="$OCC_INPUT_DIRECTORY/installation.yaml" || exit 1
+  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+    create secret generic occ-database --from-file=application-url=/secure/occ/occ-application-url --from-file=migration-url=/secure/occ/occ-migration-url || exit 1
+  if [ -n "$DATABASE_CA_SECRET" ]; then
+    kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+      create secret generic "$DATABASE_CA_SECRET" \
+      --from-file="$DATABASE_CA_KEY=/secure/occ/occ-database-ca.pem" || exit 1
+  fi
+  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+    create secret generic occ-auth --from-file=secret=/secure/occ/occ-auth-secret || exit 1
+)
 ```
+
+If either dry run fails and you have never attempted these Secret creates,
+correct the error and rerun the block. If a Secret create fails or its result is
+unknown, verify which Secrets exist in `openclaw-system` on the reviewed cluster.
+Resolve uncertain writes before resuming. Do not repeat confirmed successful
+creates.
+
+If you change any of the three prepared YAML files, rerun validation before
+continuing; it reloads the CA settings from the intended `values.yaml`. Do not
+reuse the previous CA selection. Recheck the protected inputs, including the CA file when
+its settings change. Keep the existing auth secret. Before repeating dry runs or
+any remaining creates, verify that previously created Secrets match the intended
+inputs and resolve any mismatch within the authorized change scope. When resuming
+after a create attempt, run both server dry runs separately from the create
+commands. Only after both dry runs succeed, run the create commands confirmed to
+be outstanding. Continue only after all required Secrets match the intended inputs.
 
 These operator-owned Secrets are not synchronized automatically. The optional CA
 Secret mounts read-only in migration, bootstrap, API, and worker containers at
@@ -631,6 +718,10 @@ Keep `auth.github` configured. Never [roll back](production-upgrade-recovery.md#
 
 Restart the API after secret rotation. Keeping the client ID preserves attachments. Changing it ends old-instance sessions:
 reattach under the new ID before detaching old methods.
+
+For automatic first-login accounts, configure [GitHub team enrollment](../../reference/authentication/team-enrollment.md)
+with an existing IAM Group and the App's email-read permission. Otherwise, follow
+the manual attachment procedure below.
 
 [Enroll skipped accounts](../../reference/authentication/external-sign-in.md#session-and-recovery-controls) first.
 Through the site’s identity process, an Installation administrator verifies the intended GitHub user owns the enrolled local OCE account.

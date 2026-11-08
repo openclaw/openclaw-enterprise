@@ -2,7 +2,7 @@
 ARG NODE_BASE_IMAGE
 ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
 FROM ${NODE_BASE_IMAGE} AS dependencies
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+RUN apt-get update --error-on=any && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
@@ -61,7 +61,7 @@ CMD ["apps/controller/src/server.mjs"]
 
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS runtime
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+RUN apt-get update --error-on=any && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
 WORKDIR /app
 

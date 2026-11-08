@@ -78,6 +78,20 @@ Set `OCC_TEST_BROWSER_EXECUTABLE` to use an approved existing browser. The test
 fails if no browser is available; it does not install one. Do not change managed
 browser policies. Set `OCC_TEST_CONSOLE_ARTIFACT_DIR` to retain screenshots.
 
+The three native Agent admin cases use Linux Chromium's NSS trust store. The
+Console browser command reports these three as skipped on macOS and Windows.
+For the full suite, use a disposable Ubuntu VM with Chromium sandbox support,
+`libnss3-tools`, and the Go version in `go.mod`. Set up the checkout as above,
+then run the Console browser command or just the Agent detail cases:
+
+```sh
+node --test 'tests/browser/console-agent-detail-2.test.{mjs,ts}'
+```
+
+The existing **Console Browser** check on a pull request also runs these
+cases. The tests create and remove their own certificates and browser trust
+store.
+
 The browser fixture uses real controller routes with in-memory state and test
 Drivers. It does not prove persistence, routing through a deployed gateway, or
 Agent runtime behavior. The API checks can run without a browser:

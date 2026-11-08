@@ -1,16 +1,15 @@
 ---
 created: 2026-08-25
-updated: "2026-11-04"
-last_updated_session: "authoring-run/48787d5f-913a-4fa5-910a-2f9ec35e504a"
+updated: "2026-11-08"
+last_updated_session: "authoring-run/ef34e45f-633b-49fb-8884-cdf519ed7d40"
 ---
 
 # Production Startup Flow
 
 ## Overview
 
-Prepare a fresh protected bootstrap PVC and install Helm with approved images,
-PostgreSQL/authentication credentials, trusted Installation YAML and policies.
-After private API/worker readiness, authenticate `/installation` with the service key.
+Helm initializes OCE from protected storage and approved inputs. After private
+API/worker readiness, authenticate `/installation` with the service key.
 
 [Deployment guide](../guides/deploy.md).
 
@@ -37,10 +36,13 @@ graph TD
         B["Create namespace and Secrets; check prerequisites"]
         C["Create fresh bootstrap PVC"]
         D["prepare-bootstrap-volume verifies empty output and root permissions"]
-        D --> RC["CLI snapshots inputs and syncs intent"]
+        D --> RC["Snapshot inputs and sync intent"]
+        RC --> RN{"Receipt notice write failed?"}
+        RN -->|Yes| RF["Preserve intent; stop before dispatch"]
+        RN -->|No| RD["Sync dispatch marker"]
     end
     subgraph Helm["Helm-owned startup"]
-        RC --> E["Run Helm install once with attempt marker"]
+        RD --> E["Run Helm install once with attempt marker"]
         E --> F["Run initialization Job with migrator and application roles"]
         F --> V{"PostgreSQL before 17?"}
         V -->|Yes| P["Refuse initialization before migration DDL"]
@@ -98,27 +100,26 @@ inputs, rewrites Driver configuration, nor infers runtime images.
 
 ### 2. Prepare the fresh bootstrap volume
 
-`scripts/prepare-bootstrap-volume:124`
+`scripts/prepare-bootstrap-volume:124` takes an existing
+`bootstrap.password.claimName` PVC, explicit kubeconfig/context/namespace/claim,
+an approved Node-capable image and optional `--node-selector KEY=VALUE` labels.
+It preserves namespace/selector strings, applying selectors before
+WaitForFirstConsumer binding. It requires an empty root except filesystem-owned
+`lost+found` and sets UID/GID `1000`, mode `0700`.
 
-Create the `bootstrap.password.claimName` PVC and run the helper with explicit
-kubeconfig, context, namespace, claim,
-approved Node-capable image, and optional `--node-selector KEY=VALUE` labels.
-The Pod preserves string namespaces and selector keys; selectors precede
-WaitForFirstConsumer binding. The helper requires an empty root except
-for filesystem-owned `lost+found`, and sets UID/GID `1000` with mode `0700`.
-
-If the Pod is forbidden, storage administration prepares the claim through an
-approved workflow for Helm. The helper neither creates PVCs nor
-repairs used claims, retrieves credentials, or changes controller configuration.
+If forbidden, storage administrators prepare the claim through approved procedures.
+The helper cannot create PVCs, repair used claims, retrieve credentials or
+change controller configuration.
 
 ### 3. Run Helm initialization
 
-`internal/occcli/installation_receipt.go:installationInstallCommand` snapshots the
-kubeconfig, chart and values privately and checks all release states. It syncs
-the intent, receipt directory entry and unknown dispatch marker before starting
-Helm. While Helm waits, `observeInstallationJob` records the first recognized
-install Job UID whose annotation matches the attempt. Upgrades omit the marker.
-Helm's exit outcome has a separate record.
+`internal/occcli/installation_receipt.go:installationInstallCommand` privately
+snapshots kubeconfig/chart/values, checks all release states and syncs
+`intent.json` and its directory entry. On stdout notice write error, it keeps
+intent, names the receipt directory and exits before `dispatch.json` or Helm
+install. Otherwise it syncs the unknown marker and starts Helm.
+`observeInstallationJob` records the first recognized Job UID matching the
+attempt annotation (installs only). Helm's outcome is separate.
 
 `deploy/helm/openclaw-enterprise/templates/bootstrap-networkpolicies.yaml:1`
 installs isolation before the Job; it and later policies grant configured
@@ -160,14 +161,13 @@ and `executionCluster.kubeconfigKey` must be Secret keys at most 253 characters,
 not `.` or a `..` prefix.
 
 For [handoff](../guides/deploy/production-handoff.md#resume-an-installation-in-progress),
-`internal/occcli/installation_doctor.go:installationHandoffCommand` verifies the
-receipt namespace, release and reader's cluster connection before a named Job read.
-`initializationEvidence` checks the marker, captured UID, chart steps, controller
-and terminal status. Missing UID, replacement, refusal or inconclusive status
-leaves the original checkpoint unknown. Doctor reports Helm's recorded outcome
-separately. Plan adds read-only recovery steps. Both buffer their report, including
-Helm outcome, and check `WriteTo` before returning Job status. Returned write
-errors reach `cmd/occ/main.go:main`, which reports stderr diagnostics and exits `1`.
+`internal/occcli/installation_doctor.go:installationHandoffCommand` verifies receipt
+namespace/release/cluster connection before reading the named Job.
+`initializationEvidence` checks marker, captured UID, chart steps, controller and
+terminal status. Missing UID, replacement, refusal or inconclusive status leaves
+the checkpoint unknown. Doctor separately reports Helm's outcome; plan adds
+read-only recovery. Both check the buffered report's `WriteTo` before returning
+Job status. Write errors reach `cmd/occ/main.go:main` for stderr diagnostics and exit `1`.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
@@ -380,6 +380,10 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 07:15: Clarify receipt directory. (authoring-run/ef34e45f-633b-49fb-8884-cdf519ed7d40 - 7e2eb23a7f55b5f375e52883fcb6a7bb0f10049e)
+
+- 2026-11-08 05:16: Document the preserved intent and stop before dispatch when the receipt notice write fails. (authoring-run/5809b7e1-70ee-4446-8c3a-020e78a0e7af - e0d329d9ad9560e954ce94889079ef55ba43080f)
 
 - 2026-11-04 23:30: Check complete handoff reports, including receipt outcomes. (authoring-run/48787d5f-913a-4fa5-910a-2f9ec35e504a - ce06d47cfb0b4fb29495ad4bc85bb71aa5941975)
 

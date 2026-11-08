@@ -30,6 +30,23 @@ controller build and each lane's Envoy or seccomp preparation remain separate.
 
 The preparation CLI records run-owned resources in a private state file before creating them. GitHub Actions passes that file under `RUNNER_TEMP`; it is available to later steps in the same job and is not uploaded as an artifact. Database tests receive a fresh migrated database per file and use the limited application role; the Agent revision worker suite also gives each test a copy of a migrated template (`prepareFile({ template })`). Failure and Kubernetes database names satisfy the existing test admission guards. An ordinary cluster lane selects an explicit loopback k3d context and asks the pinned k3d binary to resolve its current `v1.35` K3s image. After node readiness, preparation reads the real server version and rejects a cluster outside the Kubernetes 1.35 family. OpenShell retains its separately pinned K3s image. External images are pulled by their approved registry digest and exported for the selected platform; built and external images receive a run-owned reference at the imported platform manifest digest. Preparation records the original source image and checks Kubernetes CRI resolution before passing the immutable runtime reference to tests. The CLI-only installed repository lane is temporarily refused in `validateLaneInputsBeforeSideEffects`, before its input checks and before any state or resource is created, until its remote cleanup is safe; its image and seccomp preparation below is unreachable in this source version. When either production TUI upgrade candidate is selected, preparation requires both candidate and baseline controller/runtime digests before allocating resources. It imports the four supplied sources, rejects a candidate resolving to the same local image as its baseline, and records their source and imported identities in private state. Per-file preparation checks the same selection against that state and passes the imported references to the test. Without candidate images, the lane builds the current source as before. Preparation failures still enter job cleanup. Cluster cleanup reads k3d inventory before and after deletion, then checks for matching Docker containers, networks, and volumes. An invalid inventory or possible surviving resource retains cleanup state.
 
+`scripts/ci/prepare.mjs:ensurePostgresServer` copies the public
+`migrations/init-local.sql` into a run-owned directory beside the state file. It creates
+that file exclusively with private permissions, then makes the public SQL readable
+by the PostgreSQL container user. The Compose input
+`OPENCLAW_CI_POSTGRES_INIT_SQL` selects the copy; the checkout remains unchanged.
+The absolute directory path is recorded with the server before exclusive creation;
+directory and SQL creation are each confirmed in state before the next step. Compose
+starts only after both confirmations. An existing directory is refused. Failed
+directory creation retires the planned record. If that save fails,
+or a crash interrupts directory creation before confirmation, cleanup preserves any
+directory at that path and retains the state for inspection. Without SQL creation
+confirmation, cleanup removes only an empty confirmed directory; existing contents
+and their state are retained.
+`scripts/ci/cleanup.mjs:cleanupComposePostgres` checks its exact path against the opened state
+file and removes only the SQL file and its empty directory after Compose teardown.
+Unexpected contents or failed teardown retain cleanup state.
+
 For hosted repository QA, `scripts/ci/qa-matrix-credentials.mjs` reads the selected
 reviewed registry file only when a repository scenario is selected. It copies
 that metadata, the selected private App key and approved endpoint CIDRs into one

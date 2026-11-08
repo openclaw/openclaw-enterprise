@@ -1,15 +1,15 @@
 ---
 created: 2026-08-21
-updated: "2026-11-05 19:30"
-last_updated_session: authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62
+updated: "2026-11-08 12:00"
+last_updated_session: "agent:main:subagent:060410f5-67b1-4703-b963-741996a862b6"
 ---
 
 # Harness Execution Topology Flow
 
 ## Overview
 
-Deployment freezes Gateway settings, Harness policy, placement and authentication. Compute prepares
-workloads, publishes guarded routes and retires predecessors before activation audit.
+Deployment saves settings and authentication. Compute prepares workloads, publishes
+guarded routes, and retires predecessors.
 
 ## Entry Points
 
@@ -26,7 +26,10 @@ workloads, publishes guarded routes and retires predecessors before activation a
 ```mermaid
 graph TD
   A["Authorize Agent and Configuration"] --> B["Resolve runtime, placement and native HTTP transport"]
-  B --> C["Freeze configuration, Gateway managed mode, Harness identity and authentication"]
+  B --> B1["Compute resolves Harness settings"]
+  B1 --> B2{"Source authorizes destination?"}
+  B2 -->|No| H
+  B2 -->|Yes| C["Freeze requested and resolved settings with authentication"]
   C --> D["Claim and reauthorize version work"]
   D --> E{"Approved topology"}
   E -->|embedded OpenClaw| F["Create gateway or stage replacement"]
@@ -66,17 +69,15 @@ modes fail closed.
 Compute's `apps/controller/src/drivers/compute/native-gateway-transport.ts:validatePlaintextNativeGateway`
 rejects `gateway.tls.enabled: true` before version creation and preparation:
 Docker, SSH and Kubernetes require native HTTP.
-The saved version keeps [Gateway managed mode](../reference/agent-native-admin.md#gateway-managed-mode), native configuration, approved Harness identity/version, mode,
-Compute selection, and Agent ServicePrincipal unchanged. Production admits approved
-`openclaw`/`embedded` and `codex`/`dedicated`, and `openclaw`/`dedicated` only when
-the selected SandboxDriver provisions Harnesses with networking, filesystem, and
-process containment and the Installation has native-worker support.
-Pinned runtime support is automatic; custom images can declare it at startup.
-An associated
-`access_token` additionally requires dedicated Codex; the frozen account
-contains only its OCC identity, credential kind, and opaque Secret reference.
-`KubernetesComputeDriver.admitRevision` saves the configured OpenAI-compatible
-API-key provider fingerprint in `AgentRevision.compute.admission`.
+The revision saves [Gateway managed mode](../reference/agent-native-admin.md#gateway-managed-mode),
+native configuration, Harness identity/version/mode, Compute selection, and Agent
+ServicePrincipal. Compute and Sandbox gate the [Harness topology](../reference/harness-execution.md).
+Custom images must declare native-worker support. An associated `access_token` requires dedicated Codex;
+its snapshot contains the OCC identity, credential kind, and opaque Secret reference.
+`KubernetesComputeDriver.resolveHarnessConfiguration` resolves overrides before
+admission. OCC atomically saves `harness.overrides` and `harness.configuration`;
+`validateHarnessCredentialSources` checks consent and `admitRevision` fingerprints
+the provider.
 
 ### 2. Claim work and realize the approved topology
 
@@ -198,10 +199,11 @@ claim leases. Failed preparation or preparing or activating the predecessor clea
 its record. New exclusive versions supersede old reconciliation and maintenance
 without rollback; see [production version stages](../reference/drivers/compute.md#production-revision-stages).
 For API-key inference, `modelProviderConfiguration` in
-`apps/controller/src/drivers/compute/model-provider.ts` translates the shared
-Installation provider for OpenClaw. `pluginRuntimeSnapshot` in
+`apps/controller/src/drivers/compute/model-provider.ts` translates the provider
+saved in the revision for OpenClaw. `pluginRuntimeSnapshot` in
 `apps/controller/src/drivers/compute/kubernetes/index.ts` supplies it to Codex.
-Recovery repeats this check.
+Recovery repeats snapshot validation without reading Installation defaults.
+Missing or inconsistent saved settings refuse execution before workload effects.
 Source authorization cannot override routing.
 `pluginRuntimeConfigMapData` in `apps/controller/src/drivers/compute/plugin-runtime.ts`
 writes Codex's provider and optional standalone-search declaration.
@@ -301,20 +303,18 @@ version, then calls
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.deleteAgentRuntimeCredentials`
 to delete exact-owned private and shared claims by UID across all selected targets,
 regardless of the Agent draft's mode. Cleanup retries precede database identity
-removal. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
-owns claim sizes, mounts, StorageClass requirements and final teardown.
+removal. See the [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
 
 ## Debugging and Verification
 
 - `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:observeHeldPreview`
   reports `worker.openshell-git-continuity-refused` with the failed comparison.
   Held-startup comparisons expose SHA-256 hashes through `keyHash`.
-  Sandbox comparisons report restart count, Never-policy result and ID-change result.
+  Sandbox comparisons report restarts, Never-policy and ID changes.
 - `apps/controller/src/drivers/compute/harness-egress-enrollment.ts:HARNESS_EGRESS_ENROLLMENT_HELPER`
   logs `runtime.protected_startup` with the same startup hash.
   `runtime.process_exit` and `runtime.process_error` report fixed component,
-  exit/signal or spawn-error metadata. Collect these while Pods exist; stop can
-  remove their logs. Reporting failures preserve the guard and restart decisions.
+  exit/signal or spawn-error metadata. Collect logs before stop removes Pods. Reporting failures preserve guards.
   A changed startup still requires a new supported lifecycle; never replay its release.
 - `codex-plugin-stdio.ts:CODEX_PLUGIN_STDIO_HELPER` reports catalog queue, pipe-write,
   pending and matched-reply flags, plus bounded message and unmatched-ID-type counts.
@@ -324,16 +324,15 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 - Check placement, immutable policy, and conflicts:
   `node --test tests/conformance/configuration-occ.test.mjs`.
 - Check guarded activation and recovery:
-  `node --test tests/integration/postgres-worker-agent-revision.test.mjs` with an explicitly
-  provisioned application-role PostgreSQL database.
+  `node --test tests/integration/postgres-worker-agent-revision.test.mjs` with an application-role PostgreSQL database.
 - Check dedicated Gateway repair after an unready predecessor:
   `pnpm test:files --test-name-pattern='dedicated replacement starts a candidate Gateway' -- tests/conformance/kubernetes-compute.test.mjs`.
 - Check embedded Gateway repair after a never-served unready predecessor:
   `pnpm test:files --test-name-pattern='never-served unready Gateway' -- tests/conformance/kubernetes-compute.test.mjs`.
-- For real model turns, run
+- For model turns:
   `node --test tests/integration/harness-topology-k3d-real.test.mjs` (Kubernetes) with the
   inputs in [the real-runtime suite](../testing/kubernetes.md#run-the-real-runtime-suite-directly).
-  Docker Compute deploys no Agent: it rejects every Harness authentication binding.
+  Docker Compute rejects Harness bindings without deployment.
 - Missing credentials, images, access or either model response fail verification;
   readiness probes, handshakes, fixtures and skipped tests are not substitutes.
 - HTTP 401 before worker admission indicates callback fallthrough from node-only
@@ -356,6 +355,10 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 12:00: Preserve proxy boundaries alongside current upstream lifecycle. (agent:main:subagent:060410f5-67b1-4703-b963-741996a862b6 - 7db5638975981ec1400f1a4ba52da77d5fd33dce)
+
+- 2026-11-06 01:25: Persist Harness settings. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
 
 - 2026-11-05 19:30: Link proxy routing (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 324fbad6f248bce4606e175fbb67ac506cd824ff)
 - 2026-11-05 21:24: Trace probe closure. (authoring-run/61309ab1-dd2a-4cb0-99b5-e2a9485fe91f - fdb3fbd93a5295e37ad7814a5197029f2b615346)

@@ -364,6 +364,29 @@ test("Installation startup validates the optional external observability URL", a
 
 test("API, worker, and Helm hook report safe field diagnostics before persistence", async (t) => {
   const cases = [
+    // These all passed pair ordering but Kubernetes refuses their negative quantities.
+    ...[
+      ["gateway", "Gateway"],
+      ["agent", "Agent"],
+      ["namespace.containerDefaults", "Namespace default"],
+    ].map(([role, description]) => [
+      (configuration) => {
+        const resources = configuration.drivers.compute.configuration.resources;
+        const selected =
+          role === "namespace.containerDefaults"
+            ? resources.namespace.containerDefaults
+            : resources[role];
+        selected.requests.cpu = "-1";
+      },
+      [
+        {
+          path: `/resources/${role.replaceAll(".", "/")}/requests/cpu`,
+          code: "INVALID_FORMAT",
+          message: `${description} CPU requests must be non-negative Kubernetes quantity strings, such as 500m.`,
+        },
+      ],
+      { bootProcesses: role === "gateway" },
+    ]),
     [
       (configuration) => {
         configuration.drivers.compute.configuration.authentication = {
@@ -422,18 +445,19 @@ test("API, worker, and Helm hook report safe field diagnostics before persistenc
           message: "The end port must be at least the start port.",
         },
       ],
+      { bootProcesses: true },
     ],
   ];
   // All three entrypoints map a ConfigurationValidationError to the code and its details with
-  // the same function, so, as in the observability test, the last case boots them for real.
+  // the same function. Marked negative-resource and ceiling cases boot them for real.
   // The others reach the loader all three call with the file (production mode) and get that
   // function's one-line diagnostic.
-  for (const [index, [mutate, details]] of cases.entries()) {
+  for (const [mutate, details, { bootProcesses = false } = {}] of cases) {
     const configuration = installation();
     configuration.occ.cluster = "production-west";
     mutate(configuration);
     const path = await fixture(t, configuration);
-    if (index < cases.length - 1) {
+    if (!bootProcesses) {
       await assert.rejects(
         loadInstallationConfiguration({
           mode: "production",
@@ -1421,6 +1445,13 @@ test("production embedded replacements preserve their active Service across fail
     servicePrincipalId,
     createdAt: new Date().toISOString(),
   };
+  predecessor.harness = { ...harness, overrides: {} };
+  predecessor.harness.configuration = computeDriver.resolveHarnessConfiguration(
+    predecessor.harness,
+    predecessor.harnessAuth,
+    predecessor.configuration,
+  );
+  predecessor.compute.admission = computeDriver.admitRevision(predecessor);
   const candidate = {
     ...predecessor,
     id: `rev_production-${harness.mode}-candidate`,

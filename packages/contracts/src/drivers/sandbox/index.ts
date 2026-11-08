@@ -167,6 +167,8 @@ export type SandboxHarnessObservation =
 
 /** The selected Sandbox owns the repository recipient, including proof after a worker restart. */
 export interface SandboxRepositoryAccess {
+  /** Throws OCC's RepositoryExecutionRequiresRedeployError only when durable evidence
+   * proves repository access cannot resume on this execution. Missing evidence remains undefined. */
   verifyExecution(
     context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
   ): Promise<RepositoryExecutionIdentity | undefined>;

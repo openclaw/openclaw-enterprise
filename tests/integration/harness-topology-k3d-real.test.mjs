@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { closeSync, constants, fstatSync, openSync, renameSync, writeFileSync } from "node:fs";
 import test from "node:test";
 import {
   arrangeProductionTopology,
@@ -35,18 +36,155 @@ import {
 } from "../helpers/harness-topology-k3d-real.mjs";
 import { boundedTeardown } from "../helpers/kubernetes-real.mjs";
 
+// The runner hands the capability to this file, not to other cases or descendants.
+const case2ReceiptBinding = process.env.OCC_TEST_K3D_CASE2_PHASE_FILE;
+delete process.env.OCC_TEST_K3D_CASE2_PHASE_FILE;
+
 // The topology registers its platform Namespace delete before the worker and port-forward stops.
 // Run them newest-first, each bounded and all attempted (finding 1711).
 const topologyTeardown = (testContext) =>
   boundedTeardown(testContext, { label: "production topology teardown" });
 
 test(
+  "production Default user deploys embedded OpenClaw in the default Namespace with owner grants",
+  { ...requiresProductionCluster, timeout: 900_000 },
+  async (testContext) => {
+    const { context } = topologyTeardown(testContext);
+    // First in this file: each case's teardown deletes its tenant namespace, and Default users
+    // create Agents only in default, so this case must be the one that creates the Installation.
+    // The Installation configuration declares the Default users Roles, Group, and bindings. The
+    // caller is an ordinary account the administrator created, which joined the default-user
+    // Group as it was created. It creates the model Secret, Configuration, and Agent in default
+    // and deploys with no other grant; arrangeProductionTopology asserts its Owner bindings and
+    // the deploy-written grant.
+    const topology = await arrangeProductionTopology(context, "embedded", undefined, {
+      defaultUser: true,
+    });
+    assert.equal(topology.harnessPod, undefined, "embedded execution must not create a Codex Pod");
+    assert.equal(topology.gatewayPod.spec.serviceAccountName, topology.agentServiceName);
+    const environment = await inspectWorkloadEnvironment(
+      topology.gatewayPlacement,
+      topology.gatewayPod.metadata.name,
+    );
+    // The deploy-written grant is what lets the worker project the owner's model Secret.
+    assert.equal(environment.OPENAI_API_KEY, true);
+    // Parent checks: the owner reads its own deployment's status through its Agent binding.
+    const deployment = await topology.request(
+      "GET",
+      `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deployments/${topology.revision.id}`,
+    );
+    assert.equal(deployment.status, 200, JSON.stringify(deployment.error));
+    assert.equal(deployment.data.status, "succeeded");
+    await resource("networkpolicy", "default-deny", topology.placement);
+    await assertActualModelTurn(topology);
+  },
+);
+
+function openCase2Receipt(value) {
+  let fd;
+  try {
+    if (!value || process.platform !== "linux") {
+      return undefined;
+    }
+    const { path, dev, ino } = JSON.parse(value);
+    if (typeof path !== "string" || !path.startsWith("/") || !/\/\.k3d-case2-[^/]+$/.test(path)) {
+      return undefined;
+    }
+    fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const owned = fstatSync(fd);
+    if (
+      owned.dev !== dev ||
+      owned.ino !== ino ||
+      owned.uid !== process.getuid() ||
+      (owned.mode & 0o777) !== 0o700
+    ) {
+      throw new Error("case-2 receipt directory identity changed");
+    }
+    return fd;
+  } catch {
+    if (fd !== undefined) {
+      closeSync(fd);
+    }
+    return undefined;
+  }
+}
+
+test(
   "production dedicated Skill source uploads honor default and denied node-write policy",
   { ...requiresProductionCluster, timeout: 1_200_000 },
   async (testContext) => {
-    const { context } = topologyTeardown(testContext);
-    const topology = await arrangeProductionTopology(context, "dedicated");
-    await assertDedicatedSkillSources(topology);
+    const receiptFd = openCase2Receipt(case2ReceiptBinding);
+    let phasePath = receiptFd === undefined ? undefined : `/proc/self/fd/${receiptFd}/case-2.json`;
+    const phase = {
+      version: 1,
+      caseId: "dedicated-skill-source-policy",
+      setupEntered: true,
+      setupCompleted: false,
+      bodyEntered: false,
+      firstError: "unobserved",
+      teardown: "unobserved",
+    };
+    const record = (update) => {
+      Object.assign(phase, update);
+      if (phasePath) {
+        try {
+          const temporary = `${phasePath}.tmp`;
+          writeFileSync(temporary, JSON.stringify(phase), { flag: "wx", mode: 0o600 });
+          renameSync(temporary, phasePath);
+        } catch {
+          // A receipt failure must not change the test or teardown result.
+        }
+      }
+    };
+    const teardown = boundedTeardown(testContext, {
+      label: "production topology teardown",
+      log(message) {
+        // Bounded teardown invokes this before awaiting each owned cleanup.
+        if (teardown.started && phase.teardown === "unobserved") {
+          record({ teardown: "entered" });
+        }
+        process.stderr.write(`${message}\n`);
+      },
+      onOutcome(outcome) {
+        record({
+          teardown: { passed: "completed", failed: "failed", incomplete: "entered" }[outcome],
+        });
+        if (receiptFd !== undefined) {
+          phasePath = undefined;
+          try {
+            closeSync(receiptFd);
+          } catch {
+            // Receipt release cannot override the original cleanup result.
+          }
+        }
+      },
+    });
+    record({});
+    try {
+      const topology = await arrangeProductionTopology(teardown.context, "dedicated");
+      record({ setupCompleted: true });
+      record({ bodyEntered: true });
+      await assertDedicatedSkillSources(topology);
+    } catch (error) {
+      try {
+        let firstError = "other";
+        if (error instanceof assert.AssertionError) {
+          firstError = "assertion";
+        } else if (error instanceof AggregateError) {
+          firstError = "aggregate";
+        } else if (error instanceof Error) {
+          if (error.name === "TimeoutError" || error.code === "ETIMEDOUT") {
+            firstError = "timeout";
+          } else if (error.name === "AbortError" || error.code === "ABORT_ERR") {
+            firstError = "abort";
+          }
+        }
+        record({ firstError });
+      } catch {
+        // A thrown value can itself fail inspection. Preserve the original value.
+      }
+      throw error;
+    }
   },
 );
 

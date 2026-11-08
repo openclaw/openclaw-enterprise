@@ -79,24 +79,64 @@ export OCC_CA_BUNDLE='/secure/occ/occ-ca.pem' # omit if the system trust store i
 export UPGRADE_EVIDENCE="/secure/occ/upgrades/$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
-If the retained YAML is unavailable, set `VALUES` and `INSTALLATION` to new,
-protected paths before recovering the live values and Secret below. Do not
-overwrite retained files. Compare the recovered files with the operator's
-records; do not substitute fresh example templates.
+For missing YAML, recover to unused, protected `VALUES`/`INSTALLATION` paths.
+Resolve errors before retrying. Validate Installation
+separately. Compare both files with operator records; never use example templates.
 
 ```bash
-helm --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
-  --namespace "$NAMESPACE" get values "$RELEASE" --output yaml > "$VALUES"
-export INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' "$VALUES")"
-export INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' "$VALUES")"
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  --namespace "$NAMESPACE" get secret "$INSTALLATION_SECRET" -o json |
-  jq -er --arg key "$INSTALLATION_KEY" '.data[$key]' |
-  python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.buffer.read()))' > "$INSTALLATION"
-chmod 600 "$VALUES" "$INSTALLATION"
+(
+  set +x
+  set -o pipefail
+  umask 077
+  fail() { echo "$1" >&2; exit 1; }
+  mapping() {
+    [ -s "$1" ] && yq ea --header-preprocess=false -e '[.] | select(length == 1) | .[0] | tag == "!!map"' "$1" &>/dev/null
+  }
+  setting() {
+    yq -o=json "$1"' | select(tag == "!!str" or tag == "!!null")' "$values_stage" 2>/dev/null
+  }
+  [ ! -e "$VALUES" ] && [ ! -L "$VALUES" ] &&
+    [ ! -e "$INSTALLATION" ] && [ ! -L "$INSTALLATION" ] ||
+    fail "Choose unused output paths."
+  values_stage=$(mktemp "${VALUES}.XXXXXX") || fail "Values staging failed."
+  installation_stage=''
+  trap 'rm -f -- "$values_stage"; [ -z "$installation_stage" ] || rm -f -- "$installation_stage"' EXIT
+  installation_stage=$(mktemp "${INSTALLATION}.XXXXXX") || fail "Installation staging failed."
+
+  helm --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
+    --namespace "$NAMESPACE" get values "$RELEASE" --output yaml > "$values_stage" 2>/dev/null ||
+    fail "Helm read failed; check release, context, permissions."
+  mapping "$values_stage" || fail "Helm YAML: require one mapping."
+  INSTALLATION_SECRET=$(setting '.installation.secretName' |
+    jq -er 'if . == null then "occ-installation-startup" else . end |
+      select(length <= 253 and
+      test("\\A[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*\\z"))' 2>/dev/null) &&
+    INSTALLATION_KEY=$(setting '.installation.key' |
+      jq -er 'if . == null then "installation.yaml" else . end |
+        select(. != "." and (startswith("..") | not)) |
+        select(length > 0 and length <= 253 and
+        test("\\A[-._a-zA-Z0-9]+\\z"))' 2>/dev/null) &&
+    test -n "$INSTALLATION_SECRET" && test -n "$INSTALLATION_KEY" ||
+    fail "Invalid Secret name/key; correct Helm values."
+
+  secret_json=$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+    --namespace "$NAMESPACE" get secret "$INSTALLATION_SECRET" -o json 2>/dev/null) ||
+    fail "Secret read failed; check name, namespace, permissions."
+  installation_data=$(printf '%s' "$secret_json" |
+    jq -er --arg key "$INSTALLATION_KEY" '.data[$key] | select(type == "string" and length > 0)' 2>/dev/null) &&
+    [ -n "$installation_data" ] || fail "Missing/invalid Secret data; check configured key."
+  printf '%s' "$installation_data" |
+    python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.buffer.read(), validate=True))' > "$installation_stage" 2>/dev/null ||
+    fail "Decode failed; correct Secret base64 data."
+  mapping "$installation_stage" || fail "Installation YAML: require one mapping."
+
+  ln -- "$values_stage" "$VALUES" || fail "Values publication failed."
+  ln -- "$installation_stage" "$INSTALLATION" ||
+    { rm -f -- "$VALUES"; fail "Installation publication failed."; }
+)
 ```
 
-Record the Installation ID, Agent inventory, PVC UIDs and bound volume names:
+Record the Installation ID, Agents, PVC UIDs and bound volumes:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" get --raw=/readyz
@@ -241,12 +281,12 @@ registry index digests can differ.
 
 ## Run the upgrade
 
-Use a separate clean checkout at `RELEASE_SOURCE_SHA`, with its chart and upgrade
-script, and a compatible installed `occ` CLI. From that checkout confirm
-`git rev-parse HEAD` equals `RELEASE_SOURCE_SHA`. If that source does not
-contain the upgrade script, stop; this procedure cannot be run from it. Do not
-overwrite a working checkout. Install `helm`, `kubectl`, `jq`, `yq` v4, and
-Python 3. Use a fresh
+Use a separate clean checkout at `RELEASE_SOURCE_SHA`, with its chart, upgrade
+script, and a compatible installed `occ` CLI. Confirm
+`git rev-parse HEAD` equals `RELEASE_SOURCE_SHA`. Stop if the upgrade script is missing. Do not
+overwrite a working checkout. Install Node.js, `helm`, `kubectl`, `jq`, `yq` v4,
+and Python 3. Follow `engines.node` in this checkout's `package.json` even without
+repository credentials. Use a fresh
 `UPGRADE_EVIDENCE` directory for each new release; retain it when resuming an
 interrupted release. The script changes the protected
 input files as well as the cluster; it saves their previous contents in that
