@@ -1,4 +1,12 @@
-import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
+import {
+  harnessCredentialOwnerMatches,
+  resolveProxyHarnessBinding,
+  harnessCredentialTypeMatches,
+} from "../../harness-credential-reader.ts";
+import type {
+  CredentialPolicyWithdrawalOptions,
+  EgressRoute,
+} from "@openclaw-enterprise/contracts";
 import type { OpenShellCredentialAttachments } from "../../sandbox/openshell-credential-attachments.ts";
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
@@ -652,6 +660,27 @@ class GatewaySettingFailure extends ConfigurationFailure {
 }
 
 class KubernetesRequestTimeout extends Error {}
+
+function requireRetainedHarnessDestinations(routes: readonly EgressRoute[], baseUrl: string): void {
+  const endpoint = new URL(baseUrl);
+  // Check only this Harness's retained inference destinations. Provider callbacks and
+  // per-send grant/policy authorization belong to admission and credential exchange.
+  for (const route of routes) {
+    const destination = URL.parse(route.path, endpoint.origin);
+    if (
+      route.origin !== endpoint.origin ||
+      destination === null ||
+      destination.origin !== endpoint.origin ||
+      destination.pathname !== route.path ||
+      (destination.pathname !== endpoint.pathname &&
+        !destination.pathname.startsWith(endpoint.pathname + "/"))
+    ) {
+      throw new ConfigurationFailure(
+        "The admitted Harness route destination does not match its saved model endpoint.",
+      );
+    }
+  }
+}
 
 type KubernetesPreparationStage =
   | "prepare_revision"
@@ -4671,21 +4700,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     if (auth.method === "credential_source") {
+      const supportedLoginModes = codex
+        ? ["api_key", "codex_pat", "chatgptAuthTokens"]
+        : ["api_key"];
       // The paired Sandbox injects the credential, so this path never projects a model Secret.
       if (
         this.sandboxDriver === undefined ||
-        (auth.credentialProxyId !== undefined
-          ? auth.credentialGatewayId !== undefined ||
-            auth.credentialProxyId !== this.proxyDriver?.id ||
-            auth.sourceType !== "openai" ||
-            auth.loginMode !== "api_key"
-          : this.credentialGatewayDriver === undefined ||
-            auth.credentialGatewayId !== this.credentialGatewayDriver.id) ||
-        credentialSourceType?.type !== auth.sourceType ||
-        credentialSourceType.harnessAuth?.loginMode !== auth.loginMode ||
-        credentialSourceType.harnessAuth.modelProvider !== "openai" ||
-        (auth.loginMode !== "api_key" &&
-          !(codex && (auth.loginMode === "codex_pat" || auth.loginMode === "chatgptAuthTokens")))
+        !harnessCredentialOwnerMatches(auth, this.credentialGatewayDriver, this.proxyDriver) ||
+        !harnessCredentialTypeMatches(auth, credentialSourceType) ||
+        !supportedLoginModes.includes(auth.loginMode)
       ) {
         throw new ConfigurationFailure(
           "Credential-source Harness authentication requires paired Drivers and a matching supported OpenAI login mode.",
@@ -11328,80 +11351,54 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return undefined;
     }
     const auth = revision.harnessAuth;
-    if (auth.credentialProxyId !== undefined) {
-      const resolved = context?.harnessAuth;
-      const control = this.proxyDriver?.sourceControl;
-      if (resolved?.method !== "credential_source") {
+    if (auth.credentialProxyId === undefined) {
+      const gateway = this.requireCredentialGateway();
+      if (gateway.id !== auth.credentialGatewayId) {
         return undefined;
       }
-      const { source, ...snapshot } = resolved;
-      if (
-        !isDeepStrictEqual(snapshot, auth) ||
-        auth.credentialGatewayId !== undefined ||
-        auth.credentialProxyId !== this.proxyDriver?.id ||
-        source.namespaceId !== revision.namespaceId ||
-        source.state !== "ready" ||
-        !credentialSourceMatchesSnapshot(source, auth) ||
-        source.egress === undefined ||
-        source.egress.schemaVersion !== 1 ||
-        revision.executionAdmission.mode !== "protected" ||
-        revision.egressPlan?.egressDriverId !== auth.credentialProxyId ||
-        !isDeepStrictEqual(control?.backend, source.egress.key.backend)
-      ) {
-        return undefined;
-      }
-      const inferenceRoutes = revision.egressPlan.routes.filter(
-        (route) =>
-          route.binding.grant.kind === "inference" &&
-          isDeepStrictEqual(route.binding.source, source.egress!.key),
-      );
-      if (inferenceRoutes.length === 0) {
-        return undefined;
-      }
-      const sourceType = control?.providers.find((provider) =>
-        isDeepStrictEqual(provider.ref, source.egress!.key.provider),
-      )?.sourceType;
-      if (
-        auth.sourceType !== "openai" ||
-        auth.loginMode !== "api_key" ||
-        sourceType?.type !== auth.sourceType ||
-        sourceType.harnessAuth?.modelProvider !== "openai" ||
-        sourceType.harnessAuth.loginMode !== auth.loginMode
-      ) {
-        return undefined;
-      }
-      this.validateHarnessCredentialSources(revision.harness, [source]);
-      const endpoint = new URL(
-        modelProviderBaseUrl(savedModelProvider(revision.harness.configuration)),
-      );
-      // Check only this Harness's retained inference destinations. Provider callbacks and
-      // per-send grant/policy authorization belong to admission and credential exchange.
-      for (const route of inferenceRoutes) {
-        const destination = URL.parse(route.path, endpoint.origin);
-        if (
-          route.origin !== endpoint.origin ||
-          destination === null ||
-          destination.origin !== endpoint.origin ||
-          destination.pathname !== route.path ||
-          (destination.pathname !== endpoint.pathname &&
-            !destination.pathname.startsWith(endpoint.pathname + "/"))
-        ) {
-          throw new ConfigurationFailure(
-            "The admitted Harness route destination does not match its saved model endpoint.",
-          );
-        }
-      }
-      return sourceType;
+      const sourceType = auth.sourceType;
+      const catalog = await gateway.listSourceTypes({ signal: this.operationSignal() });
+      return catalog.find((entry) => entry.type === sourceType);
     }
-    const gateway = this.requireCredentialGateway();
-    if (gateway.id !== revision.harnessAuth.credentialGatewayId) {
+    return this.admittedProxyCredentialSourceType(revision, auth, context);
+  }
+
+  private admittedProxyCredentialSourceType(
+    revision: AgentRevision,
+    auth: Extract<HarnessAuthSnapshot, { credentialProxyId: string }>,
+    context: ComputeRevisionContext | undefined,
+  ): CredentialSourceType | undefined {
+    if (!harnessCredentialOwnerMatches(auth, this.credentialGatewayDriver, this.proxyDriver)) {
       return undefined;
     }
-    const sourceType = revision.harnessAuth.sourceType;
-    const catalog = await gateway.listSourceTypes({
-      signal: this.operationSignal(),
-    });
-    return catalog.find((entry) => entry.type === sourceType);
+    const resolved = context?.harnessAuth;
+    if (resolved?.method !== "credential_source") {
+      return undefined;
+    }
+    const { source, ...snapshot } = resolved;
+    if (
+      !isDeepStrictEqual(snapshot, auth) ||
+      source.namespaceId !== revision.namespaceId ||
+      source.state !== "ready" ||
+      !credentialSourceMatchesSnapshot(source, auth)
+    ) {
+      return undefined;
+    }
+    const binding = resolveProxyHarnessBinding(
+      auth,
+      source,
+      revision,
+      this.proxyDriver?.sourceControl,
+    );
+    if (binding === undefined) {
+      return undefined;
+    }
+    this.validateHarnessCredentialSources(revision.harness, [source]);
+    requireRetainedHarnessDestinations(
+      binding.inferenceRoutes,
+      modelProviderBaseUrl(savedModelProvider(revision.harness.configuration)),
+    );
+    return binding.provider.sourceType;
   }
 
   /** Admission selects the route; a changed or missing live source cannot change that route. */

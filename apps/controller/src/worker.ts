@@ -1,3 +1,7 @@
+import {
+  harnessCredentialOwnerMatches,
+  projectHarnessCredentialSource,
+} from "./drivers/harness-credential-reader.ts";
 import { reduceCredentialPolicy } from "@openclaw-enterprise/occ";
 import {
   assertExecutionReleaseAllowed,
@@ -5710,15 +5714,7 @@ export class ControllerWorker {
       harnessAuth = { ...auth, backendRef: secret.backendRef };
     } else if (revision.harnessAuth.method === "credential_source") {
       const auth = revision.harnessAuth;
-      if (
-        auth.credentialProxyId !== undefined
-          ? auth.credentialGatewayId !== undefined ||
-            auth.credentialProxyId !== this.proxyDriver?.id ||
-            auth.sourceType !== "openai" ||
-            auth.loginMode !== "api_key"
-          : this.credentialGateway === undefined ||
-            auth.credentialGatewayId !== this.credentialGateway.id
-      ) {
+      if (!harnessCredentialOwnerMatches(auth, this.credentialGateway, this.proxyDriver)) {
         return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
       }
       const { source, withdrawal } = await this.resolveRevisionCredentialSource(revision, auth);
@@ -5730,44 +5726,11 @@ export class ControllerWorker {
       if (source === undefined) {
         return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
       }
-      if (
-        auth.credentialProxyId !== undefined &&
-        (source.egress === undefined ||
-          source.egress.schemaVersion !== 1 ||
-          revision.executionAdmission.mode !== "protected" ||
-          revision.egressPlan?.egressDriverId !== auth.credentialProxyId ||
-          !revision.egressPlan.routes.some(
-            (route) =>
-              route.binding.grant.kind === "inference" &&
-              isDeepStrictEqual(route.binding.source, source.egress!.key),
-          ))
-      ) {
+      const projected = projectHarnessCredentialSource(auth, source, revision, this.proxyDriver);
+      if (projected === undefined) {
         return { result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" } };
       }
-      if (source.egress !== undefined) {
-        const control = this.proxyDriver?.sourceControl;
-        const provider = control?.providers.find((entry) =>
-          isDeepStrictEqual(entry.ref, source.egress!.key.provider),
-        );
-        if (
-          !provider ||
-          !isDeepStrictEqual(control?.backend, source.egress.key.backend) ||
-          (auth.credentialProxyId !== undefined &&
-            (provider.sourceType.type !== auth.sourceType ||
-              provider.sourceType.harnessAuth?.modelProvider !== "openai" ||
-              provider.sourceType.harnessAuth.loginMode !== auth.loginMode))
-        ) {
-          return { result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" } };
-        }
-        // Provider defaults must reach the normal Harness too. In particular, a
-        // source with an omitted optional endpoint cannot escape its protected profile.
-        harnessAuth = {
-          ...auth,
-          source: { ...source, config: provider.normalizeConfig(source.config) },
-        };
-      } else {
-        harnessAuth = { ...auth, source };
-      }
+      harnessAuth = { ...auth, source: projected };
     } else {
       harnessAuth = revision.harnessAuth;
     }
