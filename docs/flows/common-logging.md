@@ -227,8 +227,8 @@ letter, then at most 63 letters, digits, `_` or `-`, and no key or token shape):
 `apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts:subtractExpiredOpenShellGit`
 adds `failure` and `grpcStatus`, never supplier text.
 `worker.repository-delivery-pending` reports Git
-delivery retries. Reconciliation retries each second, logging the first failure
-and then once per minute until success. Sandbox Driver, Installation and
+delivery retries. Reconciliation retries each second, logging failures initially
+and then at most once a minute. Sandbox Driver, Installation and
 Configuration IDs stay local.
 `worker.compute-prepare-failed` (a Compute Driver could not prepare a version) is
 ERROR and keeps `occ.code` plus the Namespace, Agent and Agent revision IDs and work identity

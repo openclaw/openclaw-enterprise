@@ -120,6 +120,69 @@ async function waitUntil(description, operation, timeout, signal) {
   throw new Error(`Timed out waiting for ${description}`);
 }
 
+// The observation deadline owns every child read and never accepts a late result.
+export async function observeRestoredGitRoute({
+  identity,
+  workerUid,
+  timeout,
+  signal,
+  worker,
+  workerEvents,
+  observed,
+}) {
+  const deadline = Date.now() + timeout;
+  const controller = new AbortController();
+  const bounded = AbortSignal.any([signal, controller.signal]);
+  const expired = () =>
+    controller.abort(new Error("Timed out waiting for replacement worker Git route restoration"));
+  const timer = setTimeout(expired, timeout);
+  const current = () => {
+    if (Date.now() >= deadline) {
+      expired();
+    }
+    bounded.throwIfAborted();
+  };
+  try {
+    await waitUntil(
+      "replacement worker Git route restoration",
+      async () => {
+        current();
+        const pod = await worker({ signal: bounded });
+        current();
+        assert.equal(
+          pod?.metadata.uid,
+          workerUid,
+          "Git readiness requires the selected replacement Worker",
+        );
+        const observation = selectOpenShellGitRouteReadiness(
+          await workerEvents(pod, undefined, { signal: bounded }),
+          identity,
+        );
+        current();
+        observed(observation);
+        const after = await worker({ signal: bounded });
+        current();
+        assert.equal(
+          after?.metadata.uid,
+          workerUid,
+          "Worker changed during Git readiness observation",
+        );
+        assert.notEqual(
+          observation.state,
+          "closed",
+          "replacement Worker closed the retained Git route",
+        );
+        return observation.state === "restored";
+      },
+      timeout,
+      bounded,
+    );
+    current();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Keys remain in this private directory or worker-only Secrets. The image build
 // context below receives only public certificates, never either signing key.
 async function certificates(command, directory, originHost, authorityHost) {
@@ -936,9 +999,12 @@ async function installOpenShellGit(t, witnessIssuedGit) {
       binaryHash: supervisor.binaryHash,
     };
   };
-  const worker = async () => {
+  const worker = async (options) => {
     const pods = JSON.parse(
-      await kube(["get", "pods", "-n", platform, "-l", selector(workerLabels), "-o", "json"]),
+      await kube(
+        ["get", "pods", "-n", platform, "-l", selector(workerLabels), "-o", "json"],
+        options,
+      ),
     );
     return pods.items.find(
       (pod) =>
@@ -969,13 +1035,16 @@ async function installOpenShellGit(t, witnessIssuedGit) {
       custodyVersion: custody.resourceVersion,
     };
   };
-  const workerEvents = async (pod, diagnostics) => {
+  const workerEvents = async (pod, diagnostics, options) => {
     if (diagnostics) {
       diagnostics.logReads++;
     }
     let logs;
     try {
-      logs = await kube(["logs", pod.metadata.name, "-n", platform, "-c", "worker", "--tail=2000"]);
+      logs = await kube(
+        ["logs", pod.metadata.name, "-n", platform, "-c", "worker", "--tail=2000"],
+        options,
+      );
     } catch (error) {
       if (diagnostics) {
         diagnostics.logReadFailures++;
@@ -1033,32 +1102,17 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     let observation = { state: "unobserved", denialCode: "none" };
     let outcome = "unconfirmed";
     try {
-      await waitUntil(
-        "replacement worker Git route restoration",
-        async () => {
-          const pod = await worker();
-          assert.equal(
-            pod?.metadata.uid,
-            workerUid,
-            "Git readiness requires the selected replacement Worker",
-          );
-          observation = selectOpenShellGitRouteReadiness(await workerEvents(pod), identity);
-          signal.throwIfAborted();
-          assert.equal(
-            (await worker())?.metadata.uid,
-            workerUid,
-            "Worker changed during Git readiness observation",
-          );
-          assert.notEqual(
-            observation.state,
-            "closed",
-            "replacement Worker closed the retained Git route",
-          );
-          return observation.state === "restored";
-        },
+      await observeRestoredGitRoute({
+        identity,
+        workerUid,
         timeout,
         signal,
-      );
+        worker,
+        workerEvents,
+        observed: (value) => {
+          observation = value;
+        },
+      });
       outcome = "ready";
     } finally {
       measurement("git-route-readiness", {
