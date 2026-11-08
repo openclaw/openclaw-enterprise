@@ -11460,12 +11460,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       return undefined;
     }
-    const binding = resolveProxyHarnessBinding(
-      auth,
-      source,
-      revision,
-      this.proxyDriver?.sourceControl,
-    );
+    const binding = resolveProxyHarnessBinding(auth, source, revision, this.proxyDriver);
     if (binding === undefined) {
       return undefined;
     }

@@ -46,7 +46,7 @@ export function resolveProxyHarnessBinding(
   auth: Extract<HarnessCredentialSnapshot, { credentialProxyId: string }>,
   source: Readonly<CredentialSource>,
   revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
-  control: CredentialSourceControl | undefined,
+  proxy: Pick<CredentialProxyDriver, "sourceControl"> | undefined,
 ):
   | {
       readonly provider: CredentialProviderDefinition;
@@ -70,7 +70,8 @@ export function resolveProxyHarnessBinding(
   if (inferenceRoutes.length === 0) {
     return undefined;
   }
-  const provider = sourceEgressProvider(egress, control);
+  // Invalid admission must refuse before consulting even the installed catalog accessor.
+  const provider = sourceEgressProvider(egress, proxy?.sourceControl);
   if (provider === undefined || !harnessCredentialTypeMatches(auth, provider.sourceType)) {
     return undefined;
   }
@@ -90,7 +91,7 @@ export function projectHarnessCredentialSource(
   const provider =
     auth.credentialProxyId === undefined
       ? sourceEgressProvider(source.egress, proxy?.sourceControl)
-      : resolveProxyHarnessBinding(auth, source, revision, proxy?.sourceControl)?.provider;
+      : resolveProxyHarnessBinding(auth, source, revision, proxy)?.provider;
   return provider === undefined
     ? undefined
     : { ...source, config: provider.normalizeConfig(source.config) };

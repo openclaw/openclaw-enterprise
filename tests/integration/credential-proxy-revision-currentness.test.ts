@@ -1003,9 +1003,28 @@ test(
     const mixed = withCompanionInference(t, stored, f.egress);
     assert.doesNotThrow(() => worker["validateExecutionAdmission"](mixed));
     assert.doesNotThrow(() => compute["validateRevisionExecution"](mixed, resolved.context));
-    assert.deepEqual(await worker["resolveRevisionSecretContext"](mixed), {
-      result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" },
+    const catalogDescriptor = Object.getOwnPropertyDescriptor(f.egress, "sourceControl");
+    let catalogReads = 0;
+    // A plan without this source's inference route must refuse before any catalog access.
+    Object.defineProperty(f.egress, "sourceControl", {
+      configurable: true,
+      get() {
+        catalogReads++;
+        throw new Error("A missing retained inference route must not consult the Proxy catalog.");
+      },
     });
+    try {
+      assert.deepEqual(await worker["resolveRevisionSecretContext"](mixed), {
+        result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" },
+      });
+      assert.equal(catalogReads, 0);
+    } finally {
+      if (catalogDescriptor === undefined) {
+        Reflect.deleteProperty(f.egress, "sourceControl");
+      } else {
+        Object.defineProperty(f.egress, "sourceControl", catalogDescriptor);
+      }
+    }
     for (const wrongAuth of [
       { ...auth, credentialProxyId: "wrong-proxy" },
       { ...auth, credentialGatewayId: "wrong-gateway" },
