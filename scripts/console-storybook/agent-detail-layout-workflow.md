@@ -39,6 +39,20 @@ unavailable** (`revisionError`) preview still simulates HTTP 403. This null
 rejection is simulated UI proof, not a normal browser network failure or proof of
 backend persistence or deployment.
 
+Open **Pages / Agent detail / Runtime Logs Source Switch After Rate Limit**
+(`pages-agent-detail--runtime-logs-source-switch-after-rate-limit`). Wait for
+Gateway output, select **Agent (Harness)** under **Source**, then choose **Refresh
+logs** once the Agent output appears. Switch back to **Gateway** while the
+five-second retry message is visible. **Reading output…** should replace the old
+output and retry message. Wait past five seconds, while the Gateway read is still
+pending, and confirm the message stays gone. After about ten seconds from the
+switch, **gateway listening** appears. Reload to repeat.
+
+**Runtime Logs Refresh Rate Limited** (`RuntimeLogsRefreshRateLimited`)
+covers staying on the same source. Both stories use simulated responses. The
+controller-backed browser regression in `tests/browser/console-agent-logs.test.ts`
+checks the source switch through the Console API.
+
 1. Separately, open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, Storybook ID `pages-agent-detail--deployment-succeeded`).
    At both widths, confirm its H1 shows a readable Agent name as an independent
