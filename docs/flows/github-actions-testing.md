@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: 2026-11-05
-last_updated_session: authoring-run/14bcb9d6-2d4c-449d-8bbc-b64e3ef7e632
+updated: 2026-11-08
+last_updated_session: authoring-run/d394120a-859d-45f1-ba62-9bf9dd9b66c1
 ---
 
 # GitHub Actions testing flow
@@ -63,7 +63,7 @@ validates it before setup. Focused results retain expected cases, environment an
 cleanup, but `validateLaneEvidence` rejects them for full-lane aggregation,
 including one-file lanes.
 
-CI uses the event checkout without external service credentials. `CI Impact` starts independently of `Suite Audit and Static Checks`, which verifies checkout identity and runs the [documented checks](../testing/ci/required-checks.md#scenarios) in every mode. Docs mode skips test lanes. The [coverage map](../testing/ci/required-checks.md#scenarios) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. Image startup parts 1 and 2, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other jobs use `blacksmith-16vcpu-ubuntu-2404`.
+CI uses the event checkout without external service credentials. `CI Impact` starts independently of `Suite Audit and Static Checks`, which verifies checkout identity and runs the [documented checks](../testing/ci/required-checks.md#scenarios) in every mode. Docs mode skips test lanes. The [coverage map](../testing/ci/required-checks.md#scenarios) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. The workflow owns runner classes; Kubernetes lanes require a NetworkPolicy-enforcing kernel.
 
 The selector verifies that the tested merge has the event head as its second parent. It
 compares that tree with its first parent, the current base, using policy from the base.
@@ -88,9 +88,10 @@ A PR can change the workflow loaded from its merge checkout despite base-loaded
 policy. Separately trusted enforcement is a deployment decision, not an
 established source property.
 
-Full Integration checks out `github.sha`. Main pushes select `all`. Manual main
-dispatches require secret-free `integration-main-approval`. Preflight checks
-the team rule, dispatcher ID, triggering login and environment policy.
+Full Integration checks out `github.sha`. Main pushes select `all`; manual dispatches
+require `integration-main-approval` and verified dispatcher, team and environment policy.
+A push may reuse same-SHA CI results after the [bounded admission and publication checks](../testing/ci/full-integration.md#results-and-limits);
+otherwise it runs fresh. Credentialed lanes do not wait for reuse.
 
 Main pushes share a queue. Each dispatch waits separately for approval.
 Slack Live serializes access to its channel and app. Local Kubernetes Installation
@@ -266,6 +267,8 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 16:09: Reuse admitted same-source ordinary CI results before fresh Full Integration execution. (authoring-run/d394120a-859d-45f1-ba62-9bf9dd9b66c1 - 832dbfca29eca2dd3cb98bd9dd5d803d9100911e)
 
 - 2026-11-04 12:10: Isolate the Codex Git proof queue without Slack. (authoring-run/14bcb9d6-2d4c-449d-8bbc-b64e3ef7e632 - aa60a72115e342ec020d1083fb5e30c139202c84)
 
