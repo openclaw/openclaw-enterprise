@@ -256,6 +256,7 @@ test(
         await witness(
           postDetach ? "replacement witness before denial" : "live witness before denial",
         );
+        phase = postDetach ? "replacement denial" : "live denial";
         await sameExecution();
         const identity = { sandboxId: a.target.sandboxId, revisionId: a.revision.id };
         // The original worker blocks the route before provider detachment too.
