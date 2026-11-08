@@ -204,6 +204,21 @@ a successful earlier login check is insufficient. Startup can take several minut
 Without the access binding, the deploy request fails with `403`. After activation,
 [verify a real model response](../operate/model-verification.md); readiness does not prove inference.
 
+If a managed `codex-pat` deployment stays unready, verify the Agent binds the
+intended source, retains its required access binding, and can reach the permitted
+provider endpoints through OpenShell. Use
+[Harness troubleshooting](../../reference/harness-execution.md#troubleshooting)
+and the deployment status above to inspect the failure. A serving process that
+started without PAT authentication can remain unauthenticated after the provider
+recovers; status polling observes authentication but does not reload it. Absent
+authentication alone does not establish token revocation.
+
+Let the existing deployment reach a terminal status before retrying; readiness
+waits have a [convergence deadline](../../reference/agents/deployment.md#pending-deployment-progress),
+and pending cleanup must finish. After correcting the cause of a failed
+deployment, run `./bin/occ agent deploy "$AGENT_ID"` again to create a fresh
+version, then check its deployment status and verify a model response.
+
 ## Rotate the key
 
 Changing the Secret does not change the gateway's copy. Update the Secret, or
