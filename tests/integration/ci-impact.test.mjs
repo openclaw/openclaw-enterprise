@@ -2066,7 +2066,7 @@ test("real shallow bootstrap reports exact safe reasons for each guard", async (
   mkdirSync(objects);
   await all(
     [
-      ["bootstrap_non_pr_event", { GITHUB_EVENT_NAME: "push" }],
+      ["bootstrap_non_pr_event", { GITHUB_EVENT_NAME: "workflow_dispatch" }],
       ["bootstrap_event_unavailable", { GITHUB_EVENT_PATH: join(f.dir, "missing") }],
       ["bootstrap_invalid_identity", { GITHUB_SHA: "invalid;$(touch injected)" }],
       ["bootstrap_checkout_mismatch", { GITHUB_SHA: f.head }],
@@ -2095,7 +2095,7 @@ test("selector distinguishes conservative inspection outcomes", async (t) => {
   await all(
     [
       [f, {}, "docs", "docs_only"],
-      [f, { GITHUB_EVENT_NAME: "push" }, "full", "non_pr_event"],
+      [f, { GITHUB_EVENT_NAME: "workflow_dispatch" }, "full", "non_pr_event"],
       [f, { GITHUB_SHA: "invalid" }, "full", "invalid_identity"],
       [f, { GITHUB_SHA: f.head }, "full", "checkout_mismatch"],
       [
