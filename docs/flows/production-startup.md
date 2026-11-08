@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-08"
-last_updated_session: "authoring-run/5809b7e1-70ee-4446-8c3a-020e78a0e7af"
+last_updated_session: "authoring-run/ef34e45f-633b-49fb-8884-cdf519ed7d40"
 ---
 
 # Production Startup Flow
@@ -114,13 +114,12 @@ change controller configuration.
 ### 3. Run Helm initialization
 
 `internal/occcli/installation_receipt.go:installationInstallCommand` privately
-snapshots kubeconfig/chart/values and checks all release states. After syncing
-`intent.json` and its directory entry, it prints the receipt notice. A returned
-stdout write error preserves intent and reports its path without creating
-`dispatch.json` or starting Helm install. Success syncs the unknown dispatch marker
-before starting Helm. `observeInstallationJob` records the first recognized Job
-UID matching the attempt annotation (omitted on upgrades). Helm's outcome is
-recorded separately.
+snapshots kubeconfig/chart/values, checks all release states and syncs
+`intent.json` and its directory entry. On stdout notice write error, it keeps
+intent, names the receipt directory and exits before `dispatch.json` or Helm
+install. Otherwise it syncs the unknown marker and starts Helm.
+`observeInstallationJob` records the first recognized Job UID matching the
+attempt annotation (installs only). Helm's outcome is separate.
 
 `deploy/helm/openclaw-enterprise/templates/bootstrap-networkpolicies.yaml:1`
 installs isolation before the Job; it and later policies grant configured
@@ -381,6 +380,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 07:15: Clarify receipt directory. (authoring-run/ef34e45f-633b-49fb-8884-cdf519ed7d40 - 7e2eb23a7f55b5f375e52883fcb6a7bb0f10049e)
 
 - 2026-11-08 05:16: Document the preserved intent and stop before dispatch when the receipt notice write fails. (authoring-run/5809b7e1-70ee-4446-8c3a-020e78a0e7af - e0d329d9ad9560e954ce94889079ef55ba43080f)
 
