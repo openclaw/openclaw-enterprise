@@ -9,8 +9,10 @@ import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { isDeepStrictEqual } from "node:util";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import { managedGatewayConfiguration } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
+import { normalizeOpenAiBaseUrl } from "../../apps/controller/src/drivers/openai-endpoint.ts";
 import {
   authenticatedHeaders,
   createAuthenticatedControllerRequest,
@@ -30,6 +32,7 @@ import {
   productionGatewayMemoryLimitGi,
   withBoundedTeardown,
   withinDiagnosticDeadline,
+  waitForDeploymentAvailable,
 } from "../helpers/kubernetes-real.mjs";
 import {
   ensureEnvoyGatewayControllers,
@@ -41,7 +44,10 @@ import {
   OTEL_RESOURCE,
 } from "../helpers/logging-otel-observation.mjs";
 import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
+import { withSkillPolicyRestore } from "./skill-policy-restore.mjs";
+import { waitForWorkspaceReconnect } from "./gateway-workspace-readiness.mjs";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
+import { defaultUsersIAM } from "./default-users-iam.mjs";
 import { installManagedSlackProxyFixture } from "./managed-slack-proxy-k3d.mjs";
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
@@ -736,13 +742,10 @@ async function startInClusterControllers(
   await applyManifest(JSON.stringify(manifests), {
     redactions: [databaseUrl, authSecret, workspaceGateway.apiKey],
   });
-  await kubectl(
-    "wait",
-    "--namespace",
-    platformNamespace,
-    "--for=condition=Available",
-    `deployment/${name}`,
-    "--timeout=180s",
+  await waitForDeploymentAvailable(
+    context,
+    { kubeconfigPath, kubernetesContext },
+    { namespace: platformNamespace, deployment: name, container: "api", labels },
   );
   const pods = await resources(
     "pods",
@@ -759,13 +762,15 @@ async function startInClusterControllers(
     `${controllerPort ?? 0}:18080`,
   );
   context.after(() => forwarding.stop());
-  await kubectl(
-    "wait",
-    "--namespace",
-    platformNamespace,
-    "--for=condition=Available",
-    `deployment/${workerName}`,
-    "--timeout=180s",
+  await waitForDeploymentAvailable(
+    context,
+    { kubeconfigPath, kubernetesContext },
+    {
+      namespace: platformNamespace,
+      deployment: workerName,
+      container: "worker",
+      labels: workerLabels,
+    },
   );
   const logs = spawn(
     "kubectl",
@@ -1208,6 +1213,63 @@ async function grantSecretOperate(pool, namespaceId, subjectId, secretId) {
   );
 }
 
+/**
+ * An ordinary account with no grant, created through the accounts API. It joins the configured
+ * default-user Group as it is created; that Group holds Agent creation in the Namespace named
+ * default, and each create there makes the caller that resource's Owner.
+ */
+async function createDefaultUserRequest({ adminRequest, requestFactory }) {
+  const identifier = randomUUID();
+  const credentials = {
+    email: `default-user-${hash(identifier)}@example.test`,
+    password: `default-user-${identifier}`,
+  };
+  const account = await adminRequest("POST", "/api/auth/accounts", credentials);
+  assert.equal(account.status, 201, JSON.stringify(account.error));
+  const { principalId } = account.data;
+  return { request: await requestFactory(credentials), principalId };
+}
+
+/**
+ * The caller's deploy gave the Agent's ServicePrincipal operate on exactly the Secret the caller
+ * can operate, audited as the caller. A Default user can operate it because it created it and
+ * owns it, so its Owner bindings on the Agent and Secret are checked too.
+ */
+async function assertDeployGrant(pool, { namespaceId, agent, secretId, callerId, owner }) {
+  if (owner) {
+    const owned = await pool.query(
+      `SELECT resource_kind, resource_id FROM occ.iam_access_bindings
+        WHERE namespace_id = $1 AND identity_subject_id = $2 AND role_id = 'role_config_owner'
+          AND resource_id = ANY($3::text[])
+        ORDER BY resource_kind`,
+      [namespaceId, callerId, [agent.id, secretId]],
+    );
+    assert.deepEqual(owned.rows, [
+      { resource_kind: "agent", resource_id: agent.id },
+      { resource_kind: "secret", resource_id: secretId },
+    ]);
+  }
+  const grant = await pool.query(
+    `SELECT identity_subject_id, resource_kind, resource_id FROM occ.iam_access_bindings
+      WHERE id = $1`,
+    [`binding_${agent.id}_${secretId}_operate`],
+  );
+  assert.deepEqual(grant.rows, [
+    {
+      identity_subject_id: agent.servicePrincipalId,
+      resource_kind: "secret",
+      resource_id: secretId,
+    },
+  ]);
+  const audit = await pool.query(
+    `SELECT actor_id, details->>'agentId' AS agent_id FROM occ.audit_events
+      WHERE action = 'openclaw.iam.access_bindings.create' AND resource_id = $1
+        AND details->>'reason' = 'agent_deploy'`,
+    [secretId],
+  );
+  assert.deepEqual(audit.rows, [{ actor_id: callerId, agent_id: agent.id }]);
+}
+
 async function createSecretAssignmentCallerRequest({
   pool,
   createPostgresControllerAuth,
@@ -1620,6 +1682,9 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
           gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
         },
   );
+  // Cases share an Installation, so keep its policy after the Default user case
+  // creates durable Owner bindings. Kubernetes cleanup does not remove those grants.
+  workerConfiguration.iam = defaultUsersIAM();
   const publicGithubRead =
     options.publicGithubRead !== true
       ? undefined
@@ -1851,6 +1916,12 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   let adminRequest = await requestFactory(credentials);
   let request = adminRequest;
   let secretAssignmentPrincipalId;
+  // Default users create Agents only in the Namespace named default. Each case's teardown deletes
+  // its tenant namespace, so only the case that creates the Installation can use default.
+  assert.ok(
+    createdFreshInstallation || options.defaultUser !== true,
+    "the Default user case needs a fresh Installation's default Namespace; run it first on a new database",
+  );
   if (createdFreshInstallation) {
     const namespaces = await adminRequest("GET", "/namespaces");
     assert.equal(namespaces.status, 200, JSON.stringify(namespaces.error));
@@ -1979,14 +2050,17 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
 
   let secretApi;
   {
-    const secretAssignmentCaller = await createSecretAssignmentCallerRequest({
-      pool: observerPool,
-      createPostgresControllerAuth,
-      requestFactory,
-      installation: activeInstallation,
-      namespaceId,
-      baseURL: controllerAuthBaseURL,
-    });
+    const secretAssignmentCaller =
+      options.defaultUser === true
+        ? await createDefaultUserRequest({ adminRequest, requestFactory })
+        : await createSecretAssignmentCallerRequest({
+            pool: observerPool,
+            createPostgresControllerAuth,
+            requestFactory,
+            installation: activeInstallation,
+            namespaceId,
+            baseURL: controllerAuthBaseURL,
+          });
     request = secretAssignmentCaller.request;
     secretAssignmentPrincipalId = secretAssignmentCaller.principalId;
 
@@ -2074,6 +2148,15 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       };
     }
     if (options.bindingNegativeControl !== false) {
+      // The caller owns every Secret it creates, so the refusal needs a Secret it did not create:
+      // one the administrator owns, on which the caller holds no operate grant.
+      const unownedValue = `unowned-model-${randomUUID()}`;
+      const unownedSecret = await createApiSecret(
+        adminRequest,
+        namespaceId,
+        `unowned-model-${randomUUID()}`,
+        unownedValue,
+      );
       const ungranted = await createUndeployedAgent(
         request,
         namespaceId,
@@ -2086,29 +2169,31 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
         `/namespaces/${namespaceId}/agents/${ungranted.agent.id}`,
         {
           configurationId: ungranted.agent.configurationId,
-          harnessAuth: { method: "api_key", source: modelSecret.ref },
+          harnessAuth: { method: "api_key", source: unownedSecret.ref },
         },
-        [process.env.OPENAI_API_KEY],
+        [process.env.OPENAI_API_KEY, unownedValue],
         "Harness auth assignment without exact actor Secret operate",
       );
       assert.equal(actorDenied.status, 403);
     }
-    await Promise.all(
-      [
-        secretApi.model,
-        secretApi.slackApp,
-        secretApi.slackBot,
-        secretApi.probe,
-        secretApi.peerProbe,
-        secretApi.sharedProbe,
-        secretApi.missingBackend,
-        secretApi.unboundDelete,
-      ]
-        .filter(Boolean)
-        .map((secret) =>
-          grantSecretOperate(observerPool, namespaceId, secretAssignmentPrincipalId, secret.id),
-        ),
-    );
+    if (options.defaultUser !== true) {
+      await Promise.all(
+        [
+          secretApi.model,
+          secretApi.slackApp,
+          secretApi.slackBot,
+          secretApi.probe,
+          secretApi.peerProbe,
+          secretApi.sharedProbe,
+          secretApi.missingBackend,
+          secretApi.unboundDelete,
+        ]
+          .filter(Boolean)
+          .map((secret) =>
+            grantSecretOperate(observerPool, namespaceId, secretAssignmentPrincipalId, secret.id),
+          ),
+      );
+    }
   }
 
   const harnessId = options.harnessId ?? (mode === "dedicated" ? "codex" : "openclaw");
@@ -2278,7 +2363,6 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     assert.equal(agent.status, 201, JSON.stringify(agent.error));
     assert.deepEqual(agent.data.harnessAuth, { method: "api_key", source: secretApi.model.ref });
     await assertPresetIndependent(configuration);
-    const persistedAgent = await storedAgent(observerPool, namespaceId, agent.data.id);
     const provisionedGatewayPassword = await provisionAgentTransportSecret(
       directory,
       placement,
@@ -2294,61 +2378,35 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       options.legacyRuntimeCredentials === true
         ? await resource("secret", legacyTransportName, placement)
         : undefined;
-    {
-      const revisionsBefore = await request(
-        "GET",
-        `/namespaces/${namespaceId}/agents/${agent.data.id}/revisions`,
-      );
-      assert.equal(revisionsBefore.status, 200, JSON.stringify(revisionsBefore.error));
-      const deniedDeploy = await expectApiFailureWithoutSecret(
-        request,
-        "POST",
-        `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`,
-        undefined,
-        secretApiProtectedValues({ secretApi }),
-        "Secret-backed deploy before Agent service principal operate",
-      );
-      assert.equal(
-        deniedDeploy.status,
-        403,
-        `Agent service principal denial returned HTTP ${deniedDeploy.status}`,
-      );
-      const revisionsAfter = await request(
-        "GET",
-        `/namespaces/${namespaceId}/agents/${agent.data.id}/revisions`,
-      );
-      assert.equal(revisionsAfter.status, 200, JSON.stringify(revisionsAfter.error));
-      assert.deepEqual(
-        revisionsAfter.data.map(({ id }) => id),
-        revisionsBefore.data.map(({ id }) => id),
-        "missing Agent service-principal Secret operate must reject deployment before revision admission",
-      );
-      await Promise.all(
-        [
-          secretApi.model,
-          secretApi.slackApp,
-          secretApi.slackBot,
-          secretApi.probe,
-          secretApi.sharedProbe,
-        ]
-          .filter(Boolean)
-          .map((secret) =>
-            grantSecretOperate(
-              observerPool,
-              namespaceId,
-              persistedAgent.servicePrincipalId,
-              secret.id,
-            ),
-          ),
-      );
-    }
+    // The caller can operate the Agent's Secrets, so its deploy writes the Agent
+    // ServicePrincipal's operate grants. A deploy by a caller who cannot operate a source writes
+    // none and is refused; tests/integration/postgres-default-users.test.ts covers that refusal.
 
     deployed = await request("POST", `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`);
     assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
   }
   secretApi = { ...secretApi, configuration: configuration.data };
   const persistedAgent = await storedAgent(observerPool, namespaceId, agent.data.id);
-  assert.deepEqual(deployed.data.harness, { id: harnessId, version: "1.0.0", mode });
+  const fixtureProvider = apiConfiguration.drivers.compute.configuration.runtime.modelProvider ?? {
+    protocol: "openai-responses",
+    baseUrl: "https://api.openai.com/v1",
+  };
+  assert.ok(
+    isDeepStrictEqual(deployed.data.harness, {
+      id: harnessId,
+      version: "1.0.0",
+      mode,
+      overrides: {},
+      configuration: {
+        modelProvider: {
+          protocol: fixtureProvider.protocol,
+          baseUrl: normalizeOpenAiBaseUrl(fixtureProvider.baseUrl),
+          supportsStandaloneWebSearch: fixtureProvider.supportsStandaloneWebSearch === true,
+        },
+      },
+    }),
+    "deployed Harness descriptor must match the fixture's configured or default model provider",
+  );
   assert.deepEqual(deployed.data.harnessAuth, agent.data.harnessAuth);
   assert.equal(Object.hasOwn(deployed.data, "serviceAccount"), false);
   for (const [description, response] of [
@@ -2376,6 +2434,25 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
         event.outcome === "success",
     );
   });
+  // Guided provisioning deploys as the administrator through the worker, which writes its own
+  // grants; only the caller's own deploy writes these.
+  if (!options.provisionNativeAdmin) {
+    for (const secret of [
+      secretApi.model,
+      secretApi.slackApp,
+      secretApi.slackBot,
+      secretApi.probe,
+      secretApi.sharedProbe,
+    ].filter(Boolean)) {
+      await assertDeployGrant(observerPool, {
+        namespaceId,
+        agent: persistedAgent,
+        secretId: secret.ref.id,
+        callerId: secretAssignmentPrincipalId,
+        owner: options.defaultUser === true,
+      });
+    }
+  }
   const observedRevision = await request(
     "GET",
     `/namespaces/${namespaceId}/agents/${agent.data.id}/revisions/${deployed.data.id}`,
@@ -2505,9 +2582,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     "the admitted revision must retain its original model reference",
   );
   const expectedGatewayModel =
-    mode === "dedicated" &&
-    harnessId === "codex" &&
-    process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined
+    mode === "dedicated" && harnessId === "codex"
       ? `codex/openai-compatible/${providerModel}`
       : modelReference;
   await assertGatewayEffectiveDefaultModel(
@@ -3521,9 +3596,9 @@ async function assertDedicatedSkillSources(topology) {
       ),
     );
   }
-  try {
+  const exercise = async () => {
     await deploy(enabled);
-    return await assertDedicatedSkillSourceLifecycle({
+    return assertDedicatedSkillSourceLifecycle({
       callGateway: (method, params) => gatewayCall(topology, method, params),
       readHarnessFile: (path) =>
         readFileOrMissing(topology.placement, topology.harnessPod.metadata.name, path),
@@ -3542,17 +3617,22 @@ async function assertDedicatedSkillSources(topology) {
         (transfer.config ??= {}).nodes = {
           "*": { ...structuredClone(policy), allowWritePaths: [] },
         };
-        try {
-          await deploy(denied);
-          await run();
-        } finally {
-          await deploy(enabled);
-        }
+        await withSkillPolicyRestore(
+          async () => {
+            await deploy(denied);
+            await run();
+          },
+          () => deploy(enabled),
+          "Denied node-write test failed and enabled Skill policy restoration failed.",
+        );
       },
     });
-  } finally {
-    await deploy(original.data.values);
-  }
+  };
+  return withSkillPolicyRestore(
+    exercise,
+    () => deploy(original.data.values),
+    "Skill source lifecycle failed and original Skill policy restoration failed.",
+  );
 }
 
 async function assertGatewayEffectiveDefaultModel(context, topology, expectedModel) {
@@ -6243,10 +6323,9 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
     await readFileInPod(topology.placement, harnessPod, workspaceFromGateway),
     ownerContent,
   );
-  const reconnected = await gatewayCall(topology, "agents.files.get", {
-    agentId: "main",
-    name: "AGENTS.md",
-  });
+  const reconnected = await waitForWorkspaceReconnect(() =>
+    gatewayCall(topology, "agents.files.get", { agentId: "main", name: "AGENTS.md" }, 10_000),
+  );
   assert.equal(reconnected.file.content, ownerContent, "paired node must reconnect after restart");
 
   const secondRevision = await topology.request(
@@ -6301,10 +6380,9 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
   topology.gatewayPod = await waitForReadyGatewayPod(topology, secondRevision.data.id);
   topology.harnessPod = nextHarness;
   topology.revision = secondRevision.data;
-  const afterRevision = await gatewayCall(topology, "agents.files.get", {
-    agentId: "main",
-    name: "AGENTS.md",
-  });
+  const afterRevision = await waitForWorkspaceReconnect(() =>
+    gatewayCall(topology, "agents.files.get", { agentId: "main", name: "AGENTS.md" }, 10_000),
+  );
   assert.equal(
     afterRevision.file.content,
     ownerContent,
@@ -6341,7 +6419,10 @@ async function assertRoutedWorkspaceFileReads(topology, files) {
   const basePath = `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/workspace/files`;
   for (const [name, content] of files) {
     const observed = await topology.workspaceRequest("GET", `${basePath}/${name}`);
-    assert.equal(observed.status, 200, JSON.stringify(observed.error));
+    const { status } = observed;
+    const diagnosticStatus =
+      Number.isInteger(status) && status >= 100 && status <= 599 ? status : "unknown";
+    assert.equal(diagnosticStatus, 200, `workspace-file GET returned HTTP ${diagnosticStatus}`);
     assert.deepEqual(observed.data, { name, content });
   }
 }

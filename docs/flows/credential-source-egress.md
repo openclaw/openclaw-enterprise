@@ -14,9 +14,8 @@ and [threat model](../reference/security/credential-proxy.md).
 
 ## Entry Points
 
-- A [source binding](../reference/credential-sources.md#bind-a-source-to-an-agent)
-  and deployment establish the route. The installation must have current
-  evidence of loaded enforcement.
+- Deployment establishes a [source route](../reference/credential-sources.md#bind-a-source-to-an-agent);
+  current enforcement evidence is required.
 - The authenticated supervisor opens one TLS stream,
   `HttpInstallationExchange.Exchange`, for credential resolution, send
   authorization and response release
@@ -64,11 +63,14 @@ graph TD
 
 ### 1. Admit source and install the revision plan
 
-OCC checks source and Secret permissions at admission. Existing sources need
-explicit opt-in. Version 3 binds Sandbox and Credential Proxy to one registered
-Driver. The plan identifies the Driver, configuration digest, execution, source
-generation, grant and routes. Empty routes deny all. The API checks registration.
-The worker compares the stored reference.
+OCC checks source and Secret permissions; existing sources need opt-in. Version 3
+binds Sandbox and Proxy to one registered Driver.
+The plan records its digest, execution, source generation, grant, and routes;
+empty routes deny all. `admitProxyPlan` derives routes from saved Harness settings
+and source consent. `checkEgressUseIn` rechecks before delivery and send authorization.
+Console `apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides`
+captures the controls at submission. OCC owns normalized input before awaiting
+admission, which resolves settings and checks both caller and Agent grants.
 
 For credential-free metadata, `packages/occ/src/index.ts:admitProxyPlan` rejects
 a Driver grant that differs from the source. Equivalent grants have the same
@@ -328,6 +330,8 @@ None.
 ## Changelog
 
 - 2026-11-06 02:36: Preserve request-time token resolution and held-probe diagnostics when merging the current flow. (authoring-run/c13df234-5a0d-4e3c-b254-cc806ee046e7 - 585e7ac2c6673611ec29a3c76ca507e61308fa6f)
+
+- 2026-11-06 01:25: Pin credential destinations. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
 
 - 2026-11-05 23:21: Trace request-time token resolution and the permission check before releasing a credential header. (codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676 - 614169814)
 

@@ -152,9 +152,8 @@ preserves already-installed same-name copies.
 
 ## Contents
 
-A Preset has `id`, `namespaceId`, a Namespace-unique `name`, `template`, and
-`createdAt`. OCC assigns the ID, Namespace, and creation time. An empty template
-is valid. Its optional fields are:
+OCC assigns `id`, `namespaceId`, and `createdAt`. Each Preset has a
+Namespace-unique `name` and a `template`, which may be empty.
 
 | Field                          | Purpose                                                                           |
 | ------------------------------ | --------------------------------------------------------------------------------- |
@@ -169,17 +168,45 @@ is valid. Its optional fields are:
 | `configuration.values`         | Native Configuration JSON for models, Harness, channels, and sandbox settings.    |
 | `configuration.secretBindings` | Namespace Secret bindings.                                                        |
 
-These use the existing [Agent](agents.md) and [Configuration](configuration.md)
-contracts. Installation-owned Driver selection, generated identities, runtime
-state, and Agent revision IDs are not template settings. A supplied
-`configuration.values` replaces the console's starter JSON; it does not merge
-with it. Omitted settings use the form's normal defaults.
+Templates follow [Agent](agents.md) and [Configuration](configuration.md)
+contracts. Installation Driver selection, generated identities, runtime state,
+and revision IDs belong outside templates. `configuration.values` replaces
+starter JSON. Omitted settings use form defaults.
 
-`agent.pluginApprovers` uses the Agent default plugin approver semantics from
-[Agent Plugins](agent-plugins.md#slack-approver-users). Omit it to inherit
-the form default; `[]` selects no Slack approvers. Variable tokens
-can appear inside those identity strings; the completed Agent request still
-validates the rendered approvers with the selected Plugin Driver.
+[Plugin approver identities](agent-plugins.md#slack-approver-users) support
+variables. Omit `agent.pluginApprovers` to inherit the form default. Use `[]`
+for no Slack approvers. Agent creation validates rendered approvers with the
+selected Plugin Driver.
+
+### TypeScript consumers
+
+`validatePresetTemplate` checks syntax and returns `PresetDraftTemplate`.
+Draft bindings and approvers are `unknown`. Normalize binding templates for the
+Namespace, then render variables before checking approvers.
+
+```ts
+import {
+  normalizePresetTemplate,
+  renderPresetTemplate,
+  validPluginApprovers,
+} from "@openclaw-enterprise/contracts";
+
+export function readPreset(
+  input: unknown,
+  namespaceId: string,
+  inputs: Parameters<typeof renderPresetTemplate>[1],
+) {
+  const preset = normalizePresetTemplate(input, namespaceId);
+  const approvers = renderPresetTemplate(preset, inputs).agent?.pluginApprovers;
+  if (!validPluginApprovers(approvers)) {
+    throw new TypeError("Invalid Preset plugin approvers");
+  }
+  return { bindingTemplates: preset.configuration?.secretBindings, approvers };
+}
+```
+
+Binding templates may contain placeholders. `PresetValidationError`
+takes a string message.
 
 ## Workspace files
 

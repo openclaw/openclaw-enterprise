@@ -15541,6 +15541,405 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/agent-capabilities": {
+      "get": {
+        "description": "Requires create permission for Agent resources in the requested Namespace.",
+        "operationId": "getNamespaceAgentCapabilities",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "capabilities": {
+                          "credentialSources": {
+                            "types": [
+                              {
+                                "config": [{ "name": "authorized_base_url", "required": false }],
+                                "harnessAuth": {
+                                  "loginMode": "api_key",
+                                  "modelProvider": "openai"
+                                },
+                                "rotation": "external",
+                                "secrets": [{ "name": "api_key", "required": true }],
+                                "type": "openai"
+                              }
+                            ]
+                          },
+                          "openclaw": { "executionModes": ["dedicated"] }
+                        }
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "capabilities": {
+                          "additionalProperties": false,
+                          "description": "The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It omits nativeAdmin and agentProvisioning, which apply only to guided provisioning and need Installation administration.",
+                          "properties": {
+                            "credentialSources": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "types": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "config": {
+                                        "items": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "description": { "type": "string" },
+                                            "issuerRotated": { "type": "boolean" },
+                                            "name": { "minLength": 1, "type": "string" },
+                                            "required": { "type": "boolean" }
+                                          },
+                                          "required": ["name", "required"],
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "deviceAuthorization": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "harnessId": { "minLength": 1, "type": "string" }
+                                        },
+                                        "required": ["harnessId"],
+                                        "type": "object"
+                                      },
+                                      "harnessAuth": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "loginMode": {
+                                            "anyOf": [
+                                              { "const": "api_key", "type": "string" },
+                                              { "const": "codex_pat", "type": "string" },
+                                              { "const": "chatgptAuthTokens", "type": "string" }
+                                            ]
+                                          },
+                                          "modelProvider": { "minLength": 1, "type": "string" }
+                                        },
+                                        "required": ["modelProvider", "loginMode"],
+                                        "type": "object"
+                                      },
+                                      "rotation": {
+                                        "anyOf": [
+                                          { "const": "none", "type": "string" },
+                                          { "const": "external", "type": "string" },
+                                          { "const": "refresh", "type": "string" }
+                                        ]
+                                      },
+                                      "secrets": {
+                                        "items": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "description": { "type": "string" },
+                                            "issuerRotated": { "type": "boolean" },
+                                            "name": { "minLength": 1, "type": "string" },
+                                            "required": { "type": "boolean" }
+                                          },
+                                          "required": ["name", "required"],
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "type": {
+                                        "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                                        "maxLength": 64,
+                                        "minLength": 1,
+                                        "pattern": "^[a-z][a-z0-9-]{0,63}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["type", "config", "secrets", "rotation"],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                }
+                              },
+                              "required": ["types"],
+                              "type": "object"
+                            },
+                            "nativeWorkers": {
+                              "additionalProperties": false,
+                              "description": "Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from.",
+                              "properties": {
+                                "support": {
+                                  "anyOf": [
+                                    { "const": "pinned-runtime", "type": "string" },
+                                    { "const": "custom-image", "type": "string" }
+                                  ]
+                                }
+                              },
+                              "required": ["support"],
+                              "type": "object"
+                            },
+                            "openclaw": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "executionModes": {
+                                  "description": "The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent deploy. Agent save refuses Embedded with a selected Sandbox Driver, and Dedicated when the Sandbox Driver's settings refuse it (settingRefusals); it saves Dedicated without a Sandbox Driver that can provision it, which deploy refuses. Empty when no mode can deploy: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw with settings that allow it, and a selected Sandbox Driver that is unavailable admits neither.",
+                                  "items": {
+                                    "anyOf": [
+                                      { "const": "embedded", "type": "string" },
+                                      { "const": "dedicated", "type": "string" }
+                                    ]
+                                  },
+                                  "maxItems": 2,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "sandboxDriverUnavailable": {
+                                  "const": true,
+                                  "description": "Present while the selected Sandbox Driver is unavailable. executionModes is then empty until it returns, and Agent save and deploy answer 503 DEPENDENCY_UNAVAILABLE.",
+                                  "type": "boolean"
+                                },
+                                "settingRefusals": {
+                                  "additionalProperties": false,
+                                  "description": "Present when the selected Sandbox Driver can provision a mode missing from executionModes but its settings refuse it. Each value is the message Agent save and deploy return for that mode, naming the setting an operator changes. Absent for other reasons a mode is missing.",
+                                  "properties": {
+                                    "dedicated": { "minLength": 1, "type": "string" }
+                                  },
+                                  "type": "object"
+                                }
+                              },
+                              "required": ["executionModes"],
+                              "type": "object"
+                            },
+                            "pluginCatalogs": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "harnessId": {
+                                    "anyOf": [
+                                      { "const": "openclaw", "type": "string" },
+                                      { "const": "codex", "type": "string" }
+                                    ]
+                                  },
+                                  "pluginDiscovery": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "credential": {
+                                        "anyOf": [
+                                          { "const": "required", "type": "string" },
+                                          { "const": "none", "type": "string" }
+                                        ]
+                                      }
+                                    },
+                                    "required": ["credential"],
+                                    "type": "object"
+                                  },
+                                  "pluginPolicies": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "approvers": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agent": { "type": "boolean" },
+                                          "plugin": { "type": "boolean" },
+                                          "tools": { "type": "boolean" }
+                                        },
+                                        "required": ["agent", "plugin", "tools"],
+                                        "type": "object"
+                                      },
+                                      "driver": { "$ref": "#/components/schemas/def-1" },
+                                      "driverPolicySchema": {
+                                        "additionalProperties": {},
+                                        "type": "object"
+                                      },
+                                      "policyScopeByPlugin": {
+                                        "additionalProperties": {
+                                          "const": "enablement_only",
+                                          "type": "string"
+                                        },
+                                        "type": "object"
+                                      },
+                                      "toolDefaults": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "approval": {
+                                            "items": {
+                                              "anyOf": [
+                                                { "const": "provider_default", "type": "string" },
+                                                { "const": "all_actions", "type": "string" },
+                                                { "const": "write_actions", "type": "string" },
+                                                { "const": "none", "type": "string" }
+                                              ]
+                                            },
+                                            "type": "array"
+                                          },
+                                          "enabled": { "type": "boolean" },
+                                          "reviewer": {
+                                            "items": {
+                                              "anyOf": [
+                                                { "const": "human", "type": "string" },
+                                                { "const": "auto", "type": "string" }
+                                              ]
+                                            },
+                                            "type": "array"
+                                          }
+                                        },
+                                        "required": ["enabled", "approval", "reviewer"],
+                                        "type": "object"
+                                      },
+                                      "tools": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "approval": {
+                                            "items": {
+                                              "anyOf": [
+                                                { "const": "provider_default", "type": "string" },
+                                                { "const": "all_actions", "type": "string" },
+                                                { "const": "write_actions", "type": "string" },
+                                                { "const": "none", "type": "string" }
+                                              ]
+                                            },
+                                            "type": "array"
+                                          },
+                                          "enabled": { "type": "boolean" },
+                                          "reviewer": {
+                                            "items": {
+                                              "anyOf": [
+                                                { "const": "human", "type": "string" },
+                                                { "const": "auto", "type": "string" }
+                                              ]
+                                            },
+                                            "type": "array"
+                                          }
+                                        },
+                                        "required": ["enabled", "approval", "reviewer"],
+                                        "type": "object"
+                                      }
+                                    },
+                                    "required": [
+                                      "driver",
+                                      "toolDefaults",
+                                      "tools",
+                                      "driverPolicySchema"
+                                    ],
+                                    "type": "object"
+                                  }
+                                },
+                                "required": ["harnessId", "pluginPolicies"],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            }
+                          },
+                          "type": "object"
+                        }
+                      },
+                      "required": ["capabilities"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Report the Installation capabilities that Agent creation in this Namespace needs, for a caller who may create Agents there",
+        "tags": ["Namespaces"],
+        "x-openclaw-permissions": [
+          { "action": "create", "resourceKind": "agent", "scope": "namespace" }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/agents": {
       "get": {
         "description": "Requires read permission on the requested Namespace. Only Agent resources with individual read permission are returned.",
@@ -22450,6 +22849,25 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": { "example": { "summary": "Example request", "value": {} } },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "harnessOverrides": {
+                    "additionalProperties": {},
+                    "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
         "responses": {
           "202": {
             "content": {
@@ -22517,7 +22935,19 @@
                         "configurationKind": "agent",
                         "createdAt": "2026-10-01T12:00:00.000Z",
                         "gatewayManagedMode": true,
-                        "harness": { "id": "codex", "mode": "dedicated", "version": "1" },
+                        "harness": {
+                          "configuration": {
+                            "modelProvider": {
+                              "baseUrl": "https://api.openai.com/v1",
+                              "protocol": "openai-responses",
+                              "supportsStandaloneWebSearch": false
+                            }
+                          },
+                          "id": "codex",
+                          "mode": "dedicated",
+                          "overrides": {},
+                          "version": "1"
+                        },
                         "harnessAuth": {
                           "method": "api_key",
                           "source": {
@@ -22609,6 +23039,11 @@
                         "harness": {
                           "additionalProperties": false,
                           "properties": {
+                            "configuration": {
+                              "additionalProperties": {},
+                              "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                              "type": "object"
+                            },
                             "id": { "minLength": 1, "type": "string" },
                             "mode": {
                               "anyOf": [
@@ -22616,9 +23051,14 @@
                                 { "const": "dedicated", "type": "string" }
                               ]
                             },
+                            "overrides": {
+                              "additionalProperties": {},
+                              "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                              "type": "object"
+                            },
                             "version": { "minLength": 1, "type": "string" }
                           },
-                          "required": ["id", "version", "mode"],
+                          "required": ["id", "version", "mode", "overrides", "configuration"],
                           "type": "object"
                         },
                         "harnessAuth": {
@@ -22903,6 +23343,26 @@
             },
             "description": "The requested operation conflicts with the current resource state."
           },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
           "500": {
             "content": {
               "application/json": {
@@ -23028,6 +23488,11 @@
                     "maximum": 9007199254740991,
                     "minimum": 1,
                     "type": "integer"
+                  },
+                  "harnessOverrides": {
+                    "additionalProperties": {},
+                    "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                    "type": "object"
                   },
                   "key": {
                     "maxLength": 128,
@@ -23266,6 +23731,18 @@
         "description": "Requires deploy permission on the exact Agent and read permission on the reviewed Configuration named in the request path. These current permissions are checked for both receipts and misses. Recovery performs no admission or credential preparation.",
         "operationId": "recoverAgentFirstDeployment",
         "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "{}"
+              }
+            },
+            "in": "query",
+            "name": "harnessOverrides",
+            "required": false,
+            "schema": { "maxLength": 8192, "type": "string" }
+          },
           {
             "examples": {
               "example": {
@@ -24039,6 +24516,20 @@
                             }
                           ],
                           "description": "Pending deployment progress. Null for terminal outcomes. A last attempt describes a recorded result, not current runtime health."
+                        },
+                        "repositoryAccess": {
+                          "additionalProperties": false,
+                          "description": "Present when completed maintenance for this exact revision recorded that repository access requires a new revision. This condition does not change the original deployment result. Absence does not establish current repository access health.",
+                          "properties": {
+                            "code": {
+                              "const": "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED",
+                              "type": "string"
+                            },
+                            "message": { "type": "string" },
+                            "state": { "const": "redeploy-required", "type": "string" }
+                          },
+                          "required": ["state", "code", "message"],
+                          "type": "object"
                         },
                         "status": {
                           "anyOf": [
@@ -28918,7 +29409,19 @@
                           "createdAt": "2026-10-01T12:00:00.000Z",
                           "deploymentErrorCode": null,
                           "deploymentStatus": "succeeded",
-                          "harness": { "id": "codex", "mode": "dedicated", "version": "1" },
+                          "harness": {
+                            "configuration": {
+                              "modelProvider": {
+                                "baseUrl": "https://api.openai.com/v1",
+                                "protocol": "openai-responses",
+                                "supportsStandaloneWebSearch": false
+                              }
+                            },
+                            "id": "codex",
+                            "mode": "dedicated",
+                            "overrides": {},
+                            "version": "1"
+                          },
                           "id": "rev_123e4567-e89b-42d3-a456-426614174000",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                           "revision": 1
@@ -28985,6 +29488,11 @@
                           "harness": {
                             "additionalProperties": false,
                             "properties": {
+                              "configuration": {
+                                "additionalProperties": {},
+                                "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                                "type": "object"
+                              },
                               "id": { "minLength": 1, "type": "string" },
                               "mode": {
                                 "anyOf": [
@@ -28992,9 +29500,14 @@
                                   { "const": "dedicated", "type": "string" }
                                 ]
                               },
+                              "overrides": {
+                                "additionalProperties": {},
+                                "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                                "type": "object"
+                              },
                               "version": { "minLength": 1, "type": "string" }
                             },
-                            "required": ["id", "version", "mode"],
+                            "required": ["id", "version", "mode", "overrides", "configuration"],
                             "type": "object"
                           },
                           "id": {
@@ -29231,7 +29744,19 @@
                         "configurationKind": "agent",
                         "createdAt": "2026-10-01T12:00:00.000Z",
                         "gatewayManagedMode": true,
-                        "harness": { "id": "codex", "mode": "dedicated", "version": "1" },
+                        "harness": {
+                          "configuration": {
+                            "modelProvider": {
+                              "baseUrl": "https://api.openai.com/v1",
+                              "protocol": "openai-responses",
+                              "supportsStandaloneWebSearch": false
+                            }
+                          },
+                          "id": "codex",
+                          "mode": "dedicated",
+                          "overrides": {},
+                          "version": "1"
+                        },
                         "harnessAuth": {
                           "method": "api_key",
                           "source": {
@@ -29325,6 +29850,11 @@
                             "harness": {
                               "additionalProperties": false,
                               "properties": {
+                                "configuration": {
+                                  "additionalProperties": {},
+                                  "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                                  "type": "object"
+                                },
                                 "id": { "minLength": 1, "type": "string" },
                                 "mode": {
                                   "anyOf": [
@@ -29332,9 +29862,14 @@
                                     { "const": "dedicated", "type": "string" }
                                   ]
                                 },
+                                "overrides": {
+                                  "additionalProperties": {},
+                                  "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
+                                  "type": "object"
+                                },
                                 "version": { "minLength": 1, "type": "string" }
                               },
-                              "required": ["id", "version", "mode"],
+                              "required": ["id", "version", "mode", "overrides", "configuration"],
                               "type": "object"
                             },
                             "harnessAuth": {

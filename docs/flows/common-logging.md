@@ -1,16 +1,16 @@
 ---
 created: 2026-09-02
-updated: 2026-11-05
-last_updated_session: authoring-run/3c7815cf-f818-421f-879b-2b2fe90deac5
+updated: 2026-11-07
+last_updated_session: authoring-run/47c08087-e796-42e1-a716-e321ec52e41e
 ---
 
 # Common Operational Logging Flow
 
 ## Overview
 
-Trusted startup configuration selects the OCC logging level. At deployment, OCC
-saves the runtime logging settings in the Agent revision. Optional Collectors export reviewed operational records; PostgreSQL audit remains separate
-durable evidence.
+Startup selects OCC's logging level; deployment saves runtime logging settings
+in the Agent revision. Optional Collectors export reviewed operational records;
+PostgreSQL audit remains separate durable evidence.
 
 ## Entry Points
 
@@ -80,26 +80,29 @@ Worker (`apps/controller/src/worker.mjs`), bootstrap
 also create Pino loggers at the selected level. The API disables Fastify request
 logging. Bootstrap and migration separate success protocol output from structured
 failure diagnostics. Before Pino writes, `apps/controller/src/logging.ts:emitOccLogEvent`
-keeps reviewed scalar fields and drops unapproved fields, credentials, provider
-payloads, request/reply objects, and unsafe strings. This source boundary precedes
-the separate Collector filter in step 7. For worker records, the Collector retains
-allowlisted `work.operation` values and allowed `work.id` formats. Agent stop keys
+keeps reviewed scalar fields and drops credentials, provider payloads, request/reply
+objects, and unsafe strings before the Collector filter in step 7. The Collector
+retains allowed worker `work.operation` values and `work.id` formats. Agent stop keys
 include the operation UUID. Credential withdrawal keys end in the operation UUID or
 `activation` (the attempt a candidate's activation queues), optionally followed by
 `:recovery:<n>` for a later attempt series. Deletion keys have no operation suffix.
 Provisioning keys use `agent-provisioning:` and exactly 32 lowercase hexadecimal
-characters, matching the work ID the API and worker share.
-Unsupported values and key shapes are excluded.
-The local worker emitter also retains `stopYields` from throttled drain-yield and
-completion records as a nonnegative safe integer; the Collector does not export this count.
+characters. The local emitter retains `stopYields` from throttled drain-yield and
+completion records as a nonnegative safe integer; the Collector excludes it.
 The sanitizer keeps `check`, `failure`, `reasonCode`, `harnessState`, `hintCode`
 and the `auth:maintain` event's `command` as identifier codes, never free text;
 `fence` must be a nonnegative safe integer. `installationId` and `orphanedConfigurationId` are kept only as
 OCC-assigned `ins_` and `cfg_` UUIDs.
 
-Compute preparation failures may include a Driver-reviewed stage, classification,
-status, and a message of at most 256 characters. The worker never serializes the raw exception, and
-the sanitizer drops secret-shaped messages before local output.
+`apps/controller/src/worker.ts:finalizeActiveRevision` adds only the runtime failure
+code to active maintenance's `worker.completed.failure`, normalized through the
+shared vocabulary. Unknown codes become `UNRECOGNIZED`; absent or malformed
+evidence adds nothing and does not establish health. Pending outcomes and
+scheduling are unchanged.
+
+Compute preparation failures may carry a Driver-reviewed stage, classification,
+status and message (up to 256 characters). The worker excludes raw exceptions;
+the sanitizer drops secret-shaped messages before output.
 
 ### 3. Admission freezes runtime logging
 
@@ -209,8 +212,8 @@ the local diagnostic message is excluded from remote export.
 `occ.code`, and
 `authentication.sign-in-limited` keeps only `occ.sign_in.lane`; its local key
 hash is not exported. `authentication.provider-unavailable-warning` keeps
-`occ.sign_in.provider`, `.step` (`authorization`, `token`, `jwks`, `profile` or
-`membership`), `.cause` and `.status`, plus a transport code as `occ.code`; the provider
+`occ.sign_in.provider`, `.step` (`authorization`, `token`, `jwks`, `profile`,
+`membership` or `email`), `.cause` and `.status`, plus a transport code as `occ.code`; the provider
 instance ID stays local.
 `worker.repository-cleanup-warning` keeps `occ.code` and its cause code of at most 64 allowed characters as
 `occ.worker.cause`.
@@ -326,6 +329,10 @@ covers credentials, supervision, queue storage and backend verification.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-07 09:24: Retain closed-vocabulary runtime failure codes in active maintenance logs. (authoring-run/47c08087-e796-42e1-a716-e321ec52e41e - 5ed0898c6fba9875e075472747b660c27fb74bf6)
+
+- 2026-11-06 15:37: Retain the verified-email lookup stage in provider outage exports. (authoring-run/3cb37e31-4ea8-4dfe-bb12-965884fa83db - 3e29a60b00d2a4c6eb15d4ea2f1f283113592f74)
 
 - 2026-11-05 20:53: Export held Git probe failure categories and bounded curl exit codes through the Collector. (authoring-run/3c7815cf-f818-421f-879b-2b2fe90deac5 - 0a9351b645)
 
