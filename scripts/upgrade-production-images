@@ -14,7 +14,7 @@ Usage: scripts/upgrade-production-images \
   --source-revision FULL_GIT_SHA --evidence-dir DIRECTORY \
   [--occ PATH] [--timeout-seconds SECONDS] [--doctor-heap-mib MIB] [--resume] \
   [--verify-agent AGENT_ID --verify-agent-namespace NAMESPACE_ID] \
-  [--migration-history-checked] \
+  [--migration-history-checked] [--recover-helm --recovery-reviewed] \
   [--collector-config-reviewed] [--preflight-only]
 
 Select at least one image. Candidate files contain reviewed settings changes;
@@ -339,6 +339,8 @@ doctor_heap_mib=384
 resume=0
 preflight_only=0
 migration_history_checked=0
+recover_helm=0
+recovery_reviewed=0
 collector_config_reviewed=0
 
 while (($#)); do
@@ -386,6 +388,14 @@ while (($#)); do
       migration_history_checked=1
       shift
       ;;
+    --recover-helm)
+      recover_helm=1
+      shift
+      ;;
+    --recovery-reviewed)
+      recovery_reviewed=1
+      shift
+      ;;
     --collector-config-reviewed)
       collector_config_reviewed=1
       shift
@@ -414,6 +424,9 @@ done
   die "--verify-agent cannot be combined with --runtime-image, which selects new Agent revisions."
 
 ((resume == 0 || preflight_only == 0)) || die "--resume cannot be combined with --preflight-only."
+((recover_helm == 0 || (resume && migration_history_checked && recovery_reviewed))) ||
+  die "--recover-helm requires --resume --migration-history-checked --recovery-reviewed."
+((recovery_reviewed == 0 || recover_helm)) || die "--recovery-reviewed requires --recover-helm."
 
 for input in kubeconfig context namespace release values installation source_revision evidence_dir; do
   [[ -n "${!input}" ]] || die "--${input//_/-} is required."
@@ -626,7 +639,7 @@ def digest(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
 evidence = os.stat(sys.argv[16])
-print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.mjs"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
+print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.mjs"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
 PYTHON
 )
 if ((resume)); then
@@ -1496,12 +1509,9 @@ if ! matches_yaml "$candidate_installation" "$evidence_dir/before-live-installat
   printf '%s\n' "$installation_checksum" >"$evidence_dir/installation-checksum"
 fi
 
-rendered="$evidence_dir/rendered.yaml"
-helm template "$release" "$chart" "${helm_args[@]}" --is-upgrade \
-  --values "$candidate_values" >"$rendered"
-helm upgrade --install "$release" "$chart" "${helm_args[@]}" \
-  --values "$candidate_values" --dry-run=server --hide-secret \
-  >"$evidence_dir/server-dry-run.txt"
+helm_attempt=$(python3 scripts/upgrade-helm-state.py new "$evidence_dir" "$release" "${helm_args[@]}")
+candidate_values="$evidence_dir/helm-attempts/$helm_attempt/values.yaml"
+rendered="$evidence_dir/helm-attempts/$helm_attempt/rendered.yaml"
 preflight_startup
 if ((preflight_only)); then
   printf 'Preflight passed; no OCC writer was stopped. To deploy, omit --preflight-only and use the same reviewed inputs with a fresh evidence directory.\n'
@@ -1527,6 +1537,8 @@ candidate_values="$evidence_dir/candidate-values.yaml"
 candidate_installation="$evidence_dir/candidate-installation.yaml"
 python3 scripts/upgrade-evidence.py verify "$evidence_dir" ||
   die "prepared upgrade evidence changed; investigate before continuing."
+helm_attempt=$(python3 scripts/upgrade-helm-state.py select "$evidence_dir")
+candidate_values="$evidence_dir/helm-attempts/$helm_attempt/values.yaml"
 targets="$evidence_dir/targets.jsonl"
 dispatch_prefix() {
   printf '%s/dispatch/%s' "$evidence_dir" "$(json_file_name "$1--$2")"
@@ -1596,6 +1608,7 @@ helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/current-h
 helm_state=$(jq -er '.info.status' "$evidence_dir/current-helm-status.json")
 case "$helm_state" in
   deployed | failed) ;;
+  pending-upgrade) ((recover_helm)) || die "Helm reports pending-upgrade; reconcile the interrupted client before recovery." ;;
   *) die "Helm reports $helm_state; resolve the in-progress or unknown release before resuming." ;;
 esac
 if [[ ! -f "$evidence_dir/helm-started" && "$helm_state" != deployed ]]; then
@@ -1607,7 +1620,9 @@ matches_yaml "$values" "$evidence_dir/before-values.yaml" ||
 matches_yaml "$installation" "$evidence_dir/before-installation.yaml" ||
   matches_yaml "$installation" "$candidate_installation" || die "protected Installation changed outside this upgrade."
 matches_yaml "$evidence_dir/current-live-values.yaml" "$evidence_dir/before-live-values.yaml" ||
-  matches_yaml "$evidence_dir/current-live-values.yaml" "$candidate_values" || die "live Helm values changed outside this upgrade."
+  matches_yaml "$evidence_dir/current-live-values.yaml" "$candidate_values" ||
+  { [[ -f "$evidence_dir/helm-started" ]] && python3 scripts/upgrade-helm-state.py predecessor "$evidence_dir"; } ||
+  die "live Helm values changed outside this upgrade."
 
 live_secret="$evidence_dir/current-live-installation-secret.json"
 "${kube[@]}" --namespace "$namespace" get secret "$installation_secret" --output json >"$live_secret"
@@ -1630,7 +1645,20 @@ if [[ ! -f "$evidence_dir/helm-started" ]]; then
 fi
 
 helm_complete=0
-if [[ -f "$evidence_dir/helm-started" ]]; then
+recovered_revision=
+if [[ -e "$evidence_dir/helm-recovery" || -L "$evidence_dir/helm-recovery" ]]; then
+  recovered_revision=$(python3 scripts/upgrade-helm-state.py verify-recovery "$evidence_dir" "$release" "$kubeconfig" "$context" "$namespace") ||
+    die "Helm recovery is unresolved; preserve its evidence and reconcile manually. Do not replay recovery."
+  helm_complete=1
+elif ((recover_helm)); then
+  matches_yaml "$evidence_dir/current-live-installation.yaml" "$candidate_installation" ||
+    die "Helm recovery requires the exact candidate Installation."
+  python3 scripts/upgrade-helm-state.py recover "$evidence_dir" "$release" "$kubeconfig" "$context" "$namespace" ||
+    die "Helm recovery did not complete; preserve its evidence and reconcile before further action."
+  recovered_revision=$(python3 scripts/upgrade-helm-state.py verify-recovery "$evidence_dir" "$release" "$kubeconfig" "$context" "$namespace")
+  helm_complete=1
+fi
+if [[ -f "$evidence_dir/helm-started" ]] && ((helm_complete == 0)); then
   jq -es '
     length == 1 and (.[0] |
     (.previousRevision | type == "number" and . > 0 and floor == .) and
@@ -1671,6 +1699,11 @@ if [[ -f "$evidence_dir/helm-started" ]] && ((helm_complete == 0)); then
 fi
 
 if ((helm_complete == 0)); then
+  if [[ -f "$evidence_dir/helm-started" ]]; then
+    # Every submitted retry has a fresh hook identity; retain earlier attempts.
+    helm_attempt=$(python3 scripts/upgrade-helm-state.py new "$evidence_dir" "$release" "${helm_args[@]}")
+    candidate_values="$evidence_dir/helm-attempts/$helm_attempt/values.yaml"
+  fi
   if [[ "$repository_enabled" == true ]]; then
     verify_pair_nodes
   fi
@@ -1758,41 +1791,16 @@ PYTHON
   fi
   helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/before-helm-submission.json"
   jq -e --slurpfile observed "$evidence_dir/current-helm-status.json" '
-    .version == $observed[0].version and .info.status == $observed[0].info.status
+    . == $observed[0]
   ' "$evidence_dir/before-helm-submission.json" >/dev/null ||
     die "the Helm release changed before submission; investigate before continuing."
-  submission=$(mktemp "$evidence_dir/helm-submission.XXXXXXXX.json")
-  jq -e '
-    .version | select(type == "number" and . > 0 and floor == . and . + 1 > .) |
-    {previousRevision: ., expectedRevision: (. + 1)}
-  ' "$evidence_dir/before-helm-submission.json" >"$submission" ||
-    die "cannot bind the next Helm release revision."
-  # Publish only at the exact filename, with file and directory durability before
-  # dispatch. Unlike mv, replace must not move the intent inside a directory.
-  python3 - "$submission" "$evidence_dir/helm-started" <<'PYTHON'
-import os, stat, sys
-source, destination = sys.argv[1:]
-try:
-    current = os.lstat(destination)
-except FileNotFoundError:
-    current = None
-if current is not None and (not stat.S_ISREG(current.st_mode) or current.st_mode & 0o077):
-    sys.exit("Helm submission intent must be a private regular file, not a symbolic link.")
-with open(source, "rb") as staged:
-    os.fsync(staged.fileno())
-directory = os.open(os.path.dirname(destination), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-try:
-    os.replace(source, destination)
-    os.fsync(directory)
-finally:
-    os.close(directory)
-PYTHON
+  python3 scripts/upgrade-helm-state.py record "$evidence_dir" "$helm_attempt"
   # Open stdout before entering the native failure handler.
   {
     helm upgrade --install "$release" "$chart" "${helm_args[@]}" \
       --values "$values" --wait --timeout 5m ||
       native_command_failed "$?" helm-upgrade release
-  } >"$evidence_dir/helm-upgrade.txt"
+  } >"$evidence_dir/helm-attempts/$helm_attempt/helm-upgrade.txt"
 fi
 
 for component in api worker; do
@@ -2434,8 +2442,8 @@ fi
 
 helm status "$release" "${helm_args[@]}" >"$evidence_dir/after-helm-status.txt"
 helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/after-helm-status.json"
-jq -e --slurpfile submission "$evidence_dir/helm-started" '
-  .info.status == "deployed" and .version == $submission[0].expectedRevision
+jq -e --arg recovered "$recovered_revision" --slurpfile submission "$evidence_dir/helm-started" '
+  .info.status == "deployed" and .version == (if $recovered == "" then $submission[0].expectedRevision else ($recovered | tonumber) end)
 ' "$evidence_dir/after-helm-status.json" >/dev/null ||
   die "the final Helm release is not this submission's deployed revision; completion was not recorded."
 "${kube[@]}" get deployments,statefulsets,pods,persistentvolumeclaims --all-namespaces \
