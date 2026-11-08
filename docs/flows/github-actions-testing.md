@@ -63,13 +63,12 @@ validates it before setup. Focused results retain expected cases, environment an
 cleanup, but `validateLaneEvidence` rejects them for full-lane aggregation,
 including one-file lanes.
 
-CI uses the event checkout without external service credentials. `CI Impact` starts independently of `Suite Audit and Static Checks`, which verifies checkout identity and runs the [documented checks](../testing/ci/required-checks.md#scenarios) in every mode. Docs mode skips test lanes. The [coverage map](../testing/ci/required-checks.md#scenarios) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. The workflow owns each lane’s current runner class; Kubernetes lanes require a NetworkPolicy-enforcing kernel. `runtime-image-fixture` uses `ubuntu-22.04`.
+CI uses the event checkout without external service credentials. `CI Impact` selects coverage independently of `Suite Audit and Static Checks`, which verifies checkout identity and runs in every mode. The [coverage map](../testing/ci/required-checks.md#scenarios) lists ordinary lanes and the separate `runtime-image-fixture`. The workflow owns runner classes; Kubernetes lanes require a NetworkPolicy-enforcing kernel.
 
-For pull requests, the selector verifies that the tested merge has the event head as
-its second parent. It compares that tree with its first parent, the current base, using
-policy from the base. For ordinary canonical main pushes, it verifies the checkout
-against `after` and compares the complete `before` to `after` range using policy from
-`before`. A missing comparison commit, forced push, or older policy retains full CI.
+Pull requests compare the verified merge with its first parent using that parent’s
+policy; the second parent must match the event head. Canonical main pushes compare
+the complete `before` to verified `after` range using `before` policy. Missing history,
+forced pushes, and older policies retain full CI.
 Git path decoding preserves a leading UTF-8 BOM. Only a nonempty set of allowlisted
 regular Markdown changes selects docs mode; generated API references, including Markdown
 under `docs/reference/api/`, require full CI for `openapi:check`.
