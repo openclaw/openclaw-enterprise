@@ -2953,6 +2953,43 @@ test("shared runtime DAG selects only image consumers while other checks stay in
   }
 });
 
+test("shared runtime consumers omit idle builders and preserve source builders", () => {
+  const action = read(".github/actions/run-ci-lane/action.yml");
+  const expression = action
+    .match(/- id: builder[\s\S]*?\n {6}if: >-\n([\s\S]*?)\n {6}with:/)?.[1]
+    ?.trim()
+    .replaceAll("inputs.runtime-artifact-id", 'inputs["runtime-artifact-id"]');
+  assert.ok(expression, "the builder step has an explicit condition");
+  for (const [lane, profile, source, artifact] of [
+    ["images-runtime-startup", "full", true, false],
+    ["images-runtime-startup-2", "images", true, false],
+    ["images-runtime-startup-3", "images", true, false],
+    ["images-packaging", "full", true, true],
+    ["runtime-image-fixture", "full", true, true],
+    ["checks-browser", "baseline", false, false],
+    ["k3d-fixture-state", "k3d", false, false],
+    ["k3d-observability", "k3d", false, false],
+    ["docker-model", "full", false, false],
+    ["logging-collector", "images", false, false],
+  ]) {
+    for (const [id, expected] of [
+      ["", source],
+      ["123", artifact],
+    ]) {
+      assert.equal(
+        runInNewContext(expression, {
+          inputs: { lane, profile, "runtime-artifact-id": id },
+          startsWith: (value, prefix) => value.startsWith(prefix),
+          contains: (values, value) => values.includes(value),
+          fromJSON: JSON.parse,
+        }),
+        expected,
+        `${lane}: ${id ? "shared artifact" : "source build"}`,
+      );
+    }
+  }
+});
+
 test("full aggregate attributes image coverage to its consumer and producer jobs", (t) => {
   const workflow = loadYaml(".github/workflows/full-integration.yml");
   // This workflow uses !cancelled(), which disables GitHub's implicit success()
