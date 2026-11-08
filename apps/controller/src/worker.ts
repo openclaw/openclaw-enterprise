@@ -2375,21 +2375,24 @@ export class ControllerWorker {
       }
       if (expiryRevision !== undefined && withdrawal !== undefined) {
         // Recheck the exact active owner under admission's locks after the supplier call. A
-        // concurrent stop, replacement or terminal retirement wins, including over pending.
+        // replacement or terminal retirement wins, including over pending. Stop keeps its
+        // own supersedable runtime disposition while finite withdrawal remains fenced.
         const agent = await this.lockClaimAgent(unit, claim);
         const owner = {
           namespaceId: claim.namespaceId,
           agentId: claim.agentId!,
           revisionId: expiryRevision.id,
         };
+        const expiry = await queue.repositoryExpiryState(owner);
+        const waitingForStop = expiry === "removal" && agent?.desiredRuntimeState === "stopped";
         if (
           withdrawal === "retire-runtime" ||
           agent?.status !== "active" ||
           agent.activeRevisionId !== expiryRevision.id ||
-          agent.desiredRuntimeState !== "running" ||
+          (!waitingForStop && agent.desiredRuntimeState !== "running") ||
           agent.servicePrincipalId !== expiryRevision.servicePrincipalId ||
           (await unit.namespaces.findNamespace(claim.namespaceId))?.status !== "ready" ||
-          (await queue.repositoryExpiryState(owner)) === "retiring"
+          expiry === "retiring"
         ) {
           // Transfer every outstanding session and the runtime to irrevocable retirement.
           await queue.enqueueRepositoryCleanup(claim, owner, "terminal-runtime");
@@ -2397,6 +2400,11 @@ export class ControllerWorker {
           await queue.complete(claim, { code: completionCode });
           complete = true;
           return;
+        }
+        if (waitingForStop) {
+          // Stopped intent cannot authorize retirement, including after denied Stop.
+          // Keep cleanup responsible for later running intent without repeating Git effects.
+          complete = false;
         }
       }
       const attempts =
@@ -2507,7 +2515,6 @@ export class ControllerWorker {
     if (
       namespace?.status !== "ready" ||
       agent?.status !== "active" ||
-      agent.desiredRuntimeState !== "running" ||
       agent.activeRevisionId !== revision.id ||
       agent.servicePrincipalId !== revision.servicePrincipalId
     ) {
@@ -2550,9 +2557,14 @@ export class ControllerWorker {
             : {}),
         };
       }
-      // Both retained expiry work and regular maintenance supervise the running revision.
-      // Recover the original source obligations, including companions, without replaying here.
-      await this.recoverPendingCredentialWithdrawals(claim, revision);
+      if (agent.desiredRuntimeState !== "running" && expiry !== "removal") {
+        return { withdrawal: "pending" };
+      }
+      // A committed finite removal must detach Git even if Stop is pending or denied.
+      // Other source obligations remain owned by running maintenance, not this exception.
+      if (agent.desiredRuntimeState === "running") {
+        await this.recoverPendingCredentialWithdrawals(claim, revision);
+      }
       if (
         authorization.status === "rejected" ||
         authorization.value !== undefined ||
@@ -4583,12 +4595,19 @@ export class ControllerWorker {
       }
       if (agent.desiredRuntimeState === "stopped") {
         if (claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`)) {
+          if (await this.yieldRemovedRevisionMaintenance(claim, revision)) {
+            return;
+          }
           if (revision.repositoryCredentials !== undefined) {
             await this.closeRevisionCredentials(claim, revision);
             if (this.compute.bindAgent !== undefined) {
               await this.withClaimHeartbeat(claim, async () => {
                 await this.compute.bindAgent!({ namespace, agent });
               });
+            }
+            // Removal can commit while closing credentials or binding Compute.
+            if (await this.yieldRemovedRevisionMaintenance(claim, revision)) {
+              return;
             }
             await this.stopYieldingDrain(claim, revision);
           }
@@ -6784,6 +6803,68 @@ export class ControllerWorker {
       ),
       Math.ceil(Math.max(0, stopMs) * REFUSED_CANDIDATE_STOP_DURATION_FACTOR),
     );
+  }
+
+  // Finite removal has its own durable supervision. A due ordinary maintenance
+  // claim must not turn stopped intent (including a denied Stop) into runtime retirement.
+  private async yieldRemovedRevisionMaintenance(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): Promise<boolean> {
+    if (!revision.repositoryCredentials || revision.repositoryCredentials.standingApprovalId) {
+      return false;
+    }
+    const outcome = await this.state.transactWithQueue(async (unit, queue) => {
+      if ((await queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
+      const agent = await this.lockClaimAgent(unit, claim);
+      if (
+        agent?.status !== "active" ||
+        agent.activeRevisionId !== revision.id ||
+        agent.servicePrincipalId !== revision.servicePrincipalId
+      ) {
+        return undefined;
+      }
+      const disposition = await queue.repositoryExpiryState({
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+      });
+      if (disposition !== "removal" && disposition !== "retiring") {
+        return undefined;
+      }
+      // Intent may have returned to running since the stopped snapshot. The same
+      // durable owner still supervises removal; never drain from that stale snapshot.
+      // Neither complete nor replace the removal/terminal row: its owner keeps
+      // detachment, authority checks, and any irrevocable shutdown obligation.
+      if (disposition === "removal") {
+        // A completed cleanup may have relied on this pending maintenance row.
+        // Retain it for a fresh dispatch instead of discarding the last supervisor.
+        await queue.defer(
+          claim,
+          { code: "REPOSITORY_CLEANUP_PENDING" },
+          { delayMs: this.repositoryCleanupRetryMs },
+        );
+        return "pending" as const;
+      }
+      await queue.complete(claim, { code: "REVISION_MAINTENANCE_SUPERSEDED" });
+      return "success" as const;
+    }, this.queueOptions);
+    if (outcome !== undefined) {
+      this.passOutcome = outcome;
+      this.emit({
+        event: "worker.completed",
+        ...workLogFields(claim),
+        namespaceId: claim.namespaceId,
+        agentId: claim.agentId,
+        revisionId: revision.id,
+        outcome,
+        code:
+          outcome === "pending" ? "REPOSITORY_CLEANUP_PENDING" : "REVISION_MAINTENANCE_SUPERSEDED",
+      });
+    }
+    return outcome !== undefined;
   }
 
   private async completeStoppedRevisionWork(

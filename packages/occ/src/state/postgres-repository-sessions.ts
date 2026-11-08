@@ -141,7 +141,7 @@ export function postgresRepositorySessions(
            AND work.agent_target IS NULL AND work.namespace_target IS NULL
          LEFT JOIN occ.controller_work cleanup ON cleanup.idempotency_key=$4
          WHERE (v.namespace_id,v.agent_id,v.id)=($1,$2,$3)
-           AND a.status='active' AND a.desired_runtime_state='running'
+           AND a.status='active'
            AND v.admitted_spec->'repository_credentials' IS NOT NULL
            AND NOT (v.admitted_spec->'repository_credentials' ? 'standingApprovalId')`,
         [owner.namespaceId, owner.agentId, owner.revisionId, key],

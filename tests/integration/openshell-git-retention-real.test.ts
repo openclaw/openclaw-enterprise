@@ -15,7 +15,7 @@ import {
   createFiniteGitConversation,
   finiteGitConversationFailureStage,
 } from "../helpers/finite-git-conversation.ts";
-import { createOpenShellGitDenial } from "../helpers/openshell-git-denial.mjs";
+import { createOpenShellGitDenial, gitHttp403Command } from "../helpers/openshell-git-denial.mjs";
 
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "openshell";
@@ -482,13 +482,7 @@ test(
           before = origin.snapshot();
           phase = step.denied;
           // Keep the Git error inside the workload. Ordinary transport failures do not qualify.
-          await execute(a.target, [
-            "sh",
-            "-ceu",
-            "if error=$(" +
-              git +
-              ' 2>&1); then exit 1; fi; case "$error" in *"returned error: 403"*|*"response 403"*) ;; *) exit 2 ;; esac',
-          ]);
+          await execute(a.target, gitHttp403Command(git));
           phase = step.signed;
           const observation = await observeUntil(
             "withdrawal decision for original Sandbox and revision",

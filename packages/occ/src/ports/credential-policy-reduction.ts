@@ -6,6 +6,7 @@ import type {
   EgressInstallation,
   Namespace,
 } from "@openclaw-enterprise/contracts";
+import type { ControllerWork } from "../state/controller-work.ts";
 import type { RepositorySessionReadRepository } from "./repository-sessions.ts";
 
 /** Internal withdrawal custody, never part of caller-visible status. */
@@ -16,7 +17,10 @@ export interface CredentialPolicyReductionState {
 }
 
 /** The reduction service needs one transaction, without selecting a State adapter. */
-interface CredentialPolicyReductionUnitOfWork {
+export interface CredentialPolicyReductionUnitOfWork {
+  readonly operations: {
+    findWork(idempotencyKey: string): Promise<Readonly<ControllerWork> | undefined>;
+  };
   readonly namespaces: {
     lockNamespace(namespaceId: string): Promise<Readonly<Pick<Namespace, "id">> | undefined>;
   };

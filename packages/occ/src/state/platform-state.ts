@@ -4166,6 +4166,15 @@ function repositories(
       );
     },
     (owner, at) => {
+      const namespace = snapshot.namespaces.get(owner.namespaceId);
+      const agent = snapshot.agents.get(agentKey(owner.namespaceId, owner.agentId));
+      if (
+        namespace?.status !== "ready" ||
+        agent?.status !== "active" ||
+        agent.activeRevisionId !== owner.revisionId
+      ) {
+        throw new ScopeViolationError("Finite withdrawal requires the exact active revision.");
+      }
       const original = snapshot.operations.find(
         (operation) =>
           operation.kind === "agent_revision" &&

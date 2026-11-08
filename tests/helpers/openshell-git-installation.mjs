@@ -1189,11 +1189,47 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     }
   };
   const restartWorker = async (identity) => {
-    let stage = "ready-worker";
+    let stage = "controller-image";
     let maintenance;
     const maintenanceWait = "replacement worker revision maintenance";
     try {
+      const selected = values.images.controller;
+      assert.match(selected, /@sha256:[a-f0-9]{64}$/);
+      const controllerImageDigest = selected.split("@")[1];
+      const imported = JSON.parse(
+        await command("docker", [
+          "exec",
+          `k3d-${state.cluster}-server-0`,
+          "crictl",
+          "inspecti",
+          selected,
+        ]),
+      );
+      const controllerConfigDigest = imported.status.id;
+      assert.match(controllerConfigDigest, /^sha256:[a-f0-9]{64}$/);
+      const workerImageDigest = (pod) => {
+        const container = [...(pod.spec.initContainers ?? []), ...pod.spec.containers].find(
+          ({ name }) => name === "worker",
+        );
+        const status = [
+          ...(pod.status.initContainerStatuses ?? []),
+          ...(pod.status.containerStatuses ?? []),
+        ].find(({ name }) => name === "worker");
+        assert.ok(container && status?.ready && status.state.running);
+        assert.equal(container.image, selected, "the worker must select the imported controller");
+        const digest = status.imageID.match(/sha256:[a-f0-9]{64}$/)?.[0];
+        // CRI can report the selected image or its config. Resolve both from the
+        // Local Setup import, rather than trusting a mutable tag or the old Pod.
+        assert.ok(
+          [controllerImageDigest, controllerConfigDigest].includes(digest),
+          "the running worker must match the imported controller image",
+        );
+        return digest;
+      };
+      stage = "ready-worker";
       const before = await eventually("ready worker", worker);
+      stage = "before-worker-image";
+      const beforeImageDigest = workerImageDigest(before);
       stage = "durable-before";
       const durable = await durableIdentity();
       stage = "rollout-restart";
@@ -1215,6 +1251,8 @@ async function installOpenShellGit(t, witnessIssuedGit) {
         const pod = await worker();
         return pod?.metadata.uid !== before.metadata.uid ? pod : undefined;
       });
+      stage = "after-worker-image";
+      const afterImageDigest = workerImageDigest(after);
       stage = "revision-maintenance";
       maintenance = {
         logReads: 0,
@@ -1259,6 +1297,10 @@ async function installOpenShellGit(t, witnessIssuedGit) {
       return {
         beforeUid: before.metadata.uid,
         afterUid: after.metadata.uid,
+        controllerImageDigest,
+        controllerConfigDigest,
+        beforeImageDigest,
+        afterImageDigest,
         ...durable,
         completion,
       };

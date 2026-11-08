@@ -6,3 +6,10 @@ export function repositoryRemovalWorkKey(revisionId: string): string {
     .update("removal:" + revisionId, "utf8")
     .digest("hex")}`;
 }
+
+/** Terminal retirement always supersedes a Git-only removal, including after completion. */
+export function repositoryRetirementWorkKey(revisionId: string): string {
+  return `agent_revision:${revisionId}:repository_cleanup:retire:${createHash("sha256")
+    .update(revisionId, "utf8")
+    .digest("hex")}`;
+}

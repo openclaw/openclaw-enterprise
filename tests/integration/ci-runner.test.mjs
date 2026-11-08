@@ -6081,11 +6081,14 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     "unrecognized",
   ];
   const restartStages = [
+    "controller-image",
     "ready-worker",
+    "before-worker-image",
     "durable-before",
     "rollout-restart",
     "rollout-ready",
     "replacement-worker",
+    "after-worker-image",
     "revision-maintenance",
     "durable-after",
     "durable-retention-assertion",
@@ -6215,6 +6218,10 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       event: "worker-restarted",
       beforeUid: uuid,
       afterUid: uuid,
+      controllerImageDigest: `sha256:${sha256}`,
+      controllerConfigDigest: `sha256:${"b".repeat(64)}`,
+      beforeImageDigest: `sha256:${"b".repeat(64)}`,
+      afterImageDigest: `sha256:${sha256}`,
       databaseUid: uuid,
       custodyUid: uuid,
       custodyVersion: "234",
@@ -6246,6 +6253,21 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     { event: "cleanup", outcome: "passed" },
   ].map((value) => ({ kind: retentionKind, ...value, unexpected: forbidden }));
   const invalidRetention = [
+    ...[
+      "controllerImageDigest",
+      "controllerConfigDigest",
+      "beforeImageDigest",
+      "afterImageDigest",
+    ].flatMap((field) => [
+      {
+        ...retentionReceipts.find(({ event }) => event === "worker-restarted"),
+        [field]: forbidden,
+      },
+      {
+        ...retentionReceipts.find(({ event }) => event === "worker-restarted"),
+        [field]: undefined,
+      },
+    ]),
     { ...finiteRemoval[0], signer: "unexercised" },
     { ...finiteRemoval[0], requestId: null },
     { ...finiteRemoval[1], requestId: opaque },
@@ -6871,6 +6893,22 @@ test("run records only allowlisted measurements from test diagnostics", async (t
         agentPodsAbsent: true,
       },
     ],
+  );
+  assert.deepEqual(
+    receipts.find(({ event }) => event === "worker-restarted"),
+    {
+      kind: retentionKind,
+      event: "worker-restarted",
+      beforeUid: uuid,
+      afterUid: uuid,
+      controllerImageDigest: `sha256:${sha256}`,
+      controllerConfigDigest: `sha256:${"b".repeat(64)}`,
+      beforeImageDigest: `sha256:${"b".repeat(64)}`,
+      afterImageDigest: `sha256:${sha256}`,
+      databaseUid: uuid,
+      custodyUid: uuid,
+      custodyVersion: "234",
+    },
   );
   assert.deepEqual(
     receipts.filter(({ event }) => event === "withdrawal-origin-witness"),

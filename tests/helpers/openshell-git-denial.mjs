@@ -5,6 +5,28 @@ import { setTimeout } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { openShellSandboxLogReader } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 
+/**
+ * Require HTTP 403; never export Git's potentially sensitive error. Nonzero codes
+ * describe observed error text, not its cause: 1 access succeeded, 2 unclassified,
+ * 10 DNS, 11 connection, 12 TLS verification, 13 other HTTP, 14 timeout.
+ */
+export function gitHttp403Command(git) {
+  return [
+    "sh",
+    "-ceu",
+    "if error=$(LC_ALL=C " +
+      git +
+      ' 2>&1); then exit 1; fi; case "$error" in ' +
+      '*"returned error: 403"*|*"response 403"*) exit 0 ;; ' +
+      '*"Could not resolve host"*|*"Could not resolve proxy"*) exit 10 ;; ' +
+      '*"Failed to connect"*|*"Could not connect to server"*) exit 11 ;; ' +
+      '*"SSL certificate problem"*|*"server certificate verification failed"*) exit 12 ;; ' +
+      '*"returned error: "*|*"HTTP code "*) exit 13 ;; ' +
+      '*"Operation timed out"*|*"Connection timed out"*|*"Operation too slow"*) exit 14 ;; ' +
+      "*) exit 2 ;; esac",
+  ];
+}
+
 const ringSize = 2000;
 const reason = "transparent_tcp_policy_denied";
 // These are the Git HTTPS helpers admitted by openshell-git-runtime.ts. Resolve

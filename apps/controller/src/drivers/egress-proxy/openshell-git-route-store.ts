@@ -583,7 +583,9 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
           AND r.binding_id = $8
           AND (r.target->>'workspace') = $4 AND (r.target->>'sandbox') = $5 AND r.revision_id = v.id
           AND a.id = r.agent_id AND a.namespace_id = r.namespace_id
-          AND a.status = 'active' AND a.desired_runtime_state = 'running' AND a.active_revision_id = r.revision_id
+          AND a.status = 'active' AND a.active_revision_id = r.revision_id
+          AND (a.desired_runtime_state = 'running' OR
+            (NOT ($6::jsonb ? 'standingApprovalId') AND ${repositoryWithdrawalStateSql("r")} = 'removal'))
           AND v.admitted_spec->'repository_credentials' = $6::jsonb
           AND CASE WHEN $6::jsonb ? 'standingApprovalId'
                 THEN ${repositoryWithdrawalStateSql("r")} = 'expiry'

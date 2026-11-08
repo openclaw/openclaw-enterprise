@@ -197,11 +197,7 @@ export function memoryRepositorySessions(
     },
     async withdrawFinite(owner, at) {
       const revision = findRevision(owner);
-      if (
-        !executionAcceptsAdmission(owner) ||
-        !revision?.repositoryCredentials ||
-        revision.repositoryCredentials.standingApprovalId
-      ) {
+      if (!revision?.repositoryCredentials || revision.repositoryCredentials.standingApprovalId) {
         throw new ScopeViolationError("Finite withdrawal requires the exact active revision.");
       }
       recordFiniteWithdrawal(owner, timestamp(at));

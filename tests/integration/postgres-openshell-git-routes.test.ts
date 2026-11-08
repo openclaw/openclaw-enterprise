@@ -606,6 +606,17 @@ function retainedGitWithdrawal(removal: boolean) {
       assert.equal(await queue.claim(), undefined);
       await queue.complete(removalClaim);
     }
+    // Pending or denied Stop is intent, not authority to abandon committed Git removal.
+    // Natural expiry has no such exception and remains running-only.
+    await state.transact((unit) =>
+      unit.agents.transitionAgentDesiredRuntimeState(namespaceId, agentId, "running", "stopped"),
+    );
+    if (!removal) {
+      assert.equal(await expire(), undefined, "stopped intent cannot use the natural expiry path");
+      await state.transact((unit) =>
+        unit.agents.transitionAgentDesiredRuntimeState(namespaceId, agentId, "stopped", "running"),
+      );
+    }
     const frozen = await expire();
     assert.equal(frozen?.retainedLaunchHash, launch);
     assert.equal(await store.owns(id, 2), "repository_expired");

@@ -1,4 +1,4 @@
-import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
+import { repositoryRemovalWorkKey, repositoryRetirementWorkKey } from "../repository-withdrawal.ts";
 import { isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { createHash, randomUUID } from "node:crypto";
 import { ResourceConflictError, ScopeViolationError } from "../errors.ts";
@@ -192,9 +192,10 @@ function repositoryCleanupWorkKey(
   revisionId: string,
   purpose: "sessions" | "terminal-runtime" | "expiry",
 ): string {
-  return `agent_revision:${revisionId}:repository_cleanup:${purpose === "terminal-runtime" ? "retire:" : ""}${createHash(
-    "sha256",
-  )
+  if (purpose === "terminal-runtime") {
+    return repositoryRetirementWorkKey(revisionId);
+  }
+  return `agent_revision:${revisionId}:repository_cleanup:${createHash("sha256")
     .update(purpose === "expiry" ? REPOSITORY_EXPIRY_KEY_DOMAIN + revisionId : revisionId, "utf8")
     .digest("hex")}`;
 }
@@ -303,10 +304,11 @@ function transferRepositoryCleanupSql(
         revision.namespace_id, revision.agent_id, revision.id AS revision_id,
         -- Committed removal or expiry of this revision's maintenance can retain its runtime.
         -- Recovery has no observation: require the durable removal or database-clock deadline.
+        -- Pending Stop owns runtime disposition; it cannot undo the active revision's removal.
         CASE WHEN source.revision_id = revision.id
           AND revision.admitted_spec->'repository_credentials' IS NOT NULL THEN
           CASE WHEN namespace.status='ready' AND agent.status='active'
-            AND agent.desired_runtime_state='running' AND agent.active_revision_id=revision.id
+            AND agent.active_revision_id=revision.id
             AND ${repositoryWithdrawalStateSql("source")} = 'removal'
             THEN 'removal'
           WHEN (${mayHaveReachedRepositoryDeadline}) AND namespace.status = 'ready'

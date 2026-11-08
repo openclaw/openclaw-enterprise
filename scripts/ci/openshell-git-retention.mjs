@@ -469,11 +469,14 @@ const events = {
     stage: [
       "stage",
       choice(
+        "controller-image",
         "ready-worker",
+        "before-worker-image",
         "durable-before",
         "rollout-restart",
         "rollout-ready",
         "replacement-worker",
+        "after-worker-image",
         "revision-maintenance",
         "durable-after",
         "durable-retention-assertion",
@@ -483,6 +486,10 @@ const events = {
   "worker-restarted": {
     beforeUid: ["beforeUid", uuid],
     afterUid: ["afterUid", uuid],
+    controllerImageDigest: ["controllerImageDigest", digest],
+    controllerConfigDigest: ["controllerConfigDigest", digest],
+    beforeImageDigest: ["beforeImageDigest", digest],
+    afterImageDigest: ["afterImageDigest", digest],
     databaseUid: ["databaseUid", uuid],
     custodyUid: ["custodyUid", uuid],
     custodyVersion: ["custodyVersion", text(/^[0-9]{1,30}$/)],

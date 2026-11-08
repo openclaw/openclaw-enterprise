@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-11-07"
-last_updated_session: authoring-run/631f2612-7e8d-438d-a2bf-6ab23999c345
+updated: "2026-11-08"
+last_updated_session: authoring-run/0bed479f-9c58-4dbb-bb72-972d7dfe9790
 ---
 
 # Agent repository credential flow
@@ -10,7 +10,7 @@ last_updated_session: authoring-run/631f2612-7e8d-438d-a2bf-6ab23999c345
 
 Dedicated Codex uses prepared sessions without a Sandbox Driver;
 [OpenShell sandboxes](../reference/repository-credentials/protected-openshell-git.md) receive placeholders.
-Workers deliver credentials and check signed requests against live grants.
+Workers authorize signed requests against live grants.
 See [mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
 [service lifecycle](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
 
@@ -334,12 +334,12 @@ owner-bound Work without admission or delivery. Terminal Work closes attempts an
 `ControllerWorker.withdrawExpiredRepositoryAccess` retires the original version for IAM
 refusal, confirmed actor or Agent-principal absence, required model-source withdrawal,
 or unsupported Git withdrawal. Model withdrawal precedes Gateway readiness.
-Failed reads stay pending unless independent facts prove authority loss. Optional withdrawals cannot justify retirement. `recoverPendingCredentialWithdrawals` recovers exhausted original/companion work, preserving manual-replay holds. The v7 reducer observes without reapplying.
+Failed reads stay pending unless independent facts prove authority loss. Optional withdrawals cannot justify retirement. `recoverPendingCredentialWithdrawals` recovers exhausted original/companion work, preserving manual-replay holds.
 See [tests](../../tests/integration/postgres-standing-expiry-authority.test.ts).
 
-Under Namespace/Agent locks, `updateAgent` compares removals with finite admission. `withdrawFinite` atomically closes sessions, recording irreversible cleanup under original deployment authority, preserving existing work. The [withdrawal guard](../../migrations/0074_finite_repository_session_withdrawal.sql) rejects new sessions after locking, including blocked inserts. Re-add cannot revive admission.
+`updateAgent` commits finite removal under Namespace/Agent locks through `withdrawFinite`: irreversible session closure and cleanup with original deployment authority. The [guard](../../migrations/0074_finite_repository_session_withdrawal.sql) rejects sessions. Re-add, Stop supersession and stale-lease transfer cannot restore Git. Pending or denied Stop permits Git detachment, not retirement or running maintenance. Cleanup waits for running intent; authority loss, replacement and terminal retirement win.
 
-`PostgresWorkQueue.repositoryExpiryState` selects withdrawal before preparation despite original-work exhaustion; retirement wins. `completeActivatedRevision` defers stale maintenance. Pending removal requires active, running Agents in ready Namespaces for maintenance; other activations schedule normally. Incomplete activation can record `REPOSITORY_ACCESS_WITHDRAWN` without setup or activation success. Under Agent lock, `PostgresOpenShellGitRouteStore.adopt` blocks removed Git without recipient replacement. `expire` requires committed removal before expiry; `worker_replaced` remains refused. Compute verifies withdrawal and independent readiness. V2 consumes closed sessions through `reduceCredentialPolicy`.
+`PostgresWorkQueue.repositoryExpiryState` prioritizes retirement. `completeActivatedRevision` preserves active removal supervision; `REPOSITORY_ACCESS_WITHDRAWN` is not activation proof. `PostgresOpenShellGitRouteStore.adopt` blocks removed Git. Its `expire` and V2 `reduceCredentialPolicy` require committed finite removal while stopped. Stopped maintenance defers its claim. Git cleanup may observe pending source effects without replay or completing source withdrawal, then awaits detachment. Other withdrawals remain running-only.
 
 `ControllerWorker.processAgentDeletion` retires Compute and queues version-keyed cleanup
 without waiting for sessions. `PostgresWorkQueue.completeAgentDeletion`
@@ -378,6 +378,8 @@ Verify live PR updates, denial before provider contact and continued chat separa
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 07:45: Preserve withdrawal across Stop. (authoring-run/0bed479f-9c58-4dbb-bb72-972d7dfe9790 - d9dc87c351a0046df90915d66cbcc931ec649bb6)
 
 - 2026-11-07 12:52: Trace removal supervision. (authoring-run/631f2612-7e8d-438d-a2bf-6ab23999c345 - 6d538feb96fa163d4b74e0dd4d21b29d1cedd641)
 

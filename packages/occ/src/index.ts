@@ -12391,11 +12391,9 @@ export class OpenClawController {
       if (!updated) {
         throw new ResourceStateConflictError("The Agent Configuration changed during its update.");
       }
-      if (
-        repositoryBindings !== undefined &&
-        agent.activeRevisionId &&
-        agent.desiredRuntimeState === "running"
-      ) {
+      // Stop intent can be superseded before the active runtime is retired.
+      // Removing a finite grant must remain irreversible throughout that interval.
+      if (repositoryBindings !== undefined && agent.activeRevisionId) {
         const revision = await state.revisions.findRevision(
           namespace.id,
           agent.id,
