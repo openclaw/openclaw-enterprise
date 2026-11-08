@@ -62,9 +62,12 @@ const unspecified = "PROVIDER_READINESS_REASON_UNSPECIFIED";
 class Unsafe extends Error {}
 /** The gateway client sanitizes some failures into an error with grpcStatus; others retain
  * gRPC's numeric code. */
+function rawGrpcCode(error: unknown): unknown {
+  const failure = error as { grpcStatus?: unknown; code?: unknown } | null;
+  return failure?.grpcStatus ?? failure?.code;
+}
 function grpcCode(error: unknown): number {
-  const failure = error as { grpcStatus?: number; code?: number } | null;
-  return Number(failure?.grpcStatus ?? failure?.code);
+  return Number(rawGrpcCode(error));
 }
 function expiryFailure(error: unknown, signal: AbortSignal): OpenShellGitExpiryFailure {
   if (error instanceof OpenShellAdmissionLimitError) {
@@ -334,7 +337,7 @@ export async function subtractExpiredOpenShellGit(
     outcome: OpenShellGitExpiryResult,
     step = check,
     failure: OpenShellGitExpiryFailure = "unconfirmed",
-    grpcStatus?: number,
+    grpcStatus?: unknown,
   ) => {
     report?.(
       outcome,
@@ -498,7 +501,7 @@ export async function subtractExpiredOpenShellGit(
         : "pending",
       check,
       error instanceof Unsafe ? "unconfirmed" : expiryFailure(error, signal),
-      grpcCode(error),
+      rawGrpcCode(error),
     );
   }
 }

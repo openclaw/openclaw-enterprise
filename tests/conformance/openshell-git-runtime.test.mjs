@@ -2253,12 +2253,17 @@ test("Git expiry observes the original model in the reduced stock installation, 
         pass.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
         throw pass.signal.reason;
       }
-      if (fault === "Sandbox moved before send") {
+      if (fault === "Sandbox moved before send" || fault === "string conflict code") {
         box.resourceVersion = "14";
       }
       admitted.set(conditional.requestId, { version: conditional.expectedResourceVersion });
       if (conditional.expectedResourceVersion !== box.resourceVersion) {
-        throw Object.assign(Error("RESOURCE_VERSION_CONFLICT"), { grpcStatus: 10 });
+        // A generic string code keeps the existing fail-closed decision but is not
+        // numeric supplier evidence for the diagnostic.
+        throw Object.assign(
+          Error("RESOURCE_VERSION_CONFLICT"),
+          fault === "string conflict code" ? { code: "10" } : { grpcStatus: 10 },
+        );
       }
       if (fault === "outcome uncertain at gateway" || fault === "first send still applying") {
         // Admitted, then the call ran out of time before the gateway recorded a result.
@@ -2339,7 +2344,9 @@ test("Git expiry observes the original model in the reduced stock installation, 
       const event = expiries(f).at(-1);
       assert.equal(
         event.failure,
-        ["Sandbox moved before send", "unimplemented detach"].includes(fault)
+        ["Sandbox moved before send", "string conflict code", "unimplemented detach"].includes(
+          fault,
+        )
           ? "failed"
           : "unconfirmed",
       );
@@ -2423,6 +2430,7 @@ test("Git expiry observes the original model in the reduced stock installation, 
     ["admission limit", "pending", ["pending", "withdrawn"]],
     ["Sandbox moved after intent", "pending", "retire-runtime"],
     ["Sandbox moved before send", "retire-runtime"],
+    ["string conflict code", "retire-runtime"],
     ["replacement Pod", "retire-runtime"],
     ["Git profile scope changed", "retire-runtime"],
     ["model profile belongs to another workspace", "retire-runtime"],
