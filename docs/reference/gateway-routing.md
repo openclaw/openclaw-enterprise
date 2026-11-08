@@ -214,6 +214,7 @@ Helm's `gatewayRouting` settings configure shared infrastructure:
 | `tenantGatewayPort`            | `8080`; must equal Compute's `network.gatewayPort`.                                                                                                       |
 | `envoyHttpsTargetPort`         | `10443`; NetworkPolicy port for the Envoy listener Pod.                                                                                                   |
 | `envoyGatewayPodLabels`        | Chart defaults select the Envoy Gateway controller for control-plane egress.                                                                              |
+| `remoteNodeCidrs`              | Empty; IPv4 or IPv6 CIDRs of remote node sources that Envoy ingress admits. A `/0` prefix, such as `0.0.0.0/0`, is refused.                               |
 
 Routing ports must be decimal integers from `1` to `65535`, without leading
 zeros. With the sandbox enabled, `tenantGatewayPort` stops at `65534`, because
