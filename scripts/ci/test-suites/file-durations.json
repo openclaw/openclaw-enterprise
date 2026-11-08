@@ -108,7 +108,7 @@
     "tests/conformance/postgres-controller-auth-binding.test.mjs": 2300,
     "tests/conformance/postgres-transaction-commit.test.mjs": 500,
     "tests/conformance/postgres-transaction-unknown-commit.test.mjs": 200,
-    "tests/conformance/pr-status.test.mjs": 200,
+    "tests/conformance/pr-status.test.ts": 200,
     "tests/conformance/presets.test.mjs": 200,
     "tests/conformance/repository-client-environment.test.mjs": 100,
     "tests/conformance/repository-credentials-contracts.test.mjs": 800,

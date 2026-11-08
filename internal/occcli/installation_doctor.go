@@ -211,7 +211,8 @@ func readInitializationWithAttempt(ctx context.Context, config, kctx, ns, name, 
 	if err := cmd.Run(); err != nil {
 		var exit *exec.ExitError
 		completeDiagnostic := errors.As(err, &exit) && exit.ExitCode() == 1 && ctx.Err() == nil && !out.overflow && !diagnostic.overflow
-		if completeDiagnostic && strings.TrimSpace(diagnostic.buf.String()) ==
+		// An absence report must come from a failed read that emitted no Job output.
+		if completeDiagnostic && out.buf.Len() == 0 && strings.TrimSpace(diagnostic.buf.String()) ==
 			fmt.Sprintf("Error from server (NotFound): jobs.batch %q not found", name) {
 			if expectedAttempt != "" && expectedUID == "" {
 				return initializationResult{state: initializationOriginalNotFound, message: "Initialization Job: not found. The original UID was not recorded and the outcome remains unknown."}
