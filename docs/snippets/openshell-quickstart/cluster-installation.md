@@ -85,7 +85,7 @@ Use one raw URL per file. For this fresh installation, generate separate random
 mode 0600 and retain the keys for redeployment.
 
 Create the bootstrap claim and Secrets from the matching checkout with jq, yq v4,
-and Node.js 24.22.1 or newer. The OpenShell chart’s PKI job supplies
+and Node.js satisfying `engines.node` in the selected release checkout's `package.json`. The OpenShell chart’s PKI job supplies
 `openshell-client-tls`. Check that it exists before creating the OCC inputs.
 
 ```bash

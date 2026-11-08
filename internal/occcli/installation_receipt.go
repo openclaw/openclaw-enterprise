@@ -115,7 +115,9 @@ func (app *application) installationInstallCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Installation intent persisted in %s. An interrupted dispatch remains unknown; do not repeat install.\n", receipt)
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Installation intent persisted in %s. An interrupted dispatch remains unknown; do not repeat install.\n", receipt); err != nil {
+				return fmt.Errorf("cannot write installation receipt path to stdout (intent preserved in %q, no installation dispatched): %w", receipt, err)
+			}
 			// Persist before Start: even a crash between these operations stays unknown.
 			if err = writeInstallationRecord(receipt, "dispatch.json", map[string]string{"outcome": "unknown"}); err != nil {
 				return err

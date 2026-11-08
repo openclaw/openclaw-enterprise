@@ -104,6 +104,37 @@ func runOCCAgainst(t *testing.T, handler http.Handler, args ...string) (string, 
 	return out.String(), errOut.String(), err
 }
 
+func TestAgentStopRejectsAnAcceptedResponseWithoutTheStoppedAgent(t *testing.T) {
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	wantRequests := []string{"GET " + agentPath, "POST " + agentPath + "/stop"}
+	for _, test := range []struct {
+		name string
+		data string
+	}{
+		{"null Agent", "null"},
+		{"empty Agent", "{}"},
+		{"missing desired state", `{"id":"` + testAgentID + `","namespaceId":"` + testNamespaceID + `"}`},
+		{"different Agent", `{"id":"agt_00000000-0000-4000-8000-000000000001","namespaceId":"` + testNamespaceID + `","desiredRuntimeState":"stopped"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			out, errOut, requested, err := runOCCWithNotices(t, map[string]string{
+				wantRequests[0]: `{"id":"` + testAgentID + `","namespaceId":"` + testNamespaceID + `","desiredRuntimeState":"running"}`,
+				wantRequests[1]: `raw:202 {"data":` + test.data + `,"meta":{"requestId":"req_00000000-0000-4000-8000-000000000001"}}`,
+			}, "--namespace", testNamespaceID, "agent", "stop", testAgentID, "-o", "json")
+			if !slices.Equal(requested, wantRequests) {
+				t.Fatalf("requests = %v, want %v", requested, wantRequests)
+			}
+			wantHint := `occ --namespace ` + testNamespaceID + ` agent get ` + testAgentID
+			if err == nil || !strings.Contains(err.Error(), "stop outcome is unknown") || !strings.Contains(err.Error(), wantHint) {
+				t.Errorf("stop error = %v, want an unknown outcome and %q", err, wantHint)
+			}
+			if out != "" || strings.Contains(errOut, "stop requested") {
+				t.Errorf("stdout = %q, stderr = %q, want no success output", out, errOut)
+			}
+		})
+	}
+}
+
 func TestNamespaceTableLabelsTheAdoptedNamespaceColumn(t *testing.T) {
 	out, _, err := runOCC(t, map[string]string{
 		"GET /namespaces": `[{"id":"` + testNamespaceID + `","name":"team","status":"ready","createdAt":"2026-09-30T00:00:00.000Z"}]`,

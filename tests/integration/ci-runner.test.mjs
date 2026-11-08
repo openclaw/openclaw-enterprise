@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   chmod,
@@ -15,12 +16,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
+import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   collectNativeWorkerFailure,
   nativePlacementReadRetryable,
   nativeWorkerHistoryEvidence,
+  nativeWorkerProofProgram,
   nativeWorkerPlacementObservation,
   nativeWorkerTurnObservation,
 } from "../helpers/local-first-agent-native.mjs";
@@ -1371,6 +1374,27 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   // This marker is deliberately absent from the redactor's environment secrets.
   // The native projector and reporter must remove it themselves.
   const nativePrivate = "private-native-observation-marker";
+  const failedProgram = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      nativeWorkerProofProgram({
+        sessionFile: { path: join(root, nativePrivate) },
+        createSessionFile: false,
+        toolPrefix: "proof ",
+      }),
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(failedProgram.status, 1);
+  const inconsistentNativeFailures = [
+    [0, "read-session-file", "ENOENT"],
+    [undefined, "read-session-file", "ENOENT"],
+    [1, undefined, "ENOENT"],
+    [1, "read-session-file", undefined],
+    [1, nativePrivate, "ENOENT"],
+    [1, "read-session-file", nativePrivate],
+  ];
   const nativeHistory = nativeWorkerHistoryEvidence({
     runId: "selected",
     toolPrefix: "proof ",
@@ -1386,14 +1410,19 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
         role: "toolResult",
         toolName: "exec",
         isError: false,
-        content: JSON.stringify({ value: { aggregated: nativePrivate, exitCode: 0 } }),
+        content: JSON.stringify({
+          value: { aggregated: failedProgram.stderr, exitCode: failedProgram.status },
+        }),
         __openclaw: { runId: "selected" },
       },
     ],
   }).observation;
   assert.equal(nativeHistory.historyExecCodeStringCount, 1);
   assert.equal(nativeHistory.historyExecCommandStringCount, 0);
-  assert.equal(nativeHistory.historyExecNestedExitZeroCount, 1);
+  assert.equal(nativeHistory.historyExecNestedExitNonzeroCount, 1);
+  assert.equal(nativeHistory.historyExecNestedExitCode, 1);
+  assert.equal(nativeHistory.historyExecFailureOperation, "read-session-file");
+  assert.equal(nativeHistory.historyExecFailureCode, "ENOENT");
   assert.equal(nativeHistory.historyToolProofPresent, false);
   assert.equal(nativeHistory.historyFinalProofPresent, false);
   const nativeWorker = nativeWorkerPlacementObservation({
@@ -2084,6 +2113,18 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
             worker: { ...nativeHistory, transcript: nativePrivate },
           },
         },
+        ...inconsistentNativeFailures.map(([exitCode, operation, code], index) => ({
+          name: `rejects inconsistent native failure ${index}`,
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "model-history",
+            worker: {
+              historyExecNestedExitCode: exitCode,
+              historyExecFailureOperation: operation,
+              historyExecFailureCode: code,
+            },
+          },
+        })),
         {
           name: "rejects hostile native worker diagnostic fields",
           diagnostic: {
@@ -2429,6 +2470,14 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     ).error.diagnostic.worker,
     nativeHistory,
   );
+  for (const [index, [exitCode]] of inconsistentNativeFailures.entries()) {
+    assert.deepEqual(
+      summary.files[0].tests.find(
+        (entry) => entry.name === `rejects inconsistent native failure ${index}`,
+      ).error.diagnostic.worker,
+      exitCode === undefined ? {} : { historyExecNestedExitCode: exitCode },
+    );
+  }
   assert.deepEqual(
     summary.files[0].tests.find(
       (entry) => entry.name === "rejects hostile native worker diagnostic fields",
@@ -3039,8 +3088,14 @@ test("the redactor removes URL userinfo of any shape and multi-line private keys
 });
 
 test("the redactor removes secrets inside escaped JSON and keys from filtered log lines", async () => {
-  const { failureSecrets, newestMatchingLogLines, redactFailureDetail, redactLogLine } =
-    await import("../../scripts/ci/failure-redaction.mjs");
+  const {
+    failureSecrets,
+    maskPrivateKeyLines,
+    newestMatchingLogLines,
+    redactOutputLine,
+    redactFailureDetail,
+    redactLogLine,
+  } = await import("../../scripts/ci/failure-redaction.mjs");
   const secrets = failureSecrets([{}]);
   // A JSON document embedded in a log string escapes its quotes, once or more (finding 1551).
   // Synthetic values only; none is in the env or has a known token shape.
@@ -3087,6 +3142,8 @@ test("the redactor removes secrets inside escaped JSON and keys from filtered lo
     "syntheticBodyLineTwoBBBBBBBB",
     "-----END RSA PRIVATE KEY-----",
     "worker turn failed: ECONNRESET",
+    // Structured events stay private even when an arbitrary field matches the log filter.
+    '2026-11-07T00:00:00Z OCSF-JSON {"message":"worker failed","detail":"private-value"}',
     "debug noise",
   ].join("\n");
   const shown = newestMatchingLogLines(logs, secrets, {
@@ -3096,6 +3153,16 @@ test("the redactor removes secrets inside escaped JSON and keys from filtered lo
     lineChars: 400,
   });
   assert.equal(shown, "worker start\nworker turn failed: ECONNRESET");
+  for (const structured of [
+    'OCSF-JSON {"early":"private payload","message":"worker failed"}',
+    'OCSF-JSON {"message":"worker failed","late":"private payload"}',
+    'OCSF-JSON {"message":"worker failed","truncated":"private payload',
+  ]) {
+    assert.deepEqual(maskPrivateKeyLines(["before", structured, "after"]), ["before", "", "after"]);
+    assert.equal(redactLogLine(structured, secrets, 12), "");
+    assert.equal(redactOutputLine(structured, secrets, "/repo", 12), "");
+  }
+
   // Newest lines win the budget, and each kept line is clipped after redaction.
   assert.equal(
     newestMatchingLogLines("turn one\nturn two\nturn three", secrets, {
@@ -3352,7 +3419,13 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
       '  t.diagnostic("phase timings 1234 ms");',
       `  for (const message of ${JSON.stringify(phaseDiagnostics)}) t.diagnostic(message);`,
-      '  assert.fail(`password="fixture,\\nprivate-tail" phase=after ${"stage line\\n".repeat(80)}decisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
+      '  assert.fail(`password="fixture,\\nprivate-tail" phase=after\\nOCSF-JSON {"payload":"structured-private-early"}\\n${"stage line\\n".repeat(80)}OCSF-JSON {"payload":"structured-private-late"\\ndecisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
+      "});",
+      'test("clipped failure", () => {',
+      '  const clipped = (prefix, tail) => prefix.padEnd(16_384 - 9, "x") + "\\n" + tail;',
+      '  const error = new Error(clipped("OCSF-JSON ", process.env.CI_RUNNER_FIXTURE_CREDENTIAL));',
+      '  error.stack = "Error: clipped\\n    " + clipped("at OCSF-JSON ", "at " + process.env.CI_RUNNER_FIXTURE_CREDENTIAL).replace("\\n", "\\n    ");',
+      "  throw error;",
       "});",
       "",
     ].join("\n"),
@@ -3417,6 +3490,19 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
   assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123|private-tail|passing output/);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${text}`, /fixture-opaque-phase-detail/);
+  assert.doesNotMatch(
+    `${JSON.stringify(summary)}\n${result.stdout}\n${result.stderr}\n${text}`,
+    /structured-private|OCSF-JSON/,
+  );
+  // Removing a structured line must not hide the reporter's cut through a secret.
+  assert.equal(
+    summary.files[0].tests.find(({ name }) => name === "clipped failure").status,
+    "failed",
+  );
+  assert.doesNotMatch(
+    `${JSON.stringify(summary)}\n${result.stdout}\n${result.stderr}\n${text}`,
+    /secretau|at secre/,
+  );
   const report = JSON.parse(text);
   assert.equal(report.lane, "details");
   assert.equal(report.failures.length, 1);
@@ -5354,6 +5440,71 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
   assert.equal(required?.status, "passed");
   assert.equal(optional?.status, "passed");
 
+  const failedFileEvidence = {
+    ...fileEvidence,
+    status: "failed",
+    cleanup: { status: "failed" },
+  };
+  const duplicateFileIssue = {
+    code: "duplicate-lane-file",
+    message: `lane docker-model has duplicate file evidence for ${file}`,
+    lane: "docker-model",
+    file,
+  };
+  const failedFileIssues = [
+    {
+      code: "lane-file-failed",
+      message: "lane docker-model file did not pass",
+      lane: "docker-model",
+      file,
+      status: "failed",
+    },
+    {
+      code: "cleanup-failed",
+      message: "lane docker-model file cleanup did not pass",
+      lane: "docker-model",
+      file,
+    },
+  ];
+  for (const [label, files, issues] of [
+    ["duplicate file fails then passes", [failedFileEvidence, fileEvidence], failedFileIssues],
+    ["duplicate file passes then fails", [fileEvidence, failedFileEvidence], failedFileIssues],
+    ["duplicate file passes both times", [fileEvidence, fileEvidence], []],
+  ]) {
+    await t.test(label, async () => {
+      await writeJson(resultPath, { ...evidence, files });
+      const result = run(root, aggregateArgs);
+      assert.equal(result.status, 1, result.stdout || result.stderr);
+      const aggregate = JSON.parse(result.stdout);
+      assert.equal(aggregate.status, "failed");
+      assert.deepEqual(aggregate.issues, [duplicateFileIssue, ...issues]);
+    });
+  }
+
+  await t.test("duplicate unregistered file evidence does not expose its path", async () => {
+    const unregisteredPath = "tests/integration/untrusted-receipt-path-canary.test.mjs";
+    const unregisteredFile = { ...fileEvidence, path: unregisteredPath };
+    await writeJson(resultPath, {
+      ...evidence,
+      files: [fileEvidence, unregisteredFile, unregisteredFile],
+    });
+    const result = run(root, aggregateArgs);
+    assert.equal(result.status, 1, result.stderr);
+    assert.ok(
+      !result.stdout.includes(unregisteredPath) && !result.stderr.includes(unregisteredPath),
+      "aggregate printed an unregistered receipt path",
+    );
+    const aggregate = JSON.parse(result.stdout);
+    assert.equal(aggregate.status, "failed");
+    assert.deepEqual(aggregate.issues, [
+      {
+        code: "duplicate-lane-file",
+        message: "lane docker-model has duplicate file evidence for an unregistered file",
+        lane: "docker-model",
+      },
+    ]);
+  });
+
   const skipped = { ...required, status: "skipped" };
   const unpassed = (status) => ({
     code: "expected-test-not-passed",
@@ -5643,6 +5794,75 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     outcome: "passed",
     elapsedMs: 39_000,
   };
+  // Observation metadata can survive unavailable probes; payloads and raw identities cannot.
+  const unavailableTurnover = {
+    kind: "openshell-initial-turnover",
+    request: 1,
+    clockOffsetMinMs: -1,
+    clockOffsetMaxMs: 1,
+    startedAtMs: 1_800_000_000_000,
+    finishedAtMs: 1_800_000_010_000,
+    requestOutcome: "failed",
+    httpStatus: null,
+    nonceMatched: false,
+    observation: "unavailable",
+    qualification: "failed",
+    durableCommands: false,
+    nodeIdSha256: null,
+    connectedBeforeMs: null,
+    connectedAfterMs: null,
+    providerEnvBeforeSha256: null,
+    providerEnvAfterSha256: null,
+    configBeforeSha256: null,
+    configAfterSha256: null,
+    policyBeforeSha256: null,
+    policyAfterSha256: null,
+    turnoverAtMs: null,
+    staleTunnelAtMs: null,
+    harness1006LogObserved: false,
+    capturedGeneration: null,
+    currentGeneration: null,
+    configUnchanged: false,
+    policyUnchanged: false,
+    providerEnvChanged: false,
+    settingsConsistent: false,
+    stableRuntime: false,
+  };
+  const unexercisedTurnover = {
+    ...unavailableTurnover,
+    requestOutcome: "passed",
+    httpStatus: 200,
+    nonceMatched: true,
+    observation: "complete",
+    qualification: "unexercised",
+    durableCommands: true,
+    nodeIdSha256: "a".repeat(64),
+    connectedBeforeMs: 1_799_999_999_000,
+    connectedAfterMs: 1_799_999_999_000,
+    providerEnvBeforeSha256: "b".repeat(64),
+    providerEnvAfterSha256: "b".repeat(64),
+    configBeforeSha256: "c".repeat(64),
+    configAfterSha256: "c".repeat(64),
+    policyBeforeSha256: "d".repeat(64),
+    policyAfterSha256: "d".repeat(64),
+    configUnchanged: true,
+    policyUnchanged: true,
+    settingsConsistent: true,
+    stableRuntime: true,
+  };
+  const turnContinuity = {
+    ...unexercisedTurnover,
+    request: 2,
+    qualification: "turn-continuity",
+    connectedAfterMs: 1_800_000_003_000,
+    providerEnvAfterSha256: "e".repeat(64),
+    turnoverAtMs: 1_800_000_001_000,
+    staleTunnelAtMs: 1_800_000_002_000,
+    harness1006LogObserved: true,
+    capturedGeneration: 1,
+    currentGeneration: 2,
+    providerEnvChanged: true,
+  };
   const runtimeFailure = {
     kind: "local-first-agent-command",
     phase: "setup",
@@ -5650,6 +5870,34 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     count: 4,
     failed: 3,
     elapsedMs: 200,
+  };
+  // These records exercise the same consistency decision used by the real observer.
+  // Contradiction stays incomplete even when each field is well-typed.
+  const conflictingSettings = {
+    ...turnContinuity,
+    settingsConsistent: false,
+    qualification: "incomplete",
+  };
+  const unchangedProvider = {
+    ...turnContinuity,
+    providerEnvAfterSha256: turnContinuity.providerEnvBeforeSha256,
+    qualification: "incomplete",
+  };
+  const missingTurnoverEvent = {
+    ...unexercisedTurnover,
+    providerEnvAfterSha256: "e".repeat(64),
+    qualification: "incomplete",
+  };
+  const changedGateway = { ...turnContinuity, stableRuntime: false, qualification: "incomplete" };
+  const earlyRelay = {
+    ...turnContinuity,
+    staleTunnelAtMs: 1_799_999_999_999,
+    qualification: "incomplete",
+  };
+  const lateTurnover = {
+    ...turnContinuity,
+    turnoverAtMs: 1_800_000_010_001,
+    qualification: "incomplete",
   };
   await writeFile(
     join(root, "tests/integration/measurements.test.mjs"),
@@ -5858,6 +6106,45 @@ test("run records only allowlisted measurements from test diagnostics", async (t
         measurement({ ...openshellPhase, outcome: "secretauthvalue-phase-outcome" }),
         measurement({ ...openshellPhase, elapsedMs: 2_400_001 }),
         measurement({ ...openshellPhase, elapsedMs: 0.5 }),
+        ...[unavailableTurnover, unexercisedTurnover, turnContinuity].map((value) =>
+          measurement({
+            ...value,
+            detail: "secretauthvalue-turnover-detail",
+            nodeId: "secretauthvalue-node-id",
+            provider: { config: "secretauthvalue-provider-config" },
+          }),
+        ),
+        ...[
+          { request: 3 },
+          { startedAtMs: -1 },
+          { finishedAtMs: Number.MAX_SAFE_INTEGER + 1 },
+          { requestOutcome: "secretauthvalue-request-outcome" },
+          { httpStatus: 600 },
+          { observation: "secretauthvalue-observation" },
+          { qualification: "secretauthvalue-qualification" },
+          { nodeIdSha256: "secretauthvalue-node-id" },
+          { providerEnvAfterSha256: "A".repeat(64) },
+          { configBeforeSha256: "a".repeat(63) },
+          { policyAfterSha256: undefined },
+          { connectedAfterMs: 0.5 },
+          { turnoverAtMs: "secretauthvalue-time" },
+          { currentGeneration: -1 },
+          { nonceMatched: "secretauthvalue-matched" },
+          { durableCommands: 1 },
+          { stableRuntime: undefined },
+          { harness1006LogObserved: "secretauthvalue-close" },
+        ].map((invalid) => measurement({ ...turnContinuity, ...invalid })),
+        ...[
+          conflictingSettings,
+          unchangedProvider,
+          missingTurnoverEvent,
+          changedGateway,
+          earlyRelay,
+          lateTurnover,
+        ].flatMap((value) => [
+          measurement(value),
+          measurement({ ...value, qualification: "turn-continuity" }),
+        ]),
         "openclaw-ci-measurement secretauthvalue-not-json",
         "secretauthvalue-plain-diagnostic",
       ].map((message) => `  t.diagnostic(${JSON.stringify(message)});`),
@@ -5962,6 +6249,15 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       budgetMs: 15_000,
     },
     openshellPhase,
+    unavailableTurnover,
+    unexercisedTurnover,
+    turnContinuity,
+    conflictingSettings,
+    unchangedProvider,
+    missingTurnoverEvent,
+    changedGateway,
+    earlyRelay,
+    lateTurnover,
   ]);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
 });
@@ -6319,6 +6615,8 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
     "2026-10-08T07:43:53.3Z request Authorization: Bearer do-not-publish-header",
     "2026-10-08T07:43:53.4Z provider token=do-not-publish-assignment refreshed",
     "2026-10-08T07:43:53.5Z parent value secretauthvalue-parent seen",
+    '2026-10-08T07:43:53.5Z OCSF-JSON {"detail":"private-structured-early","message":"failure"}',
+    '2026-10-08T07:43:53.5Z OCSF-JSON {"message":"failure","detail":"private-structured-truncated',
   ];
   // Only the lane gives the child this value; the runner's own env never has it.
   const childSecret = "childonlysecret-1754";
@@ -6335,6 +6633,9 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
       'if (args.includes("logs")) {',
       `  process.stdout.write(${JSON.stringify(`${logLines.join("\n")}\n`)});`,
       "  process.stdout.write(`2026-10-08T07:43:53.6Z child value ${process.env.OCC_TEST_CHILD_ONLY}\\n`);",
+      // Split one structured record across actual pipe writes; neither fragment may persist.
+      '  process.stdout.write(\'2026-10-08T07:43:53.7Z OCSF-JSON {"detail":"private-structured-split\');',
+      "  setTimeout(() => process.stdout.write('-tail\"}\\n'), 100);",
       "  process.stderr.write('follow note\\nGET https://api Authorization: Bearer do-not-publish-verbose');",
       "  setTimeout(() => process.stdout.write('2026-10-08T07:44:22.0Z [gateway] exit 0'), 300);",
       '} else if (args.includes("get") && args.includes("pods")) {',
@@ -6740,6 +7041,83 @@ describe("tests that wait out real runner limits, side by side", { concurrency: 
   }
 });
 
+test("native proof diagnoses real file failures without disclosing program output", async (t) => {
+  const directory = await temporaryDirectory(t, "native-proof-diagnostic-");
+  const toolPrefix = "FIRST_AGENT_NATIVE_TOOL ";
+  const privateName = "private-native-proof-file";
+  const workspaceFile = { path: join(directory, privateName) };
+  await writeFile(workspaceFile.path, "private-workspace-content");
+  for (const [name, createSessionFile, operation, errorCode] of [
+    ["duplicate", true, "write-session-file", "EEXIST"],
+    ["missing-session", false, "read-session-file", "ENOENT"],
+    ["missing-workspace", true, "read-workspace-file", "ENOENT"],
+    ["success", true, undefined, undefined],
+    ["reuse", false, undefined, undefined],
+  ]) {
+    const sessionFile = { path: join(directory, name) };
+    if (name === "duplicate") {
+      await writeFile(sessionFile.path, "keep-existing-session");
+    } else if (name === "reuse") {
+      await writeFile(sessionFile.path, "private-session-content");
+    }
+    // Run the same generated program as the native model prompt against actual
+    // files. Only the recorded Code Mode envelope is supplied to the decoder.
+    const result = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        nativeWorkerProofProgram({
+          sessionFile,
+          sessionFileContent: "private-session-content",
+          toolPrefix,
+          createSessionFile,
+          workspaceFile:
+            name === "missing-workspace" ? { path: workspaceFile.path + "-absent" } : workspaceFile,
+        }),
+      ],
+      { encoding: "utf8", timeout: 10_000 },
+    );
+    assert.equal(result.status, operation ? 1 : 0, name);
+    const evidence = nativeWorkerHistoryEvidence({
+      runId: "selected",
+      toolPrefix,
+      marker: "expected-final",
+      messages: [
+        {
+          role: "toolResult",
+          toolName: "exec",
+          isError: false,
+          content: JSON.stringify({
+            value: { aggregated: result.stdout + result.stderr, exitCode: result.status },
+          }),
+          __openclaw: { runId: "selected" },
+        },
+      ],
+    });
+    const diagnostic = nativeFirstAgentProofDiagnostic("model-history", evidence.observation);
+    assert.equal(diagnostic.worker.historyExecNestedExitCode, result.status, name);
+    assert.equal(diagnostic.worker.historyExecFailureOperation, operation, name);
+    assert.equal(diagnostic.worker.historyExecFailureCode, errorCode, name);
+    assert.equal(Boolean(evidence.tool), !operation, name);
+    assert.equal(Boolean(evidence.final), false, name);
+    assert.doesNotMatch(JSON.stringify(diagnostic), /private-|keep-existing|Error:|\bat /);
+    if (operation) {
+      assert.doesNotMatch(result.stdout + result.stderr, /private-|keep-existing|Error:|\bat /);
+    } else {
+      const proof = JSON.parse(result.stdout.slice(toolPrefix.length));
+      assert.equal(
+        proof.sessionFileSha256,
+        createHash("sha256").update("private-session-content").digest("hex"),
+      );
+      assert.equal(
+        proof.workspaceFileSha256,
+        createHash("sha256").update("private-workspace-content").digest("hex"),
+      );
+    }
+  }
+  assert.equal(await readFile(join(directory, "duplicate"), "utf8"), "keep-existing-session");
+});
+
 test("native history proof keeps exact run, explicit success and marker predicates", () => {
   const prefix = "FIRST_AGENT_NATIVE_TOOL ";
   const marker = "FIRST_AGENT_NATIVE_expected";
@@ -6867,6 +7245,40 @@ test("native history proof keeps exact run, explicit success and marker predicat
     assert.equal(evidence.observation.historyToolProofPresent, false);
     assert.equal(evidence.observation.historyFinalProofPresent, false);
     assert.doesNotMatch(JSON.stringify(evidence.observation), /private-|FIRST_AGENT_NATIVE/);
+  }
+  // Only a single recognized failing result may contribute bounded categories.
+  // Unmarked pre-Node failures and hostile/ambiguous markers remain unclassified.
+  const failureLine =
+    'FIRST_AGENT_NATIVE_FAILURE {"operation":"read-session-file","code":"ENOENT"}';
+  for (const [exitCode, aggregated] of [
+    [1, "private-shell-error"],
+    [1, 'FIRST_AGENT_NATIVE_FAILURE {"operation":"private-path","code":"ENOENT"}'],
+    [1, 'FIRST_AGENT_NATIVE_FAILURE {"operation":"read-session-file","code":"private-error"}'],
+    [1, "FIRST_AGENT_NATIVE_FAILURE {invalid"],
+    [1, "command: " + failureLine],
+    [1, failureLine + "\n" + failureLine],
+    [1, failureLine + "\nFIRST_AGENT_NATIVE_FAILURE {invalid"],
+    [1, failureLine + '\nFIRST_AGENT_NATIVE_FAILURE {"operation":"private-path","code":"ENOENT"}'],
+    [1, failureLine + "\nFIRST_AGENT_NATIVE_FAILURE " + "x".repeat(256)],
+    [0, failureLine],
+    [256, failureLine],
+    [-1, failureLine],
+  ]) {
+    const evidence = nativeWorkerHistoryEvidence({
+      messages: [{ ...tool, content: JSON.stringify({ value: { exitCode, aggregated } }) }],
+      runId: "selected",
+      toolPrefix: prefix,
+      marker,
+    });
+    const diagnostic = nativeFirstAgentProofDiagnostic("model-history", evidence.observation);
+    assert.equal(diagnostic.worker.historyExecFailureOperation, undefined);
+    assert.equal(diagnostic.worker.historyExecFailureCode, undefined);
+    assert.equal(
+      diagnostic.worker.historyExecNestedExitCode,
+      exitCode >= 0 && exitCode <= 255 ? exitCode : undefined,
+    );
+    assert.equal(Boolean(evidence.tool), false);
+    assert.doesNotMatch(JSON.stringify(diagnostic), /private-|FIRST_AGENT_NATIVE/);
   }
   // Peer-supplied part names and command arguments must not become diagnostic values.
   const command = "private-command";

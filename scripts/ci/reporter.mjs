@@ -59,6 +59,7 @@ const openShellPolicyCheckKind = "openshell-network-policy-check";
 const openShellFixtureTeardownKind = "openshell-fixture-teardown";
 const openShellGatewayTurnFailureKind = "openshell-gateway-turn-failure";
 const openShellNativePolicyCheckKind = "openshell-native-policy-check";
+const openShellInitialTurnoverKind = "openshell-initial-turnover";
 const nativePolicyPrimaryChecks = new Set([
   "agent.get",
   "agent.status-200",
@@ -114,6 +115,7 @@ const openShellMeasurementKinds = new Set([
   openShellFixtureTeardownKind,
   openShellGatewayTurnFailureKind,
   openShellNativePolicyCheckKind,
+  openShellInitialTurnoverKind,
 ]);
 const openShellPolicyChecks = new Set([
   "installation-discovery",
@@ -170,6 +172,9 @@ function parseMeasurement(message) {
 }
 
 function safeMeasurement(value) {
+  if (isRecord(value) && value.kind === openShellInitialTurnoverKind) {
+    return safeOpenShellInitialTurnoverMeasurement(value);
+  }
   if (isRecord(value) && value.kind === openShellGatewayTurnFailureKind) {
     const { kind, checkpoint, turn, status } = value;
     const outsideTurn = checkpoint === "gateway-setup" || checkpoint === "native-evidence";
@@ -438,6 +443,153 @@ function safeMeasurement(value) {
     sample: value.sample,
     seconds: Math.round(value.seconds * 10) / 10,
   };
+}
+
+// Shared by the real refresh observer and receipt admission. This establishes
+// original-turn continuity only; it cannot identify an interrupted workspace read.
+export function openShellTurnoverQualification(value) {
+  if (value.requestOutcome === "failed") {
+    return "failed";
+  }
+  if (
+    value.observation !== "complete" ||
+    !value.stableRuntime ||
+    !value.settingsConsistent ||
+    value.httpStatus !== 200 ||
+    !value.nonceMatched ||
+    !value.nodeIdSha256 ||
+    !value.configUnchanged ||
+    !value.policyUnchanged ||
+    !value.configBeforeSha256 ||
+    value.configBeforeSha256 !== value.configAfterSha256 ||
+    !value.policyBeforeSha256 ||
+    value.policyBeforeSha256 !== value.policyAfterSha256 ||
+    !value.providerEnvBeforeSha256 ||
+    !value.providerEnvAfterSha256 ||
+    !Number.isSafeInteger(value.clockOffsetMinMs) ||
+    !Number.isSafeInteger(value.clockOffsetMaxMs) ||
+    value.clockOffsetMinMs > value.clockOffsetMaxMs ||
+    value.startedAtMs > value.finishedAtMs
+  ) {
+    return "incomplete";
+  }
+  const events = [value.turnoverAtMs, value.staleTunnelAtMs];
+  const providerChanged = value.providerEnvBeforeSha256 !== value.providerEnvAfterSha256;
+  if (
+    !providerChanged &&
+    !value.providerEnvChanged &&
+    !value.harness1006LogObserved &&
+    events.every((time) => time === null) &&
+    value.capturedGeneration === null &&
+    value.currentGeneration === null &&
+    Number.isSafeInteger(value.connectedBeforeMs) &&
+    value.connectedBeforeMs === value.connectedAfterMs
+  ) {
+    return "unexercised";
+  }
+  const inRequest = (time) =>
+    Number.isSafeInteger(time) &&
+    time >= value.startedAtMs + value.clockOffsetMaxMs &&
+    time <= value.finishedAtMs + value.clockOffsetMinMs;
+  if (
+    providerChanged &&
+    value.providerEnvChanged &&
+    value.harness1006LogObserved &&
+    events.every(inRequest) &&
+    Number.isSafeInteger(value.connectedBeforeMs) &&
+    value.connectedBeforeMs <= value.startedAtMs + value.clockOffsetMinMs &&
+    value.connectedAfterMs > value.connectedBeforeMs &&
+    inRequest(value.connectedAfterMs) &&
+    value.turnoverAtMs <= value.staleTunnelAtMs &&
+    value.staleTunnelAtMs <= value.connectedAfterMs &&
+    Number.isSafeInteger(value.capturedGeneration) &&
+    value.capturedGeneration >= 0 &&
+    value.currentGeneration === value.capturedGeneration + 1
+  ) {
+    return "turn-continuity";
+  }
+  return "incomplete";
+}
+
+function safeOpenShellInitialTurnoverMeasurement(value) {
+  if (
+    ![1, 2].includes(value.request) ||
+    !["passed", "failed"].includes(value.requestOutcome) ||
+    !["complete", "unavailable"].includes(value.observation) ||
+    !["turn-continuity", "unexercised", "incomplete", "failed"].includes(value.qualification) ||
+    (value.httpStatus !== null &&
+      !(Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599))
+  ) {
+    return undefined;
+  }
+  const measurement = {
+    kind: value.kind,
+    request: value.request,
+    requestOutcome: value.requestOutcome,
+    httpStatus: value.httpStatus,
+    observation: value.observation,
+    qualification: value.qualification,
+  };
+  for (const key of ["startedAtMs", "finishedAtMs"]) {
+    if (!(Number.isSafeInteger(value[key]) && value[key] >= 0)) {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  for (const key of ["clockOffsetMinMs", "clockOffsetMaxMs"]) {
+    if (value[key] !== null && !Number.isSafeInteger(value[key])) {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  for (const key of [
+    "connectedBeforeMs",
+    "connectedAfterMs",
+    "turnoverAtMs",
+    "staleTunnelAtMs",
+    "capturedGeneration",
+    "currentGeneration",
+  ]) {
+    if (value[key] !== null && !(Number.isSafeInteger(value[key]) && value[key] >= 0)) {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  for (const key of [
+    "nodeIdSha256",
+    "providerEnvBeforeSha256",
+    "providerEnvAfterSha256",
+    "configBeforeSha256",
+    "configAfterSha256",
+    "policyBeforeSha256",
+    "policyAfterSha256",
+  ]) {
+    if (
+      value[key] !== null &&
+      !(typeof value[key] === "string" && /^[a-f0-9]{64}$/.test(value[key]))
+    ) {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  for (const key of [
+    "nonceMatched",
+    "harness1006LogObserved",
+    "durableCommands",
+    "configUnchanged",
+    "policyUnchanged",
+    "providerEnvChanged",
+    "settingsConsistent",
+    "stableRuntime",
+  ]) {
+    if (typeof value[key] !== "boolean") {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  return measurement.qualification === openShellTurnoverQualification(measurement)
+    ? measurement
+    : undefined;
 }
 
 const modelProbeMeasurementCases = new Set([
@@ -978,6 +1130,35 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     if (Number.isSafeInteger(worker[field]) && worker[field] >= 0 && worker[field] <= limit) {
       safe[field] = worker[field];
     }
+  }
+  if (
+    Number.isInteger(worker.historyExecNestedExitCode) &&
+    worker.historyExecNestedExitCode >= 0 &&
+    worker.historyExecNestedExitCode <= 255
+  ) {
+    safe.historyExecNestedExitCode = worker.historyExecNestedExitCode;
+  }
+  if (
+    safe.historyExecNestedExitCode > 0 &&
+    ["write-session-file", "read-session-file", "read-workspace-file", "emit-proof"].includes(
+      worker.historyExecFailureOperation,
+    ) &&
+    [
+      "EACCES",
+      "EPERM",
+      "ENOENT",
+      "EEXIST",
+      "EISDIR",
+      "ENOTDIR",
+      "ENOSPC",
+      "EROFS",
+      "EMFILE",
+      "EIO",
+      "other",
+    ].includes(worker.historyExecFailureCode)
+  ) {
+    safe.historyExecFailureOperation = worker.historyExecFailureOperation;
+    safe.historyExecFailureCode = worker.historyExecFailureCode;
   }
   return { ...diagnostic, worker: safe };
 }

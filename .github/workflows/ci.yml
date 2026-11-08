@@ -125,7 +125,7 @@ jobs:
       # part 3's length (it was a job of its own, Image Model Probes).
       # Runner labels now expose their named CPU capacity. Restore the
       # measured pre-November 3 allocations without changing lane concurrency.
-      # k3d keeps Blacksmith's kernel for NetworkPolicy checks. Image lanes
+      # k3d keeps Blacksmith's kernel for NetworkPolicy checks. Runtime image lanes
       # retain 8 CPUs / 30.4 GiB for their measured 15-20 GiB peaks. Browser
       # lanes use 8 CPUs with their existing eight-file concurrency.
       - id: matrix
@@ -143,15 +143,15 @@ jobs:
               {"lane": "postgres-application", "title": "PostgreSQL Application", "profile": "postgres", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "postgres-auth", "title": "PostgreSQL Authentication", "profile": "postgres", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "postgres-platform", "title": "PostgreSQL Platform", "profile": "postgres", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"},
-              {"lane": "images-packaging", "title": "Images and Packaging", "profile": "full", "timeout": 45, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "images-packaging", "title": "Images and Packaging", "profile": "full", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup", "title": "Image Runtime Startup", "profile": "full", "timeout": 30, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup-2", "title": "Image Runtime Startup 2", "profile": "images", "timeout": 30, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup-3", "title": "Image Runtime Startup 3", "profile": "images", "timeout": 30, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-8vcpu-ubuntu-2404"},
-              {"lane": "k3d-fixture-network", "title": "k3d Network Isolation", "profile": "k3d", "timeout": 45, "runner": "blacksmith-8vcpu-ubuntu-2404"},
-              {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "blacksmith-8vcpu-ubuntu-2404"},
-              {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-network", "title": "k3d Network Isolation", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
+              {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "repository-credentials-container", "title": "Repository Credentials", "profile": "images", "timeout": 40, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "keycloak-oidc", "title": "Keycloak OIDC", "profile": "postgres", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"}
@@ -494,10 +494,21 @@ jobs:
           ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
         run: node scripts/ci/first-agent-smoke.mjs images
       - name: Install, deploy, chat, stop and start
+        id: smoke
         run: node scripts/ci/first-agent-smoke.mjs run
       - name: Show Docker Hub pull endpoints
         if: ${{ !cancelled() }}
         run: bash scripts/ci/docker-hub-mirror.sh report
+      - name: Upload First Agent Smoke timings
+        if: ${{ !cancelled() && (steps.smoke.outcome == 'success' || steps.smoke.outcome == 'failure') }}
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: first-agent-smoke-timing-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/first-agent-smoke-timing.json
+          if-no-files-found: ignore
+          retention-days: 7
 
   ci-required:
     name: CI Required

@@ -6,7 +6,7 @@ last_verified: "2026-11-02"
 
 # Set up OCE on Amazon EKS
 
-Install OpenClaw Enterprise (OCE), configure browser access, on Amazon Elastic Kubernetes Service (EKS). Start in the matching OCE checkout on the operator’s laptop. Use Bash, AWS CLI, version-compatible kubectl, Helm, OpenSSL, jq, Node.js 24.22.1 or newer, Python 3, yq v4, PostgreSQL client tools and the [OCC CLI](../cli.md). Image selection needs Git and Docker; builds also need Buildx. Select compatible source, chart and image revisions.
+Install OpenClaw Enterprise (OCE), configure browser access, on Amazon Elastic Kubernetes Service (EKS). Start in the matching OCE checkout on the operator’s laptop. Use Bash, AWS CLI, version-compatible kubectl, Helm, OpenSSL, jq, Node.js satisfying `engines.node` in the selected release checkout's `package.json`, Python 3, yq v4, PostgreSQL client tools and the [OCC CLI](../cli.md). Image selection needs Git and Docker; builds also need Buildx. Select compatible source, chart and image revisions.
 
 This OpenShell workflow supports development and evaluation.
 [OpenShell production qualification remains incomplete](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).

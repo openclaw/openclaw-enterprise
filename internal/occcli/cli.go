@@ -1,6 +1,7 @@
 package occcli
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json/jsontext"
@@ -1009,6 +1010,10 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			resource, _ := agent.(map[string]any)
+			if resource["id"] != args[0] || resource["namespaceId"] != namespace || resource["desiredRuntimeState"] != "stopped" {
+				return fmt.Errorf("OCC returned an invalid Agent stop response; the stop outcome is unknown. Run \"occ --namespace %s agent get %s\" to check the Agent's state", namespace, args[0])
+			}
 			if err := app.printAgent(agent, false); err != nil {
 				return err
 			}
@@ -1499,9 +1504,22 @@ func readJSON(path string) (jsontext.Value, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read JSON file %s: %w", path, err)
 	}
-	value := jsontext.Value(contents)
-	if !value.IsValid() {
+	decoder := jsontext.NewDecoder(bytes.NewBuffer(contents))
+	if _, err := decoder.ReadValue(); err != nil {
+		// Decoder errors can contain input fragments and object names.
+		var syntax *jsontext.SyntacticError
+		if errors.As(err, &syntax) {
+			switch syntax.Err {
+			case jsontext.ErrDuplicateName:
+				return nil, fmt.Errorf("invalid JSON file %s: duplicate object key at byte offset %d", path, syntax.ByteOffset)
+			case io.ErrUnexpectedEOF:
+				return nil, fmt.Errorf("invalid JSON file %s: incomplete JSON at byte offset %d", path, syntax.ByteOffset)
+			}
+		}
 		return nil, fmt.Errorf("invalid JSON file %s", path)
 	}
-	return value, nil
+	if _, err := decoder.ReadToken(); err != io.EOF {
+		return nil, fmt.Errorf("invalid JSON file %s", path)
+	}
+	return jsontext.Value(contents), nil
 }

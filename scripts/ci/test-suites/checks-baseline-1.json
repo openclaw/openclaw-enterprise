@@ -93,7 +93,7 @@
     "tests/conformance/contracts.test.mjs",
     "tests/conformance/presets.test.mjs",
     "tests/integration/production-healthcheck.test.mjs",
-    "tests/conformance/pr-status.test.mjs",
+    "tests/conformance/pr-status.test.ts",
     "tests/conformance/codex-stderr-filter.test.mjs",
     "tests/docs/docs-server.test.mjs",
     "tests/integration/console-build-metadata.test.ts",
@@ -290,7 +290,7 @@
       "path": "tests/conformance/platform-state-memory.test.mjs"
     },
     {
-      "path": "tests/conformance/pr-status.test.mjs"
+      "path": "tests/conformance/pr-status.test.ts"
     },
     {
       "path": "tests/conformance/presets.test.mjs"
