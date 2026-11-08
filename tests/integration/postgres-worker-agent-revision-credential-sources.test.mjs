@@ -3138,6 +3138,7 @@ function attachedGitExpires({
     let runtime;
     let senderRuntime;
     let withdrawalCommitted = false;
+    let unacknowledgedStop;
     let finalizationStop;
     let finalizationRemoval;
     const stopWork = [];
@@ -3432,7 +3433,19 @@ function attachedGitExpires({
     };
     const start = () =>
       f.start(compute, {
-        emit: (e) => events.push(e),
+        emit: (e) => {
+          events.push(e);
+          if (
+            unacknowledgedActivation &&
+            e.event === "worker.completed" &&
+            e.workId === revision.idempotencyKey &&
+            e.code === "REVISION_FINALIZATION_INCOMPLETE"
+          ) {
+            // Stop at the completed pass: a delayed observer can otherwise interrupt
+            // its next claim, leaving a live lease that due-time advancement cannot recover.
+            unacknowledgedStop = f.stop();
+          }
+        },
         transformDrivers: (drivers) => protectedGit.selectDrivers(drivers, gateway),
       });
     let originRequests = 0;
@@ -3532,7 +3545,8 @@ function attachedGitExpires({
         "activation acknowledgment lost",
         (e) => e.event === "worker.completed" && e.workId === revision.idempotencyKey,
       );
-      await f.stop();
+      assert.ok(unacknowledgedStop);
+      await unacknowledgedStop;
       assert.equal(unacknowledged.code, "REVISION_FINALIZATION_INCOMPLETE");
       assert.equal(unacknowledged.outcome, "pending");
       await assertUnacknowledged();
