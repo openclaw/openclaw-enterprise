@@ -204,7 +204,11 @@ export function selectOpenShellGitWithdrawalDenials(events, { sandboxId, revisio
       !["session_closed", "route_blocked", "material_unavailable"].includes(event.reason)
     ) {
       result.rejectedReason++;
-    } else if (event.reason === "session_closed" && event.operation !== "advertise-upload-pack") {
+    } else if (
+      event.reason === "session_closed"
+        ? event.operation !== "advertise-upload-pack"
+        : event.operation !== undefined
+    ) {
       result.rejectedOperation++;
     } else if (typeof event.requestId !== "string" || event.requestId.length === 0) {
       result.rejectedRequestId++;
@@ -300,7 +304,7 @@ for (const name of [
 const withdrawalDiagnostics = {
   mode: ["mode", choice("live", "replacement")],
   workerReady: ["workerReady", boolean],
-  workerMatches: ["workerMatches", boolean],
+  workerComparison: ["workerComparison", choice("unchecked", "same", "different")],
 };
 for (const name of [
   "logReads",

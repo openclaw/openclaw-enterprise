@@ -998,6 +998,7 @@ async function installOpenShellGit(t, witnessIssuedGit) {
   const gitWithdrawalDenials = async (identity, diagnostics) => {
     if (diagnostics) {
       diagnostics.workerReady = false;
+      diagnostics.workerComparison = "unchecked";
     }
     const pod = await worker();
     assert.ok(pod, "expected ready Worker for Git denial observation");

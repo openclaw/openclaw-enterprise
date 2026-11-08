@@ -597,6 +597,15 @@ test("an open Git route that loses its material says so once and names it in eac
   assert.deepEqual(selectOpenShellGitWithdrawalDenials(w.denials(), selected).requestIds, [
     w.identity.requestId,
   ]);
+  // Lookup precedes operation selection: adding an operation contradicts the real event.
+  for (const operation of ["advertise-upload-pack", null]) {
+    const rejected = selectOpenShellGitWithdrawalDenials(
+      [{ ...w.denials().at(-1), operation }],
+      selected,
+    );
+    assert.deepEqual(rejected.requestIds, []);
+    assert.equal(rejected.rejectedOperation, 1);
+  }
   assert.equal(warnings(w).at(-1).reasonCode, "access_withdrawn");
   for (const mismatch of [{ sandboxId: "another-sandbox" }, { revisionId: "another-revision" }]) {
     assert.deepEqual(
@@ -1316,6 +1325,12 @@ test("a route another worker withdrew or expired closes with that reason, not as
       }).requestIds,
       [f.identity.requestId],
     );
+    const contradictory = selectOpenShellGitWithdrawalDenials(
+      [{ ...f.denials().at(-1), operation: "advertise-upload-pack" }],
+      { sandboxId: f.identity.sandboxId, revisionId: f.revision.id },
+    );
+    assert.deepEqual(contradictory.requestIds, []);
+    assert.equal(contradictory.rejectedOperation, 1);
     assert.deepEqual(f.runtime.route(f.revision.id), { state: "blocked", reason });
     assert.deepEqual(f.errors(), []);
     assert.deepEqual(

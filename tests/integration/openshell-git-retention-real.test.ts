@@ -451,7 +451,7 @@ test(
         const diagnostics = {
           mode,
           workerReady: false,
-          workerMatches: true,
+          workerComparison: "unchecked",
           freshRequests: 0,
           logReads: 0,
           logReadSuccesses: 0,
@@ -470,7 +470,8 @@ test(
         try {
           const previous = await fixture.gitWithdrawalDenials(identity, diagnostics);
           if (expectedWorker !== undefined) {
-            diagnostics.workerMatches = previous.workerUid === expectedWorker;
+            diagnostics.workerComparison =
+              previous.workerUid === expectedWorker ? "same" : "different";
             assert.equal(
               previous.workerUid === expectedWorker,
               true,
@@ -494,7 +495,8 @@ test(
             finiteSignal,
             async () => {
               const next = await fixture.gitWithdrawalDenials(identity, diagnostics);
-              diagnostics.workerMatches = next.workerUid === previous.workerUid;
+              diagnostics.workerComparison =
+                next.workerUid === previous.workerUid ? "same" : "different";
               assert.equal(
                 next.workerUid,
                 previous.workerUid,
