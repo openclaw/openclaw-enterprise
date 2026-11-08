@@ -769,6 +769,11 @@ function validateNativeAdminDomains(domain, sharedCookieDomain, authBaseUrl, dia
       "controlPlane.agentNativeAdminDomain must be a DNS hostname without a wildcard, port, scheme, or path.",
     );
   }
+  if (lowerDomain.length > 214) {
+    diagnostics.errors.push(
+      "controlPlane.agentNativeAdminDomain must not exceed 214 characters, leaving room for the Agent hostname prefix.",
+    );
+  }
   if (!dnsHostname.test(lowerSharedCookieDomain)) {
     diagnostics.errors.push(
       "controlPlane.sharedCookieDomain must be a DNS hostname without a wildcard, port, scheme, or path.",

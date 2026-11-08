@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-11-03
-last_updated_session: fix/native-admin-signed-out-html-fallback
+updated: 2026-11-08
+last_updated_session: authoring-run/f4c6c22c-3dfc-43c4-b468-a1b2803c3b76
 ---
 
 # Agent Native Admin UI Flow
@@ -155,7 +155,7 @@ Then the selected Compute Driver's `id` and `implementation` must match `revisio
 `apps/controller/src/gateway/native-admin.ts:nativeAdminTarget`
 `apps/controller/src/gateway/native-admin-host.mjs:deriveNativeAdminHost`
 
-`deriveNativeAdminHost` hashes Installation, Namespace, and Agent IDs into an opaque hostname under the configured domain. `nativeAdminTarget` substitutes it in `publicOrigin` and returns `/`.
+`normalizeNativeAdminDomain` refuses an Agent domain over 214 characters at API startup, reserving 39 characters for `agent-<32 hex>.` within the 253-character hostname limit. Helm and profile preflight enforce the same budget. `deriveNativeAdminHost` hashes Installation, Namespace, and Agent IDs into an opaque hostname under the configured domain. `nativeAdminTarget` substitutes it in `publicOrigin` and returns `/`.
 
 Native-host admission resolves the hash from Installation, Namespace, and Agent state. Unknown hosts, wrong suffixes, deleted Agents, and non-unique matches fail closed.
 
@@ -273,6 +273,8 @@ admin Configuration remains Pod-local.
 
 ## Changelog
 
+- 2026-11-08 13:48: Reserve the Agent host prefix at native-admin configuration admission; accompanying uncommitted changes. (authoring-run/f4c6c22c-3dfc-43c4-b468-a1b2803c3b76 - fdd02eae4df5bffc2ead78b7415a2e9784663e54)
+
 - 2026-11-03 12:55: Sign-in link for unactivated page loads. (fix/native-admin-signed-out-html-fallback)
 
 - 2026-11-02 09:55: Shorten provisioning prose and link shared status definitions after rebasing. (authoring-run/275c0d0a-d040-47d3-9e52-47ff86b87ab9 - 393b1585e4b10a3232abf10c60b766d8e55d85ce)
@@ -287,11 +289,5 @@ admin Configuration remains Pod-local.
 - 2026-10-26 22:00: Close refused sockets and denied leases before their denial audit settles; track admission through its audit attempt and bound the shutdown drain. (wf-land-1707 - #1707)
 - 2026-10-26 01:00: A JSON `administer` denial names the grant, not the Agent.
 - 2026-10-25 16:40: Preserve current native-admin flow and identity-grant eligibility while rebasing. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - e1c6288c28b8dcc62926e44ba43f8edd945dfcd1)
-
-- 2026-10-15 21:41: Allowed narrow device enrollment with machine admin grants. (authoring-run/4a439216-a1ba-4628-b96e-660a9db92d59 - e03429ce3d889b0ac07fedad801aacacc3498a6a)
-
-- 2026-10-25 12:00: Skip the status read when the permission answer denies `administer`.
-- 2026-10-24 23:25: Documented the authenticated browser 403 Agents link.
-- 2026-10-20 14:54: Extract persistence repair; trim repeated prose. (agent:roboclaw:dashboard:830a6ba7-3357-4ae0-9037-95d98205608c - 1ce18eeea10c83c856c8c08f6b0815e4b39308e0)
 
 [Agent native admin documentation history](agent-native-admin/history.md) preserves the older dated entries.

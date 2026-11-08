@@ -522,6 +522,33 @@ async function issueServiceKeyForNativeAgent(context) {
   return issued.data.key;
 }
 
+// Exercise API startup, not only the hostname helper: no native upstream is needed
+// to refuse an unusable suffix before the application starts listening.
+test("native admin startup reserves the Agent hostname prefix", async (t) => {
+  const longest = `${"a.".repeat(99)}oce.example.test`;
+  const options = (domain) => ({
+    publicOrigin,
+    authBaseURL,
+    authCookieDomain: cookieDomain,
+    authSecureCookies: true,
+    nativeAdmin: { enabled: true, domain, sharedCookieDomain: cookieDomain },
+    nativeAdminGatewayApiKey: async () => randomUUID(),
+  });
+  const retained = await createConsoleAppFixture(t, options(longest));
+  assert.ok(retained);
+  assert.equal(
+    deriveNativeAdminHost("installation", { id: "agent", namespaceId: "namespace" }, longest)
+      .length,
+    253,
+  );
+  for (const length of [215, 217, 253]) {
+    await assert.rejects(
+      createConsoleAppFixture(t, options(`${"a".repeat(length - longest.length)}${longest}`)),
+      /Native admin Agent domain must not exceed 214 characters/,
+    );
+  }
+});
+
 test("native admin shared session configuration validates cookie scope and rejects keys", async (t) => {
   const context = await createNativeAdminFixture(t);
   const status = await nativeStatus(context);

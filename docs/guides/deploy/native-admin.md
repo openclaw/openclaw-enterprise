@@ -23,7 +23,7 @@ browser onboarding and reopening the same conversation.
 - Use the supported password sign-in profile. Native admin cannot be enabled with GitHub, Google, or OIDC sign-in; see [authentication limits](../../reference/agent-native-admin.md#who-can-open-it).
 - Private workspace routing already works for the target Agents. Private routing is enabled by default, but its controllers, GatewayClass, service-key Secret, and matching Installation settings must be ready. Helm rejects an explicit routing opt-out while native admin is enabled.
 - A public wildcard DNS name and HTTPS certificate route traffic to the OCC API Service, not to Envoy. Use a previously unused `agentNativeAdmin.domain` for the first pilot rollout; do not reuse a domain from prior native UI experiments because OCC does not evict already registered browser service workers.
-- The configured Agent domain is separate from the console host and does not include a wildcard, scheme, port, or path.
+- The configured Agent domain is separate from the console host, is at most 214 characters, and does not include a wildcard, scheme, port, or path. The generated `agent-<32 hex>.` prefix uses the remaining 39 characters of the DNS hostname budget.
 - The configured `agentNativeAdmin.sharedCookieDomain` is the shared OCE session cookie parent domain. The console host and Agent domain must both be inside it on DNS-label boundaries, for example `console.oce.example.com`, `agents.oce.example.com`, and cookie domain `oce.example.com`. All matching subdomains that can receive the OCE session cookie must be trusted OCE ingress endpoints.
 - Each pilot Agent uses native trusted-proxy authentication with `occ-workspace-files` granted `operator.admin`, native `controlUi.enabled: true`, the derived Agent origin in `controlUi.allowedOrigins`, and trusted-proxy device auto-approval.
 - Operators who use the console have exact Agent `administer` permission.
@@ -44,6 +44,15 @@ agentNativeAdmin:
   domain: agents.oce.example.com
   sharedCookieDomain: oce.example.com
 ```
+
+Before upgrading an existing Installation, check the retained Agent domain. A
+suffix over 214 characters is now refused by Helm, profile preflight, and API
+startup. Choose a shorter suffix inside the trusted cookie parent, provision its
+DNS and certificate, and update the retained native admin setting. Each existing
+Agent's allowed origin and public origin must then match its new derived host;
+follow [Configure each Agent](#configure-each-agent) and deploy the updated
+Configuration before reopening it. Existing domains within the limit retain the
+same hosts; this change does not migrate saved Agent Configuration.
 
 Expose the API Service through your existing public ingress layer. The chart does not create this route. This example shows the required shape; adapt the Ingress class, certificate, and selectors to your cluster:
 

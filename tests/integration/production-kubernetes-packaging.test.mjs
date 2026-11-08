@@ -1861,6 +1861,24 @@ test(
     assert.ok(objects.some(({ kind }) => kind === "Gateway"));
     assert.ok(objects.some(({ kind }) => kind === "EnvoyProxy"));
 
+    const longest = `${"a.".repeat(99)}example.invalid`;
+    // Keep the whole suffix at 214 while preserving the fixture cookie parent.
+    const boundary = `a${longest}`;
+    assert.equal(boundary.length, 214);
+    assert.match(
+      (await render({ ...agentNativeAdminValues, "agentNativeAdmin.domain": boundary })).stdout,
+      new RegExp(`value: "${boundary.replaceAll(".", "\\.")}"`),
+    );
+    for (const length of [215, 217, 253]) {
+      await assert.rejects(
+        render({
+          ...agentNativeAdminValues,
+          "agentNativeAdmin.domain": `${"a".repeat(length - boundary.length)}${boundary}`,
+        }),
+        /agentNativeAdmin.domain must not exceed 214 characters/,
+      );
+    }
+
     const disabledObjects = await resources((await render()).stdout);
     const disabledDeployment = (component) =>
       disabledObjects.find(
