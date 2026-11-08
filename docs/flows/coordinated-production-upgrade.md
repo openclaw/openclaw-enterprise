@@ -1,6 +1,6 @@
 ---
 created: 2026-09-23
-updated: "2026-11-08 12:00"
+updated: "2026-11-08 10:00"
 last_updated_session: "agent:main:subagent:060410f5-67b1-4703-b963-741996a862b6"
 ---
 
@@ -338,7 +338,7 @@ undoing prior merges. Rename keys are literal, including `constructor` and
 
 ## Changelog
 
-- 2026-11-08 12:00: Preserve proxy boundaries alongside current upstream lifecycle. (agent:main:subagent:060410f5-67b1-4703-b963-741996a862b6 - 7db5638975981ec1400f1a4ba52da77d5fd33dce)
+- 2026-11-08 10:00: Preserve proxy boundaries alongside current upstream lifecycle. (agent:main:subagent:060410f5-67b1-4703-b963-741996a862b6 - 7db5638975981ec1400f1a4ba52da77d5fd33dce)
 
 - 2026-11-07 03:01: Freeze reviewed controller compatibility evidence. (authoring-run/4adaf10b-d7e7-46e1-8f30-65993c797458 - ada47832cb112f255f6c51d34dae37acce9760cd)
 

@@ -1,6 +1,6 @@
 ---
 created: 2026-08-21
-updated: "2026-11-08 12:00"
+updated: "2026-11-08 10:00"
 last_updated_session: "agent:main:subagent:060410f5-67b1-4703-b963-741996a862b6"
 ---
 
@@ -356,7 +356,7 @@ removal. See the [storage contract](../reference/drivers/kubernetes-compute/stor
 
 ## Changelog
 
-- 2026-11-08 12:00: Preserve proxy boundaries alongside current upstream lifecycle. (agent:main:subagent:060410f5-67b1-4703-b963-741996a862b6 - 7db5638975981ec1400f1a4ba52da77d5fd33dce)
+- 2026-11-08 10:00: Preserve proxy boundaries alongside current upstream lifecycle. (agent:main:subagent:060410f5-67b1-4703-b963-741996a862b6 - 7db5638975981ec1400f1a4ba52da77d5fd33dce)
 
 - 2026-11-06 01:25: Persist Harness settings. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
 
