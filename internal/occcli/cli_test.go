@@ -1335,6 +1335,11 @@ func TestExplicitEmptyFlagValuesAreRefusedBeforeAnyWork(t *testing.T) {
 		args []string
 		want string
 	}{
+
+		{[]string{"agent", "deploy", "agt_00000000-0000-4000-8000-000000000001", "--harness-overrides="}, "--harness-overrides must name a JSON document"},
+		{[]string{"agent", "deploy", "agt_00000000-0000-4000-8000-000000000001", "--retain-harness-overrides="}, "--retain-harness-overrides must name a revision ID"},
+		{[]string{"agent", "deploy-first", "agt_00000000-0000-4000-8000-000000000001", "--key", "proof", "--configuration", "cfg_00000000-0000-4000-8000-000000000001", "--generation", "1", "--harness-overrides="}, "--harness-overrides must name a JSON document"},
+		{[]string{"agent", "recover-first-deployment", "agt_00000000-0000-4000-8000-000000000001", "--key", "proof", "--configuration", "cfg_00000000-0000-4000-8000-000000000001", "--generation", "1", "--harness-overrides="}, "--harness-overrides must name a JSON document"},
 		{[]string{"agent", "runtime", "agt_00000000-0000-4000-8000-000000000001", "--revision="}, "--revision must name a revision ID"},
 		{[]string{"agent", "logs", "agt_00000000-0000-4000-8000-000000000001", "--source", "gateway", "--revision="}, "--revision must name a revision ID"},
 		{[]string{"agent", "logs", "agt_00000000-0000-4000-8000-000000000001", "--source", "gateway", "--pod="}, "--pod must name a Pod"},

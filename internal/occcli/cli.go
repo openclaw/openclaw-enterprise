@@ -1410,6 +1410,7 @@ func (app *application) validateOptions(command *cobra.Command) error {
 var emptyFlagValues = map[string]string{
 	"facet":                               "a sandbox policy facet such as networking",
 	"file":                                "a JSON document",
+	"harness-overrides":                   "a JSON document",
 	"key-output":                          "a key file path",
 	"sandbox-network-policy-ceiling-file": "a Sandbox network policy ceiling file",
 	"sandbox-network-policy-file":         "a Sandbox network policy file",
@@ -1417,6 +1418,7 @@ var emptyFlagValues = map[string]string{
 	"out":                                 "a key file path",
 	"pod":                                 "a Pod",
 	"revision":                            "a revision ID",
+	"retain-harness-overrides":            "a revision ID",
 	"service-key-file":                    "a bootstrap or service-key response file",
 	"service-principal":                   "a ServicePrincipal ID",
 	"source":                              "gateway, agent or sandbox",

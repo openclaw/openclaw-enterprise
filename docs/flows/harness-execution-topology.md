@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-06
-last_updated_session: authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0
+updated: 2026-11-08
+last_updated_session: authoring-run/cfa29515-79ff-461c-8672-47f35c60eab5
 ---
 
 # Harness Execution Topology Flow
@@ -25,6 +25,8 @@ guarded routes, and retires predecessors.
 
 ```mermaid
 graph TD
+  CLI{"CLI override flag explicitly empty?"} -->|Yes| Refuse["Refuse locally; no request"]
+  CLI -->|No| A
   A["Authorize Agent and Configuration"] --> B["Resolve runtime, placement and native HTTP transport"]
   B --> B1["Compute resolves Harness settings"]
   B1 --> B2{"Source authorizes destination?"}
@@ -56,6 +58,11 @@ graph TD
 ## Execution Trace
 
 ### 1. Freeze Gateway and Harness settings
+
+`internal/occcli/cli.go:refuseEmptyFlags` refuses explicitly empty Harness override
+flags before connection or deployment. Omitted flags use defaults; a supplied
+JSON object or retained revision follows normal admission. The same local check
+protects first-deployment admission and receipt recovery.
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
@@ -357,6 +364,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 
 ## Changelog
 
+- 2026-11-08 13:12: Refuse explicitly empty CLI override flags before requests. (authoring-run/cfa29515-79ff-461c-8672-47f35c60eab5 - 8cd900a4d67937d77e4edfec002d32a2b04079a1)
+
 - 2026-11-06 01:25: Persist Harness settings. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
 
 - 2026-11-05 21:24: Trace probe closure. (authoring-run/61309ab1-dd2a-4cb0-99b5-e2a9485fe91f - fdb3fbd93a5295e37ad7814a5197029f2b615346)
@@ -374,13 +383,5 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 - 2026-10-31 03:41: Observe catalog pipe writes and reply counts. (authoring-run/afb5c72a-ef2b-4983-990c-427173225f65 - fbe295286b26132acf6330c87710231324afd5b1)
 
 - 2026-10-31 02:28: Trace continuity comparisons and wrapper exits. (authoring-run/c1b37e4b-0ce0-4d5a-b087-b9833636f11e - 4dc71d4678df0f9dc49bcbeaa654819d76e3ebb0)
-
-- 2026-10-29 18:43: Trace the explicit custom-provider standalone search declaration and protected-tool exclusion. (authoring-run/be4eda1a-8676-415e-9999-ffcfe3f9bd17 - 35569940c)
-
-- 2026-10-26 23:35: Trace the model tool policy in both Gateway administration modes and recovery after a forced stop. (authoring-run/5da38bb7-602c-4a49-a7f2-863af81abcba - fac7d121c3c582afb53ca49c7d4579e04b5e5ea5)
-
-- 2026-10-23 17:15: Correct forced-termination recovery. (Codex/01a1558e-c27f-7bc0-a403-af59e9364ddf)
-
-- 2026-10-23 15:51: Rebase the native endpoint trace onto current lifecycle behavior; preserve older entries in linked history. (agent:roboclaw:dashboard:578a8b10-8406-4f5c-a2cc-21ab6524bf68 - 0b326680a7a388de9331c2ae9f0a7cadf2788fe7)
 
 [Harness execution topology documentation history](harness-execution-topology/history.md) preserves the older dated entries.
