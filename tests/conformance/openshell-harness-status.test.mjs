@@ -275,7 +275,12 @@ test("OpenShell PAT status closes unresponsive upgraded peers within its cleanup
         receiver.on("message", (data) => {
           const message = JSON.parse(data.toString());
           if (message.method === "initialize") {
-            reply(message.id, { userAgent: "codex/0.164.0" });
+            reply(message.id, {
+              userAgent: "codex/0.164.0",
+              codexHome: "/synthetic",
+              platformFamily: "unix",
+              platformOs: "linux",
+            });
           } else if (message.method === "getAuthStatus") {
             if (outcome === "serving") {
               reply(message.id, {
