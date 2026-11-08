@@ -1741,6 +1741,60 @@ func TestFirstDeploymentNullResponse(t *testing.T) {
 	}
 }
 
+func TestFirstDeploymentRecoveryMissWithClosedStderr(t *testing.T) {
+	const configurationID = "cfg_55555555-5555-4555-8555-555555555555"
+	path := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID + "/deploy-first/review-1/" + configurationID + "/1"
+	for _, format := range []string{"table", "json", "yaml"} {
+		t.Run(format, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				body, err := io.ReadAll(r.Body)
+				if err != nil || len(body) != 0 || r.ContentLength != 0 || r.Method != http.MethodGet || r.URL.RequestURI() != path {
+					t.Errorf("recovery must be a bodyless GET to %s; got %s %s, content length %d, body length %d, read error %v", path, r.Method, r.URL.RequestURI(), r.ContentLength, len(body), err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":null,"meta":{"requestId":"test"}}`))
+			}))
+			t.Cleanup(server.Close)
+			caBundle := filepath.Join(t.TempDir(), "ca.pem")
+			if err := os.WriteFile(caBundle, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+				t.Fatal(err)
+			}
+			keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
+			reader, stderr := io.Pipe()
+			defer stderr.Close()
+			if err := reader.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			var stdout bytes.Buffer
+			command := New(&stdout, stderr)
+			command.SetArgs([]string{"--url", server.URL, "--service-key-file", keyFile, "--ca-bundle", caBundle, "--namespace", testNamespaceID, "--output", format, "agent", "recover-first-deployment", testAgentID, "--key", "review-1", "--configuration", configurationID, "--generation", "1"})
+			err := command.Execute()
+			server.Close()
+			if calls != 1 {
+				t.Fatalf("requests = %d; recovery must make exactly one GET", calls)
+			}
+			if format == "table" {
+				if stdout.Len() != 0 {
+					t.Fatalf("unexpected table output: %q", stdout.String())
+				}
+				if !errors.Is(err, io.ErrClosedPipe) {
+					t.Fatalf("table recovery returned %v; want closed stderr pipe error", err)
+				}
+				if !strings.HasPrefix(err.Error(), "write first-deployment recovery notice to stderr: ") {
+					t.Fatalf("table recovery error lacks notice write context: %v", err)
+				}
+			} else if err != nil || stdout.String() != "null\n" {
+				t.Fatalf("%s recovery with closed stderr: stdout = %q, err = %v; want null and success", format, stdout.String(), err)
+			}
+		})
+	}
+}
+
 func TestFirstDeploymentIntentValidationBeforeClientConstruction(t *testing.T) {
 	for _, command := range []string{"deploy-first", "recover-first-deployment"} {
 		for _, invalid := range []struct{ key, configuration, generation, field string }{
