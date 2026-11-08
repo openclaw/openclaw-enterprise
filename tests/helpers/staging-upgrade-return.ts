@@ -1,7 +1,7 @@
 import type { Agent } from "@openclaw-enterprise/contracts";
 import { imageReferenceProblem } from "../../packages/occ/src/index.ts";
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -339,16 +339,30 @@ type ContainerStatus = {
   imageID: string;
   containerID: string;
   ready: boolean;
+  state?: { terminated?: { exitCode: number } };
 };
 
 type Pod = {
-  metadata: { name: string; uid: string; labels: Record<string, string> };
+  metadata: {
+    name: string;
+    uid: string;
+    labels: Record<string, string>;
+    annotations?: Record<string, string>;
+    deletionTimestamp?: string;
+    ownerReferences?: { uid: string; controller?: boolean }[];
+  };
   spec: {
     nodeName: string;
     serviceAccountName: string;
     containers: { name: string; image: string }[];
+    initContainers?: { name: string; image: string }[];
   };
-  status: { phase: string; podIP: string; containerStatuses?: ContainerStatus[] };
+  status: {
+    phase: string;
+    podIP: string;
+    containerStatuses?: ContainerStatus[];
+    initContainerStatuses?: ContainerStatus[];
+  };
 };
 
 export async function assertRunningController(
@@ -697,6 +711,72 @@ export async function rehearsePopulatedReturn({
     201,
   )) as { id: string };
   assert.ok(configurationId);
+  const checkMigration = async (
+    image: ControllerImage,
+    template: typeof previousJob,
+    database: string,
+    probeName: string,
+  ) => {
+    const migration = template.spec.initContainers.find(
+      (container: { name: string }) => container.name === "migration",
+    );
+    assert.equal(migration?.image, image.reference, "migration probe must use the selected image");
+    const probeSecret = {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: custody.metadata(probeName),
+      data: { "migration-url": await custody.restoredMigrationURL(database) },
+    };
+    const probe = {
+      apiVersion: "v1",
+      kind: "Pod",
+      // Copy the chart's network policy labels, not the Job's ownership labels.
+      metadata: custody.metadata(probeName, {
+        "app.kubernetes.io/name": "openclaw-enterprise",
+        "app.kubernetes.io/instance": release,
+        "app.kubernetes.io/component": "initialization",
+      }),
+      spec: {
+        restartPolicy: "Never",
+        activeDeadlineSeconds: 120,
+        automountServiceAccountToken: false,
+        securityContext: template.spec.securityContext,
+        volumes: template.spec.volumes?.filter((volume: { name: string }) =>
+          migration.volumeMounts?.some((mount: { name: string }) => mount.name === volume.name),
+        ),
+        containers: [
+          {
+            ...migration,
+            args: ["scripts/migrate-production.mjs", "--check"],
+            env: [
+              ...migration.env.filter(
+                (entry: { name: string }) => entry.name !== "OCC_MIGRATION_DATABASE_URL",
+              ),
+              {
+                name: "OCC_MIGRATION_DATABASE_URL",
+                valueFrom: { secretKeyRef: { name: probeName, key: "migration-url" } },
+              },
+            ],
+          },
+        ],
+      },
+    };
+    await custody.create(probeSecret);
+    const probeUID = await custody.create(probe);
+    const completed = await waitFor<Pod>("controller migration check", async () => {
+      const pod: Pod = await get(`pod/${probeName}`);
+      assert.equal(pod.metadata.uid, probeUID, "the compatibility Pod was replaced");
+      return ["Succeeded", "Failed"].includes(pod.status.phase) ? pod : false;
+    });
+    await verifyPodImage(
+      image,
+      completed,
+      completed.status.containerStatuses?.find(({ name }) => name === "migration"),
+    );
+    assert.equal(completed.status.phase, "Succeeded", "selected image cannot use the database");
+    await verifyCompletedMigrationHistory(run, kubeArgs, probeName);
+  };
+
   const createAgent = async (name: string) => {
     const agent = returnedAgentSnapshot(
       await api("POST", agentPath, { name, configurationId, executionMode: "embedded" }, 201),
@@ -749,26 +829,289 @@ export async function rehearsePopulatedReturn({
     "--timeout-seconds",
     "300",
   ];
-  const upgrade = async (args: string[]) => {
+  const upgrade = async (args: string[], env = occEnv) => {
     await localCluster.assertCluster();
     await custody.assertPostgres();
     await custody.assertRelease();
     return run("bash", ["scripts/upgrade-production-images", ...upgradeArgs, ...args], {
       cwd: candidate.checkout,
-      env: occEnv,
+      env,
+      protectedInput: true,
       timeout: 720_000,
     });
   };
   await phase("Check the candidate without stopping writers", () =>
     upgrade(["--preflight-only", "--evidence-dir", join(directory, "preflight")]),
   );
-  await phase("Upgrade the controller and confirm authenticated OCC recovery", async () => {
-    await upgrade(["--evidence-dir", join(directory, "forward")]);
-    await verifyInstallation();
-  });
+  await phase(
+    "Recover the interrupted controller upgrade after committed initialization",
+    async () => {
+      const evidence = join(directory, "forward");
+      const client = join(directory, "helm-client.json");
+      const shimDirectory = join(directory, "helm-client-bin");
+      const shim = join(shimDirectory, "helm");
+      const controller = fileURLToPath(new URL("./rehearsal-helm-client.py", import.meta.url));
+      const executable = (await run("sh", ["-c", "command -v helm"])).trim();
+      assert.ok(isAbsolute(executable), "the real Helm executable must have an absolute path");
+      await mkdir(shimDirectory, { mode: 0o700 });
+      await copyFile(controller, shim);
+      await chmod(shim, 0o700);
+      const clientAction = (action: string) => run("python3", [controller, client, action]);
+      const readIfPresent = async (path: string) => {
+        try {
+          return await readFile(path, "utf8");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return undefined;
+          }
+          throw error;
+        }
+      };
+      const save = (name: string, value: unknown) =>
+        writeFile(join(directory, name), JSON.stringify(value) + "\n", { mode: 0o600, flag: "wx" });
+
+      // The shim execs stock Helm with unchanged arguments. Only its exact PID and
+      // Linux start time can be signalled; no API, chart hook or Helm record is faked.
+      let ended = false;
+      const command = upgrade(["--evidence-dir", evidence], {
+        ...occEnv,
+        PATH: `${shimDirectory}:${occEnv.PATH ?? process.env.PATH}`,
+        OCE_REHEARSAL_HELM: executable,
+        OCE_REHEARSAL_RELEASE: release,
+        OCE_REHEARSAL_HELM_CLIENT: client,
+      }).then(
+        () => {
+          ended = true;
+          return undefined;
+        },
+        (error: unknown) => {
+          ended = true;
+          return error;
+        },
+      );
+      const annotation = "openclaw.dev/upgrade-attempt";
+      let intent = "";
+      let initializer:
+        | {
+            metadata: { uid: string; annotations: Record<string, string> };
+            spec: { template: typeof previousJob };
+          }
+        | undefined;
+      let pending;
+      let completedPod: Pod | undefined;
+      try {
+        initializer = await waitFor("the submitted candidate's initializer", async () => {
+          assert.ok(!ended, "the upgrade ended before its Helm client could be interrupted");
+          const submitted = await readIfPresent(join(evidence, "helm-started"));
+          if (!submitted) {
+            return false;
+          }
+          const { attempt, previousRevision, expectedRevision } = protectedJSON<{
+            attempt: { nonce: string };
+            previousRevision: number;
+            expectedRevision: number;
+          }>(submitted);
+          assert.equal(previousRevision, baselineRelease.version);
+          assert.equal(expectedRevision, baselineRelease.version + 1);
+          const output = await kube(
+            "get",
+            `job/${release}-initialization`,
+            "--ignore-not-found",
+            "-o",
+            "json",
+          );
+          if (!output.trim()) {
+            return false;
+          }
+          const job = JSON.parse(output);
+          if (job.metadata.annotations?.[annotation] !== attempt.nonce) {
+            return false;
+          }
+          assert.equal(job.spec.template.metadata.annotations[annotation], attempt.nonce);
+          intent = submitted;
+          return job;
+        });
+        assert.ok(initializer);
+        await save("helm-client-stopped.json", JSON.parse(await clientAction("stop")));
+        pending = await helmStatus();
+        assert.equal(pending.version, baselineRelease.version + 1);
+        assert.equal(
+          pending.info.status,
+          "pending-upgrade",
+          "the interruption lost the Helm completion race",
+        );
+        assert.equal(
+          pending.config.installation.upgradeAttemptId,
+          initializer.metadata.annotations[annotation],
+        );
+        await custody.bindPendingRelease(pending.version);
+        const initializerUID = initializer.metadata.uid;
+
+        // Kubernetes continues the real initialization while Helm is suspended.
+        // A successful Job alone is insufficient: require its owned, successful
+        // Pod, then independently check PostgreSQL with the candidate migrator.
+        completedPod = await waitFor<Pod>("the interrupted initializer to complete", async () => {
+          const job = await get(`job/${release}-initialization`);
+          assert.equal(job.metadata.uid, initializerUID, "initializer Job was replaced");
+          assert.ok(
+            !job.metadata.deletionTimestamp && !job.status?.failed,
+            "initializer failed or is deleting",
+          );
+          const result = JSON.parse(
+            await kube(
+              "get",
+              "pods",
+              "-l",
+              `batch.kubernetes.io/controller-uid=${job.metadata.uid}`,
+              "-o",
+              "json",
+            ),
+          ) as { items: Pod[] };
+          assert.ok(result.items.length <= 1, "initializer unexpectedly retried");
+          const pod = result.items[0];
+          if (
+            !job.status?.conditions?.some(
+              (condition: { type: string; status: string }) =>
+                condition.type === "Complete" && condition.status === "True",
+            ) ||
+            !pod ||
+            pod.status.phase !== "Succeeded"
+          ) {
+            return false;
+          }
+          assert.ok(!pod.metadata.deletionTimestamp);
+          assert.ok(
+            pod.metadata.ownerReferences?.some(
+              (owner) => owner.controller && owner.uid === job.metadata.uid,
+            ),
+          );
+          assert.equal(
+            pod.metadata.annotations?.[annotation],
+            job.metadata.annotations[annotation],
+          );
+          const statuses = [
+            ...(pod.status.initContainerStatuses ?? []),
+            ...(pod.status.containerStatuses ?? []),
+          ];
+          assert.deepEqual(
+            statuses.map(({ name }) => name).sort(),
+            [...(pod.spec.initContainers ?? []), ...pod.spec.containers]
+              .map(({ name }) => name)
+              .sort(),
+          );
+          for (const status of statuses) {
+            assert.equal(
+              status.state?.terminated?.exitCode,
+              0,
+              "initializer container did not complete successfully",
+            );
+            await verifyPodImage(candidate, pod, status);
+          }
+          return pod;
+        });
+        await save("interrupted-initializer.json", {
+          job: await get(`job/${release}-initialization`),
+          pod: completedPod,
+        });
+        assert.deepEqual(
+          await helmStatus(),
+          pending,
+          "pending Helm state changed during initialization",
+        );
+      } finally {
+        // Always reap this invocation before attempting recovery. If the race or
+        // a real hook fails, leave the owned fixture for diagnosis, never replay.
+        try {
+          if (await readIfPresent(client)) {
+            await save("helm-client-terminated.json", JSON.parse(await clientAction("kill")));
+          }
+        } finally {
+          await command;
+        }
+      }
+      const outcome = await command;
+      assert.ok(
+        outcome instanceof Error && /failed \(137\)/u.test(outcome.message),
+        "the interrupted helper must exit with Helm's SIGKILL status",
+      );
+      await save("helm-client-reaped.json", {
+        ...JSON.parse(await clientAction("absent")),
+        helperExit: 137,
+      });
+      await assert.rejects(
+        lstat(join(evidence, ".upgrade-lock")),
+        { code: "ENOENT" },
+        "the exited helper retained its evidence lock",
+      );
+      assert.ok(completedPod && initializer);
+      await assertNoCandidateWriters();
+      const committedHistory = await migrationReceipts(originalDatabase);
+      assert.ok(
+        committedHistory.length > 0,
+        "the interrupted initializer left no committed history",
+      );
+      await checkMigration(
+        candidate,
+        initializer.spec.template,
+        originalDatabase,
+        "recovery-history",
+      );
+      assert.equal(await migrationReceipts(originalDatabase), committedHistory);
+      await save("interrupted-migration-history.json", {
+        history: committedHistory,
+        check: "completed",
+      });
+
+      await upgrade([
+        "--evidence-dir",
+        evidence,
+        "--resume",
+        "--recover-helm",
+        "--migration-history-checked",
+        "--recovery-reviewed",
+      ]);
+      const recovered = await helmStatus();
+      assert.equal(recovered.version, baselineRelease.version + 2);
+      assert.equal(recovered.info.status, "deployed");
+      assert.equal(recovered.info.description, `Rollback to ${baselineRelease.version + 1}`);
+      for (const field of ["manifest", "config", "hooks"]) {
+        assert.deepEqual(recovered[field], pending[field], `recovery changed candidate ${field}`);
+      }
+      assert.equal(
+        await readFile(join(evidence, "helm-started"), "utf8"),
+        intent,
+        "recovery rewrote the original submission",
+      );
+      assert.equal(
+        (await get(`job/${release}-initialization`)).metadata.uid,
+        initializer.metadata.uid,
+        "recovery reran initialization",
+      );
+      const retainedPod = await get(`pod/${completedPod.metadata.name}`);
+      assert.equal(retainedPod.metadata.uid, completedPod.metadata.uid);
+      assert.deepEqual(
+        retainedPod.status,
+        completedPod.status,
+        "recovery changed the completed initializer",
+      );
+      assert.equal(
+        await migrationReceipts(originalDatabase),
+        committedHistory,
+        "recovery changed the committed migration history",
+      );
+      await verifyInstallation();
+    },
+  );
   const candidateRelease = await helmStatus();
   assert.equal(candidateRelease.info.status, "deployed");
   await custody.bindRelease(candidateRelease.version);
+  const recoveredStartupSecret = await startupSecret();
+  assert.equal(recoveredStartupSecret.metadata.uid, initialStartupSecret.metadata.uid);
+  assert.deepEqual(
+    recoveredStartupSecret.data,
+    initialStartupSecret.data,
+    "recovery changed the retained Installation configuration",
+  );
   const candidatePods = await controlPlane(candidate, originalDatabase);
   assert.deepEqual(writerIdentities(candidatePods), writerIdentities(previousPods));
   assert.deepEqual(await readAgent(baseline.id), baseline);
@@ -827,62 +1170,9 @@ export async function rehearsePopulatedReturn({
     );
   });
 
-  const probeName = "return-compatibility";
-  await phase("Check the restored database with the previous controller", async () => {
-    const probeSecret = {
-      apiVersion: "v1",
-      kind: "Secret",
-      metadata: custody.metadata(probeName),
-      data: { "migration-url": await custody.restoredMigrationURL(restoredDatabase) },
-    };
-    const probe = {
-      apiVersion: "v1",
-      kind: "Pod",
-      // Copy the chart's network policy labels, not the Job's ownership labels.
-      metadata: custody.metadata(probeName, {
-        "app.kubernetes.io/name": "openclaw-enterprise",
-        "app.kubernetes.io/instance": release,
-        "app.kubernetes.io/component": "initialization",
-      }),
-      spec: {
-        restartPolicy: "Never",
-        activeDeadlineSeconds: 120,
-        automountServiceAccountToken: false,
-        securityContext: previousJob.spec.securityContext,
-        containers: [
-          {
-            ...priorMigration,
-            args: ["scripts/migrate-production.mjs", "--check"],
-            env: [
-              { name: "NODE_ENV", value: "production" },
-              {
-                name: "OCC_MIGRATION_DATABASE_URL",
-                valueFrom: { secretKeyRef: { name: probeName, key: "migration-url" } },
-              },
-            ],
-          },
-        ],
-      },
-    };
-    await custody.create(probeSecret);
-    const probeUID = await custody.create(probe);
-    const completed = await waitFor<Pod>("previous controller migration check", async () => {
-      const pod: Pod = await get(`pod/${probeName}`);
-      assert.equal(pod.metadata.uid, probeUID, "the compatibility Pod was replaced");
-      return ["Succeeded", "Failed"].includes(pod.status.phase) ? pod : false;
-    });
-    await verifyPodImage(
-      previous,
-      completed,
-      completed.status.containerStatuses?.find(({ name }) => name === "migration"),
-    );
-    assert.equal(
-      completed.status.phase,
-      "Succeeded",
-      "previous image cannot use the restored database",
-    );
-    await verifyCompletedMigrationHistory(run, kubeArgs, probeName);
-  });
+  await phase("Check the restored database with the previous controller", () =>
+    checkMigration(previous, previousJob, restoredDatabase, "return-compatibility"),
+  );
 
   await phase("Return to the previous Helm revision on the restored database", async () => {
     await localCluster.assertCluster();
