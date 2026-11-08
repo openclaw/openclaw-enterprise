@@ -1,12 +1,12 @@
 # Upgrade production images
 
-Run `scripts/upgrade-production-images` with the matching [OCC CLI](../cli.md#connect-to-your-installation)
-from the release checkout to upgrade Kubernetes Compute Helm installations.
+Upgrade Kubernetes Compute Helm installations using the release checkout's
+`scripts/upgrade-production-images` and matching [OCC CLI](../cli.md#connect-to-your-installation).
 See [production installation](production-installation.md) and
 [production Agents](production-agents.md).
 
 1. [Select and prepare the release](#prepare-the-release). Record the live
-   baseline and take the backups required by the [upgrade checklist](upgrade-checklist.md).
+   baseline; take backups required by the [upgrade checklist](upgrade-checklist.md).
 2. [Preflight the target](#rehearse-before-the-maintenance-window).
    [Compare manifests](upgrade-baseline.md#compare-the-candidate-with-the-installed-manifest).
 3. Plan traffic handoff and freeze writers. Apply the [control plane](#upgrade-the-control-plane) or
@@ -35,8 +35,8 @@ For the experimental two-cluster profile, first
 
 ## Prepare the release
 
-For retained conversations, send a unique nonsecret marker; privately record its
-Agent and location.
+For retained conversations, send a unique nonsecret marker through the approved
+interface; privately record its Agent and location.
 
 Prepare:
 

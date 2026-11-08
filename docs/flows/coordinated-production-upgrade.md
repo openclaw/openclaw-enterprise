@@ -170,8 +170,8 @@ Preflight Jobs retain default-deny labels and a copy of
 `openclaw-enterprise-dependency-egress`, including execution-cluster API rules.
 Controller ownership addresses EKS's standalone-Pod limitation; verify enforcement.
 
-Startup failures, timeouts and unconfirmed creates refuse preparation; errors
-remain in `preflight-<resource>-create.err`.
+Failures or timeouts stop preparation. Create errors remain in
+`preflight-<resource>-create.err`.
 `cleanup_preflight` requests UID-guarded foreground Job deletion and polls with a
 30-second deadline per Job for removal of that Job, its UID-selected children and
 recorded child. Only then does it delete the Secret and policy by original UID.
