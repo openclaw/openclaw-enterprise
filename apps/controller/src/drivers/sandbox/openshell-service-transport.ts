@@ -328,7 +328,11 @@ export async function serviceCodexPatStatus(
   const target = serviceTarget(options, serviceUrl);
   const authorization = bearerHeader(bearer);
   signal.throwIfAborted();
+  let transportSocket: Socket | undefined;
+  let disposed = false;
   const connect = buildConnector({
+    allowH2: false,
+    timeout: options.requestTimeoutMs,
     ...(target.secure ? tlsIdentity(target.hostname) : {}),
     ...(options.rootCertificate === undefined ? {} : { ca: options.rootCertificate }),
   });
@@ -345,18 +349,42 @@ export async function serviceCodexPatStatus(
           port: String(target.port),
           ...(target.secure ? { servername: tlsIdentity(target.hostname).servername } : {}),
         },
-        callback,
+        (...result) => {
+          const [, connected] = result;
+          if (connected) {
+            transportSocket = connected;
+            if (disposed) {
+              connected.destroy();
+            }
+          }
+          callback(...result);
+        },
       ),
   });
   const url = new URL(serviceUrl);
   url.protocol = target.secure ? "wss:" : "ws:";
+  // Fetch applies browser port restrictions and discards explicit Host headers.
+  // Dispatch to the validated service origin after that layer to preserve its Host;
+  // the connector still dials and verifies only the configured control endpoint.
+  const origin = `${target.secure ? "https:" : "http:"}//${target.host}`;
+  const serviceDispatcher = dispatcher.compose(
+    (dispatch) => (request, handler) => dispatch({ ...request, origin }, handler),
+  );
+  url.port = "";
   return new Promise((resolve, reject) => {
     let settled = false;
     let initialized = false;
     let opened = false;
     let bytes = 0;
-    const socket = new WebSocket(url, { dispatcher, headers: { authorization } });
+    const socket = new WebSocket(url, {
+      dispatcher: serviceDispatcher,
+      headers: { authorization },
+    });
     const dispose = () => {
+      disposed = true;
+      // Undici detaches upgraded sockets from the dispatcher. This read still owns
+      // its connection, including when the peer never acknowledges normal Close.
+      transportSocket?.destroy();
       void dispatcher.destroy().catch(() => {});
     };
     const finish = (status: "unavailable" | "starting" | "serving", error?: unknown) => {

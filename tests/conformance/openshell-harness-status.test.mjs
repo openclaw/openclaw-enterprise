@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import { createServer as createSecureServer } from "node:https";
 import { createRequire } from "node:module";
-import { connect } from "node:net";
+import { connect, createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -45,16 +45,19 @@ test("OpenShell PAT readiness requires the serving process's authentication thro
   const requests = [];
   let answer = { authMethod: null, authToken: null, requiresOpenaiAuth: true };
   let hold = false;
-  let heldRequest;
+  let advertisedPort = 9443;
+  const negotiated = [];
+  let plainRequests = 0;
   const gateway = createSecureServer(
-    { key: certificate.key, cert: certificate.cert },
+    { key: certificate.key, cert: certificate.cert, ALPNProtocols: ["h2", "http/1.1"] },
     (_request, response) => {
-      assert.fail("an upgraded Harness must not receive a plain status request");
-      response.end();
+      plainRequests += 1;
+      response.writeHead(404).end();
     },
   );
+  gateway.on("secureConnection", (socket) => negotiated.push(socket.alpnProtocol));
   gateway.on("upgrade", (request, socket, head) => {
-    assert.equal(request.headers.host, "codex.example.test:9443");
+    assert.equal(request.headers.host, `codex.example.test:${advertisedPort}`);
     assert.equal(request.headers.authorization, `Bearer ${TOKEN}`);
     peers.handleUpgrade(request, socket, head, (peer) => {
       peers.emit("connection", peer);
@@ -75,7 +78,7 @@ test("OpenShell PAT readiness requires the serving process's authentication thro
           );
         } else if (message.method === "getAuthStatus") {
           if (hold) {
-            heldRequest?.(peer);
+            gateway.emit("auth-held", peer);
           } else {
             peer.send(JSON.stringify({ id: message.id, result: answer }));
           }
@@ -118,8 +121,8 @@ test("OpenShell PAT readiness requires the serving process's authentication thro
     name,
     targetPort: 8080,
     authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
-    url: "https://codex.example.test:9443/",
-    advertisedUrl: "https://codex.example.test:9443/",
+    url: `https://codex.example.test:${advertisedPort}/`,
+    advertisedUrl: `https://codex.example.test:${advertisedPort}/`,
   });
   const driver = new OpenShellSandboxDriver(
     {
@@ -193,11 +196,18 @@ test("OpenShell PAT readiness requires the serving process's authentication thro
     { ...answer, authMethod: "personalAccessToken", authToken: "unexpected" },
   ]) {
     answer = status;
-    assert.deepEqual(await driver.harnessStatus(context), { state: "starting" });
+    const observed = await driver.harnessStatus(context);
+    assert.equal(negotiated.at(-1), "http/1.1", "service upgrades require HTTP/1.1");
+    assert.deepEqual(observed, { state: "starting" });
   }
   answer = { authMethod: "personalAccessToken", authToken: null, requiresOpenaiAuth: true };
   assert.deepEqual(await driver.harnessStatus(context), { state: "serving" });
-  assert.equal(requests.filter(({ method }) => method === "getAuthStatus").length, 6);
+  // A valid backend service port must not inherit Fetch's browser-only port blocklist.
+  // The real TLS endpoint remains on its ephemeral port; advertised Host selects the service.
+  advertisedPort = 10080;
+  assert.deepEqual(await driver.harnessStatus(context), { state: "serving" });
+  assert.equal(plainRequests, 0, "an upgraded Harness must not receive a plain status request");
+  assert.equal(requests.filter(({ method }) => method === "getAuthStatus").length, 7);
   assert.ok(
     requests
       .filter(({ method }) => method === "getAuthStatus")
@@ -217,17 +227,153 @@ test("OpenShell PAT readiness requires the serving process's authentication thro
   );
   const cancelled = new AbortController();
   const reason = new Error("cancelled readiness");
-  const received = new Promise((resolve) => {
-    heldRequest = resolve;
-  });
+  const received = once(gateway, "auth-held", { signal: AbortSignal.timeout(3_000) });
   const reading = driver.harnessStatus({ ...context, signal: cancelled.signal });
   const rejected = assert.rejects(reading, (error) => error === reason);
-  const peer = await received;
+  const [peer] = await Promise.race([
+    received,
+    rejected.then(() => {
+      throw new Error("read settled before the held authentication request");
+    }),
+  ]);
   const closed = once(peer, "close", { signal: context.signal });
   cancelled.abort(reason);
   await rejected;
   const [code] = await closed;
   assert.equal(code, 1000);
+});
+
+// A completed read must not retain a detached upgraded socket when the peer never
+// acknowledges Close. Exercise success, deadline and cancellation through real TCP.
+test("OpenShell PAT status closes unresponsive upgraded peers within its cleanup bound", async (t) => {
+  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const { Receiver, Sender } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
+  for (const outcome of ["serving", "timeout", "cancelled"]) {
+    await t.test(outcome, async (t) => {
+      const gateway = createServer();
+      const sockets = new Set();
+      const cancelled = new AbortController();
+      const reason = new Error("cancelled after authentication request");
+      let closeCode;
+      let closeReceivedAt;
+      gateway.on("upgrade", (request, socket, head) => {
+        sockets.add(socket);
+        const accept = createHash("sha1")
+          .update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+          .digest("base64");
+        socket.write(
+          `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
+        );
+        const receiver = new Receiver({ isServer: true });
+        const sender = new Sender(socket);
+        const reply = (id, result) =>
+          sender.send(
+            JSON.stringify({ id, result }),
+            { binary: false, mask: false, compress: false, fin: true },
+            () => {},
+          );
+        receiver.on("message", (data) => {
+          const message = JSON.parse(data.toString());
+          if (message.method === "initialize") {
+            reply(message.id, { userAgent: "codex/0.164.0" });
+          } else if (message.method === "getAuthStatus") {
+            if (outcome === "serving") {
+              reply(message.id, {
+                authMethod: "personalAccessToken",
+                authToken: null,
+                requiresOpenaiAuth: true,
+              });
+            } else if (outcome === "cancelled") {
+              cancelled.abort(reason);
+            }
+          }
+        });
+        receiver.on("conclude", (code) => {
+          closeCode = code;
+          closeReceivedAt = performance.now();
+          // Intentionally neither acknowledge Close nor end TCP.
+        });
+        if (head.length > 0) {
+          receiver.write(head);
+        }
+        socket.pipe(receiver);
+      });
+      const port = await listen(gateway);
+      t.after(async () => {
+        for (const socket of sockets) {
+          socket.destroy();
+        }
+        await close(gateway);
+      });
+      const client = new GrpcOpenShellGatewayClient({
+        endpoint: `http://127.0.0.1:${port}`,
+        requestTimeoutMs: 1_000,
+      });
+      t.after(() => client.close());
+      const deadline = AbortSignal.timeout(4_000);
+      let endedAt;
+      const ended = once(gateway, "upgrade", { signal: deadline }).then(([, socket]) =>
+        once(socket, "end", { signal: deadline }).then(() => {
+          endedAt = performance.now();
+        }),
+      );
+      const started = performance.now();
+      const reading = client.serviceCodexPatStatus(
+        serviceUrl,
+        TOKEN,
+        outcome === "cancelled" ? cancelled.signal : deadline,
+      );
+      const verified =
+        outcome === "serving"
+          ? reading.then((status) => {
+              assert.equal(status, "serving");
+              assert.equal(endedAt, undefined, "read result must precede cleanup");
+            })
+          : assert.rejects(reading, (error) =>
+              outcome === "cancelled"
+                ? error === reason
+                : error instanceof OpenShellServiceTransportError && error.reason === "timeout",
+            );
+      await Promise.all([verified, ended]);
+      assert.equal(closeCode, 1000);
+      assert.ok(endedAt - started >= 950, "normal Close must get its cleanup interval");
+      assert.ok(endedAt - closeReceivedAt < 1_500, "detached socket exceeded cleanup deadline");
+    });
+  }
+});
+
+test("OpenShell PAT cancellation releases a connection stalled before TLS completes", async (t) => {
+  const sockets = new Set();
+  const cancelled = new AbortController();
+  const reason = new Error("cancelled during TLS negotiation");
+  const gateway = createTcpServer((socket) => {
+    sockets.add(socket);
+    // Receive the real ClientHello but never finish negotiation. Cancellation must
+    // use the configured bound rather than the connector's longer default timeout.
+    socket.once("data", () => cancelled.abort(reason));
+    socket.resume();
+  });
+  const port = await listen(gateway);
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    await close(gateway);
+  });
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: `https://127.0.0.1:${port}`,
+    requestTimeoutMs: 1_000,
+  });
+  t.after(() => client.close());
+  const deadline = AbortSignal.timeout(2_000);
+  const ended = once(gateway, "connection", { signal: deadline }).then(([socket]) =>
+    once(socket, "end", { signal: deadline }),
+  );
+  const rejected = assert.rejects(
+    client.serviceCodexPatStatus(serviceUrl, TOKEN, cancelled.signal),
+    (error) => error === reason,
+  );
+  await Promise.all([rejected, ended]);
 });
 
 function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
