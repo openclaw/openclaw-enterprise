@@ -104,6 +104,67 @@ function killGroup(child, signal) {
   child.kill(signal);
 }
 
+// The CLI emits one final stdout record on failed startup. This is diagnostic
+// evidence from a shared stream, not authentication of its writer.
+export function startupFailureObservation() {
+  let partial = "";
+  let candidates = 0;
+  let final;
+  let invalid = false;
+  let size = 0;
+  return {
+    write(chunk) {
+      size += Buffer.byteLength(chunk);
+      if (size > 16 * 1024 * 1024) {
+        invalid = true;
+        return;
+      }
+      const lines = (partial + chunk).split("\n");
+      partial = lines.pop();
+      if (partial.length > 4096) {
+        invalid = true;
+        partial = "";
+      }
+      for (const line of lines) {
+        if (line.length > 4096) {
+          invalid = true;
+        }
+        if (!line.trim()) {
+          continue;
+        }
+        final = undefined;
+        if (!line.startsWith("[occ-dev-startup")) {
+          continue;
+        }
+        candidates++;
+        const match =
+          /^\[occ-dev-startup\] primary_stage=(unknown|canceled|deadline|routing|network-verification|network-cleanup|registry-detach|platform-namespace|openshell-preparation|rollback) cleanup_failed=(true|false) parent_context_done=(true|false)$/.exec(
+            line,
+          );
+        if (match) {
+          final = {
+            kind: "local-first-agent-startup-failure",
+            primaryStage: match[1],
+            cleanupFailed: match[2] === "true",
+            parentContextDone: match[3] === "true",
+          };
+        }
+      }
+    },
+    finish(code, signal, interrupted = false) {
+      return !invalid &&
+        !interrupted &&
+        !signal &&
+        Number.isSafeInteger(code) &&
+        code > 0 &&
+        candidates === 1 &&
+        partial === ""
+        ? final
+        : undefined;
+    },
+  };
+}
+
 function run(
   command,
   args,
@@ -115,6 +176,10 @@ function run(
   timingPhase = "setup",
 ) {
   const started = performance.now();
+  const startup =
+    command === cli && args[0] === "dev" && args[1] === "up"
+      ? startupFailureObservation()
+      : undefined;
   const observed = new Set();
   const commands = new Map();
   return new Promise((resolve, reject) => {
@@ -142,6 +207,9 @@ function run(
       let previousRuntimeFailure = false;
       stream.setEncoding("utf8");
       stream.on("data", (chunk) => {
+        if (index === 0) {
+          startup?.write(chunk);
+        }
         if (collect && index === 0) {
           outputSize += Buffer.byteLength(chunk);
           if (outputSize <= 4 * 1024 * 1024) {
@@ -215,6 +283,10 @@ function run(
       }
     });
     child.once("close", (code, signal) => {
+      const observation = startup?.finish(code, signal, timedOut || !!spawnCode);
+      if (context && observation) {
+        context.diagnostic("openclaw-ci-measurement " + JSON.stringify(observation));
+      }
       for (const [stage, total] of commands) {
         context.diagnostic(
           "openclaw-ci-measurement " +

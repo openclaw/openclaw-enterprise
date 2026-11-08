@@ -24,7 +24,10 @@ import {
 import { migrateWithHistory } from "../../scripts/migration-history.mjs";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { assertReleasedControllerCompatibility } from "../helpers/released-controller-compatibility.mjs";
+import {
+  assertReleasedControllerCompatibility,
+  assertReleasedControllerIAMCompatibility,
+} from "../helpers/released-controller-compatibility.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const migrationsDirectory = join(repositoryRoot, "migrations");
@@ -1391,6 +1394,7 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.close_repository_standing_execution()", false],
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
+      ["occ.hold_account_administration_policy(text)", true],
       ["occ.record_repository_standing_execution(text,text,text,text,text)", true],
       ["occ.remove_sandbox_policy_access()", false, "search_path=pg_catalog, occ"],
       ["occ.retry_failed_agent_deletion(text,text,text,text)", true],
@@ -1421,7 +1425,12 @@ function receiptsMatchEntries(receipts, entries) {
 
 async function seedCanonicalData(
   db,
-  { preset = false, computeAdmission = false, executionAdmission = false } = {},
+  {
+    preset = false,
+    computeAdmission = false,
+    executionAdmission = false,
+    harnessSettings = false,
+  } = {},
 ) {
   const installation = `ins_${randomUUID()}`;
   const namespace = `ns_${randomUUID()}`;
@@ -1464,7 +1473,12 @@ async function seedCanonicalData(
           configuration_kind: "agent",
           configuration_generation: 1,
           draft_spec: {},
-          harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+          harness: {
+            id: "codex",
+            version: "1.0.0",
+            mode: "dedicated",
+            ...(harnessSettings ? { overrides: {}, configuration: {} } : {}),
+          },
           harness_auth: { method: "runtime" },
           ...(executionAdmission
             ? { execution_admission: { version: 2, mode: "unprotected" } }
@@ -2025,6 +2039,7 @@ test(
       [69, "preSavedConnections"],
       [70, "preDefaultUsers"],
       [71, "preHarnessOverrides"],
+      [72, "preAccountAdministrationPolicy"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2033,6 +2048,8 @@ test(
           computeAdmission: prefix >= 55,
           // 0060 requires an execution admission on every revision written after it.
           executionAdmission: prefix >= 62,
+          // 0072 requires settings on new rows; earlier prefixes retain their historical shape.
+          harnessSettings: prefix >= 72,
         });
         const assertSourceOwners =
           prefix === 59
@@ -3715,6 +3732,22 @@ if (
       await assertReleasedControllerCompatibility(t, controllerImages, async () => {
         const fixture = await migrationHistoryFixture();
         return historyDatabase(t, fixture, "released_controller");
+      });
+    },
+  );
+  test(
+    "Released controller remains usable after configured IAM activation",
+    { timeout: 360_000 },
+    async (t) => {
+      assert.ok(
+        Object.values(controllerImages).every(
+          (image) => typeof image.reference === "string" && typeof image.revision === "string",
+        ),
+        "Both released and candidate controller image references and revisions are required.",
+      );
+      await assertReleasedControllerIAMCompatibility(t, controllerImages, async () => {
+        const fixture = await migrationHistoryFixture();
+        return historyDatabase(t, fixture, "released_iam");
       });
     },
   );

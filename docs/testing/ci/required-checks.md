@@ -18,9 +18,12 @@ covers the lanes selected for that change, not every registered integration.
 ## Trigger
 
 The workflow runs on pull requests, pushes to `main`, merge groups, and manual
-dispatch. Documentation-only changes run static checks. Recognized test-only
-changes select affected lanes, including TypeScript test checks. Other changes
-run the ordinary lane matrix. Failed main-push CI also prevents release workflows
+dispatch. Documentation-only pull requests and verified, forward main pushes
+run static checks. Main pushes compare the complete `before` to `after` range
+using the policy from `before`; missing history, forced pushes, or a policy that
+does not support push selection run the ordinary lane matrix. Recognized
+test-only pull requests select affected lanes, including TypeScript test checks.
+Other changes run the ordinary lane matrix. Failed main-push CI also prevents release workflows
 that require successful CI for that source.
 
 ## Scenarios

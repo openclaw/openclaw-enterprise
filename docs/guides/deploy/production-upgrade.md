@@ -1,9 +1,8 @@
 # Upgrade production images
 
-Run `scripts/upgrade-production-images` from the release checkout with the
-matching [OCC CLI](../cli.md#connect-to-your-installation) to upgrade an existing
-Kubernetes Compute Helm installation. For installation, see
-[production installation](production-installation.md); for one Agent, see
+Run `scripts/upgrade-production-images` with the matching [OCC CLI](../cli.md#connect-to-your-installation)
+from the release checkout to upgrade Kubernetes Compute Helm installations.
+See [production installation](production-installation.md) and
 [production Agents](production-agents.md). Plan traffic handoff.
 
 1. [Select and prepare the release](#prepare-the-release). Record the live
@@ -22,8 +21,13 @@ runtime image and redeploys every running Agent concurrently. Each upgrade
 stops the API and worker during migration and rollout. Allow capacity for old
 and replacement versions to overlap.
 
-Before cluster access, the helper checks chart paths and bytes against the commit.
-Keep evidence/baselines outside the chart and the unchanged checkout under exclusive control.
+The helper verifies committed chart files before cluster access.
+Keep the unchanged checkout exclusive and evidence/baselines outside the chart.
+
+Configure endpoint and TLS settings in the selected kubeconfig.
+Unset `HELM_KUBEAPISERVER`, `HELM_KUBECAFILE`, `HELM_KUBETLS_SERVER_NAME` and
+`HELM_KUBEINSECURE_SKIP_TLS_VERIFY` before starting or resuming.
+These override kubeconfig/context flags.
 
 For settings changes, [prepare reviewed candidate files](#include-reviewed-settings).
 For the experimental two-cluster profile, first
@@ -31,8 +35,8 @@ For the experimental two-cluster profile, first
 
 ## Prepare the release
 
-For retained conversations, send a unique nonsecret test marker through the
-approved interface; privately record its Agent and location.
+For retained conversations, send a unique nonsecret marker through the approved
+interface; privately record its Agent and location.
 
 Prepare:
 
@@ -49,7 +53,7 @@ Prepare:
   database state;
 - the production kubeconfig, Helm values, Installation YAML, OCC service key,
   and optional CA bundle in protected files;
-- Bash, Python 3, Node.js, Helm, kubectl, jq, yq, cmp and mktemp on the operator host. The Kubernetes identity must
+- Bash, Python 3, Node.js satisfying `engines.node` in the release checkout’s `package.json`, Helm, kubectl, jq, yq, cmp and mktemp on the operator host. The Kubernetes identity must
   create and delete Jobs, Secrets and NetworkPolicies; get Jobs and Pods; list Pods;
   read Pod logs; and get and patch Deployments in the release namespace;
 - for the bundled Collector, [refresh its config Secret](../observability.md#refresh-the-collector-configuration-on-upgrade)
@@ -60,11 +64,10 @@ Prepare:
   restoration, and Agent-volume backups for runtime releases that can require
   runtime data restoration.
 
-For repository-enabled releases, pass both `--controller-image` and
+Repository-enabled releases require both `--controller-image` and
 `--broker-image`, even when you retain the current digest. Stage the exact operator-trusted
 images on a Linux host running as UID 1000. Docker Engine must support
-platform-specific image inspection and export. Install Python 3, Node.js and
-OpenSSL. Every node matching the control-plane selector must match the host's native
+platform-specific image inspection and export. Install OpenSSL. Every node matching the control-plane selector must match the host's native
 `linux/amd64` or `linux/arm64` architecture. Freeze eligible nodes and their labels
 during maintenance. The Kubernetes identity must list nodes, read Deployments,
 ReplicaSets and Pods, and run a read-only check in the worker container. Local
@@ -261,8 +264,8 @@ selected immutable broker reference. Keep protected values equal to live values;
 the helper preserves the broker hostname, qualifies the pair before mutation,
 and verifies the deployed pair and broker capability.
 
-Add `--verify-agent AGENT_ID --verify-agent-namespace NAMESPACE_ID` to check one
-running Agent. It requires enabled [runtime inspection](../../reference/cli.md#runtime-status-and-logs),
+Check one running Agent with `--verify-agent AGENT_ID --verify-agent-namespace NAMESPACE_ID`.
+This requires [runtime inspection](../../reference/cli.md#runtime-status-and-logs),
 exact Agent `read`/`operate` and active AgentRevision `read`, verified before shutdown.
 Freeze that Agent's deployment, stop and deletion through verification.
 This option cannot accompany `--runtime-image`, which changes revisions.
@@ -282,7 +285,7 @@ The helper stops API/worker before updating protected inputs and the Installatio
 Secret. Helm migrates and bootstraps before restoring Deployments; the helper
 then verifies rollout and OCC access.
 
-Success looks like:
+Expected result:
 
 ```text
 Upgraded controller image; no Agent deployments were requested.
@@ -290,7 +293,7 @@ Upgraded controller image; no Agent deployments were requested.
 
 ## Upgrade Agent runtimes
 
-Set the runtime image and run the command:
+Select the runtime image:
 
 ```bash
 export RUNTIME_IMAGE='<registry>/runtime@sha256:<64-hex-digest>'
@@ -303,7 +306,7 @@ scripts/upgrade-production-images "${target[@]}" \
 When repository credentials are enabled, also pass `--controller-image` (current
 digest) and `--broker-image` (selected digest). The worker and broker still restart.
 
-Check the preflight warnings. The selected controller image checks saved Agent
+Check preflight warnings. The selected controller image checks saved Agent
 Configurations when it supports draft validation and the drafts fit in the
 temporary Secret. Otherwise, OCC checks them at deployment. If preflight
 refuses a draft, correct it or stop the Agent before running a new preflight.
@@ -344,7 +347,7 @@ Doctor, fails the upgrade. Doctor output is saved under `status/*.doctor.*`; see
 Gateways run `doctor --fix` themselves only
 for [older state](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
 
-Success looks like:
+Expected result:
 
 ```text
 Upgraded runtime image; controller image remained unchanged and <count> running Agents selected new revisions.

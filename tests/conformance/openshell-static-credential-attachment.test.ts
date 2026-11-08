@@ -132,6 +132,7 @@ test("startup composes both OpenShell members from one Backend for static source
     execSandbox: unexpected,
     getServiceDocument: unexpected,
     postServiceDocument: unexpected,
+    serviceCodexPatStatus: unexpected,
     listProviderProfiles: unexpected,
     deleteProviderProfile: unexpected,
     listProviders: unexpected,

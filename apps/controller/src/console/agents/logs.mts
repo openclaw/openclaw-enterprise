@@ -1346,6 +1346,9 @@ export function renderAgentLogs(
   sourceSelect.addEventListener("change", () => {
     podSelect.value = "";
     renderPickers();
+    if (!logsDenied) {
+      showLogError(null);
+    }
     void readLogs({ restart: true });
   });
   podSelect.addEventListener("change", () => {
