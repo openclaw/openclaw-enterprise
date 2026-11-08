@@ -220,6 +220,51 @@ export function selectOpenShellGitWithdrawalDenials(events, { sandboxId, revisio
   return result;
 }
 
+/** Observe only this revision's ordered route events from the selected worker log. */
+export function selectOpenShellGitRouteReadiness(events, identity) {
+  const result = { state: "unobserved", denialCode: "none" };
+  for (const event of events) {
+    if (
+      event.namespaceId !== identity.namespaceId ||
+      event.agentId !== identity.agentId ||
+      event.revisionId !== identity.revisionId ||
+      event.repositoryRef !== identity.repositoryRef
+    ) {
+      continue;
+    }
+    if (event.event === "worker.openshell-git-route") {
+      result.state =
+        [undefined, "worker_restarted", "supervisor_reconnected"].includes(event.reason) &&
+        ["adopted", "restored"].includes(event.status)
+          ? event.status
+          : "unrecognized";
+    } else if (event.event === "worker.openshell-git-route-warning") {
+      result.state = ["pending", "closed"].includes(event.status) ? event.status : "unrecognized";
+    } else if (
+      event.event === "worker.error" &&
+      event.code === "OPENSHELL_GIT_RECONCILIATION_REQUIRED"
+    ) {
+      result.state = "closed";
+    } else if (
+      event.event === "worker.openshell-git-denied" &&
+      event.sandboxId === identity.sandboxId
+    ) {
+      result.denialCode = [
+        "route_not_ready",
+        "route_blocked",
+        "access_withdrawn",
+        "credential_unavailable",
+      ].includes(event.reasonCode)
+        ? event.reasonCode
+        : "unrecognized";
+      result.state = ["route_blocked", "access_withdrawn"].includes(result.denialCode)
+        ? "closed"
+        : "pending";
+    }
+  }
+  return result;
+}
+
 /** Select matching maintenance completions before buffering their diagnostics. */
 export function projectOpenShellGitMaintenanceCompletion(value) {
   const completion = project(value, {
@@ -324,6 +369,26 @@ for (const name of [
   withdrawalDiagnostics[name] = [name, count];
 }
 const events = {
+  "git-route-readiness": {
+    workerUid: ["workerUid", uuid],
+    revisionIdHash: ["revisionId", identityHash],
+    outcome: ["outcome", choice("ready", "unconfirmed")],
+    state: [
+      "state",
+      choice("unobserved", "adopted", "restored", "pending", "closed", "unrecognized"),
+    ],
+    denialCode: [
+      "denialCode",
+      choice(
+        "none",
+        "route_not_ready",
+        "route_blocked",
+        "access_withdrawn",
+        "credential_unavailable",
+        "unrecognized",
+      ),
+    ],
+  },
   "withdrawal-decision-unconfirmed": withdrawalDiagnostics,
   "finite-removal-live-denial": {
     boundary: ["boundary", choice("signed-access-withdrawn", "supervisor-policy")],

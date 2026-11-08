@@ -34,7 +34,10 @@ import {
   SandboxGatewayUnavailableError,
 } from "../../packages/occ/src/errors.ts";
 import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
-import { selectOpenShellGitWithdrawalDenials } from "../../scripts/ci/openshell-git-retention.mjs";
+import {
+  selectOpenShellGitWithdrawalDenials,
+  selectOpenShellGitRouteReadiness,
+} from "../../scripts/ci/openshell-git-retention.mjs";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 
 // Every field the runtime emits reaches the worker log: the production logger drops what it
@@ -1695,7 +1698,33 @@ test("a restarted worker re-adopts a persisted Git route without a provider writ
   );
   assert.deepEqual(g.runtime.route(f.revision.id), { state: "pending", reason: "unverified" });
   await expectDenied(g, "route_pending", "nothing is admitted before the route verifies");
+  const identity = {
+    namespaceId: g.revision.namespaceId,
+    agentId: g.revision.agentId,
+    revisionId: g.revision.id,
+    repositoryRef: "installation",
+    sandboxId: g.identity.sandboxId,
+  };
+  // Restarted worker readiness is per route: adopted and pending cannot authorize
+  // the installed test's one positive Git request, even if another route is ready.
+  assert.deepEqual(selectOpenShellGitRouteReadiness(g.events, identity), {
+    state: "pending",
+    denialCode: "route_not_ready",
+  });
   await g.reconcile();
+  assert.deepEqual(selectOpenShellGitRouteReadiness(g.events, identity), {
+    state: "restored",
+    denialCode: "route_not_ready",
+  });
+  for (const field of ["namespaceId", "agentId", "revisionId", "repositoryRef"]) {
+    assert.deepEqual(
+      selectOpenShellGitRouteReadiness(g.events, { ...identity, [field]: "other" }),
+      {
+        state: "unobserved",
+        denialCode: "none",
+      },
+    );
+  }
   assert.deepEqual(g.runtime.route(f.revision.id), { state: "installed" });
   assert.equal(f.calls.rotate, 1, "the same material version is not written again");
   assert.deepEqual(g.errors(), []);
@@ -1707,6 +1736,12 @@ test("a restarted worker re-adopts a persisted Git route without a provider writ
   assert.equal(store.rows.get(f.revision.id).fence, installedFence + 1);
   await g.reconcile();
   assert.equal(restorations(g).length, 1, "a restoration is reported once");
+  g.runtime.withdraw(g.revision.id);
+  await expectDenied(g, "route_blocked");
+  assert.deepEqual(selectOpenShellGitRouteReadiness(g.events, identity), {
+    state: "closed",
+    denialCode: "access_withdrawn",
+  });
 
   // Material rotated by the owner while the worker was down (or a lagging restart): the
   // normal rotation installs the new version, and the generation it writes is recorded.

@@ -14,6 +14,7 @@ import {
   projectOpenShellGitMaintenanceCompletion,
   projectOpenShellGitRetention,
   selectOpenShellGitWithdrawalDenials,
+  selectOpenShellGitRouteReadiness,
 } from "../../scripts/ci/openshell-git-retention.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
 import { startSkipperPrivateGitOrigin } from "../fixtures/skipper-private-git-origin.mjs";
@@ -1013,6 +1014,46 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     }
     return { workerUid: pod.metadata.uid, requestIds };
   };
+  const waitForRestoredGitRoute = async (identity, workerUid, timeout, signal) => {
+    let observation = { state: "unobserved", denialCode: "none" };
+    let outcome = "unconfirmed";
+    try {
+      await waitUntil(
+        "replacement worker Git route restoration",
+        async () => {
+          const pod = await worker();
+          assert.equal(
+            pod?.metadata.uid,
+            workerUid,
+            "Git readiness requires the selected replacement Worker",
+          );
+          observation = selectOpenShellGitRouteReadiness(await workerEvents(pod), identity);
+          signal.throwIfAborted();
+          assert.equal(
+            (await worker())?.metadata.uid,
+            workerUid,
+            "Worker changed during Git readiness observation",
+          );
+          assert.notEqual(
+            observation.state,
+            "closed",
+            "replacement Worker closed the retained Git route",
+          );
+          return observation.state === "restored";
+        },
+        timeout,
+        signal,
+      );
+      outcome = "ready";
+    } finally {
+      measurement("git-route-readiness", {
+        workerUid,
+        revisionId: identity.revisionId,
+        outcome,
+        ...observation,
+      });
+    }
+  };
   const completedWork = async (pod, { agentId, revisionId }, accepts, observed) => {
     const events = observed ?? (await workerEvents(pod));
     for (const event of events) {
@@ -1344,6 +1385,7 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     workspace: sandboxNamespace,
     sandboxNamespace,
     gitWithdrawalDenials,
+    waitForRestoredGitRoute,
     waitForExpiry,
     verifySupervisorImage,
     restartWorker,

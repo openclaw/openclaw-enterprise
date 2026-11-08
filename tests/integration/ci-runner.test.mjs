@@ -6437,7 +6437,16 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       agentPodsAbsent: true,
     },
   ];
+  const routeReadiness = {
+    event: "git-route-readiness",
+    workerUid: uuid,
+    revisionId: opaque,
+    outcome: "ready",
+    state: "restored",
+    denialCode: "route_not_ready",
+  };
   const retentionReceipts = [
+    { ...routeReadiness, error: forbidden },
     ...finiteRemoval.map((receipt) => ({ ...receipt, credential: forbidden, output: forbidden })),
     ...withdrawalWitnesses.map((receipt) => ({ ...receipt, error: forbidden, token: forbidden })),
     { ...withdrawalRetirement, token: forbidden },
@@ -6548,6 +6557,10 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     { event: "cleanup", outcome: "passed" },
   ].map((value) => ({ kind: retentionKind, ...value, unexpected: forbidden }));
   const invalidRetention = [
+    ...["workerUid", "outcome", "state", "denialCode"].map((field) => ({
+      ...routeReadiness,
+      [field]: forbidden,
+    })),
     ...[
       "controllerImageDigest",
       "controllerConfigDigest",
@@ -7203,6 +7216,18 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       databaseUid: uuid,
       custodyUid: uuid,
       custodyVersion: "234",
+    },
+  );
+  assert.deepEqual(
+    receipts.find(({ event }) => event === "git-route-readiness"),
+    {
+      kind: retentionKind,
+      event: "git-route-readiness",
+      workerUid: uuid,
+      revisionIdHash: opaqueHash,
+      outcome: "ready",
+      state: "restored",
+      denialCode: "route_not_ready",
     },
   );
   assert.deepEqual(

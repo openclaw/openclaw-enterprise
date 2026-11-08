@@ -664,11 +664,35 @@ test(
         );
         assert.equal(after.issued, before.issued);
         await witness(step.witnessAfter);
+        if (mode === "replacement") {
+          phase = "replacement B route readiness";
+          // A's reduced-runtime maintenance does not restore B's independent Git route.
+          // Observe B on the same worker before its single positive request; never retry Git.
+          await fixture.waitForRestoredGitRoute(
+            {
+              namespaceId: fixture.namespace.id,
+              agentId: b.agent.id,
+              revisionId: b.revision.id,
+              repositoryRef: origin.repositoryRef,
+              sandboxId: b.target.sandboxId,
+            },
+            expectedWorker,
+            Math.min(30_000, remaining()),
+            finiteSignal,
+          );
+          inTime();
+        }
         phase = step.positive;
+        const issuedBeforeRead = origin.snapshot().issued;
         assert.equal(
           await read(b),
           indexB,
           "the second Agent must retain its authorized Git credential",
+        );
+        assert.equal(
+          origin.snapshot().issued,
+          issuedBeforeRead,
+          "B must reuse its original credential",
         );
         assert.deepEqual((await a.readExecution()).identity, a.original.identity);
         assert.deepEqual((await b.readExecution()).identity, b.original.identity);
