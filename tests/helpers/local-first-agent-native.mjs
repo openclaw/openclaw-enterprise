@@ -1003,6 +1003,41 @@ export function nativePlacementReadRetryable(error, correlatedResponse) {
   );
 }
 
+// This same program runs through the model's exec and in the local diagnostic proof.
+export function nativeWorkerProofProgram({
+  sessionFile,
+  sessionFileContent,
+  workspaceFile,
+  toolPrefix,
+  createSessionFile,
+}) {
+  return [
+    'let operation="write-session-file";try{',
+    ...(createSessionFile
+      ? [
+          `require("node:fs").writeFileSync(${JSON.stringify(sessionFile.path)},${JSON.stringify(sessionFileContent)},{flag:"wx"});`,
+        ]
+      : []),
+    'operation="read-session-file";',
+    `const sessionFileSha256=require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(${JSON.stringify(sessionFile.path)})).digest("hex");`,
+    ...(workspaceFile === undefined
+      ? []
+      : [
+          'operation="read-workspace-file";',
+          `const workspaceFileSha256=require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(${JSON.stringify(workspaceFile.path)})).digest("hex");`,
+        ]),
+    'operation="emit-proof";',
+    `process.stdout.write(${JSON.stringify(toolPrefix)} + JSON.stringify({`,
+    'hostname:require("node:os").hostname(),',
+    'cwd:process.cwd(),modelCredentialPresent:Object.hasOwn(process.env,"OPENAI_API_KEY")||Object.hasOwn(process.env,"CODEX_ACCESS_TOKEN"),sessionFileSha256,',
+    ...(workspaceFile === undefined ? [] : ["workspaceFileSha256,"]),
+    '}) + "\\n");',
+    "}catch(error){",
+    'const code=["EACCES","EPERM","ENOENT","EEXIST","EISDIR","ENOTDIR","ENOSPC","EROFS","EMFILE","EIO"].includes(error?.code)?error.code:"other";',
+    'process.stderr.write("FIRST_AGENT_NATIVE_FAILURE "+JSON.stringify({operation,code})+"\\n");process.exitCode=1;}',
+  ].join("");
+}
+
 // Keep exact run, explicit success, standalone tool output and final-marker
 // predicates together. Only the fixed observation is retained in diagnostics.
 export function nativeWorkerHistoryEvidence({
@@ -1088,6 +1123,8 @@ export function nativeWorkerHistoryEvidence({
       : [],
   );
   const nestedExitCodes = [];
+  const nestedFailures = [];
+  let failureMarkerCount = 0;
   const envelopes = exec.map((message) => {
     try {
       const value = JSON.parse(text(message.content));
@@ -1096,6 +1133,46 @@ export function nativeWorkerHistoryEvidence({
         Number.isSafeInteger(value.value.exitCode)
       ) {
         nestedExitCodes.push(value.value.exitCode);
+        if (value.value.exitCode > 0 && value.value.exitCode <= 255) {
+          for (const line of value.value.aggregated.split(/\r?\n/)) {
+            const prefix = "FIRST_AGENT_NATIVE_FAILURE ";
+            if (!line.startsWith(prefix)) {
+              continue;
+            }
+            failureMarkerCount += 1;
+            if (line.length > 256) {
+              continue;
+            }
+            try {
+              const failure = JSON.parse(line.slice(prefix.length));
+              if (
+                [
+                  "write-session-file",
+                  "read-session-file",
+                  "read-workspace-file",
+                  "emit-proof",
+                ].includes(failure?.operation) &&
+                [
+                  "EACCES",
+                  "EPERM",
+                  "ENOENT",
+                  "EEXIST",
+                  "EISDIR",
+                  "ENOTDIR",
+                  "ENOSPC",
+                  "EROFS",
+                  "EMFILE",
+                  "EIO",
+                  "other",
+                ].includes(failure?.code)
+              ) {
+                nestedFailures.push({ operation: failure.operation, code: failure.code });
+              }
+            } catch {
+              // A malformed peer marker cannot supply diagnostic fields.
+            }
+          }
+        }
       }
       return typeof value?.value?.aggregated === "string" ? "aggregated" : "other";
     } catch {
@@ -1135,6 +1212,15 @@ export function nativeWorkerHistoryEvidence({
         (part) =>
           typeof part.arguments?.code === "string" && part.arguments.code.includes(toolPrefix),
       ).length,
+      ...(nestedExitCodes.length === 1 && nestedExitCodes[0] >= 0 && nestedExitCodes[0] <= 255
+        ? { historyExecNestedExitCode: nestedExitCodes[0] }
+        : {}),
+      ...(nestedExitCodes.length === 1 && failureMarkerCount === 1 && nestedFailures.length === 1
+        ? {
+            historyExecFailureOperation: nestedFailures[0].operation,
+            historyExecFailureCode: nestedFailures[0].code,
+          }
+        : {}),
       historyExecNestedExitZeroCount: nestedExitCodes.filter((code) => code === 0).length,
       historyExecNestedExitNonzeroCount: nestedExitCodes.filter((code) => code !== 0).length,
       historyExecCommandStringCount: calls.filter(
@@ -1356,23 +1442,13 @@ async function nativeWorkerProof({
     assert.match(sessionFile.sha256, /^[a-f0-9]{64}$/);
     const marker = `FIRST_AGENT_NATIVE_${randomUUID()}`;
     const toolPrefix = "FIRST_AGENT_NATIVE_TOOL ";
-    const program = [
-      ...(existingSession === undefined
-        ? [
-            `require("node:fs").writeFileSync(${JSON.stringify(sessionFile.path)},${JSON.stringify(sessionFileContent)},{flag:"wx"});`,
-          ]
-        : []),
-      `process.stdout.write(${JSON.stringify(toolPrefix)} + JSON.stringify({`,
-      'hostname:require("node:os").hostname(),',
-      'cwd:process.cwd(),modelCredentialPresent:Object.hasOwn(process.env,"OPENAI_API_KEY")||Object.hasOwn(process.env,"CODEX_ACCESS_TOKEN"),',
-      `sessionFileSha256:require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(${JSON.stringify(sessionFile.path)})).digest("hex"),`,
-      ...(workspaceFile === undefined
-        ? []
-        : [
-            `workspaceFileSha256:require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(${JSON.stringify(workspaceFile.path)})).digest("hex"),`,
-          ]),
-      '}) + "\\n")',
-    ].join("");
+    const program = nativeWorkerProofProgram({
+      sessionFile,
+      sessionFileContent,
+      workspaceFile,
+      toolPrefix,
+      createSessionFile: existingSession === undefined,
+    });
     const command = `node -e '${program.replaceAll("'", "'\\''")}'`;
     stage = "send";
     const sent = await call("sessions.send", {
@@ -1492,7 +1568,7 @@ export async function assertNativeWorkerProofInController(
   delete safeEnvironment.OPENAI_API_KEY_FILE;
   delete safeEnvironment.CODEX_ACCESS_TOKEN;
   delete safeEnvironment.CODEX_ACCESS_TOKEN_FILE;
-  const input = `const nativePlacementReadRetryable = (${nativePlacementReadRetryable.toString()});\nconst nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
+  const input = `const nativePlacementReadRetryable = (${nativePlacementReadRetryable.toString()});\nconst nativeWorkerProofProgram = (${nativeWorkerProofProgram.toString()});\nconst nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =
     state.deploymentMode === "k3d"

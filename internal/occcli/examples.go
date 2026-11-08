@@ -32,12 +32,16 @@ JSON
   For a complete example, see
   https://docs-enterprise.openclaw.org/guides/deploy/production-agents/`
 
-const secretCreateExample = `  (umask 077; tr -d '\n' < /path/to/key | jq -Rs '{name: "openai-model-key", value: .}' > secret.json)
-  occ secret create --file secret.json
-  rm secret.json
+const secretCreateExample = `  (
+    umask 077
+    secret_file=$(mktemp -- "${TMPDIR:-/tmp}/occ-secret.XXXXXX") || exit
+    trap 'rm -f -- "$secret_file"' EXIT
+    jq -Rs '{name: "openai-model-key", value: gsub("\n"; "")}' < /path/to/key > "$secret_file" &&
+      occ secret create --file "$secret_file"
+  )
 
-  The body is {"name": "<name>", "value": "<secret value>"}. Keep the value off the
-  command line and delete the file after use.`
+  The body is {"name": "<name>", "value": "<secret value>"}. The example keeps
+  the value off the command line and removes the temporary file on exit.`
 
 const agentCreateExample = `  cat > agent.json <<'JSON'
   {"name": "example-agent", "configurationId": "<configuration-id>", "executionMode": "embedded"}

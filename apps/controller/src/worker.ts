@@ -113,6 +113,7 @@ import {
   type PostgresPool,
   type PostgresQueryClient,
   type PostgresWorkQueueOptions,
+  recognizedRuntimeFailureValues,
   validateRuntimeFailureEvidence,
 } from "@openclaw-enterprise/occ";
 import {
@@ -6945,6 +6946,9 @@ export class ControllerWorker {
       outcome: "pending",
       code,
       ...failure.failureLogFields,
+      ...(runtimeFailure === undefined
+        ? {}
+        : { failure: recognizedRuntimeFailureValues(runtimeFailure).code }),
       ...stopYieldsField(this.stopYields.count(claim.idempotencyKey)),
     });
   }

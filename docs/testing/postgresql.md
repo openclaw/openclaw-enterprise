@@ -19,7 +19,12 @@ URLs skip cases, so check the test results for skips.
 The application lane prepares isolated databases and removes its resources on
 exit. Its PostgreSQL server is disposable, so preparation turns off `fsync`,
 `synchronous_commit` and `full_page_writes` there; keep no data in it. Each run
-needs its own state file. With Docker Compose available, run:
+needs its own state file. Preparation stages a container-readable copy of the public
+bootstrap SQL, so restrictive checkout permissions do not need changing. Cleanup
+removes this copy with the disposable server; unexpected files in its directory
+are preserved and reported as a cleanup failure. If directory or SQL creation was
+not durably confirmed, cleanup preserves any unconfirmed contents and state.
+Inspect their ownership before manual removal; a competing process may own the directory. With Docker Compose available, run:
 
 ```sh
 (
