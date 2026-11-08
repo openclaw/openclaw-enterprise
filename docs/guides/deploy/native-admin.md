@@ -46,14 +46,24 @@ agentNativeAdmin:
 ```
 
 Before upgrading an existing Installation, check the retained Agent domain. A
-suffix over 214 characters is now refused by Helm, profile preflight, and API
-startup while native admin is enabled. Disabling the feature preserves API startup
-and refuses requests to retained Agent hosts. Choose a shorter suffix inside the trusted cookie parent, provision its
-DNS and certificate, and update the retained native admin setting. Each existing
-Agent's allowed origin and public origin must then match its new derived host;
-follow [Configure each Agent](#configure-each-agent) and deploy the updated
-Configuration before reopening it. Existing domains within the limit retain the
-same hosts; this change does not migrate saved Agent Configuration.
+suffix over 214 characters is refused by Helm, profile preflight, and API startup
+while native admin is enabled.
+
+To restore API availability by disabling native admin, withdraw the old native
+wildcard ingress route first; keep the Console route available. Helm omits
+`OCC_AGENT_NATIVE_ADMIN_DOMAIN` when `agentNativeAdmin.enabled` is false, even if
+the domain remains in retained values. Disabling alone therefore does not
+guarantee HTTP 403 for old Agent hosts. Native-host refusal is preserved only
+when a custom deployment explicitly retains that runtime domain.
+
+Choose a shorter suffix inside the trusted cookie parent, provision its DNS and
+certificate, and update the retained native admin setting. Re-enable the feature,
+then follow [Configure each Agent](#configure-each-agent) to update each Agent's
+allowed/public origins and deploy its Configuration. Keep the old native ingress
+withdrawn while correcting these settings; expose only the new native ingress
+with its matching certificate after the Configuration is ready. Existing domains
+within the limit retain the same hosts; this change does not migrate saved Agent
+Configuration.
 
 Expose the API Service through your existing public ingress layer. The chart does not create this route. This example shows the required shape; adapt the Ingress class, certificate, and selectors to your cluster:
 
