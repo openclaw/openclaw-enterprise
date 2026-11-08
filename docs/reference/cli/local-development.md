@@ -6,9 +6,11 @@ output options in the [CLI command reference](../cli.md). Kubernetes is the supp
 local setup for deploying an Agent; follow [Local Setup](../../guides/quickstart.md).
 
 The CLI uses the nearest enclosing checkout identified by its OCE `go.mod` and
-`compose.yaml`. If that `go.mod` contains CRLF line endings, both commands stop
-with a repair error. Convert the file to LF and retry; the CLI does not continue
-to an outer checkout that could own a different stack.
+`compose.yaml`. The Compose marker must be a regular file or a symlink to one.
+An absent marker allows the search to continue; an invalid or unresolvable marker
+stops both commands with the exact path to fix. If `go.mod` contains CRLF line
+endings, convert the file to LF and retry. These errors do not fall through to
+an outer checkout that could own a different stack.
 
 | Command                                         | What it does                                                                                                                                                                   |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

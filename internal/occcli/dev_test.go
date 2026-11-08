@@ -120,13 +120,15 @@ func TestDevelopmentRepositoryComposeMarker(t *testing.T) {
 func TestDevRefusesNearestInvalidCheckout(t *testing.T) {
 	const declaration = "module github.com/openclaw/openclaw-enterprise"
 	for _, test := range []struct {
-		name             string
-		module           string
-		composeDirectory bool
+		name          string
+		module        string
+		composeMarker string
 	}{
 		{name: "CRLF", module: declaration + "\r\n"},
 		{name: "mixed endings", module: declaration + "\n\r\ngo 1.27.3\r\n"},
-		{name: "Compose directory", module: declaration + "\n", composeDirectory: true},
+		{name: "Compose directory", module: declaration + "\n", composeMarker: "directory"},
+		{name: "dangling Compose symlink", module: declaration + "\n", composeMarker: "dangling"},
+		{name: "looping Compose symlink", module: declaration + "\n", composeMarker: "loop"},
 	} {
 		for _, args := range [][]string{{"dev", "up"}, {"dev", "down", "--volumes"}} {
 			t.Run(test.name+"/"+args[1], func(t *testing.T) {
@@ -142,8 +144,16 @@ func TestDevRefusesNearestInvalidCheckout(t *testing.T) {
 						t.Fatal(err)
 					}
 					composePath := filepath.Join(directory, "compose.yaml")
-					if directory == nested && test.composeDirectory {
+					if directory == nested && test.composeMarker == "directory" {
 						if err := os.Mkdir(composePath, 0o700); err != nil {
+							t.Fatal(err)
+						}
+					} else if directory == nested && (test.composeMarker == "dangling" || test.composeMarker == "loop") {
+						target := "missing.yaml"
+						if test.composeMarker == "loop" {
+							target = "compose.yaml"
+						}
+						if err := os.Symlink(target, composePath); err != nil {
 							t.Fatal(err)
 						}
 					} else if err := os.WriteFile(composePath, nil, 0o600); err != nil {
@@ -162,10 +172,15 @@ func TestDevRefusesNearestInvalidCheckout(t *testing.T) {
 				command.SetArgs(args)
 				err := command.Execute()
 				want := fmt.Sprintf("%q uses CRLF line endings; convert it to LF before running occ dev", filepath.Join(nested, "go.mod"))
-				if test.composeDirectory {
+				if test.composeMarker == "directory" {
 					want = fmt.Sprintf("%q must be a regular file", filepath.Join(nested, "compose.yaml"))
 				}
-				if err == nil || err.Error() != want {
+				if test.composeMarker == "dangling" || test.composeMarker == "loop" {
+					want = fmt.Sprintf("inspect %q:", filepath.Join(nested, "compose.yaml"))
+					if err == nil || !strings.HasPrefix(err.Error(), want) {
+						t.Fatalf("%v: got %v; want nearest-checkout refusal starting with %q", args, err, want)
+					}
+				} else if err == nil || err.Error() != want {
 					t.Fatalf("%v: got %v; want nearest-checkout refusal %q", args, err, want)
 				}
 			})
