@@ -65,14 +65,71 @@ func TestDevelopmentRepository(t *testing.T) {
 	}
 }
 
-func TestDevRefusesNearestCRLFCheckout(t *testing.T) {
+func TestDevelopmentRepositoryComposeMarker(t *testing.T) {
+	const module = "module github.com/openclaw/openclaw-enterprise\n"
+	for _, marker := range []string{"regular file", "symlink to regular file", "missing", "directory"} {
+		t.Run(marker, func(t *testing.T) {
+			outer := t.TempDir()
+			inner := filepath.Join(outer, "nested")
+			if err := os.Mkdir(inner, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for _, directory := range []string{outer, inner} {
+				if err := os.WriteFile(filepath.Join(directory, "go.mod"), []byte(module), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			outerCompose := filepath.Join(outer, "compose.yaml")
+			if err := os.WriteFile(outerCompose, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			innerCompose := filepath.Join(inner, "compose.yaml")
+			want := inner
+			switch marker {
+			case "regular file":
+				if err := os.WriteFile(innerCompose, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink to regular file":
+				if err := os.Symlink(outerCompose, innerCompose); err != nil {
+					t.Fatal(err)
+				}
+			case "missing":
+				want = outer
+			case "directory":
+				if err := os.Mkdir(innerCompose, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Chdir(inner)
+			got, err := developmentRepository()
+			if marker == "directory" {
+				wantError := fmt.Sprintf("%q must be a regular file", innerCompose)
+				if got != "" || err == nil || err.Error() != wantError {
+					t.Fatalf("developmentRepository() = %q, %v; want no path and %q", got, err, wantError)
+				}
+				return
+			}
+			if err != nil || got != want {
+				t.Fatalf("developmentRepository() = %q, %v; want %q", got, err, want)
+			}
+		})
+	}
+}
+
+func TestDevRefusesNearestInvalidCheckout(t *testing.T) {
 	const declaration = "module github.com/openclaw/openclaw-enterprise"
-	for _, module := range []struct{ name, content string }{
-		{"CRLF", declaration + "\r\n"},
-		{"mixed endings", declaration + "\n\r\ngo 1.27.3\r\n"},
+	for _, test := range []struct {
+		name             string
+		module           string
+		composeDirectory bool
+	}{
+		{name: "CRLF", module: declaration + "\r\n"},
+		{name: "mixed endings", module: declaration + "\n\r\ngo 1.27.3\r\n"},
+		{name: "Compose directory", module: declaration + "\n", composeDirectory: true},
 	} {
 		for _, args := range [][]string{{"dev", "up"}, {"dev", "down", "--volumes"}} {
-			t.Run(module.name+"/"+args[1], func(t *testing.T) {
+			t.Run(test.name+"/"+args[1], func(t *testing.T) {
 				repository := t.TempDir()
 				nested := filepath.Join(repository, "nested")
 				if err := os.Mkdir(nested, 0o700); err != nil {
@@ -80,11 +137,16 @@ func TestDevRefusesNearestCRLFCheckout(t *testing.T) {
 				}
 				// The outer checkout is valid, but must never receive the inner
 				// checkout's startup or destructive cleanup command.
-				for directory, content := range map[string]string{repository: declaration + "\n", nested: module.content} {
+				for directory, content := range map[string]string{repository: declaration + "\n", nested: test.module} {
 					if err := os.WriteFile(filepath.Join(directory, "go.mod"), []byte(content), 0o600); err != nil {
 						t.Fatal(err)
 					}
-					if err := os.WriteFile(filepath.Join(directory, "compose.yaml"), nil, 0o600); err != nil {
+					composePath := filepath.Join(directory, "compose.yaml")
+					if directory == nested && test.composeDirectory {
+						if err := os.Mkdir(composePath, 0o700); err != nil {
+							t.Fatal(err)
+						}
+					} else if err := os.WriteFile(composePath, nil, 0o600); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -100,6 +162,9 @@ func TestDevRefusesNearestCRLFCheckout(t *testing.T) {
 				command.SetArgs(args)
 				err := command.Execute()
 				want := fmt.Sprintf("%q uses CRLF line endings; convert it to LF before running occ dev", filepath.Join(nested, "go.mod"))
+				if test.composeDirectory {
+					want = fmt.Sprintf("%q must be a regular file", filepath.Join(nested, "compose.yaml"))
+				}
 				if err == nil || err.Error() != want {
 					t.Fatalf("%v: got %v; want nearest-checkout refusal %q", args, err, want)
 				}

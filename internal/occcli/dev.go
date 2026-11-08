@@ -147,7 +147,11 @@ func developmentRepository() (string, error) {
 		content := string(module)
 		line, _, hasNewline := strings.Cut(content, "\n")
 		if err == nil && hasNewline && strings.TrimSuffix(line, "\r") == declaration {
-			if _, err := os.Stat(filepath.Join(directory, "compose.yaml")); err == nil {
+			composePath := filepath.Join(directory, "compose.yaml")
+			if info, err := os.Stat(composePath); err == nil {
+				if !info.Mode().IsRegular() {
+					return "", fmt.Errorf("%q must be a regular file", composePath)
+				}
 				if !strings.Contains(content, "\r\n") {
 					return directory, nil
 				}
