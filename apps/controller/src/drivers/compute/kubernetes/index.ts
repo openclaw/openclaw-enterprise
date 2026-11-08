@@ -223,6 +223,9 @@ import { nodeProgramArguments } from "../node-program.ts";
 import { codexGatewayModelConfiguration } from "../codex-model-configuration.ts";
 import {
   modelProviderBaseUrl,
+  normalizeHarnessSettings,
+  savedModelProvider,
+  DEFAULT_MODEL_BASE_URL,
   modelProviderReferenceSetting,
   MODEL_PROVIDER_REFERENCE_REQUIREMENT,
   modelProviderConfiguration,
@@ -4501,7 +4504,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     this.verifyGatewayRoutingConfiguration({
       configuration: this.namedGatewayConfigurationDocument(input.configuration),
-      harness: { id: "codex", version: "provisioning", mode: "dedicated" },
+      harness: { mode: "dedicated" },
     });
   }
 
@@ -4696,11 +4699,26 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const models = nativeOpenAiModelSelections(configuration)?.map(({ reference }) => reference);
     const authentication = harnessModelAuthentication(configuration, embedded);
-    configuration = modelProviderConfiguration(
-      configuration,
-      harness,
-      this.providerForHarness(harness, auth, configuration),
-    );
+    if (
+      stage === "preparation" &&
+      this.usesModelProvider(harness, auth, configuration) !==
+        (savedModelProvider(harness.configuration) !== undefined)
+    ) {
+      throw new ConfigurationFailure(
+        "Saved Harness settings do not match its authentication and model selection.",
+      );
+    }
+    if (!agentSave) {
+      configuration = modelProviderConfiguration(
+        configuration,
+        harness,
+        savedModelProvider(
+          stage === "admission" && harness.configuration === undefined
+            ? this.resolveHarnessConfiguration(harness, auth, configuration)
+            : harness.configuration,
+        ),
+      );
+    }
 
     // Every model selection (fallbacks, subagents, image, PDF, per-channel, ...) and every Agent
     // entry uses the primary model's provider, named by the setting (finding 1291). Dedicated
@@ -6195,7 +6213,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (admission?.startsWith("model-provider:v1:")) {
       if (provider === undefined || !admission.startsWith(`model-provider:v1:${provider}:`)) {
         throw new ConfigurationFailure(
-          "The Installation model provider changed; deploy a new Agent revision.",
+          "The saved model provider does not match the Agent revision admission.",
         );
       }
     } else if (provider !== undefined) {
@@ -6419,7 +6437,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           modelProviderConfiguration(
             nativeConfiguration,
             revision.harness,
-            this.providerForHarness(revision.harness, revision.harnessAuth, nativeConfiguration),
+            savedModelProvider(revision.harness.configuration),
           ),
         ),
       ),
@@ -7720,7 +7738,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           modelProviderConfiguration(
             nativeConfiguration,
             revision.harness,
-            this.providerForHarness(revision.harness, revision.harnessAuth, nativeConfiguration),
+            savedModelProvider(revision.harness.configuration),
           ),
         ),
       ),
@@ -11385,7 +11403,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return [];
     }
     if (source?.type === "openai") {
-      requireModelSourceDestination(source.config, this.options.runtime?.modelProvider);
+      requireModelSourceDestination(
+        source.config,
+        savedModelProvider(revision.harness.configuration),
+      );
     }
     const sourceId = revision.harnessAuth.sourceId;
     const attachment = attachments.find((entry) => entry.sourceId === sourceId);
@@ -13874,9 +13895,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     )}.${routing.envoyNamespace}.svc`;
   }
 
-  private verifyGatewayRoutingConfiguration(
-    revision: Pick<AgentRevision, "configuration" | "harness">,
-  ): void {
+  private verifyGatewayRoutingConfiguration(revision: {
+    readonly configuration: OpenClawConfigurationDocument;
+    readonly harness: Pick<RevisionHarnessDescriptor, "mode">;
+  }): void {
     if (this.options.executionCluster !== undefined && revision.harness.mode !== "dedicated") {
       throw new ConfigurationFailure("Two-cluster execution supports only dedicated Harnesses.");
     }
@@ -14348,35 +14370,101 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return true;
   }
 
-  private providerForHarness(
+  private usesModelProvider(
     harness: RevisionHarnessDescriptor,
     auth: HarnessAuthSnapshot,
     configuration: OpenClawConfigurationDocument,
-  ): ModelProviderConfiguration | undefined {
-    if (this.options.runtime?.modelProvider === undefined) {
-      return undefined;
-    }
+  ): boolean {
+    return (
+      (auth.method === "api_key" ||
+        (auth.method === "credential_source" && auth.loginMode === "api_key")) &&
+      (harness.id === "codex" ||
+        (harness.id === "openclaw" &&
+          nativeOpenAiModelSelections(configuration)?.[0]?.provider === "openai"))
+    );
+  }
+
+  normalizeHarnessOverrides(overrides: Readonly<Record<string, unknown>>) {
+    return normalizeHarnessSettings(overrides);
+  }
+
+  resolveHarnessConfiguration(
+    harness: RevisionHarnessDescriptor,
+    auth: HarnessAuthSnapshot,
+    configuration: OpenClawConfigurationDocument,
+  ): Readonly<Record<string, unknown>> {
+    const overrides = normalizeHarnessSettings(harness.overrides ?? {});
+    const applicable = this.usesModelProvider(harness, auth, configuration);
     if (
-      auth.method !== "api_key" &&
-      !(auth.method === "credential_source" && auth.loginMode === "api_key")
+      overrides.modelProvider !== undefined &&
+      (!applicable || auth.method !== "credential_source")
     ) {
-      return undefined;
+      throw new ConfigurationHarnessError(
+        "An explicit modelProvider override requires source-backed OpenAI API-key authentication.",
+      );
     }
-    if (
-      harness.id === "openclaw" &&
-      harnessModelAuthentication(configuration, harness.mode === "embedded").providerId !== "openai"
-    ) {
-      return undefined;
+    if (!applicable) {
+      return {};
     }
-    return this.options.runtime?.modelProvider;
+    const native = asRecord(asRecord(asRecord(configuration.models)?.providers)?.openai);
+    const protocol =
+      harness.id === "codex"
+        ? "openai-responses"
+        : (native?.api ??
+          nativeOpenAiModelSelections(configuration)?.[0]?.matches[0]?.entry.api ??
+          "openai-responses");
+    const provider =
+      overrides.modelProvider ??
+      normalizeHarnessSettings({
+        modelProvider: this.options.runtime?.modelProvider ?? {
+          protocol,
+          baseUrl: DEFAULT_MODEL_BASE_URL,
+          supportsStandaloneWebSearch: false,
+        },
+      }).modelProvider!;
+    modelProviderConfiguration(configuration, harness, provider);
+    return { modelProvider: provider };
+  }
+
+  validateHarnessCredentialSources(
+    harness: RevisionHarnessDescriptor,
+    sources: readonly Readonly<CredentialSource>[],
+  ): void {
+    const provider = savedModelProvider(harness.configuration);
+    for (const source of sources) {
+      if (source.type === "openai") {
+        requireModelSourceDestination(source.config, provider);
+      }
+    }
   }
 
   private providerAdmission(revision: Readonly<AgentRevision>): string | undefined {
-    const provider = this.providerForHarness(
-      revision.harness,
-      revision.harnessAuth,
-      revision.configuration,
-    );
+    let provider: ModelProviderConfiguration | undefined;
+    try {
+      provider = savedModelProvider(revision.harness.configuration);
+      const requested = normalizeHarnessSettings(revision.harness.overrides);
+      if (
+        !isDeepStrictEqual(requested, revision.harness.overrides) ||
+        (revision.harness.id === "codex" &&
+          (revision.harnessAuth.method === "api_key" ||
+            (revision.harnessAuth.method === "credential_source" &&
+              revision.harnessAuth.loginMode === "api_key")) !==
+            (provider !== undefined)) ||
+        (revision.harness.id === "codex" &&
+          provider !== undefined &&
+          provider.protocol !== "openai-responses") ||
+        (requested.modelProvider !== undefined &&
+          (revision.harnessAuth.method !== "credential_source" ||
+            revision.harnessAuth.loginMode !== "api_key" ||
+            !isDeepStrictEqual(requested.modelProvider, provider)))
+      ) {
+        throw new Error("Inconsistent saved Harness settings");
+      }
+    } catch {
+      throw new ConfigurationFailure(
+        "Saved Harness settings are missing, malformed, or unsupported.",
+      );
+    }
     return provider === undefined
       ? undefined
       : sha256Hex(
@@ -14537,11 +14625,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     revision: AgentRevision,
     repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
   ): PluginRuntimeSnapshot | undefined {
-    const provider = this.providerForHarness(
-      revision.harness,
-      revision.harnessAuth,
-      revision.configuration,
-    );
+    const provider = savedModelProvider(revision.harness.configuration);
     let openaiBaseUrl: string | undefined;
     if (
       provider !== undefined ||

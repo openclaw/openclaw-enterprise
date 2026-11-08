@@ -151,7 +151,6 @@ async function fixture(
     {
       id: "openshell-credentials",
       backend,
-      ...(modelProvider === undefined ? {} : { modelProvider }),
     },
   );
   let now = Date.parse("2026-10-05T12:00:00Z");
@@ -299,30 +298,45 @@ async function fixture(
       return driver.attachForRevision({
         namespace,
         sources,
-        revision: { harness: { id: "codex", mode: "dedicated" } },
+        revision: {
+          harness: {
+            id: "codex",
+            mode: "dedicated",
+            overrides: {},
+            configuration: {
+              modelProvider: {
+                protocol: "openai-responses",
+                baseUrl: "https://api.openai.com/v1",
+                ...modelProvider,
+                supportsStandaloneWebSearch: false,
+              },
+            },
+          },
+        },
         signal: AbortSignal.timeout(5000),
       });
     },
   };
 }
 
-test("source API rejects routing inputs and mismatched destination authorization before registration", async (t) => {
+test("source API rejects routing inputs and registers independently authorized destinations", async (t) => {
   const endpoint = "https://models.example.test/v1";
   const f = await fixture(t, {
     modelProvider: { protocol: "openai-responses", baseUrl: endpoint },
   });
   // Neither an old routing field nor permission to use a default-provider key selects a route.
   assertRefused(await f.create("routing", { base_url: endpoint }), "base_url", /has no field/);
-  assertRefused(await f.create("default"), "authorized_base_url", /must match/);
-  assertRefused(
-    await f.create("other", { authorized_base_url: "https://other.example.test/v1" }),
-    "authorized_base_url",
-    /must match/,
-  );
   await f.assertNothingSaved();
+  assert.equal((await f.create("default")).status, 201);
+  assert.equal(
+    (await f.create("other", { authorized_base_url: "https://other.example.test/v1" })).status,
+    201,
+  );
   const created = await f.create("authorized", { authorized_base_url: endpoint });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  const profile = [...f.profiles.values()][0];
+  const profile = [...f.profiles.values()].find(
+    (profile) => profile.id === openShellProviderName(created.data.id),
+  );
   assert.deepEqual(profile.endpoints, [
     { host: "models.example.test", port: 443, protocol: "rest", path: "/v1/**" },
   ]);
@@ -637,7 +651,18 @@ test("OpenShell credentials authorized for one provider keep independent ownersh
   };
   // Native inference uses the source's exact endpoint, including a custom prefix.
   const nativeRevision = {
-    harness: { id: "openclaw", mode: "dedicated" },
+    harness: {
+      id: "openclaw",
+      mode: "dedicated",
+      overrides: {},
+      configuration: {
+        modelProvider: {
+          protocol: "openai-responses",
+          baseUrl: endpoint,
+          supportsStandaloneWebSearch: false,
+        },
+      },
+    },
     configuration: {
       agents: { defaults: { model: "openai/model" } },
       models: {
@@ -711,7 +736,10 @@ test("OpenShell credentials authorized for one provider keep independent ownersh
       });
     },
   ]) {
-    await assert.rejects(attachNative(change), /OpenAI model baseUrl must match the Installation/);
+    await assert.rejects(
+      attachNative(change),
+      /OpenAI model baseUrl must match the resolved Harness/,
+    );
   }
   // A shape Compute refuses before deployment stays refused here, without naming a setting.
   for (const change of [
@@ -739,7 +767,20 @@ test("OpenShell credentials authorized for one provider keep independent ownersh
     await f.driver.attachForRevision({
       ...context,
       sources: [source],
-      revision: { harness: { id: "codex", mode: "dedicated" } },
+      revision: {
+        harness: {
+          id: "codex",
+          mode: "dedicated",
+          overrides: {},
+          configuration: {
+            modelProvider: {
+              protocol: "openai-responses",
+              baseUrl: endpoint,
+              supportsStandaloneWebSearch: false,
+            },
+          },
+        },
+      },
     }),
     [{ sourceId: custom.data.id, ref: provider.name }],
   );

@@ -75,9 +75,10 @@ defines its permitted endpoints and authentication limits.
 
 Register an API-key Secret as an `openai` credential source:
 
-Configure the Installation's [shared model provider](../../reference/drivers/kubernetes-compute/model-provider.md)
-first. For a custom endpoint, set `MODEL_AUTHORIZED_BASE_URL` to the same URL
-when registering the source. This authorizes the destination; it cannot select it.
+Choose the [revision model provider](../../reference/drivers/kubernetes-compute/model-provider.md)
+through an Installation default or a deployment override. For a custom endpoint,
+set `MODEL_AUTHORIZED_BASE_URL` to that URL when registering the source.
+Registration authorizes the destination; it does not select the Agent's route.
 Keep `models.providers.codex.baseUrl` at the fail-closed `http://127.0.0.1:9`
 shown below for the Gateway's transport bridge.
 The current source profile uses Bearer authorization; an endpoint requiring
@@ -197,9 +198,26 @@ DEPLOYMENT_ID="$(./bin/occ agent deploy "$AGENT_ID" -o json | jq -r .id)"
 Expected result: OCC accepts the deployment and freezes
 `{"method": "credential_source", "sourceId": "cs_…"}` in the version. Compute
 starts the Agent Gateway, then OpenShell creates the Sandbox, and the version
-becomes active once the Harness workspace node connects to the Gateway. Startup
-can take several minutes. Without the access binding, the deploy request fails
-with `403`.
+becomes active after Harness readiness and workspace-node connection. For
+`codex-pat`, readiness also requires [PAT authentication in the serving process](../../reference/drivers/openshell-sandbox/harness-providers.md#harness-observation);
+a successful earlier login check is insufficient. Startup can take several minutes.
+Without the access binding, the deploy request fails with `403`. After activation,
+[verify a real model response](../operate/model-verification.md); readiness does not prove inference.
+
+If a managed `codex-pat` deployment stays unready, verify the Agent binds the
+intended source, retains its required access binding, and can reach the permitted
+provider endpoints through OpenShell. Use
+[Harness troubleshooting](../../reference/harness-execution.md#troubleshooting)
+and the deployment status above to inspect the failure. A serving process that
+started without PAT authentication can remain unauthenticated after the provider
+recovers; status polling observes authentication but does not reload it. Absent
+authentication alone does not establish token revocation.
+
+Let the existing deployment reach a terminal status before retrying; readiness
+waits have a [convergence deadline](../../reference/agents/deployment.md#pending-deployment-progress),
+and pending cleanup must finish. After correcting the cause of a failed
+deployment, run `./bin/occ agent deploy "$AGENT_ID"` again to create a fresh
+version, then check its deployment status and verify a model response.
 
 ## Rotate the key
 

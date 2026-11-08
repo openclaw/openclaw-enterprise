@@ -1,9 +1,11 @@
 import type { Agent } from "@openclaw-enterprise/contracts";
 import { imageReferenceProblem } from "../../packages/occ/src/index.ts";
 import assert from "node:assert/strict";
-import { chmod, copyFile, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+import { ProductionTuiRequestError } from "./production-tui-request.ts";
 import {
   protectedJSON,
   type FixtureRun,
@@ -291,8 +293,140 @@ type ExternalRequest = (
   method: "GET",
   path: string,
   body: undefined,
-  options: { authenticated: boolean },
-) => Promise<{ status?: number; body: unknown }>;
+  options: { authenticated: boolean; signal?: AbortSignal },
+) => Promise<{ status: number | undefined; body: unknown }>;
+
+// These observations describe the fixture's authenticated HTTPS route. They do
+// not establish continuous availability between requests or gate the upgrade.
+export async function measureUpgradeAvailability<T>(
+  request: ExternalRequest,
+  installationId: string,
+  directory: string,
+  upgrade: () => Promise<T>,
+  record: (details: object) => Promise<void>,
+) {
+  const samples: {
+    phase: "before" | "during" | "after";
+    startedAt: string;
+    finishedAt: string;
+    elapsedMs: number;
+    gapMs: number | null;
+    outcome:
+      "ok" | "http-error" | "invalid-response" | "wrong-installation" | "timeout" | "request-error";
+    status: number | undefined;
+  }[] = [];
+  let previousFinish: number | undefined;
+  const evidenceErrors: unknown[] = [];
+  const evidence = (upgradeSucceeded: boolean | null) => ({
+    requestTimeoutMs: 5_000,
+    intervalAfterResponseMs: 1_000,
+    upgradeSucceeded,
+    samples: samples.map((observation) => ({ ...observation })),
+  });
+  const sample = async (
+    phase: (typeof samples)[number]["phase"],
+    upgradeSucceeded: boolean | null = null,
+  ) => {
+    const startedAt = new Date().toISOString();
+    const start = performance.now();
+    const signal = AbortSignal.timeout(5_000);
+    let outcome: (typeof samples)[number]["outcome"];
+    let status: number | undefined;
+    try {
+      const response = await request("GET", "/installation", undefined, {
+        authenticated: true,
+        signal,
+      });
+      status = response.status;
+      const body = response.body as { data?: { id?: unknown } } | null;
+      if (status !== 200) {
+        outcome = "http-error";
+      } else if (typeof body?.data?.id !== "string") {
+        outcome = "invalid-response";
+      } else {
+        outcome = body.data.id === installationId ? "ok" : "wrong-installation";
+      }
+    } catch (error) {
+      // Keep received status even when strict response parsing rejects the body.
+      // Transport errors can contain private bytes; never retain their text.
+      status = error instanceof ProductionTuiRequestError ? error.status : undefined;
+      if (signal.aborted) {
+        outcome = "timeout";
+      } else if (status !== undefined && status !== 200) {
+        outcome = "http-error";
+      } else {
+        outcome = "request-error";
+      }
+    }
+    const finish = performance.now();
+    samples.push({
+      phase,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      elapsedMs: Math.round(finish - start),
+      gapMs: previousFinish === undefined ? null : Math.round(start - previousFinish),
+      outcome,
+      status,
+    });
+    previousFinish = finish;
+    try {
+      // A killed runner leaves the last complete snapshot, never a truncated one.
+      // Null means the action has not been recorded as settled.
+      const path = join(directory, "forward-api-availability.json");
+      await writeFile(`${path}.tmp`, JSON.stringify(evidence(upgradeSucceeded)) + "\n", {
+        mode: 0o600,
+      });
+      await rename(`${path}.tmp`, path);
+    } catch (error) {
+      // Keep observing without rejecting in parallel with the running upgrade.
+      if (evidenceErrors.length === 0) {
+        evidenceErrors.push(error);
+      }
+    }
+  };
+  await sample("before");
+  const stopped = new AbortController();
+  let observing: Promise<void> | undefined;
+  let outcome: { succeeded: true; value: T } | { succeeded: false; error: unknown };
+  try {
+    const upgrading = upgrade();
+    observing = (async () => {
+      while (!stopped.signal.aborted) {
+        await sample("during");
+        await delay(1_000, undefined, { signal: stopped.signal }).catch(() => {});
+      }
+    })();
+    outcome = { succeeded: true, value: await upgrading };
+  } catch (error) {
+    outcome = { succeeded: false, error };
+  }
+  stopped.abort();
+  // Join the final bounded request before taking the post-upgrade observation.
+  await observing;
+  await sample("after", outcome.succeeded);
+  try {
+    await record(evidence(outcome.succeeded));
+  } catch (error) {
+    evidenceErrors.push(error);
+  }
+  if (!outcome.succeeded) {
+    if (evidenceErrors.length > 0) {
+      throw new AggregateError(
+        [outcome.error, ...evidenceErrors],
+        "Upgrade failed and API availability observations could not be recorded",
+        { cause: outcome.error },
+      );
+    }
+    throw outcome.error;
+  }
+  if (evidenceErrors.length === 1) {
+    throw evidenceErrors[0];
+  }
+  if (evidenceErrors.length > 1) {
+    throw new AggregateError(evidenceErrors, "API availability observations could not be recorded");
+  }
+  return outcome.value;
+}
 
 async function assertReturnedInstallationAuthentication(
   request: ExternalRequest,
@@ -843,264 +977,272 @@ export async function rehearsePopulatedReturn({
   await phase("Check the candidate without stopping writers", () =>
     upgrade(["--preflight-only", "--evidence-dir", join(directory, "preflight")]),
   );
-  await phase(
-    "Recover the interrupted controller upgrade after committed initialization",
-    async () => {
-      const evidence = join(directory, "forward");
-      const client = join(directory, "helm-client.json");
-      const shimDirectory = join(directory, "helm-client-bin");
-      const shim = join(shimDirectory, "helm");
-      const controller = fileURLToPath(new URL("./rehearsal-helm-client.py", import.meta.url));
-      const executable = (await run("sh", ["-c", "command -v helm"])).trim();
-      assert.ok(isAbsolute(executable), "the real Helm executable must have an absolute path");
-      await mkdir(shimDirectory, { mode: 0o700 });
-      await copyFile(controller, shim);
-      await chmod(shim, 0o700);
-      const clientAction = (action: string) => run("python3", [controller, client, action]);
-      const readIfPresent = async (path: string) => {
-        try {
-          return await readFile(path, "utf8");
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+  await phase("Recover the interrupted controller upgrade after committed initialization", () =>
+    measureUpgradeAvailability(
+      externalRequest,
+      installationId,
+      directory,
+      async () => {
+        const evidence = join(directory, "forward");
+        const client = join(directory, "helm-client.json");
+        const shimDirectory = join(directory, "helm-client-bin");
+        const shim = join(shimDirectory, "helm");
+        const controller = fileURLToPath(new URL("./rehearsal-helm-client.py", import.meta.url));
+        const executable = (await run("sh", ["-c", "command -v helm"])).trim();
+        assert.ok(isAbsolute(executable), "the real Helm executable must have an absolute path");
+        await mkdir(shimDirectory, { mode: 0o700 });
+        await copyFile(controller, shim);
+        await chmod(shim, 0o700);
+        const clientAction = (action: string) => run("python3", [controller, client, action]);
+        const readIfPresent = async (path: string) => {
+          try {
+            return await readFile(path, "utf8");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+              return undefined;
+            }
+            throw error;
+          }
+        };
+        const save = (name: string, value: unknown) =>
+          writeFile(join(directory, name), JSON.stringify(value) + "\n", {
+            mode: 0o600,
+            flag: "wx",
+          });
+
+        // The shim execs stock Helm with unchanged arguments. Only its exact PID and
+        // Linux start time can be signalled; no API, chart hook or Helm record is faked.
+        let ended = false;
+        const command = upgrade(["--evidence-dir", evidence], {
+          ...occEnv,
+          PATH: `${shimDirectory}:${occEnv.PATH ?? process.env.PATH}`,
+          OCE_REHEARSAL_HELM: executable,
+          OCE_REHEARSAL_RELEASE: release,
+          OCE_REHEARSAL_HELM_CLIENT: client,
+        }).then(
+          () => {
+            ended = true;
             return undefined;
-          }
-          throw error;
-        }
-      };
-      const save = (name: string, value: unknown) =>
-        writeFile(join(directory, name), JSON.stringify(value) + "\n", { mode: 0o600, flag: "wx" });
-
-      // The shim execs stock Helm with unchanged arguments. Only its exact PID and
-      // Linux start time can be signalled; no API, chart hook or Helm record is faked.
-      let ended = false;
-      const command = upgrade(["--evidence-dir", evidence], {
-        ...occEnv,
-        PATH: `${shimDirectory}:${occEnv.PATH ?? process.env.PATH}`,
-        OCE_REHEARSAL_HELM: executable,
-        OCE_REHEARSAL_RELEASE: release,
-        OCE_REHEARSAL_HELM_CLIENT: client,
-      }).then(
-        () => {
-          ended = true;
-          return undefined;
-        },
-        (error: unknown) => {
-          ended = true;
-          return error;
-        },
-      );
-      const annotation = "openclaw.dev/upgrade-attempt";
-      let intent = "";
-      let initializer:
-        | {
-            metadata: { uid: string; annotations: Record<string, string> };
-            spec: { template: typeof previousJob };
-          }
-        | undefined;
-      let pending;
-      let completedPod: Pod | undefined;
-      try {
-        initializer = await waitFor("the submitted candidate's initializer", async () => {
-          assert.ok(!ended, "the upgrade ended before its Helm client could be interrupted");
-          const submitted = await readIfPresent(join(evidence, "helm-started"));
-          if (!submitted) {
-            return false;
-          }
-          const { attempt, previousRevision, expectedRevision } = protectedJSON<{
-            attempt: { nonce: string };
-            previousRevision: number;
-            expectedRevision: number;
-          }>(submitted);
-          assert.equal(previousRevision, baselineRelease.version);
-          assert.equal(expectedRevision, baselineRelease.version + 1);
-          const output = await kube(
-            "get",
-            `job/${release}-initialization`,
-            "--ignore-not-found",
-            "-o",
-            "json",
-          );
-          if (!output.trim()) {
-            return false;
-          }
-          const job = JSON.parse(output);
-          if (job.metadata.annotations?.[annotation] !== attempt.nonce) {
-            return false;
-          }
-          assert.equal(job.spec.template.metadata.annotations[annotation], attempt.nonce);
-          intent = submitted;
-          return job;
-        });
-        assert.ok(initializer);
-        await save("helm-client-stopped.json", JSON.parse(await clientAction("stop")));
-        pending = await helmStatus();
-        assert.equal(pending.version, baselineRelease.version + 1);
-        assert.equal(
-          pending.info.status,
-          "pending-upgrade",
-          "the interruption lost the Helm completion race",
+          },
+          (error: unknown) => {
+            ended = true;
+            return error;
+          },
         );
-        assert.equal(
-          pending.config.installation.upgradeAttemptId,
-          initializer.metadata.annotations[annotation],
-        );
-        await custody.bindPendingRelease(pending.version);
-        const initializerUID = initializer.metadata.uid;
-
-        // Kubernetes continues the real initialization while Helm is suspended.
-        // A successful Job alone is insufficient: require its owned, successful
-        // Pod, then independently check PostgreSQL with the candidate migrator.
-        completedPod = await waitFor<Pod>("the interrupted initializer to complete", async () => {
-          const job = await get(`job/${release}-initialization`);
-          assert.equal(job.metadata.uid, initializerUID, "initializer Job was replaced");
-          assert.ok(
-            !job.metadata.deletionTimestamp && !job.status?.failed,
-            "initializer failed or is deleting",
-          );
-          const result = JSON.parse(
-            await kube(
+        const annotation = "openclaw.dev/upgrade-attempt";
+        let intent = "";
+        let initializer:
+          | {
+              metadata: { uid: string; annotations: Record<string, string> };
+              spec: { template: typeof previousJob };
+            }
+          | undefined;
+        let pending;
+        let completedPod: Pod | undefined;
+        try {
+          initializer = await waitFor("the submitted candidate's initializer", async () => {
+            assert.ok(!ended, "the upgrade ended before its Helm client could be interrupted");
+            const submitted = await readIfPresent(join(evidence, "helm-started"));
+            if (!submitted) {
+              return false;
+            }
+            const { attempt, previousRevision, expectedRevision } = protectedJSON<{
+              attempt: { nonce: string };
+              previousRevision: number;
+              expectedRevision: number;
+            }>(submitted);
+            assert.equal(previousRevision, baselineRelease.version);
+            assert.equal(expectedRevision, baselineRelease.version + 1);
+            const output = await kube(
               "get",
-              "pods",
-              "-l",
-              `batch.kubernetes.io/controller-uid=${job.metadata.uid}`,
+              `job/${release}-initialization`,
+              "--ignore-not-found",
               "-o",
               "json",
-            ),
-          ) as { items: Pod[] };
-          assert.ok(result.items.length <= 1, "initializer unexpectedly retried");
-          const pod = result.items[0];
-          if (
-            !job.status?.conditions?.some(
-              (condition: { type: string; status: string }) =>
-                condition.type === "Complete" && condition.status === "True",
-            ) ||
-            !pod ||
-            pod.status.phase !== "Succeeded"
-          ) {
-            return false;
-          }
-          assert.ok(!pod.metadata.deletionTimestamp);
-          assert.ok(
-            pod.metadata.ownerReferences?.some(
-              (owner) => owner.controller && owner.uid === job.metadata.uid,
-            ),
+            );
+            if (!output.trim()) {
+              return false;
+            }
+            const job = JSON.parse(output);
+            if (job.metadata.annotations?.[annotation] !== attempt.nonce) {
+              return false;
+            }
+            assert.equal(job.spec.template.metadata.annotations[annotation], attempt.nonce);
+            intent = submitted;
+            return job;
+          });
+          assert.ok(initializer);
+          await save("helm-client-stopped.json", JSON.parse(await clientAction("stop")));
+          pending = await helmStatus();
+          assert.equal(pending.version, baselineRelease.version + 1);
+          assert.equal(
+            pending.info.status,
+            "pending-upgrade",
+            "the interruption lost the Helm completion race",
           );
           assert.equal(
-            pod.metadata.annotations?.[annotation],
-            job.metadata.annotations[annotation],
+            pending.config.installation.upgradeAttemptId,
+            initializer.metadata.annotations[annotation],
           );
-          const statuses = [
-            ...(pod.status.initContainerStatuses ?? []),
-            ...(pod.status.containerStatuses ?? []),
-          ];
-          assert.deepEqual(
-            statuses.map(({ name }) => name).sort(),
-            [...(pod.spec.initContainers ?? []), ...pod.spec.containers]
-              .map(({ name }) => name)
-              .sort(),
-          );
-          for (const status of statuses) {
-            assert.equal(
-              status.state?.terminated?.exitCode,
-              0,
-              "initializer container did not complete successfully",
-            );
-            await verifyPodImage(candidate, pod, status);
-          }
-          return pod;
-        });
-        await save("interrupted-initializer.json", {
-          job: await get(`job/${release}-initialization`),
-          pod: completedPod,
-        });
-        assert.deepEqual(
-          await helmStatus(),
-          pending,
-          "pending Helm state changed during initialization",
-        );
-      } finally {
-        // Always reap this invocation before attempting recovery. If the race or
-        // a real hook fails, leave the owned fixture for diagnosis, never replay.
-        try {
-          if (await readIfPresent(client)) {
-            await save("helm-client-terminated.json", JSON.parse(await clientAction("kill")));
-          }
-        } finally {
-          await command;
-        }
-      }
-      const outcome = await command;
-      assert.ok(
-        outcome instanceof Error && /failed \(137\)/u.test(outcome.message),
-        "the interrupted helper must exit with Helm's SIGKILL status",
-      );
-      await save("helm-client-reaped.json", {
-        ...JSON.parse(await clientAction("absent")),
-        helperExit: 137,
-      });
-      await assert.rejects(
-        lstat(join(evidence, ".upgrade-lock")),
-        { code: "ENOENT" },
-        "the exited helper retained its evidence lock",
-      );
-      assert.ok(completedPod && initializer);
-      await assertNoCandidateWriters();
-      const committedHistory = await migrationReceipts(originalDatabase);
-      assert.ok(
-        committedHistory.length > 0,
-        "the interrupted initializer left no committed history",
-      );
-      await checkMigration(
-        candidate,
-        initializer.spec.template,
-        originalDatabase,
-        "recovery-history",
-      );
-      assert.equal(await migrationReceipts(originalDatabase), committedHistory);
-      await save("interrupted-migration-history.json", {
-        history: committedHistory,
-        check: "completed",
-      });
+          await custody.bindPendingRelease(pending.version);
+          const initializerUID = initializer.metadata.uid;
 
-      await upgrade([
-        "--evidence-dir",
-        evidence,
-        "--resume",
-        "--recover-helm",
-        "--migration-history-checked",
-        "--recovery-reviewed",
-      ]);
-      const recovered = await helmStatus();
-      assert.equal(recovered.version, baselineRelease.version + 2);
-      assert.equal(recovered.info.status, "deployed");
-      assert.equal(recovered.info.description, `Rollback to ${baselineRelease.version + 1}`);
-      for (const field of ["manifest", "config", "hooks"]) {
-        assert.deepEqual(recovered[field], pending[field], `recovery changed candidate ${field}`);
-      }
-      assert.equal(
-        await readFile(join(evidence, "helm-started"), "utf8"),
-        intent,
-        "recovery rewrote the original submission",
-      );
-      assert.equal(
-        (await get(`job/${release}-initialization`)).metadata.uid,
-        initializer.metadata.uid,
-        "recovery reran initialization",
-      );
-      const retainedPod = await get(`pod/${completedPod.metadata.name}`);
-      assert.equal(retainedPod.metadata.uid, completedPod.metadata.uid);
-      assert.deepEqual(
-        retainedPod.status,
-        completedPod.status,
-        "recovery changed the completed initializer",
-      );
-      assert.equal(
-        await migrationReceipts(originalDatabase),
-        committedHistory,
-        "recovery changed the committed migration history",
-      );
-      await verifyInstallation();
-    },
+          // Kubernetes continues the real initialization while Helm is suspended.
+          // A successful Job alone is insufficient: require its owned, successful
+          // Pod, then independently check PostgreSQL with the candidate migrator.
+          completedPod = await waitFor<Pod>("the interrupted initializer to complete", async () => {
+            const job = await get(`job/${release}-initialization`);
+            assert.equal(job.metadata.uid, initializerUID, "initializer Job was replaced");
+            assert.ok(
+              !job.metadata.deletionTimestamp && !job.status?.failed,
+              "initializer failed or is deleting",
+            );
+            const result = JSON.parse(
+              await kube(
+                "get",
+                "pods",
+                "-l",
+                `batch.kubernetes.io/controller-uid=${job.metadata.uid}`,
+                "-o",
+                "json",
+              ),
+            ) as { items: Pod[] };
+            assert.ok(result.items.length <= 1, "initializer unexpectedly retried");
+            const pod = result.items[0];
+            if (
+              !job.status?.conditions?.some(
+                (condition: { type: string; status: string }) =>
+                  condition.type === "Complete" && condition.status === "True",
+              ) ||
+              !pod ||
+              pod.status.phase !== "Succeeded"
+            ) {
+              return false;
+            }
+            assert.ok(!pod.metadata.deletionTimestamp);
+            assert.ok(
+              pod.metadata.ownerReferences?.some(
+                (owner) => owner.controller && owner.uid === job.metadata.uid,
+              ),
+            );
+            assert.equal(
+              pod.metadata.annotations?.[annotation],
+              job.metadata.annotations[annotation],
+            );
+            const statuses = [
+              ...(pod.status.initContainerStatuses ?? []),
+              ...(pod.status.containerStatuses ?? []),
+            ];
+            assert.deepEqual(
+              statuses.map(({ name }) => name).sort(),
+              [...(pod.spec.initContainers ?? []), ...pod.spec.containers]
+                .map(({ name }) => name)
+                .sort(),
+            );
+            for (const status of statuses) {
+              assert.equal(
+                status.state?.terminated?.exitCode,
+                0,
+                "initializer container did not complete successfully",
+              );
+              await verifyPodImage(candidate, pod, status);
+            }
+            return pod;
+          });
+          await save("interrupted-initializer.json", {
+            job: await get(`job/${release}-initialization`),
+            pod: completedPod,
+          });
+          assert.deepEqual(
+            await helmStatus(),
+            pending,
+            "pending Helm state changed during initialization",
+          );
+        } finally {
+          // Always reap this invocation before attempting recovery. If the race or
+          // a real hook fails, leave the owned fixture for diagnosis, never replay.
+          try {
+            if (await readIfPresent(client)) {
+              await save("helm-client-terminated.json", JSON.parse(await clientAction("kill")));
+            }
+          } finally {
+            await command;
+          }
+        }
+        const outcome = await command;
+        assert.ok(
+          outcome instanceof Error && /failed \(137\)/u.test(outcome.message),
+          "the interrupted helper must exit with Helm's SIGKILL status",
+        );
+        await save("helm-client-reaped.json", {
+          ...JSON.parse(await clientAction("absent")),
+          helperExit: 137,
+        });
+        await assert.rejects(
+          lstat(join(evidence, ".upgrade-lock")),
+          { code: "ENOENT" },
+          "the exited helper retained its evidence lock",
+        );
+        assert.ok(completedPod && initializer);
+        await assertNoCandidateWriters();
+        const committedHistory = await migrationReceipts(originalDatabase);
+        assert.ok(
+          committedHistory.length > 0,
+          "the interrupted initializer left no committed history",
+        );
+        await checkMigration(
+          candidate,
+          initializer.spec.template,
+          originalDatabase,
+          "recovery-history",
+        );
+        assert.equal(await migrationReceipts(originalDatabase), committedHistory);
+        await save("interrupted-migration-history.json", {
+          history: committedHistory,
+          check: "completed",
+        });
+
+        await upgrade([
+          "--evidence-dir",
+          evidence,
+          "--resume",
+          "--recover-helm",
+          "--migration-history-checked",
+          "--recovery-reviewed",
+        ]);
+        const recovered = await helmStatus();
+        assert.equal(recovered.version, baselineRelease.version + 2);
+        assert.equal(recovered.info.status, "deployed");
+        assert.equal(recovered.info.description, `Rollback to ${baselineRelease.version + 1}`);
+        for (const field of ["manifest", "config", "hooks"]) {
+          assert.deepEqual(recovered[field], pending[field], `recovery changed candidate ${field}`);
+        }
+        assert.equal(
+          await readFile(join(evidence, "helm-started"), "utf8"),
+          intent,
+          "recovery rewrote the original submission",
+        );
+        assert.equal(
+          (await get(`job/${release}-initialization`)).metadata.uid,
+          initializer.metadata.uid,
+          "recovery reran initialization",
+        );
+        const retainedPod = await get(`pod/${completedPod.metadata.name}`);
+        assert.equal(retainedPod.metadata.uid, completedPod.metadata.uid);
+        assert.deepEqual(
+          retainedPod.status,
+          completedPod.status,
+          "recovery changed the completed initializer",
+        );
+        assert.equal(
+          await migrationReceipts(originalDatabase),
+          committedHistory,
+          "recovery changed the committed migration history",
+        );
+        await verifyInstallation();
+      },
+      (details) => record("Forward upgrade API availability observations", details),
+    ),
   );
   const candidateRelease = await helmStatus();
   assert.equal(candidateRelease.info.status, "deployed");

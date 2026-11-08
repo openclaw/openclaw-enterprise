@@ -457,7 +457,7 @@ function compareEventTimestamps(left, right) {
 // transitions for Compute-managed Pods and the Kubernetes events of the
 // namespaces that ran them. Pod specs, environments and credential-bearing
 // event lines are never retained.
-export function projectAgentNamespaceActivity(eventsText, podsText) {
+export function projectAgentNamespaceActivity(eventsText, podsText, secrets = []) {
   const namespaces = new Set();
   const pods = [];
   const lastByPod = new Map();
@@ -483,7 +483,7 @@ export function projectAgentNamespaceActivity(eventsText, podsText) {
     }
     // Later watch records for the same event carry its updated count.
     events.set(object.metadata.uid ?? `${namespace}/${object.metadata.name}`, {
-      ...eventStatus(object),
+      ...eventStatus(object, secrets),
       namespace,
     });
   }
@@ -511,14 +511,21 @@ const MAX_CONTAINER_LOG_INPUT_BYTES = 4 * 1024 * 1024;
 const CONTAINER_LOG_LINES = 1_500;
 const CONTAINER_LOG_LINE_CHARS = 1_000;
 
-function eventStatus(object) {
+function eventStatus(object, secrets = []) {
   return {
     namespace: object.metadata?.namespace ?? object.involvedObject?.namespace,
     kind: object.involvedObject?.kind,
     name: object.involvedObject?.name,
     type: object.type,
     reason: object.reason,
-    message: safeText(object.message)?.slice(0, 512),
+    // Mask whole multiline keys and registered values before the publication limit.
+    message:
+      typeof object.message === "string"
+        ? maskPrivateKeyLines(object.message.split("\n"))
+            .map((line) => redactLogLine(redactCredentialLine(line), secrets, 512))
+            .join("\n")
+            .slice(0, 512)
+        : undefined,
     count: object.series?.count ?? object.count,
     firstTimestamp: object.firstTimestamp ?? object.eventTime,
     lastTimestamp: eventObservedTime(object),
@@ -597,8 +604,7 @@ export function projectContainerLog(value, secrets = []) {
         events: (Array.isArray(snapshot.events) ? snapshot.events : [])
           .filter(record)
           .map((event) => {
-            const status = eventStatus(event);
-            return { ...status, message: text(status.message, 512) };
+            return eventStatus(event, secrets);
           })
           .sort(compareEventTimestamps)
           .slice(-MAX_ACTIVITY_RECORDS),
@@ -772,6 +778,7 @@ export async function startAgentNamespaceCapture({ statePath, lane, file }) {
           const activity = projectAgentNamespaceActivity(
             await readWatchTail(paths.events),
             await readWatchTail(paths.pods),
+            failureSecrets([process.env, env]),
           );
           await Promise.all(Object.values(paths).map((path) => rm(path, { force: true })));
           if (activity.namespaces.length > 0) {

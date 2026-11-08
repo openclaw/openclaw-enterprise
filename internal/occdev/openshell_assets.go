@@ -6,12 +6,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
@@ -113,36 +115,77 @@ func downloadVerifiedManifest(ctx context.Context, log io.Writer, url, destinati
 }
 
 func downloadVerified(ctx context.Context, url, destination, expected string) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	policy := developmentManifestRetry
+	started := time.Now()
+	delay := policy.firstDelay
+	for attempt := 1; ; attempt++ {
+		transient, err := downloadArchiveAttempt(ctx, url, destination, expected)
+		if err == nil {
+			return nil
+		}
+		if !transient || attempt >= policy.attempts || time.Since(started)+delay > policy.budget {
+			return fmt.Errorf("%w (after %d attempt(s))", err, attempt)
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("download archive: %w", context.Cause(ctx))
+		case <-timer.C:
+		}
+		delay = min(delay*2, policy.maxDelay)
+	}
+}
+
+func downloadArchiveAttempt(ctx context.Context, url, destination, expected string) (transient bool, result error) {
+	attemptCtx, cancel := context.WithTimeout(ctx, developmentManifestRetry.attemptTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, url, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return fmt.Errorf("download %s failed: %w", url, err)
+		return transientManifestError(ctx, err), fmt.Errorf("download %s failed: %w", url, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("download %s failed: HTTP %d", url, response.StatusCode)
+		status := response.StatusCode
+		return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500 && status <= 599,
+			fmt.Errorf("download %s failed: HTTP %d", url, status)
 	}
 	file, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return err
+		return false, err
 	}
+	defer func() {
+		if result != nil {
+			// Only this attempt's exclusive file may be removed. A failed
+			// cleanup must stop retries rather than reuse unverified bytes.
+			if err := os.Remove(destination); err != nil {
+				transient = false
+				result = errors.Join(result, err)
+			}
+		}
+	}()
 	hash := sha256.New()
 	_, copyErr := io.Copy(io.MultiWriter(file, hash), response.Body)
 	closeErr := file.Close()
 	if copyErr != nil {
-		return copyErr
+		if closeErr != nil {
+			return false, errors.Join(copyErr, closeErr)
+		}
+		var fileError *os.PathError
+		return !errors.As(copyErr, &fileError) && transientManifestError(ctx, copyErr), copyErr
 	}
 	if closeErr != nil {
-		return closeErr
+		return false, closeErr
 	}
 	actual := hex.EncodeToString(hash.Sum(nil))
 	if actual != expected {
-		return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", filepath.Base(destination), expected, actual)
+		return false, fmt.Errorf("checksum mismatch for %s: expected %s, got %s", filepath.Base(destination), expected, actual)
 	}
-	return nil
+	return false, nil
 }
 
 func extractArchiveSubtree(archive, destination, prefix string) error {

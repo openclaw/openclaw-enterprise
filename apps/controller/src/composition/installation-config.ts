@@ -1,4 +1,3 @@
-import type { ModelProviderConfiguration } from "../drivers/compute/model-provider.ts";
 import {
   openShellProxyConfiguration,
   openShellRepositoryConfiguration,
@@ -605,7 +604,7 @@ function selectGitHubRepositoryDelivery(
   if (!repository) {
     return undefined;
   }
-  const { nativeSender, prepared, transport, selection } = repository;
+  const { nativeSender, prepared, transport } = repository;
   const external = input.externalProxy && !!prepared && !transport;
   if (
     nativeSender &&
@@ -619,10 +618,6 @@ function selectGitHubRepositoryDelivery(
     throw new Error(
       "repository requires explicitly selected protected Git delivery and prepared GitHub custody.",
     );
-  }
-  const policy = object(selection.configuration, "repository.configuration");
-  if (external && (policy.controlSocket !== undefined || policy.publicCaPath !== undefined)) {
-    throw new Error("Protected repository Git does not accept native broker configuration.");
   }
   if (!input.kubernetes || (input.sandbox && !transport && !external)) {
     if (input.openShellBackend && input.bundledSandbox) {
@@ -934,7 +929,7 @@ export async function loadInstallationConfiguration(options: {
     configuration.repository,
     options.mode,
   );
-  const repoSelection =
+  let repoSelection =
     repositoryConfiguration &&
     (selected(
       repositoryConfiguration.selection,
@@ -943,6 +938,18 @@ export async function loadInstallationConfiguration(options: {
       GitHubRepositoryPolicy,
       "repository",
     ) as SelectedDriverConfiguration<Readonly<{ sessionDurationSeconds: number }>>);
+  if (repositoryConfiguration && repoSelection) {
+    // Validate the original first, then retain the accepted flat policy across loader awaits.
+    // Both authority projections must describe the policy used to construct the Driver.
+    const policy = Object.freeze({ ...repoSelection.configuration });
+    const selection = { ...repositoryConfiguration.selection };
+    // A non-enumerable configuration never contributed to the raw selection's digest.
+    if (Object.hasOwn(selection, "configuration")) {
+      selection.configuration = policy;
+    }
+    repositoryConfiguration.selection = selection;
+    repoSelection = Object.freeze({ ...repoSelection, configuration: policy });
+  }
   const nativeRepositorySelection = repositoryConfiguration?.nativeSender;
   const preparedRepositoryGit = repositoryConfiguration?.prepared;
   let repositoryTransportConfiguration = repositoryConfiguration?.transport;
@@ -1380,8 +1387,6 @@ export async function loadInstallationConfiguration(options: {
     resolveDelivery: repositoryRuntime?.resolveRepositoryDelivery,
   };
   let repositoryTransport: RepositoryTransportBinding | undefined;
-  const modelProvider = asRecord(compute.configuration.runtime)?.modelProvider as
-    ModelProviderConfiguration | undefined;
   const credentialGatewayDriver =
     credentialGateway === undefined
       ? undefined
@@ -1391,7 +1396,6 @@ export async function loadInstallationConfiguration(options: {
             id: credentialGateway.id,
             implementation: credentialGateway.implementation,
             backend: openShell!,
-            ...(modelProvider === undefined ? {} : { modelProvider }),
           },
         );
   const pluginSourceReader =
@@ -1455,7 +1459,6 @@ export async function loadInstallationConfiguration(options: {
           id: proxySelection.id,
           configuration: proxySelection.configuration as unknown as OpenShellProxyOptions,
           preparedProviders: preparedGitHub ? [githubMetadataProvider] : [],
-          ...(modelProvider === undefined ? {} : { modelProvider }),
           ...(egressAuthority && { exchangeAuthority: egressAuthority }),
         },
       });

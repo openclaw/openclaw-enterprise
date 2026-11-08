@@ -95,7 +95,30 @@ of the Installation.
 
 See `proof.json` for completed checks and timings and `return-progress.json` for
 the last phase started. Both are in the private evidence directory reported by
-the test. Inspect retained fixture resources after a failure. Set
+the test. The forward upgrade records authenticated HTTPS `GET /installation`
+samples before, during, and after the upgrade, including a failed upgrade. Each
+request has a five-second deadline; requests run serially with a one-second
+pause between observations during the upgrade. The evidence includes timestamps,
+request durations, actual gaps, received HTTP status even for invalid response
+bodies, and outcomes. Only
+HTTP 200 with the original Installation ID counts as a successful observation.
+Response bodies and credentials are omitted. If recording fails, the test reports
+the write failure alongside any upgrade failure, preserving the upgrade as the
+primary cause.
+
+Each completed observation also updates `forward-api-availability.json` in that
+same directory by atomic replacement. If the runner stops, this file retains the
+last saved observations. `upgradeSucceeded: null` means the action has not been
+recorded as finished; do not infer success or recovery from an incomplete file.
+A final boolean records whether the upgrade action succeeded, independently of
+the observed HTTP results. Process interruption does not add an `after` sample.
+This protects completed writes against process termination, not host or disk loss.
+
+These observations do not add an outage-free pass requirement. They measure the
+fixture's HTTPS route, not exact downtime, public ingress, Slack, or model
+continuity. Availability between requests remains unobserved.
+
+Inspect retained fixture resources after a failure. Set
 `OCC_TEST_PRODUCTION_TUI_KEEP=1` to retain fixture resources after a success.
 Remove the disposable cluster when you finish inspecting the evidence.
 

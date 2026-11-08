@@ -21,6 +21,7 @@ control-plane data.
 
 ```bash
 umask 077
+mkdir -p /secure/occ/upgrades
 export BASELINE="/secure/occ/upgrades/baseline-$(date -u +%Y%m%dT%H%M%SZ)"
 export PGPASSFILE=/secure/occ/pgpass
 export OCC_MIGRATION_DATABASE_URL='postgresql://occ_migrator@<postgres-host>:5432/<database>?sslmode=verify-full&sslrootcert=/secure/occ/database-ca.pem'
@@ -69,29 +70,42 @@ before the upgrade.
 ## Record images and Kubernetes state
 
 ```bash
-"${kube[@]}" get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{range .status.initContainerStatuses[*]} {.name}={.imageID}{end}{range .status.containerStatuses[*]} {.name}={.imageID}{end}{"\n"}{end}' \
-  >"$BASELINE/pod-images.txt"
-"${kube[@]}" get namespaces -o json |
-  jq -S '[.items[] | {name: .metadata.name, labels: .metadata.labels}]' >"$BASELINE/namespaces.json"
-for kind in rolebindings networkpolicies services; do
-  "${kube[@]}" get "$kind" -A -o json |
-    jq -S '[.items[] | {namespace: .metadata.namespace, name: .metadata.name, roleRef, subjects, spec}]' \
-      >"$BASELINE/$kind.json"
-done
-"${kube[@]}" get storageclasses -o json |
-  jq -S '[.items[] | {name: .metadata.name, provisioner, reclaimPolicy, volumeBindingMode,
-    allowVolumeExpansion, parameters,
-    default: .metadata.annotations["storageclass.kubernetes.io/is-default-class"]}]' \
-    >"$BASELINE/storageclasses.json"
-"${kube[@]}" get pvc -A -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid,VOLUME:.spec.volumeName' \
-  >"$BASELINE/pvcs.txt"
-# Only with private Agent routing (Gateway API resources):
+(
+  set -uo pipefail
+  "${kube[@]}" get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{range .status.initContainerStatuses[*]} {.name}={.imageID}{end}{range .status.containerStatuses[*]} {.name}={.imageID}{end}{"\n"}{end}' \
+    >"$BASELINE/pod-images.txt" || exit
+  "${kube[@]}" get namespaces -o json |
+    jq -S '[.items[] | {name: .metadata.name, labels: .metadata.labels}]' >"$BASELINE/namespaces.json" || exit
+  for kind in rolebindings networkpolicies services; do
+    "${kube[@]}" get "$kind" -A -o json |
+      jq -S '[.items[] | {namespace: .metadata.namespace, name: .metadata.name, roleRef, subjects, spec}]' \
+        >"$BASELINE/$kind.json" || exit
+  done
+  "${kube[@]}" get storageclasses -o json |
+    jq -S '[.items[] | {name: .metadata.name, provisioner, reclaimPolicy, volumeBindingMode,
+      allowVolumeExpansion, parameters,
+      default: .metadata.annotations["storageclass.kubernetes.io/is-default-class"]}]' \
+      >"$BASELINE/storageclasses.json" || exit
+  "${kube[@]}" get pvc -A -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid,VOLUME:.spec.volumeName' \
+    | cat >"$BASELINE/pvcs.txt" || exit
+)
+```
+
+Check the exit status immediately. If it is nonzero, discard the incomplete
+capture. Resolve the failure, then repeat the setup and capture in a fresh
+baseline directory. Only for private Agent routing, also require the following
+read to succeed before using the baseline:
+
+```bash
 "${kube[@]}" get gateways,httproutes -A -o yaml >"$BASELINE/gateway-api.yaml"
 ```
 
 `pod-images.txt` records the digest each container actually runs, which the
-configured image reference alone does not prove. The PVC UIDs must be unchanged
-after the upgrade: a new UID means the volume and its Agent data were replaced.
+configured image reference alone does not prove. The PVC UIDs must remain unchanged
+after the upgrade. A changed UID identifies a different claim object; it does
+not by itself establish whether the backing volume or Agent data changed. Stop
+and reconcile the claim, volume identity and workspace checks against the
+baseline before continuing.
 
 ## Record the OCC inventory
 

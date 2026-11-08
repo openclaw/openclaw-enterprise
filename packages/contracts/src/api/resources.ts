@@ -18,6 +18,7 @@ import {
   CredentialSourceType,
   GatewayManagedModeSchema,
   HarnessExecutionModeSchema,
+  RevisionHarnessSchema,
   HarnessAuthBindingSchema,
   AgentCredentialSourcesSchema,
   InstallationId,
@@ -1383,14 +1384,7 @@ export const AgentRevisionSchema = Type.Object(
       description:
         "Gateway managed mode requested for this Agent version. It does not report Gateway runtime state.",
     }),
-    harness: Type.Object(
-      {
-        id: Type.String({ minLength: 1 }),
-        version: Type.String({ minLength: 1 }),
-        mode: HarnessExecutionModeSchema,
-      },
-      { additionalProperties: false },
-    ),
+    harness: RevisionHarnessSchema,
     compute: Type.Object(
       { id: Type.String({ minLength: 1 }), implementation: Type.String({ minLength: 1 }) },
       { additionalProperties: false },

@@ -171,42 +171,15 @@ revision to change artifact authority. Live Agent policy apply remains unavailab
 
 ### Gateway readiness and workspace
 
-Optional readiness observes a Service and Pods in the OCC namespace (a paired
-Gateway normally uses a Backend `endpoint`). It needs a positive `timeoutMs`;
-`pollIntervalMs` (default 1000) is at most `2147483647`. Development uses Harness readiness with the optional `startupDelayMs` unset.
+Optional readiness observes an OCC-namespace Service and Pods; paired Gateways normally use a Backend `endpoint`. It requires positive `timeoutMs` and `pollIntervalMs` at most `2147483647` (default 1000). Development uses Harness readiness without `startupDelayMs`.
 
-Install OpenShell's gateway separately. Required `gateway.workspaceMode`
-accepts `operator` or `managed`; deferred managed mode fails before Kubernetes
-mutations or Gateway calls. Configure the Gateway's Kubernetes driver with `workspaceMode: operator`, a
-namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels`
-listing `openclaw.dev/*`, `app.kubernetes.io/name`, and
-`app.kubernetes.io/managed-by`; otherwise deployment fails with
-`SANDBOX_POD_LABELS_NOT_PERMITTED`. An OpenShell Workspace
-name must equal its pre-provisioned Kubernetes namespace: `oce-` plus a
-15-character digest, within the 19-character limit.
+Install OpenShell's Gateway separately. Required `gateway.workspaceMode` accepts `operator` or `managed`; `managed` fails before Kubernetes mutations or Gateway calls. Configure its Kubernetes driver with `workspaceMode: operator`, a namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels` containing `openclaw.dev/*`, `app.kubernetes.io/name`, and `app.kubernetes.io/managed-by`. Missing labels cause `SANDBOX_POD_LABELS_NOT_PERMITTED`. Workspace names must match their pre-provisioned namespace: `oce-` plus a 15-character digest (19 characters maximum).
 
-The [development profile](../../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile)
-installs one Gateway with workspace resources disabled: in `oce-system` for the
-Kubernetes-only control plane, or `openshell-system` for Compose. Agent Sandbox
-runs in `agent-sandbox-system`. The launcher renders `openshell-workspace` once
-into trusted Installation configuration; the Driver applies it for each OCC
-Namespace before creating its Workspace, without per-Namespace Helm releases.
+The [development profile](../../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile) installs one Gateway with workspace resources disabled in `oce-system` (Kubernetes-only) or `openshell-system` (Compose). Agent Sandbox runs in `agent-sandbox-system`. The launcher renders `openshell-workspace` once into trusted Installation configuration. The Driver applies it before each OCC Namespace's Workspace creation, without per-Namespace Helm releases.
 
-Kubernetes-only installations enable Gateway TLS, mTLS and authentication. Static
-inference requires explicit opt-in. The Compose-backed profile permits unauthenticated
-Gateway access. Its shared port exposes both control-plane RPCs and Harness traffic;
-NetworkPolicies cannot give Agent Gateways service-only authority. Use that mode
-only in owned disposable development clusters, never production.
+Kubernetes-only installations enable Gateway TLS, mTLS and authentication; static inference requires explicit opt-in. The Compose-backed OpenShell profile permits unauthenticated Gateway access. Control-plane RPCs and Harness traffic share one port. NetworkPolicies cannot give Agent Gateways service-only authority. Use this profile only in owned disposable development clusters.
 
-`gateway.operatorWorkspaceResources` takes the ServiceAccount, Role,
-RoleBinding, and NetworkPolicy manifests the workspace chart renders;
-`gateway.networkPolicyResources` takes namespaced provider networking
-manifests. In `operator` mode, `ensureNamespace` server-side applies both with
-the Compute-owned namespace and OCC ownership metadata, or only compares them
-with `preprovisionedNamespace`. Startup rejects Secrets,
-a NetworkPolicy ingress `_from` (write `from`), and fields the Kubernetes
-client would drop or change (a misspelled selector key, LimitRange `default`).
-Keep OpenShell credentials and cluster-scoped objects out of both lists.
+`gateway.operatorWorkspaceResources` takes the workspace chart's ServiceAccount, Role, RoleBinding, and NetworkPolicy manifests; `gateway.networkPolicyResources` takes namespaced provider networking manifests. In `operator` mode, `ensureNamespace` server-side applies both to the Compute-owned namespace with OCC ownership metadata; `preprovisionedNamespace` only compares them. Startup rejects Secrets, NetworkPolicy ingress `_from` (use `from`), and fields the Kubernetes client drops or changes (misspelled selector keys, LimitRange `default`). Neither list permits OpenShell credentials or cluster-scoped objects.
 
 `kubernetes.sandboxDataMount` must match exactly one approved dedicated Harness
 workspace mount. It may not mount the PVC root or use `..`, and must mount
@@ -382,14 +355,22 @@ Errors include:
   below `/sandbox/.openclaw-runtime`; a Landlock write grant does not
   override Unix ownership on the image layer.
 
+### Private CAs for Gateway peers
+
+If both `pkiInitJob.enabled` and `certManager.enabled` are false and the Gateway container does not trust the issuing CA, set:
+
+```yaml
+server:
+  extraEnv:
+    - name: OPENSHELL_PEER_TLS_CA_FILE
+      value: /etc/openshell-tls/server/ca.crt
+```
+
+Include the public `ca.crt` in the Secret named by `server.tls.certSecretName`. Middleware uses `tls_ca_cert_path` separately.
+
 ### Gateway identity and removal
 
-If stop, deletion, or credential withdrawal reports `SANDBOX_GATEWAY_UNAUTHORIZED`,
-check the worker's `sandbox-gateway-identity` hint. A missing Workspace role
-fails immediately. Restore the role, or deploy again to recreate an externally
-removed Workspace. If authentication fails, check the controller's token file
-and the gateway's signing-key refresh. The worker retries transient failures
-within its attempt budget. Retry the original operation after restoring access.
+For `SANDBOX_GATEWAY_UNAUTHORIZED` during stop, deletion, or credential withdrawal, check `sandbox-gateway-identity`. Missing Workspace roles fail immediately: restore the role, or redeploy to recreate an externally removed Workspace. For authentication failures, check the controller token file and Gateway signing-key refresh. Workers retry transient failures within their attempt budget. Restore access before retrying.
 
 OpenShell can return `NOT_FOUND` for a resource hidden from the caller. To
 confirm absence, the Driver reads the Workspace with the controller's identity

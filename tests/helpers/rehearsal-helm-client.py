@@ -37,6 +37,12 @@ receipt = json.loads(Path(sys.argv[1]).read_text())
 action = sys.argv[2]
 assert action in ("stop", "kill", "absent")
 pid = receipt["pid"]
+# Pin the process before reading /proc; PID reuse after validation must never
+# redirect either signal to an unrelated process. This fixture is Linux-only.
+try:
+    descriptor = os.pidfd_open(pid)
+except ProcessLookupError:
+    descriptor = None
 observed = process(pid)
 same_process = observed is not None and observed[1] == receipt["startTicks"]
 if action == "kill" and (not same_process or observed[0] == "Z"):
@@ -56,10 +62,19 @@ if action == "absent":
                       "processGroup": receipt["processGroup"], "reaped": True}))
     sys.exit(0)
 assert same_process, "the owned Helm client exited before interruption"
+assert descriptor is not None, "the owned Helm client exited before interruption"
 assert os.path.realpath(f"/proc/{pid}/exe") == receipt["executable"], "Helm executable changed"
 arguments = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
 assert [arg.decode() for arg in arguments[1:-1]] == receipt["arguments"], "Helm arguments changed"
-os.kill(pid, signal.SIGSTOP if action == "stop" else signal.SIGKILL)
+try:
+    signal.pidfd_send_signal(descriptor, signal.SIGSTOP if action == "stop" else signal.SIGKILL)
+except ProcessLookupError:
+    if action != "kill":
+        raise
+    print(json.dumps({"pid": pid, "startTicks": receipt["startTicks"], "alreadyExited": True}))
+    sys.exit(0)
+finally:
+    os.close(descriptor)
 if action == "stop":
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:

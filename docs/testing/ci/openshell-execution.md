@@ -101,7 +101,13 @@ worker proof.
 Native first-Agent proof retains the exact run ID, explicit successful exec flag,
 standalone tool-proof line, and exact final nonce. After a turn is terminal, history
 has 30 seconds to settle; a missing proof remains a failure. Failure diagnostics
-report only counts and flags, not marker values, commands or transcripts. Content
+retain counts and flags, plus the numeric exit code (0–255) when a single nested
+exec result is recognized. The proof program reports fixed operation and error
+categories for failed session-file writes, session/workspace-file reads, or proof
+emission. These categories contain no paths, commands, raw output, or stacks;
+unknown error codes become `other`. A failure before Node starts, or without a
+recognized failure marker, remains unclassified. These observations do not relax
+any success predicate. Content
 shape counts distinguish strings, arrays, recognized text and tool-call parts,
 and unsupported parts. Exec observations distinguish an exact requested command,
 nonempty output, and the recognized `value.aggregated` result envelope from other
