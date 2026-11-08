@@ -753,6 +753,10 @@
                     "label": "Upgrade Recovery"
                   },
                   {
+                    "page": "guides/deploy/production-helm-recovery",
+                    "label": "Helm Recovery"
+                  },
+                  {
                     "page": "guides/deploy/split-layout-upgrade",
                     "label": "Split-Layout Upgrade"
                   },

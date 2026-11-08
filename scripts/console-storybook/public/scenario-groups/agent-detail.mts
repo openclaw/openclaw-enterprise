@@ -1,6 +1,7 @@
 import type {
   AgentCredentialSourceBinding,
   AgentDeploymentStatusWire,
+  AgentRevisionSummaryWire,
   AgentRuntimeHarnessStatus,
   OpenClawConfigurationDocument,
   PluginApprovers,
@@ -132,6 +133,20 @@ export function createAgentDetailScenarios({
   currentVersion: string;
   candidateVersion: string;
 }) {
+  const newerDeployment: AgentRevisionSummaryWire = {
+    id: "rev_00000000-0000-4000-8000-000000000008",
+    namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+    agentId: "agt_00000000-0000-4000-8000-000000000001",
+    revision: 8,
+    backendId: null,
+    configurationId: "cfg_00000000-0000-4000-8000-000000000001",
+    configurationGeneration: 2,
+    harness: { id: "codex", version: "demo", mode: "dedicated", overrides: {}, configuration: {} },
+    createdAt: "2026-09-26T23:10:00.000Z",
+    deploymentStatus: "queued",
+    deploymentErrorCode: null,
+  };
+
   const configurationConflictDraft = {
     group: "Pages/Agent detail",
     path: draft,
@@ -175,6 +190,16 @@ export function createAgentDetailScenarios({
     AgentDetailScenario,
     "group" | "path" | "deployed" | "candidateDeploymentStatus"
   >;
+
+  const candidateRuntimeLogs =
+    "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/runtime/logs";
+  const agentLogStream = {
+    source: "agent",
+    pod: "agent-9194e1800111-rev-997042d6ce64-6b5bbd9699-v5rcp",
+    podUid: "8d6b1c2e-3f4a-4b5c-9d6e-7f8a9b0c1d2e",
+    container: "agent",
+    restartCount: 0,
+  };
 
   // The current version, v8, which the viewer cannot read, opened on its Logs tab.
   const hiddenCurrentLogsPage = {
@@ -1649,6 +1674,40 @@ export function createAgentDetailScenarios({
           "At phone width, reload the preview and repeat, this time scrolling all the way to the top without changing focus. The details open on completion and the reader stays at the top with the focused button still offscreen.",
         ],
       },
+      deploymentRefreshFocus: {
+        group: "Pages/Agent detail",
+        name: "Refresh deployment focus when a newer version appears",
+        path: `${candidateVersion}&tab=deployment`,
+        deployed: true,
+        candidateDeploymentStatus: "queued",
+        rules: [
+          {
+            suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+            skip: 1,
+            once: true,
+            delayMs: 6_000,
+          },
+          {
+            suffix: `/agents/${newerDeployment.agentId}/revisions`,
+            skip: 1,
+            data: [newerDeployment],
+          },
+          {
+            suffix: `/deployments/${newerDeployment.id}`,
+            delayMs: 1_800,
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+          },
+        ],
+        description:
+          "A quiet poll for queued v7 is still running when you request a refresh. The refresh discovers v8, whose deployment record is temporarily unavailable.",
+        steps: [
+          "Fold Deployment details and Tab to Refresh deployment. About five seconds after v7 appears, the quiet poll starts. The button stays enabled and focused.",
+          "Press Enter while that poll is pending. The button becomes busy and keeps focus. When the refresh discovers v8 and replaces the panel, its Refresh deployment button keeps focus in the same position.",
+          "Wait for the v8 retry notice. Refresh deployment is enabled again and remains focused. Reset the story to repeat.",
+        ],
+        gap: "Storybook simulates the version list and the failed deployment read. The Controller browser regression covers the real version discovery and read failure.",
+      },
       deploymentCompletesRereadFails: {
         group: "Pages/Agent detail",
         name: "New version completes, Agent reread fails",
@@ -2654,6 +2713,59 @@ export function createAgentDetailScenarios({
           "Wait 5 seconds. The message changes to 'Too many requests. You can try again now.' without another read.",
           "Select Include debug. That read is for another selection, so the old rows clear before its rate-limited answer.",
         ],
+      },
+      runtimeLogsSourceSwitchAfterRateLimit: {
+        ...runtimeLogsPage,
+        name: "Switch log sources after a rate-limited refresh",
+        runtimePod: "dedicatedPair",
+        rules: [
+          // The expected reads are Gateway, Agent, Agent refresh, then Gateway again.
+          // Check the last read's delay first so every earlier read advances its skip count.
+          { path: candidateRuntimeLogs, skip: 3, once: true, delayMs: 10_000 },
+          {
+            path: candidateRuntimeLogs,
+            skip: 2,
+            once: true,
+            status: 429,
+            code: "RUNTIME_LOGS_RATE_LIMITED",
+            retryAfter: 5,
+          },
+          {
+            path: candidateRuntimeLogs,
+            skip: 1,
+            once: true,
+            data: {
+              revisionId: "rev_00000000-0000-4000-8000-000000000007",
+              source: "agent",
+              stream: agentLogStream,
+              observedAt: "2026-09-27T12:00:00.000Z",
+              records: [
+                {
+                  type: "line",
+                  time: "2026-09-27T11:40:01.120Z",
+                  stream: agentLogStream,
+                  contentClass: "operational",
+                  kind: "text",
+                  level: "info",
+                  message: "Agent harness ready",
+                },
+              ],
+              withheld: 0,
+              truncated: false,
+              cursor: `v1.${"a".repeat(40)}.${"b".repeat(43)}`,
+            },
+          },
+        ],
+        description:
+          "An Agent (Harness) refresh is rate limited for five seconds. Switching to Gateway clears the old feedback while its read is pending.",
+        steps: [
+          "Wait for Gateway output, select Agent (Harness) under Source, and wait for “Agent harness ready.” Keep Follow off.",
+          "Choose Refresh logs. Check that the Agent output stays visible with “Too many requests. Try again in 5 seconds.”",
+          "Switch Source to Gateway while the message is visible. Check for “Reading output…” with neither the Agent output nor its rate-limit message.",
+          "After five seconds, confirm the retry message has not returned and the Gateway read is still pending. After about ten seconds from the switch, confirm “gateway listening” appears.",
+          "Reload the preview to repeat the sequence.",
+        ],
+        gap: "Storybook simulates the response and delay. The controller-backed Logs browser regression checks the same interaction through the Console API.",
       },
       runtimeLogsDenied: {
         group: "Pages/Agent detail",

@@ -293,46 +293,50 @@ a removed binding (`access_withdrawn`) from a rejected App key (`credential_unav
 Sandbox, supervisor and provider generation, or material is unavailable.
 `REPOSITORY_GIT_ROUTE_BLOCKED` closes Git until a new revision; continued chat
 requires independent model access and verified Git-only removal. Unsafe identity
-changes, overlapping GitHub access from retained providers or failed observation
-can require runtime retirement instead. Git-only removal records one conditional
-detach request. While Git stays attached, the worker sends that same request again;
-a moved Sandbox version or an outcome the gateway cannot tell retires the runtime.
-An empty OpenShell profile workspace selects the platform profile, not a same-named
+changes, retained providers’ overlapping GitHub access or failed observation can
+require retirement. Git-only removal records one conditional detach request, reused
+while Git remains attached. A moved Sandbox version or an outcome the gateway cannot tell retires the runtime.
+An empty profile workspace selects the platform profile, not a same-named
 Workspace profile.
 
-Standing succession can use a fresh expired-provider report only to confirm
+Standing succession uses fresh expired-provider reports only to confirm
 predecessor identity. New installations and post-detach model completion require
 ready credentials; model authorization remains independent.
 
-A transient observation failure closes access until the same installation verifies,
-with retry backoff from 1 s to 10 s. The held-launch paths (`github-repository`,
-protected `git-write`, and installation preview) cannot be adopted by a replacement
-worker: deploy a new revision after `worker_replaced` or terminal `bootstrap_failed`.
-For v5 held launches after verified replacement, deployment detail reports `repositoryAccess.state: redeploy-required`
+Runtime and conversation retention does not ensure uninterrupted requests.
+In OpenShell 0.1.6, Git detachment can close model and workspace connections through
+Sandbox-wide policy reload, despite retained model authorization. Check uncertain
+turn outcomes; do not resend automatically while unknown.
+
+Transient observation failure closes access until the same installation verifies,
+with 1–10 s retry backoff. Replacement workers cannot adopt held launches (`github-repository`, protected
+`git-write`, and installation preview): deploy a new revision after `worker_replaced`
+or terminal `bootstrap_failed`.
+After verified replacement of v5 held launches, deployment detail reports `repositoryAccess.state: redeploy-required`
 and `REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`, preserving history. OCE closes Git and checks
 withdrawal and model authority.
 Waiting cannot reopen this route. Other qualified paths may retry
-a pre-write read or re-observe durable delivery after restart. No path replays an
-uncertain provider write. Provider writes retain their own deadline. See
+pre-write reads or re-observe durable delivery after restart. Provider writes keep
+their deadlines; no path replays an uncertain write. See
 [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
 Prepared-material expiry, quarantine and retirement belong to
 [Token Service lifecycle](../repository-credentials.md#token-service-lifecycle) and
 its [source flow](../../flows/credential-source-refresh.md#6-oce-prepared-github-core).
 
-Inspect `OPENSHELL_GIT_RECONCILIATION_REQUIRED` and its `reason`:
+`OPENSHELL_GIT_RECONCILIATION_REQUIRED` reasons:
 `execution_replaced`, `supervisor_replaced`, `write_unknown`, `worker_restarted`
 or `gateway_unauthorized`. `worker.openshell-git-route-warning` distinguishes
 `unobserved` reads, `pending` material, `closed` routes (`worker_replaced`, or
 `withdrawn` and `repository_expired` when another worker closed the route) and
 `retained` ones.
-`OPENSHELL_GIT_WITHDRAWAL_UNRECORDED` means withdrawal was not persisted.
-Confirm Sandbox deletion: this worker refuses the route, but another could adopt it.
-Closed routes are dropped after confirmed absence (two reads if never observed).
+`OPENSHELL_GIT_WITHDRAWAL_UNRECORDED` means unpersisted withdrawal.
+Confirm Sandbox deletion: another worker could adopt the refused route.
+OCE drops closed routes after confirmed absence (two reads if never observed).
 Failed reads retain them. Gateway authorization refusal logs `retained` with
 `gateway_unauthorized` and retries with backoff until absence; preparation, adoption
 and verification remain refused, and denials log `no_binding`.
 `worker.openshell-git-route` reports adoption and restoration, with `durationMs`.
-Correlate the revision and request ID with `worker.openshell-git-denied`.
+Correlate revision and request IDs with `worker.openshell-git-denied`.
 
 ### Qualification history
 

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-08
-last_updated_session: authoring-run/ac563bfd-5c5e-43d2-8682-8bb3899b1814
+last_updated_session: authoring-run/84991a6f-3680-4e06-871a-d5e82266193d
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -97,11 +97,12 @@ regardless of launcher architecture, verify 0.1.6 charts and pin
 Gateway/supervisor/sandbox images. OCE image import precedes k3s garbage collection. `writeInstallation` selects curated Codex plugins; the selected
 Credential Gateway supplies credentials.
 
-Agent Sandbox downloads: `internal/occdev/routing_manifest.go`;
-CI bootstrap: `scripts/ci/routing.mjs:downloadPinnedArtifact`. Transient network failures
-and HTTP 408/429/5xx allow eight attempts, each limited to 60 seconds;
-retries require their delay to fit the 120-second budget. Other failures are terminal. Verified manifests are limited to 32 MiB and written `0600`; archives
-are unchanged.
+`internal/occdev/openshell_assets.go:downloadVerified` streams archives;
+`internal/occdev/routing_manifest.go` and CI's
+`scripts/ci/routing.mjs:downloadPinnedArtifact` fetch manifests (32 MiB maximum).
+Transient network errors and HTTP 408/429/5xx allow eight 60-second attempts,
+starting within 120 seconds. Local downloads honor cancellation. Other errors
+are terminal. Archive retries remove failed `0600` files, preserving existing files.
 
 `dev-up` validates Kubernetes/OpenShell before `occ dev up`.
 `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only: in-cluster
@@ -418,6 +419,6 @@ Workspace wire test checks request IDs and deletion outcomes. Live provider remo
 
 ## Changelog
 
-- 2026-11-08 04:08: Preserve Namespace cleanup and upstream readiness while merging histories. (authoring-run/ac563bfd-5c5e-43d2-8682-8bb3899b1814 - 40e98dcfd3b8f3b4f7e2b96e1460b6185486866e)
+- 2026-11-08 16:17: Preserve archive retries and Namespace cleanup histories. (authoring-run/84991a6f-3680-4e06-871a-d5e82266193d - 11ed9080a4093e2637803eca7dbcd76d26b77edd)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.
