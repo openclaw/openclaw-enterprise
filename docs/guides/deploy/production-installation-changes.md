@@ -28,12 +28,13 @@ cp /secure/occ/installation.yaml /secure/occ/installation.yaml.before
 # Edit /secure/occ/installation.yaml and review the diff, then:
 OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' /secure/occ/values.yaml)"
 OCC_INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' /secure/occ/values.yaml)"
+OCC_CHECKSUM="$(sha256sum /secure/occ/installation.yaml | cut -d ' ' -f 1)"
 jq -n --arg key "$OCC_INSTALLATION_KEY" --rawfile document /secure/occ/installation.yaml \
   '{data: {($key): ($document | @base64)}}' |
   kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
     --namespace openclaw-system patch secret "$OCC_INSTALLATION_SECRET" \
     --type merge --patch-file /dev/stdin
-OCC_CHECKSUM="$(sha256sum /secure/occ/installation.yaml | cut -d ' ' -f 1)" \
+OCC_CHECKSUM="$OCC_CHECKSUM" \
   yq -i '.controlPlane.installationChecksum = strenv(OCC_CHECKSUM)' /secure/occ/values.yaml
 helm upgrade oce deploy/helm/openclaw-enterprise \
   --kubeconfig /secure/occ/kubeconfig --kube-context '<reviewed-context>' \
@@ -65,5 +66,6 @@ The patch replaces only the Installation key and keeps the Secret's
 apply deletes it and the next upgrade refuses the Secret. Settings that
 shape Agent Pods, such as Gateway resources, apply only to Pods created
 afterward; deploy an Agent to apply them to it. To undo, restore the `.before`
-file and rerun the Secret patch, checksum and `helm upgrade` commands. The
+file, recompute its checksum, then rerun the Secret patch, values update and
+`helm upgrade` commands. The
 edited files are the baseline for the next upgrade.
