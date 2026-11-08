@@ -134,7 +134,11 @@ All three commands require `--kubeconfig`, `--context`, `--kube-namespace` and
 - `occ installation install` requires Helm, `kubectl`, a local `--chart`
   (directory or archive, up to 64 MiB, no symlinks), `--values` (up to 4 MiB)
   and a new `--receipt` directory. It snapshots inputs and syncs the intent
-  before one Helm install. Use Secret release storage and unset `HELM_KUBE*`
+  before one Helm install. If writing the receipt notice to stdout returns an
+  error, it exits unsuccessfully with the receipt path, preserves `intent.json`,
+  and neither creates `dispatch.json` nor starts Helm install. See
+  [receipt handoff](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff).
+  Use Secret release storage and unset `HELM_KUBE*`
   overrides. Credentials must work without interactive input. Helm applies
   `--wait-timeout` per operation (default `5m`, positive, at most `24h`).
   A successful install exit records Helm success. Check the Job separately.
@@ -180,7 +184,9 @@ skipped the newer-version check; with none selected, its error names the grant a
 
 Text output prints `TIME LEVEL KIND [SUBSYSTEM] MESSAGE key=value` per line.
 Gap and withheld records are printed to stderr as `notice:` lines; in JSON mode
-they are also records on stdout. Text lines and notices show an invisible or
+they are also records on stdout. In text mode, the CLI exits with a nonzero
+status if it cannot write a no-running-Pod, gap, or withheld notice to stderr.
+Text lines and notices show an invisible or
 control character, such as a bidirectional override, as an escape like
 `\u202e`; a field value holding one is quoted. JSON records are unchanged. With `--follow`, the CLI waits for
 `Retry-After` after a `429`, retries after a `504`, starts a new audited view

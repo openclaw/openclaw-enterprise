@@ -416,7 +416,10 @@ func (app *application) runAgentLogs(command *cobra.Command, agentID string, opt
 			// A present stream ends the absence, even when it has no new records.
 			missingPod := string(page.Stream) == "null" || len(page.Stream) == 0
 			if missingPod && !noPod {
-				noticef(notices, "notice: revision %s has no running Pod for source %s", page.RevisionID, page.Source)
+				err := noticef(notices, "notice: revision %s has no running Pod for source %s", page.RevisionID, page.Source)
+				if err != nil && app.output != "json" {
+					return err
+				}
 			}
 			noPod = missingPod
 			read = true

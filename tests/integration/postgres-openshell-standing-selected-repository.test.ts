@@ -25,3 +25,13 @@ test(
   { ...requiresPostgres, timeout: 180_000 },
   (t) => repositorySetJourney(t, true, "cold-worker"),
 );
+
+// Keep approval active while a real session deadline passes with the worker stopped.
+// Kubernetes records are controlled; their validation and witness come from the real Sandbox Driver.
+for (const outcome of ["expired-original-pods", "expired-replaced-supervisor"] as const) {
+  test(
+    `a cold worker after session expiry checks ${outcome}`,
+    { ...requiresPostgres, timeout: 180_000 },
+    (t) => repositorySetJourney(t, true, outcome),
+  );
+}

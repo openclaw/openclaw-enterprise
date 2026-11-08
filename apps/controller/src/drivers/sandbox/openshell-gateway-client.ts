@@ -33,6 +33,7 @@ import {
   getServiceDocument,
   postServiceDocument,
   serviceWebSocketHandshake,
+  serviceCodexPatStatus,
   type OpenShellServiceDocument,
 } from "./openshell-service-transport.ts";
 import type {
@@ -494,6 +495,12 @@ export interface OpenShellGatewayClient
     bearer: string,
     signal: AbortSignal,
   ): Promise<boolean>;
+  /** Initializes a dedicated Codex process and observes only its PAT authentication status. */
+  serviceCodexPatStatus(
+    serviceUrl: string,
+    bearer: string,
+    signal: AbortSignal,
+  ): Promise<"unavailable" | "starting" | "serving">;
   /** Read a profile in its Workspace, or pass null to request the platform profile. */
   getProviderProfile(
     workspace: string | null,
@@ -1370,6 +1377,14 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     signal: AbortSignal,
   ): Promise<boolean> {
     return serviceWebSocketHandshake(this.serviceTransportOptions(), serviceUrl, bearer, signal);
+  }
+
+  async serviceCodexPatStatus(
+    serviceUrl: string,
+    bearer: string,
+    signal: AbortSignal,
+  ): Promise<"unavailable" | "starting" | "serving"> {
+    return serviceCodexPatStatus(this.serviceTransportOptions(), serviceUrl, bearer, signal);
   }
 
   private serviceRootCertificate: Buffer | undefined;

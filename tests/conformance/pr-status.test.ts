@@ -1,23 +1,41 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { test } from "node:test";
-import { commandPath } from "../helpers/fake-commands.ts";
-import { readJsonLinesSync } from "../helpers/json-lines.mjs";
-import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
+import { test, type TestContext } from "node:test";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 
 const script = resolve("scripts/pr-status.ts");
 
-function setup(t) {
+const liveTip = "1234567890abcdef1234567890abcdef12345678";
+const reportedBase = "abcdef1234567890abcdef1234567890abcdef12";
+const nestedBase = "release/team+fix#1";
+const encodedBase = "release%2Fteam%2Bfix%231";
+
+function readCalls(log: string): string[][] {
+  return readFileSync(log, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => {
+      const call: unknown = JSON.parse(line);
+      assert.ok(Array.isArray(call) && call.every((arg: unknown) => typeof arg === "string"));
+      return call as string[];
+    });
+}
+
+function setup(t: TestContext) {
   const directory = temporaryDirectorySync(t, "pr-status-");
   const log = join(directory, "calls");
-  // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
+  // Use the current Node directly and an isolated PATH: fixture failure cannot find real gh.
   writeFileSync(
     join(directory, "gh"),
-    `#!/usr/bin/env node
+    `#!${process.execPath}
 const fs = process.getBuiltinModule("node:fs");
 const args = process.argv.slice(2);
+const baseName = process.env.PR_STATUS_BASE_NAME || "main";
+const repository = "example/project";
+const refPath = "repos/" + repository + "/git/ref/heads/" + encodeURIComponent(baseName);
+const commitPath = "repos/" + repository + "/commits/" + encodeURIComponent(baseName);
 fs.appendFileSync(process.env.PR_STATUS_CALLS, JSON.stringify(args) + "\\n");
 if (process.env.PR_STATUS_RESPONSE && args[0] === "pr") {
   process.stdout.write(process.env.PR_STATUS_RESPONSE);
@@ -33,11 +51,22 @@ if (args[0] === "api" && args[1] === "user" && process.env.PR_STATUS_USER_UNAVAI
   process.exit(1);
 }
 if (args[0] === "api" && args[1] === "user") console.log(JSON.stringify({ login: "alice" }));
-else if (args[0] === "api") console.log(JSON.stringify({ sha: "current-base" }));
+else if (args[0] === "api" && args[1] === commitPath && args.length === 2) {
+  // A valid full-commit response exceeds execFileSync's default stdout buffer.
+  console.log(JSON.stringify({ sha: "${liveTip}", files: [{ patch: "x".repeat(2 * 1024 * 1024) }] }));
+}
+else if (args[0] === "api" && args[1] === refPath && args.length === 2) {
+  console.log(process.env.PR_STATUS_REF_RESPONSE || JSON.stringify({
+    ref: "refs/heads/" + baseName, object: { type: "commit", sha: "${liveTip}" }
+  }));
+}
+else if (JSON.stringify(args) === JSON.stringify(["repo", "view", "--json", "nameWithOwner"])) {
+  console.log(JSON.stringify({ nameWithOwner: repository }));
+}
 else if (args[0] === "pr") console.log(JSON.stringify({
   number: 12, title: "Fix a bug", url: "https://example.test/pull/12", state: "OPEN",
   isDraft: false, author: { login: "alice" }, headRefOid: "head-id", headRefName: "fix",
-  baseRefOid: "old-base", baseRefName: "main", mergeable: "MERGEABLE",
+  baseRefOid: "${reportedBase}", baseRefName: baseName, mergeable: "MERGEABLE",
   mergeStateStatus: "CLEAN", reviewDecision: "", statusCheckRollup: [
     { name: "CI Required", conclusion: "SUCCESS" }, { name: "Native", conclusion: "SKIPPED" }
   ]
@@ -48,9 +77,9 @@ else process.exit(1);
   );
   return {
     log,
+    directory,
     env: {
-      ...process.env,
-      PATH: commandPath(directory),
+      PATH: directory,
       PR_STATUS_CALLS: log,
     },
   };
@@ -64,11 +93,11 @@ test("reports observed PR and target separately without asserting merge readines
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /same account: yes/);
-  assert.match(result.stdout, /Target: main current-base/);
-  assert.match(result.stdout, /PR-reported base: old-base/);
+  assert.ok(result.stdout.includes(`Target: main ${liveTip}`));
+  assert.ok(result.stdout.includes(`PR-reported base: ${reportedBase}`));
   assert.match(result.stdout, /Native: SKIPPED/);
   assert.match(result.stdout, /does not decide merge readiness/);
-  const calls = readJsonLinesSync(log);
+  const calls = readCalls(log);
   assert.deepEqual(
     calls.map((call) => call[0]),
     ["api", "pr", "api"],
@@ -88,7 +117,7 @@ test("reports PR status with unknown ownership when the user lookup is unavailab
     result.stdout,
     /Authenticated user unavailable; verify publishing authority separately/,
   );
-  assert.match(result.stdout, /Target: main current-base/);
+  assert.ok(result.stdout.includes(`Target: main ${liveTip}`));
   assert.match(result.stdout, /CI Required: SUCCESS/);
   assert.match(result.stdout, /Native: SKIPPED/);
   assert.match(result.stdout, /does not decide merge readiness/);
@@ -97,7 +126,7 @@ test("reports PR status with unknown ownership when the user lookup is unavailab
     /private-token-example|HTTP 403|same account: (yes|no)/,
   );
   assert.deepEqual(
-    readJsonLinesSync(log).map((call) => call[0]),
+    readCalls(log).map((call) => call[0]),
     ["api", "pr", "api"],
   );
 });
@@ -105,7 +134,7 @@ test("reports PR status with unknown ownership when the user lookup is unavailab
 for (const [failedRead, label] of [
   ["pr", "pull request"],
   ["base", "target branch"],
-]) {
+] as const) {
   test(`reports a failed ${label} read without exposing upstream diagnostics`, (t) => {
     const { env } = setup(t);
     const result = spawnSync(process.execPath, [script, "12", "example/project"], {
@@ -158,4 +187,83 @@ test("preserves partial check output before a malformed check", (t) => {
   assert.equal(result.status, 1);
   assert.match(result.stdout, /first: SUCCESS/);
   assert.match(result.stderr, /Cannot read properties of null/);
+});
+
+for (const inferred of [false, true]) {
+  test(`reads the exact nested base ref with ${inferred ? "inferred" : "explicit"} repository`, (t) => {
+    const { env, log } = setup(t);
+    const result = spawnSync(
+      process.execPath,
+      [script, "12", ...(inferred ? [] : ["example/project"])],
+      {
+        env: { ...env, PR_STATUS_BASE_NAME: nestedBase },
+        encoding: "utf8",
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.includes(`Target: ${nestedBase} ${liveTip}`));
+    assert.ok(result.stdout.includes(`PR-reported base: ${reportedBase}`));
+    assert.match(result.stdout, /Repository: example\/project/);
+    const calls = readCalls(log);
+    assert.deepEqual(
+      calls.map((call) => call[0]),
+      inferred ? ["repo", "api", "pr", "api"] : ["api", "pr", "api"],
+    );
+    if (inferred) {
+      assert.deepEqual(calls[0], ["repo", "view", "--json", "nameWithOwner"]);
+    }
+    assert.deepEqual(calls.find((call) => call[0] === "pr")?.slice(0, 6), [
+      "pr",
+      "view",
+      "12",
+      "--repo",
+      "example/project",
+      "--json",
+    ]);
+    assert.deepEqual(
+      calls.filter((call) => call[0] === "api"),
+      [
+        ["api", "user"],
+        ["api", `repos/example/project/git/ref/heads/${encodedBase}`],
+      ],
+    );
+    assert.ok(calls.every((call) => !call.some((arg) => arg.includes("/commits/"))));
+  });
+}
+
+for (const [label, response] of [
+  ["wrong ref name", { ref: "refs/heads/other", object: { type: "commit", sha: liveTip } }],
+  ["wrong object type", { ref: "refs/heads/main", object: { type: "tag", sha: liveTip } }],
+  ...["", "abc123", "g".repeat(40), "a".repeat(39), "a".repeat(41), 123, null].map(
+    (sha) =>
+      [
+        `invalid SHA ${JSON.stringify(sha)}`,
+        { ref: "refs/heads/main", object: { type: "commit", sha } },
+      ] as const,
+  ),
+] as const) {
+  test(`fails closed for ${label}`, (t) => {
+    const { env, log } = setup(t);
+    const result = spawnSync(process.execPath, [script, "12", "example/project"], {
+      env: { ...env, PR_STATUS_REF_RESPONSE: JSON.stringify(response) },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /GitHub did not return the target branch commit/);
+    assert.deepEqual(readCalls(log).at(-1), ["api", "repos/example/project/git/ref/heads/main"]);
+  });
+}
+
+test("missing fake gh fails closed without searching the host PATH", (t) => {
+  const { env, log, directory } = setup(t);
+  rmSync(join(directory, "gh"));
+  const result = spawnSync(process.execPath, [script, "12", "example/project"], {
+    env,
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /Could not read pull request/);
+  assert.throws(() => readFileSync(log), { code: "ENOENT" });
 });
