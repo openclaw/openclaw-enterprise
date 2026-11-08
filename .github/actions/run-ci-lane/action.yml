@@ -62,6 +62,7 @@ runs:
       env:
         JOB_TIMEOUT_MINUTES: ${{ inputs.job-timeout-minutes }}
         QA_TIMING: ${{ inputs.lane == 'qa-matrix' }}
+        OPENSHELL_TIMING: ${{ inputs.lane == 'openshell' }}
       run: |
         if [[ ! "$JOB_TIMEOUT_MINUTES" =~ ^[1-9][0-9]{0,3}$ ]] || (( JOB_TIMEOUT_MINUTES <= 5 )); then
           echo "::error::job-timeout-minutes must be the calling job's timeout-minutes, above 5." >&2
@@ -70,6 +71,10 @@ runs:
         printf 'ms=%s\n' "$(( $(date +%s%3N) + (JOB_TIMEOUT_MINUTES - 5) * 60000 ))" >> "$GITHUB_OUTPUT"
         if [[ "$QA_TIMING" == true ]]; then
           node scripts/ci/qa-phase-timing.ts entry 2>/dev/null >> "$GITHUB_OUTPUT" || true
+        fi
+        # OpenShell has not set up pinned Node yet. All its marks use Linux uptime.
+        if [[ "$OPENSHELL_TIMING" == true ]] && read -r uptime _ </proc/uptime; then
+          printf 'openshell-uptime=%s\n' "$uptime" >> "$GITHUB_OUTPUT" || true
         fi
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
       id: setup-node
@@ -195,11 +200,11 @@ runs:
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
       id: setup-go
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell' || inputs.lane == 'k3d-fixture-configuration'
+      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell' || inputs.lane == 'k3d-fixture-configuration' || (inputs.lane == 'checks-browser' && (inputs.test-file == '' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.mjs' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.ts'))
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
-        cache: true
+        cache: ${{ inputs.lane != 'checks-browser' }}
     - name: Run workspace boundary check
       id: workspace-check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
@@ -230,7 +235,7 @@ runs:
       id: docs-check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
-      run: pnpm docs:install && pnpm openapi:lint && pnpm docs:check && pnpm docs:build
+      run: pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check && pnpm docs:build
     - name: Install documentation browser dependencies
       id: install-docs-browser
       # Only browser part 1 runs docs-compute-matrix. Baseline part 1's docs-site
@@ -294,6 +299,12 @@ runs:
         artifact-ids: ${{ inputs.runtime-artifact-id }}
         path: ${{ runner.temp }}/runtime-artifact
         merge-multiple: true
+    - name: Mark OpenShell preparation start
+      id: openshell-prepare-start
+      if: inputs.lane == 'openshell'
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Prepare lane
       id: prepare-lane
       shell: bash
@@ -317,6 +328,12 @@ runs:
           selection=(--selected-file "$CI_SELECTED_TEST_FILE")
         fi
         node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV" "${selection[@]}"
+    - name: Mark OpenShell preparation end
+      id: openshell-prepare-end
+      if: always() && inputs.lane == 'openshell' && steps.openshell-prepare-start.outputs.uptime != ''
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Record skipped Logging Collector image preparation
       if: always() && inputs.lane == 'logging-collector' && steps.prepare-lane.outcome == 'skipped'
       continue-on-error: true
@@ -326,7 +343,7 @@ runs:
       run: node scripts/ci/logging-setup-timing.ts finish image-pulls
     - name: Install trusted browser certificate tooling
       id: install-browser-certificates
-      if: inputs.lane == 'qa-matrix' || inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell'
+      if: inputs.lane == 'qa-matrix' || inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell' || (inputs.lane == 'checks-browser' && (inputs.test-file == '' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.mjs' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.ts'))
       shell: bash
       run: |
         if ! command -v certutil >/dev/null 2>&1; then
@@ -341,6 +358,12 @@ runs:
       continue-on-error: true
       shell: bash
       run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
+    - name: Mark OpenShell run start
+      id: openshell-run-start
+      if: inputs.lane == 'openshell'
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Run lane
       id: run-lane
       shell: bash
@@ -390,6 +413,12 @@ runs:
       continue-on-error: true
       shell: bash
       run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
+    - name: Mark OpenShell cleanup start
+      id: openshell-cleanup-start
+      if: always() && inputs.lane == 'openshell'
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Cleanup lane
       id: cleanup-lane
       if: always()
@@ -401,6 +430,12 @@ runs:
       continue-on-error: true
       shell: bash
       run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
+    - name: Mark OpenShell cleanup end
+      id: openshell-cleanup-end
+      if: always() && inputs.lane == 'openshell'
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Export image cleanup reconciliation
       id: image_reconciliation
       if: always() && inputs.lane == 'images-packaging'
@@ -493,6 +528,22 @@ runs:
         QA_CLEANUP_OUTCOME: ${{ steps.cleanup-lane.outcome }}
         QA_SELECTION: ${{ inputs.test-file == '' && 'full' || 'focused' }}
       run: node scripts/ci/qa-phase-timing.ts summarize 2>/dev/null
+    - name: Summarize OpenShell phase timing
+      if: always() && inputs.lane == 'openshell'
+      continue-on-error: true
+      shell: bash
+      env:
+        OPENSHELL_ENTRY: ${{ steps.deadline.outputs.openshell-uptime }}
+        OPENSHELL_PREPARE_START: ${{ steps.openshell-prepare-start.outputs.uptime }}
+        OPENSHELL_PREPARE_END: ${{ steps.openshell-prepare-end.outputs.uptime }}
+        OPENSHELL_RUN_START: ${{ steps.openshell-run-start.outputs.uptime }}
+        OPENSHELL_CLEANUP_START: ${{ steps.openshell-cleanup-start.outputs.uptime }}
+        OPENSHELL_CLEANUP_END: ${{ steps.openshell-cleanup-end.outputs.uptime }}
+        OPENSHELL_PREPARE_OUTCOME: ${{ steps.prepare-lane.outcome }}
+        OPENSHELL_RUN_OUTCOME: ${{ steps.run-lane.outcome }}
+        OPENSHELL_CLEANUP_OUTCOME: ${{ steps.cleanup-lane.outcome }}
+        OPENSHELL_SELECTION: ${{ inputs.test-file == '' && 'full' || 'focused' }}
+      run: node scripts/ci/openshell-phase-timing.ts summarize 2>/dev/null
     - name: Summarize first lane failure
       if: failure() || cancelled()
       continue-on-error: true

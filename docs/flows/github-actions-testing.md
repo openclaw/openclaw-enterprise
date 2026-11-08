@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-08
-last_updated_session: authoring-run/bafcfe3a-329e-4d07-8f36-f178b64e37d0
+last_updated_session: authoring-run/7219e3b9-3091-4a5b-8712-c543ff5f0c68
 ---
 
 # GitHub Actions testing flow
@@ -83,22 +83,14 @@ source. Docs mode produces no test artifacts. The impact summary shows mode, fix
 and accepted lanes; it omits paths and raw output. Selector errors fail the job, and missing
 evidence is reported as unavailable.
 
-For full-mode PRs, `affected-packages` verifies merge identity and checkout cleanliness, then reports workspace dependents. This advisory neither selects tests nor gates `CI Required`.
+For full-mode PRs, `affected-packages` verifies the checkout and reports dependents; it does not select tests or gate CI. Base-loaded policy cannot prevent PR changes to the workflow itself.
 
-A PR can change the workflow loaded from its merge checkout despite base-loaded
-policy. Separately trusted enforcement is a deployment decision, not an
-established source property.
+Full Integration checks out `github.sha`. Verified docs-only main pushes omit runtime lanes; other pushes select `all`. Manual dispatches
+require `integration-main-approval` and verified dispatcher, team and environment policy.
+A push may reuse same-SHA CI results after the [bounded admission and publication checks](../testing/ci/full-integration.md#results-and-limits);
+otherwise it runs fresh. Credentialed lanes do not wait for reuse.
 
-Full Integration checks out `github.sha`. Main pushes select `all`. Manual main
-dispatches require secret-free `integration-main-approval`. Preflight checks
-the team rule, dispatcher ID, triggering login and environment policy.
-
-Main pushes share a queue. Each dispatch waits separately for approval.
-Slack Live serializes access to its channel and app. Local Kubernetes Installation
-and installed Skipper Git each serialize per branch across pushes and dispatches.
-All three queues retain waiting jobs. Test jobs verify repository, main branch
-and event. Push retries use the original commit. Manual retries require a fresh
-approved dispatch. See [approval setup](../testing/ci/configuration.md#environments).
+Main pushes share a queue; dispatches await approval separately. Slack Live serializes channel/app access. Installation and installed Skipper Git serialize per branch. These queues retain waiting jobs. Jobs verify repository, branch and event. Push retries retain their source; manual retries require a new [approved dispatch](../testing/ci/configuration.md#environments).
 
 `all` selects every suite. QA waits for Slack even after failure. Cancellation
 stops QA. Aggregation requires the selected results.
@@ -233,7 +225,7 @@ Root hooks allow two seconds for reports, immediately on cleanup failure; skippe
 
 `scripts/ci/impact-gate.mjs:main` and Full Integration report matrix failures by job.
 `scripts/ci/run-tests.mjs:aggregateGroup` attributes lane outcomes only to matching lane/SHA
-receipts, even when the parent fails. Passing requires successful jobs, one owner per lane, test evidence and cleanup. Docs mode skips aggregation. Full Integration checks its lane or `full` group; `ssh-host` requires a [disposable host](../testing/ssh.md#ssh-raw-hosts).
+receipts, even when the parent fails. Reused lanes have independent successful job entries; fresh lanes retain their matrix parent. Passing requires successful jobs, one owner per lane, test evidence and cleanup. Docs mode skips aggregation. Full Integration checks its lane or `full` group; `ssh-host` requires a [disposable host](../testing/ssh.md#ssh-raw-hosts).
 Runner loss can prevent teardown and erase private `RUNNER_TEMP` state; external reconciliation
 awaits an approved resource ledger.
 
@@ -258,6 +250,10 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 08:28: Preserve matrix failure attribution alongside admitted CI reuse. (authoring-run/7219e3b9-3091-4a5b-8712-c543ff5f0c68 - 006cf6288913ff8eb56d0fbc2283885bd551ecc9)
+
+- 2026-11-08 16:09: Reuse admitted same-source ordinary CI results before fresh Full Integration execution. (authoring-run/d394120a-859d-45f1-ba62-9bf9dd9b66c1 - 832dbfca29eca2dd3cb98bd9dd5d803d9100911e)
 
 - 2026-11-08 16:02: Select documentation-only main pushes from verified before-tree policy. (authoring-run/bafcfe3a-329e-4d07-8f36-f178b64e37d0 - ca3ad3c4f3ec8ec5660ec2909bd4673adf78ff90)
 

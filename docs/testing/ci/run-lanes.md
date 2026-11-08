@@ -51,6 +51,12 @@ register it in its owning manifest and check that the intended workflow selects
 that lane. A passing inventory audit does not prove that a credentialed or
 manually prepared lane has run.
 
+The runner removes inherited test selectors unless the manifest declares them.
+`requiredEnv` fails when an input is missing or empty; `optionalEnv` forwards an
+input only when supplied. Both may be declared on a lane or a file.
+File-specific test selectors do not reach sibling files, and optional inputs do
+not select a file or change its required-case inventory.
+
 ## Shared runtime image in ordinary CI
 
 The four image lanes and First Agent Smoke use one runtime image built from the

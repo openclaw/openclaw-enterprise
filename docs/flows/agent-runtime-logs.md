@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: "2026-11-04"
-last_updated_session: authoring-run/dcd46e24-f282-428e-8b71-91a98d9290a6
+updated: 2026-11-08
+last_updated_session: authoring-run/8719abbf-9776-4ebb-970d-9575222fe52b
 ---
 
 # Agent runtime logs flow
@@ -212,6 +212,15 @@ Pod cards show state/exit; Gateway links Harness output or Deployment activity.
 
 CLI flags, follow polling and `Retry-After` handling (`internal/occclient/transport.go:apiError`): see the
 [CLI reference](../reference/cli.md#runtime-status-and-logs). Cancellation succeeds only for `runAgentLogs --follow`.
+`internal/occcli/agent_runtime.go:runAgentLogs` returns a text-mode stderr write
+error for a no-running-Pod notice. It also returns errors from
+`internal/occcli/agent_runtime_output.go:printRuntimeLogPage` when a gap or withheld
+notice fails to write to stderr in text mode. `cmd/occ/main.go:main` exits nonzero
+on these errors.
+
+`cmd/occ/main.go:main` restores default signal handling after the first
+cancellation. A subsequent Ctrl-C or `SIGTERM` can terminate a command blocked
+on local I/O or cleanup; that forced exit does not guarantee completed cleanup.
 Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadlines.
 
 ## Debugging and Verification
@@ -237,6 +246,10 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 03:13: Document CLI exits on text notice write errors. (authoring-run/8719abbf-9776-4ebb-970d-9575222fe52b - 143419c5a957dfacc399e72fccceeb9f3ebfa403)
+
+- 2026-11-04 22:52: Restore signal termination after initial CLI cancellation. (PR #4640 - f9c0fb4398a33099bdbeec7a83d18b99b0861933)
 
 - 2026-11-04 18:33: Keep loaded Console output when a log page cannot be prepared. (authoring-run/dcd46e24-f282-428e-8b71-91a98d9290a6 - d59eff6dc3b51e87eac86bb47eb4df3fd55846bb)
 

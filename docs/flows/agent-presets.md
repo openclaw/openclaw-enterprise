@@ -172,7 +172,7 @@ Secret metadata, validates the original template, then substitutes the selected
 reference in a temporary copy. Changing mode discards tokens; stale catalog
 responses cannot replace a later selection.
 The user then selects **Use Preset**. The shared
-[`renderPresetTemplate`](../../packages/contracts/src/preset-variables.mjs)
+[`renderPresetTemplate`](../../packages/contracts/src/preset-variables.mts)
 walks JSON once, rejects missing or mistyped inputs and duplicate rendered native
 keys, and preserves runtime placeholders and unresolved SecretRefs.
 

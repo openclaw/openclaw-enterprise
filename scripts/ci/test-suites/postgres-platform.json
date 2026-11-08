@@ -17,6 +17,7 @@
     "tests/integration/postgres-restart-recovery.test.mjs",
     "tests/integration/postgres-agent-deletion-audit.test.mjs",
     "tests/integration/postgres-agent-gateway-managed-mode.test.ts",
+    "tests/integration/postgres-default-users.test.ts",
     "tests/integration/postgres-agent-runtime-logs.test.mjs",
     "tests/integration/postgres-repository-broker-receipts.test.mjs",
     "tests/integration/postgres-worker-stale-claim.test.mjs",
@@ -63,7 +64,8 @@
     "tests/integration/credential-proxy-revision-currentness.test.ts",
     "tests/integration/postgres-egress-policy-transaction.test.ts",
     "tests/integration/postgres-credential-source-revision-owner.test.ts",
-    "tests/integration/postgres-worker-process-shutdown.test.ts"
+    "tests/integration/postgres-worker-process-shutdown.test.ts",
+    "tests/integration/postgres-harness-overrides.test.ts"
   ],
   "files": [
     {
@@ -242,6 +244,16 @@
       "path": "tests/integration/postgres-agent-gateway-managed-mode.test.ts",
       "expectedTests": [
         "an Installation admin controls Gateway managed mode and a deployer applies the saved setting"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-default-users.test.ts",
+      "expectedTests": [
+        "Default users create Agents in the default Namespace and own what they create",
+        "an iam configuration change at restart revokes Group grants and keeps what members created",
+        "a session revoked while a Default user's deploy waits commits no Agent grant",
+        "an iam configuration change and a member's create commit one after the other",
+        "an Agent Owner binding deleted while its owner's deploy waits commits no Agent grant"
       ]
     },
     {
@@ -447,7 +459,8 @@
       "expectedTests": [
         "one selected repository renews beyond its original session without replacing the execution and denies withdrawn approval",
         "an expired acknowledged launch refuses a pending successor after recipient changes",
-        "an expired acknowledged launch refuses a pending successor after approval changes"
+        "an expired acknowledged launch refuses a pending successor after approval changes",
+        "a cold worker persists redeploy-required standing Git status without renewing it"
       ]
     },
     {
@@ -499,7 +512,8 @@
       "path": "tests/integration/postgres-standing-session-worker.test.ts",
       "expectedTests": [
         "standing maintenance supervises missing Git evidence across restart and still withdraws model authority",
-        "standing maintenance refuses withdrawn eligibility with unchanged scope"
+        "standing maintenance refuses withdrawn eligibility with unchanged scope",
+        "bound worker reconciliation retains the original repository admission policy"
       ]
     },
     {
@@ -613,6 +627,12 @@
       "path": "tests/integration/postgres-worker-process-shutdown.test.ts",
       "expectedTests": [
         "worker.mjs exits cleanly on SIGTERM after stopping the worker and its metrics listener"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-harness-overrides.test.ts",
+      "expectedTests": [
+        "PostgreSQL preserves Harness destinations across restart and default replacement"
       ]
     }
   ]

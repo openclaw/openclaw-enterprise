@@ -140,6 +140,13 @@ test("credential-free metadata exchange accepts a reordered Driver grant", async
 
 test("Gateway-owned source admission consults its catalog despite a matching Proxy offer", async (t) => {
   const f = await staticEgressFixture(t, { admitRevision: false });
+  // Runtime-managed authentication has no provider override; its supplemental source
+  // authorizes the native default so this case isolates catalog ownership.
+  const created = await f.request("POST", `/namespaces/${f.namespace.id}/credential-sources`, {
+    body: { name: "supplemental", type: "openai", config: {}, secrets: f.source.secrets },
+  });
+  assert.equal(created.status, 201);
+  const source = created.data;
   const controller: OpenClawController = f.controller;
   const gateway = controller.selectedDriver("credential_gateway");
   const providers = controller.selectedDriver("credential_proxy").sourceControl
@@ -150,22 +157,41 @@ test("Gateway-owned source admission consults its catalog despite a matching Pro
   const provider = providers[index];
   assert.ok(provider);
   // After the Gateway creates the source, make an offered Proxy provider advertise the same type.
-  providers[index] = { ...provider, sourceType: { ...provider.sourceType, type: f.source.type } };
+  providers[index] = { ...provider, sourceType: { ...provider.sourceType, type: source.type } };
   const agentPath = `/namespaces/${f.namespace.id}/agents/${f.agent.id}`;
   const bound = await f.request("PATCH", agentPath, {
     body: {
       configurationId: f.agent.configurationId,
       harnessAuth: { method: "runtime" },
-      credentialSources: [{ sourceId: f.source.id }],
+      credentialSources: [{ sourceId: source.id }],
     },
   });
   assert.equal(bound.status, 200);
+  // Grant the supplemental source through the regular IAM API.
+  const secretRole = await f.request("POST", `/namespaces/${f.namespace.id}/iam/roles`, {
+    body: {
+      name: "supplemental-source-use",
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    },
+  });
+  assert.equal(secretRole.status, 201);
+  const secretGrant = await f.request("POST", `/namespaces/${f.namespace.id}/iam/access-bindings`, {
+    body: {
+      subjectKind: "identity",
+      subjectId: f.agent.servicePrincipalId,
+      roleId: secretRole.data.id,
+      resourceKind: "credential_source",
+      resourceId: source.id,
+    },
+  });
+  assert.equal(secretGrant.status, 201);
   const revisions = () =>
     controller.transact((state) => state.revisions.listRevisions(f.namespace.id, f.agent.id));
-  await f.deployAgent(f.namespace.id, f.agent.id);
+  const deployed = await f.request("POST", `${agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
   const admitted = await revisions();
   assert.deepEqual(admitted[0]?.credentialSources, [
-    { sourceId: f.source.id, sourceType: f.source.type, credentialGatewayId: gateway.id },
+    { sourceId: source.id, sourceType: source.type, credentialGatewayId: gateway.id },
   ]);
 
   const list = gateway.listSourceTypes.bind(gateway);
