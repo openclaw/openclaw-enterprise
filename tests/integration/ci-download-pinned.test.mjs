@@ -118,7 +118,7 @@ function download(
 async function readTool(path) {
   const file = await open(path, "r");
   try {
-    return { bytes: await file.readFile(), mode: (await file.stat()).mode & 0o777 };
+    return { bytes: await file.readFile(), mode: (await file.stat()).mode & 0o7777 };
   } finally {
     await file.close();
   }
@@ -265,12 +265,14 @@ test("downloads publish only verified bytes and preserve existing tools on failu
       await chmod(destination, 0o6755);
       const privilegedFailure = await download(url, destination, "0".repeat(64));
       assert.notEqual(privilegedFailure.code, 0);
-      assert.equal(statSync(destination).mode & 0o7777, 0o6755);
-      assert.deepEqual(await readFile(destination), previous);
+      const privilegedRetained = await readTool(destination);
+      assert.equal(privilegedRetained.mode, 0o6755);
+      assert.deepEqual(privilegedRetained.bytes, previous);
       const unprivilegedReplacement = await download(url, destination, sha256);
       assert.equal(unprivilegedReplacement.code, 0, unprivilegedReplacement.stderr);
-      assert.equal(statSync(destination).mode & 0o7777, 0o755);
-      assert.deepEqual(await readFile(destination), body);
+      const unprivileged = await readTool(destination);
+      assert.equal(unprivileged.mode, 0o755);
+      assert.deepEqual(unprivileged.bytes, body);
     },
   );
 });
@@ -378,8 +380,9 @@ test("a checksum-valid installed candidate is reused offline without a cache", a
           "0755",
         );
         assert.equal(executable.code, 0, executable.stderr);
-        assert.equal(statSync(destination).mode & 0o7777, 0o755);
-        assert.deepEqual(await readFile(destination), body);
+        const published = await readTool(destination);
+        assert.equal(published.mode, 0o755);
+        assert.deepEqual(published.bytes, body);
       }
     },
   );
