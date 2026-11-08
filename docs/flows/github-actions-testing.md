@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-08
-last_updated_session: authoring-run/bafcfe3a-329e-4d07-8f36-f178b64e37d0
+last_updated_session: authoring-run/d394120a-859d-45f1-ba62-9bf9dd9b66c1
 ---
 
 # GitHub Actions testing flow
@@ -89,9 +89,10 @@ A PR can change the workflow loaded from its merge checkout despite base-loaded
 policy. Separately trusted enforcement is a deployment decision, not an
 established source property.
 
-Full Integration checks out `github.sha`. Main pushes select `all`. Manual main
-dispatches require secret-free `integration-main-approval`. Preflight checks
-the team rule, dispatcher ID, triggering login and environment policy.
+Full Integration checks out `github.sha`. Main pushes select `all`; manual dispatches
+require `integration-main-approval` and verified dispatcher, team and environment policy.
+A push may reuse same-SHA CI results after the [bounded admission and publication checks](../testing/ci/full-integration.md#results-and-limits);
+otherwise it runs fresh. Credentialed lanes do not wait for reuse.
 
 Main pushes share a queue. Each dispatch waits separately for approval.
 Slack Live serializes access to its channel and app. Local Kubernetes Installation
@@ -267,6 +268,8 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 16:09: Reuse admitted same-source ordinary CI results before fresh Full Integration execution. (authoring-run/d394120a-859d-45f1-ba62-9bf9dd9b66c1 - 832dbfca29eca2dd3cb98bd9dd5d803d9100911e)
 
 - 2026-11-08 16:02: Select documentation-only main pushes from verified before-tree policy. (authoring-run/bafcfe3a-329e-4d07-8f36-f178b64e37d0 - ca3ad3c4f3ec8ec5660ec2909bd4673adf78ff90)
 
