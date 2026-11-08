@@ -42,6 +42,7 @@ import {
   createNativePluginAssertions,
 } from "../helpers/plugin-driver-real.mjs";
 import {
+  assertAllowedCredentialRoute,
   assertExposedCodexInitializes,
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,
@@ -4533,15 +4534,14 @@ async function diagnosticResource(kind, name, namespace) {
   );
 }
 
-async function diagnosticResources(kind, namespace) {
-  return JSON.parse(await diagnosticKubectl("get", kind, "--namespace", namespace, "-o", "json"))
-    .items;
+async function diagnosticResources(kind, namespace, read = diagnosticKubectl) {
+  return JSON.parse(await read("get", kind, "--namespace", namespace, "-o", "json")).items;
 }
 
 // The network supervisor serving this Harness shares its boundary pair, as in the L7 denial
 // proof below. Anything other than exactly one match reads no supervisor: another Agent's
 // supervisor in the same namespace is not evidence for this Harness.
-async function openShellSupervisorPod(topology) {
+async function openShellSupervisorPod(topology, read = diagnosticKubectl) {
   if (topology.harnessPod === undefined) {
     throw new Error("no Harness Pod was found");
   }
@@ -4549,7 +4549,7 @@ async function openShellSupervisorPod(topology) {
   if (!boundaryPair) {
     throw new Error("the Harness has no openshell.ai/boundary-pair label");
   }
-  const supervisors = (await diagnosticResources("pods", topology.placement)).filter(
+  const supervisors = (await diagnosticResources("pods", topology.placement, read)).filter(
     (pod) =>
       pod.metadata.labels?.["openshell.ai/boundary-role"] === "supervisor" &&
       pod.metadata.labels?.["openshell.ai/boundary-pair"] === boundaryPair,
@@ -6584,11 +6584,32 @@ async function assertCredentialRouteEnforcement(topology) {
     true,
     "a command must be able to read the Harness model placeholder for this check.",
   );
-  assert.equal(
-    observed.modelHostFromCurl.httpStatus,
-    "200",
-    "a command Codex runs must authenticate at the allowed source endpoint.",
-  );
+  await assertAllowedCredentialRoute({
+    probe: observed.modelHostFromCurl,
+    sourceType: modelSourceType,
+    destination:
+      modelSourceType === "codex-pat"
+        ? "auth.openai.com:443"
+        : `${modelEndpoint.hostname}:${modelPort}`,
+    capture: async () => {
+      // One read per operation: diagnostics never retry the failed curl or Kubernetes reads.
+      const pod = await openShellSupervisorPod(topology, (...args) =>
+        kubectl(diagnosticRequestTimeout, ...args),
+      );
+      return kubectl(
+        diagnosticRequestTimeout,
+        "logs",
+        pod.metadata.name,
+        "--namespace",
+        topology.placement,
+        "--container",
+        "supervisor",
+        "--tail=2000",
+        "--limit-bytes=262144",
+        "--timestamps",
+      );
+    },
+  });
   // Skipping the proxy settings gains nothing: a denied host and a bare address stay unreachable.
   // The allowed host still answers, so the run has an outbound path and these failures are the
   // policy's, not a missing network.
