@@ -21,7 +21,7 @@ export async function prepareProductionHelmControlPlane({
   authBaseURL,
   installationName,
   apiClients,
-  channelDirectoryProxyUrl,
+  channelDirectoryProxyUrl = undefined,
   repositoryCredentials,
   gatewayRouting,
   controlPlane,
