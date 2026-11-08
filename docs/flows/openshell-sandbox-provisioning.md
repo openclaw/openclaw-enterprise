@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-08
-last_updated_session: authoring-run/cc85b8e8-41ee-4b88-9807-456c25e0fa77
+last_updated_session: authoring-run/0ff5cd21-1ead-46fb-bb5f-9f578872634a
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -93,13 +93,12 @@ Gateway/supervisor/sandbox images. Importing OCE images first prevents k3s garba
 collection. `writeInstallation` selects curated Codex plugins; the selected
 Credential Gateway supplies credentials.
 
-Agent Sandbox downloads use
-`internal/occdev/routing_manifest.go`; CI bootstrap uses
-`scripts/ci/routing.mjs:downloadPinnedArtifact`. Transient network failures
-and HTTP 408/429/5xx allow eight attempts, each limited to 60 seconds;
-retries are scheduled only when their delay fits the 120-second budget. Other failures
-are terminal. Verified manifests are limited to 32 MiB and written `0600`; archives
-are unchanged.
+`internal/occdev/openshell_assets.go:downloadVerified` streams archives;
+`internal/occdev/routing_manifest.go` and CI's
+`scripts/ci/routing.mjs:downloadPinnedArtifact` fetch manifests (32 MiB maximum).
+Transient network errors and HTTP 408/429/5xx allow eight 60-second attempts,
+starting within 120 seconds. Local downloads honor cancellation. Other errors
+are terminal. Archive retries remove failed `0600` files, preserving existing files.
 
 `dev-up` validates Kubernetes/OpenShell before `occ dev up`.
 `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only: in-cluster
@@ -413,6 +412,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 12:06: Bound archive retries. (authoring-run/0ff5cd21-1ead-46fb-bb5f-9f578872634a - 4566d20b8ef66a3268e27bceac946765ecd5d336)
 
 - 2026-11-08 06:54: Trace serving-process PAT readiness. (authoring-run/cc85b8e8-41ee-4b88-9807-456c25e0fa77 - 12582b2da6c58b020cff462d6d8ecfe2bbedde8a)
 
