@@ -6160,7 +6160,7 @@ async function interruptedProxyRemoval(t, selectedProxy = "") {
   const candidate = structuredClone(values);
   candidate.api.channelDirectoryProxyUrl = selectedProxy;
   const candidatePath = join(f.directory, "remove-proxy.json");
-  await writeFile(candidatePath, JSON.stringify(candidate));
+  await writeFile(candidatePath, JSON.stringify(candidate), { mode: 0o600 });
   const policy = {
     apiVersion: "networking.k8s.io/v1",
     kind: "NetworkPolicy",
