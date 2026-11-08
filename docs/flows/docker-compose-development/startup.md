@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-04
-last_updated_session: authoring-run/f21567be-bf0f-4e4e-be99-a937b8cab69b
+updated: 2026-11-08
+last_updated_session: authoring-run/aa2519c0-24d1-44b0-9725-9bde7e4c2501
 ---
 
 # Compose development startup
@@ -10,10 +10,9 @@ last_updated_session: authoring-run/f21567be-bf0f-4e4e-be99-a937b8cab69b
 
 ## Overview
 
-`scripts/dev-up` starts Docker or Kubernetes Compute. Compose-backed profiles run
-PostgreSQL, migration, bootstrap, API, and worker in Compose; the Kubernetes-only
-profile runs them in the owned k3d cluster. Startup requires authenticated
-Installation and bootstrap Namespace readiness, plus Workspace readiness for OpenShell.
+`scripts/dev-up` runs PostgreSQL, migration, bootstrap, API, and worker in Compose
+or an owned k3d cluster. Startup requires authenticated Installation and bootstrap
+Namespace readiness, plus Workspace readiness for OpenShell.
 
 ## Entry Points
 
@@ -93,11 +92,9 @@ is unsafe; other services retain SELinux confinement. One development image
 covers migration, bootstrap, API, and worker, so `dev-up` builds it once through
 migration and starts with `--no-build`; Docker uses `up --build`. Expanded
 configuration and credentials are never printed.
-`internal/occdev/command.go` and `k3d_import.go` measure the existing command
-execution with Go's monotonic clock and report fixed timing categories through
-`timing.go`. They keep the same subprocess and cancellation context. See
-[local command diagnostics](../../reference/cli/local-development.md) for the
-output scope; concurrent durations can overlap.
+`command.go` and `k3d_import.go` report monotonic durations through `timing.go`. See
+[local command diagnostics](../../reference/cli/local-development.md);
+concurrent durations can overlap.
 
 For unselected runtime images, `dev-up` builds missing
 `openclaw-enterprise-runtime:quickstart` from `deploy/runtime/Dockerfile` at
@@ -394,6 +391,11 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 
 ## Debugging and Verification
 
+`upK3d` reports startup failures after tracked cleanup. First-Agent and refusal
+helpers accept one validated terminal stdout record from normally failed startup.
+Ambiguity, success or cleanup yields no observation. Diagnostics
+do not authenticate writers. See [field meanings](../../reference/cli/local-development.md).
+
 - `node --test tests/integration/dev-up-compose.test.mjs tests/integration/dev-up.test.mjs`
   exercises profile selection, generated configuration, authenticated readiness,
   rollback, and cleanup with inert engine and cluster commands.
@@ -421,6 +423,8 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 09:54: Attribute startup failures separately from cleanup. (authoring-run/aa2519c0-24d1-44b0-9725-9bde7e4c2501 - 7db5638975981ec1400f1a4ba52da77d5fd33dce)
 
 - 2026-11-04 23:00: Overlap routing controllers and runtime preparation; preserve rollback. (authoring-run/f21567be-bf0f-4e4e-be99-a937b8cab69b - 381845c12d3694fc19f836786831bb98cbe2c3e1)
 
