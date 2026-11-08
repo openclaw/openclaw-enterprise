@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -85,6 +85,50 @@ test("Full Integration partitions OpenShell without changing the default focused
       ...canonical,
       files: canonical.files.filter(({ path }) => paths.has(path)),
     });
+  }
+
+  // Each physical job must retain its identity in the timing summary used for comparisons.
+  const timingDirectory = temporaryDirectorySync(t, "openshell-view-timing-");
+  for (const lane of ["openshell", ...shards]) {
+    const summary = join(timingDirectory, `${lane}.md`);
+    const timing = spawnSync(
+      process.execPath,
+      ["scripts/ci/openshell-phase-timing.ts", "summarize"],
+      {
+        cwd: root,
+        encoding: "utf8",
+        timeout: 15_000,
+        env: {
+          PATH: process.env.PATH,
+          GITHUB_STEP_SUMMARY: summary,
+          GITHUB_SHA: testedSha,
+          GITHUB_JOB: "openshell",
+          OPENSHELL_LANE: lane,
+          OPENSHELL_SELECTION: "full",
+          OPENSHELL_ENTRY: "0.00",
+          OPENSHELL_PREPARE_START: "0.01",
+          OPENSHELL_PREPARE_END: "0.02",
+          OPENSHELL_RUN_START: "0.03",
+          OPENSHELL_CLEANUP_START: "0.04",
+          OPENSHELL_CLEANUP_END: "0.05",
+          OPENSHELL_PREPARE_OUTCOME: "success",
+          OPENSHELL_RUN_OUTCOME: "success",
+          OPENSHELL_CLEANUP_OUTCOME: "success",
+        },
+      },
+    );
+    assert.equal(timing.error, undefined);
+    assert.equal(timing.signal, null);
+    assert.equal(timing.status, 0, timing.stderr);
+    const json = present(readFileSync(summary, "utf8").split("```json\n")[1]);
+    const receipt = JSON.parse(present(json.split("\n```")[0]));
+    assert.equal(receipt.lane, lane);
+    assert.equal(receipt.sha, testedSha);
+    assert.equal(receipt.selection, "full");
+    for (const phase of ["prepare", "run", "cleanup"]) {
+      assert.deepEqual(receipt.phases[phase], { elapsedMs: 10, outcome: "success" });
+    }
+    assert.equal(receipt.residualMs, 0);
   }
 
   const select = (lane: string, view?: string) =>

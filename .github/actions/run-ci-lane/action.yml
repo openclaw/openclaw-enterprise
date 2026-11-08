@@ -66,7 +66,7 @@ runs:
       env:
         JOB_TIMEOUT_MINUTES: ${{ inputs.job-timeout-minutes }}
         QA_TIMING: ${{ inputs.lane == 'qa-matrix' }}
-        OPENSHELL_TIMING: ${{ inputs.lane == 'openshell' }}
+        OPENSHELL_TIMING: ${{ (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers') }}
       run: |
         if [[ ! "$JOB_TIMEOUT_MINUTES" =~ ^[1-9][0-9]{0,3}$ ]] || (( JOB_TIMEOUT_MINUTES <= 5 )); then
           echo "::error::job-timeout-minutes must be the calling job's timeout-minutes, above 5." >&2
@@ -313,7 +313,7 @@ runs:
         merge-multiple: true
     - name: Mark OpenShell preparation start
       id: openshell-prepare-start
-      if: inputs.lane == 'openshell'
+      if: (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers')
       continue-on-error: true
       shell: bash
       run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
@@ -343,7 +343,7 @@ runs:
         node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV" "${selection[@]}"
     - name: Mark OpenShell preparation end
       id: openshell-prepare-end
-      if: always() && inputs.lane == 'openshell' && steps.openshell-prepare-start.outputs.uptime != ''
+      if: always() && (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers') && steps.openshell-prepare-start.outputs.uptime != ''
       continue-on-error: true
       shell: bash
       run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
@@ -373,7 +373,7 @@ runs:
       run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Mark OpenShell run start
       id: openshell-run-start
-      if: inputs.lane == 'openshell'
+      if: (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers')
       continue-on-error: true
       shell: bash
       run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
@@ -429,7 +429,7 @@ runs:
       run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Mark OpenShell cleanup start
       id: openshell-cleanup-start
-      if: always() && inputs.lane == 'openshell'
+      if: always() && (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers')
       continue-on-error: true
       shell: bash
       run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
@@ -446,7 +446,7 @@ runs:
       run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Mark OpenShell cleanup end
       id: openshell-cleanup-end
-      if: always() && inputs.lane == 'openshell'
+      if: always() && (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers')
       continue-on-error: true
       shell: bash
       run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
@@ -543,10 +543,11 @@ runs:
         QA_SELECTION: ${{ inputs.test-file == '' && 'full' || 'focused' }}
       run: node scripts/ci/qa-phase-timing.ts summarize 2>/dev/null
     - name: Summarize OpenShell phase timing
-      if: always() && inputs.lane == 'openshell'
+      if: always() && (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers')
       continue-on-error: true
       shell: bash
       env:
+        OPENSHELL_LANE: ${{ inputs.lane }}
         OPENSHELL_ENTRY: ${{ steps.deadline.outputs.openshell-uptime }}
         OPENSHELL_PREPARE_START: ${{ steps.openshell-prepare-start.outputs.uptime }}
         OPENSHELL_PREPARE_END: ${{ steps.openshell-prepare-end.outputs.uptime }}

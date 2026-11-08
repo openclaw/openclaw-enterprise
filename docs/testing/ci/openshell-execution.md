@@ -132,6 +132,12 @@ setup, image builds/imports, tests, cleanup, and artifact upload in elapsed time
 Report runner allocation and protected-environment waiting separately, and keep
 failed or canceled runs separate from successful runtime measurements.
 
+The job summary records phase timings for each physical lane: `openshell`,
+`openshell-policy`, or `openshell-installers`. Use the receipt's lane, source SHA,
+run ID, and attempt to compare matching jobs. Its elapsed time covers the lane
+action through artifact retention; it excludes earlier checkout and runner or
+environment waiting. Missing checkpoints remain missing measurements.
+
 Parallel workflows repeat installation setup and can use more runner minutes
 even when wall time falls. The OpenShell job cap bounds concurrent VMs; each
 security workflow keeps model calls serial. Existing model request deadlines,
