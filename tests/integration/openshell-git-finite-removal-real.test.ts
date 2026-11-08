@@ -3,9 +3,9 @@ import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 
-import type { OpenShellSandboxProviderStatus } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
 import { deployFiniteAgent, observeUntil } from "../helpers/finite-git-agent.ts";
+import { createFiniteGitProviderObservation } from "../helpers/finite-git-providers.ts";
 import {
   createFiniteGitConversation,
   finiteGitConversationFailureStage,
@@ -16,41 +16,6 @@ import { createOpenShellGitInstallation } from "../helpers/openshell-git-install
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "openshell";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "kubernetes";
-
-// Read the supplier's real receipt, without printing provider material on failure.
-function generation(status: OpenShellSandboxProviderStatus) {
-  const desired = status.receipt?.desired;
-  const observed = status.observed;
-  assert.ok(desired && observed);
-  for (const key of [
-    "attachmentEpoch",
-    "providerEnvRevision",
-    "configRevision",
-    "policyHash",
-  ] as const) {
-    assert.ok(desired[key]);
-    assert.equal(observed[key] === desired[key], true, "supplier generation mismatch");
-  }
-  assert.equal(observed.credentialsInstalled, true);
-  assert.equal(observed.policyActive, true);
-  assert.equal(observed.launchEnvironmentInstalled, true);
-  assert.ok(observed.sessionId && observed.processInstanceId && status.networkInstanceId);
-  assert.match(observed.sequence, /^[1-9][0-9]*$/);
-  assert.ok(!status.reason || status.reason === "PROVIDER_READINESS_REASON_UNSPECIFIED");
-  assert.ok(!observed.reason || observed.reason === "PROVIDER_READINESS_REASON_UNSPECIFIED");
-  const evaluated = Date.parse(status.evaluatedTime ?? "");
-  const at = Date.parse(status.observedTime ?? "");
-  assert.ok(Number.isFinite(at) && at <= evaluated && Math.abs(Date.now() - evaluated) < 30_000);
-  return {
-    attachmentEpoch: desired.attachmentEpoch,
-    providerEnvRevision: desired.providerEnvRevision,
-    configRevision: desired.configRevision,
-    policyHash: desired.policyHash,
-    sessionId: observed.sessionId,
-    processInstanceId: observed.processInstanceId,
-    networkInstanceId: status.networkInstanceId,
-  };
-}
 
 test(
   "OpenShell retains a finite Agent after repository removal until model authority is withdrawn",
@@ -129,70 +94,12 @@ test(
         connections: origin.snapshot().connections,
         requests: origin.snapshot().requests,
       });
-      const providers = a.original.sandbox.spec?.providers;
-      assert.ok(Array.isArray(providers));
-      const named = await Promise.all(
-        providers.map(async (name: string) => {
-          const provider = await gatewayClient.getProvider(workspace, name, context.signal);
-          assert.ok(provider);
-          const profile = await gatewayClient.getProviderProfile(
-            provider.profileWorkspace || null,
-            provider.type,
-            context.signal,
-          );
-          assert.ok(profile?.definition);
-          return { name, provider, model: profile.definition.inference_capable === true };
-        }),
-      );
-      const model = named.find((entry) => entry.model);
-      const gitProviders = named.filter(
-        (entry) => !entry.model && entry.provider.type !== "oce-codex-runtime",
-      );
-      assert.ok(model);
-      assert.equal(
-        model.provider.labels["openclaw.dev/credential-source-id"],
-        fixture.modelSource.id,
-      );
-      assert.equal(gitProviders.length, 1);
-      const gitProvider = gitProviders[0]!;
-      const readStatus = async (name: string, state: string) => {
-        let receipt: string | undefined;
-        return observeUntil(
-          "supplier provider receipt",
-          context.signal,
-          async () => {
-            remaining();
-            const status = await gatewayClient.getSandboxProviderStatus(
-              workspace,
-              a.original.sandbox.name,
-              name,
-              context.signal,
-              receipt,
-            );
-            assert.ok(status.receipt?.receiptId);
-            receipt ??= status.receipt.receiptId;
-            assert.equal(status.receipt.receiptId, receipt);
-            assert.equal(status.receipt.kind, "PROVIDER_MUTATION_KIND_OBSERVE");
-            assert.equal(status.receipt.provider, name);
-            assert.equal(status.receipt.workspace, workspace);
-            assert.equal(status.receipt.desired?.sandboxId, a.target.sandboxId);
-            assert.equal(status.receipt.desired?.sandbox, a.original.sandbox.name);
-            if (
-              ["PROVIDER_READINESS_STATE_PENDING", "PROVIDER_READINESS_STATE_PERSISTED"].includes(
-                status.state,
-              )
-            ) {
-              return undefined;
-            }
-            assert.equal(status.state, state);
-            return status;
-          },
-          Math.min(30_000, remaining()),
-        );
-      };
-      const originalStatus = await readStatus(gitProvider.name, "PROVIDER_READINESS_STATE_READY");
-      const originalGeneration = generation(originalStatus);
-      assert.equal(originalStatus.receipt?.desired?.providerId, gitProvider.provider.id);
+      const providers = await createFiniteGitProviderObservation({
+        fixture,
+        agent: a,
+        signal: context.signal,
+        remaining,
+      });
       const conversation = createFiniteGitConversation({
         kube: fixture.kube,
         agent: {
@@ -374,60 +281,8 @@ test(
         },
         Math.min(180_000, remaining()),
       );
-      const reduced = async () => {
-        await sameExecution();
-        const box = await gatewayClient.getSandbox(
-          { workspace, name: a.original.sandbox.name },
-          context.signal,
-        );
-        assert.ok(box);
-        const attached = box.spec?.providers;
-        assert.ok(Array.isArray(attached));
-        assert.equal(
-          isDeepStrictEqual(
-            [...attached].sort(),
-            providers.filter((name: string) => name !== gitProvider.name).sort(),
-          ),
-          true,
-          "only the Git provider may detach",
-        );
-        const revoked = await readStatus(gitProvider.name, "PROVIDER_READINESS_STATE_REVOKED");
-        const ready = await readStatus(model.name, "PROVIDER_READINESS_STATE_READY");
-        assert.equal(revoked.receipt?.desired?.providerId, "");
-        assert.equal(ready.receipt?.desired?.providerId, model.provider.id);
-        const current = generation(revoked);
-        assert.equal(
-          isDeepStrictEqual(current, generation(ready)),
-          true,
-          "Git revocation and model readiness must share one generation",
-        );
-        assert.notEqual(current.attachmentEpoch, originalGeneration.attachmentEpoch);
-        for (const key of ["sessionId", "processInstanceId", "networkInstanceId"] as const) {
-          assert.equal(
-            current[key] === originalGeneration[key],
-            true,
-            "supplier execution changed",
-          );
-        }
-        return current;
-      };
       phase = "confirmed provider removal";
-      await observeUntil(
-        "Git provider detached",
-        context.signal,
-        async () => {
-          await sameExecution();
-          const box = await gatewayClient.getSandbox(
-            { workspace, name: a.original.sandbox.name },
-            context.signal,
-          );
-          const attached = box?.spec?.providers;
-          assert.ok(Array.isArray(attached));
-          return !attached.includes(gitProvider.name) ? true : undefined;
-        },
-        Math.min(180_000, remaining()),
-      );
-      const beforeRestartGeneration = await reduced();
+      const beforeRestartGeneration = await providers.waitForRemoval();
       phase = "worker replacement";
       const originBeforeRestart = origin.snapshot();
       const restart = await fixture.restartWorker({
@@ -440,7 +295,7 @@ test(
       assert.equal(restart.completion.workerUid, restart.afterUid);
       await checkpoint("worker-restarted", restart);
       phase = "reduced supplier generation";
-      const reducedGeneration = await reduced();
+      const reducedGeneration = await providers.readReduced();
       assert.equal(
         isDeepStrictEqual(reducedGeneration, beforeRestartGeneration),
         true,
@@ -467,7 +322,7 @@ test(
         revisionId: a.revision.id,
         ...reply,
       });
-      assert.equal(isDeepStrictEqual(await reduced(), reducedGeneration), true);
+      assert.equal(isDeepStrictEqual(await providers.readReduced(), reducedGeneration), true);
       phase = "required model withdrawal";
       remaining();
       const withdrawal = await fixture.request(

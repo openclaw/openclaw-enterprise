@@ -10,12 +10,13 @@ import type {
 import { verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
 import { deployFiniteAgent, observeUntil } from "../helpers/finite-git-agent.ts";
+import { createFiniteGitProviderObservation } from "../helpers/finite-git-providers.ts";
 import { createOpenShellGitInstallation } from "../helpers/openshell-git-installation.mjs";
 import {
   createFiniteGitConversation,
   finiteGitConversationFailureStage,
 } from "../helpers/finite-git-conversation.ts";
-import { createOpenShellGitDenial, gitHttp403Command } from "../helpers/openshell-git-denial.mjs";
+import { createOpenShellGitDenial } from "../helpers/openshell-git-denial.mjs";
 
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "openshell";
@@ -366,6 +367,21 @@ test(
           checkpoint: fixture.checkpoint,
         },
       );
+      const executable = await execute(a.target, [
+        "sh",
+        "-ceu",
+        'readlink -f "$(git --exec-path)/git-remote-https"',
+      ]);
+      const denial = createOpenShellGitDenial({
+        gatewayClient,
+        workspace,
+        sandbox: a.original.sandbox.name,
+        sandboxId: a.original.sandbox.id,
+        supervisor: a.supervisor,
+        readSupervisor: () => fixture.verifySupervisorImage(a.target),
+        executable: executable.stdout.toString("utf8").trim(),
+        signal: finiteSignal,
+      });
       assert.match(origin.repository, /^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/);
       const git =
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 git -c protocol.version=2 ls-remote --exit-code --refs https://github.com/" +
@@ -395,6 +411,12 @@ test(
       const indexA = await read(a);
       const indexB = await read(b);
       assert.notEqual(indexA, indexB, "two Agents must use distinct credentials");
+      const providers = await createFiniteGitProviderObservation({
+        fixture,
+        agent: a,
+        signal: finiteSignal,
+        remaining,
+      });
       const inTime = () => {
         remaining();
       };
@@ -405,6 +427,7 @@ test(
       // Keep A's exact upstream credential valid while OCE withdraws access. A real 503
       // leaves retirement unconfirmed; the issuer must refuse any accidental replay too.
       origin.refuseTokenRetirement(indexA);
+      const issuedBeforeRemoval = origin.snapshot().issued;
       await fixture.request("PATCH", a.path, {
         configurationId: a.configuration.id,
         repositoryBindings: [],
@@ -479,32 +502,95 @@ test(
             );
           }
           phase = step.origin;
+          assert.deepEqual((await a.readExecution()).identity, a.original.identity);
+          const baseline = await denial.snapshot();
           before = origin.snapshot();
+          const attempts = origin.gitAttemptIndices().length;
           phase = step.denied;
-          // Keep the Git error inside the workload. Ordinary transport failures do not qualify.
-          await execute(a.target, gitHttp403Command(git));
-          phase = step.signed;
-          const observation = await observeUntil(
-            "withdrawal decision for original Sandbox and revision",
-            finiteSignal,
-            async () => {
-              const next = await fixture.gitWithdrawalDenials(identity, diagnostics);
-              diagnostics.workerComparison =
-                next.workerUid === previous.workerUid ? "same" : "different";
-              assert.equal(
-                next.workerUid,
-                previous.workerUid,
-                "Worker changed inside the denial interval",
-              );
-              const fresh = next.requestIds.filter(
-                (id: string) => !previous.requestIds.includes(id),
-              );
-              diagnostics.freshRequests = new Set(fresh).size;
-              return fresh.length ? fresh : undefined;
-            },
-            Math.min(10_000, remaining()),
-          );
-          assert.equal(new Set(observation).size, 1, "ambiguous signed Git denial interval");
+          const startedAt = Date.now();
+          // Keep the raw Git error inside the workload. A transport category only
+          // qualifies with the exact, ordered supervisor evidence below.
+          const result = await execute(a.target, [
+            "sh",
+            "-ceu",
+            "set +e; error=$(" +
+              git +
+              ' 2>&1); status=$?; set -e; test "$status" -ne 0; test "$status" -ne 126; test "$status" -ne 127; case "$error" in *"returned error: 403"*|*"response 403"*) printf signed ;; *) printf transport ;; esac',
+          ]);
+          const endedAt = Date.now();
+          const category = result.stdout.toString("utf8");
+          if (category === "signed") {
+            assert.equal(mode, "live", "completed detach must refuse before HTTP");
+            phase = step.signed;
+            const observation = await observeUntil(
+              "withdrawal decision for original Sandbox and revision",
+              finiteSignal,
+              async () => {
+                const next = await fixture.gitWithdrawalDenials(identity, diagnostics);
+                diagnostics.workerComparison =
+                  next.workerUid === previous.workerUid ? "same" : "different";
+                assert.equal(
+                  next.workerUid,
+                  previous.workerUid,
+                  "Worker changed inside the denial interval",
+                );
+                const fresh = next.requestIds.filter(
+                  (id: string) => !previous.requestIds.includes(id),
+                );
+                diagnostics.freshRequests = new Set(fresh).size;
+                return fresh.length ? fresh : undefined;
+              },
+              Math.min(10_000, remaining()),
+            );
+            assert.equal(new Set(observation).size, 1, "ambiguous signed Git denial interval");
+            await fixture.checkpoint("finite-removal-live-denial", {
+              signer: "exercised",
+              boundary: "signed-access-withdrawn",
+              requestId: observation[0],
+              workerUid: previous.workerUid,
+            });
+          } else {
+            assert.equal(category, "transport");
+            const markerHost = `git-retention-${randomUUID()}.invalid`;
+            await execute(a.target, [
+              "node",
+              "-e",
+              "require('node:dns').lookup(process.argv[1], { family: 4 }, () => {});",
+              `${markerHost}.`,
+            ]);
+            const proof = await denial.expectAfter(baseline, {
+              startedAt,
+              endedAt,
+              markerHost,
+              markerEndedAt: Date.now(),
+            });
+            const next = await fixture.gitWithdrawalDenials(identity, diagnostics);
+            assert.equal(
+              next.workerUid,
+              previous.workerUid,
+              "Worker changed inside the denial interval",
+            );
+            await fixture.checkpoint("git-policy-denied", {
+              stage: mode === "live" ? "after-removal" : "after-worker-restart",
+              ...proof,
+            });
+            if (mode === "live") {
+              await fixture.checkpoint("finite-removal-live-denial", {
+                boundary: "supervisor-policy",
+                signer: "unexercised",
+                requestId: null,
+                workerUid: previous.workerUid,
+              });
+            }
+          }
+          assert.equal(origin.gitAttemptIndices().length, attempts);
+          if (mode === "replacement") {
+            assert.deepEqual(
+              origin.snapshot(),
+              before,
+              "post-detach Git must cause no origin traffic",
+            );
+          }
         } catch (error) {
           if (phase === step.signed) {
             try {
@@ -571,6 +657,11 @@ test(
         Math.min(180_000, remaining()),
       );
       inTime();
+      // Issuer refusal does not prevent local policy subtraction. Observe it before
+      // requiring a pre-HTTP denial from the replacement Worker.
+      phase = "confirmed provider removal";
+      const beforeRestartGeneration = await providers.waitForRemoval();
+      const originBeforeRestart = origin.snapshot();
       phase = "restart invocation";
       const restart = await fixture.restartWorker({
         agentId: a.agent.id,
@@ -585,15 +676,41 @@ test(
           restart.afterUid !== restart.beforeUid,
         "the replacement must name a new Worker",
       );
+      assert.equal(restart.completion.code, "REPOSITORY_ACCESS_WITHDRAWN");
+      assert.equal(restart.completion.workerUid, restart.afterUid);
+      await fixture.checkpoint("worker-restarted", restart);
+      phase = "reduced supplier generation";
+      const reducedGeneration = await providers.readReduced();
+      assert.equal(
+        isDeepStrictEqual(reducedGeneration, beforeRestartGeneration),
+        true,
+        "worker replacement changed the reduced generation",
+      );
+      assert.deepEqual(
+        origin.snapshot(),
+        originBeforeRestart,
+        "worker replacement must not replay issuance or retirement",
+      );
+      await fixture.checkpoint("finite-removal-reduced", {
+        revisionId: a.revision.id,
+        ...restart.completion,
+        ...reducedGeneration,
+      });
       await verify("replacement", restart.afterUid);
       phase = "replacement chat";
       previousReply = await conversation.turn(previousReply, remaining());
+      assert.equal(isDeepStrictEqual(await providers.readReduced(), reducedGeneration), true);
       // This extra control follows both finite Git observations and does not spend their budget.
       clearTimeout(timer);
       phase = "alternate-key mismatch";
       await conversation.rejectSubstitution(previousReply, 180_000);
       phase = "targeted retirement refusal";
       const finalOrigin = origin.snapshot();
+      assert.equal(
+        finalOrigin.issued,
+        issuedBeforeRemoval,
+        "removal must not issue replacement credentials",
+      );
       assert.equal(finalOrigin.targetedRetirementRefusals, 1, "retirement must run exactly once");
       assert.equal(
         finalOrigin.tokens.find((token: OriginToken & { index: number }) => token.index === indexA)
