@@ -87,7 +87,7 @@ before the upgrade.
       default: .metadata.annotations["storageclass.kubernetes.io/is-default-class"]}]' \
       >"$BASELINE/storageclasses.json" || exit
   "${kube[@]}" get pvc -A -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid,VOLUME:.spec.volumeName' \
-    >"$BASELINE/pvcs.txt" || exit
+    | cat >"$BASELINE/pvcs.txt" || exit
 )
 ```
 
