@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-04
-last_updated_session: authoring-run/f21567be-bf0f-4e4e-be99-a937b8cab69b
+updated: 2026-11-08
+last_updated_session: authoring-run/aa2519c0-24d1-44b0-9725-9bde7e4c2501
 ---
 
 # Compose development startup
@@ -10,10 +10,9 @@ last_updated_session: authoring-run/f21567be-bf0f-4e4e-be99-a937b8cab69b
 
 ## Overview
 
-`scripts/dev-up` starts Docker or Kubernetes Compute. Compose-backed profiles run
-PostgreSQL, migration, bootstrap, API, and worker in Compose; the Kubernetes-only
-profile runs them in the owned k3d cluster. Startup requires authenticated
-Installation and bootstrap Namespace readiness, plus Workspace readiness for OpenShell.
+`scripts/dev-up` runs PostgreSQL, migration, bootstrap, API, and worker in Compose
+or an owned k3d cluster. Startup requires authenticated Installation and bootstrap
+Namespace readiness, plus Workspace readiness for OpenShell.
 
 ## Entry Points
 
@@ -87,17 +86,14 @@ Docker Compose renders JSON; Podman YAML is converted to JSON in private tempora
 storage. `./bin/occ dev analyze-compose` enforces loopback controller and database
 publications and resolves Docker runtime image selection. The final `compose.podman.yaml` override
 mounts Podman's reported API socket at `/var/run/docker.sock` in the worker.
-The base Docker Compute
-worker disables SELinux process labeling because relabeling a host engine socket
-is unsafe; other services retain SELinux confinement. One development image
-covers migration, bootstrap, API, and worker, so `dev-up` builds it once through
-migration and starts with `--no-build`; Docker uses `up --build`. Expanded
-configuration and credentials are never printed.
-`internal/occdev/command.go` and `k3d_import.go` measure the existing command
-execution with Go's monotonic clock and report fixed timing categories through
-`timing.go`. They keep the same subprocess and cancellation context. See
-[local command diagnostics](../../reference/cli/local-development.md) for the
-output scope; concurrent durations can overlap.
+The Docker Compute worker disables SELinux process labeling because socket
+relabeling is unsafe; other services retain confinement. Migration,
+bootstrap, API, and worker share one image. `dev-up` builds through migration,
+uses `--no-build`; Docker uses `up --build`. Configuration and credentials
+are never printed.
+`command.go` and `k3d_import.go` report monotonic durations through `timing.go`. See
+[local command diagnostics](../../reference/cli/local-development.md);
+concurrent durations can overlap.
 
 For unselected runtime images, `dev-up` builds missing
 `openclaw-enterprise-runtime:quickstart` from `deploy/runtime/Dockerfile` at
@@ -394,6 +390,11 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 
 ## Debugging and Verification
 
+`upK3d` reports after cleanup; `concurrently` retains sibling cleanup failures
+preserving the selected error. First-Agent and refusal helpers validate one
+terminal stdout record from failed startup; ambiguity, success or cleanup yields none.
+Stdout does not authenticate writers. See [field meanings](../../reference/cli/local-development.md).
+
 - `node --test tests/integration/dev-up-compose.test.mjs tests/integration/dev-up.test.mjs`
   exercises profile selection, generated configuration, authenticated readiness,
   rollback, and cleanup with inert engine and cluster commands.
@@ -421,6 +422,10 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 10:46: Retain sibling cleanup failures. (authoring-run/sibling-cleanup - 2dfb98210779ba2be413f4ddf7beaa71dbc2374f)
+
+- 2026-11-08 09:54: Attribute startup failures separately from cleanup. (authoring-run/aa2519c0-24d1-44b0-9725-9bde7e4c2501 - 7db5638975981ec1400f1a4ba52da77d5fd33dce)
 
 - 2026-11-04 23:00: Overlap routing controllers and runtime preparation; preserve rollback. (authoring-run/f21567be-bf0f-4e4e-be99-a937b8cab69b - 381845c12d3694fc19f836786831bb98cbe2c3e1)
 

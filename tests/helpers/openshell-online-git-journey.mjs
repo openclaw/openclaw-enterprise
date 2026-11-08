@@ -160,6 +160,26 @@ export async function gitExpiryGateway(
       metadata: { workspace, name: "operator-service", id: "service-id", resource_version: "4" },
     };
   }
+  if (supervisor) {
+    // Stock attaches an endpointless runtime-files profile as well as the model.
+    // Keep it observable after Git detach; an absent provider must fail retention.
+    profiles["oce-codex-runtime"] = {
+      id: "oce-codex-runtime",
+      endpoints: [],
+      credentials: [],
+      files: [{ path: "runtime.json", content: "{{config.runtime_json}}" }],
+    };
+    providers[supervisor.runtimeProvider] = {
+      type: "oce-codex-runtime",
+      profile_workspace: workspace,
+      metadata: {
+        workspace,
+        name: supervisor.runtimeProvider,
+        id: "runtime-files-id",
+        resource_version: "1",
+      },
+    };
+  }
   world.retainedProviders = Object.keys(providers);
   let gitName;
   const receiptEnvironments = new Map();
@@ -382,7 +402,7 @@ export async function gitExpiryGateway(
     },
     GetSandboxProviderStatus: observe,
     DetachSandboxProvider: (req) => {
-      assert.equal(req.sandbox, sandbox);
+      assert.equal(req.sandbox, supervisor?.sandbox ?? sandbox);
       assert.equal(req.provider, gitName);
       assert.equal(req.workspace_scope.workspace, workspace);
       assert.deepEqual(world.detaches, []);
@@ -406,8 +426,8 @@ export async function gitExpiryGateway(
           network_policies: {
             ...supervisor.policy.network_policies,
             [supervisor.gitRule.name]: supervisor.gitRule,
-            ["_provider_" + model]: {
-              name: "_provider_" + model,
+            ["_provider_" + model.replaceAll("-", "_")]: {
+              name: "_provider_" + model.replaceAll("-", "_"),
               endpoints: [{ host: "api.openai.com", port: 443 }],
             },
             ["_provider_" + supervisor.runtimeProvider.replaceAll("-", "_")]: {

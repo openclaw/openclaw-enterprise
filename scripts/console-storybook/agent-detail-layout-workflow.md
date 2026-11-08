@@ -39,6 +39,20 @@ unavailable** (`revisionError`) preview still simulates HTTP 403. This null
 rejection is simulated UI proof, not a normal browser network failure or proof of
 backend persistence or deployment.
 
+Open **Pages / Agent detail / Runtime Logs Source Switch After Rate Limit**
+(`pages-agent-detail--runtime-logs-source-switch-after-rate-limit`). Wait for
+Gateway output, select **Agent (Harness)** under **Source**, then choose **Refresh
+logs** once the Agent output appears. Switch back to **Gateway** while the
+five-second retry message is visible. **Reading output…** should replace the old
+output and retry message. Wait past five seconds, while the Gateway read is still
+pending, and confirm the message stays gone. After about ten seconds from the
+switch, **gateway listening** appears. Reload to repeat.
+
+**Runtime Logs Refresh Rate Limited** (`RuntimeLogsRefreshRateLimited`)
+covers staying on the same source. Both stories use simulated responses. The
+controller-backed browser regression in `tests/browser/console-agent-logs.test.ts`
+checks the source switch through the Console API.
+
 1. Separately, open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, Storybook ID `pages-agent-detail--deployment-succeeded`).
    At both widths, confirm its H1 shows a readable Agent name as an independent
@@ -106,6 +120,15 @@ backend persistence or deployment.
    phone widths. At phone width, reload and repeat. This time, scroll to the top
    after tabbing to the button. The details still open and the reader stays at
    the top.
+   In **Refresh deployment focus when a newer version appears**, open the preview
+   in its own tab, fold **Deployment details**, and Tab to **Refresh deployment**.
+   About five seconds after queued v7 appears, its quiet poll starts and the
+   button stays enabled. Press Enter during the next six seconds. The button
+   becomes busy immediately and keeps focus as the panel switches to v8.
+   When the simulated record read fails, v8 shows a retry notice and the
+   button is enabled and still focused. Reset the story to replay. The real
+   Controller regression for this replacement is in
+   `tests/browser/console-agent-detail-2.test.ts`.
    These stories simulate responses. The real Controller browser regression in
    `tests/browser/console-deployment-activity.test.ts` additionally checks queued →
    503 → queued, queued → running, terminal completion with the diagnostics
