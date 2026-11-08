@@ -448,42 +448,77 @@ test(
         const step = phases[mode];
         await witness(step.witnessBefore);
         phase = step.signed;
-        const previous = await fixture.gitWithdrawalDenials(identity, mode === "replacement");
-        if (expectedWorker !== undefined) {
-          assert.equal(
-            previous.workerUid === expectedWorker,
-            true,
-            "replacement denial must use the named Worker",
-          );
-        }
-        phase = step.origin;
-        const before = origin.snapshot();
-        phase = step.denied;
-        // Keep the Git error inside the workload. Ordinary transport failures do not qualify.
-        await execute(a.target, [
-          "sh",
-          "-ceu",
-          "if error=$(" +
-            git +
-            ' 2>&1); then exit 1; fi; case "$error" in *"returned error: 403"*|*"response 403"*) ;; *) exit 2 ;; esac',
-        ]);
-        phase = step.signed;
-        const observation = await observeUntil(
-          "withdrawal decision for original Sandbox and revision",
-          finiteSignal,
-          async () => {
-            const next = await fixture.gitWithdrawalDenials(identity, mode === "replacement");
+        const diagnostics = {
+          mode,
+          workerReady: false,
+          workerMatches: true,
+          freshRequests: 0,
+          logReads: 0,
+          logReadSuccesses: 0,
+          logReadFailures: 0,
+          linesRead: 0,
+          parsedEvents: 0,
+          parseFailures: 0,
+          tailLimitReads: 0,
+          candidates: 0,
+          rejectedCode: 0,
+          rejectedReason: 0,
+          rejectedOperation: 0,
+          rejectedRequestId: 0,
+        };
+        let before: ReturnType<typeof origin.snapshot>;
+        try {
+          const previous = await fixture.gitWithdrawalDenials(identity, diagnostics);
+          if (expectedWorker !== undefined) {
+            diagnostics.workerMatches = previous.workerUid === expectedWorker;
             assert.equal(
-              next.workerUid,
-              previous.workerUid,
-              "Worker changed inside the denial interval",
+              previous.workerUid === expectedWorker,
+              true,
+              "replacement denial must use the named Worker",
             );
-            const fresh = next.requestIds.filter((id: string) => !previous.requestIds.includes(id));
-            return fresh.length ? fresh : undefined;
-          },
-          Math.min(10_000, remaining()),
-        );
-        assert.equal(new Set(observation).size, 1, "ambiguous signed Git denial interval");
+          }
+          phase = step.origin;
+          before = origin.snapshot();
+          phase = step.denied;
+          // Keep the Git error inside the workload. Ordinary transport failures do not qualify.
+          await execute(a.target, [
+            "sh",
+            "-ceu",
+            "if error=$(" +
+              git +
+              ' 2>&1); then exit 1; fi; case "$error" in *"returned error: 403"*|*"response 403"*) ;; *) exit 2 ;; esac',
+          ]);
+          phase = step.signed;
+          const observation = await observeUntil(
+            "withdrawal decision for original Sandbox and revision",
+            finiteSignal,
+            async () => {
+              const next = await fixture.gitWithdrawalDenials(identity, diagnostics);
+              diagnostics.workerMatches = next.workerUid === previous.workerUid;
+              assert.equal(
+                next.workerUid,
+                previous.workerUid,
+                "Worker changed inside the denial interval",
+              );
+              const fresh = next.requestIds.filter(
+                (id: string) => !previous.requestIds.includes(id),
+              );
+              diagnostics.freshRequests = new Set(fresh).size;
+              return fresh.length ? fresh : undefined;
+            },
+            Math.min(10_000, remaining()),
+          );
+          assert.equal(new Set(observation).size, 1, "ambiguous signed Git denial interval");
+        } catch (error) {
+          if (phase === step.signed) {
+            try {
+              await fixture.checkpoint("withdrawal-decision-unconfirmed", diagnostics);
+            } catch {
+              // Preserve the original observation failure if diagnostic retention fails.
+            }
+          }
+          throw error;
+        }
         phase = step.origin;
         const after = origin.snapshot();
         // Retirement has its own endpoint. No fresh Git request (including a denied GET),

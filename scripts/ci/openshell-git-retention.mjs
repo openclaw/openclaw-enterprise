@@ -179,6 +179,43 @@ export function projectOpenShellGitExpiryObservation(value) {
   return project(value, fields);
 }
 
+/** Classify only the selected runtime's denials; never retain arbitrary event fields. */
+export function selectOpenShellGitWithdrawalDenials(events, { sandboxId, revisionId }) {
+  const result = {
+    requestIds: [],
+    candidates: 0,
+    rejectedCode: 0,
+    rejectedReason: 0,
+    rejectedOperation: 0,
+    rejectedRequestId: 0,
+  };
+  for (const event of events) {
+    if (
+      event.event !== "worker.openshell-git-denied" ||
+      event.sandboxId !== sandboxId ||
+      event.revisionId !== revisionId
+    ) {
+      continue;
+    }
+    result.candidates++;
+    if (event.reasonCode !== "access_withdrawn") {
+      result.rejectedCode++;
+    } else if (
+      !["session_closed", "route_blocked", "material_unavailable"].includes(event.reason)
+    ) {
+      result.rejectedReason++;
+    } else if (event.reason === "session_closed" && event.operation !== "advertise-upload-pack") {
+      result.rejectedOperation++;
+    } else if (typeof event.requestId !== "string" || event.requestId.length === 0) {
+      result.rejectedRequestId++;
+    } else {
+      // Lookup-level withdrawal precedes operation selection, even in the original Worker.
+      result.requestIds.push(event.requestId);
+    }
+  }
+  return result;
+}
+
 /** Select matching maintenance completions before buffering their diagnostics. */
 export function projectOpenShellGitMaintenanceCompletion(value) {
   const completion = project(value, {
@@ -260,7 +297,30 @@ for (const name of [
 ]) {
   expiryDiagnostics[name] = [name, count];
 }
+const withdrawalDiagnostics = {
+  mode: ["mode", choice("live", "replacement")],
+  workerReady: ["workerReady", boolean],
+  workerMatches: ["workerMatches", boolean],
+};
+for (const name of [
+  "logReads",
+  "logReadSuccesses",
+  "logReadFailures",
+  "linesRead",
+  "parsedEvents",
+  "parseFailures",
+  "tailLimitReads",
+  "candidates",
+  "rejectedCode",
+  "rejectedReason",
+  "rejectedOperation",
+  "rejectedRequestId",
+  "freshRequests",
+]) {
+  withdrawalDiagnostics[name] = [name, count];
+}
 const events = {
+  "withdrawal-decision-unconfirmed": withdrawalDiagnostics,
   "finite-removal-live-denial": {
     boundary: ["boundary", choice("signed-access-withdrawn", "supervisor-policy")],
     signer: ["signer", choice("exercised", "unexercised")],

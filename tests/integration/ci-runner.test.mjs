@@ -5994,6 +5994,25 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     status,
     targetedRetirementRefusals: index,
   }));
+  const withdrawalDecision = {
+    event: "withdrawal-decision-unconfirmed",
+    mode: "live",
+    workerReady: true,
+    workerMatches: false,
+    freshRequests: 2,
+    logReads: 3,
+    logReadSuccesses: 2,
+    logReadFailures: 1,
+    linesRead: 2004,
+    parsedEvents: 2000,
+    parseFailures: 4,
+    tailLimitReads: 1,
+    candidates: 5,
+    rejectedCode: 1,
+    rejectedReason: 1,
+    rejectedOperation: 1,
+    rejectedRequestId: 0,
+  };
   const withdrawalRetirement = {
     event: "withdrawal-retirement-refused",
     outcome: "passed",
@@ -6124,6 +6143,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     ...finiteRemoval.map((receipt) => ({ ...receipt, credential: forbidden, output: forbidden })),
     ...withdrawalWitnesses.map((receipt) => ({ ...receipt, error: forbidden, token: forbidden })),
     { ...withdrawalRetirement, token: forbidden },
+    { ...withdrawalDecision, requestIds: [forbidden], error: forbidden },
     ...maintenanceReasons.map((reason) => ({ ...maintenanceDiagnostic, reason })),
     ...restartStages.map((stage) => ({
       event: "worker-restart-unconfirmed",
@@ -6245,6 +6265,9 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       ["unconfirmed", 403],
     ].map(([outcome, status]) => ({ ...withdrawalWitnesses[0], outcome, status })),
     { ...withdrawalRetirement, status: 204 },
+    { ...withdrawalDecision, mode: forbidden },
+    { ...withdrawalDecision, freshRequests: -1 },
+    { ...withdrawalDecision, workerMatches: forbidden },
     ...[0, 2].map((targetedRetirementRefusals) => ({
       ...withdrawalRetirement,
       targetedRetirementRefusals,
@@ -6897,6 +6920,10 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       binaryHash: sha256,
       configDigest: `sha256:${sha256}`,
     },
+  );
+  assert.deepEqual(
+    receipts.find(({ event }) => event === "withdrawal-decision-unconfirmed"),
+    { kind: retentionKind, ...withdrawalDecision },
   );
   assert.deepEqual(receipts.find(({ event }) => event === "git-expiry-observed").expiry, {
     event: "worker.openshell-git-expiry",

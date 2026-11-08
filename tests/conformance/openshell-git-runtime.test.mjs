@@ -34,6 +34,7 @@ import {
   SandboxGatewayUnavailableError,
 } from "../../packages/occ/src/errors.ts";
 import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
+import { selectOpenShellGitWithdrawalDenials } from "../../scripts/ci/openshell-git-retention.mjs";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 
 // Every field the runtime emits reaches the worker log: the production logger drops what it
@@ -590,11 +591,27 @@ test("an open Git route that loses its material says so once and names it in eac
   });
   await expectDenied(w, "material_unavailable");
   assert.equal(w.denials().at(-1).reasonCode, "access_withdrawn");
+  // A material owner can withdraw access without replacing the Worker. The installed
+  // observation must accept this actual runtime event, but not temporary unavailability.
+  const selected = { sandboxId: w.identity.sandboxId, revisionId: w.revision.id };
+  assert.deepEqual(selectOpenShellGitWithdrawalDenials(w.denials(), selected).requestIds, [
+    w.identity.requestId,
+  ]);
   assert.equal(warnings(w).at(-1).reasonCode, "access_withdrawn");
+  for (const mismatch of [{ sandboxId: "another-sandbox" }, { revisionId: "another-revision" }]) {
+    assert.deepEqual(
+      selectOpenShellGitWithdrawalDenials(w.denials(), { ...selected, ...mismatch }).requestIds,
+      [],
+    );
+  }
   w.owner.material = { absent: "unprepared" };
   await w.reconcile();
   assert.equal(await w.lookup(), undefined);
   assert.equal(w.denials().at(-1).reasonCode, "credential_unavailable");
+  assert.deepEqual(
+    selectOpenShellGitWithdrawalDenials([w.denials().at(-1)], selected).requestIds,
+    [],
+  );
 
   // Lost again after the restoration: reported again, once.
   f.owner.material = undefined;
@@ -1292,6 +1309,13 @@ test("a route another worker withdrew or expired closes with that reason, not as
     await close(f);
     await expectDenied(f, "route_blocked");
     assert.equal(f.denials().at(-1).reasonCode, "access_withdrawn");
+    assert.deepEqual(
+      selectOpenShellGitWithdrawalDenials(f.denials(), {
+        sandboxId: f.identity.sandboxId,
+        revisionId: f.revision.id,
+      }).requestIds,
+      [f.identity.requestId],
+    );
     assert.deepEqual(f.runtime.route(f.revision.id), { state: "blocked", reason });
     assert.deepEqual(f.errors(), []);
     assert.deepEqual(

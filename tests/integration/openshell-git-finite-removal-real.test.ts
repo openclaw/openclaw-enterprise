@@ -264,7 +264,7 @@ test(
         const identity = { sandboxId: a.target.sandboxId, revisionId: a.revision.id };
         // The original worker blocks the route before provider detachment too.
         // Include its mapped access_withdrawn decisions in both sides of the interval.
-        const signedBefore = await fixture.gitWithdrawalDenials(identity, true);
+        const signedBefore = await fixture.gitWithdrawalDenials(identity);
         if (expectedWorker !== undefined) {
           assert.equal(signedBefore.workerUid, expectedWorker);
         }
@@ -289,7 +289,7 @@ test(
             "fresh signed removal denial",
             context.signal,
             async () => {
-              const next = await fixture.gitWithdrawalDenials(identity, true);
+              const next = await fixture.gitWithdrawalDenials(identity);
               assert.equal(next.workerUid, signedBefore.workerUid);
               const ids = next.requestIds.filter(
                 (id: string) => !signedBefore.requestIds.includes(id),

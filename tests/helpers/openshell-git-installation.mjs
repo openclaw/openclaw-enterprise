@@ -13,6 +13,7 @@ import {
   projectOpenShellGitExpiryObservation,
   projectOpenShellGitMaintenanceCompletion,
   projectOpenShellGitRetention,
+  selectOpenShellGitWithdrawalDenials,
 } from "../../scripts/ci/openshell-git-retention.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
 import { startSkipperPrivateGitOrigin } from "../fixtures/skipper-private-git-origin.mjs";
@@ -994,27 +995,22 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     }
     return events;
   };
-  const gitWithdrawalDenials = async ({ sandboxId, revisionId }, replacement) => {
+  const gitWithdrawalDenials = async (identity, diagnostics) => {
+    if (diagnostics) {
+      diagnostics.workerReady = false;
+    }
     const pod = await worker();
     assert.ok(pod, "expected ready Worker for Git denial observation");
-    const events = await workerEvents(pod);
-    return {
-      workerUid: pod.metadata.uid,
-      requestIds: events
-        .filter(
-          (event) =>
-            event.event === "worker.openshell-git-denied" &&
-            event.sandboxId === sandboxId &&
-            event.revisionId === revisionId &&
-            event.reasonCode === "access_withdrawn" &&
-            ((event.reason === "session_closed" && event.operation === "advertise-upload-pack") ||
-              (replacement &&
-                (event.reason === "route_blocked" || event.reason === "material_unavailable"))) &&
-            typeof event.requestId === "string" &&
-            event.requestId.length > 0,
-        )
-        .map((event) => event.requestId),
-    };
+    if (diagnostics) {
+      diagnostics.workerReady = true;
+    }
+    const events = await workerEvents(pod, diagnostics);
+    const { requestIds, ...counts } = selectOpenShellGitWithdrawalDenials(events, identity);
+    // Counts describe the latest successful tail read, not repeated copies of the same event.
+    if (diagnostics) {
+      Object.assign(diagnostics, counts);
+    }
+    return { workerUid: pod.metadata.uid, requestIds };
   };
   const completedWork = async (pod, { agentId, revisionId }, accepts, observed) => {
     const events = observed ?? (await workerEvents(pod));
