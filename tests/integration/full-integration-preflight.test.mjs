@@ -56,12 +56,21 @@ async function reuseFixture() {
     workflow_run: { id: 123, head_sha: sha, head_branch: "main" },
   }));
   const get = async (path) => {
-    if (path === "/actions/workflows/ci.yml") return { id: 456, name: "CI", path: run.path };
-    if (path.includes("/runs?")) return { workflow_runs: [run] };
-    if (path.endsWith("/jobs?per_page=100")) return { total_count: jobs.length, jobs };
-    if (path.endsWith("/artifacts?per_page=100"))
+    if (path === "/actions/workflows/ci.yml") {
+      return { id: 456, name: "CI", path: run.path };
+    }
+    if (path.includes("/runs?")) {
+      return { workflow_runs: [run] };
+    }
+    if (path.endsWith("/jobs?per_page=100")) {
+      return { total_count: jobs.length, jobs };
+    }
+    if (path.endsWith("/artifacts?per_page=100")) {
       return { total_count: artifacts.length, artifacts };
-    if (path === "/actions/runs/123") return run;
+    }
+    if (path === "/actions/runs/123") {
+      return run;
+    }
     throw new Error(`Unexpected API request ${path}`);
   };
   return { rows, sha, run, jobs, artifacts, get };
@@ -80,8 +89,9 @@ test("same-SHA reuse admits only successful canonical CI jobs and immutable curr
     { path: ".github/workflows/other.yml" },
     { conclusion: "failure" },
     { run_attempt: 3 },
-  ])
+  ]) {
     assert.equal(await admitProducer(get, { ...run, ...patch }, sha, 456, rows), null);
+  }
   for (const job of jobs) {
     job.conclusion = "skipped";
     assert.equal(await admitProducer(get, run, sha, 456, rows), null, job.name);
@@ -121,7 +131,9 @@ test("same-SHA reuse waits at most twelve minutes and falls back without delayin
     now: () => elapsed,
     sleep: async (ms) => {
       elapsed += ms;
-      if (elapsed === 60_000) run.status = "completed";
+      if (elapsed === 60_000) {
+        run.status = "completed";
+      }
     },
   });
   assert.equal(admitted.runId, 123);

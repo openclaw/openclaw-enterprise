@@ -23,7 +23,9 @@ async function reusableRows() {
   ]);
   const table = JSON.parse(ci.match(/LANE_TABLE: \|\n\s*(\[[\s\S]*?\n\s*\])/)[1]);
   const node = (source) => source.match(/^  NODE_VERSION: (.+)$/m)?.[1];
-  if (!node(ci) || node(ci) !== node(full)) return [];
+  if (!node(ci) || node(ci) !== node(full)) {
+    return [];
+  }
   return rows.filter(
     (row) =>
       !freshOnly.has(row.lane) &&
@@ -53,13 +55,20 @@ function validRun(run, sha, workflowId) {
 }
 
 export async function admitProducer(get, run, sha, workflowId, rows, deadline) {
-  if (!validRun(run, sha, workflowId) || run.status !== "completed" || run.conclusion !== "success")
+  if (
+    !validRun(run, sha, workflowId) ||
+    run.status !== "completed" ||
+    run.conclusion !== "success"
+  ) {
     return null;
+  }
   const jobs = await get(
     `/actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100`,
     deadline,
   );
-  if (jobs.total_count !== jobs.jobs?.length) return null;
+  if (jobs.total_count !== jobs.jobs?.length) {
+    return null;
+  }
   for (const name of [
     "CI Required",
     "Suite Audit and Static Checks",
@@ -70,17 +79,22 @@ export async function admitProducer(get, run, sha, workflowId, rows, deadline) {
       matches.length !== 1 ||
       matches[0].status !== "completed" ||
       matches[0].conclusion !== "success"
-    )
+    ) {
       return null;
+    }
   }
   const artifacts = await get(`/actions/runs/${run.id}/artifacts?per_page=100`, deadline);
-  if (artifacts.total_count !== artifacts.artifacts?.length) return null;
+  if (artifacts.total_count !== artifacts.artifacts?.length) {
+    return null;
+  }
   const selected = [];
   for (const row of rows) {
     const matches = artifacts.artifacts.filter(
       (artifact) => artifact.name === `attempt-${run.run_attempt}-ci-results-${row.lane}`,
     );
-    if (matches.length !== 1) return null;
+    if (matches.length !== 1) {
+      return null;
+    }
     const artifact = matches[0];
     if (
       artifact.expired ||
@@ -89,8 +103,9 @@ export async function admitProducer(get, run, sha, workflowId, rows, deadline) {
       artifact.workflow_run?.id !== run.id ||
       artifact.workflow_run?.head_sha !== sha ||
       artifact.workflow_run?.head_branch !== "main"
-    )
+    ) {
       return null;
+    }
     selected.push({ lane: row.lane, id: artifact.id });
   }
   return { runId: run.id, attempt: run.run_attempt, workflowId, artifacts: selected };
@@ -105,15 +120,18 @@ export async function discoverProducer({
 }) {
   const deadline = now() + waitMilliseconds;
   const workflow = await get("/actions/workflows/ci.yml", deadline);
-  if (workflow.name !== "CI" || workflow.path !== ".github/workflows/ci.yml") return null;
+  if (workflow.name !== "CI" || workflow.path !== ".github/workflows/ci.yml") {
+    return null;
+  }
   while (now() < deadline) {
     const page = await get(
       `/actions/workflows/${workflow.id}/runs?head_sha=${sha}&event=push&branch=main&per_page=20`,
       deadline,
     );
     const run = page.workflow_runs?.find((candidate) => validRun(candidate, sha, workflow.id));
-    if (run?.status === "completed")
+    if (run?.status === "completed") {
       return admitProducer(get, run, sha, workflow.id, rows, deadline);
+    }
     await sleep(Math.min(pollMilliseconds, Math.max(0, deadline - now())));
   }
   return null;
@@ -142,14 +160,18 @@ export async function validateResults({ directory, producer, sha, get }) {
   const admitted = await admitProducer(get, run, sha, producer.workflowId, rows);
   // A rerun, expiration or changed producer identity during download invalidates
   // admission. Do not mix results from different attempts.
-  if (JSON.stringify(admitted) !== JSON.stringify(producer)) return [];
+  if (JSON.stringify(admitted) !== JSON.stringify(producer)) {
+    return [];
+  }
   const accepted = [];
   await mkdir(join(directory, "accepted"), { recursive: true });
   for (const { lane } of producer.artifacts) {
     try {
       const path = join(directory, "download", `${lane}.json`);
       const summary = JSON.parse(await readFile(path, "utf8"));
-      if (summary.scope !== "full" || summary.sourceSha !== sha || summary.lane !== lane) continue;
+      if (summary.scope !== "full" || summary.sourceSha !== sha || summary.lane !== lane) {
+        continue;
+      }
       const validation = spawnSync(
         process.execPath,
         [
@@ -167,7 +189,9 @@ export async function validateResults({ directory, producer, sha, get }) {
           maxBuffer: 2 * 1024 * 1024,
         },
       );
-      if (validation.status !== 0) continue;
+      if (validation.status !== 0) {
+        continue;
+      }
       await copyFile(path, join(directory, "accepted", `${lane}.json`));
       accepted.push(lane);
     } catch {
@@ -201,7 +225,9 @@ async function main(command) {
         signal: AbortSignal.timeout(Math.max(1, Math.min(15_000, deadline - Date.now()))),
       },
     );
-    if (!response.ok) throw new Error(`GitHub metadata HTTP ${response.status}`);
+    if (!response.ok) {
+      throw new Error(`GitHub metadata HTTP ${response.status}`);
+    }
     return response.json();
   };
   if (command === "plan") {
@@ -247,12 +273,15 @@ async function main(command) {
     } else if (command === "validate") {
       const producer = JSON.parse(await readFile(join(directory, "producer.json"), "utf8"));
       await output({ lanes: await validateResults({ directory, producer, sha, get }) });
-    } else throw new Error("Expected discover, validate or plan");
+    } else {
+      throw new Error("Expected discover, validate or plan");
+    }
   } catch (error) {
     console.log(`Full Integration reuse unavailable: ${error.message}`);
     await output(command === "discover" ? { artifact_ids: "" } : { lanes: [] });
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await main(process.argv[2]);
+}
