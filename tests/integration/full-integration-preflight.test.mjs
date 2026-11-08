@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
 import { join } from "node:path";
@@ -15,6 +15,202 @@ import {
 } from "../../scripts/ci/full-integration-preflight.mjs";
 import { selectQaMatrix, validateQaInputs } from "../helpers/qa-selection.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import {
+  admitProducer,
+  discoverProducer,
+  pollMilliseconds,
+  selectFreshLanes,
+  validateResults,
+  waitMilliseconds,
+} from "../../scripts/ci/full-integration-reuse.mjs";
+import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
+
+async function reuseFixture() {
+  const rows = (await selectFreshLanes([], "skipped")).matrix.filter(
+    (row) => !["k3d-observability-demo", "repository-credentials-container"].includes(row.lane),
+  );
+  const sha = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+  const run = {
+    id: 123,
+    run_attempt: 2,
+    head_sha: sha,
+    event: "push",
+    head_branch: "main",
+    repository: { full_name: "openclaw/openclaw-enterprise" },
+    head_repository: { full_name: "openclaw/openclaw-enterprise" },
+    workflow_id: 456,
+    path: ".github/workflows/ci.yml",
+    status: "completed",
+    conclusion: "success",
+  };
+  const jobs = [
+    "CI Required",
+    "Suite Audit and Static Checks",
+    ...rows.map((row) => row.title),
+  ].map((name) => ({ name, status: "completed", conclusion: "success" }));
+  const artifacts = rows.map((row, index) => ({
+    id: index + 1000,
+    name: `attempt-2-ci-results-${row.lane}`,
+    expired: false,
+    size_in_bytes: 1000,
+    workflow_run: { id: 123, head_sha: sha, head_branch: "main" },
+  }));
+  const get = async (path) => {
+    if (path === "/actions/workflows/ci.yml") {
+      return { id: 456, name: "CI", path: run.path };
+    }
+    if (path.includes("/runs?")) {
+      return { workflow_runs: [run] };
+    }
+    if (path.endsWith("/jobs?per_page=100")) {
+      return { total_count: jobs.length, jobs };
+    }
+    if (path.endsWith("/artifacts?per_page=100")) {
+      return { total_count: artifacts.length, artifacts };
+    }
+    if (path === "/actions/runs/123") {
+      return run;
+    }
+    throw new Error(`Unexpected API request ${path}`);
+  };
+  return { rows, sha, run, jobs, artifacts, get };
+}
+
+test("same-SHA reuse admits only successful canonical CI jobs and immutable current-attempt artifacts", async () => {
+  const fixture = await reuseFixture();
+  const { get, run, sha, rows, jobs, artifacts } = fixture;
+  assert.ok(await admitProducer(get, run, sha, 456, rows));
+  for (const patch of [
+    { head_sha: "0".repeat(40) },
+    { event: "pull_request" },
+    { head_branch: "other" },
+    { head_repository: { full_name: "someone/fork" } },
+    { workflow_id: 999 },
+    { path: ".github/workflows/other.yml" },
+    { conclusion: "failure" },
+    { run_attempt: 3 },
+  ]) {
+    assert.equal(await admitProducer(get, { ...run, ...patch }, sha, 456, rows), null);
+  }
+  for (const job of jobs) {
+    job.conclusion = "skipped";
+    assert.equal(await admitProducer(get, run, sha, 456, rows), null, job.name);
+    job.conclusion = "success";
+  }
+  for (const patch of [
+    { expired: true },
+    { name: "ci-results-checks-baseline-1" },
+    { workflow_run: { id: 999, head_sha: sha, head_branch: "main" } },
+  ]) {
+    const original = artifacts[0];
+    artifacts[0] = { ...original, ...patch };
+    assert.equal(await admitProducer(get, run, sha, 456, rows), null);
+    artifacts[0] = original;
+  }
+});
+
+test("same-SHA reuse waits at most twelve minutes and falls back without delaying credentialed lanes", async () => {
+  const { get, run, sha, rows } = await reuseFixture();
+  let elapsed = 0;
+  const sleeps = [];
+  run.status = "in_progress";
+  const sleep = async (ms) => {
+    sleeps.push(ms);
+    elapsed += ms;
+  };
+  assert.equal(await discoverProducer({ get, sha, rows, now: () => elapsed, sleep }), null);
+  assert.equal(elapsed, 720_000);
+  assert.equal(waitMilliseconds, 720_000);
+  assert.equal(pollMilliseconds, 30_000);
+  assert.ok(sleeps.every((ms) => ms === 30_000));
+  elapsed = 0;
+  const admitted = await discoverProducer({
+    get,
+    sha,
+    rows,
+    now: () => elapsed,
+    sleep: async (ms) => {
+      elapsed += ms;
+      if (elapsed === 60_000) {
+        run.status = "completed";
+      }
+    },
+  });
+  assert.equal(admitted.runId, 123);
+  assert.equal(elapsed, 60_000);
+  const fallback = await selectFreshLanes(
+    rows.map((row) => row.lane),
+    "failure",
+  );
+  assert.equal(fallback.matrix.length, 17);
+  assert.deepEqual(fallback.lanes, []);
+  const reused = await selectFreshLanes(
+    rows.map((row) => row.lane),
+    "success",
+  );
+  assert.deepEqual(
+    reused.matrix.map((row) => row.lane),
+    ["k3d-observability-demo", "repository-credentials-container"],
+  );
+  const workflow = await readFile(
+    new URL("../../.github/workflows/full-integration.yml", import.meta.url),
+    "utf8",
+  );
+  for (const lane of ["docker-model", "k3d-model", "gateway-routing", "slack", "openshell"]) {
+    const job = workflow.split(`\n  ${lane}:`)[1].split(/\n {2}[a-z][a-z-]+:/)[0];
+    assert.match(job, /needs: preflight/);
+    assert.doesNotMatch(job, /needs:.*ci-reuse/);
+  }
+});
+
+test("same-SHA reuse runs the existing full-coverage validator and rejects damaged or rerun evidence", async (t) => {
+  const { get, run, sha, rows } = await reuseFixture();
+  const producer = await admitProducer(get, run, sha, 456, rows);
+  const directory = await temporaryDirectory(t, "ci-reuse-");
+  await mkdir(join(directory, "download"));
+  const manifest = loadTestSuites(
+    fileURLToPath(new URL("../../scripts/ci/test-suites.json", import.meta.url)),
+  );
+  const lane = "postgres";
+  const summary = {
+    version: 1,
+    command: "run",
+    sourceSha: sha,
+    scope: "full",
+    lane,
+    status: "passed",
+    exitCode: 0,
+    files: manifest.lanes[lane].files.map((file) => ({
+      path: file.path,
+      status: "passed",
+      counts: { total: file.expectedTests.length },
+      tests: file.expectedTests.map((name) => ({ name, status: "passed" })),
+      cleanup: { status: "passed" },
+    })),
+  };
+  const path = join(directory, "download", `${lane}.json`);
+  await writeFile(path, JSON.stringify(summary));
+  assert.deepEqual(await validateResults({ directory, producer, sha, get }), [lane]);
+  assert.deepEqual(
+    JSON.parse(await readFile(join(directory, "accepted", `${lane}.json`))),
+    summary,
+  );
+  for (const patch of [
+    { scope: "focused" },
+    { scope: undefined },
+    { sourceSha: "0".repeat(40) },
+    { files: [] },
+    { exitCode: 1 },
+    { files: summary.files.map((file) => ({ ...file, cleanup: { status: "failed" } })) },
+    { files: summary.files.map((file) => ({ ...file, tests: [] })) },
+  ]) {
+    await writeFile(path, JSON.stringify({ ...summary, ...patch }));
+    assert.deepEqual(await validateResults({ directory, producer, sha, get }), []);
+  }
+  await writeFile(path, JSON.stringify(summary));
+  run.run_attempt = 3;
+  assert.deepEqual(await validateResults({ directory, producer, sha, get }), []);
+});
 
 test("full integration workflow carries QA and installation outcomes into selected aggregation", async (t) => {
   const directory = await temporaryDirectory(t, "qa-aggregate-");
@@ -43,6 +239,61 @@ test("full integration workflow carries QA and installation outcomes into select
         assert.deepEqual(recorded[target], { result }, `${lane}: ${target}: ${result}`);
       }
     }
+  }
+});
+
+test("full integration plans fresh fallback and attributes only published reuse to successful needs", async (t) => {
+  const directory = await temporaryDirectory(t, "reuse-plan-");
+  const output = join(directory, "output");
+  const plan = spawnSync(process.execPath, ["scripts/ci/full-integration-reuse.mjs", "plan"], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      RUNNER_TEMP: directory,
+      GITHUB_OUTPUT: output,
+      REUSED_LANES: '["postgres"]',
+      REUSE_UPLOADED: "success",
+    },
+  });
+  assert.equal(plan.status, 0, plan.stderr);
+  const values = Object.fromEntries(
+    (await readFile(output, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => {
+        const at = line.indexOf("=");
+        return [line.slice(0, at), JSON.parse(line.slice(at + 1))];
+      }),
+  );
+  assert.deepEqual(values.lanes, ["postgres"]);
+  assert.equal(values.matrix.length, 16);
+  assert.ok(!values.matrix.some((row) => row.lane === "postgres"));
+  const workflow = await readFile(
+    new URL("../../.github/workflows/full-integration.yml", import.meta.url),
+    "utf8",
+  );
+  const script = workflow
+    .split("- name: Write selected job state")[1]
+    .match(/node <<'NODE'\n([\s\S]*?)\n\s+NODE/)[1];
+  for (const result of ["success", "failure", "skipped"]) {
+    const aggregated = spawnSync(process.execPath, ["--input-type=commonjs"], {
+      input: script,
+      encoding: "utf8",
+      env: {
+        RUNNER_TEMP: directory,
+        SELECTED_LANE: "all",
+        REUSED_LANES: '["postgres"]',
+        NEEDS_JSON: JSON.stringify({
+          "ci-reuse": { result },
+          "pr-safe-same-sha": { result: "failure" },
+        }),
+      },
+    });
+    assert.equal(aggregated.status, 0, aggregated.stderr);
+    const needs = JSON.parse(await readFile(join(directory, "needs.json"), "utf8"));
+    assert.equal(needs.postgres.result, result === "success" ? "success" : "failure");
+    assert.equal(needs["postgres-auth"].result, "failure");
+    assert.equal(needs["images-packaging"].result, "missing");
   }
 });
 
@@ -428,6 +679,74 @@ test("integration environment policy rejects broad, incomplete or bypassable rul
     assert.throws(
       () => validateEnvironmentPolicy("integration-main", integrationEnvironment(), policies),
       /only the main branch/,
+    );
+  }
+});
+
+test("verified docs pushes omit runtime lanes while keeping environment policy checks", async () => {
+  const fetched = [];
+  assert.deepEqual(
+    await validateFullIntegrationPreflight({
+      env: mainRun,
+      github: approvalApi({}, fetched),
+      impactMode: "docs",
+    }),
+    { selectedLane: "docs", runAll: false },
+  );
+  assert.deepEqual(fetched, [
+    "/environments/integration-main",
+    "/environments/integration-main/deployment-branch-policies",
+  ]);
+  await assert.rejects(
+    validateFullIntegrationPreflight({
+      env: mainRun,
+      github: approvalApi({
+        "/environments/integration-main": { ...integrationEnvironment(), can_admins_bypass: true },
+      }),
+      impactMode: "docs",
+    }),
+    /disable administrator bypass/,
+  );
+  assert.equal(
+    selectLane({ eventName: "workflow_dispatch", inputLane: "all", impactMode: "docs" }),
+    "all",
+  );
+  assert.equal(
+    selectLane({ eventName: "push", ref: "refs/heads/main", impactMode: "tests" }),
+    "all",
+  );
+  const workflow = await readFile(
+    new URL("../../.github/workflows/full-integration.yml", import.meta.url),
+    "utf8",
+  );
+  const jobs = workflow
+    .slice(workflow.indexOf("\njobs:\n") + 7)
+    .split(/\n(?= {2}[a-z][a-z0-9-]+:)/);
+  for (const block of jobs) {
+    const name = /^ {2}([a-z][a-z0-9-]+):/.exec(block)?.[1];
+    const condition = /^ {4}if: (.+)$/m.exec(block)?.[1];
+    assert.ok(name && condition, "every Full Integration job has an explicit selection condition");
+    assert.equal(
+      workflowCondition(condition, {
+        github: {
+          repository: mainRun.GITHUB_REPOSITORY,
+          ref: mainRun.GITHUB_REF,
+          ref_type: "branch",
+          event_name: "push",
+          run_attempt: "1",
+        },
+        needs: {
+          preflight: { result: "success", outputs: { selected_lane: "docs", run_all: "false" } },
+          "manual-approval": { result: "skipped" },
+          "runtime-artifact": { result: "skipped" },
+          slack: { result: "skipped" },
+        },
+        inputs: {},
+        always: () => true,
+        cancelled: () => false,
+      }),
+      name === "preflight",
+      `docs push: ${name}`,
     );
   }
 });
