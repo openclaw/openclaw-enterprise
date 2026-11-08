@@ -44,6 +44,42 @@ This deletes the owned cluster and its database. It does not delete unrelated
 clusters. For the Compose control-plane variant, set
 `OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup.
 
+## Finite repository removal
+
+Select `tests/integration/openshell-git-finite-removal-real.test.ts` in the
+`openshell` lane to qualify one Agent after its repository binding is removed.
+Use the lane preparation below with the same `--file` selection for preparation
+and execution. The fixture owns a disposable Kubernetes control plane and
+PostgreSQL, a real OpenShell deployment, and a controlled HTTPS Git issuer.
+It needs the lane's authorized model credentials and immutable images.
+Both controller and runtime images must match the candidate checkout; an image
+from an earlier revision cannot be substituted by changing its label.
+
+The case first reads Git with the admitted credential and starts a real model
+conversation. It removes the binding before the original ten-minute deadline.
+The issuer refuses retirement of that exact credential with HTTP 503; direct
+HTTP 200 witnesses bracket each subsequent Git attempt. This keeps issuer
+validity separate from OpenShell's revocation of the Git provider.
+
+If the first denied request reaches the worker, it must receive a fresh signed
+`access_withdrawn` decision for the original revision. If provider detachment wins
+that race, the case requires the supervisor's ordered pre-HTTP policy refusal and
+records the signer as unexercised. It does not delay cleanup to force a signature.
+The signed-request PostgreSQL integration remains separate evidence for that boundary.
+After detachment and worker replacement, the case requires successful
+`REPOSITORY_ACCESS_WITHDRAWN` maintenance, Git revocation and model readiness on
+the same reduced supervisor generation, another ordered Git refusal without
+origin traffic or new issuance, and a reply in the original conversation and
+runtime. Finally, withdrawing required model authority must clear the active
+revision and remove the original Sandbox and Agent Pods before the same deadline.
+Queued retirement and fixture teardown do not satisfy this final assertion.
+
+`openshell-git-retention-real.test.ts` keeps the separate natural-expiry and
+two-Agent peer-read cases. The single-Agent result does not establish another
+Agent's authorized Git use after worker replacement. Local fixture, receipt and
+source checks do not establish installed acceptance: retain the selected image
+digests, case result and cleanup evidence from an actual matched-image run.
+
 ## Codex plugin installation
 
 The `plugin-install` QA scenario deploys a dedicated Codex Agent with the selected
