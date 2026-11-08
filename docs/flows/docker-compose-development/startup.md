@@ -86,12 +86,11 @@ Docker Compose renders JSON; Podman YAML is converted to JSON in private tempora
 storage. `./bin/occ dev analyze-compose` enforces loopback controller and database
 publications and resolves Docker runtime image selection. The final `compose.podman.yaml` override
 mounts Podman's reported API socket at `/var/run/docker.sock` in the worker.
-The base Docker Compute
-worker disables SELinux process labeling because relabeling a host engine socket
-is unsafe; other services retain SELinux confinement. One development image
-covers migration, bootstrap, API, and worker, so `dev-up` builds it once through
-migration and starts with `--no-build`; Docker uses `up --build`. Expanded
-configuration and credentials are never printed.
+The Docker Compute worker disables SELinux process labeling because socket
+relabeling is unsafe; other services retain confinement. Migration,
+bootstrap, API, and worker share one image. `dev-up` builds through migration,
+uses `--no-build`; Docker uses `up --build`. Configuration and credentials
+are never printed.
 `command.go` and `k3d_import.go` report monotonic durations through `timing.go`. See
 [local command diagnostics](../../reference/cli/local-development.md);
 concurrent durations can overlap.
@@ -391,10 +390,10 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 
 ## Debugging and Verification
 
-`upK3d` reports startup failures after tracked cleanup. First-Agent and refusal
-helpers accept one validated terminal stdout record from normally failed startup.
-Ambiguity, success or cleanup yields no observation. Diagnostics
-do not authenticate writers. See [field meanings](../../reference/cli/local-development.md).
+`upK3d` reports after cleanup; `concurrently` retains sibling cleanup failures
+preserving the selected error. First-Agent and refusal helpers validate one
+terminal stdout record from failed startup; ambiguity, success or cleanup yields none.
+Stdout does not authenticate writers. See [field meanings](../../reference/cli/local-development.md).
 
 - `node --test tests/integration/dev-up-compose.test.mjs tests/integration/dev-up.test.mjs`
   exercises profile selection, generated configuration, authenticated readiness,
@@ -423,6 +422,8 @@ do not authenticate writers. See [field meanings](../../reference/cli/local-deve
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 10:46: Retain sibling cleanup failures. (authoring-run/sibling-cleanup - 2dfb98210779ba2be413f4ddf7beaa71dbc2374f)
 
 - 2026-11-08 09:54: Attribute startup failures separately from cleanup. (authoring-run/aa2519c0-24d1-44b0-9725-9bde7e4c2501 - 7db5638975981ec1400f1a4ba52da77d5fd33dce)
 
