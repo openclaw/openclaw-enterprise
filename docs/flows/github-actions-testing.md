@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: 2026-11-05
-last_updated_session: authoring-run/14bcb9d6-2d4c-449d-8bbc-b64e3ef7e632
+updated: 2026-11-08
+last_updated_session: authoring-run/bafcfe3a-329e-4d07-8f36-f178b64e37d0
 ---
 
 # GitHub Actions testing flow
@@ -63,18 +63,20 @@ validates it before setup. Focused results retain expected cases, environment an
 cleanup, but `validateLaneEvidence` rejects them for full-lane aggregation,
 including one-file lanes.
 
-CI uses the event checkout without external service credentials. `CI Impact` starts independently of `Suite Audit and Static Checks`, which verifies checkout identity and runs the [documented checks](../testing/ci/required-checks.md#scenarios) in every mode. Docs mode skips test lanes. The [coverage map](../testing/ci/required-checks.md#scenarios) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. Image startup parts 1 and 2, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other jobs use `blacksmith-16vcpu-ubuntu-2404`.
+CI uses the event checkout without external service credentials. `CI Impact` starts independently of `Suite Audit and Static Checks`, which verifies checkout identity and runs the [documented checks](../testing/ci/required-checks.md#scenarios) in every mode. Docs mode skips test lanes. The [coverage map](../testing/ci/required-checks.md#scenarios) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. The workflow owns each lane’s current runner class; Kubernetes lanes require a NetworkPolicy-enforcing kernel. `runtime-image-fixture` uses `ubuntu-22.04`.
 
-The selector verifies that the tested merge has the event head as its second parent. It
-compares that tree with its first parent, the current base, using policy from the base.
+For pull requests, the selector verifies that the tested merge has the event head as
+its second parent. It compares that tree with its first parent, the current base, using
+policy from the base. For ordinary canonical main pushes, it verifies the checkout
+against `after` and compares the complete `before` to `after` range using policy from
+`before`. A missing comparison commit, forced push, or older policy retains full CI.
 Git path decoding preserves a leading UTF-8 BOM. Only a nonempty set of allowlisted
 regular Markdown changes selects docs mode; generated API references, including Markdown
 under `docs/reference/api/`, require full CI for `openapi:check`.
 
 Registered test changes may include docs and their own lane-manifest entries. CI runs
 the owning lanes from either tree, adds `checks-baseline-2` for TypeScript, and uses
-`checks-baseline-1` if only the fixture job would run. Other changes and non-PR events
-select full CI. Missing policy or unverifiable source selects full or fails closed.
+`checks-baseline-1` if only the fixture job would run. Test-only main pushes, other changes, and remaining event types select full CI. Missing policy or unverifiable source selects full or fails closed.
 
 `CI Required` rechecks the mode and selected lanes. Impact, the combined static-checks job, and selected lanes must
 succeed; other jobs must be skipped. Full and tests modes aggregate results from the same
@@ -266,6 +268,8 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 16:02: Select documentation-only main pushes from verified before-tree policy. (authoring-run/bafcfe3a-329e-4d07-8f36-f178b64e37d0 - ca3ad3c4f3ec8ec5660ec2909bd4673adf78ff90)
 
 - 2026-11-04 12:10: Isolate the Codex Git proof queue without Slack. (authoring-run/14bcb9d6-2d4c-449d-8bbc-b64e3ef7e632 - aa60a72115e342ec020d1083fb5e30c139202c84)
 

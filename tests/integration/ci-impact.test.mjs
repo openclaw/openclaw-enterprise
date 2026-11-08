@@ -1024,6 +1024,107 @@ function laneTable() {
   return JSON.parse(match[1]);
 }
 
+const mainPushEnvironment = {
+  GITHUB_EVENT_NAME: "push",
+  GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
+  GITHUB_REF: "refs/heads/main",
+};
+
+function mainPushEvent(f, overrides = {}) {
+  f.writeEvent({
+    before: f.base,
+    after: f.tested,
+    ref: "refs/heads/main",
+    repository: { full_name: "openclaw/openclaw-enterprise" },
+    forced: false,
+    deleted: false,
+    created: false,
+    ...overrides,
+  });
+}
+
+test("main push uses the before-tree policy to select and verify documentation", async (t) => {
+  const [f, shallow] = await policyFixture(t, docsChange);
+  mainPushEvent(f);
+  await f.expect("docs", mainPushEnvironment, "docs_only");
+  await shallow.expect("docs", mainPushEnvironment, "docs_only");
+  for (const changed of [
+    { forced: true },
+    { created: true },
+    { deleted: true },
+    { forced: null },
+  ]) {
+    mainPushEvent(f, changed);
+    await f.expectReason("invalid_event", mainPushEnvironment);
+    await shallow.expectReason("invalid_event", mainPushEnvironment);
+  }
+  mainPushEvent(f, { after: f.head });
+  await f.expectReason("checkout_mismatch", mainPushEnvironment);
+  await shallow.expectReason("bootstrap_checkout_mismatch", mainPushEnvironment);
+  mainPushEvent(f, { before: "0".repeat(40) });
+  await f.expectReason("checkout_mismatch", mainPushEnvironment);
+  await shallow.expect("full", mainPushEnvironment);
+  mainPushEvent(f);
+  for (const changed of [
+    { GITHUB_REPOSITORY: "another/repository" },
+    { GITHUB_REF: "refs/heads/another" },
+    { GITHUB_EVENT_NAME: "workflow_dispatch" },
+  ]) {
+    await f.expectReason("non_pr_event", { ...mainPushEnvironment, ...changed });
+    await shallow.expectReason("bootstrap_non_pr_event", { ...mainPushEnvironment, ...changed });
+  }
+});
+
+test("main push compares every commit since before, not just the last commit", async (t) => {
+  const [f, shallow] = await policyFixture(t, docsChange, {
+    moveMain: ({ put }) => put("src/main.ts", "export const changed = true;\n"),
+  });
+  mainPushEvent(f);
+  await f.expectReason("ineligible_change", mainPushEnvironment);
+  // A shallow checkout lacking the before commit must fail closed.
+  await shallow.expect("full", mainPushEnvironment);
+});
+
+test("main push keeps tests, policy changes, symlinks and executable docs in full mode", async (t) => {
+  for (const change of [
+    ({ put }) => put("tests/integration/ci-impact.test.mjs"),
+    ({ put }) => put(".github/workflows/ci.yml"),
+    ({ put }) => put("scripts/ci/impact.mjs", policy + "\n// changed\n"),
+    ({ put, repo }) => {
+      put("docs/executable.md");
+      chmodSync(join(repo, "docs/executable.md"), 0o755);
+    },
+    ({ repo }) => {
+      mkdirSync(join(repo, "docs"));
+      symlinkSync("../base.txt", join(repo, "docs/link.md"));
+    },
+  ]) {
+    const [f, shallow] = await policyFixture(t, change);
+    mainPushEvent(f);
+    await f.expect("full", mainPushEnvironment);
+    await shallow.expect("full", mainPushEnvironment);
+  }
+});
+
+test("main push cannot execute its new policy or narrow with an old policy", async (t) => {
+  const marker = join(temporaryDirectorySync(t, "ci-push-marker-"), "untrusted-marker");
+  const [f, shallow] = await policyFixture(t, ({ put }) => {
+    put("scripts/ci/impact.mjs", untrustedSelector(marker, "mode=docs\\n"));
+    put("docs/change.md");
+  });
+  mainPushEvent(f);
+  await shallow.expectReason("ineligible_change", mainPushEnvironment);
+  assert.equal(existsSync(marker), false);
+  const old = await fixture(t, docsChange, {
+    "scripts/ci/impact.mjs": `import { appendFileSync } from "node:fs";
+if (process.argv[2] === "--github-output") appendFileSync(process.argv[3], "mode=full\\nreason=non_pr_event\\n");
+else if (process.argv[3] !== "full") process.exit(1);
+`,
+  });
+  mainPushEvent(old);
+  await (await shallowBootstrap(old)).expectReason("non_pr_event", mainPushEnvironment);
+});
+
 test("the checked-in policy can select a documentation-only pull request", async (t) => {
   // Use the actual Git mode so a policy the bootstrap rejects cannot pass by
   // being recreated with a different mode in the fixture.
