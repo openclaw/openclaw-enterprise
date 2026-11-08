@@ -460,7 +460,9 @@
         "one selected repository renews beyond its original session without replacing the execution and denies withdrawn approval",
         "an expired acknowledged launch refuses a pending successor after recipient changes",
         "an expired acknowledged launch refuses a pending successor after approval changes",
-        "a cold worker persists redeploy-required standing Git status without renewing it"
+        "a cold worker persists redeploy-required standing Git status without renewing it",
+        "a cold worker after session expiry checks expired-original-pods",
+        "a cold worker after session expiry checks expired-replaced-supervisor"
       ]
     },
     {
