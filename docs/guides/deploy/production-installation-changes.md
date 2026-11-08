@@ -26,8 +26,8 @@ set -euo pipefail
 cd /secure/src/openclaw-enterprise-installed # checkout of the deployed source revision
 cp /secure/occ/installation.yaml /secure/occ/installation.yaml.before
 # Edit /secure/occ/installation.yaml and review the diff, then:
-export OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' /secure/occ/values.yaml)"
-export OCC_INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' /secure/occ/values.yaml)"
+OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' /secure/occ/values.yaml)"
+OCC_INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' /secure/occ/values.yaml)"
 jq -n --arg key "$OCC_INSTALLATION_KEY" --rawfile document /secure/occ/installation.yaml \
   '{data: {($key): ($document | @base64)}}' |
   kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
