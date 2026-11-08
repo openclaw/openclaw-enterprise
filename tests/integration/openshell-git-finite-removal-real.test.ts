@@ -346,6 +346,8 @@ test(
       phase = "binding removal";
       remaining();
       origin.refuseTokenRetirement(index);
+      // Keep one monotonic baseline across removal, observation gaps and retirement.
+      const issuedBeforeRemoval = origin.snapshot().issued;
       await fixture.request("PATCH", a.path, {
         configurationId: a.configuration.id,
         repositoryBindings: [],
@@ -514,7 +516,11 @@ test(
       );
       remaining();
       const final = origin.snapshot();
-      assert.equal(final.issued, beforeReply.issued);
+      assert.equal(
+        final.issued,
+        issuedBeforeRemoval,
+        "removal must not issue replacement credentials",
+      );
       assert.equal(final.targetedRetirementRefusals, 1);
       assert.equal(
         final.tokens.find((token: { index: number; revoked: boolean }) => token.index === index)
