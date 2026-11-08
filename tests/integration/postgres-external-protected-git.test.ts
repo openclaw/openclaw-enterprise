@@ -2251,10 +2251,23 @@ function externalGitJourney(
               ?.state === "succeeded" || undefined
           );
         });
-        const resumed = await f.advanceMaintenance(revision);
+        // Removal can finish while the worker has already claimed the ordinary observation.
+        // Count the pending chain, then advance queued work without replacing its selected key.
+        const resumed = await pool.query<{ idempotency_key: string; actor_id: string }>(
+          `SELECT idempotency_key, actor_id FROM occ.controller_work
+           WHERE revision_id = $1 AND state IN ('queued', 'claimed') AND idempotency_key LIKE $2`,
+          [revision.id, `agent_revision:${revision.id}:maintenance:%`],
+        );
         assert.equal(resumed.rowCount, 1, "one ordinary maintenance chain resumes");
-        assert.equal(resumed.rows[0].actor_id, who, "original deployment actor owns maintenance");
-        const maintenance = { id: agentId, idempotencyKey: resumed.rows[0].idempotency_key };
+        const [resumedWork] = resumed.rows;
+        assert.ok(resumedWork);
+        await pool.query(
+          `UPDATE occ.controller_work SET available_at = clock_timestamp()
+           WHERE idempotency_key = $1 AND state = 'queued'`,
+          [resumedWork.idempotency_key],
+        );
+        assert.equal(resumedWork.actor_id, who, "original deployment actor owns maintenance");
+        const maintenance = { id: agentId, idempotencyKey: resumedWork.idempotency_key };
         await f.work(maintenance, "succeeded");
         assert.equal(
           (await f.workResult(maintenance)).rows[0].reason_code,
