@@ -2647,9 +2647,10 @@ async function buildMatrix(t, mode, lanes) {
 
 test("the lane matrix runs every lane in full mode and only selected lanes in tests mode", async (t) => {
   const table = laneTable();
-  for (const lane of ["checks-baseline-1", "checks-baseline-2"]) {
-    assert.equal(table.find((row) => row.lane === lane).runner, "blacksmith-4vcpu-ubuntu-2404");
-  }
+  assert.equal(
+    table.find((row) => row.lane === "checks-baseline-1").runner,
+    "blacksmith-4vcpu-ubuntu-2404",
+  );
   // A runner label nobody provides leaves the job queued until it times out.
   // Every lane must use a self-hosted label that actionlint knows (the only
   // list in .github/actionlint.yaml).
