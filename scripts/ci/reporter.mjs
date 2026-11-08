@@ -264,6 +264,32 @@ function safeMeasurement(value) {
       ? { kind: value.kind, outcome: value.outcome }
       : undefined;
   }
+  if (isRecord(value) && value.kind === "local-first-agent-startup-failure") {
+    if (
+      ![
+        "unknown",
+        "canceled",
+        "deadline",
+        "routing",
+        "network-verification",
+        "network-cleanup",
+        "registry-detach",
+        "platform-namespace",
+        "openshell-preparation",
+        "rollback",
+      ].includes(value.primaryStage) ||
+      typeof value.cleanupFailed !== "boolean" ||
+      typeof value.parentContextDone !== "boolean"
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      primaryStage: value.primaryStage,
+      cleanupFailed: value.cleanupFailed,
+      parentContextDone: value.parentContextDone,
+    };
+  }
   if (isRecord(value) && value.kind === "local-first-agent-setup-point") {
     if (
       ![
