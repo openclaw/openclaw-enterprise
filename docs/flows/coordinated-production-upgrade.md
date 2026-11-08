@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-07"
-last_updated_session: "authoring-run/4adaf10b-d7e7-46e1-8f30-65993c797458"
+updated: "2026-11-08"
+last_updated_session: "authoring-run/cd7fae84-40fe-4d7a-bfe0-aff970e961db"
 ---
 
 # Production image upgrade flow
@@ -69,14 +69,14 @@ graph TD
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
-Before protected reads, evidence writes or cluster access, `HEAD` must match
-`--source-revision`. Changed, extra, missing or symlinked chart files and baseline/evidence aliases
-inside the chart are rejected. Other edits and image provenance remain unchecked.
+Before reads or writes, reject nonempty
+[Helm target/TLS overrides](../guides/deploy/production-upgrade.md).
+`HEAD` must match `--source-revision`; chart changes, symlinks and internal
+evidence/baseline aliases are rejected. Other edits and image provenance remain unchecked.
 
 Resume binds the evidence directory's path, device and inode; aliases share its
-lock. Any `completed` entry refuses resume before live calls or evidence changes.
-Runtime upgrades lock the private sibling dispatch journal, separate from restored
-evidence.
+lock. Resume checks saved parameters under lock, then rejects `completed`.
+Runtime upgrades lock the private sibling dispatch journal separately from evidence.
 
 `matches_yaml` compares ordered candidate YAML mappings, including images, with
 the [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
@@ -340,6 +340,8 @@ undoing prior merges. Rename keys are literal, including `constructor` and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 12:18: Reject Helm target overrides. (authoring-run/cd7fae84-40fe-4d7a-bfe0-aff970e961db - 4566d20b8ef66a3268e27bceac946765ecd5d336)
 
 - 2026-11-07 03:01: Freeze reviewed controller compatibility evidence. (authoring-run/4adaf10b-d7e7-46e1-8f30-65993c797458 - ada47832cb112f255f6c51d34dae37acce9760cd)
 

@@ -42,6 +42,12 @@ import { loadYaml } from "../helpers/qa-utils.mjs";
 import { registerDispatchRestoreTests } from "../helpers/production-upgrade-dispatch-restore.ts";
 
 const execute = promisify(execFile);
+const helmTargetOverrides = [
+  "HELM_KUBEAPISERVER",
+  "HELM_KUBECAFILE",
+  "HELM_KUBETLS_SERVER_NAME",
+  "HELM_KUBEINSECURE_SKIP_TLS_VERIFY",
+];
 const readyCapability = { status: 200, body: '{"durableAdmissionVersion":1}' };
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const sourceRevision = (
@@ -1418,6 +1424,7 @@ async function fixture(
     olderDraftRules = false,
     unavailableDraftResolver = false,
     afterDeploy,
+    environment = {},
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "occ-upgrade-recovery-"));
@@ -1707,6 +1714,9 @@ async function fixture(
     OCC_URL: "https://occ.example.invalid",
     OCC_SERVICE_KEY_FILE: join(directory, "key"),
   };
+  for (const variable of helmTargetOverrides) {
+    delete env[variable];
+  }
   return {
     directory,
     evidence,
@@ -1724,7 +1734,10 @@ async function fixture(
     executionReads: api?.executionReads ?? [],
     accessReviews: api?.reviews ?? [],
     run: (...extra) => {
-      const result = execute(script, [...args, ...extra], { cwd: repository, env });
+      const result = execute(script, [...args, ...extra], {
+        cwd: repository,
+        env: { ...env, ...environment },
+      });
       upgradeProcess = result.child;
       return result;
     },
@@ -2073,6 +2086,51 @@ test("Agent continuity finishes before the terminal Helm identity check", async 
   assert.equal(state.version, 3);
   assert.equal(state.helmSubmissions, 1);
   assert.equal(state.dispatches, 0);
+});
+
+test("Upgrade rejects inherited Helm target overrides before external calls or evidence writes", async (t) => {
+  for (const variable of helmTargetOverrides) {
+    await t.test(variable, async (t) => {
+      const value = "private-target-override";
+      const f = await fixture(t, { controllerOnly: true, environment: { [variable]: value } });
+      // Helm accepts these independently of --kubeconfig/--kube-context. Refuse
+      // before either command protocol or recovery evidence can use another target.
+      await assert.rejects(f.run(), (error) => {
+        assert.match(error.stderr, new RegExp(`unset ${variable}`));
+        assert.match(error.stderr, /selected kubeconfig/);
+        assert.equal(error.stderr.includes(value), false);
+        return true;
+      });
+      assert.equal(f.commands.length, 0);
+      assert.equal(existsSync(f.evidence), false);
+    });
+  }
+});
+
+test("Resume refuses inherited Helm target changes without altering accepted upgrade evidence", async (t) => {
+  const environment = {};
+  const f = await fixture(t, { controllerOnly: true, environment });
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  const parameters = await readFile(join(f.evidence, "parameters.json"), "utf8");
+  const submission = await readFile(join(f.evidence, "helm-started"), "utf8");
+  const commands = f.commands.length;
+  const events = await f.events();
+  // A changed shell environment must not redirect reconciliation of an accepted
+  // submission, even when the recorded kubeconfig and all arguments still match.
+  for (const variable of helmTargetOverrides) {
+    environment[variable] = "private-target-override";
+    await assert.rejects(f.run("--resume"), new RegExp(`unset ${variable}`));
+    delete environment[variable];
+    assert.equal(f.commands.length, commands);
+    assert.deepEqual(await f.events(), events);
+    assert.equal(await readFile(join(f.evidence, "parameters.json"), "utf8"), parameters);
+    assert.equal(await readFile(join(f.evidence, "helm-started"), "utf8"), submission);
+    assert.equal(existsSync(join(f.evidence, ".upgrade-lock")), false);
+  }
+  await f.run("--resume");
+  assert.ok(existsSync(join(f.evidence, "completed")));
+  assert.equal((await f.state()).helmSubmissions, 1);
 });
 
 test("Agent continuity rejects explicitly empty selection before external calls", async (t) => {
