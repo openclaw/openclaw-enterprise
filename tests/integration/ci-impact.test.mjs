@@ -1277,17 +1277,21 @@ test("full-integration lanes read NODE_BASE_IMAGE from a variable their environm
   }
 });
 
-test("full-integration runs kernel- and sandbox-sensitive same-SHA lanes on ci.yml's runner", () => {
+test("full-integration uses ordinary CI runners for kernel, sandbox, and image lanes", () => {
   // Hosted ubuntu-24.04 refuses Chromium's sandbox, which PostgreSQL Authentication's
   // sign-in cases turn on (finding 1383), and the k3d lanes need a kernel that enforces
   // NetworkPolicy. These lanes must run where ci.yml runs them.
-  const job = loadYaml(".github/workflows/full-integration.yml").jobs["pr-safe-same-sha"];
-  const expression = job["runs-on"].replace(/^\$\{\{\s*|\s*\}\}$/g, "");
-  const runnerFor = (lane) =>
-    runInNewContext(expression, {
-      matrix: { lane },
-      startsWith: (value, prefix) => value.startsWith(prefix),
-    });
+  const jobs = loadYaml(".github/workflows/full-integration.yml").jobs;
+  const job = jobs["pr-safe-same-sha"];
+  const runnerFor = (target, lane) => {
+    const runner = target["runs-on"];
+    return runner.startsWith("${{")
+      ? runInNewContext(runner.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), {
+          matrix: { lane },
+          startsWith: (value, prefix) => value.startsWith(prefix),
+        })
+      : runner;
+  };
   const ciRunners = new Map(laneTable().map((row) => [row.lane, row.runner]));
   const lanes = job.strategy.matrix.include.map((entry) => entry.lane);
   const pinned = lanes.filter(
@@ -1298,7 +1302,11 @@ test("full-integration runs kernel- and sandbox-sensitive same-SHA lanes on ci.y
     assert.ok(pinned.includes(lane), lane);
   }
   for (const lane of pinned) {
-    assert.equal(runnerFor(lane), ciRunners.get(lane), lane);
+    assert.equal(runnerFor(job, lane), ciRunners.get(lane), lane);
+  }
+  const images = jobs["image-lanes-same-sha"];
+  for (const { lane } of images.strategy.matrix.include) {
+    assert.equal(runnerFor(images, lane), ciRunners.get(lane), lane);
   }
 });
 
