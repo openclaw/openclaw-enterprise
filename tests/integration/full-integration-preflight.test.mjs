@@ -157,7 +157,7 @@ test("same-SHA reuse waits at most twelve minutes and falls back without delayin
     "utf8",
   );
   for (const lane of ["docker-model", "k3d-model", "gateway-routing", "slack", "openshell"]) {
-    const job = workflow.split(`\n  ${lane}:`)[1].split(/\n  [a-z][a-z-]+:/)[0];
+    const job = workflow.split(`\n  ${lane}:`)[1].split(/\n {2}[a-z][a-z-]+:/)[0];
     assert.match(job, /needs: preflight/);
     assert.doesNotMatch(job, /needs:.*ci-reuse/);
   }
