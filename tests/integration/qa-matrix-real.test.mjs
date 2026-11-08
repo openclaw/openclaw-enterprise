@@ -77,6 +77,16 @@ test(
         () => verifyQaSandboxPolicy(artifacts, "plugin-install"),
       );
     }
+    if (selection.harnessOverrides) {
+      const { verifyQaHarnessOverrides } = await import("../helpers/qa-harness-overrides.mjs");
+      await stage(
+        context,
+        "kubernetes/OpenShell",
+        "revision-owned model destinations and withdrawal",
+        () => verifyQaHarnessOverrides(context, artifacts, selection.presets),
+        "harness-overrides",
+      );
+    }
     if (selection.linearRead) {
       const { verifyOpenShellLinearRead } = await import("../helpers/openshell-linear-read.mjs");
       await stage(

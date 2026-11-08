@@ -120,7 +120,7 @@ const CONSOLE_ASSETS = new Map([
   [
     "/console/preset-variables.mjs",
     {
-      path: new URL("../../../packages/contracts/src/preset-variables.mjs", import.meta.url),
+      path: new URL("../../../packages/contracts/src/preset-variables.mts", import.meta.url),
       contentType: "text/javascript; charset=utf-8",
     },
   ],

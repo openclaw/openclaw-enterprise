@@ -6,6 +6,12 @@
   "files": [
     {
       "path": "tests/integration/postgres-migration-compatibility.test.mjs",
+      "optionalEnv": [
+        "OCC_TEST_RELEASED_CONTROLLER_IMAGE",
+        "OCC_TEST_RELEASED_CONTROLLER_REVISION",
+        "OCC_TEST_CANDIDATE_CONTROLLER_IMAGE",
+        "OCC_TEST_CANDIDATE_CONTROLLER_REVISION"
+      ],
       "expectedTests": [
         "Logical restore preserves reviewed canonical and Provider migration histories",
         "First installation requires empty migration history under the migration lock",

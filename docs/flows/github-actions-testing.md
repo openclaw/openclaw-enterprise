@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: 2026-11-05
-last_updated_session: authoring-run/14bcb9d6-2d4c-449d-8bbc-b64e3ef7e632
+updated: 2026-11-08
+last_updated_session: authoring-run/d394120a-859d-45f1-ba62-9bf9dd9b66c1
 ---
 
 # GitHub Actions testing flow
@@ -63,18 +63,19 @@ validates it before setup. Focused results retain expected cases, environment an
 cleanup, but `validateLaneEvidence` rejects them for full-lane aggregation,
 including one-file lanes.
 
-CI uses the event checkout without external service credentials. `CI Impact` starts independently of `Suite Audit and Static Checks`, which verifies checkout identity and runs the [documented checks](../testing/ci/required-checks.md#scenarios) in every mode. Docs mode skips test lanes. The [coverage map](../testing/ci/required-checks.md#scenarios) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. Image startup parts 1 and 2, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other jobs use `blacksmith-16vcpu-ubuntu-2404`.
+CI uses the event checkout without external service credentials. `CI Impact` selects coverage independently of `Suite Audit and Static Checks`, which verifies checkout identity and runs in every mode. The [coverage map](../testing/ci/required-checks.md#scenarios) lists ordinary lanes and the separate `runtime-image-fixture`. The workflow owns runner classes; Kubernetes lanes require a NetworkPolicy-enforcing kernel.
 
-The selector verifies that the tested merge has the event head as its second parent. It
-compares that tree with its first parent, the current base, using policy from the base.
+Pull requests compare the verified merge with its first parent using that parent’s
+policy; the second parent must match the event head. Canonical main pushes compare
+the complete `before` to verified `after` range using `before` policy. Missing history,
+forced pushes, and older policies retain full CI.
 Git path decoding preserves a leading UTF-8 BOM. Only a nonempty set of allowlisted
 regular Markdown changes selects docs mode; generated API references, including Markdown
 under `docs/reference/api/`, require full CI for `openapi:check`.
 
 Registered test changes may include docs and their own lane-manifest entries. CI runs
 the owning lanes from either tree, adds `checks-baseline-2` for TypeScript, and uses
-`checks-baseline-1` if only the fixture job would run. Other changes and non-PR events
-select full CI. Missing policy or unverifiable source selects full or fails closed.
+`checks-baseline-1` if only the fixture job would run. Test-only main pushes, other changes, and remaining event types select full CI. Missing policy or unverifiable source selects full or fails closed.
 
 `CI Required` rechecks the mode and selected lanes. Impact, the combined static-checks job, and selected lanes must
 succeed; other jobs must be skipped. Full and tests modes aggregate results from the same
@@ -82,22 +83,14 @@ source. Docs mode produces no test artifacts. The impact summary shows mode, fix
 and accepted lanes; it omits paths and raw output. Selector errors fail the job, and missing
 evidence is reported as unavailable.
 
-For full-mode PRs, `affected-packages` verifies merge identity and checkout cleanliness, then reports workspace dependents. This advisory neither selects tests nor gates `CI Required`.
+For full-mode PRs, `affected-packages` verifies the checkout and reports dependents; it does not select tests or gate CI. Base-loaded policy cannot prevent PR changes to the workflow itself.
 
-A PR can change the workflow loaded from its merge checkout despite base-loaded
-policy. Separately trusted enforcement is a deployment decision, not an
-established source property.
+Full Integration checks out `github.sha`. Verified docs-only main pushes omit runtime lanes; other pushes select `all`. Manual dispatches
+require `integration-main-approval` and verified dispatcher, team and environment policy.
+A push may reuse same-SHA CI results after the [bounded admission and publication checks](../testing/ci/full-integration.md#results-and-limits);
+otherwise it runs fresh. Credentialed lanes do not wait for reuse.
 
-Full Integration checks out `github.sha`. Main pushes select `all`. Manual main
-dispatches require secret-free `integration-main-approval`. Preflight checks
-the team rule, dispatcher ID, triggering login and environment policy.
-
-Main pushes share a queue. Each dispatch waits separately for approval.
-Slack Live serializes access to its channel and app. Local Kubernetes Installation
-and installed Skipper Git each serialize per branch across pushes and dispatches.
-All three queues retain waiting jobs. Test jobs verify repository, main branch
-and event. Push retries use the original commit. Manual retries require a fresh
-approved dispatch. See [approval setup](../testing/ci/configuration.md#environments).
+Main pushes share a queue; dispatches await approval separately. Slack Live serializes channel/app access. Installation and installed Skipper Git serialize per branch. These queues retain waiting jobs. Jobs verify repository, branch and event. Push retries retain their source; manual retries require a new [approved dispatch](../testing/ci/configuration.md#environments).
 
 `all` selects every suite. QA waits for Slack even after failure. Cancellation
 stops QA. Aggregation requires the selected results.
@@ -128,17 +121,22 @@ These lanes use `--no-rollback`; workflows own teardown after capture, while
 local callers use the failed state file. Observation failures preserve the original error. `nodeLogExcerpt` orders Docker streams
 and retry summaries by full UTC timestamp precision using locale-independent ASCII comparison ([CI guide](../testing/ci.md)).
 
-Tests delete Agent namespaces and their events before file exit. While each file
-runs, `scripts/ci/run-tests.mjs:runFile` watches Compute-managed Pods and events
-in ready k3d clusters; `scripts/ci/k3d-diagnostics.mjs:projectAgentNamespaceActivity`
-appends Pod transitions and those namespaces' events to the report under
-`agentNamespaces` on pass or failure. Each file retains at most 200 Pod and 200
-event records, and the report retains 40 files. Messages are redacted and
-truncated, and Pod specs dropped. Each file streams raw watches to its own files
-in the cluster directory and removes them when done. Watches are cluster-wide, so
-under `fileConcurrency` a record can include a sibling's namespaces. A failed
-start logs `Agent namespace activity unavailable`. Each lane that writes the
-artifact uploads it.
+`scripts/ci/run-tests.mjs:runFile` watches Compute-managed Pods and namespace
+events in ready k3d clusters before tests delete them. On pass or failure,
+`scripts/ci/k3d-diagnostics.mjs:projectAgentNamespaceActivity` records
+`agentNamespaces`: up to 200 Pod and 200 event records per file and cluster, retaining 40
+entries. Messages are redacted and truncated; Pod specs are omitted. Raw watches
+use separate files in the cluster directory and are removed on completion.
+Cluster-wide watches can include sibling namespaces under `fileConcurrency`.
+Failed starts log `Agent namespace activity unavailable`. Each producing lane
+uploads the artifact.
+
+API or worker Deployment readiness can fail before any Agent Pod exists.
+`tests/helpers/kubernetes-real.mjs:waitForDeploymentAvailable` captures logs
+and Pod/event snapshots; the artifact retains the last eight `containerLogs`
+records. Without configured runner capture, it emits a projected test diagnostic.
+Snapshots marked `unavailable` are failed observations; missing records do not
+prove healthy startup.
 
 Dedicated Codex preparation and the operator's offline profile generator share
 `scripts/lib/codex-seccomp-profile.mjs:deriveCodexBwrapProfile`. Preparation
@@ -261,6 +259,10 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 16:09: Reuse admitted same-source ordinary CI results before fresh Full Integration execution. (authoring-run/d394120a-859d-45f1-ba62-9bf9dd9b66c1 - 832dbfca29eca2dd3cb98bd9dd5d803d9100911e)
+
+- 2026-11-08 16:02: Select documentation-only main pushes from verified before-tree policy. (authoring-run/bafcfe3a-329e-4d07-8f36-f178b64e37d0 - ca3ad3c4f3ec8ec5660ec2909bd4673adf78ff90)
 
 - 2026-11-04 12:10: Isolate the Codex Git proof queue without Slack. (authoring-run/14bcb9d6-2d4c-449d-8bbc-b64e3ef7e632 - aa60a72115e342ec020d1083fb5e30c139202c84)
 

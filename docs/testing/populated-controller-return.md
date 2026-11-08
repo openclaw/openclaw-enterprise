@@ -35,9 +35,8 @@ Stage two distinct, compatible controller images in Docker and k3d. Use
 [verified publications](../guides/deploy/published-images.md#check-publication-and-source)
 or transfer the OCI artifacts from successful
 [native image checks](../release/containers.md#check-native-images-without-publication).
-Public registry publication is not required. For transferred artifacts, retain
-the source SHA, native build/check run and attempt, platform receipt, and OCI
-blob hashes. Verify the archive's root, platform receipt, and reachable blobs
+Public registry publication is not required. For transferred artifacts,
+[retain and verify native export evidence](../release/containers.md#retain-native-export-evidence)
 before loading the images; the source revision label alone does not establish
 approval.
 
@@ -84,7 +83,30 @@ of the Installation.
 
 See `proof.json` for completed checks and timings and `return-progress.json` for
 the last phase started. Both are in the private evidence directory reported by
-the test. Inspect retained fixture resources after a failure. Set
+the test. The forward upgrade records authenticated HTTPS `GET /installation`
+samples before, during, and after the upgrade, including a failed upgrade. Each
+request has a five-second deadline; requests run serially with a one-second
+pause between observations during the upgrade. The evidence includes timestamps,
+request durations, actual gaps, received HTTP status even for invalid response
+bodies, and outcomes. Only
+HTTP 200 with the original Installation ID counts as a successful observation.
+Response bodies and credentials are omitted. If recording fails, the test reports
+the write failure alongside any upgrade failure, preserving the upgrade as the
+primary cause.
+
+Each completed observation also updates `forward-api-availability.json` in that
+same directory by atomic replacement. If the runner stops, this file retains the
+last saved observations. `upgradeSucceeded: null` means the action has not been
+recorded as finished; do not infer success or recovery from an incomplete file.
+A final boolean records whether the upgrade action succeeded, independently of
+the observed HTTP results. Process interruption does not add an `after` sample.
+This protects completed writes against process termination, not host or disk loss.
+
+These observations do not add an outage-free pass requirement. They measure the
+fixture's HTTPS route, not exact downtime, public ingress, Slack, or model
+continuity. Availability between requests remains unobserved.
+
+Inspect retained fixture resources after a failure. Set
 `OCC_TEST_PRODUCTION_TUI_KEEP=1` to retain fixture resources after a success.
 Remove the disposable cluster when you finish inspecting the evidence.
 

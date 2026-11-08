@@ -17,7 +17,7 @@ cdb38b72e36bc5d33d5b8810f8018ece1baa29a8f215b4495e495ded82bbf3c7  curl_7.88.1.or
 961b78bc48492c5693e4decb352ddd176f343260a8956f48b2887874048ef23b  curl_7.88.1-10+deb12u15.debian.tar.xz
 CHECKSUMS
 
-apt-get update
+apt-get update --error-on=any
 # A newer Debian update may carry fixes absent from these pinned sources.
 # Fail rather than silently replace it with an older local backport.
 candidate=$(apt-cache policy curl | sed -n 's/^  Candidate: //p')

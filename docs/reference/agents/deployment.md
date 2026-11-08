@@ -273,6 +273,12 @@ Agent. Each returned Agent revision requires its own authorized read; substituti
 parent does not grant access to another Agent's history. Public response shapes
 are defined by the [API reference](../api.md).
 
+## Harness settings
+
+Revisions save `harnessOverrides` and resolved settings.
+See the [provider contract](../drivers/kubernetes-compute/model-provider.md) and
+[deployment and recovery workflow](../../guides/topics/agent-revisions.md#choose-a-harness-destination).
+
 ## Guarded first deployment
 
 `POST /namespaces/:namespaceId/agents/:agentId/deploy-first` accepts `key`,

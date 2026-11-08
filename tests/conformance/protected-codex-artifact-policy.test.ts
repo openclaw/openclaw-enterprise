@@ -184,7 +184,7 @@ function protectedRevision(snapshot: SandboxPolicySnapshot): AgentRevision {
     configurationGeneration: 1,
     configuration: createHarnessConfiguration("codex", "fixture"),
     gatewayManagedMode: false,
-    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {}, configuration: {} },
     compute: { id: "kubernetes", implementation: "kubernetes" },
     sandboxDriverId: snapshot.driverId,
     sandboxPolicy: snapshot,

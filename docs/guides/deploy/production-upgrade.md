@@ -1,11 +1,10 @@
 # Upgrade production images
 
-Run `scripts/upgrade-production-images` from the release checkout to change
-images in an existing Helm installation with Kubernetes Compute. Use the
-matching [OCC CLI](../cli.md#connect-to-your-installation). For a new
-installation, follow [install the production control plane](production-installation.md).
-For one Agent, follow [deploy and verify production Agents](production-agents.md).
-Plan any traffic handoff separately from this in-place upgrade.
+Run `scripts/upgrade-production-images` from the release checkout with the
+matching [OCC CLI](../cli.md#connect-to-your-installation) to upgrade an existing
+Kubernetes Compute Helm installation. For installation, see
+[production installation](production-installation.md); for one Agent, see
+[production Agents](production-agents.md). Plan traffic handoff.
 
 1. [Select and prepare the release](#prepare-the-release). Record the live
    baseline and take the backups required by the [upgrade checklist](upgrade-checklist.md).
@@ -23,9 +22,8 @@ runtime image and redeploys every running Agent concurrently. Each upgrade
 stops the API and worker during migration and rollout. Allow capacity for old
 and replacement versions to overlap.
 
-The helper checks chart paths and bytes against the selected commit before
-contacting the cluster. Keep evidence and baselines outside the chart. Keep the
-checkout unchanged and under your exclusive control.
+Before cluster access, the helper checks chart paths and bytes against the commit.
+Keep evidence/baselines outside the chart and the unchanged checkout under exclusive control.
 
 For settings changes, [prepare reviewed candidate files](#include-reviewed-settings).
 For the experimental two-cluster profile, first
@@ -33,9 +31,8 @@ For the experimental two-cluster profile, first
 
 ## Prepare the release
 
-If you retain conversations, send a unique nonsecret marker in a test
-conversation through the approved interface. Privately record its Agent and
-location.
+For retained conversations, send a unique nonsecret test marker through the
+approved interface; privately record its Agent and location.
 
 Prepare:
 
@@ -52,9 +49,9 @@ Prepare:
   database state;
 - the production kubeconfig, Helm values, Installation YAML, OCC service key,
   and optional CA bundle in protected files;
-- Bash, Python 3, Node.js, Helm, kubectl, jq, yq, cmp and mktemp on the operator host. The Kubernetes identity must create and
-  delete Pods, Secrets and NetworkPolicies and read Pod logs in the release
-  namespace;
+- Bash, Python 3, Node.js satisfying `engines.node` in the release checkout’s `package.json`, Helm, kubectl, jq, yq, cmp and mktemp on the operator host. The Kubernetes identity must
+  create and delete Jobs, Secrets and NetworkPolicies; get Jobs and Pods; list Pods;
+  read Pod logs; and get and patch Deployments in the release namespace;
 - for the bundled Collector, [refresh its config Secret](../observability.md#refresh-the-collector-configuration-on-upgrade)
   from the release checkout and restart the Collector, even for image-only
   releases. Helm leaves the Secret as is. The helper stops before mutation if
@@ -63,11 +60,10 @@ Prepare:
   restoration, and Agent-volume backups for runtime releases that can require
   runtime data restoration.
 
-For repository-enabled releases, pass both `--controller-image` and
+Repository-enabled releases require both `--controller-image` and
 `--broker-image`, even when you retain the current digest. Stage the exact operator-trusted
 images on a Linux host running as UID 1000. Docker Engine must support
-platform-specific image inspection and export. Install Python 3, Node.js and
-OpenSSL. Every node matching the control-plane selector must match the host's native
+platform-specific image inspection and export. Install OpenSSL. Every node matching the control-plane selector must match the host's native
 `linux/amd64` or `linux/arm64` architecture. Freeze eligible nodes and their labels
 during maintenance. The Kubernetes identity must list nodes, read Deployments,
 ReplicaSets and Pods, and run a read-only check in the worker container. Local
@@ -163,7 +159,7 @@ and recovery. The helper compares their references, not their contents; review
 them with the [repository installation guide](../repository-credentials/installation.md)
 before upgrading.
 
-Add either or both flags to any upgrade command below:
+Add either or both flags:
 
 ```text
 --candidate-values /secure/occ/candidate-values.yaml
@@ -173,8 +169,8 @@ Add either or both flags to any upgrade command below:
 The helper saves the reviewed inputs in its private evidence, applies the image
 selections and preserved broker endpoint, and writes the final candidate to the
 baseline paths during the upgrade. An Installation change also updates its
-Secret and restarts OCC with the new checksum. Keep candidate files unchanged
-and available at the same paths for recovery.
+Secret and restarts OCC with the new checksum. Retain unchanged candidate files
+at these paths for recovery.
 
 ### Apply other Installation changes
 
@@ -186,34 +182,42 @@ recommended resource values, separately with
 
 ## Bind the Installation once
 
-Skip this step when the live Installation Secret already has the correct
-`openclaw.dev/installation-id` annotation.
-
-After initial production bootstrap, read the Installation ID from the retained
-bootstrap key and annotate the Secret:
+After bootstrap, bind the Installation Secret using the retained key. Skip an
+already-correct `openclaw.dev/installation-id` annotation:
 
 ```bash
-export OCC_INSTALLATION_ID="$(jq -er '.meta.installationId' "$OCC_BOOTSTRAP_KEY_FILE")"
-export OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' /secure/occ/values.yaml)"
-kubectl --kubeconfig /secure/occ/kubeconfig \
-  --context '<reviewed-context>' --namespace openclaw-system \
-  annotate secret "$OCC_INSTALLATION_SECRET" \
-  openclaw.dev/installation-id="$OCC_INSTALLATION_ID"
+(
+  set -o pipefail
+  OCC_INSTALLATION_ID=$(jq -ser '
+    select(length == 1) | .[0].meta.installationId | select(type == "string") |
+    select(test("\\Ains_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\z"))
+  ' "$OCC_BOOTSTRAP_KEY_FILE") &&
+  OCC_INSTALLATION_SECRET=$(yq -o=json '.' /secure/occ/values.yaml | jq -ser '
+    select(length == 1) | .[0] | objects | .installation.secretName |
+    if . == null then "occ-installation-startup" else . end |
+    select(type == "string" and length <= 253) |
+    select(test("\\A[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*\\z"))
+  ') || { printf '%s\n' 'Invalid inputs; annotation unchanged.' >&2; exit 1; }
+  kubectl --kubeconfig /secure/occ/kubeconfig \
+    --context '<reviewed-context>' --namespace openclaw-system \
+    annotate secret "$OCC_INSTALLATION_SECRET" \
+    openclaw.dev/installation-id="$OCC_INSTALLATION_ID"
+)
 ```
 
-Do not replace a different existing ID. Investigate why the cluster and
-bootstrap record disagree.
+Never overwrite a different ID; reconcile cluster and bootstrap records.
 
 ## Rehearse before the maintenance window
 
-`--preflight-only` checks target inputs and applicable repository image pairs,
-runs a Helm server dry run, and checks startup in temporary API and worker Pods.
-Add this flag to the controller or runtime command below. Use
-`--evidence-dir "${UPGRADE_EVIDENCE}-preflight"` for this run. Writers stay
-active. After [cleanup](production-upgrade-recovery.md#clean-up-preflight-resources),
-run the same command without `--preflight-only` and with the original, unused
-`"$UPGRADE_EVIDENCE"` directory.
-Live checks repeat. Keep writer and draft freezes through recovery.
+Add `--preflight-only --evidence-dir "${UPGRADE_EVIDENCE}-preflight"` to the
+controller or runtime command. This checks inputs and repository image pairs,
+runs Helm's server dry run, and checks startup in temporary API/worker Jobs.
+Their controller-owned Pods retain chart security and NetworkPolicy labels.
+Job and child cleanup must precede Secret/policy removal; uncertain cleanup
+stops the upgrade. Writers stay active.
+After [cleanup](production-upgrade-recovery.md#clean-up-preflight-resources),
+repeat without `--preflight-only`, using the original unused `"$UPGRADE_EVIDENCE"`.
+Live checks repeat; retain writer and draft freezes through recovery.
 
 Time upgrade and recovery interruptions on an isolated, populated installation.
 Use the same command, separate endpoints, a [protected baseline](upgrade-baseline.md),
@@ -229,7 +233,19 @@ Installation with
 [split-layout tenants](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations);
 check before the maintenance window.
 
-Set the controller image and run the command without `--runtime-image`:
+Add `--controller-compatibility-results /secure/occ/controller-results.json` with
+`--controller-image` to require the native PostgreSQL `run` result from
+[released-controller qualification](../../testing/postgresql.md#released-controller-compatibility).
+Before startup Jobs or writer changes, the selected case and cleanup must pass
+for the recorded incumbent release image and selected candidate image digests.
+Index, platform-manifest and configuration digests are not interchangeable.
+
+The receipt stays [frozen through recovery](production-upgrade-recovery.md).
+Operators must establish authenticity. `sourceSha` identifies the runner checkout,
+not image revisions or worktree cleanliness. This proves neither IAM startup
+compatibility nor online or rollback safety; writers still stop.
+
+Omit `--runtime-image`:
 
 ```bash
 export CONTROLLER_IMAGE='<registry>/controller@sha256:<64-hex-digest>'
@@ -239,20 +255,31 @@ scripts/upgrade-production-images "${target[@]}" \
   --evidence-dir "$UPGRADE_EVIDENCE"
 ```
 
-For a repository-enabled release, set `BROKER_IMAGE` to the selected immutable
-broker reference and add `--broker-image "$BROKER_IMAGE"` to this command. Keep
-the protected values equal to live values; the helper preserves
-the running broker's exact hostname in the candidate. It qualifies the pair
-before cluster mutation and verifies the deployed pair and broker capability.
+For repository-enabled releases, add `--broker-image "$BROKER_IMAGE"` with the
+selected immutable broker reference. Keep protected values equal to live values;
+the helper preserves the broker hostname, qualifies the pair before mutation,
+and verifies the deployed pair and broker capability.
+
+Add `--verify-agent AGENT_ID --verify-agent-namespace NAMESPACE_ID` to check one
+running Agent. It requires enabled [runtime inspection](../../reference/cli.md#runtime-status-and-logs),
+exact Agent `read`/`operate` and active AgentRevision `read`, verified before shutdown.
+Freeze that Agent's deployment, stop and deletion through verification.
+This option cannot accompany `--runtime-image`, which changes revisions.
+
+Completion requires the original active revision, Ready workload roles and any
+observed provider Harness still running. Replacement Pod UIDs are allowed.
+This samples readiness, not routing, model or channel availability. A final-check failure leaves
+the upgraded control plane without `completed`; follow
+[recovery](production-upgrade-recovery.md#resume-an-unfinished-prepared-upgrade).
 
 If the startup preflight fails, the old release keeps serving. Inspect the
 API and worker preflight logs in the evidence directory. After a cleanup warning
 or interruption, preserve the evidence and lock and follow
 [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
 
-The helper stops the release's API and worker before updating the protected
-inputs and Installation Secret. Helm runs migration and bootstrap before it
-restores the Deployments. The helper then verifies rollout and OCC access.
+The helper stops API/worker before updating protected inputs and the Installation
+Secret. Helm migrates and bootstraps before restoring Deployments; the helper
+then verifies rollout and OCC access.
 
 Success looks like:
 

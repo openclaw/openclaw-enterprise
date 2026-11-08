@@ -16,13 +16,18 @@ during an image upgrade. Run these commands from a checkout of the installed
 controller's source commit, not the release checkout, and keep the image
 references in `values.yaml` unchanged:
 
+Run the setup once for each reviewed change. If
+`/secure/occ/installation.yaml.before` already exists, preserve it and reconcile
+the previous change before continuing. During recovery, use that original backup;
+do not repeat the backup command after editing `installation.yaml`.
+
 ```bash
 set -euo pipefail
 cd /secure/src/openclaw-enterprise-installed # checkout of the deployed source revision
 cp /secure/occ/installation.yaml /secure/occ/installation.yaml.before
 # Edit /secure/occ/installation.yaml and review the diff, then:
-export OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' /secure/occ/values.yaml)"
-export OCC_INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' /secure/occ/values.yaml)"
+OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' /secure/occ/values.yaml)"
+OCC_INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' /secure/occ/values.yaml)"
 jq -n --arg key "$OCC_INSTALLATION_KEY" --rawfile document /secure/occ/installation.yaml \
   '{data: {($key): ($document | @base64)}}' |
   kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \

@@ -146,9 +146,12 @@ while IFS= read -r argument; do
 done <<< "$source_args"
 ```
 
-CI and development launchers resolve the same manifest. An explicitly selected prebuilt runtime image
-keeps its own identity. The separate [local OpenClaw checkout test path](../../docs/testing/openshell.md)
-builds its selected checkout and records that checkout's commit.
+CI and development launchers share this manifest. Prebuilt images retain their identity;
+[local checkout tests](../../docs/testing/openshell.md) record their selected commit.
+
+## Verify runtime source
+
+Local assembly omits broad suites. Run [source verification](../../docs/flows/container-publication.md#runtime-source-verification) for runtime changes.
 
 ## Build a local runtime image
 

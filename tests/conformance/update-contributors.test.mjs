@@ -43,7 +43,10 @@ else if (endpoint.includes("/commits/")) {
   fs.writeFileSync(countFile, String(count + 1));
   response = { sha: (scenario === "branch-changed" && count > 0 ? "b" : "a").repeat(40) };
 } else if (endpoint.includes("/contributors?")) response = scenario === "invalid-pages" ? [{id: 1}] : [[{id: 2}], [{id: 1}]];
-else if (endpoint.includes("/pulls?")) response = [[{number: 9, merged_at: "2026-01-01", base: {ref: "main"}, user: {id: 1}}, {number: 10, merged_at: "2026-01-01", base: {ref: "main"}, user: null}, {number: 11, merged_at: "2026-01-01", base: {ref: "main"}, user: {id: 4}}]];
+else if (endpoint === "graphql") response = scenario === "graphql-error" ? [{errors: [{message: "Unavailable"}], data: {repository: null}}] : [
+  {data: {repository: {pullRequests: {nodes: [{number: 9, author: {id: 1}}, {number: 10, author: null}], pageInfo: {hasNextPage: true, endCursor: "first-page"}}}}},
+  {data: {repository: {pullRequests: {nodes: [{number: 11, author: {id: 4}}], pageInfo: {hasNextPage: false, endCursor: "last-page"}}}}}
+];
 else if (endpoint === "user/1") response = {id: 1, type: "User", login: "zeta"};
 else if (endpoint === "user/2") response = {id: 2, type: "User", login: "Alpha"};
 else if (endpoint === "user/3") {
@@ -94,6 +97,31 @@ test("generator refuses to lose previously credited accounts", (t) => {
   assert.equal(actual.result.status, 1);
   assert.match(actual.result.stderr, /Previously credited account 99 is missing/);
   assert.equal(actual.readme, readme);
+});
+
+test("generator preserves prior credit through an explicit account alias", (t) => {
+  const priorReadme = initialReadme.replace(
+    "<!-- contributors:end -->",
+    '<img src="https://avatars.githubusercontent.com/u/1?s=48">\n<!-- contributors:end -->',
+  );
+  const { result, readme } = run(t, "normal", {
+    readme: priorReadme,
+    correctionData: {
+      ...corrections,
+      1: { aliasOf: "2", reason: "Same contributor", url: "https://example.com/evidence" },
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Updated: 3 contributors/);
+  assert.doesNotMatch(readme, /avatars\.githubusercontent\.com\/u\/1\?/);
+  assert.equal(readme.split("avatars.githubusercontent.com/u/2?").length - 1, 1);
+});
+
+test("generator leaves the README unchanged when GraphQL returns errors", (t) => {
+  const actual = run(t, "graphql-error");
+  assert.equal(actual.result.status, 1);
+  assert.match(actual.result.stderr, /Invalid GitHub PR page/);
+  assert.equal(actual.readme, initialReadme);
 });
 
 test("generator validates correction data before collecting", (t) => {

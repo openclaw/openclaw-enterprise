@@ -16,9 +16,11 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import {
   loadInstallationConfiguration,
+  loadStartupConfigurationSnapshot,
   readPublicCaBundle,
   type InstallationRuntimeDrivers,
 } from "../../apps/controller/src/composition/installation-config.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
 import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
 import { repositoryGitAuthority } from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
@@ -227,27 +229,91 @@ test("production composition separates repository policy from protected and expl
   assert.deepEqual(scope.pushRefAllowlist, ["refs/heads/review"]);
   assert.equal(scope.pullRequestBase, "main");
   assert.equal(scope.draftPullLimit, "one-per-grant");
-  await assert.rejects(
-    load({
+  const startup = await loadStartupConfigurationSnapshot({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  const loadSnapshot = (value: typeof configuration) =>
+    loadInstallationConfiguration({
+      mode: "production",
+      packageRoot: directory,
+      startupConfiguration: { ...startup, configuration: value },
+    });
+  const unknownPolicyField = {
+    name: "ConfigurationValidationError",
+    error: {
+      details: [
+        {
+          path: "",
+          code: "UNKNOWN_FIELD",
+          message: "Configuration does not satisfy additionalProperties.",
+        },
+      ],
+    },
+  };
+  for (const misplaced of [
+    { controlSocket: "/unselected/control.sock" },
+    { publicCaPath: "/unselected/public-ca.pem" },
+  ]) {
+    const invalid = {
       ...configuration,
       repository: {
         ...configuration.repository,
-        configuration: { sessionDurationSeconds: 180, controlSocket: "/unselected/control.sock" },
+        configuration: { sessionDurationSeconds: 180, ...misplaced },
       },
-    }),
-    {
-      name: "ConfigurationValidationError",
-      error: {
-        details: [
-          {
-            path: "",
-            code: "UNKNOWN_FIELD",
-            message: "Configuration does not satisfy additionalProperties.",
-          },
-        ],
+    };
+    await assert.rejects(load(invalid), unknownPolicyField);
+  }
+  for (const replacePolicy of [false, true]) {
+    const mutable = {
+      ...configuration,
+      repository: {
+        ...configuration.repository,
+        configuration: { sessionDurationSeconds: 180 },
       },
-    },
-  );
+    };
+    let scheduled = false;
+    const validate = GitHubRepositoryPolicy.validateConfiguration;
+    const validation = t.mock.method(
+      GitHubRepositoryPolicy,
+      "validateConfiguration",
+      (value: unknown) => {
+        const errors = validate(value);
+        if (!scheduled && errors.length === 0) {
+          scheduled = true;
+          // Mutate at the next loader await, after genuine validation of the policy copy.
+          queueMicrotask(() => {
+            if (replacePolicy) {
+              mutable.repository.configuration = { sessionDurationSeconds: 90 };
+            } else {
+              Object.assign(mutable.repository.configuration, {
+                sessionDurationSeconds: 90,
+                note: "changed after validation",
+              });
+            }
+          });
+        }
+        return errors;
+      },
+    );
+    try {
+      const captured = (await loadSnapshot(mutable))!;
+      assert.equal(mutable.repository.configuration.sessionDurationSeconds, 90);
+      assert.equal(
+        captured.repositoryPolicy!.resolve({
+          namespaceId,
+          bindings: [{ repositoryRef: "source", profile: "git-write" }],
+        }).sessionDurationSeconds,
+        180,
+      );
+      assert.equal(
+        captured.repositoryGitDriver!.ref.configurationId,
+        protectedGit.repositoryGitDriver!.ref.configurationId,
+      );
+    } finally {
+      validation.mock.restore();
+    }
+  }
   await assert.rejects(
     load({
       ...configuration,
@@ -478,7 +544,6 @@ function externalGitJourney(
     const modelGateway = conversation
       ? new OpenShellCredentialGatewayDriver(modelGatewayConfiguration, {
           id: "external-journey-model",
-          modelProvider: { protocol: "openai-responses", baseUrl: conversation.baseUrl },
           backend: {
             id: "external-journey-model",
             drivers: { credential_gateway: "external-journey-model" },

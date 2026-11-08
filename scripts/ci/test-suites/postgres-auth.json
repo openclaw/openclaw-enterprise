@@ -27,7 +27,8 @@
     "tests/integration/postgres-sign-in-unmatched-callbacks.test.mjs",
     "tests/integration/postgres-github-session-cookie.test.mjs",
     "tests/integration/postgres-service-api-keys.test.mjs",
-    "tests/integration/postgres-auth-binding.test.mjs"
+    "tests/integration/postgres-auth-binding.test.mjs",
+    "tests/integration/postgres-github-team-enrollment.test.ts"
   ],
   "files": [
     {
@@ -174,6 +175,12 @@
       "path": "tests/integration/postgres-auth-binding.test.mjs",
       "expectedTests": [
         "PostgreSQL auth binding pins transactions, rolls back failures, and preserves caller pool ownership"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-github-team-enrollment.test.ts",
+      "expectedTests": [
+        "GitHub team enrollment creates one account with configured Group access and refuses unsafe enrollment"
       ]
     }
   ]

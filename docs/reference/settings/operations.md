@@ -85,9 +85,9 @@ through `0050_agent_credential_sources`; later shapes add one each, through
 63 receipts mean `preGatewayManagedMode`; 64 mean `preSelectedRepositorySet`,
 65 mean `preAgentDeployIntent`; 66 mean `preAgentCredentialSourceLimit`;
 67 mean `preAgentPluginDriver`; 68 mean `preConnectionTemplates`;
-69 mean `preSavedConnections`; and 70 mean `preRuntimeRoles`.
+69 mean `preSavedConnections`; 70 mean `preDefaultUsers`; 71 mean `preHarnessOverrides`; 72 mean `preAccountAdministrationPolicy`; and 73 mean `preRuntimeRoles`.
 `--check` must report `completed` afterward.
-See the [canonical manifest](../../../migrations/meta/_canonical-history.json) for hashes.
+Hashes: [canonical manifest](../../../migrations/meta/_canonical-history.json).
 Never delete or relabel unsupported receipts. Empty schemas may be absent or owner-only, with no objects or
 unexpected default privileges. A rolled-back first migration may leave an empty Drizzle ledger.
 
