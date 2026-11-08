@@ -896,8 +896,12 @@ func (app *application) agentCommand() *cobra.Command {
 					return err
 				}
 				if receipt == nil {
-					fmt.Fprintln(command.ErrOrStderr(), "No matching admission found. An in-flight request may still commit; this does not prove failure.")
+					_, noticeErr := fmt.Fprintln(command.ErrOrStderr(), "No matching admission found. An in-flight request may still commit; this does not prove failure.")
 					if app.output == "table" {
+						// The notice is the entire result in table mode.
+						if noticeErr != nil {
+							return fmt.Errorf("write first-deployment recovery notice to stderr: %w; restore stderr and repeat this recover-first-deployment command", noticeErr)
+						}
 						return nil
 					}
 				}
