@@ -15,18 +15,21 @@ const disconnected = (changes = {}) =>
 for (const message of [
   "node not connected",
   "GatewayClientRequestError: node not connected: code=UNAVAILABLE",
-])
+]) {
   test(`replacement workspace read waits for enrollment: ${message}`, async () => {
     const expected = { file: { content: "retained workspace" } };
     let reads = 0;
     const result = await waitForWorkspaceReconnect(async () => {
       reads += 1;
-      if (reads === 1) throw disconnected({ message });
+      if (reads === 1) {
+        throw disconnected({ message });
+      }
       return expected;
     });
     assert.equal(result, expected);
     assert.equal(reads, 2);
   });
+}
 
 test("workspace readiness never retries other protocol, authorization or transport failures", async () => {
   for (const failure of [
