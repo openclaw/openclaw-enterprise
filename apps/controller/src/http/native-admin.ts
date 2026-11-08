@@ -315,6 +315,12 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     if (nativeAdminDomain === undefined) {
       throw new Error("Native admin UI access requires an Agent domain.");
     }
+    // The per-Agent label plus its separating dot uses 39 of DNS's 253 characters.
+    if (nativeAdminDomain.length > 214) {
+      throw new Error(
+        "Native admin Agent domain must not exceed 214 characters, leaving room for the Agent hostname prefix.",
+      );
+    }
     const sharedCookieDomain = options.auth.sharedCookieDomain;
     if (
       sharedCookieDomain === undefined ||

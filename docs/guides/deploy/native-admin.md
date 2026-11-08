@@ -47,7 +47,8 @@ agentNativeAdmin:
 
 Before upgrading an existing Installation, check the retained Agent domain. A
 suffix over 214 characters is now refused by Helm, profile preflight, and API
-startup. Choose a shorter suffix inside the trusted cookie parent, provision its
+startup while native admin is enabled. Disabling the feature preserves API startup
+and refuses requests to retained Agent hosts. Choose a shorter suffix inside the trusted cookie parent, provision its
 DNS and certificate, and update the retained native admin setting. Each existing
 Agent's allowed origin and public origin must then match its new derived host;
 follow [Configure each Agent](#configure-each-agent) and deploy the updated

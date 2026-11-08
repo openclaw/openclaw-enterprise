@@ -547,6 +547,23 @@ test("native admin startup reserves the Agent hostname prefix", async (t) => {
       /Native admin Agent domain must not exceed 214 characters/,
     );
   }
+  // Retained settings still identify disabled native hosts, which must be denied
+  // instead of preventing startup or falling through to ordinary Console routes.
+  const domain = `aaa${longest}`;
+  const disabled = await createConsoleAppFixture(t, {
+    ...options(domain),
+    nativeAdmin: { enabled: false, domain, sharedCookieDomain: cookieDomain },
+    nativeAdminGatewayApiKey: async () => {
+      assert.fail("disabled native administration must not read the gateway key");
+    },
+  });
+  const denied = await disabled.app.inject({
+    method: "GET",
+    url: "/",
+    headers: { host: `agent-${"a".repeat(32)}.${domain}` },
+  });
+  assert.equal(denied.statusCode, 403);
+  assert.equal(denied.json().error.code, "FORBIDDEN");
 });
 
 test("native admin shared session configuration validates cookie scope and rejects keys", async (t) => {

@@ -155,7 +155,7 @@ Then the selected Compute Driver's `id` and `implementation` must match `revisio
 `apps/controller/src/gateway/native-admin.ts:nativeAdminTarget`
 `apps/controller/src/gateway/native-admin-host.mjs:deriveNativeAdminHost`
 
-`normalizeNativeAdminDomain` refuses an Agent domain over 214 characters at API startup, reserving 39 characters for `agent-<32 hex>.` within the 253-character hostname limit. Helm and profile preflight enforce the same budget. `deriveNativeAdminHost` hashes Installation, Namespace, and Agent IDs into an opaque hostname under the configured domain. `nativeAdminTarget` substitutes it in `publicOrigin` and returns `/`.
+`createNativeAdminAccess` refuses an Agent domain over 214 characters at API startup when enabled, reserving 39 characters for `agent-<32 hex>.` within the 253-character hostname limit. Helm and profile preflight enforce the same budget. `deriveNativeAdminHost` hashes Installation, Namespace, and Agent IDs into an opaque hostname under the configured domain. `nativeAdminTarget` substitutes it in `publicOrigin` and returns `/`.
 
 Native-host admission resolves the hash from Installation, Namespace, and Agent state. Unknown hosts, wrong suffixes, deleted Agents, and non-unique matches fail closed.
 
@@ -273,7 +273,7 @@ admin Configuration remains Pod-local.
 
 ## Changelog
 
-- 2026-11-08 13:48: Reserve the Agent host prefix at native-admin configuration admission; accompanying uncommitted changes. (authoring-run/f4c6c22c-3dfc-43c4-b468-a1b2803c3b76 - fdd02eae4df5bffc2ead78b7415a2e9784663e54)
+- 2026-11-08 14:09: Reserve the Agent host prefix only for enabled native admin; preserve disabled-host refusal. Accompanying uncommitted changes. (authoring-run/f4c6c22c-3dfc-43c4-b468-a1b2803c3b76 - 1283b1327b9f2e8150dcfb60210e90edac74e9ac)
 
 - 2026-11-03 12:55: Sign-in link for unactivated page loads. (fix/native-admin-signed-out-html-fallback)
 

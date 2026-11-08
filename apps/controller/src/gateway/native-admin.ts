@@ -33,12 +33,6 @@ export function normalizeNativeAdminDomain(domain: string | undefined): string |
   if (!SAFE_DOMAIN.test(normalized)) {
     throw new Error("Native admin Agent domain must be a DNS hostname.");
   }
-  // The per-Agent label plus its separating dot uses 39 of DNS's 253 characters.
-  if (normalized.length > 214) {
-    throw new Error(
-      "Native admin Agent domain must not exceed 214 characters, leaving room for the Agent hostname prefix.",
-    );
-  }
   return normalized;
 }
 
