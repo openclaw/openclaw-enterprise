@@ -1788,6 +1788,9 @@ func TestFirstDeploymentRecoveryMissWithClosedStderr(t *testing.T) {
 				if !strings.HasPrefix(err.Error(), "write first-deployment recovery notice to stderr: ") {
 					t.Fatalf("table recovery error lacks notice write context: %v", err)
 				}
+				if !strings.Contains(err.Error(), "restore stderr and repeat this recover-first-deployment command") {
+					t.Fatalf("table recovery error lacks read-only retry guidance: %v", err)
+				}
 			} else if err != nil || stdout.String() != "null\n" {
 				t.Fatalf("%s recovery with closed stderr: stdout = %q, err = %v; want null and success", format, stdout.String(), err)
 			}

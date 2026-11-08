@@ -900,7 +900,7 @@ func (app *application) agentCommand() *cobra.Command {
 					if app.output == "table" {
 						// The notice is the entire result in table mode.
 						if noticeErr != nil {
-							return fmt.Errorf("write first-deployment recovery notice to stderr: %w", noticeErr)
+							return fmt.Errorf("write first-deployment recovery notice to stderr: %w; restore stderr and repeat this recover-first-deployment command", noticeErr)
 						}
 						return nil
 					}
