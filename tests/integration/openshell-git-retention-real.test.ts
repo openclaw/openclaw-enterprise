@@ -298,6 +298,31 @@ test(
   { skip: !selected, timeout: 45 * 60_000 },
   async (t) => {
     let phase = "setup";
+    const generationFields = [
+      "attachmentEpoch",
+      "providerEnvRevision",
+      "configRevision",
+      "policyHash",
+      "sessionId",
+      "processInstanceId",
+      "networkInstanceId",
+    ] as const;
+    const describeDifferences = (
+      actual: Record<string, unknown>,
+      expected: Record<string, unknown>,
+      fields: readonly string[],
+    ) => {
+      try {
+        const changed = fields.filter(
+          (field) => !isDeepStrictEqual(actual[field], expected[field]),
+        );
+        if (changed.length) {
+          phase += `: ${changed.join(", ")}`;
+        }
+      } catch {
+        // Preserve the exact assertion below if diagnostic comparison itself fails.
+      }
+    };
     const phases = {
       live: {
         witnessBefore: "live witness before denial",
@@ -679,18 +704,34 @@ test(
       assert.equal(restart.completion.code, "REPOSITORY_ACCESS_WITHDRAWN");
       assert.equal(restart.completion.workerUid, restart.afterUid);
       await fixture.checkpoint("worker-restarted", restart);
-      phase = "reduced supplier generation";
-      const reducedGeneration = await providers.readReduced();
+      phase = "reduced supplier read";
+      const reducedGeneration = await providers.readReduced((check) => {
+        phase = `reduced supplier read: ${check}`;
+      });
+      phase = "reduced supplier equality";
+      describeDifferences(reducedGeneration, beforeRestartGeneration, generationFields);
       assert.equal(
         isDeepStrictEqual(reducedGeneration, beforeRestartGeneration),
         true,
         "worker replacement changed the reduced generation",
       );
+      phase = "restart origin equality";
+      const afterRestartOrigin = origin.snapshot();
+      describeDifferences(afterRestartOrigin, originBeforeRestart, [
+        "connections",
+        "requests",
+        "pullCreateRequests",
+        "endpoints",
+        "issued",
+        "tokens",
+        "targetedRetirementRefusals",
+      ]);
       assert.deepEqual(
-        origin.snapshot(),
+        afterRestartOrigin,
         originBeforeRestart,
         "worker replacement must not replay issuance or retirement",
       );
+      phase = "reduced supplier checkpoint";
       await fixture.checkpoint("finite-removal-reduced", {
         revisionId: a.revision.id,
         ...restart.completion,
@@ -699,7 +740,13 @@ test(
       await verify("replacement", restart.afterUid);
       phase = "replacement chat";
       previousReply = await conversation.turn(previousReply, remaining());
-      assert.equal(isDeepStrictEqual(await providers.readReduced(), reducedGeneration), true);
+      phase = "post-chat supplier read";
+      const postChatGeneration = await providers.readReduced((check) => {
+        phase = `post-chat supplier read: ${check}`;
+      });
+      phase = "post-chat supplier equality";
+      describeDifferences(postChatGeneration, reducedGeneration, generationFields);
+      assert.equal(isDeepStrictEqual(postChatGeneration, reducedGeneration), true);
       // This extra control follows both finite Git observations and does not spend their budget.
       clearTimeout(timer);
       phase = "alternate-key mismatch";
