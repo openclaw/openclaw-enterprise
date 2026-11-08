@@ -142,8 +142,8 @@ jobs:
       # k3d keeps Blacksmith's kernel for NetworkPolicy checks. Runtime image lanes
       # retain 8 CPUs / 30.4 GiB for their measured 15-20 GiB peaks. Browser
       # lanes use 8 CPUs with their existing eight-file concurrency.
-      # Ordinary Conformance 1 uses 4 CPUs; Full Integration keeps 8 for its
-      # additional static checks. The test runner caps files to available CPUs.
+      # Ordinary Conformance lanes use 4 CPUs; Full Integration keeps 8.
+      # The test runner caps concurrent files to the available CPUs.
       - id: matrix
         name: Build lane matrix
         env:
@@ -152,7 +152,7 @@ jobs:
           LANE_TABLE: |
             [
               {"lane": "checks-baseline-1", "title": "Checks and Conformance 1", "profile": "baseline", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"},
-              {"lane": "checks-baseline-2", "title": "Checks and Conformance 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "checks-baseline-2", "title": "Checks and Conformance 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "checks-browser", "title": "Console Browser", "profile": "baseline", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "checks-browser-2", "title": "Console Browser 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "postgres", "title": "PostgreSQL Migrations", "profile": "postgres", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"},
