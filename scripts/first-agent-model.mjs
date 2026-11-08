@@ -184,8 +184,9 @@ function validProbeStatus(code, status) {
 export class FirstAgentModelError extends Error {
   #code;
   #status;
+  #requestInterval;
 
-  constructor(code, status = undefined) {
+  constructor(code, status = undefined, requestInterval = undefined) {
     const known =
       typeof code === "string" && Object.hasOwn(modelFailureMessages, code) ? code : "unexpected";
     const httpStatus =
@@ -198,6 +199,20 @@ export class FirstAgentModelError extends Error {
     super(modelFailureMessages[known].replace("{status}", String(httpStatus ?? "unknown")));
     this.#code = known;
     this.#status = httpStatus;
+    // Diagnostic coordinates only: never retain arbitrary probe output or errors.
+    const { start, end } = requestInterval ?? {};
+    if (
+      known === "upstream" &&
+      httpStatus === 500 &&
+      Number.isSafeInteger(start) &&
+      Number.isSafeInteger(end) &&
+      start >= 0 &&
+      end <= 8_640_000_000_000_000 &&
+      end >= start &&
+      end - start <= 180_000
+    ) {
+      this.#requestInterval = Object.freeze({ start, end });
+    }
   }
 
   get code() {
@@ -205,6 +220,9 @@ export class FirstAgentModelError extends Error {
   }
   get status() {
     return this.#status;
+  }
+  get requestInterval() {
+    return this.#requestInterval;
   }
 }
 
@@ -357,7 +375,9 @@ async function probeInGateway({ nonce, prompt, expectProviderKey, sessionKey }) 
     }
 
     async function getAssistant(content) {
+      const start = Date.now();
       const response = await request(content, true);
+      const end = Date.now();
       if (!response) {
         return failure("unavailable");
       }
@@ -370,7 +390,12 @@ async function probeInGateway({ nonce, prompt, expectProviderKey, sessionKey }) 
             : response.status === 429
               ? "rate_limit"
               : "upstream";
-        return failure(code, response.status);
+        return {
+          ...failure(code, response.status),
+          ...(sessionKey !== undefined && response.status === 500
+            ? { requestInterval: { start, end } }
+            : {}),
+        };
       }
       let body;
       try {
@@ -520,7 +545,11 @@ export async function verifyFirstAgentModel(kubectl, options) {
     ) {
       throw new FirstAgentModelError("unexpected");
     }
-    throw new FirstAgentModelError(result.error, result.status);
+    throw new FirstAgentModelError(
+      result.error,
+      result.status,
+      sessionKey === undefined ? undefined : result.requestInterval,
+    );
   }
   if (
     result?.nonce !== nonce ||

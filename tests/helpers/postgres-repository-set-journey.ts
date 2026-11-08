@@ -4,7 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { waitForRevisionPass, advanceCleanupRetries } from "./postgres-worker-revision-support.mjs";
 import { deferred } from "./deferred.ts";
 import { waitFor, within } from "./wait-for.mjs";
-import { testPool } from "./postgres-database.mjs";
+import { Pool } from "pg";
 import { buffer } from "node:stream/consumers";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import {
@@ -75,14 +75,16 @@ type NarrowPolicy = { draftPull?: boolean; pushRef?: string };
 
 export async function narrowOnlineGitJourney(
   t: TestContext,
+  testUrl: string,
   exercise: (journey: NarrowJourney) => Promise<void>,
   policy: NarrowPolicy = {},
 ) {
-  return repositoryGitJourney(t, exercise, policy);
+  return repositoryGitJourney(t, testUrl, exercise, policy);
 }
 
 export async function repositorySetJourney(
   t: TestContext,
+  testUrl: string,
   standing = false,
   pendingSuccessor?:
     | "recipient"
@@ -91,11 +93,12 @@ export async function repositorySetJourney(
     | "expired-original-pods"
     | "expired-replaced-supervisor",
 ) {
-  return repositoryGitJourney(t, undefined, {}, standing, pendingSuccessor);
+  return repositoryGitJourney(t, testUrl, undefined, {}, standing, pendingSuccessor);
 }
 
 async function repositoryGitJourney(
   t: TestContext,
+  testUrl: string,
   narrow?: (journey: NarrowJourney) => Promise<void>,
   policy: NarrowPolicy = {},
   standing = false,
@@ -250,7 +253,7 @@ async function repositoryGitJourney(
     { binaries: ["/usr/bin/codex"] },
     { id: CREDENTIAL_GATEWAY_FIXTURE_ID, backend: backend as never },
   );
-  const f = await standingExecutionPlatform(t, import.meta.url, { sandbox: selected }, [
+  const f = await standingExecutionPlatform(t, testUrl, { sandbox: selected }, [
     {
       id: "prepared-standing",
       type: "github",
@@ -1578,12 +1581,14 @@ async function repositoryGitJourney(
     const claim = await queue.claim();
     assert.ok(claim);
     assert.equal(claim.idempotencyKey, removalWork[0].idempotency_key);
-    const cleanupPool = testPool(t, {
+    const cleanupPool = new Pool({
       connectionString: f.database.url,
       application_name: `finite-removal-cleanup-${randomUUID()}`,
       max: 1,
       statement_timeout: 10_000,
     });
+    // The fixture must close this connection before dropping its owned database.
+    f.database.pools.add(cleanupPool);
     const cleanupPid = (await cleanupPool.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
     const cleanupState = new PostgresPlatformState(cleanupPool);
     const deadlocks = async () =>

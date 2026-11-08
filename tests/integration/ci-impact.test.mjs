@@ -1378,10 +1378,11 @@ test("full-integration lanes read NODE_BASE_IMAGE from a variable their environm
   }
 });
 
-test("full-integration uses ordinary CI runners for kernel, sandbox, and image lanes", () => {
+test("full-integration preserves qualified runners for kernel, sandbox, and image lanes", () => {
   // Hosted ubuntu-24.04 refuses Chromium's sandbox, which PostgreSQL Authentication's
   // sign-in cases turn on (finding 1383), and the k3d lanes need a kernel that enforces
-  // NetworkPolicy. These lanes must run where ci.yml runs them.
+  // NetworkPolicy. Keep the runner family; State retains its qualified eight-CPU
+  // Full Integration allocation while ordinary CI uses four CPUs.
   const jobs = loadYaml(".github/workflows/full-integration.yml").jobs;
   const job = jobs["pr-safe-same-sha"];
   const runnerFor = (target, lane) => {
@@ -1406,7 +1407,11 @@ test("full-integration uses ordinary CI runners for kernel, sandbox, and image l
     assert.ok(pinned.includes(lane), lane);
   }
   for (const lane of pinned) {
-    assert.equal(runnerFor(job, lane), ciRunners.get(lane), lane);
+    assert.equal(
+      runnerFor(job, lane),
+      lane === "k3d-fixture-state" ? "blacksmith-8vcpu-ubuntu-2404" : ciRunners.get(lane),
+      lane,
+    );
   }
   const images = jobs["image-lanes-same-sha"];
   for (const { lane } of images.strategy.matrix.include) {
@@ -2667,16 +2672,7 @@ test("the lane matrix runs every lane in full mode and only selected lanes in te
     // NetworkPolicy proofs need a runner kernel shown to enforce them.
     const netfilter = row.lane.startsWith("k3d-fixture-") || row.lane === "k3d-observability";
     if (netfilter) {
-      assert.equal(
-        row.runner,
-        row.lane === "k3d-observability" ||
-          row.lane === "k3d-fixture-network" ||
-          row.lane === "k3d-fixture-plugins" ||
-          row.lane === "k3d-fixture-configuration"
-          ? "blacksmith-4vcpu-ubuntu-2404"
-          : "blacksmith-8vcpu-ubuntu-2404",
-        row.lane,
-      );
+      assert.equal(row.runner, "blacksmith-4vcpu-ubuntu-2404", row.lane);
     }
   }
   const valid = [

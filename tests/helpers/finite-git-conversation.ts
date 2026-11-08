@@ -12,18 +12,76 @@ const conversationStages = [
   "persisted reply",
 ] as const;
 type ConversationStage = (typeof conversationStages)[number];
+type GatewayFailureObservation =
+  | "workspace_skill_discovery_failure_observed"
+  | "unclassified"
+  | "observation_unavailable"
+  | "ambiguous";
+const logByteLimit = 65_536;
+
+function classifyGatewayFailure(
+  logs: string,
+  interval: { start: number; end: number },
+): GatewayFailureObservation {
+  // kubectl can return a truncated prefix at its byte limit. Never infer uniqueness from it.
+  if (Buffer.byteLength(logs) >= logByteLimit || (logs && !logs.endsWith("\n"))) {
+    return "observation_unavailable";
+  }
+  const failures: string[] = [];
+  for (const line of logs.split("\n").filter(Boolean)) {
+    const record = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z) (.*)$/.exec(line);
+    if (!record || !Number.isFinite(Date.parse(record[1]!))) {
+      return "observation_unavailable";
+    }
+    // Admitted Gateways use JSON console logs. A message quoting a subsystem prefix
+    // is not that subsystem's warning. Producer time selects records; capture can lag.
+    if (!record[2]!.startsWith("{")) {
+      continue;
+    }
+    const value = JSON.parse(record[2]!);
+    if (
+      value?.subsystem !== "openai-compat" ||
+      value.level !== "warn" ||
+      typeof value.message !== "string" ||
+      !value.message.startsWith("chat completion failed: ")
+    ) {
+      continue;
+    }
+    if (
+      typeof value.time !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/.test(value.time) ||
+      !Number.isFinite(Date.parse(value.time))
+    ) {
+      return "observation_unavailable";
+    }
+    const produced = Date.parse(value.time);
+    if (produced >= interval.start && produced <= interval.end) {
+      failures.push(value.message);
+    }
+  }
+  if (failures.length > 1) {
+    return "ambiguous";
+  }
+  return failures[0] ===
+    "chat completion failed: WorkspaceAccessUnavailableError: Remote workspace skill discovery failed"
+    ? "workspace_skill_discovery_failure_observed"
+    : "unclassified";
+}
 
 class FiniteGitConversationError extends Error {
   readonly stage: ConversationStage;
   readonly detail: string;
 
-  constructor(stage: ConversationStage, error?: unknown) {
+  constructor(stage: ConversationStage, error?: unknown, observation?: GatewayFailureObservation) {
     let detail: string = stage;
     if (stage === "model turn" && error instanceof FirstAgentModelError) {
       detail += `; probe=${error.code}`;
       if (error.status !== undefined) {
         detail += `; HTTP=${error.status}`;
       }
+    }
+    if (observation !== undefined) {
+      detail += `; gateway=${observation}`;
     }
     super(`Finite Git conversation verification failed (${detail}).`);
     this.stage = stage;
@@ -200,6 +258,41 @@ export function createFiniteGitConversation({
     pinned = current;
     stage = previousStage;
   }
+  async function observeGatewayFailure(
+    error: FirstAgentModelError,
+  ): Promise<GatewayFailureObservation> {
+    const target = pinned;
+    const interval = error.requestInterval;
+    if (!target || !interval) {
+      return "observation_unavailable";
+    }
+    const previousDeadline = deadline;
+    const previousStage = stage;
+    deadline = Math.min(deadline, Date.now() + 5_000);
+    try {
+      await guard(target);
+      const logs = await command([
+        "logs",
+        target.name,
+        "--namespace",
+        target.namespace,
+        "-c",
+        "gateway",
+        "--timestamps=true",
+        "--tail=-1",
+        `--limit-bytes=${logByteLimit}`,
+        `--since-time=${new Date(interval.start).toISOString()}`,
+      ]);
+      await guard(target);
+      return classifyGatewayFailure(logs, interval);
+    } catch {
+      // Preserve the original model failure; raw logs and subprocess errors stay in memory.
+      return "observation_unavailable";
+    } finally {
+      deadline = previousDeadline;
+      stage = previousStage;
+    }
+  }
   async function exec(target: ReturnType<typeof identity>, args: string[], options?: Options) {
     await guard(target);
     const output = await command(args, options);
@@ -323,6 +416,15 @@ export function createFiniteGitConversation({
       await checkExecution();
       return { reply, nonce: proof.nonce };
     } catch (error) {
+      if (
+        stage === "model turn" &&
+        error instanceof FirstAgentModelError &&
+        error.code === "upstream" &&
+        error.status === 500
+      ) {
+        const observation = await observeGatewayFailure(error);
+        throw new FiniteGitConversationError(stage, error, observation);
+      }
       return fail(error);
     }
   }

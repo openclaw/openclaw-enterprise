@@ -3677,16 +3677,51 @@ const privateFailure = () => { throw Object.assign(new Error("private-command-da
   stdout: "private-command-stdout", stderr: "private-command-stderr",
   cause: new Error("private-command-cause"),
 }); };
+const interval = { start: 1794140000000, end: 1794140001000 };
+const line = (message, time = interval.start + 500) => new Date(time).toISOString() + " " + message + "\\n";
+const signature = "chat completion failed: WorkspaceAccessUnavailableError: Remote workspace skill discovery failed";
+const warning = (message = signature, time = interval.start + 500) => JSON.stringify({
+  time: new Date(time).toISOString().replace("Z", "+00:00"), level: "warn", subsystem: "openai-compat", message,
+});
+const failureLine = line(warning());
+const observations = [
+  { name: "unique Gateway failure", observation: "workspace_skill_discovery_failure_observed", logs: failureLine },
+  { name: "quoted subsystem prefix", observation: "unclassified", logs: line("[workspace] [openai-compat] " + signature) },
+  { name: "missing producer time", observation: "observation_unavailable", logs: failureLine + line(JSON.stringify({level: "warn", subsystem: "openai-compat", message: signature})) },
+  { name: "invalid producer time", observation: "observation_unavailable", logs: line(JSON.stringify({time: "private-command-invalid-time", level: "warn", subsystem: "openai-compat", message: signature})) },
+  { name: "delayed capture", observation: "workspace_skill_discovery_failure_observed", logs: line(warning(), interval.end + 1) },
+  { name: "early capture", observation: "workspace_skill_discovery_failure_observed", logs: line(warning(), interval.start - 1) },
+  { name: "delayed competing warning", observation: "ambiguous", logs: failureLine + line(warning("chat completion failed: private-command-data"), interval.end + 1) },
+  { name: "old producer time", observation: "unclassified", logs: line(warning(signature, interval.start - 1)) },
+  { name: "later producer time", observation: "unclassified", logs: line(warning(signature, interval.end + 1)) },
+  { name: "ambiguous Gateway failure", observation: "ambiguous", logs: failureLine + line(warning("chat completion failed: private-command-data")) },
+  { name: "unclassified Gateway failure", observation: "unclassified", logs: line(warning("chat completion failed: private-command-data")) },
+  { name: "background disconnect", observation: "unclassified", logs: line("[workspace] " + signature) },
+  { name: "truncated Gateway logs", observation: "observation_unavailable", logs: failureLine + "x".repeat(65536) },
+  { name: "incomplete Gateway record", observation: "observation_unavailable", logs: failureLine.trimEnd() },
+  { name: "log read failure", observation: "observation_unavailable" },
+  { name: "Gateway replaced before read", observation: "observation_unavailable", drift: 2, logs: failureLine },
+  { name: "Gateway restarted during read", observation: "observation_unavailable", drift: 3, logs: failureLine },
+  { name: "invalid request interval", observation: "observation_unavailable", interval: { start: "private-command-data", end: interval.end }, logs: failureLine },
+];
 const cases = [
   ...["execution identity", "target discovery", "gateway identity", "model turn", "persisted reply"].map(stage => ({
     name: stage, stage, detail: stage === "model turn" ? "model turn; probe=execution" : stage,
   })),
+  ...observations.map(item => ({
+    ...item, stage: "model turn", detail: "model turn; probe=upstream; HTTP=500; gateway=" + item.observation,
+    output: JSON.stringify({ error: "upstream", status: 500, requestInterval: item.interval ?? interval }),
+  })),
+  { name: "unauthenticated HTTP 500", stage: "model turn", detail: "model turn; probe=unauthenticated; HTTP=500", output: JSON.stringify({ error: "unauthenticated", status: 500 }) },
   { name: "upstream status", stage: "model turn", detail: "model turn; probe=upstream; HTTP=503", output: JSON.stringify({ error: "upstream", status: 503, extra: "private-command-data" }) },
   { name: "unknown probe", stage: "model turn", detail: "model turn; probe=unexpected", output: JSON.stringify({ error: "private-command-data", status: 503 }) },
   { name: "invalid status", stage: "model turn", detail: "model turn; probe=unexpected", output: JSON.stringify({ error: "upstream", status: "private-command-data" }) },
 ];
-for (const { name, stage, detail, output } of cases) {
+for (const { name, stage, detail, output, logs, drift, observation } of cases) {
   test(name, async () => {
+    let logReads = 0;
+    let probeCompleted = false;
+    let guards = 0;
     const conversation = createFiniteGitConversation({
       agent, signal: new AbortController().signal, originalIdentity: "original",
       readExecution: async () => stage === "execution identity" ? privateFailure() : { identity: "original" },
@@ -3696,9 +3731,20 @@ for (const { name, stage, detail, output } of cases) {
           if (args[1] === "namespaces") return JSON.stringify({ items: [{ metadata: { name: "tenant" } }] });
           if (args[1] === "pods") return JSON.stringify({ items: [pod] });
           if (stage === "gateway identity") return privateFailure();
+          if (probeCompleted && ++guards === drift) {
+            return JSON.stringify({ ...pod, status: { ...pod.status, containerStatuses: [{ ...pod.status.containerStatuses[0], restartCount: 1 }] } });
+          }
           return JSON.stringify(pod);
         }
-        if (args[1] === "-i" && output !== undefined) return output;
+        if (args[0] === "logs") {
+          logReads++;
+          assert.deepEqual(args, ["logs", "gateway", "--namespace", "tenant", "-c", "gateway",
+            "--timestamps=true", "--tail=-1", "--limit-bytes=65536", "--since-time=" + new Date(interval.start).toISOString()]);
+          assert.ok(options.timeout > 0 && options.timeout <= 5000);
+          if (logs === undefined) return privateFailure();
+          return logs;
+        }
+        if (args[1] === "-i" && output !== undefined) { probeCompleted = true; return output; }
         if (args[1] === "-i" && stage === "persisted reply") {
           return JSON.stringify({ nonce: options.input.match(/FIRST_AGENT_[0-9a-f-]+/)[0] });
         }
@@ -3708,6 +3754,8 @@ for (const { name, stage, detail, output } of cases) {
     try { await conversation.turn(undefined, 1000); }
     catch (error) {
       assert.equal(finiteGitConversationFailureStage(error), detail);
+      const needsRead = observation && name !== "invalid request interval" && drift !== 2;
+      assert.equal(logReads, needsRead ? 1 : 0, "one bounded read only after an eligible model failure");
       assert.equal(finiteGitConversationFailureStage({ stage, message: error.message }), undefined);
       assert.equal(finiteGitConversationFailureStage(new Error(error.message)), undefined);
       assert.equal(error.cause, undefined);
@@ -3739,19 +3787,51 @@ for (const { name, stage, detail, output } of cases) {
   const summaryText = await readFile(resultsPath, "utf8");
   const detailText = await readFile(`${statePath}.diagnostics.json`, "utf8");
   const summary = JSON.parse(summaryText);
-  const details = JSON.parse(detailText).failures[0].tests;
-  assert.equal(summary.files[0].tests.length, 8);
+  const detail = JSON.parse(detailText).failures[0];
+  const details = detail.tests;
+  assert.equal(details.length, 20);
+  assert.equal(detail.omittedTests, 7);
+  assert.equal(summary.files[0].tests.length, 27);
   const expected = {
     "model turn": "model turn; probe=execution",
     "upstream status": "model turn; probe=upstream; HTTP=503",
+    "unauthenticated HTTP 500": "model turn; probe=unauthenticated; HTTP=500",
     "unknown probe": "model turn; probe=unexpected",
     "invalid status": "model turn; probe=unexpected",
   };
+  const observations = {
+    "unique Gateway failure": "workspace_skill_discovery_failure_observed",
+    "quoted subsystem prefix": "unclassified",
+    "missing producer time": "observation_unavailable",
+    "invalid producer time": "observation_unavailable",
+    "delayed capture": "workspace_skill_discovery_failure_observed",
+    "early capture": "workspace_skill_discovery_failure_observed",
+    "delayed competing warning": "ambiguous",
+    "old producer time": "unclassified",
+    "later producer time": "unclassified",
+    "ambiguous Gateway failure": "ambiguous",
+    "unclassified Gateway failure": "unclassified",
+    "background disconnect": "unclassified",
+    "truncated Gateway logs": "observation_unavailable",
+    "incomplete Gateway record": "observation_unavailable",
+    "log read failure": "observation_unavailable",
+    "Gateway replaced before read": "observation_unavailable",
+    "Gateway restarted during read": "observation_unavailable",
+    "invalid request interval": "observation_unavailable",
+  };
   for (const failure of summary.files[0].tests) {
-    const message = `Finite Git conversation verification failed (${expected[failure.name] ?? failure.name}).`;
+    const detail = observations[failure.name]
+      ? `model turn; probe=upstream; HTTP=500; gateway=${observations[failure.name]}`
+      : (expected[failure.name] ?? failure.name);
+    const message = `Finite Git conversation verification failed (${detail}).`;
     assert.equal(failure.status, "failed");
     assert.equal(failure.error.message, message);
-    assert.equal(details.find((entry) => entry.name === failure.name).message, message);
+    const retained = details.find((entry) => entry.name === failure.name);
+    if (summary.files[0].tests.indexOf(failure) < 20) {
+      assert.equal(retained.message, message);
+    } else {
+      assert.equal(retained, undefined);
+    }
   }
   assert.doesNotMatch(
     `${summaryText}\n${detailText}\n${result.stdout}\n${result.stderr}`,

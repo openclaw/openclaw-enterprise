@@ -679,6 +679,8 @@ test("model verification retains safe failure metadata without forwarding probe 
     });
     return output;
   };
+  let sessionKey;
+  let interval;
   const verify = (code, status) =>
     assert.rejects(
       verifyFirstAgentModel(kubectl, {
@@ -686,8 +688,10 @@ test("model verification retains safe failure metadata without forwarding probe 
         agentId: "agent",
         revisionId: "revision",
         expectProviderKey: false,
+        sessionKey,
       }),
       (error) => {
+        interval = error.requestInterval;
         assert.equal(error.code, code);
         assert.equal(error.status, status);
         assert.equal(error.cause, undefined);
@@ -697,6 +701,28 @@ test("model verification retains safe failure metadata without forwarding probe 
     );
   await verify("upstream", 503);
   assert.equal(requests, 2, "one unauthenticated check and one authorized request; no replay");
+  assert.equal(interval, undefined);
+  sessionKey = "agent:main:git-withdrawal-00000000-0000-4000-8000-000000000001";
+  responseStatus = 500;
+  const start = Date.now();
+  await verify("upstream", 500);
+  assert.ok(
+    interval.start >= start && interval.end <= Date.now() && interval.start <= interval.end,
+  );
+  assert.equal(requests, 4, "diagnostic timing must not replay a model request");
+  assert.equal(Object.isFrozen(interval), true);
+  for (const invalid of [
+    null,
+    {},
+    { start: "private-start", end: 1 },
+    { start: 2, end: 1 },
+    { start: 0, end: 180001 },
+  ]) {
+    suppliedOutput = JSON.stringify({ error: "upstream", status: 500, requestInterval: invalid });
+    await verify("upstream", 500);
+    assert.equal(interval, undefined, "invalid timing cannot replace the original HTTP failure");
+  }
+  suppliedOutput = undefined;
   responseStatus = 401;
   await verify("authorization", 401);
   responseStatus = 200;
