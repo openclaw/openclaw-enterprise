@@ -16,7 +16,10 @@ import {
   createFiniteGitConversation,
   finiteGitConversationFailureStage,
 } from "../helpers/finite-git-conversation.ts";
-import { createOpenShellGitDenial } from "../helpers/openshell-git-denial.mjs";
+import {
+  createOpenShellGitDenial,
+  openShellGitDenialFailureStage,
+} from "../helpers/openshell-git-denial.mjs";
 
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "openshell";
@@ -328,6 +331,11 @@ test(
         witnessBefore: "live witness before denial",
         witnessAfter: "live witness after denial",
         denied: "live denied Git",
+        marker: "live DNS marker",
+        supervisor: "live supervisor evidence",
+        worker: "live worker observation",
+        workerIdentity: "live worker identity",
+        receipt: "live denial receipt",
         signed: "live signed decision",
         origin: "live origin checks",
         positive: "live B positive",
@@ -336,6 +344,11 @@ test(
         witnessBefore: "replacement witness before denial",
         witnessAfter: "replacement witness after denial",
         denied: "replacement denied Git",
+        marker: "replacement DNS marker",
+        supervisor: "replacement supervisor evidence",
+        worker: "replacement worker observation",
+        workerIdentity: "replacement worker identity",
+        receipt: "replacement denial receipt",
         signed: "replacement signed decision",
         origin: "replacement origin checks",
         positive: "replacement B positive",
@@ -576,6 +589,7 @@ test(
             });
           } else {
             assert.equal(category, "transport");
+            phase = step.marker;
             const markerHost = `git-retention-${randomUUID()}.invalid`;
             await execute(a.target, [
               "node",
@@ -583,18 +597,22 @@ test(
               "require('node:dns').lookup(process.argv[1], { family: 4 }, () => {});",
               `${markerHost}.`,
             ]);
+            phase = step.supervisor;
             const proof = await denial.expectAfter(baseline, {
               startedAt,
               endedAt,
               markerHost,
               markerEndedAt: Date.now(),
             });
+            phase = step.worker;
             const next = await fixture.gitWithdrawalDenials(identity, diagnostics);
+            phase = step.workerIdentity;
             assert.equal(
               next.workerUid,
               previous.workerUid,
               "Worker changed inside the denial interval",
             );
+            phase = step.receipt;
             await fixture.checkpoint("git-policy-denied", {
               stage: mode === "live" ? "after-removal" : "after-worker-restart",
               ...proof,
@@ -608,6 +626,7 @@ test(
               });
             }
           }
+          phase = step.origin;
           assert.equal(origin.gitAttemptIndices().length, attempts);
           if (mode === "replacement") {
             assert.deepEqual(
@@ -772,7 +791,8 @@ test(
       });
     } catch (error) {
       // Keep only our fixed stage labels; command errors can contain private data.
-      const stage = finiteGitConversationFailureStage(error);
+      const stage =
+        finiteGitConversationFailureStage(error) ?? openShellGitDenialFailureStage(error);
       // eslint-disable-next-line preserve-caught-error -- Raw tool errors may contain credentials.
       throw new Error(
         `Finite Git withdrawal verification failed (${phase}${stage ? `: ${stage}` : ""}).`,

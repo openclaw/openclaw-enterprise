@@ -8,9 +8,20 @@ import { createServer as createHttpsServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { createOpenShellGitDenial, gitHttp403Command } from "../helpers/openshell-git-denial.mjs";
+import * as gitDenial from "../helpers/openshell-git-denial.mjs";
 
 import { selfSigned } from "../helpers/certificates.mjs";
+
+const { createOpenShellGitDenial, gitHttp403Command } = gitDenial;
+
+// The installed test may retain only this owner-assigned stage, never raw errors.
+function refusalAt(stage, message) {
+  return (error) => {
+    assert.match(error.message, message);
+    assert.equal(gitDenial.openShellGitDenialFailureStage?.(error), stage);
+    return true;
+  };
+}
 
 const executable = "/usr/lib/git-core/git-remote-http";
 const startedAt = Date.parse("2026-11-05T12:00:00.000Z");
@@ -161,7 +172,10 @@ test(
             ],
       );
     });
-    await assert.rejects(late.observer.expectAfter(lateBefore, interval), /competing or unpaired/);
+    await assert.rejects(
+      late.observer.expectAfter(lateBefore, interval),
+      refusalAt("policy-pair", /competing or unpaired/),
+    );
     // Two concurrent denials must not lend each other their warning reason.
     const interleaved = fixture([line(1)]);
     const interleavedBefore = await interleaved.observer.snapshot();
@@ -267,7 +281,10 @@ test(
       const f = fixture([line(1)]);
       const before = await f.observer.snapshot();
       f.set([line(1), warning, denial, { ...marker, ...change }]);
-      await assert.rejects(f.observer.expectAfter(before, interval), /DNS marker/);
+      await assert.rejects(
+        f.observer.expectAfter(before, interval),
+        refusalAt("dns-marker", /DNS marker/),
+      );
     }
     for (const sequence of [
       [marker, warning, denial],
@@ -277,7 +294,10 @@ test(
       const f = fixture([line(1)]);
       const before = await f.observer.snapshot();
       f.set([line(1), ...sequence]);
-      await assert.rejects(f.observer.expectAfter(before, interval), /DNS marker/);
+      await assert.rejects(
+        f.observer.expectAfter(before, interval),
+        refusalAt("dns-marker", /DNS marker/),
+      );
     }
   },
 );
@@ -294,7 +314,7 @@ test("Git denial receipt tolerates ring rollover only with unchanged retained hi
   });
   await assert.rejects(
     rewritten.observer.expectAfter(rewrittenBefore, interval),
-    /Git denial (baseline anchor|log history)/,
+    refusalAt("log-history", /Git denial (baseline anchor|log history)/),
   );
   // A repeated post-boundary record cannot be reinterpreted as its identical
   // pre-boundary copy when a later full ring rewrites the observed suffix.
@@ -319,7 +339,7 @@ test("Git denial receipt tolerates ring rollover only with unchanged retained hi
   });
   await assert.rejects(
     aliased.observer.expectAfter(aliasedBefore, interval),
-    /Git denial (baseline anchor|log history)/,
+    refusalAt("log-history", /Git denial (baseline anchor|log history)/),
   );
   const baseline = Array.from({ length: 2000 }, (_, index) => line(index));
   const f = fixture(baseline);
@@ -342,6 +362,20 @@ test("Git denial receipt tolerates ring rollover only with unchanged retained hi
 });
 
 test("Git denial receipt refuses foreign, incomplete, and ambiguous log histories", async () => {
+  const privateError = Object.assign(new Error("private transport failure"), {
+    stage: "private stage must not escape",
+  });
+  assert.equal(gitDenial.openShellGitDenialFailureStage?.(privateError), undefined);
+  const unavailable = fixture([line(1)]);
+  const unavailableBefore = await unavailable.observer.snapshot();
+  unavailable.afterRead(() => {
+    throw privateError;
+  });
+  await assert.rejects(unavailable.observer.expectAfter(unavailableBefore, interval), (error) => {
+    assert.equal(error, privateError);
+    assert.equal(gitDenial.openShellGitDenialFailureStage?.(error), "log-read");
+    return true;
+  });
   const f = fixture([line(1)]);
   const before = await f.observer.snapshot();
   f.set([line(1), warning, { ...denial, sandboxId: "sandbox-two" }]);
@@ -368,9 +402,15 @@ test("Git denial receipt rejects normalized or noncanonical event dates", async 
   const before = await f.observer.snapshot();
   for (const time of [null, "2026-11-05T12:00:00.002Z", "2026-11-31T12:00:00.002000000Z"]) {
     f.set([line(1), warning, { ...denial, time }]);
-    await assert.rejects(f.observer.expectAfter(before, interval), /event time/);
+    await assert.rejects(
+      f.observer.expectAfter(before, interval),
+      refusalAt("event-time", /event time/),
+    );
     f.set([line(1), { ...warning, time }, denial]);
-    await assert.rejects(f.observer.expectAfter(before, interval), /event time/);
+    await assert.rejects(
+      f.observer.expectAfter(before, interval),
+      refusalAt("event-time", /event time/),
+    );
   }
 });
 
@@ -384,7 +424,10 @@ test("Git denial receipt refuses a replaced supervisor before or during the read
     } else {
       f.replaceSupervisor();
     }
-    await assert.rejects(f.observer.expectAfter(before, interval), /supervisor identity changed/);
+    await assert.rejects(
+      f.observer.expectAfter(before, interval),
+      refusalAt("supervisor-identity", /supervisor identity changed/),
+    );
   }
 });
 
