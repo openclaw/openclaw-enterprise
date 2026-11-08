@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
-import { verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
+import { FirstAgentModelError, verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
 import { createNativePluginAssertions } from "./plugin-driver-real.mjs";
 
 const conversationStages = [
@@ -15,16 +15,25 @@ type ConversationStage = (typeof conversationStages)[number];
 
 class FiniteGitConversationError extends Error {
   readonly stage: ConversationStage;
+  readonly detail: string;
 
-  constructor(stage: ConversationStage) {
-    super(`Finite Git conversation verification failed (${stage}).`);
+  constructor(stage: ConversationStage, error?: unknown) {
+    let detail: string = stage;
+    if (stage === "model turn" && error instanceof FirstAgentModelError) {
+      detail += `; probe=${error.code}`;
+      if (error.status !== undefined) {
+        detail += `; HTTP=${error.status}`;
+      }
+    }
+    super(`Finite Git conversation verification failed (${detail}).`);
     this.stage = stage;
+    this.detail = detail;
   }
 }
 
 export function finiteGitConversationFailureStage(error: unknown) {
   return error instanceof FiniteGitConversationError && conversationStages.includes(error.stage)
-    ? error.stage
+    ? error.detail
     : undefined;
 }
 
@@ -73,8 +82,8 @@ export function createFiniteGitConversation({
   let pinned: ReturnType<typeof identity> | undefined;
   let deadline = 0;
   let stage: ConversationStage = "execution identity";
-  function fail(): never {
-    throw new FiniteGitConversationError(stage);
+  function fail(error?: unknown): never {
+    throw new FiniteGitConversationError(stage, error);
   }
   function remaining() {
     signal.throwIfAborted();
@@ -313,8 +322,8 @@ export function createFiniteGitConversation({
       });
       await checkExecution();
       return { reply, nonce: proof.nonce };
-    } catch {
-      return fail();
+    } catch (error) {
+      return fail(error);
     }
   }
   return {

@@ -150,6 +150,64 @@ const probeMessages = {
     "The gateway could not complete the model check. Check the gateway logs and run the command again.",
 };
 
+const modelFailureMessages = {
+  ...probeMessages,
+  execution:
+    "Could not run the model check in the Agent's gateway. Check that the Pod is still Ready and that your Kubernetes identity can exec into it.",
+  invalid_result:
+    "The model check returned an invalid result. Check the gateway logs and run the command again.",
+};
+
+function validProbeStatus(code, status) {
+  switch (code) {
+    case "authorization":
+      return status === 401 || status === 403;
+    case "endpoint":
+      return status === 404;
+    case "rate_limit":
+      return status === 429;
+    case "unauthenticated":
+    case "upstream":
+      return (
+        Number.isInteger(status) &&
+        status >= 100 &&
+        status <= 599 &&
+        !(code === "upstream" ? [200, 401, 403, 404, 429] : [401, 403]).includes(status)
+      );
+    default:
+      return status === undefined;
+  }
+}
+
+// Keep the operator explanation and machine-readable classification together.
+// Neither probe output nor an underlying command error is retained.
+export class FirstAgentModelError extends Error {
+  #code;
+  #status;
+
+  constructor(code, status = undefined) {
+    const known =
+      typeof code === "string" && Object.hasOwn(modelFailureMessages, code) ? code : "unexpected";
+    const httpStatus =
+      ["unauthenticated", "authorization", "endpoint", "rate_limit", "upstream"].includes(known) &&
+      Number.isInteger(status) &&
+      status >= 100 &&
+      status <= 599
+        ? status
+        : undefined;
+    super(modelFailureMessages[known].replace("{status}", String(httpStatus ?? "unknown")));
+    this.#code = known;
+    this.#status = httpStatus;
+  }
+
+  get code() {
+    return this.#code;
+  }
+  get status() {
+    return this.#status;
+  }
+}
+
 function idHash(id) {
   return createHash("sha256").update(id).digest("hex").slice(0, 12);
 }
@@ -427,9 +485,9 @@ export async function verifyFirstAgentModel(kubectl, options) {
   const { namespace, pod } = await findGateway(kubectl, namespaceId, agentId, revisionId, signal);
   const nonce = `FIRST_AGENT_${randomUUID()}`;
   const script = `await (${probeInGateway.toString()})(${JSON.stringify({ nonce, prompt, expectProviderKey, sessionKey })});`;
-  let result;
+  let output;
   try {
-    const output = await kubectl(
+    output = await kubectl(
       "exec",
       "-i",
       "--namespace",
@@ -443,30 +501,35 @@ export async function verifyFirstAgentModel(kubectl, options) {
       "-",
       { input: script, timeout: 420_000 },
     );
+  } catch {
+    throw new FirstAgentModelError("execution");
+  }
+  let result;
+  try {
     result = JSON.parse(output);
   } catch {
-    throw new Error(
-      "Could not run the model check in the Agent's gateway. Check that the Pod is still Ready and that your Kubernetes identity can exec into it.",
-    );
+    throw new FirstAgentModelError("invalid_result");
   }
   if (result?.error) {
-    const message = probeMessages[result.error] ?? probeMessages.unexpected;
-    const status =
-      Number.isInteger(result.status) && result.status >= 100 && result.status <= 599
-        ? result.status
-        : "unknown";
-    throw new Error(message.replace("{status}", String(status)));
+    // Wire failures must match the probe's branches. Execution/JSON failures
+    // belong only to the local catches above, never to a returned payload.
+    if (
+      typeof result.error !== "string" ||
+      !Object.hasOwn(probeMessages, result.error) ||
+      !validProbeStatus(result.error, result.status)
+    ) {
+      throw new FirstAgentModelError("unexpected");
+    }
+    throw new FirstAgentModelError(result.error, result.status);
   }
   if (
     result?.nonce !== nonce ||
     (prompt !== undefined && (typeof result.response !== "string" || !result.response.trim()))
   ) {
-    throw new Error(
-      "The model check returned an invalid result. Check the gateway logs and run the command again.",
-    );
+    throw new FirstAgentModelError("invalid_result");
   }
   if (typeof apiKey === "string" && apiKey && result.response?.includes(apiKey)) {
-    throw new Error(probeMessages.credential);
+    throw new FirstAgentModelError("credential");
   }
   return prompt === undefined ? { nonce } : { nonce, response: result.response };
 }

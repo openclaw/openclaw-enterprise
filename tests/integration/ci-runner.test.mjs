@@ -3677,8 +3677,16 @@ const privateFailure = () => { throw Object.assign(new Error("private-command-da
   stdout: "private-command-stdout", stderr: "private-command-stderr",
   cause: new Error("private-command-cause"),
 }); };
-for (const stage of ["execution identity", "target discovery", "gateway identity", "model turn", "persisted reply"]) {
-  test(stage, async () => {
+const cases = [
+  ...["execution identity", "target discovery", "gateway identity", "model turn", "persisted reply"].map(stage => ({
+    name: stage, stage, detail: stage === "model turn" ? "model turn; probe=execution" : stage,
+  })),
+  { name: "upstream status", stage: "model turn", detail: "model turn; probe=upstream; HTTP=503", output: JSON.stringify({ error: "upstream", status: 503, extra: "private-command-data" }) },
+  { name: "unknown probe", stage: "model turn", detail: "model turn; probe=unexpected", output: JSON.stringify({ error: "private-command-data", status: 503 }) },
+  { name: "invalid status", stage: "model turn", detail: "model turn; probe=unexpected", output: JSON.stringify({ error: "upstream", status: "private-command-data" }) },
+];
+for (const { name, stage, detail, output } of cases) {
+  test(name, async () => {
     const conversation = createFiniteGitConversation({
       agent, signal: new AbortController().signal, originalIdentity: "original",
       readExecution: async () => stage === "execution identity" ? privateFailure() : { identity: "original" },
@@ -3690,6 +3698,7 @@ for (const stage of ["execution identity", "target discovery", "gateway identity
           if (stage === "gateway identity") return privateFailure();
           return JSON.stringify(pod);
         }
+        if (args[1] === "-i" && output !== undefined) return output;
         if (args[1] === "-i" && stage === "persisted reply") {
           return JSON.stringify({ nonce: options.input.match(/FIRST_AGENT_[0-9a-f-]+/)[0] });
         }
@@ -3698,7 +3707,7 @@ for (const stage of ["execution identity", "target discovery", "gateway identity
     });
     try { await conversation.turn(undefined, 1000); }
     catch (error) {
-      assert.equal(finiteGitConversationFailureStage(error), stage);
+      assert.equal(finiteGitConversationFailureStage(error), detail);
       assert.equal(finiteGitConversationFailureStage({ stage, message: error.message }), undefined);
       assert.equal(finiteGitConversationFailureStage(new Error(error.message)), undefined);
       assert.equal(error.cause, undefined);
@@ -3731,9 +3740,15 @@ for (const stage of ["execution identity", "target discovery", "gateway identity
   const detailText = await readFile(`${statePath}.diagnostics.json`, "utf8");
   const summary = JSON.parse(summaryText);
   const details = JSON.parse(detailText).failures[0].tests;
-  assert.equal(summary.files[0].tests.length, 5);
+  assert.equal(summary.files[0].tests.length, 8);
+  const expected = {
+    "model turn": "model turn; probe=execution",
+    "upstream status": "model turn; probe=upstream; HTTP=503",
+    "unknown probe": "model turn; probe=unexpected",
+    "invalid status": "model turn; probe=unexpected",
+  };
   for (const failure of summary.files[0].tests) {
-    const message = `Finite Git conversation verification failed (${failure.name}).`;
+    const message = `Finite Git conversation verification failed (${expected[failure.name] ?? failure.name}).`;
     assert.equal(failure.status, "failed");
     assert.equal(failure.error.message, message);
     assert.equal(details.find((entry) => entry.name === failure.name).message, message);

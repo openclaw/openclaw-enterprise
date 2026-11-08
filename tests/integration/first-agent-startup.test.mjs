@@ -7,11 +7,13 @@ import { cp, mkdtemp, mkdir, open, readFile, realpath, rm, writeFile } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 
 import {
   firstAgentPriorPatPolicy,
   firstAgentPriorPatPolicyWarning,
   firstAgentRevisionValuesMatch,
+  verifyFirstAgentModel,
 } from "../../scripts/first-agent-model.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
@@ -621,4 +623,108 @@ test("first-Agent does not take the next flag as the prompt or harness", () => {
   assert.equal(kept.status, 1);
   assert.match(kept.stderr, /Local Kubernetes state or its recorded key was not found/);
   assert.doesNotMatch(kept.stderr, /--prompt requires text/);
+});
+
+test("model verification retains safe failure metadata without forwarding probe output", async (t) => {
+  let responseStatus = 503;
+  let responseBody = "private-upstream-body";
+  let requests = 0;
+  const server = createServer((request, response) => {
+    requests++;
+    response.writeHead(request.headers.authorization ? responseStatus : 401);
+    response.end(responseBody);
+  });
+  const port = await listen(t, server);
+  const hash = (value) => createHash("sha256").update(value).digest("hex").slice(0, 12);
+  let suppliedOutput;
+  const kubectl = async (...args) => {
+    if (args[1] === "namespaces") {
+      return JSON.stringify({ items: [{ metadata: { name: "tenant" } }] });
+    }
+    if (args[1] === "pods") {
+      return JSON.stringify({
+        items: [
+          {
+            metadata: { name: "gateway" },
+            spec: {
+              volumes: [
+                { configMap: { name: `gateway-${hash("agent")}-rev-${hash("revision")}` } },
+              ],
+            },
+            status: { phase: "Running", conditions: [{ type: "Ready", status: "True" }] },
+          },
+        ],
+      });
+    }
+    if (suppliedOutput !== undefined) {
+      return suppliedOutput;
+    }
+    // Execute the production serialized probe. Only its transport destination is
+    // adapted to an owned loopback server; this does not claim a Gateway/model run.
+    let output = "";
+    await runInNewContext(`(async () => { ${args.at(-1).input} })()`, {
+      AbortSignal,
+      process: {
+        env: { OPENCLAW_GATEWAY_PASSWORD: "synthetic-password" },
+        stdout: {
+          write: (value) => {
+            output += value;
+          },
+        },
+      },
+      fetch: (url, options) => {
+        assert.equal(url, "http://127.0.0.1:8080/v1/chat/completions");
+        return fetch(`http://127.0.0.1:${port}/v1/chat/completions`, options);
+      },
+    });
+    return output;
+  };
+  const verify = (code, status) =>
+    assert.rejects(
+      verifyFirstAgentModel(kubectl, {
+        namespaceId: "namespace",
+        agentId: "agent",
+        revisionId: "revision",
+        expectProviderKey: false,
+      }),
+      (error) => {
+        assert.equal(error.code, code);
+        assert.equal(error.status, status);
+        assert.equal(error.cause, undefined);
+        assert.doesNotMatch(error.message + JSON.stringify(error), /private-|synthetic-password/);
+        return true;
+      },
+    );
+  await verify("upstream", 503);
+  assert.equal(requests, 2, "one unauthenticated check and one authorized request; no replay");
+  responseStatus = 401;
+  await verify("authorization", 401);
+  responseStatus = 200;
+  responseBody = JSON.stringify({ choices: [{ message: { content: "private-wrong-answer" } }] });
+  await verify("nonce", undefined);
+  suppliedOutput = JSON.stringify({
+    error: "private-unknown",
+    status: 503,
+    cause: "private-cause",
+  });
+  await verify("unexpected", undefined);
+  // Successful exec does not authorize the wire payload to claim a local catch,
+  // nor a status/category pair that the serialized probe could never emit.
+  for (const invalid of [
+    { error: "execution" },
+    { error: "invalid_result" },
+    { error: "authorization", status: 200 },
+    { error: "upstream", status: 404 },
+    { error: "endpoint", status: 503 },
+    { error: "unauthenticated", status: 401 },
+    { error: "nonce", status: 200 },
+    { error: "upstream", status: "private-status" },
+  ]) {
+    await t.test(`${invalid.error}/${invalid.status ?? "absent"}`, async () => {
+      suppliedOutput = JSON.stringify(invalid);
+      await verify("unexpected", undefined);
+    });
+  }
+  suppliedOutput = "private-invalid-json";
+  await verify("invalid_result", undefined);
 });
