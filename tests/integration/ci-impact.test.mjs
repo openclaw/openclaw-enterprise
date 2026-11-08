@@ -1296,9 +1296,12 @@ test("full-integration uses ordinary CI runners for kernel, sandbox, and image l
   const lanes = job.strategy.matrix.include.map((entry) => entry.lane);
   const pinned = lanes.filter(
     (lane) =>
-      lane === "postgres-auth" || lane.startsWith("k3d-fixture-") || lane === "k3d-observability",
+      lane === "postgres-auth" ||
+      lane === "postgres-application" ||
+      lane.startsWith("k3d-fixture-") ||
+      lane === "k3d-observability",
   );
-  for (const lane of ["postgres-auth", "k3d-observability"]) {
+  for (const lane of ["postgres-auth", "postgres-application", "k3d-observability"]) {
     assert.ok(pinned.includes(lane), lane);
   }
   for (const lane of pinned) {
