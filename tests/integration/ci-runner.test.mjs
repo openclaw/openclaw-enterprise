@@ -5440,6 +5440,71 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
   assert.equal(required?.status, "passed");
   assert.equal(optional?.status, "passed");
 
+  const failedFileEvidence = {
+    ...fileEvidence,
+    status: "failed",
+    cleanup: { status: "failed" },
+  };
+  const duplicateFileIssue = {
+    code: "duplicate-lane-file",
+    message: `lane docker-model has duplicate file evidence for ${file}`,
+    lane: "docker-model",
+    file,
+  };
+  const failedFileIssues = [
+    {
+      code: "lane-file-failed",
+      message: "lane docker-model file did not pass",
+      lane: "docker-model",
+      file,
+      status: "failed",
+    },
+    {
+      code: "cleanup-failed",
+      message: "lane docker-model file cleanup did not pass",
+      lane: "docker-model",
+      file,
+    },
+  ];
+  for (const [label, files, issues] of [
+    ["duplicate file fails then passes", [failedFileEvidence, fileEvidence], failedFileIssues],
+    ["duplicate file passes then fails", [fileEvidence, failedFileEvidence], failedFileIssues],
+    ["duplicate file passes both times", [fileEvidence, fileEvidence], []],
+  ]) {
+    await t.test(label, async () => {
+      await writeJson(resultPath, { ...evidence, files });
+      const result = run(root, aggregateArgs);
+      assert.equal(result.status, 1, result.stdout || result.stderr);
+      const aggregate = JSON.parse(result.stdout);
+      assert.equal(aggregate.status, "failed");
+      assert.deepEqual(aggregate.issues, [duplicateFileIssue, ...issues]);
+    });
+  }
+
+  await t.test("duplicate unregistered file evidence does not expose its path", async () => {
+    const unregisteredPath = "tests/integration/untrusted-receipt-path-canary.test.mjs";
+    const unregisteredFile = { ...fileEvidence, path: unregisteredPath };
+    await writeJson(resultPath, {
+      ...evidence,
+      files: [fileEvidence, unregisteredFile, unregisteredFile],
+    });
+    const result = run(root, aggregateArgs);
+    assert.equal(result.status, 1, result.stderr);
+    assert.ok(
+      !result.stdout.includes(unregisteredPath) && !result.stderr.includes(unregisteredPath),
+      "aggregate printed an unregistered receipt path",
+    );
+    const aggregate = JSON.parse(result.stdout);
+    assert.equal(aggregate.status, "failed");
+    assert.deepEqual(aggregate.issues, [
+      {
+        code: "duplicate-lane-file",
+        message: "lane docker-model has duplicate file evidence for an unregistered file",
+        lane: "docker-model",
+      },
+    ]);
+  });
+
   const skipped = { ...required, status: "skipped" };
   const unpassed = (status) => ({
     code: "expected-test-not-passed",
