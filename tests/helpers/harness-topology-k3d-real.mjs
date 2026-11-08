@@ -45,6 +45,7 @@ import {
 } from "../helpers/logging-otel-observation.mjs";
 import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
 import { withSkillPolicyRestore } from "./skill-policy-restore.mjs";
+import { waitForWorkspaceReconnect } from "./gateway-workspace-readiness.mjs";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 import { defaultUsersIAM } from "./default-users-iam.mjs";
 import { installManagedSlackProxyFixture } from "./managed-slack-proxy-k3d.mjs";
@@ -6322,10 +6323,9 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
     await readFileInPod(topology.placement, harnessPod, workspaceFromGateway),
     ownerContent,
   );
-  const reconnected = await gatewayCall(topology, "agents.files.get", {
-    agentId: "main",
-    name: "AGENTS.md",
-  });
+  const reconnected = await waitForWorkspaceReconnect(() =>
+    gatewayCall(topology, "agents.files.get", { agentId: "main", name: "AGENTS.md" }, 10_000),
+  );
   assert.equal(reconnected.file.content, ownerContent, "paired node must reconnect after restart");
 
   const secondRevision = await topology.request(
@@ -6380,10 +6380,9 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
   topology.gatewayPod = await waitForReadyGatewayPod(topology, secondRevision.data.id);
   topology.harnessPod = nextHarness;
   topology.revision = secondRevision.data;
-  const afterRevision = await gatewayCall(topology, "agents.files.get", {
-    agentId: "main",
-    name: "AGENTS.md",
-  });
+  const afterRevision = await waitForWorkspaceReconnect(() =>
+    gatewayCall(topology, "agents.files.get", { agentId: "main", name: "AGENTS.md" }, 10_000),
+  );
   assert.equal(
     afterRevision.file.content,
     ownerContent,
