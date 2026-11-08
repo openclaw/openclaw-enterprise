@@ -88,6 +88,10 @@ export const DeploymentCompletionFocus = {
   ...story("deploymentCompletionFocus", { openInNewTab: true }),
   name: "Diagnostics focus when deployment completes",
 };
+export const DeploymentRefreshFocus = {
+  ...story("deploymentRefreshFocus", { openInNewTab: true }),
+  name: "Refresh deployment focus when a newer version appears",
+};
 export const DeploymentCompletesRereadFails = story("deploymentCompletesRereadFails");
 export const DeploymentStatusReadRecovers = {
   ...story("deploymentStatusReadRecovers"),

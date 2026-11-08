@@ -1,6 +1,7 @@
 import type {
   AgentCredentialSourceBinding,
   AgentDeploymentStatusWire,
+  AgentRevisionSummaryWire,
   AgentRuntimeHarnessStatus,
   OpenClawConfigurationDocument,
   PluginApprovers,
@@ -132,6 +133,20 @@ export function createAgentDetailScenarios({
   currentVersion: string;
   candidateVersion: string;
 }) {
+  const newerDeployment: AgentRevisionSummaryWire = {
+    id: "rev_00000000-0000-4000-8000-000000000008",
+    namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+    agentId: "agt_00000000-0000-4000-8000-000000000001",
+    revision: 8,
+    backendId: null,
+    configurationId: "cfg_00000000-0000-4000-8000-000000000001",
+    configurationGeneration: 2,
+    harness: { id: "codex", version: "demo", mode: "dedicated", overrides: {}, configuration: {} },
+    createdAt: "2026-09-26T23:10:00.000Z",
+    deploymentStatus: "queued",
+    deploymentErrorCode: null,
+  };
+
   const configurationConflictDraft = {
     group: "Pages/Agent detail",
     path: draft,
@@ -1658,6 +1673,40 @@ export function createAgentDetailScenarios({
           "Wait for the recorded status to read Completed. The details open and the same button stays focused and fully in view. Repeat at desktop and phone widths.",
           "At phone width, reload the preview and repeat, this time scrolling all the way to the top without changing focus. The details open on completion and the reader stays at the top with the focused button still offscreen.",
         ],
+      },
+      deploymentRefreshFocus: {
+        group: "Pages/Agent detail",
+        name: "Refresh deployment focus when a newer version appears",
+        path: `${candidateVersion}&tab=deployment`,
+        deployed: true,
+        candidateDeploymentStatus: "queued",
+        rules: [
+          {
+            suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+            skip: 1,
+            once: true,
+            delayMs: 6_000,
+          },
+          {
+            suffix: `/agents/${newerDeployment.agentId}/revisions`,
+            skip: 1,
+            data: [newerDeployment],
+          },
+          {
+            suffix: `/deployments/${newerDeployment.id}`,
+            delayMs: 1_800,
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+          },
+        ],
+        description:
+          "A quiet poll for queued v7 is still running when you request a refresh. The refresh discovers v8, whose deployment record is temporarily unavailable.",
+        steps: [
+          "Fold Deployment details and Tab to Refresh deployment. About five seconds after v7 appears, the quiet poll starts. The button stays enabled and focused.",
+          "Press Enter while that poll is pending. The button becomes busy and keeps focus. When the refresh discovers v8 and replaces the panel, its Refresh deployment button keeps focus in the same position.",
+          "Wait for the v8 retry notice. Refresh deployment is enabled again and remains focused. Reset the story to repeat.",
+        ],
+        gap: "Storybook simulates the version list and the failed deployment read. The Controller browser regression covers the real version discovery and read failure.",
       },
       deploymentCompletesRereadFails: {
         group: "Pages/Agent detail",
