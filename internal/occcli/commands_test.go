@@ -1186,9 +1186,9 @@ func TestAgentRevisionsPagesWithCursor(t *testing.T) {
 	t.Setenv("OCC_NAMESPACE", "ns_55555555-5555-4555-8555-555555555555")
 	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
 	firstResponses := agentRevisionResponses()
-	firstResponses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2,"createdAt":"2026-09-30T01:00:00.000Z"}],"meta":{"requestId":"req_test","nextCursor":"v1.2"}}`
+	firstResponses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2,"namespaceId":"` + testNamespaceID + `","agentId":"` + testAgentID + `","backendId":null,"configurationId":"cfg_55555555-5555-4555-8555-555555555555","harness":{"id":"codex","version":"fixture","mode":"dedicated","overrides":{},"configuration":{}},"configurationGeneration":2,"createdAt":"2026-09-30T01:00:00.000Z","deploymentStatus":"failed","deploymentErrorCode":"CONVERGENCE_DEADLINE_EXCEEDED"}],"meta":{"requestId":"req_66666666-6666-4666-8666-666666666666","nextCursor":"v1.2"}}`
 	lastResponses := agentRevisionResponses()
-	lastResponses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision1ID + `","revision":1,"createdAt":"2026-09-30T00:00:00.000Z"}],"meta":{"requestId":"req_test","nextCursor":null}}`
+	lastResponses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision1ID + `","revision":1,"namespaceId":"` + testNamespaceID + `","agentId":"` + testAgentID + `","backendId":null,"configurationId":"cfg_55555555-5555-4555-8555-555555555555","harness":{"id":"codex","version":"fixture","mode":"dedicated","overrides":{},"configuration":{}},"configurationGeneration":1,"createdAt":"2026-09-30T00:00:00.000Z","deploymentStatus":"succeeded","deploymentErrorCode":null}],"meta":{"requestId":"req_66666666-6666-4666-8666-666666666666","nextCursor":null}}`
 	first := &fakeOCC{responses: firstResponses}
 	last := &fakeOCC{responses: lastResponses}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1239,9 +1239,16 @@ func TestAgentRevisionsPagesWithCursor(t *testing.T) {
 			id = testRevision2ID
 		}
 		defaultPage = append(defaultPage, map[string]any{
-			"id":                      id,
-			"revision":                revision,
-			"agentId":                 testAgentID,
+			"id":              id,
+			"revision":        revision,
+			"agentId":         testAgentID,
+			"namespaceId":     testNamespaceID,
+			"backendId":       nil,
+			"configurationId": "cfg_55555555-5555-4555-8555-555555555555",
+			"harness": map[string]any{
+				"id": "codex", "version": "fixture", "mode": "dedicated",
+				"overrides": map[string]any{}, "configuration": map[string]any{},
+			},
 			"configurationGeneration": 2,
 			"createdAt":               "2026-09-30T01:00:00.000Z",
 			"deploymentStatus":        "failed",
@@ -1252,7 +1259,7 @@ func TestAgentRevisionsPagesWithCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstResponses["GET "+agentPath+"/revisions"] = `raw:200 {"data":` + string(pageJSON) + `,"meta":{"requestId":"req_test","nextCursor":"v1.2"}}`
+	firstResponses["GET "+agentPath+"/revisions"] = `raw:200 {"data":` + string(pageJSON) + `,"meta":{"requestId":"req_66666666-6666-4666-8666-666666666666","nextCursor":"v1.2"}}`
 	_, notices, err = runOCCWithArgs("--namespace", testNamespaceID, "agent", "revisions", testAgentID)
 	if err != nil {
 		t.Fatal(err)
@@ -1270,7 +1277,7 @@ func TestAgentRevisionsContinuationKeepsOverrides(t *testing.T) {
 	responses := agentRevisionResponses()
 	// With --limit 1, revision 2 fills the page and readable revision 1
 	// allows OCC to return v1.2 as the next cursor.
-	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2,"agentId":"` + testAgentID + `","configurationGeneration":2,"createdAt":"2026-09-30T01:00:00.000Z","deploymentStatus":"failed","deploymentErrorCode":"CONVERGENCE_DEADLINE_EXCEEDED"}],"meta":{"requestId":"req_test","nextCursor":"v1.2"}}`
+	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2,"namespaceId":"` + testNamespaceID + `","agentId":"` + testAgentID + `","backendId":null,"configurationId":"cfg_55555555-5555-4555-8555-555555555555","harness":{"id":"codex","version":"fixture","mode":"dedicated","overrides":{},"configuration":{}},"configurationGeneration":2,"createdAt":"2026-09-30T01:00:00.000Z","deploymentStatus":"failed","deploymentErrorCode":"CONVERGENCE_DEADLINE_EXCEEDED"}],"meta":{"requestId":"req_66666666-6666-4666-8666-666666666666","nextCursor":"v1.2"}}`
 	server := httptest.NewServer(&fakeOCC{responses: responses})
 	defer server.Close()
 	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
