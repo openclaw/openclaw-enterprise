@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-06
-last_updated_session: authoring-run/06ea0064-3df1-4770-ab8a-64a5abc819b4
+updated: 2026-11-08
+last_updated_session: authoring-run/ac563bfd-5c5e-43d2-8682-8bb3899b1814
 ---
 
 # Compose development flow
@@ -49,7 +49,7 @@ owns the operator procedure and destructive cleanup boundary.
 
 ```mermaid
 graph TD
-  A["./bin/occ dev up"] --> Checkout{"Nearest checkout uses LF?"}
+  A["./bin/occ dev up"] --> Checkout{"Valid checkout markers<br/>and LF module?"}
   Checkout -->|No| Refuse["Refuse before startup"]
   Checkout -->|Yes| Guard{"Development settings valid?"}
   Guard -->|No| Refuse
@@ -113,10 +113,12 @@ graph TD
 `internal/occdev/egress_k3d.go:CheckDevelopmentProfile`, `scripts/dev-up`
 
 `internal/occcli/dev.go:developmentRepository` selects the nearest enclosing
-checkout with an OCE module declaration and `compose.yaml`. A matching checkout
-with CRLF in `go.mod` stops both `up` and `down` with an LF repair error before
-profile dispatch. It cannot fall through to an outer checkout and target that
-checkout's stack or volumes.
+checkout with an OCE module declaration and a regular `compose.yaml` file,
+including a symlink to one. An absent Compose marker allows the ancestor search
+to continue. A present marker that is not a regular file or cannot be resolved
+stops both `up` and `down` with its exact path before profile dispatch. CRLF in
+`go.mod` also stops both commands with an LF repair error. These invalid markers
+cannot fall through to an outer checkout and target its stack or volumes.
 
 Before Compute dispatch, the CLI checks protected-egress, database, and host-gateway
 selectors through the existing development validators. Direct Docker script startup
@@ -328,6 +330,10 @@ describes accepted selectors.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 04:08: Preserve Namespace cleanup and upstream readiness while merging documentation histories. (authoring-run/ac563bfd-5c5e-43d2-8682-8bb3899b1814 - 40e98dcfd3b8f3b4f7e2b96e1460b6185486866e)
+
+- 2026-11-08 05:18: Reject invalid or unresolvable Compose markers before development dispatch. (authoring-run/2c3fb5d2-955a-471d-a236-332a4bdb34c2 - 2b6201f1bd74549ffb38bfa910d00b49e6ebc07c)
 
 - 2026-11-06 18:12: Preserve the checkout line-ending guard and both development cleanup histories while merging main. (authoring-run/06ea0064-3df1-4770-ab8a-64a5abc819b4 - 11214072c8afd401fbf217f564627a63caabffc1)
 

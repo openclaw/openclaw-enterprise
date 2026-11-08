@@ -8,6 +8,10 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 ## Changelog
 
+- 2026-11-05 13:56: Preserve Namespace journal cleanup while integrating shared setup validation and current workload-identity refusal. (authoring-run/50d65cc8-04ef-4050-bef5-3cf7563297a6 - 26909c112b94322dcd7196631c2087c121ae2217)
+
+- 2026-11-08 06:54: Trace serving-process PAT readiness. (authoring-run/cc85b8e8-41ee-4b88-9807-456c25e0fa77 - 12582b2da6c58b020cff462d6d8ecfe2bbedde8a)
+
 - 2026-11-05 05:35: Preserve journal cleanup, TLS setup validation and preparer shutdown while integrating main. (authoring-run/a169e925-2eda-47cf-b47c-192df70fcd3a - 7c113779d56e81637388a8a79b3a8de61bb15b59)
 
 - 2026-11-04 19:20: Preserve cleanup ownership and observed Harness readiness. (authoring-run/73695cc1-a0da-41a6-9cb1-c3fbde5f5a71 - 3f3150ce8a8b024e902ecf493a5e41ff5b72c934)

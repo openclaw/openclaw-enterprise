@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-11-05
-last_updated_session: authoring-run/50d65cc8-04ef-4050-bef5-3cf7563297a6
+updated: 2026-11-08
+last_updated_session: authoring-run/ac563bfd-5c5e-43d2-8682-8bb3899b1814
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -223,7 +223,11 @@ Duplicate names and `workspace-node-enrollment` prevent construction.
 Template Pod labels outside `allowed_pod_labels` fail deployment immediately
 with `SANDBOX_POD_LABELS_NOT_PERMITTED`.
 
-`provisionHarness` creates or adopts the provider. Renewal checks its version and updates only `node_setup_json` through `UpdateProvider`. Optional `startupDelayMs` is at most 120 seconds; development omits it. `harnessStatus` reports starting until an authenticated WebSocket handshake succeeds. Harness failures block readiness. Compute rolls the Gateway before enrollment.
+`provisionHarness` creates/adopts the provider. Renewal checks its version
+and updates only `node_setup_json` through `UpdateProvider`.
+`internal/occdev/kubernetes.go:openShellInstallationConfiguration` omits the
+development startup delay. Compute rolls the Gateway before checking enrollment;
+`harnessStatus` below gates readiness.
 
 Dedicated Codex requires one lowercase `APP_TOKEN_SHA` and two runtime files,
 each at most 65,536 bytes. `APP_SERVER_TOKEN` is forbidden. A second model proxy,
@@ -232,7 +236,7 @@ malformed files and other Secret-backed environment fail before Gateway mutation
 After login, `agentRuntimeEntrypoint` calls
 `apps/controller/src/drivers/compute/kubernetes/codex-plugin-stdio.ts:withCodexPluginStdio`.
 Clean exit permits verifier WebSocket startup; failure triggers group TERM/KILL.
-Provider Gateway readiness checks transport, not HMAC plugin status.
+Readiness does not attest HMAC plugin status.
 
 `oce-codex-runtime`/`oce-openclaw-runtime` provide read-only setup and Gateway CA.
 Only Codex accepts `runtime.json`/`config.toml`. `harnessRuntimeCredentials` reads
@@ -293,21 +297,26 @@ After HTTP `400` or `404`, `observeHeldRepositoryGitPreview` and `enrollHarness`
 require the recorded release acknowledgment and authenticated WebSocket. Other
 non-`200` responses stay pending or refuse enrollment without an upgrade.
 
-Setup retries reuse Backend clients. Cancellation follows setup/credential
-preparation; stalled initialization/file reads have no cancellation deadline. After dispatch, cancellation stops local gRPC; remote mutations may need recovery.
+Retries reuse Backend clients. Cancellation follows setup/credential
+preparation; stalled initialization/file reads lack deadlines. After dispatch, cancellation stops local gRPC; remote mutations may need recovery.
 
-`GetService` separates control URL and advertised workload host/port.
-`harnessEndpoint` returns WebSocket origin and configured
+`GetService` separates control URL from workload host/port.
+`harnessEndpoint` returns WebSocket origin and
 `sandboxDataMount.mountPath` (default `/sandbox/enterprise`). Native hooks
-use `harnessHome`, mode `0700`. Invalid or changed exposure fails closed.
+use `harnessHome` (`0700`). Invalid/changed exposure fails closed.
 
-`apps/controller/src/drivers/sandbox/openshell.ts:harnessStatus` probes the
-authenticated WebSocket handshake before reading a held-failure document;
-unanswered reads are transient `SANDBOX_GATEWAY_UNAVAILABLE`.
-`apps/controller/src/drivers/sandbox/openshell-service-transport.ts:serviceWebSocketHandshake`
-destroys HTTP refusals at once, releasing their connections.
+`apps/controller/src/drivers/sandbox/openshell.ts:harnessStatus` uses
+`apps/controller/src/drivers/sandbox/openshell-service-transport.ts:serviceCodexPatStatus`
+for dedicated `credential_source`/`codex_pat` revisions. Bearer-authenticated
+initialization precedes `getAuthStatus` with `includeToken:false`
+and `refreshToken:false`. Only `personalAccessToken`, null `authToken` and
+`requiresOpenaiAuth:true` report `serving`; absent, mismatched or malformed
+authentication stays `starting`; login repair and inference remain unproved.
+Other modes retain `serviceWebSocketHandshake`. TLS and cancellation persist;
+unavailable WebSockets permit held-failure reads. Timeouts yield transient
+`SANDBOX_GATEWAY_UNAVAILABLE`.
 
-Provider files require reported absolute paths. Gateway failure blocks readiness; uncertain creates retain providers. Cleanup deletes the Sandbox first.
+Provider files require reported absolute paths. Failed Gateways block readiness; uncertain creates retain providers. Cleanup deletes Sandbox first.
 
 Both planes use scoped WSS node routes; Envoy rewrites worker-transfer paths and attributes clients. Policy binds executable, host and port. On process-group `EPERM`, the supervisor signals the process.
 
@@ -409,6 +418,6 @@ Workspace wire test checks request IDs and deletion outcomes. Live provider remo
 
 ## Changelog
 
-- 2026-11-05 13:56: Preserve Namespace journal cleanup while integrating shared setup validation and current workload-identity refusal. (authoring-run/50d65cc8-04ef-4050-bef5-3cf7563297a6 - 26909c112b94322dcd7196631c2087c121ae2217)
+- 2026-11-08 04:08: Preserve Namespace cleanup and upstream readiness while merging histories. (authoring-run/ac563bfd-5c5e-43d2-8682-8bb3899b1814 - 40e98dcfd3b8f3b4f7e2b96e1460b6185486866e)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.
