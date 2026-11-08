@@ -182,7 +182,7 @@ jobs:
 
   image-lanes-same-sha:
     name: Same-SHA ${{ matrix.title }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ${{ matrix.lane == 'images-packaging' && 'blacksmith-4vcpu-ubuntu-2404' || 'blacksmith-8vcpu-ubuntu-2404' }}
     needs: [preflight, runtime-artifact]
     if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && needs.runtime-artifact.result == 'success' && (needs.preflight.outputs.run_all == 'true') }}
     timeout-minutes: ${{ matrix.timeout }}
