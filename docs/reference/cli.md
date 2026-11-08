@@ -180,7 +180,9 @@ skipped the newer-version check; with none selected, its error names the grant a
 
 Text output prints `TIME LEVEL KIND [SUBSYSTEM] MESSAGE key=value` per line.
 Gap and withheld records are printed to stderr as `notice:` lines; in JSON mode
-they are also records on stdout. Text lines and notices show an invisible or
+they are also records on stdout. In text mode, the CLI exits with a nonzero
+status if it cannot write a no-running-Pod, gap, or withheld notice to stderr.
+Text lines and notices show an invisible or
 control character, such as a bidirectional override, as an escape like
 `\u202e`; a field value holding one is quoted. JSON records are unchanged. With `--follow`, the CLI waits for
 `Retry-After` after a `429`, retries after a `504`, starts a new audited view
