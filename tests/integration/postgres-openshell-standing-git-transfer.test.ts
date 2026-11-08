@@ -129,9 +129,6 @@ test(
       { binaries: ["/usr/bin/codex"] },
       {
         id: gatewayId,
-        ...(conversation && {
-          modelProvider: { protocol: "openai-responses", baseUrl: conversation.baseUrl },
-        }),
         backend: {
           id: "fixture-gateway",
           drivers: { credential_gateway: gatewayId },
@@ -833,6 +830,16 @@ test(
       );
       await runtime.close();
       runtime = newRuntime();
+      // Expired Git withholds the aggregate environment for both providers. This is
+      // predecessor identity evidence only: no expired material can authorize a request.
+      assert.ok(route.observed);
+      for (const name of [route.observed.provider, model]) {
+        const status = await client.getSandboxProviderStatus(workspace, sandbox, name, signal);
+        assert.equal(status.state, "PROVIDER_READINESS_STATE_WITHHELD");
+        assert.equal(status.reason, "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED");
+        assert.equal(status.observed?.credentialsInstalled, false);
+        assert.equal(status.observed?.launchEnvironmentInstalled, false);
+      }
       const identity = await kube.verifyRepositoryExecution(warm, signal);
       assert.deepEqual(identity, {
         executionId: execution.executionId,

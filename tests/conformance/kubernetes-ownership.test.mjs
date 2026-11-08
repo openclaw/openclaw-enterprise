@@ -268,8 +268,8 @@ test("sealed Namespace compares SDK-deserialized ingress exactly", async () => {
         // Use the same SDK deserializer as NetworkingV1Api's response processor.
         const result = ObjectSerializer.deserialize({ items: [wire] }, "V1NetworkPolicyList");
         assert.deepEqual(
-          JSON.parse(JSON.stringify(result.items[0].spec.ingress[0]._from ?? null)),
-          wire.spec.ingress[0].from ?? null,
+          JSON.parse(JSON.stringify(result.items[0].spec.ingress?.[0]?._from ?? null)),
+          wire.spec.ingress?.[0]?.from ?? null,
         );
         extra?.(result.items[0].spec);
         return result;
@@ -320,6 +320,64 @@ test("sealed Namespace compares SDK-deserialized ingress exactly", async () => {
     },
   ]) {
     extra = add;
+    await assert.rejects(
+      driver.verifyExistingNetworkPolicies(target, ownership),
+      /undeclared or changed NetworkPolicy/,
+    );
+  }
+
+  // Kubernetes omits empty rule lists from admitted JSON. Explicit policy types
+  // keep these directions isolated; an empty rule object would instead allow traffic.
+  extra = undefined;
+  const denyPolicy = {
+    ...policy,
+    spec: { podSelector: {}, policyTypes: ["Ingress", "Egress"], ingress: [], egress: [] },
+  };
+  driver.preprovisionedNamespace = new PreprovisionedKubernetesNamespace(
+    JSON.stringify({
+      namespaceId: ownership.namespaceId,
+      uid: "00000000-0000-4000-8000-000000000001",
+    }),
+    { gatewayNamespace: "controller", gatewayName: "gateway" },
+    [{ ...denyPolicy, metadata: { name: policy.metadata.name } }],
+  );
+  wire = structuredClone(denyPolicy);
+  delete wire.spec.ingress;
+  delete wire.spec.egress;
+  await driver.verifyExistingNetworkPolicies(target, ownership);
+  for (const changed of [
+    { ingress: [{}] },
+    { egress: [{}] },
+    { policyTypes: ["Ingress"] },
+    { podSelector: { matchLabels: { app: "other" } } },
+  ]) {
+    wire = { ...denyPolicy, spec: { ...denyPolicy.spec, ...changed } };
+    await assert.rejects(
+      driver.verifyExistingNetworkPolicies(target, ownership),
+      /undeclared or changed NetworkPolicy/,
+    );
+  }
+
+  // A malformed configured value with length zero is not an empty Kubernetes
+  // list and must not compare equal to the server's omitted field.
+  wire = structuredClone(denyPolicy);
+  delete wire.spec.ingress;
+  delete wire.spec.egress;
+  for (const egress of ["", { length: 0 }]) {
+    driver.preprovisionedNamespace = new PreprovisionedKubernetesNamespace(
+      JSON.stringify({
+        namespaceId: ownership.namespaceId,
+        uid: "00000000-0000-4000-8000-000000000001",
+      }),
+      { gatewayNamespace: "controller", gatewayName: "gateway" },
+      [
+        {
+          ...denyPolicy,
+          metadata: { name: policy.metadata.name },
+          spec: { ...denyPolicy.spec, egress },
+        },
+      ],
+    );
     await assert.rejects(
       driver.verifyExistingNetworkPolicies(target, ownership),
       /undeclared or changed NetworkPolicy/,

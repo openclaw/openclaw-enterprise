@@ -460,10 +460,26 @@ test(
         "service.name": "forged-service",
         "openclaw.agent.id": "forged-agent",
       });
-    const filtered = async () =>
-      /otelcol_processor_filter_logs_filtered[^\n]* [1-9]/.test(
-        await fetch(`http://${metricsAddress}/metrics`).then((response) => response.text()),
-      );
+    let lastMetrics;
+    const filtered = async () => {
+      const response = await fetch(`http://${metricsAddress}/metrics`);
+      lastMetrics = { httpStatus: response.status };
+      const metrics = await response.text();
+      // Keep counts only: labels and response bodies are not failure diagnostics.
+      for (const [field, name] of [
+        ["accepted", "otelcol_receiver_accepted_log_records"],
+        ["refused", "otelcol_receiver_refused_log_records"],
+        ["filtered", "otelcol_processor_filter_logs_filtered"],
+      ]) {
+        const values = [
+          ...metrics.matchAll(new RegExp(`^${name}(?:_total)?(?:\\{[^\\n]*\\})? ([^\\s]+)$`, "gm")),
+        ]
+          .map(([, value]) => Number(value))
+          .filter(Number.isFinite);
+        lastMetrics[field] = values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+      }
+      return /otelcol_processor_filter_logs_filtered[^\n]* [1-9]/.test(metrics);
+    };
 
     // No other records have entered this fresh Collector, so a filter count
     // proves the near-match was processed and rejected before capture assertions.
@@ -474,7 +490,12 @@ test(
       [],
       ["com.docker.compose.service=worker"],
     );
-    await waitFor("the Collector to count the filtered near-match", filtered, fixture);
+    try {
+      await waitFor("the Collector to count the filtered near-match", filtered, fixture);
+    } catch (error) {
+      t.diagnostic(`Last Collector metrics (null means absent): ${JSON.stringify(lastMetrics)}`);
+      throw error;
+    }
 
     await send("gateway", [
       JSON.stringify({
@@ -542,6 +563,20 @@ test(
           status: 403,
           ...payload,
         }),
+        // Verified-email lookup failures must keep their stage after the body is
+        // replaced. An unreviewed stage must still be discarded by the Collector.
+        ...["email", canaries[4]].map((step) =>
+          JSON.stringify({
+            event: "authentication.provider-unavailable-warning",
+            severity: "WARN",
+            provider: "github",
+            providerId: `github:providerkey${fixture.suffix}`,
+            step,
+            cause: "http_status",
+            status: 503,
+            ...payload,
+          }),
+        ),
         JSON.stringify({
           event: "presets.default-refresh-skipped",
           severity: "WARN",
@@ -611,12 +646,12 @@ test(
       JSON.stringify({ level: "info", subsystem: "gateway", message: "x".repeat(33_000) }),
     ]);
     await waitFor(
-      "at least 13 exported records",
-      async () => (await records()).length >= 13,
+      "at least 15 exported records",
+      async () => (await records()).length >= 15,
       fixture,
     );
     const initial = await records();
-    assert.equal(initial.length, 13, "only reviewed JSON classes and Codex stderr pass");
+    assert.equal(initial.length, 15, "only reviewed JSON classes and Codex stderr pass");
     const warningEvents = [
       "compute.preflight-warning",
       "authentication.sign-in-limited",
@@ -643,6 +678,8 @@ test(
     }
     assert.deepEqual(initial.map(({ resource }) => resource["service.name"]).sort(), [
       "codex-app-server",
+      "occ-api",
+      "occ-api",
       "occ-api",
       "occ-api",
       "occ-api",
@@ -732,6 +769,21 @@ test(
         "occ.sign_in.step": "membership",
         "occ.sign_in.cause": "http_status",
         "occ.sign_in.status": "403",
+      },
+      {
+        "event.name": "authentication.provider-unavailable-warning",
+        "log.iostream": "stdout",
+        "occ.sign_in.provider": "github",
+        "occ.sign_in.step": "email",
+        "occ.sign_in.cause": "http_status",
+        "occ.sign_in.status": "503",
+      },
+      {
+        "event.name": "authentication.provider-unavailable-warning",
+        "log.iostream": "stdout",
+        "occ.sign_in.provider": "github",
+        "occ.sign_in.cause": "http_status",
+        "occ.sign_in.status": "503",
       },
       {
         "event.name": "authentication.provider-unavailable-warning",

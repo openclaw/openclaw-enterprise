@@ -48,12 +48,13 @@ export async function assertPopulatedUpgradeReturn(
   const audit = `aud_${randomUUID()}`;
 
   // Admission and selection are committed before the later operator gate. This
-  // is a persistence fixture, not proof of a running gateway or model turn.
+  // is a persistence fixture with current Harness fields, not proof of a running gateway or model turn.
   await candidate.app.query("BEGIN");
   try {
     await candidate.app.query(
       `INSERT INTO occ.agent_revisions(id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at)
-       SELECT $1,namespace_id,agent_id,revision_number+1,admitted_spec,backend_id,now()
+       SELECT $1,namespace_id,agent_id,revision_number+1,
+         jsonb_set(admitted_spec, '{harness}', (admitted_spec->'harness') || '{"overrides":{},"configuration":{}}'::jsonb),backend_id,now()
        FROM occ.agent_revisions WHERE id=$2`,
       [revision, agent.active_revision_id],
     );

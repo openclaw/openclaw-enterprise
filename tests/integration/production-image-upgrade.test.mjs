@@ -296,7 +296,7 @@ test("production image upgrades preserve controller/runtime ownership and wait f
   const bin = join(directory, "bin");
   await mkdir(bin);
   // Use real JSON operations for the run's dispatch journal and receipts.
-  const dispatchJson = `if [[ "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$1" == '-ser' || "$1" == '-cser' ]]; then
+  const dispatchJson = `if [[ "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$1" == '-ser' || "$1" == '-cser' ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 `;
@@ -369,6 +369,7 @@ esac
     bin,
     "python3",
     `if [[ "$1" == scripts/upgrade-dispatch-state.py ||
+      ( "$1" == - && "$4" == */oce-upgrade-preflight-* ) ||
       ( "$1" == - && ( "$2" == deploy/helm/openclaw-enterprise ||
         "$2" == "$UPGRADE_TEST_KUBECONFIG" || "$2" == */parameters.json ) ) ]]; then
   command -p python3 "$@"
@@ -669,6 +670,62 @@ esac
 `,
     { interpreter: "bash" },
   );
+  // Keep preflight identities across command invocations. This is API protocol
+  // coverage; the fixture does not run a Kubernetes Job controller.
+  await writeCommand(
+    bin,
+    "preflight-kubectl",
+    `const fs = require("node:fs");
+const args = process.argv.slice(2);
+const statePath = process.argv[1] + ".json";
+const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : {};
+const value = (flag) => args[args.indexOf(flag) + 1];
+const child = (job) => job && ({
+  apiVersion: "v1", kind: "Pod",
+  metadata: {
+    ...job.spec.template.metadata, namespace: job.metadata.namespace,
+    labels: { ...job.spec.template.metadata.labels, "batch.kubernetes.io/controller-uid": job.metadata.uid },
+    name: job.metadata.name + "-child", uid: job.metadata.uid + "-child",
+    ownerReferences: [{ apiVersion: "batch/v1", kind: "Job", controller: true,
+      name: job.metadata.name, uid: job.metadata.uid }],
+  },
+  spec: job.spec.template.spec, status: { phase: "Succeeded" },
+});
+let result;
+if (args.includes("create")) {
+  const file = value("--filename");
+  const object = JSON.parse(fs.readFileSync(file === "-" ? 0 : file, "utf8"));
+  object.metadata.uid = "fixture-" + object.metadata.name;
+  if (object.kind === "Job") {
+    object.status = { conditions: [{ type: "Complete", status: "True" }] };
+  }
+  state[object.metadata.name] = object;
+  result = object.metadata.uid;
+} else if (args.includes("delete")) {
+  const name = args.find((arg) => arg.startsWith("--raw=")).split("/").at(-1);
+  const options = JSON.parse(fs.readFileSync(0, "utf8"));
+  if (state[name]?.metadata.uid !== options.preconditions?.uid) {
+    throw new Error("preflight DELETE UID mismatch");
+  }
+  delete state[name];
+} else if (args.includes("logs")) {
+  result = "agent-drafts-accepted\\ninstallation-startup-ready\\n";
+} else if (args.includes("pods")) {
+  const uid = value("--selector").slice("batch.kubernetes.io/controller-uid=".length);
+  result = { items: Object.values(state).filter((object) =>
+    object.kind === "Job" && object.metadata.uid === uid).map(child) };
+} else {
+  const resource = args.find((arg) => /^(job[.]batch|pod)\\//.test(arg));
+  const [kind, name] = resource.split("/");
+  result = kind === "pod" ? child(state[name.slice(0, -6)]) : state[name];
+}
+fs.writeFileSync(statePath, JSON.stringify(state));
+if (result !== undefined) {
+  process.stdout.write(typeof result === "string" ? result : JSON.stringify(result));
+}
+`,
+    { interpreter: process.execPath },
+  );
   await writeCommand(
     bin,
     "kubectl",
@@ -681,8 +738,9 @@ case "$*" in
     fi
     printf '%s\\n' '{"status":"ok"}'
     ;;
-  *' create --filename -'*) cat >/dev/null; printf '%s' 'fixture-preflight-uid' ;;
-  *' create --filename'*) printf '%s' 'fixture-preflight-uid' ;;
+  *' create --filename'*|*' get job.batch/'*|*'batch.kubernetes.io/controller-uid='*|*' get pod/oce-upgrade-preflight-'*|*' logs pod/oce-upgrade-preflight-'*|*'delete --raw='*)
+    exec "$(dirname "$0")/preflight-kubectl" "$@" ;;
+
   *'jsonpath='*) printf '%s\\n' "$OBSERVED_CONTROLLER_IMAGE" ;;
   *'get pods'*) printf '%s\\n' '{"items":[]}' ;;
   *' get pod/'*) printf '%s\\n' '{"status":{"phase":"Succeeded"}}' ;;
@@ -822,7 +880,11 @@ esac
       const journal = await readFile(journalPath);
       assert.deepEqual(lastDispatchEntry(journal), ["send", "ns_test", "agt_test"]);
       const calls = await readFile(log, "utf8");
-      assert.equal(calls.match(/^occ .* agent deploy agt_test$/gmu)?.length, 1);
+      assert.equal(
+        calls.match(/^occ .* agent deploy agt_test --retain-harness-overrides rev_test$/gmu)
+          ?.length,
+        1,
+      );
 
       // An untrusted response cannot authorize another deployment on resume.
       await assert.rejects(

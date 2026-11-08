@@ -13,6 +13,7 @@ export function createPlatformReadView(
       "list",
       "findWork",
       "findWorkAttempt",
+      "hasRepositoryExecutionRedeployRequired",
       "hasOutstandingCredentialWithdrawalWork",
     ]),
     installations: bindRepository(repositories.installations, lifetime, [
@@ -93,6 +94,7 @@ export function createPlatformReadView(
       "listRestrictionsTargeting",
       "listServicePrincipals",
       "getServicePrincipal",
+      "listConfiguredPolicy",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
       "findStandingExecution",

@@ -113,6 +113,7 @@ import {
   type PostgresPool,
   type PostgresQueryClient,
   type PostgresWorkQueueOptions,
+  recognizedRuntimeFailureValues,
   validateRuntimeFailureEvidence,
 } from "@openclaw-enterprise/occ";
 import {
@@ -1401,11 +1402,19 @@ export class ControllerWorker {
         throw new Error("The selected native repository sender is unavailable.");
       }
     }
+    const bound = this.repositoryAdmission?.policy;
+    if (
+      this.repositoryAdmission !== undefined &&
+      (bound !== this.repositoryPolicy || typeof bound?.resolveBindings !== "function")
+    ) {
+      throw new Error("The bound repository admission owner is not selected or unavailable.");
+    }
     this.repositoryCredentials = new RepositoryCredentialLifecycle({
       state: this.state,
       queueOptions: this.queueOptions,
-      driver: this.repositoryPolicy,
-      repositoryAdmission: this.repositoryAdmission,
+      repository: bound
+        ? { kind: "bound", policy: bound }
+        : this.repositoryPolicy && { kind: "registered", policy: this.repositoryPolicy },
       nativeSender: this.nativeRepositorySender,
       verifyExecution: (claim, revision) =>
         this.withClaimHeartbeat(
@@ -4954,7 +4963,7 @@ export class ControllerWorker {
       }
       if (
         error instanceof RepositoryCredentialAuthorityError &&
-        (await this.completeStandingRepositoryDenial(claim, error.code))
+        (await this.completeStandingRepositoryWithdrawal(claim, error.code))
       ) {
         return;
       }
@@ -5088,17 +5097,21 @@ export class ControllerWorker {
     });
   }
 
-  /** Loss of Git approval is not loss of model authority. Close only repository
-   * access on an already active execution; ordinary stop/replacement still owns Compute.
-   * The online authorizer denies immediately from the approval/policy before this cleanup. */
-  private async completeStandingRepositoryDenial(
+  /** Terminal repository authority loss does not revoke independent model authority.
+   * Close Git admission durably; the existing cleanup owner verifies whether this
+   * execution can remain running without it. Ordinary stop/replacement still owns Compute. */
+  private async completeStandingRepositoryWithdrawal(
     claim: ClaimedWork,
     code: string,
   ): Promise<boolean> {
     if (
       !claim.agentId ||
       !claim.revisionId ||
-      !["REPOSITORY_STANDING_APPROVAL_REMOVED", "REPOSITORY_STANDING_POLICY_CHANGED"].includes(code)
+      ![
+        "REPOSITORY_STANDING_APPROVAL_REMOVED",
+        "REPOSITORY_STANDING_POLICY_CHANGED",
+        "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED",
+      ].includes(code)
     ) {
       return false;
     }
@@ -5129,6 +5142,8 @@ export class ControllerWorker {
         return false;
       }
       // A delayed error cannot remove an unrelated generation or a now-valid policy.
+      // The Driver's terminal execution verdict cannot recover on this same revision;
+      // the current claim and exact active owner were revalidated above.
       const snapshot = revision.repositoryCredentials;
       if (code === "REPOSITORY_STANDING_APPROVAL_REMOVED") {
         const approval = await unit.repositorySessions.findStandingApproval(
@@ -5144,7 +5159,7 @@ export class ControllerWorker {
         ) {
           return false;
         }
-      } else {
+      } else if (code === "REPOSITORY_STANDING_POLICY_CHANGED") {
         try {
           this.repositoryCredentials.validate(revision);
           return false;
@@ -6931,6 +6946,9 @@ export class ControllerWorker {
       outcome: "pending",
       code,
       ...failure.failureLogFields,
+      ...(runtimeFailure === undefined
+        ? {}
+        : { failure: recognizedRuntimeFailureValues(runtimeFailure).code }),
       ...stopYieldsField(this.stopYields.count(claim.idempotencyKey)),
     });
   }

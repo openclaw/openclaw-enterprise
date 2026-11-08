@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-05
-last_updated_session: authoring-run/e800e024-db39-481b-a057-372ef95213de
+updated: 2026-11-08
+last_updated_session: authoring-run/303c3a8b-1e62-44ed-b31f-e7ab26a94c0f
 ---
 
 # Container publication flow
@@ -66,6 +66,24 @@ permission or protected-environment credentials.
 `.github/workflows/container-publish.yml:jobs.prepare` calls the reusable
 `.github/workflows/container-check.yml:jobs.prepare` image/architecture matrix. Controller and runtime each build on native AMD64 and ARM64 Linux runners.
 See [shared CI settings](../release/configuration.md#build-settings) for native runner defaults and overrides.
+
+### Runtime source verification
+
+To verify runtime changes locally, first
+[resolve the build arguments](../../deploy/runtime/README.md#resolve-openclaw-build-arguments), then run:
+
+```bash
+docker build -f deploy/runtime/Dockerfile \
+  "${openclaw_build_args[@]}" --target openclaw-bridge-tests .
+```
+
+Runtime jobs first build the explicit `openclaw-bridge-tests` target, which runs
+the broad bridge suites, CUA tests, and source typechecks. The subsequent image
+assembly uses the same checkout, source build arguments, base, and platform.
+Verification failure prevents assembly, smoke checks, and artifact upload through
+the normal required-step failure path. Local image assembly has no dependency on
+this target; see [local source verification](../../deploy/runtime/README.md#verify-runtime-source).
+
 Each job checks its architecture and logs CPU, memory, and available disk.
 The reported runner label alone is not evidence of allocated capacity.
 `scripts/ci/setup-tools.sh` installs checksum-pinned kubectl, k3d, Helm, and yq
@@ -108,7 +126,9 @@ loader cases. Runtime assembly copies that executable and repeats the checks in
 slim Bookworm. Missing shared libraries, changed ABI, or a failed regression
 stops assembly. Repository-credential service stages keep their original base.
 Both bases apply available Debian updates; image digests do not freeze Debian
-repositories.
+repositories. Every package-index refresh uses `apt-get update --error-on=any`,
+so any failed index download stops the build before installation or upgrade
+can use stale indexes.
 
 `deploy/runtime/node/build.sh` records the source, patch, ABI and executable
 digest. `scripts/build-runtime-assets.mjs:inventory` verifies that digest against
@@ -285,6 +305,12 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-08 10:25: Integrate Node termination repair with current source verification and strict package-index refresh. (authoring-run/303c3a8b-1e62-44ed-b31f-e7ab26a94c0f - 0d828be256d49c5cad9f57a25d716e472347ec6b)
+
+- 2026-11-07 00:55: Stop image builds when Debian package indexes cannot refresh. (authoring-run/8cbd0aef-172d-4a4f-baa0-cd6d0d75025c - c8a9a5f66d138afa4ded680080fad0dc821a5af6)
+
+- 2026-11-06 10:40: Separate local runtime assembly from required native CI source verification. (authoring-run/67960fd7-f16d-459d-83ae-8dc02997f0d5 - a239e6df5946cc62367ab7872791e4c0edf358bc)
 
 - 2026-11-05 20:42: Document the source-built Node termination repair, final executable provenance and native full/slim verification. (authoring-run/e800e024-db39-481b-a057-372ef95213de - 0eab6d6c320f8f4e522ccb1b1ebfd3ad7e400e6a)
 

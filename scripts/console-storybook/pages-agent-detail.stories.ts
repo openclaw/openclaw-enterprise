@@ -70,6 +70,7 @@ export const InvalidConfigurationCurlyQuotes = story("invalidConfigurationCurlyQ
 export const ConfigurationChangedElsewhereMerged = story("configurationChangedElsewhereMerged");
 export const ConfigurationConflictFocus = story("configurationConflictFocus");
 export const Admitted = story("admitted");
+export const RepositoryAccessRedeployRequired = story("repositoryAccessRedeployRequired");
 export const RepositoryDraft = {
   ...story("repositoryDraft"),
   name: "Repository access in new version",
@@ -308,3 +309,8 @@ export const ConfigurationSaveReadDenied = {
   ...story("configurationSaveReadDenied"),
   name: "Configuration Save read denied",
 };
+
+export const HarnessOverrides = story("harnessOverrides");
+
+export const HarnessDeploymentPending = story("harnessDeploymentPending");
+export const HarnessDeploymentDenied = story("harnessDeploymentDenied");

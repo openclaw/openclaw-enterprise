@@ -33,7 +33,9 @@ administrators create human accounts through the
 [HTTP API](../../reference/authentication.md#account-provisioning) only, and
 manage Namespace Roles and AccessBindings through the
 [HTTP API or CLI](../../reference/authorization.md#manage-namespace-policy).
-Groups and Restrictions remain managed by the selected IAM authority. See
+Apart from the Groups that the
+[Installation configuration](#let-people-create-agents) declares, Groups and
+Restrictions remain managed by the selected IAM authority. See
 [Authorization](../../reference/authorization.md) for available actions, scope,
 and how denials work.
 
@@ -151,10 +153,44 @@ appointed account holds only `installation:administer` and `installation:read`:
   there to a Role with `namespace:read`, as in step 4 of
   [Add a person](#add-a-person). Namespace IAM writes then work in that
   Namespace; Namespace creation stays refused.
+- Like every account created through the API, it joins the configured
+  [default Groups](#let-people-create-agents). With them, it can create Agents
+  in `default`.
 
 Appoint one only for account and service-key administration. The draft
 [RFC in PR #889](https://github.com/openclaw/openclaw-enterprise/pull/889)
 proposes a change to this behavior.
+
+## Let people create Agents
+
+Declare the Default users Roles, Group, and bindings in the Installation
+configuration to let people create Agents in the shared `default` Namespace
+without other grants. Each account that an administrator creates afterwards
+joins the Group. The person owns each Agent, Configuration, Secret, and
+credential source they create, and deploys their Agents themselves. Other
+members cannot see or change those resources.
+[Default users and configured Roles](../../reference/authorization/default-users.md)
+defines each field and its limits.
+
+1. Add the `iam` block from the
+   [reference example](../../reference/authorization/default-users.md#installation-iam-configuration)
+   to the
+   [Installation startup configuration](../../reference/configuration.md#installation-startup-configuration)
+   of both the API and the worker. Omit the `namespace_creator` binding unless
+   members can also create and own Namespaces. OCC sets no limit on how many
+   Namespaces or Agents a member creates.
+2. Restart the API and the worker. At startup, OCC writes the Roles, the Group,
+   and the bindings. A configuration error stops startup and names the field.
+3. Create each person's account (steps 1–3 of [Add a person](#add-a-person)).
+   The account joins `default-user` as it is created. Accounts that already
+   exist do not join; there is no API, CLI, or console support to add them.
+
+The person can now create Agents in `default`. To stop all members from
+creating more, remove the binding from the configuration and restart. To stop
+one person, [disable their account](#remove-a-person). What they created stays,
+and their Agents keep running. To end their access to one resource, delete it,
+or delete its Owner binding `binding_owner_<resource-id>` with
+`occ iam access-binding delete` in that Namespace.
 
 ## Remove a person
 
@@ -176,11 +212,13 @@ jq -n --argjson version "$VERSION" '{expectedVersion: $version}' |
     "$OCC_URL/api/auth/accounts/$USER_ID/disable"
 ```
 
-The response shows `disabled: true`. Every session of the account ends at once, and
-password and GitHub, Google or OIDC sign-in are refused; an external sign-in tells the
-person the account is disabled. IAM grants stay, unused. The recovery account cannot be
-disabled, and account controls need external sign-in (on a password-only Installation
-they return `409`). `POST .../enable` with the same body reverses it.
+The response acknowledges `data.userId`. Repeat the GET above to verify
+`data.disabled: true` and read the new `data.version`. Every session of the account
+ends at once, and password and GitHub, Google or OIDC sign-in are refused; an external
+sign-in tells the person the account is disabled. IAM grants stay, unused. The recovery
+account cannot be disabled, and account controls need external sign-in (on a
+password-only Installation they return `409`). `POST .../enable` reverses disablement;
+use the freshly read version as `expectedVersion` in its body.
 
 Disabling does not end service keys. Keys belong to ServicePrincipals, and OCE does not
 record whom a key was issued for, so find a person's keys by the name given at issuance
@@ -243,8 +281,8 @@ of the Agent, not this set, so use the CLI or HTTP API as in
 
 The person still cannot create Agents, Secrets or Configurations. Codex device
 login on the Agent needs Agent `update` and `read`, plus Secret and
-credential-source `create` in the Namespace, so only an Installation
-administrator can start it; see
+credential-source `create` in the Namespace, which exact-resource grants
+cannot give; see
 [Use a personal Codex login](../deploy/credential-lifecycle.md#use-a-personal-codex-login).
 To message
 the Agent, the person needs a channel its Configuration sets up or
@@ -256,9 +294,12 @@ enabled.
 
 Besides the person who deploys it, the Agent's own ServicePrincipal needs
 `operate` on each Secret and credential source the Agent binds; without it, OCC
-refuses the deployment. Only an Installation administrator can give the Agent
-this grant: bind a Role that holds only Secret `operate` to the Agent's
-ServicePrincipal, once for each exact Secret.
+refuses the deployment. When a person who can operate those Secrets deploys,
+OCC
+[writes these grants](../../reference/authorization/default-users.md#grant-an-agent-its-credentials-at-deployment).
+Otherwise, only an Installation administrator can give the Agent this grant:
+bind a Role that holds only Secret `operate` to the Agent's ServicePrincipal,
+once for each exact Secret.
 
 When the console creates an Agent, it binds the Role
 `role_<namespace-id>_agent_secret_operate`, named `Agent Secret operate`, and
