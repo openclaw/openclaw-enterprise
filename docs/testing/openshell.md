@@ -48,8 +48,12 @@ clusters. For the Compose control-plane variant, set
 
 Select `tests/integration/openshell-git-finite-removal-real.test.ts` in the
 `openshell` lane to qualify one Agent after its repository binding is removed.
-Use the lane preparation below with the same `--file` selection for preparation
-and execution. The fixture owns a disposable Kubernetes control plane and
+Follow the lane prerequisites below. Set `file` to that path and pass
+`--selected-file "$file"` to `scripts/ci/prepare.mjs --lane openshell`, then
+`--file "$file"` to `scripts/ci/run-tests.mjs run openshell`. Use the same private
+`--state "$state"` for both. Always run
+`node scripts/ci/cleanup.mjs --state "$state"`, including after preparation or
+execution fails. The fixture owns a disposable Kubernetes control plane and
 PostgreSQL, a real OpenShell deployment, and a controlled HTTPS Git issuer.
 It needs the lane's authorized model credentials and immutable images.
 Both controller and runtime images must match the candidate checkout; an image
