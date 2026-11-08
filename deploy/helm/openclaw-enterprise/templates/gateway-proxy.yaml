@@ -93,10 +93,7 @@ spec:
               app.kubernetes.io/name: openclaw-enterprise
               app.kubernetes.io/instance: {{ .Release.Name | quote }}
               app.kubernetes.io/component: api
-        {{- if .Values.gatewayRouting.enabled }}
         - namespaceSelector:
-            matchLabels:
-              openclaw-enterprise.io/gateway: {{ include "openclaw.gatewayRouting.routeNamespaceLabel" . | quote }}
             matchExpressions:
               - key: openclaw.dev/gateway-namespace
                 operator: Exists
@@ -104,10 +101,10 @@ spec:
             matchLabels:
               app.kubernetes.io/managed-by: openclaw-enterprise
               openclaw.dev/workload-role: gateway
+              openclaw-enterprise.io/gateway-proxy: {{ include "openclaw.gatewayProxy.membershipLabel" . | quote }}
             matchExpressions:
               - key: openclaw.dev/agent
                 operator: Exists
-        {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.gatewayProxy.port }}

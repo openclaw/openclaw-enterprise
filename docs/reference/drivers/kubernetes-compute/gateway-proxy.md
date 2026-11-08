@@ -7,6 +7,11 @@ port. Compute validates the pair and permits only that peer and port from the
 Agent's Gateway, whether channels are enabled or not. Embedded Gateways receive
 the same setting; dedicated Harness processes do not.
 
+Bundled proxy access does not require private Gateway routing. Compute labels
+Gateway Pods with the selected proxy Service identity. Helm admits those Pods
+only in Gateway namespaces, not another Installation's Gateways. The API has a
+separate, release-scoped ingress rule.
+
 The API directory client shares that endpoint by default. Helm
 `api.channelDirectoryProxyUrl`, rendered from profile `channels.directoryProxyUrl`,
 can override only the API route. An empty Helm value inherits the Gateway proxy.

@@ -3570,12 +3570,6 @@ test(
         },
       },
     };
-    assert.deepEqual(proxyPolicy.spec.ingress, [
-      {
-        from: [apiProxyPeer],
-        ports: [{ protocol: "TCP", port: 3128 }],
-      },
-    ]);
     const gatewayObjects = await resources(
       (await render({ ...gatewayProxyValues, ...gatewayRoutingValues })).stdout,
     );
@@ -3590,18 +3584,16 @@ test(
           apiProxyPeer,
           {
             namespaceSelector: {
-              matchLabels: {
-                "openclaw-enterprise.io/gateway": routeNamespaceLabel(
-                  "openclaw-system",
-                  "oce-agent-gateways",
-                ),
-              },
               matchExpressions: [{ key: "openclaw.dev/gateway-namespace", operator: "Exists" }],
             },
             podSelector: {
               matchLabels: {
                 "app.kubernetes.io/managed-by": "openclaw-enterprise",
                 "openclaw.dev/workload-role": "gateway",
+                "openclaw-enterprise.io/gateway-proxy": createHash("sha256")
+                  .update("openclaw-enterprise-gateway-proxy.openclaw-system.svc")
+                  .digest("hex")
+                  .slice(0, 12),
               },
               matchExpressions: [{ key: "openclaw.dev/agent", operator: "Exists" }],
             },
@@ -3610,6 +3602,7 @@ test(
         ports: [{ protocol: "TCP", port: 3128 }],
       },
     ]);
+    assert.deepEqual(proxyPolicy.spec.ingress, gatewayProxyPolicy.spec.ingress);
     assert.deepEqual(proxyPolicy.spec.egress.at(-1), {
       // Preserve the original proxy's public HTTPS destinations as DNS rotates.
       to: [
@@ -5459,7 +5452,7 @@ test(
       }
     };
     collect(objects);
-    assert.ok(values.length >= 5);
+    assert.ok(values.length >= 4);
     assert.deepEqual(new Set(values), new Set([label]));
   },
 );
@@ -7175,6 +7168,109 @@ test(
       );
       const envoy = objects.find(({ kind }) => kind === "EnvoyProxy");
       assert.equal(envoy.spec.provider.kubernetes.envoyService.type, serviceType);
+    }
+  },
+);
+
+test(
+  "bundled proxy admits only its Installation's Gateways with or without private routing",
+  tooling,
+  async () => {
+    for (const routing of [false, true]) {
+      const objects = await resources(
+        (await render({ ...gatewayProxyValues, ...(routing ? gatewayRoutingValues : {}) })).stdout,
+      );
+      const proxy = objects.find(
+        ({ kind, metadata }) =>
+          kind === "Service" && metadata.name === "openclaw-enterprise-gateway-proxy",
+      );
+      const destination = { namespace: "openclaw-system", labels: proxy.spec.selector };
+      const makeDriver = (namespace, serviceName = proxy.metadata.name, managed = true) => {
+        const configured = conformanceKubernetesOptions({
+          gatewayTrustedProxyCidrs: ["10.42.0.0/16"],
+        });
+        if (routing) {
+          delete configured.network.gatewayClients;
+          configured.gatewayRouting = {
+            gatewayNamespace: "openclaw-system",
+            gatewayName: "oce-agent-gateways",
+            envoyNamespace: "envoy-gateway-system",
+          };
+        }
+        const hostname = `${serviceName}.${namespace}.svc`;
+        configured.runtime = {
+          transportSecretPrefix: "transport",
+          gatewayStorageClassName: "local-path",
+          ...(managed
+            ? {
+                proxy: {
+                  proxyUrl: `http://${hostname}:3128`,
+                  managedProxy: { hostname, namespace, podLabels: proxy.spec.selector, port: 3128 },
+                },
+              }
+            : {}),
+        };
+        return createKubernetesComputeDriver(configured);
+      };
+      const ownership = { namespaceId: "ns_00000000-0000-4000-8000-000000000001" };
+      const sourceFor = (driver) => {
+        const namespace = driver.gatewayNamespaceManifest(ownership);
+        const gateway = driver.deployment(
+          "gateway-one",
+          { ...ownership, agentId: "agent-one" },
+          { name: namespace.metadata.name, plane: "execution" },
+          driver.options.images.gateway,
+          "gateway-one",
+          "gateway",
+          {},
+          "info",
+          {
+            name: "configuration-one",
+            revision: 1,
+            revisionId: "revision-one",
+            gatewayManagedMode: true,
+            annotations: {},
+          },
+          true,
+          undefined,
+          {
+            loginMode: "api_key",
+            environment: [
+              {
+                name: "OPENAI_API_KEY",
+                valueFrom: { secretKeyRef: { name: "model-key", key: "value" } },
+              },
+            ],
+          },
+        );
+        return {
+          namespace: namespace.metadata.name,
+          namespaceLabels: namespace.metadata.labels,
+          labels: gateway.spec.template.metadata.labels,
+        };
+      };
+      const own = sourceFor(makeDriver(destination.namespace));
+      assert.equal(chartAllowsIngress(objects, destination, own, 3128), true);
+      assert.equal(chartAllowsIngress(objects, destination, own, 3129), false);
+
+      // Generic Gateway labels (and even the same private-routing configuration)
+      // must not admit another Installation's proxy client or an unconfigured client.
+      for (const foreign of [
+        makeDriver("other-installation"),
+        makeDriver(destination.namespace, "other-proxy"),
+        makeDriver(destination.namespace, undefined, false),
+      ]) {
+        assert.equal(chartAllowsIngress(objects, destination, sourceFor(foreign), 3128), false);
+      }
+      const harness = {
+        ...own,
+        labels: { ...own.labels, "openclaw.dev/workload-role": "agent" },
+      };
+      assert.equal(chartAllowsIngress(objects, destination, harness, 3128), false);
+      assert.equal(
+        chartAllowsIngress(objects, destination, { ...own, namespaceLabels: {} }, 3128),
+        false,
+      );
     }
   },
 );
