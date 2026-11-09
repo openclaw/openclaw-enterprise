@@ -1270,14 +1270,17 @@ async function repositoryGitJourney(
               }),
               true,
             );
-            const contradictory = await restartRoutes.standing(revision);
-            assert.ok(contradictory, "all standing route joins still match");
-            assert.equal(contradictory.executionFingerprint, saved.executionFingerprint);
-            assert.notEqual(
-              contradictory.route.observed?.processInstanceId,
-              observed.processInstanceId,
+            assert.equal(
+              await restartRoutes.standing(revision),
+              undefined,
+              "the observed process no longer matches the protected installation recipient",
             );
             const beforeMismatchRead = await repositoryRestartState(f.observerPool, revision.id);
+            assert.deepEqual(
+              beforeMismatchRead.repository_standing_executions,
+              beforeCancellation.repository_standing_executions,
+              "the immutable standing witness is unchanged",
+            );
             assert.equal(await inventory(), "unknown");
             assert.deepEqual(
               await repositoryRestartState(f.observerPool, revision.id),
