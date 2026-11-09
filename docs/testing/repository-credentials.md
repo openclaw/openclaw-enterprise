@@ -190,8 +190,8 @@ stock Codex and generated client material. Those checks do not replace the insta
 On a native-command chat completion mismatch, the lane attempts to report matching
 synthetic model request/result counts and whether any result contained the completion
 marker, or state that model observations are unavailable. The session-disposal checkpoint
-identifies completed withdrawal. These diagnostics do not expose chat or command output
-and do not replace the Git assertions or qualify the release.
+records session disposal and provider-token retirement. These diagnostics do not expose chat
+or command output and do not replace the Git assertions or qualify the release.
 The failure summary prefers the runner's failed-case or file-failure record over
 generic lane issues. It publishes only known source coordinates and fixed error
 categories; absent or malformed records retain the bounded fallback summary.
