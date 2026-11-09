@@ -14,8 +14,7 @@ See [production installation](production-installation.md) and
 4. [Verify the release](#verify-the-release) with a real workload.
 5. [Recover from a partial failure](#recover-from-a-partial-failure) before retrying.
 
-Select `--controller-image` for the OCC API and worker, and `--broker-image`
-for the repository broker when credentials are enabled. A broker restart can
+Use `--controller-image` for the API and worker; add `--broker-image` when repository credentials are enabled. A broker restart can
 interrupt existing Agent versions. `--runtime-image` updates the gateway and
 runtime image and redeploys every running Agent concurrently. Upgrades stop the
 API and worker during migration and rollout. Allow capacity for old
@@ -56,8 +55,9 @@ Prepare:
 - Bash, Python 3, Node.js matching the checkout’s `package.json` `engines.node`, Helm, kubectl, jq, yq, cmp and mktemp on the operator host. The Kubernetes identity must
   create and delete Jobs, Secrets and NetworkPolicies; get Jobs and Pods; list Pods;
   read Pod logs; get and patch Deployments; and get Installation Secrets in the
-  release namespace. Mutable Installation Secret changes require `update` after
-  API/worker shutdown; the helper only reads staged immutable Secrets;
+  release namespace. Changing a mutable Secret requires `update` on that name.
+  Fresh preparation stops on confirmed denial and warns if access is unverified.
+  Staged immutable Secrets remain read-only;
 - for the bundled Collector, [refresh its config Secret](../observability.md#refresh-the-collector-configuration-on-upgrade)
   from the release checkout and restart the Collector, even for image-only
   releases. Helm leaves the Secret as is. The helper stops before mutation if
@@ -281,9 +281,8 @@ API and worker preflight logs in the evidence directory. After a cleanup warning
 or interruption, preserve the evidence and lock and follow
 [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
 
-The helper stops the API and worker before updating protected inputs or replacing
-changed mutable Secret data. Helm migrates and bootstraps before restoring Deployments; the helper
-then verifies rollout and OCC access.
+The helper stops both writers before updating protected inputs or replacing changed mutable Secret data.
+Helm migrates, bootstraps and restores Deployments. The helper verifies rollout and OCC access.
 
 ```text
 Upgraded controller image; no Agent deployments were requested.
