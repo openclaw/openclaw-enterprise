@@ -58,6 +58,31 @@ persistence and GitHub sign-in; memory-backed success does not prove them.
 `OCC_HELM_BIN` can select Helm. It exercises loopback TLS trust and callback
 transport, not a live IdP, PostgreSQL authentication, or an installed deployment.
 
+### Synthetic OIDC issuer
+
+With Node.js 24 and OpenSSL available, run the portable issuer checks:
+
+```sh
+node --test tests/integration/oidc-provider.test.ts
+```
+
+The HTTPS fixture and the `fakeOidc` fetch adapter share the
+[OIDC protocol handler](../../tests/helpers/oidc-provider.mjs). The fixture grants
+one synthetic subject without a login screen; keep it on a disposable test network.
+These checks exercise the fixture, not a real identity provider or installed OCE
+sign-in.
+
+[Create run-owned material](../../tests/helpers/oidc-provider-material.mjs) once
+per rehearsal and retain it across controller replacements. It generates the
+client, subject, and TLS material in a private subdirectory and removes partial
+output if setup fails. Stop provider users before calling its returned `dispose`.
+
+The [server entrypoint](../../tests/helpers/oidc-provider-server.mjs) takes that
+material directory as its argument. `OIDC_LISTEN_HOST` and `OIDC_LISTEN_PORT`
+default to loopback and an ephemeral port; select the disposable network's bind
+address and port explicitly for a packaged fixture. The caller owns stopping the
+server and removing its material.
+
 ## Packaged-driver integration
 
 `tests/integration/driver-plugin-installation.test.mjs` installs precompiled

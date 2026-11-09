@@ -2762,6 +2762,18 @@ async function prepareNativeWorkspaceEnvoyImage(state, env) {
   env.OCC_TEST_WORKSPACE_ENVOY_IMAGE = image;
 }
 
+// The release job owns a fresh state path. Refuse a prior reservation rather
+// than adopting another attempt's resources. Cleanup uses the ordinary CI state.
+export async function prepareStagingSigninCluster(path) {
+  const state = baseState("staging-signin", path);
+  await writeFile(path, JSON.stringify(state) + "\n", { flag: "wx", mode: 0o600 });
+  const cluster = await ensureK3dCluster(path, state);
+  if (cluster.nodes.length !== 1 || cluster.nodes[0] !== `k3d-${cluster.name}-server-0`) {
+    throw new Error("Staging sign-in requires a single owned k3d server.");
+  }
+  return cluster;
+}
+
 /** @param {{ image: string, statePath: string, codexVersion?: string }} options */
 export async function prepareRuntimeImageSmoke({ image, statePath, codexVersion }) {
   assertDockerImageId(image, "Runtime smoke image");

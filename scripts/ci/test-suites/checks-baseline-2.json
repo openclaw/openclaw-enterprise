@@ -123,7 +123,11 @@
     "tests/integration/egress-connected-preflight.test.mjs",
     "tests/integration/credential-proxy-configuration.test.ts",
     "tests/helpers/socket-relay.test.mjs",
-    "tests/integration/gateway-workspace-readiness.test.mjs"
+    "tests/integration/gateway-workspace-readiness.test.mjs",
+    "tests/integration/oidc-provider.test.ts",
+    "tests/integration/signin-network-probe.test.ts",
+    "tests/integration/port-forward-cleanup.test.ts",
+    "tests/integration/staged-signin-proof.test.ts"
   ],
   "serialFiles": {
     "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
@@ -641,6 +645,32 @@
     },
     {
       "path": "tests/integration/openshell-full-integration.test.ts"
+    },
+    {
+      "path": "tests/integration/oidc-provider.test.ts"
+    },
+    {
+      "path": "tests/integration/signin-network-probe.test.ts",
+      "expectedTests": [
+        "sign-in TCP commands preserve outcomes and fail missing positive controls",
+        "only the initial egress control retries bounded transport rejections"
+      ]
+    },
+    {
+      "path": "tests/integration/port-forward-cleanup.test.ts",
+      "expectedTests": [
+        "operator forwarder shutdown waits for normal closure and can repeat",
+        "operator forwarder shutdown escalates a stubborn child before returning",
+        "operator forwarder shutdown refuses an exited child with an open inherited pipe",
+        "forwarder launch failure remains available after confirmed cleanup"
+      ]
+    },
+    {
+      "path": "tests/integration/staged-signin-proof.test.ts",
+      "expectedTests": [
+        "sign-in proof reader accepts complete observations for both protocols and return branches",
+        "sign-in proof reader refuses incomplete or misbound observations without reflecting proof"
+      ]
     }
   ]
 }

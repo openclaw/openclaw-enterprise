@@ -11,7 +11,7 @@ last_verified: "2026-11-04"
 Check published controller and runtime images with trusted startup tests before
 considering a staging installation. The default mode checks container startup on
 amd64. An optional mode stages a controller pair for a sign-in rehearsal.
-Neither mode installs or promotes a release. See the [release guides](README.md)
+Set `rehearse_signin` explicitly to install a prepared pair on a fresh, disposable runner. No mode promotes a release. See the [release guides](README.md)
 for publication and recovery procedures.
 
 <a id="when-it-runs"></a>
@@ -114,7 +114,7 @@ container startup, and live installations need separate proof.
 Supply all three optional inputs: `previous_source_sha`,
 `previous_publication_run_id`, and `previous_publication_attempt`. The existing
 source and publication inputs identify the candidate. A partial previous tuple
-fails validation. With all three omitted, the original startup job runs.
+fails validation. With all three omitted and `rehearse_signin` off, the original startup job runs.
 
 The pair job validates two ordered main publications and their underlying CI
 runs and verifies each downloaded receipt before using its registry references.
@@ -130,14 +130,15 @@ config, and revision in the exported config against the publication. It rejects
 a store without platform descriptors. The existing staging environment and
 read-only package permissions apply. No model or cluster credentials are needed.
 
-A successful job uploads `staging-pair-images.json` and
-`staging-signin-plan.json`. The latter binds the observed images to the intended
+After preparation succeeds, the job uploads `staging-pair-images.json` and
+`staging-signin-plan.json`. These files remain available if a later installed
+rehearsal fails. The plan binds the observed images to the intended
 sign-in test: the source inputs must match a reviewed controller reader profile
 and both releases must share its migration tree. A preparatory/activated pair
 and two activated controllers require different receipt behavior. A change to
 the reviewed production inputs requires review of the test expectations.
 
-These artifacts establish **input preparation only**. This job does not start
+These artifacts establish **input preparation only**. Preparing a pair does not start
 the controllers, exercise a callback or rollback, measure availability, or
 write the single-release startup qualification receipt. Publish and retain the
 preparatory release before merging a protocol activation when both generations
@@ -146,6 +147,33 @@ unpublished historical main revision. For a rehearsal publication, set
 `publish: true` and choose a dedicated `image_tag` unless you intend to update
 `latest` for both images. Run pair preparation while both publication receipts
 are available; the publisher retains them for 30 days.
+
+## Rehearse installed sign-in
+
+With both publication tuples supplied, select `rehearse_signin` to run the installed
+case after preparation on the same Linux/amd64 runner. Leaving it off keeps the
+preparation-only path. The job creates one k3d server with its own database and
+synthetic HTTPS identity provider. The cluster is separate from the configured
+staging installation; no application, model or operator-cluster credentials are needed.
+
+Both controllers and the unchanged runtime must be reachable by their verified
+public digest from the node. The job also checks the exact PostgreSQL and Node
+support images. It builds the fixture CLI and selects the chart from the trusted
+workflow checkout. The two image generations share a populated database and
+one issuer across replacements.
+
+For a preparatory/activated pair, the case checks five replacements, including
+refusal of incompatible sign-in receipts while they remain live. For two
+compatible activated releases, it checks forward and return replacement with
+live, one-use collection and replay refusal. The job refuses unknown reader
+versions, missing migration evidence, and inconclusive expiry windows.
+
+Only a passing selected case, complete transition evidence, a normally exited
+runner with no surviving descendants, and confirmed cluster cleanup produce
+`staging-signin-qualification.json`. Missing or ambiguous ownership evidence
+blocks automatic cleanup. No raw identity-provider material, cluster config,
+or session data is uploaded. This verifies sequential controller replacement;
+it does not measure normal-ingress availability or qualify overlapping writers.
 
 ## Results and limits
 
@@ -158,12 +186,16 @@ writes `staging-qualification.json`. The always-run upload explicitly retains
 produced. An early preparation failure retains the pull receipt without a
 success receipt or invented suite results.
 
-This is **container startup qualification on amd64**, not an installation or
-rollout. The installed private Git test lane builds a separate repository-service
-image and a runtime with a test CA through
+The single-release job provides **container startup qualification on amd64**,
+not an installation or rollout. The installed private Git test lane builds a
+separate repository-service image and a runtime with a test CA through
 [first-agent-smoke](../../scripts/ci/first-agent-smoke.mjs); the two-image
 publication receipt cannot supply that installation unchanged. Full Integration
 and QA Advisory retain their existing installation and provider requirements.
+
+For an installed sign-in rehearsal, use `staging-signin-qualification.json` as
+the success receipt. The pair inputs alone do not establish an installed result.
+
 This workflow does not promote to production or prove staging readiness,
 installed Agent workflows, or arm64 behavior.
 
