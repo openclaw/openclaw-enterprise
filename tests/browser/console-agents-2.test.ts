@@ -1063,6 +1063,26 @@ test("Dedicated Agent creation opens the Agent's deployment at handoff", async (
     assert.ok(observation, "Create polled the job after it handed off");
     return observation;
   });
+  // A running first deployment this caller may read, as a cluster reports it; the test API has
+  // no Compute and would answer 503, which the form treats as "ask again at the next poll".
+  await page.route(
+    `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
+    (route) =>
+      route.fulfill({
+        json: {
+          data: {
+            deploymentId: revision.id,
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            status: "running",
+            error: null,
+            warnings: [],
+            progress: { lastAttempt: null, nextAttemptAt: null },
+          },
+          meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+        },
+      }),
+  );
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -1085,6 +1105,66 @@ test("Dedicated Agent creation opens the Agent's deployment at handoff", async (
   await waitForIdleFetches(page);
   assert.equal(served.reads, observations.length);
   assert.equal(await settledFetches(page, work.url), observations.length);
+});
+
+// A revision read Restriction can refuse the first deployment to a caller its provisioning job
+// still answers (tests/integration/postgres-agent-provisioning.test.mjs). That caller would find
+// nothing on the Deployment tab, so the form keeps following the job, asks once whether the
+// deployment is readable, and opens the Agent when the job succeeds, as before handoff opened it.
+test("Dedicated Agent creation keeps following the job when the first deployment is unreadable", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unreadable handoff", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Restricted Agent", nativeValues("v1"));
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const work = provisioningJob(namespace.id, "work_restricted");
+  const { page } = await newPage(t, fixture);
+  await routeDedicatedProvisioning(page, fixture, namespace);
+  const handoff = {
+    agentId: agent.id,
+    configurationId: agent.configurationId,
+    revisionId: revision.id,
+    phase: "handoff",
+  };
+  const observations = [
+    work.job("running", { configurationId: agent.configurationId }),
+    work.job("running", handoff),
+    work.job("running", handoff),
+    work.job("succeeded", handoff),
+  ];
+  const served = await routeProvisioningJob(page, fixture, work, (index) => {
+    const observation = observations[index];
+    assert.ok(observation, "Create polled the job after it ended");
+    return observation;
+  });
+  // The deployment is refused to this caller, as the Restriction refuses it.
+  const deploymentPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`;
+  // Reads the form makes; the Agent page it opens reads the deployment again on its own.
+  let formDeploymentReads = 0;
+  await page.route(`**${deploymentPath}`, (route) => {
+    if (new URL(page.url()).pathname === "/console/agents/new") {
+      formDeploymentReads += 1;
+    }
+    return route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL));
+  });
+  await trackSettledFetches(page);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Restricted Agent");
+  await enterManualModel(page, "test-model-key");
+  await runProvisioningPolls(
+    page,
+    () => page.getByRole("button", { name: "Create Agent" }).click(),
+    work.url,
+    observations.length,
+  );
+  await page.waitForURL((location) => location.pathname === `/console/agents/${agent.id}`);
+  const location = new URL(page.url());
+  assert.equal(location.searchParams.get("revision"), revision.id);
+  assert.equal(location.searchParams.get("tab"), "configuration");
+  assert.equal(served.reads, observations.length);
+  // The form asked once; the refusal settled it for the rest of the job.
+  assert.equal(formDeploymentReads, 1);
 });
 
 test("Create preserves the admitted version when the operator resends the same provisioning request", async (t) => {

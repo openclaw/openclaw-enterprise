@@ -507,6 +507,28 @@ function handedOff(
   );
 }
 
+// Whether the caller may read the job's first deployment: true when the read answers, false when
+// it is refused (403 or 404), and undefined when it is unavailable, so the next poll asks again.
+// An expired session still ends the wait.
+async function firstDeploymentReadable(
+  request: CreateRequest,
+  namespaceId: string,
+  job: { agentId: string; revisionId: string },
+) {
+  try {
+    await request(
+      `${namespacePath(namespaceId)}/agents/${encodeURIComponent(job.agentId)}/deployments/${encodeURIComponent(job.revisionId)}`,
+    );
+    return true;
+  } catch (error) {
+    const { status } = requestFailure(error);
+    if (status === 401) {
+      throw error;
+    }
+    return status === 403 || status === 404 ? false : undefined;
+  }
+}
+
 async function waitForProvisioning({
   request,
   status,
@@ -522,7 +544,24 @@ async function waitForProvisioning({
   // A started job goes back to queued between retries. Keep one label once it has started,
   // and write it only when it changes, since this rereads every second (finding 1424).
   let started = false;
-  while ((current?.status === "queued" || current?.status === "running") && !handedOff(current)) {
+  // Whether this caller may read the first deployment, once a read has said so.
+  let deploymentReadable: boolean | undefined;
+  while (current?.status === "queued" || current?.status === "running") {
+    // Past handoff the job only waits for the first deployment, which the Agent page shows with
+    // its waits, Stop and recovery actions, as plan 35 specifies: open it there now instead of
+    // holding the form until the deployment ends. Retry no longer applies to a job with a
+    // revision. A caller the job answers but a revision read Restriction refuses would find
+    // nothing there, so the form keeps following the job for them.
+    if (handedOff(current) && deploymentReadable !== false) {
+      deploymentReadable = await firstDeploymentReadable(request, namespaceId, current);
+      if (!isCurrent()) {
+        throw new DOMException("View closed", "AbortError");
+      }
+      if (deploymentReadable) {
+        status.textContent = "Agent created. Opening its first deployment…";
+        return { agentId: current.agentId, revisionId: current.revisionId, deploying: true };
+      }
+    }
     started ||= current.status === "running";
     setText(status, provisioningStatusText(started ? "running" : current.status));
     await wait(1_000);
@@ -531,13 +570,6 @@ async function waitForProvisioning({
     }
     const next = await request(first.url);
     current = observeJob(next);
-  }
-  // Past handoff the job only waits for the first deployment, which the Agent page shows with
-  // its waits, Stop and recovery actions, as plan 35 specifies: open it there now instead of
-  // holding the form until the deployment ends. Retry no longer applies to a job with a revision.
-  if ((current?.status === "queued" || current?.status === "running") && handedOff(current)) {
-    status.textContent = "Agent created. Opening its first deployment…";
-    return { agentId: current.agentId, revisionId: current.revisionId, deploying: true };
   }
   // A Stop during the first deployment (REVISION_STOPPED) or before it (PROVISIONING_CANCELLED)
   // is the owner's choice, not a failure to repair.

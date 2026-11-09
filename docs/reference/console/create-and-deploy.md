@@ -76,7 +76,8 @@ as the reason Dedicated OpenClaw is disabled.
    repositories, and workspace files for supported Dedicated provisioning.
    Create waits until provisioning creates the Agent and starts its first deployment,
    then opens that version's **Deployment** tab, which shows the deployment's progress,
-   current wait and recovery actions. A job that ends before then shows its result on
+   current wait and recovery actions. If you cannot read that deployment, Create keeps
+   following the job and opens the Agent when it succeeds. A job that ends before then shows its result on
    Create: if a newer deployment took over, Create offers no retry or link; for a failed
    deployment, open the linked Agent and version and follow its recovery guidance.
    After a Stop, deploy again when ready.

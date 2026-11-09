@@ -34,8 +34,9 @@ graph TD
   Agent --> Transport["<b>Compute Driver</b><br/>Trusted-proxy credentials"]
   Transport --> Deploy["<b>Ordinary deploy</b><br/>Record first version"]
   Deploy --> Observe["<b>Same provisioning handle</b><br/>Observe saved version"]
-  Observe -->|Pending| Observe
-  Observe -->|Activated| UI["<b>Agent deployment view</b><br/>Open existing version"]
+  Observe -->|Version readable| UI["<b>Agent deployment view</b><br/>Open the deploying version"]
+  Observe -->|Version refused; pending| Observe
+  Observe -->|Version refused; activated| UI
   Observe -->|Superseded| Superseded["<b>Create stays open</b><br/>Newer deployment took over"]
   Observe -->|Malformed present ID| Unknown["<b>Outcome unknown</b><br/>Keep job; offer Retry"]
   Observe -->|Confirmed failure| Terminal["<b>Creation failed</b><br/>Keep Agent and version"]
@@ -134,9 +135,13 @@ defers work without consuming retries until that version activates or fails. The
 success or the deployment’s safe error; meanwhile `progress` names its wait. Stop during rollout yields `REVISION_STOPPED`; Stop or deletion
 before handoff yields `PROVISIONING_CANCELLED` and says which happened. Status retains the Agent ID; both IDs survive restart.
 
-Create Agent (`apps/controller/src/console/agents/create.mts:waitForProvisioning`) shows the job's named
-wait and waits one second between status reads, spending it on details such as a full Pod quota, cancelling unfinished reads
-at the next poll. Admission, status and retry report the stored client `requestId`.
+Create Agent (`apps/controller/src/console/agents/create.mts:waitForProvisioning`) reads the job
+once a second. Once the job names its Agent and first revision, Create reads that deployment: if
+it answers, Create opens the version's Deployment tab, which shows its waits, Stop and recovery,
+and stops polling. A revision read Restriction can refuse the deployment (403 or 404) to a caller
+the job still answers; Create then keeps following the job and opens the Agent when it succeeds.
+An unavailable read is asked again at the next poll. Admission, status and retry report the
+stored client `requestId`.
 If absent or different, Create keeps the original request and any confirmed job.
 `meta.requestId` identifies each HTTP request. Leaving stops polling, not provisioning.
 If a newer deployment takes over, Create explains what happened without a retry or a link:
@@ -210,6 +215,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-09: Create Agent opens the first deployment at handoff when the caller can read it, and otherwise follows the job to its end.
 
 - 2026-11-04 16:38: Explain how Create Agent handles malformed provisioning IDs and error messages. (authoring-run/03df9caf-3a28-496d-bb70-f5b0d838a028 - fe3f13a48d54e3ad3a0dc872f6e5313c783c1ed0)
 
