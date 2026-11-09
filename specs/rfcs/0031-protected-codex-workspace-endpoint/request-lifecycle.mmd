@@ -1,49 +1,32 @@
 ---
 config:
   theme: base
-  sequence:
-    useMaxWidth: false
-    diagramMarginX: 18
-    diagramMarginY: 12
-    actorMargin: 38
-    boxMargin: 8
-    messageMargin: 28
-    mirrorActors: true
+  htmlLabels: true
+  flowchart:
+    curve: linear
+    nodeSpacing: 18
+    rankSpacing: 22
+    wrappingWidth: 200
 ---
-sequenceDiagram
-  accTitle: Proposed protected workspace lifecycle
-  accDescr: Compute pins a reservation from the selected Sandbox Driver. After the same original acknowledges signed release, Compute compares all four pins and asks the Driver for bearer-authenticated serving status using the retained admitted requirements. Only serving permits activation. The Gateway authenticates the canonical origin with only the pinned provider CA before it sends the HTTP Upgrade request and bearer. A TLS failure sends neither. On the authenticated connection the relay checks the bearer and released original before returning 101 with one generation proof. The Gateway verifies that proof before sending or accepting native frames.
-  participant C as Compute
-  participant S as Selected Sandbox Driver
-  participant G as Agent Gateway
-  participant W as Workspace relay
-  Note over C,G: Prepare (no workspace traffic)
-  C->>S: Read original workspace binding
-  S-->>C: Reserved endpoint and generation
-  C->>G: Pin origin, CA, root and generation
-  Note over C,W: Activate and connect
-  C->>S: Recheck original after signed release
-  S-->>C: Observed release state and binding, if available
-  alt Same original acknowledged and all four pins match
-    C->>S: Read bearer-authenticated harnessStatus
-    Note over C,S: Driver uses retained admitted requirements
-    alt Authenticated serving result
-      S-->>C: Serving
-      C->>G: Activate
-      G->>W: Start TLS for the canonical origin
-      Note over G,W: Gateway authenticates TLS with only the pinned provider CA
-      alt TLS authenticates the origin
-        G->>W: Send HTTP Upgrade request with bearer
-        Note right of W: Check bearer and current released original
-        W-->>G: Return 101 and one generation proof
-        Note over G,W: Gateway checks for one matching generation before any frame either way
-      else TLS authentication fails
-        Note over G,W: Close without sending Upgrade or bearer
-      end
-    else Missing or non-serving result
-      S-->>C: Unavailable or not serving
-      Note over C,G: Keep the new revision unavailable
-    end
-  else Held, changed or missing owner or pin
-    Note over C,G: Keep unavailable without recreating the pin
+flowchart TB
+  accTitle: One workspace address, two process generations
+  accDescr: Today, a Service can route the same address to replacement workspace B. A serving response alone does not show which process answered. Under the proposal, Compute pins the original workspace A before release, checks A's acknowledgement of the signed release and all four pins, then independently verifies A is serving. On each connection the Gateway verifies TLS with only the pinned CA before sending its bearer. The relay checks the bearer and released original before returning 101. The Gateway checks the generation proof before sending or accepting native frames. Missing or different proof closes the connection.
+  subgraph next["Proposed for protected workspaces"]
+    direction TB
+    pin["Before release: identify A<br/>and pin its workspace binding"] --> ready["Check A acknowledged release;<br/>verify A is serving"]
+    ready --> tls["On connect: verify TLS<br/>before sending the bearer"]
+    tls --> generation{"Did the upgrade identify<br/>workspace A?"}
+    generation -->|Yes| good["Start workspace traffic"]
+    generation -->|No| stop["Close before workspace traffic"]
   end
+  subgraph now["Today"]
+    direction TB
+    addr["Same Service address<br/>A is replaced by B"] --> status["Driver returns the address<br/>and reports serving"]
+    status --> unknown["Which process answered?<br/>Generation unknown"]
+  end
+  classDef check fill:#e8f0f7,stroke:#536c85,color:#172c3e
+  classDef permit fill:#e5f2e8,stroke:#4c7655,color:#193c23
+  classDef refuse fill:#feeee9,stroke:#a45a49,color:#552a21
+  class addr,status,unknown,pin,ready,tls,generation check
+  class good permit
+  class stop refuse
