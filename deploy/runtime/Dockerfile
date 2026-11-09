@@ -223,7 +223,7 @@ RUN echo 'b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538  /tmp
 
 # Issue first-install node setup from the Gateway's own pairing store before it starts.
 COPY deploy/runtime/openclaw-node-only-setup.patch /tmp/openclaw-node-only-setup.patch
-RUN echo 'b19f0c262ddd437e3f0958aba577ac5ccf13241148c0436f4a7455b45f300d34  /tmp/openclaw-node-only-setup.patch' | sha256sum --check --strict \
+RUN echo '279b270ad09f2ef7d5ea24e3de733b1856b7bc9150eb5e8854e2b0523aac42f2  /tmp/openclaw-node-only-setup.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-only-setup.patch
 
 # Broad source verification is an explicit target, separate from image assembly.
