@@ -229,7 +229,9 @@ See [session and recovery controls](authentication/external-sign-in.md#session-a
 ## Native admin shared sessions
 
 Agent native admin UI access starts from an ordinary controller browser session.
-With the trusted-operator pilot enabled, the session cookie is scoped to the
+Guarded GitHub sign-in supports an explicit [host-only session exchange](agent-native-admin.md#host-only-session-exchange): the Console cookie stays on its host, while the Agent receives a separate handle bound to the live parent session. This exchange creates neither accounts nor grants.
+
+With the trusted-operator pilot enabled in the default shared-cookie mode, the session cookie is scoped to the
 explicit `nativeAdmin.sharedCookieDomain` parent so the console and derived Agent
 hosts share one human session. Service API keys cannot open native admin UI.
 When native admin is disabled, leftover shared-cookie-domain configuration is

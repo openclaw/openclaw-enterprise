@@ -1,7 +1,7 @@
 # External sign-in and account controls
 
-GitHub, Google and generic OIDC sign-in for existing OpenClaw Control Plane (OCC)
-accounts share these session, recovery and account controls. The
+Existing OpenClaw Control Plane (OCC) accounts share session and recovery controls
+across GitHub, Google and generic OIDC. The
 [authentication reference](../authentication.md) covers bootstrap, password sessions,
 request origin, provisioning and failures.
 
@@ -16,15 +16,14 @@ recovery ends at its console page; opening native UI remains a separate action.
 
 GitHub sign-in requires one serving controller, one Installation, PostgreSQL with
 its restricted application role, native IAM, one GitHub App on github.com, and one
-canonical HTTPS Console origin with host-only cookies. Shared-cookie native
-administration (startup fails with `EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED`),
+canonical HTTPS Console origin with host-only cookies. Native administration requires
+[host-only exchange](../agent-native-admin.md#host-only-session-exchange).
+Shared-cookie native administration (startup fails with `EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED`),
 other session readers, rolling or mixed-version serving, and mutable Installation
-policy are unsupported. Keep bootstrap, seeding, external
-policy writers, and recovery-affecting changes stopped.
+policy are unsupported. Stop bootstrap, seeding, external policy writers, and recovery-affecting changes.
 Loopback development does not qualify deployed HTTPS.
 [Google sign-in](../../guides/deploy/google-sign-in.md) and
-[OIDC sign-in](../../guides/deploy/oidc-sign-in.md) use this profile and its
-controls.
+[OIDC sign-in](../../guides/deploy/oidc-sign-in.md) require native administration disabled.
 
 HTTPS sessions use `__Host-openclaw_occ.session_token`, `Secure`, `HttpOnly`,
 `Path=/`, and no `Domain`, preventing sibling hosts from planting that cookie.

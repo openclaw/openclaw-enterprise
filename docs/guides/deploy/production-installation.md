@@ -24,7 +24,9 @@ controllers first; create the service-key Secret and match Helm and Installation
 settings in [Prepare workspace access](#prepare-workspace-access) before Helm installation.
 Start with the password profile and
 [native Agent administration](native-admin.md#requirements); optional
-[GitHub](#enable-github-browser-sign-in) or [Google](google-sign-in.md) sign-in requires disabling native administration.
+[GitHub](#enable-github-browser-sign-in) requires disabling native administration or
+selecting [host-only exchange](native-admin.md#install-on-an-existing-cluster).
+[Google](google-sign-in.md) and [OIDC](oidc-sign-in.md) require native administration disabled.
 
 Use a clean checkout matching the image source commit. Follow
 [private-registry delivery](private-registry-images.md) for provenance, ECR copies,
@@ -250,8 +252,8 @@ before the checks:
   (`http` only for `localhost` or `127.0.0.1`), even a bare `?` or `#`, Unicode
   spaces or invisible characters (outer ASCII spaces are ignored), or forms the
   API's URL parser refuses, such as full-width `？`.
-  IDNA-invalid joiners (U+200C, U+200D) pass Helm but fail the bootstrap Job. With
-  native admin, it must be `https` and its host inside
+  IDNA-invalid joiners (U+200C, U+200D) pass Helm but fail the bootstrap Job. Native
+  admin requires `https`; shared-cookie mode also requires its host inside
   `agentNativeAdmin.sharedCookieDomain`.
 - `installation.yaml`: set cluster name, log level, DNS selectors,
   service-principal token settings, Secret prefixes, runtime storage class,
@@ -702,7 +704,9 @@ Keep `auth.github` configured. Never [roll back](production-upgrade-recovery.md#
      enabled: false
    ```
 
-   Match its name and distinct keys (client ID, not App ID).
+   For native admin, replace `enabled: false` with the
+   [host-only exchange settings](native-admin.md#install-on-an-existing-cluster).
+   Match the GitHub sign-in Secret name and distinct keys (client ID, not App ID).
    Rerender with workspace routing and [profile inputs](installation-profiles.md#external-sign-in-and-trusted-proxies). Register the [callback](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
    See [allowlists, egress and proxies](../../reference/settings/production.md#github-sign-in-and-trusted-proxies).
 
