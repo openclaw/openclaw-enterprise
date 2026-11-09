@@ -24,7 +24,10 @@ import {
 import { migrateWithHistory } from "../../scripts/migration-history.mjs";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { assertReleasedControllerCompatibility } from "../helpers/released-controller-compatibility.mjs";
+import {
+  assertReleasedControllerCompatibility,
+  assertReleasedControllerIAMCompatibility,
+} from "../helpers/released-controller-compatibility.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const migrationsDirectory = join(repositoryRoot, "migrations");
@@ -2397,7 +2400,8 @@ test(
       [70, "preDefaultUsers"],
       [71, "preHarnessOverrides"],
       [72, "preAccountAdministrationPolicy"],
-      [73, "preProxyHarnessSnapshot"],
+      [73, "preFiniteRepositorySessionWithdrawal"],
+      [74, "preProxyHarnessSnapshot"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2412,7 +2416,7 @@ test(
         const assertProxyReader =
           prefix >= 72 ? await prepareProxyHarnessUpgrade(db, namespaceId) : undefined;
         const policyBefore = prefix >= 72 ? await accountPolicyData(db) : undefined;
-        if (prefix === 73) {
+        if (prefix >= 73) {
           await assertAccountAdministrationPolicy(db);
         }
         const assertSourceOwners =
@@ -2947,16 +2951,14 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    for (const lineage of ["canonical", "provider", "canonical51", "canonical72", "canonical73"]) {
-      const prefix = { canonical51: 51, canonical72: 72, canonical73: 73 }[lineage];
-      const history =
-        prefix === 51
-          ? "preProvisioningDeploymentOutcome"
-          : prefix === 72
-            ? "preAccountAdministrationPolicy"
-            : prefix === 73
-              ? "preProxyHarnessSnapshot"
-              : "completed";
+    for (const [lineage, prefix, history] of [
+      ["canonical", undefined, "completed"],
+      ["provider", undefined, "completed"],
+      ["canonical51", 51, "preProvisioningDeploymentOutcome"],
+      ["canonical72", 72, "preAccountAdministrationPolicy"],
+      ["canonical73", 73, "preFiniteRepositorySessionWithdrawal"],
+      ["canonical74", 74, "preProxyHarnessSnapshot"],
+    ]) {
       const source = await historyDatabase(context, fixture, "dump");
       if (lineage === "provider") {
         await installProviderCompletedHistory(source);
@@ -2993,7 +2995,7 @@ test(
       assert.equal(native.identities.length, prefix >= 72 ? 4 : prefix ? 3 : 2);
       const nativeData = prefix ? await canonicalData(source) : undefined;
       const policyBefore = prefix >= 72 ? await accountPolicyData(source) : undefined;
-      if (prefix === 73) {
+      if (prefix >= 73) {
         await assertAccountAdministrationPolicy(source);
       }
 
@@ -3023,7 +3025,7 @@ test(
       if (prefix >= 72) {
         assert.deepEqual(await accountPolicyData(restored), policyBefore);
       }
-      if (prefix === 73) {
+      if (prefix >= 73) {
         await assertAccountAdministrationPolicy(restored);
       }
       assert.deepEqual(await runHistoryCommand(restored, "production"), {
@@ -3474,7 +3476,7 @@ test(
         await assertHistoryRefused(db);
       });
     }
-    for (const slot of [71, 72, 73]) {
+    for (const slot of [71, 72, 73, 74]) {
       void context.test(`draft snapshot at occupied migration slot ${slot}`, async (child) => {
         const db = await historyDatabase(child, fixture, "snapshotpreview");
         const journal = JSON.parse(
@@ -3483,7 +3485,7 @@ test(
         // Recreate the draft's SQL and original receipt, not a forged canonical receipt.
         // Published default-users and Harness-settings prefixes are accepted above.
         const snapshot = journal.entries.find(
-          (entry) => entry.tag === "0074_proxy_harness_snapshot",
+          (entry) => entry.tag === "0075_proxy_harness_snapshot",
         );
         const entries = [
           ...journal.entries.slice(0, slot - 1),
@@ -4187,6 +4189,22 @@ if (
       await assertReleasedControllerCompatibility(t, controllerImages, async () => {
         const fixture = await migrationHistoryFixture();
         return historyDatabase(t, fixture, "released_controller");
+      });
+    },
+  );
+  test(
+    "Released controller remains usable after configured IAM activation",
+    { timeout: 360_000 },
+    async (t) => {
+      assert.ok(
+        Object.values(controllerImages).every(
+          (image) => typeof image.reference === "string" && typeof image.revision === "string",
+        ),
+        "Both released and candidate controller image references and revisions are required.",
+      );
+      await assertReleasedControllerIAMCompatibility(t, controllerImages, async () => {
+        const fixture = await migrationHistoryFixture();
+        return historyDatabase(t, fixture, "released_iam");
       });
     },
   );

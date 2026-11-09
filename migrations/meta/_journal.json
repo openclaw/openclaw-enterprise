@@ -517,7 +517,14 @@
       "idx": 74,
       "version": "7",
       "when": 1787000000074,
-      "tag": "0074_proxy_harness_snapshot",
+      "tag": "0074_finite_repository_session_withdrawal",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1787000000075,
+      "tag": "0075_proxy_harness_snapshot",
       "breakpoints": true
     }
   ]

@@ -32,6 +32,7 @@ import {
   productionGatewayMemoryLimitGi,
   withBoundedTeardown,
   withinDiagnosticDeadline,
+  waitForDeploymentAvailable,
 } from "../helpers/kubernetes-real.mjs";
 import {
   ensureEnvoyGatewayControllers,
@@ -43,6 +44,8 @@ import {
   OTEL_RESOURCE,
 } from "../helpers/logging-otel-observation.mjs";
 import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
+import { withSkillPolicyRestore } from "./skill-policy-restore.mjs";
+import { waitForWorkspaceReconnect } from "./gateway-workspace-readiness.mjs";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 import { defaultUsersIAM } from "./default-users-iam.mjs";
 import { installManagedSlackProxyFixture } from "./managed-slack-proxy-k3d.mjs";
@@ -739,13 +742,10 @@ async function startInClusterControllers(
   await applyManifest(JSON.stringify(manifests), {
     redactions: [databaseUrl, authSecret, workspaceGateway.apiKey],
   });
-  await kubectl(
-    "wait",
-    "--namespace",
-    platformNamespace,
-    "--for=condition=Available",
-    `deployment/${name}`,
-    "--timeout=180s",
+  await waitForDeploymentAvailable(
+    context,
+    { kubeconfigPath, kubernetesContext },
+    { namespace: platformNamespace, deployment: name, container: "api", labels },
   );
   const pods = await resources(
     "pods",
@@ -762,13 +762,15 @@ async function startInClusterControllers(
     `${controllerPort ?? 0}:18080`,
   );
   context.after(() => forwarding.stop());
-  await kubectl(
-    "wait",
-    "--namespace",
-    platformNamespace,
-    "--for=condition=Available",
-    `deployment/${workerName}`,
-    "--timeout=180s",
+  await waitForDeploymentAvailable(
+    context,
+    { kubeconfigPath, kubernetesContext },
+    {
+      namespace: platformNamespace,
+      deployment: workerName,
+      container: "worker",
+      labels: workerLabels,
+    },
   );
   const logs = spawn(
     "kubectl",
@@ -1680,10 +1682,9 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
           gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
         },
   );
-  if (options.defaultUser === true) {
-    // Default users create Agents in default and own what they create (RFC-0026).
-    workerConfiguration.iam = defaultUsersIAM();
-  }
+  // Cases share an Installation, so keep its policy after the Default user case
+  // creates durable Owner bindings. Kubernetes cleanup does not remove those grants.
+  workerConfiguration.iam = defaultUsersIAM();
   const publicGithubRead =
     options.publicGithubRead !== true
       ? undefined
@@ -3595,9 +3596,9 @@ async function assertDedicatedSkillSources(topology) {
       ),
     );
   }
-  try {
+  const exercise = async () => {
     await deploy(enabled);
-    return await assertDedicatedSkillSourceLifecycle({
+    return assertDedicatedSkillSourceLifecycle({
       callGateway: (method, params) => gatewayCall(topology, method, params),
       readHarnessFile: (path) =>
         readFileOrMissing(topology.placement, topology.harnessPod.metadata.name, path),
@@ -3616,17 +3617,22 @@ async function assertDedicatedSkillSources(topology) {
         (transfer.config ??= {}).nodes = {
           "*": { ...structuredClone(policy), allowWritePaths: [] },
         };
-        try {
-          await deploy(denied);
-          await run();
-        } finally {
-          await deploy(enabled);
-        }
+        await withSkillPolicyRestore(
+          async () => {
+            await deploy(denied);
+            await run();
+          },
+          () => deploy(enabled),
+          "Denied node-write test failed and enabled Skill policy restoration failed.",
+        );
       },
     });
-  } finally {
-    await deploy(original.data.values);
-  }
+  };
+  return withSkillPolicyRestore(
+    exercise,
+    () => deploy(original.data.values),
+    "Skill source lifecycle failed and original Skill policy restoration failed.",
+  );
 }
 
 async function assertGatewayEffectiveDefaultModel(context, topology, expectedModel) {
@@ -6317,10 +6323,9 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
     await readFileInPod(topology.placement, harnessPod, workspaceFromGateway),
     ownerContent,
   );
-  const reconnected = await gatewayCall(topology, "agents.files.get", {
-    agentId: "main",
-    name: "AGENTS.md",
-  });
+  const reconnected = await waitForWorkspaceReconnect(() =>
+    gatewayCall(topology, "agents.files.get", { agentId: "main", name: "AGENTS.md" }, 10_000),
+  );
   assert.equal(reconnected.file.content, ownerContent, "paired node must reconnect after restart");
 
   const secondRevision = await topology.request(
@@ -6375,10 +6380,9 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
   topology.gatewayPod = await waitForReadyGatewayPod(topology, secondRevision.data.id);
   topology.harnessPod = nextHarness;
   topology.revision = secondRevision.data;
-  const afterRevision = await gatewayCall(topology, "agents.files.get", {
-    agentId: "main",
-    name: "AGENTS.md",
-  });
+  const afterRevision = await waitForWorkspaceReconnect(() =>
+    gatewayCall(topology, "agents.files.get", { agentId: "main", name: "AGENTS.md" }, 10_000),
+  );
   assert.equal(
     afterRevision.file.content,
     ownerContent,

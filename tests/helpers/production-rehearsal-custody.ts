@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 type CommandOptions = {
   cwd?: string;
@@ -272,6 +273,11 @@ export function writeFixtureObject(
     input: JSON.stringify(object),
     protectedInput: object.kind === "Secret",
   });
+}
+
+export function assertProtectedEqual(actual: unknown, expected: unknown, label: string) {
+  // Node's deep assertion errors retain both operands, including nested secrets.
+  assert.ok(isDeepStrictEqual(actual, expected), label);
 }
 
 export function protectedJSON<T>(text: string): T {
@@ -807,7 +813,8 @@ export function createRehearsalCustody({
       secret,
     };
   };
-  const currentReleaseUID = async (version: number) => {
+  let interruptedRelease: number | undefined;
+  const currentReleaseUID = async (version: number, pending = false) => {
     await assertNamespaces();
     const namesAndUIDs =
       'jsonpath={range .items[*]}{.metadata.name}{" "}{.metadata.uid}{" "}{.metadata.labels.status}{"\\n"}{end}';
@@ -829,11 +836,19 @@ export function createRehearsalCustody({
     for (let index = 1; index <= version; index++) {
       const entry = history.get(`sh.helm.release.v1.${release}.v${index}`);
       const expected = helmUIDs.get(index);
+      let expectedStatus = "superseded";
+      // Stock Helm supersedes deployed releases on rollback. The explicitly
+      // observed interrupted revision retains its pending status and UID.
+      if (index === interruptedRelease || (pending && index === version)) {
+        expectedStatus = "pending-upgrade";
+      } else if (index === (pending ? version - 1 : version)) {
+        expectedStatus = "deployed";
+      }
       assert.ok(
         entry?.uid &&
           uidPattern.test(entry.uid) &&
           (!expected || entry.uid === expected) &&
-          entry.status === (index === version ? "deployed" : "superseded"),
+          entry.status === expectedStatus,
         "the acknowledged Helm release revision was replaced or is not settled",
       );
     }
@@ -881,7 +896,7 @@ export function createRehearsalCustody({
     },
     async assertRelease() {
       assert.ok(helmUIDs.size, "no acknowledged Helm release revision");
-      await currentReleaseUID(helmUIDs.size);
+      await currentReleaseUID(helmUIDs.size, interruptedRelease === helmUIDs.size);
     },
     assertUID(resource: string, uid: string) {
       assert.equal(uid, acknowledged(resource), `fixture ${resource} was replaced`);
@@ -921,6 +936,12 @@ export function createRehearsalCustody({
     async bindRelease(version: number) {
       assert.equal(version, helmUIDs.size + 1, "unexpected Helm release revision");
       helmUIDs.set(version, await currentReleaseUID(version));
+    },
+    async bindPendingRelease(version: number) {
+      assert.equal(interruptedRelease, undefined, "another interrupted release is already owned");
+      assert.equal(version, helmUIDs.size + 1, "unexpected pending Helm revision");
+      helmUIDs.set(version, await currentReleaseUID(version, true));
+      interruptedRelease = version;
     },
     async restoredMigrationURL(restored: string) {
       const { secret } = await assertPostgres();

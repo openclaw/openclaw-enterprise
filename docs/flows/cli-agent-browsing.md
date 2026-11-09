@@ -81,10 +81,14 @@ status. A version without a deployment work record has `null` for both.
 `internal/occcli/cli.go:describeAgentRevisions` reads the Agent to determine its
 selected version, clones each summary, and sets its `active` marker. It keeps
 the listed status and sends no read for each version. A failed Agent read
-ends the command. When a page is full,
-a notice prints the next command with the resolved `--namespace`, the retained
-`--limit` when supplied, and the new `--cursor`. Explicit scope keeps that
-command on the selected Namespace even when `OCC_NAMESPACE` is unset or differs.
+ends the command. When the API returns a next cursor, the notice tells you how
+to continue. If you passed `--url`, `--service-key-file`, `--ca-bundle`,
+`--timeout-seconds`, or `--output`, repeat the same invocation with the new
+`--cursor` so the explicit settings carry over. Otherwise, the notice prints
+the complete continuation command with the resolved `--namespace`, the retained
+`--limit` when supplied, and the new `--cursor`. The explicit Namespace keeps
+that command on the selected Namespace even when `OCC_NAMESPACE` is unset or
+differs.
 
 Neither branch treats missing settings as empty settings. The command retains
 the API error object in structured output. Explicit deployment, editing, and

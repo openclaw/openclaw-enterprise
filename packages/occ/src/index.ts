@@ -1,3 +1,4 @@
+export { recognizedRuntimeFailureValues } from "./runtime-failure-cause.ts";
 import { deploymentRepositoryAccessStatus } from "./deployment-repository-access.ts";
 import { exchangeAuthorizationCode, startBrowserAuthorization } from "./browser-authorization.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
@@ -545,6 +546,7 @@ export {
   SandboxRepositoryRecipientUnverifiedError,
   SandboxWorkspaceSetupRefusedError,
   SavedRepositorySelectionError,
+  RepositorySessionWithdrawnError,
   ScopeViolationError,
   SecretBindingDriverError,
   ServiceAccountBackendBindingError,
@@ -2246,22 +2248,20 @@ async function negotiateProxyRepositoryPolicy(
       "The selected Credential Proxy did not confirm installation-wide repository access.",
     );
   }
-  const reducibleGit =
-    gitProfile !== undefined &&
-    gitAuthorization === "exact-dispatch" &&
-    driver.policyReduction?.version === 2;
-  if (repositoryGit && sourceCount && !reducibleGit) {
+  if (gitProfile !== undefined && gitAuthorization === "exact-dispatch") {
+    const reduction = driver.policyReduction;
+    if (reduction?.version === 2) {
+      await reduction.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
+      return { gitAuthorization, policyReductionVersion: 2 as const };
+    }
+  }
+  if (repositoryGit !== undefined && sourceCount > 0) {
     throw new CredentialProxyAdmissionError("gitAlone");
   }
-  if (reducibleGit && driver.policyReduction?.version === 2) {
-    await driver.policyReduction.assertAvailable(
-      AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-    );
-  }
-  let policyReductionVersion: ProxyPlan["policyReductionVersion"] = reducibleGit ? 2 : undefined;
-  if (!repositoryGit && sourceCount > 0 && driver.policyReduction?.version === 1) {
-    policyReductionVersion = 1;
-  }
+  const policyReductionVersion: ProxyPlan["policyReductionVersion"] =
+    repositoryGit === undefined && sourceCount > 0 && driver.policyReduction?.version === 1
+      ? 1
+      : undefined;
   return { gitAuthorization, policyReductionVersion };
 }
 
@@ -12438,6 +12438,38 @@ export class OpenClawController {
       );
       if (!updated) {
         throw new ResourceStateConflictError("The Agent Configuration changed during its update.");
+      }
+      // Stop intent can be superseded before the active runtime is retired.
+      // Removing a finite grant must remain irreversible throughout that interval.
+      if (repositoryBindings !== undefined && agent.activeRevisionId) {
+        const revision = await state.revisions.findRevision(
+          namespace.id,
+          agent.id,
+          agent.activeRevisionId,
+        );
+        const admitted = revision?.repositoryCredentials;
+        const selected = (
+          bindings: readonly { repositoryRef: string; profile: string }[] | undefined,
+          member: { repositoryRef: string; profile: string },
+        ) =>
+          bindings?.some(
+            (binding) =>
+              binding.repositoryRef === member.repositoryRef && binding.profile === member.profile,
+          ) === true;
+        if (
+          admitted &&
+          !admitted.standingApprovalId &&
+          admitted.bindings.some(
+            (member) =>
+              selected(agent.repositoryBindings, member) &&
+              !selected(updated.repositoryBindings, member),
+          )
+        ) {
+          await state.repositorySessions.withdrawFinite(
+            { namespaceId: namespace.id, agentId: agent.id, revisionId: revision!.id },
+            this.timestamp(),
+          );
+        }
       }
       const activeApprovals = (
         await state.repositorySessions.listStandingApprovals(namespace.id, agent.id)

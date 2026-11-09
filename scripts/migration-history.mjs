@@ -138,7 +138,57 @@ function classifyReceipts(receipts, manifest) {
   return catalogAtMigrationCount(receipts.length, expected.length);
 }
 
+const historicalCatalogs = new Map([
+  [27, "repositoryCredentials"],
+  [28, "repositoryRetention"],
+  [29, "workspaceSetup"],
+  [30, "agentProvisioning"],
+  [31, "backendCompleted"],
+  [32, "backendTerminology"],
+  [33, "prePluginApprovers"],
+  [34, "preBrokerReceipts"],
+  [35, "preAgentDeletion"],
+  [36, "preDeploymentProgress"],
+  [37, "preHumanAuthentication"],
+  [38, "preAgentDeletionTakeover"],
+  [39, "preNamespaceDeletionTakeover"],
+  [40, "preRepositoryAccess"],
+  [41, "preRestrictionReadLogs"],
+  [42, "preOAuth"],
+  [43, "preCredentialWithdrawals"],
+  [44, "preBrokerReceiptFence"],
+  [45, "preModelProbeFailureCause"],
+  [46, "preProvisioningConfigurationRelease"],
+  [47, "preAdministratorCredentialSourceGrants"],
+  [48, "preCodexPatSources"],
+  [49, "preAgentCredentialSources"],
+  [50, "preCredentialWithdrawalRequester"],
+  [51, "preProvisioningDeploymentOutcome"],
+  [52, "preComputePreparationFailureEvidence"],
+  [53, "preCredentialSourcePat"],
+  [54, "preComputeRevisionAdmission"],
+  [55, "preHeldAuthenticationSession"],
+  [56, "preCanonicalHarnessAuth"],
+  [57, "preSandboxPolicies"],
+  [58, "preSandboxPolicyAdministrator"],
+  [59, "preCredentialProxy"],
+  [62, "prePreparedAttemptSettlement"],
+  [63, "preGatewayManagedMode"],
+  [64, "preSelectedRepositorySet"],
+  [65, "preAgentDeployIntent"],
+  [66, "preAgentCredentialSourceLimit"],
+  [67, "preAgentPluginDriver"],
+  [68, "preConnectionTemplates"],
+  [69, "preSavedConnections"],
+  [70, "preDefaultUsers"],
+  [71, "preHarnessOverrides"],
+  [72, "preAccountAdministrationPolicy"],
+  [73, "preFiniteRepositorySessionWithdrawal"],
+  [74, "preProxyHarnessSnapshot"],
+]);
+
 function catalogAtMigrationCount(count, completedCount) {
+  // These three baselines retain their release identity even at the manifest head.
   if (count === 0) {
     return "empty";
   }
@@ -148,143 +198,12 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 25) {
     return "main";
   }
-  if (count === 65 && completedCount > 65) {
-    return "preAgentDeployIntent";
-  }
-  if (count === 66 && completedCount > 66) {
-    return "preAgentCredentialSourceLimit";
-  }
-  if (count === 67 && completedCount > 67) {
-    return "preAgentPluginDriver";
-  }
-  if (count === 68 && completedCount > 68) {
-    return "preConnectionTemplates";
-  }
-  if (count === 69 && completedCount > 69) {
-    return "preSavedConnections";
-  }
-  if (count === 70 && completedCount > 70) {
-    return "preDefaultUsers";
-  }
-  if (count === 71 && completedCount > 71) {
-    return "preHarnessOverrides";
-  }
-  if (count === 72 && completedCount > 72) {
-    return "preAccountAdministrationPolicy";
-  }
-  if (count === 73 && completedCount > 73) {
-    return "preProxyHarnessSnapshot";
-  }
   if (count === completedCount) {
     return "completed";
   }
-  if (count === 27) {
-    return "repositoryCredentials";
-  }
-  if (count === 28) {
-    return "repositoryRetention";
-  }
-  if (count === 29) {
-    return "workspaceSetup";
-  }
-  if (count === 30) {
-    return "agentProvisioning";
-  }
-  if (count === 31) {
-    return "backendCompleted";
-  }
-  if (count === 32) {
-    return "backendTerminology";
-  }
-  if (count === 33) {
-    return "prePluginApprovers";
-  }
-  if (count === 34) {
-    return "preBrokerReceipts";
-  }
-  if (count === 36) {
-    return "preDeploymentProgress";
-  }
-  if (count === 35) {
-    return "preAgentDeletion";
-  }
-  if (count === 37) {
-    return "preHumanAuthentication";
-  }
-  if (count === 38) {
-    return "preAgentDeletionTakeover";
-  }
-  if (count === 39) {
-    return "preNamespaceDeletionTakeover";
-  }
-  if (count === 40) {
-    return "preRepositoryAccess";
-  }
-  if (count === 41) {
-    return "preRestrictionReadLogs";
-  }
-  if (count === 42) {
-    return "preOAuth";
-  }
-  if (count === 43) {
-    return "preCredentialWithdrawals";
-  }
-  if (count === 44) {
-    return "preBrokerReceiptFence";
-  }
-  if (count === 45) {
-    return "preModelProbeFailureCause";
-  }
-  if (count === 46) {
-    return "preProvisioningConfigurationRelease";
-  }
-  if (count === 47) {
-    return "preAdministratorCredentialSourceGrants";
-  }
-  if (count === 48) {
-    return "preCodexPatSources";
-  }
-  if (count === 49) {
-    return "preAgentCredentialSources";
-  }
-  if (count === 50) {
-    return "preCredentialWithdrawalRequester";
-  }
-  if (count === 51) {
-    return "preProvisioningDeploymentOutcome";
-  }
-  if (count === 52) {
-    return "preComputePreparationFailureEvidence";
-  }
-  if (count === 53) {
-    return "preCredentialSourcePat";
-  }
-  if (count === 54) {
-    return "preComputeRevisionAdmission";
-  }
-  if (count === 55) {
-    return "preHeldAuthenticationSession";
-  }
-  if (count === 56) {
-    return "preCanonicalHarnessAuth";
-  }
-  if (count === 57) {
-    return "preSandboxPolicies";
-  }
-  if (count === 58) {
-    return "preSandboxPolicyAdministrator";
-  }
-  if (count === 59) {
-    return "preCredentialProxy";
-  }
-  if (count === 62) {
-    return "prePreparedAttemptSettlement";
-  }
-  if (count === 64) {
-    return "preSelectedRepositorySet";
-  }
-  if (count === 63) {
-    return "preGatewayManagedMode";
+  const catalog = historicalCatalogs.get(count);
+  if (catalog !== undefined) {
+    return catalog;
   }
   refuse("an incomplete or unsupported development history is installed");
 }
