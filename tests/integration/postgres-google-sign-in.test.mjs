@@ -213,19 +213,22 @@ test(
 
       const signIn = await assertGoogleSignIn(memberSubject, member.id);
       const setCookies = [signIn.callback.headers["set-cookie"]].flat();
-      assert.ok(
-        setCookies.some(
-          (cookie) =>
-            cookie.startsWith(`${sessionCookieName}=`) &&
-            /; Secure/i.test(cookie) &&
-            /; HttpOnly/i.test(cookie) &&
-            /; Path=\//i.test(cookie) &&
-            !/; Domain=/i.test(cookie),
-        ),
-        "the session cookie is a host-only __Host- cookie",
+      // Only an issued session proves shared scope; a cookie clearance cannot satisfy it.
+      const sessionCookies = setCookies.filter((cookie) =>
+        cookie.startsWith(`${sessionCookieName}=`),
       );
+      assert.equal(sessionCookies.length, 1);
+      const sessionCookie = sessionCookies[0];
+      assert.match(sessionCookie, /^__Secure-openclaw_occ_shared\.session_token=[^;]+;/);
+      assert.doesNotMatch(sessionCookie, /; Max-Age=0(?:;|$)/i);
+      assert.match(sessionCookie, /; Domain=oce\.example\.internal(?:;|$)/i);
+      assert.match(sessionCookie, /; Secure(?:;|$)/i);
+      assert.match(sessionCookie, /; HttpOnly(?:;|$)/i);
+      assert.match(sessionCookie, /; Path=\/(?:;|$)/i);
+      assert.match(sessionCookie, /; SameSite=Lax(?:;|$)/i);
       const receipt = setCookies.find((cookie) => cookie.startsWith("__Host-occ_login_receipt="));
       assert.ok(receipt, "the callback issues a __Host- receipt");
+      assert.doesNotMatch(receipt, /; Domain=/i);
       const token = google.tokens.at(-1);
       assert.equal(token.redirect_uri, `${origin}/api/auth/providers/google/callback`);
       assert.equal(token.grant_type, "authorization_code");

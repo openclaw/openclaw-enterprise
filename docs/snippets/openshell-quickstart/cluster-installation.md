@@ -49,7 +49,7 @@ Check the browser values **before** the first Helm install. Keep port 18443 in t
 ```bash
 jq -e --arg d "$CLUSTER_NAME.oce.localhost" '
   .auth.baseUrl==("https://console."+$d+":18443") and .agentNativeAdmin.enabled
-  and .agentNativeAdmin.domain==("agents."+$d) and .agentNativeAdmin.sharedCookieDomain==$d' "$RUN_DIR/values.json"
+  and .agentNativeAdmin.domain==("agents."+$d)' "$RUN_DIR/values.json"
 ```
 
 The templates use `CLUSTER_DOMAIN` for route and certificate names; the browser listener uses namespace-relative Service DNS. Preserve mTLS, OpenShell PKI and JWT signing material through upgrades.

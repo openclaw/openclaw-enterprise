@@ -3763,7 +3763,7 @@ Report the Installation capabilities that Agent creation in this Namespace needs
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.capabilities` | `object` | Yes | The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It omits nativeAdmin and agentProvisioning, which apply only to guided provisioning and need Installation administration. |
+| `data.capabilities` | `object` | Yes | The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It includes browser-access availability and omits agentProvisioning, which needs Installation administration. |
 | `data.capabilities.credentialSources` | `object` | No | — |
 | `data.capabilities.credentialSources.types` | `array<object>` | Yes | — |
 | `data.capabilities.credentialSources.types[].config` | `array<object>` | Yes | — |
@@ -3783,6 +3783,7 @@ Report the Installation capabilities that Agent creation in this Namespace needs
 | `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
+| `data.capabilities.nativeAdmin` | `true` | No | — |
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
 | `data.capabilities.nativeWorkers.support` | `"pinned-runtime" or "custom-image"` | Yes | — |
 | `data.capabilities.openclaw` | `object` | No | — |
@@ -4156,6 +4157,7 @@ Create a Namespace-owned Agent
 | `credentialSources` | `array<object>` | No | max items: 64; Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
 | `credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
+| `expectedConfigurationGeneration` | `integer` | No | minimum: 1; maximum: 9007199254740991 |
 | `gatewayManagedMode` | `boolean` | No | Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment. |
 | `harnessAuth` | `object or object or object or object or null` | No | — |
 | `initialWorkspaceFiles` | `object` | No | — |
@@ -4164,6 +4166,7 @@ Create a Namespace-owned Agent
 | `initialWorkspaceFiles.SOUL.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `initialWorkspaceFiles.USER.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `nativeAdmin` | `boolean` | No | Enable Agent browser access with server-derived settings. Requires Configuration update permission, expectedConfigurationGeneration, and an unreferenced Configuration. Chat requires Agent operate; full administration requires Agent administer. |
 | `pluginApprovers` | `PluginApprovers` | No | max items: 64 |
 | `pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
@@ -6640,11 +6643,12 @@ Resolve native admin UI launch availability for one Agent
 
 **Operation ID:** `getAgentNativeAdmin`
 
-**Permissions:** Requires a human session with administer permission on the exact Agent. Service API keys cannot launch or inspect native admin UI access.
+**Permissions:** Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Service API keys cannot launch or inspect native admin UI access.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
-| `administer` | `agent` | `requested` |
+| `operate` | `agent` | `requested` (chat access) |
+| `administer` | `agent` | `requested` (full native administration, instead of `operate`) |
 
 ##### Parameters
 
@@ -6670,6 +6674,7 @@ Resolve native admin UI launch availability for one Agent
 | `data` | `object` | Yes | — |
 | `data.activeRevisionId` | `string` | No | — |
 | `data.host` | `string` | No | — |
+| `data.mode` | `"admin" or "chat"` | No | — |
 | `data.origin` | `string (uri)` | No | — |
 | `data.status` | `"available" or "disabled" or "stopped" or "unavailable" or "unsupported"` | Yes | — |
 | `data.url` | `string (uri)` | No | — |
@@ -8533,11 +8538,12 @@ Resolve an authorized Agent from a copied native chat link
 
 **Operation ID:** `resolveAgentNativeAdminReturn`
 
-**Permissions:** Requires a human session with administer permission on the exact Agent. Unknown and inaccessible Agents both return 404. This lookup does not launch or start the Agent.
+**Permissions:** Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Unknown and inaccessible Agents both return 404. This lookup does not launch or start the Agent.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
-| `administer` | `agent` | `requested` |
+| `operate` | `agent` | `requested` (chat access) |
+| `administer` | `agent` | `requested` (full native administration, instead of `operate`) |
 
 ##### Parameters
 

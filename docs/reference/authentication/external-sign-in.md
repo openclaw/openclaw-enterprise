@@ -16,8 +16,10 @@ recovery ends at its console page; opening native UI remains a separate action.
 
 GitHub sign-in requires one serving controller, one Installation, PostgreSQL with
 its restricted application role, native IAM, one GitHub App on github.com, and one
-canonical HTTPS Console origin with host-only cookies. Shared-cookie native
-administration (startup fails with `EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED`),
+canonical HTTPS Console origin and an Agent DNS suffix for
+[shared browser sessions](../authentication.md#native-admin-shared-sessions).
+Native administration with GitHub or Google (startup fails with
+`EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED`),
 other session readers, rolling or mixed-version serving, and mutable Installation
 policy are unsupported. Keep bootstrap, seeding, external
 policy writers, and recovery-affecting changes stopped.
@@ -26,8 +28,7 @@ Loopback development does not qualify deployed HTTPS.
 [OIDC sign-in](../../guides/deploy/oidc-sign-in.md) use this profile and its
 controls.
 
-HTTPS sessions use `__Host-openclaw_occ.session_token`, `Secure`, `HttpOnly`,
-`Path=/`, and no `Domain`, preventing sibling hosts from planting that cookie.
+OIDC supports native access with the [shared session cookie](../authentication.md#native-admin-shared-sessions).
 Session reads, protected requests, and logout reject duplicate session cookies.
 
 Activation enrolls qualifying existing accounts and reports the rest, which cannot

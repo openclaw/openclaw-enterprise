@@ -337,7 +337,7 @@ test(
     const { passwordFailureAdmission } =
       await import("../../apps/controller/src/auth/admission.ts");
     const { createControllerAuth } = await import("../helpers/password-hasher.mjs");
-    const origin = "http://127.0.0.1";
+    const origin = "https://console.oce.localhost";
     const authSecret = `test-secret-${randomUUID()}-${randomUUID()}`;
     const address = `route-${randomUUID()}@example.test`;
     const password = `password-${randomUUID()}`;
@@ -371,8 +371,8 @@ test(
       mode: "development",
       installationId: `ins_${randomUUID()}`,
       baseURL: origin,
+      agentDomain: "agents.oce.localhost",
       secret: authSecret,
-      secureCookies: false,
       memoryDatabase: { user: [], account: [], session: [], verification: [], apikey: [] },
       knownDeviceState: async () => {
         reads += 1;
@@ -398,7 +398,7 @@ test(
     app.post("/api/auth/sign-in/email", auth.signInEmail);
     const requests = Array.from({ length: 3 }, () =>
       injectJson(app, "POST", "/api/auth/sign-in/email", {
-        headers: { origin, cookie: `occ_known_device=${value}` },
+        headers: { origin, cookie: `__Host-occ_known_device=${value}` },
         body: { email: address, password: "synthetic-wrong-password" },
       }),
     );
@@ -436,7 +436,7 @@ test(
       new URL("../../apps/controller/src/auth/index.ts", import.meta.url),
     );
     const Fastify = require("fastify");
-    const origin = "http://127.0.0.1";
+    const origin = "https://console.oce.localhost";
     const secret = `synthetic-secret-${randomUUID()}-${randomUUID()}`;
     const email = `synthetic-${randomUUID()}@example.test`;
     const password = `synthetic-password-${randomUUID()}`;
@@ -463,8 +463,8 @@ test(
       mode: "development",
       installationId: `ins_${randomUUID()}`,
       baseURL: origin,
+      agentDomain: "agents.oce.localhost",
       secret,
-      secureCookies: false,
       memoryDatabase: { user: [], account: [], session: [], verification: [], apikey: [] },
       knownDeviceState: async () => {
         reads += 1;
@@ -480,7 +480,7 @@ test(
     const statuses = [];
     for (let index = 0; index < 40; index += 1) {
       const response = await injectJson(app, "POST", "/api/auth/sign-in/email", {
-        headers: { origin, cookie: `occ_known_device=${cookie}` },
+        headers: { origin, cookie: `__Host-occ_known_device=${cookie}` },
         body: { email, password: "synthetic-wrong-password" },
       });
       statuses.push(response.statusCode);
@@ -507,7 +507,7 @@ async function globalProofHandler(lookup) {
   const Fastify = require("fastify");
   const { createControllerAuth } = await import("../helpers/password-hasher.mjs");
   const { passwordFailureAdmission } = await import("../../apps/controller/src/auth/admission.ts");
-  const origin = "http://127.0.0.1";
+  const origin = "https://console.oce.localhost";
   const address = `global-proof-${randomUUID()}@example.test`;
   const key = `global-proof-secret-${randomUUID()}-${randomUUID()}`;
   const admission = passwordFailureAdmission({
@@ -528,8 +528,8 @@ async function globalProofHandler(lookup) {
     mode: "development",
     installationId: `ins_${randomUUID()}`,
     baseURL: origin,
+    agentDomain: "agents.oce.localhost",
     secret: key,
-    secureCookies: false,
     memoryDatabase: { user: [], account: [], session: [], verification: [], apikey: [] },
     knownDeviceState: lookup,
     passwordAdmission: admission,
@@ -542,7 +542,7 @@ async function globalProofHandler(lookup) {
       injectJson(app, "POST", "/api/auth/sign-in/email", {
         headers: {
           origin,
-          ...(cookie === undefined ? {} : { cookie: `occ_known_device=${cookie}` }),
+          ...(cookie === undefined ? {} : { cookie: `__Host-occ_known_device=${cookie}` }),
         },
         body: { email: address, password: "global-proof-wrong-password" },
       }),

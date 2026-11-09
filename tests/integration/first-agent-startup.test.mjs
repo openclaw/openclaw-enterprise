@@ -54,6 +54,9 @@ async function fixture(t, sandboxDriver) {
         containerEngine: "docker",
         composeProject: "first-agent-startup-test",
         cluster: "occ-dev-first-agent-test",
+        browserPort: 8443,
+        browserOrigin: "https://console.occ-dev-first-agent-test.oce.localhost:8443",
+        nativeAdminDomain: "agents.occ-dev-first-agent-test.oce.localhost",
         dockerHost: "unix:///tmp/first-agent-startup-test.sock",
         keyPath,
         keyOwned: true,
@@ -316,32 +319,9 @@ test("first-Agent flags a prior OpenShell PAT revision and points at --replace-k
   assert.match(warning, /current sandbox mode \(danger-full-access/);
 });
 
-test("first-Agent admits dedicated Codex with OpenShell development state", async (t) => {
+test("first-Agent admits dedicated Codex Control UI with OpenShell development state", async (t) => {
   const { engineLog, env } = await fixture(t, "openshell");
 
-  assert.match(runFirstAgent(env, "--harness", "codex"), /docker did not complete successfully/);
-  assert.match(await readFile(engineLog, "utf8"), /compose .* port controller 3000/);
-});
-
-test("first-Agent control UI requires the launcher-owned native admin endpoint", async (t) => {
-  const { directory, engineLog, env } = await fixture(t, "openshell");
-
-  assert.match(
-    runFirstAgent(env, "--harness", "codex", "--control-ui"),
-    /did not enable its durable native admin endpoint/,
-  );
-  await assert.rejects(readFile(engineLog), { code: "ENOENT" });
-
-  const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
-  await writeFile(
-    join(directory, "state.json"),
-    `${JSON.stringify({
-      ...state,
-      browserOrigin: "https://console.occ-dev-first-agent-test.oce.localhost:8443",
-      nativeAdminDomain: "agents.occ-dev-first-agent-test.oce.localhost",
-    })}\n`,
-    { mode: 0o600 },
-  );
   assert.match(
     runFirstAgent(env, "--harness", "codex", "--control-ui"),
     /docker did not complete successfully/,
@@ -349,15 +329,40 @@ test("first-Agent control UI requires the launcher-owned native admin endpoint",
   assert.match(await readFile(engineLog, "utf8"), /compose .* port controller 3000/);
 });
 
+test("first-Agent validates launcher-owned HTTPS endpoints before external calls", async (t) => {
+  const { directory, engineLog, env } = await fixture(t, "none");
+  const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
+  // Browser settings are mandatory even when this setup disables Agent browser access.
+  for (const [label, change] of [
+    ["missing origin", { browserOrigin: undefined }],
+    ["missing domain", { nativeAdminDomain: undefined }],
+    ["unowned domain", { nativeAdminDomain: "agents.other.oce.localhost" }],
+    ["unowned origin", { browserOrigin: "https://console.other.oce.localhost:8443" }],
+    ["insecure origin", { browserOrigin: state.browserOrigin.replace("https:", "http:") }],
+    ["mismatched port", { browserPort: 8444 }],
+    ["missing port", { browserPort: undefined }],
+    ["invalid port", { browserPort: 65536 }],
+  ]) {
+    await writeFile(join(directory, "state.json"), JSON.stringify({ ...state, ...change }));
+    assert.match(runFirstAgent(env), /recorded Local Setup .* is invalid/, label);
+    await assert.rejects(readFile(engineLog), { code: "ENOENT" });
+  }
+  await writeFile(join(directory, "state.json"), JSON.stringify(state));
+  assert.match(
+    runFirstAgent(env, "--control-ui"),
+    /Control UI requires the OpenShell Sandbox Driver/,
+  );
+  await assert.rejects(readFile(engineLog), { code: "ENOENT" });
+});
+
 test("first-Agent admits a native admin origin on the default HTTPS port", async (t) => {
   const { directory, engineLog, env } = await fixture(t, "openshell");
   const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
   const host = "console.occ-dev-first-agent-test.oce.localhost";
-  // The canonical origin current Local Setup records for port 443, the explicit
-  // :443 form older Local Setup recorded, and forms that are still refused.
+  // Only the canonical origin emitted by Local Setup is accepted.
   for (const [browserOrigin, admitted] of [
     [`https://${host}`, true],
-    [`https://${host}:443`, true],
+    [`https://${host}:443`, false],
     [`https://${host}:443/`, false],
     [`https://${host}/`, false],
     [`https://${host}:0443`, false],
@@ -368,6 +373,7 @@ test("first-Agent admits a native admin origin on the default HTTPS port", async
       `${JSON.stringify({
         ...state,
         browserOrigin,
+        browserPort: 443,
         nativeAdminDomain: "agents.occ-dev-first-agent-test.oce.localhost",
       })}\n`,
       { mode: 0o600 },

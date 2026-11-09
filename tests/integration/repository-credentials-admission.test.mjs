@@ -318,7 +318,11 @@ async function fixture(
       resolveHarness: resolveApprovedHarness,
       auditSink,
       auth: auth.auth,
-      development: { enabled: true, installationId: installation.id },
+      development: {
+        enabled: true,
+        installationId: installation.id,
+        browserOrigin: "https://console.oce.localhost",
+      },
     });
     t.after(() => app.close());
     const request = await createAuthenticatedControllerRequest(app, auth);

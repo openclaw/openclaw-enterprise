@@ -201,46 +201,39 @@ async function loadLocalInstallation(harness, controlUi) {
       "The OpenShell first-Agent workflow requires --harness codex so its authenticated app server runs in dedicated mode.",
     );
   }
-  let nativeAdmin;
-  if (state.browserOrigin !== undefined || state.nativeAdminDomain !== undefined) {
-    let browserOrigin;
-    try {
-      browserOrigin = new URL(state.browserOrigin);
-    } catch {
-      throw new Error("The recorded Local Setup browser origin is invalid.");
-    }
-    const cookieDomain = `${state.cluster}.oce.localhost`;
-    const expectedBrowserHost = `console.${cookieDomain}`;
-    const expectedNativeAdminDomain = `agents.${cookieDomain}`;
-    if (
-      (state.deploymentMode === "k3d" &&
-        (!Number.isInteger(state.browserPort) ||
-          Number(browserOrigin.port || 443) !== state.browserPort)) ||
-      state.sandboxDriver !== "openshell" ||
-      browserOrigin.protocol !== "https:" ||
-      browserOrigin.hostname !== expectedBrowserHost ||
-      browserOrigin.pathname !== "/" ||
-      browserOrigin.username ||
-      browserOrigin.password ||
-      browserOrigin.search ||
-      browserOrigin.hash ||
-      // URL drops the default port. Older Local Setup recorded port 443 explicitly.
-      (state.browserOrigin !== browserOrigin.origin &&
-        state.browserOrigin !== `${browserOrigin.origin}:443`) ||
-      state.nativeAdminDomain !== expectedNativeAdminDomain
-    ) {
-      throw new Error("The recorded Local Setup native admin endpoint is invalid.");
-    }
-    nativeAdmin = {
-      browserOrigin: browserOrigin.origin,
-      domain: state.nativeAdminDomain,
-      bootstrapWorkspace: state.deploymentMode === "k3d",
-    };
+  let browserOrigin;
+  try {
+    browserOrigin = new URL(state.browserOrigin);
+  } catch {
+    throw new Error("The recorded Local Setup browser origin is invalid.");
   }
-  if (controlUi && nativeAdmin === undefined) {
-    throw new Error(
-      "Local Setup did not enable its durable native admin endpoint. Use a fresh Kubernetes Compute installation with the OpenShell Sandbox Driver and its HTTPS browser endpoint, then start a new Agent name.",
-    );
+  const cookieDomain = `${state.cluster}.oce.localhost`;
+  const expectedBrowserHost = `console.${cookieDomain}`;
+  const expectedNativeAdminDomain = `agents.${cookieDomain}`;
+  if (
+    !Number.isInteger(state.browserPort) ||
+    state.browserPort < 1 ||
+    state.browserPort > 65535 ||
+    Number(browserOrigin.port || 443) !== state.browserPort ||
+    browserOrigin.protocol !== "https:" ||
+    browserOrigin.hostname !== expectedBrowserHost ||
+    browserOrigin.pathname !== "/" ||
+    browserOrigin.username ||
+    browserOrigin.password ||
+    browserOrigin.search ||
+    browserOrigin.hash ||
+    state.browserOrigin !== browserOrigin.origin ||
+    state.nativeAdminDomain !== expectedNativeAdminDomain
+  ) {
+    throw new Error("The recorded Local Setup native admin endpoint is invalid.");
+  }
+  const nativeAdmin = {
+    browserOrigin: browserOrigin.origin,
+    domain: state.nativeAdminDomain,
+    bootstrapWorkspace: state.deploymentMode === "k3d",
+  };
+  if (controlUi && state.sandboxDriver !== "openshell") {
+    throw new Error("The first-Agent Control UI requires the OpenShell Sandbox Driver.");
   }
   if (state.deploymentMode !== "k3d") {
     await privateOwned(join(directory, "compose.yaml"));
@@ -1188,10 +1181,7 @@ async function main(options) {
       expectProviderKey: record.harness === "openclaw",
     });
     failureDiagnostics = undefined;
-    const consoleUrl = new URL(
-      `/console/agents/${agent.id}`,
-      local.nativeAdmin?.browserOrigin ?? local.origin,
-    );
+    const consoleUrl = new URL(`/console/agents/${agent.id}`, local.nativeAdmin.browserOrigin);
     consoleUrl.searchParams.set("namespace", namespace.id);
     // Before the result, so the response on stdout cannot bury it.
     if (priorPatRevisions.has(record.revisionId)) {

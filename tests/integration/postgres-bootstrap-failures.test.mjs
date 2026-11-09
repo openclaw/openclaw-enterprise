@@ -484,6 +484,10 @@ test(
         databaseUrl: failureDatabaseUrl,
         poolMax: 2,
         authBaseURL: environments[winnerIndex].OCC_AUTH_BASE_URL,
+        nativeAdmin: {
+          enabled: false,
+          domain: environments[winnerIndex].OCC_AGENT_NATIVE_ADMIN_DOMAIN,
+        },
         authSecret: environments[winnerIndex].OCC_AUTH_SECRET,
         logging: { level: "warn" },
       },
@@ -809,6 +813,7 @@ test(
         OCC_PORT: "39999",
         OCC_DATABASE_URL: failureDatabaseUrl,
         OCC_AUTH_BASE_URL: environment.OCC_AUTH_BASE_URL,
+        OCC_AGENT_NATIVE_ADMIN_DOMAIN: environment.OCC_AGENT_NATIVE_ADMIN_DOMAIN,
         OCC_AUTH_SECRET: environment.OCC_AUTH_SECRET,
         // Development composition builds these Drivers before it reads the Installation.
         OCC_DOCKER_RUNTIME_IMAGE: "openclaw-enterprise-runtime:not-used-by-this-test",
