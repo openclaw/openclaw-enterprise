@@ -1,0 +1,35 @@
+---
+config:
+  theme: base
+  sequence:
+    useMaxWidth: false
+    diagramMarginX: 18
+    diagramMarginY: 12
+    actorMargin: 38
+    boxMargin: 8
+    messageMargin: 28
+    mirrorActors: true
+---
+sequenceDiagram
+  accTitle: Proposed protected workspace lifecycle
+  accDescr: Compute pins a reservation from the selected Sandbox. It waits for the same original to acknowledge signed release, then the Gateway verifies serving before accepting workspace messages.
+  participant C as Compute
+  participant S as Selected Sandbox
+  participant G as Agent Gateway
+  participant W as Workspace endpoint
+  Note over C,G: Prepare (no workspace traffic)
+  C->>S: Read original workspace binding
+  S-->>C: Reserved endpoint and generation
+  C->>G: Pin origin, CA, root and generation
+  Note over C,W: Activate and connect
+  C->>S: Recheck original after signed release
+  alt Same original acknowledged
+    S-->>C: Matching release acknowledgement
+    C->>G: Enable after authenticated serving check
+    G->>W: Connect with pinned TLS trust
+    W-->>G: Prove the released generation
+    Note over G,W: Accept messages after both checks
+  else Held, missing or replaced original
+    S-->>C: Pending or refused
+    Note over C,G: Keep the new revision unavailable
+  end
