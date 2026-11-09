@@ -3,12 +3,16 @@ import {
   assertExecutionReleaseAllowed,
   pluginRuntimeHarnessRequirement,
   credentialSourceMatchesSnapshot,
+  credentialSourceOwnedByGateway,
   revisionCredentialSourceSnapshot,
 } from "@openclaw-enterprise/contracts";
 import type { CredentialProxyDriver } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { closeResources } from "./composition/close-resources.ts";
-import { installationDriverConfigurations } from "./composition/installation-config.ts";
+import {
+  installationDriverConfigurations,
+  installPackagedGatewayRegistration,
+} from "./composition/installation-config.ts";
 import {
   DriverConfigurationRegistry,
   type DriverConfigurationRegistration,
@@ -119,11 +123,14 @@ import {
 } from "@openclaw-enterprise/occ";
 import {
   backendDefinitionMap,
+  DriverSelectionError,
   removeNamespacePolicy,
   removedPolicyDetails,
   validateBackendDefinitions,
+  validateSelectedBackendDrivers,
   validateServiceAccountBackendBinding,
 } from "@openclaw-enterprise/occ";
+import type { WorkerStartupHooks } from "./worker/shutdown.ts";
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
 import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
@@ -1191,6 +1198,7 @@ export class ControllerWorker {
   private nextClientCleanup = 0;
   private readonly proxyDriver: CredentialProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
+  private readonly packagedGatewayRegistration: InstalledDriver | undefined;
   private readonly preparedTokens: InstallationRuntimeDrivers["tokenService"];
   private readonly backends: readonly BackendDefinition[];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
@@ -1219,9 +1227,11 @@ export class ControllerWorker {
   private readonly repositoryGitMaterial: ControllerWorkerOptions["repositoryGitMaterial"];
   private readonly abort = new AbortController();
   private installation: Readonly<Installation> | undefined;
+  private starting: Promise<void> | undefined;
   private loop: Promise<void> | undefined;
   private stopping = false;
-  private closing = false;
+  private draining: Promise<void> | undefined;
+  private closing: Promise<void> | undefined;
   private lastHealthAt = 0;
   private pendingHealth: Promise<void> | undefined;
   private lastProgressAt = 0;
@@ -1334,6 +1344,7 @@ export class ControllerWorker {
       throw new Error("The selected Configuration Driver exposes invalid lifecycle hooks.");
     }
     this.protectedDriver = drivers?.protectedDriver;
+    this.packagedGatewayRegistration = drivers?.packagedGatewayRegistration;
     this.preparedTokens = drivers?.tokenService;
     this.sandbox =
       this.protectedDriver?.require("sandbox") ?? drivers?.sandboxDriver ?? options.sandboxDriver;
@@ -1343,6 +1354,14 @@ export class ControllerWorker {
       this.protectedDriver?.require("credential_proxy") ??
       drivers?.proxyDriver ??
       options.proxyDriver;
+    if (
+      this.packagedGatewayRegistration !== undefined &&
+      (drivers?.sandboxDriver !== this.sandbox || drivers?.proxyDriver !== this.proxyDriver)
+    ) {
+      throw new Error(
+        "The selected packaged Sandbox or Credential Proxy view differs from its registration.",
+      );
+    }
     if (
       (drivers?.installation.drivers.credential_gateway === undefined) !==
       (drivers?.credentialGatewayDriver === undefined)
@@ -1429,16 +1448,39 @@ export class ControllerWorker {
     });
   }
 
-  async start(): Promise<void> {
-    if (this.loop !== undefined) {
-      throw new Error("The controller worker is already running.");
+  async start(hooks: WorkerStartupHooks = {}): Promise<void> {
+    if (this.starting !== undefined || this.loop !== undefined || this.stopping) {
+      throw new Error("The controller worker is already running or has stopped.");
+    }
+    this.starting = Promise.resolve()
+      .then(() => this.startWork(hooks))
+      .finally(() => {
+        this.starting = undefined;
+      });
+    return this.starting;
+  }
+
+  private throwIfStopping(): void {
+    if (this.stopping) {
+      throw new Error("The controller worker stopped during startup.");
+    }
+  }
+
+  private async startWork({ connect, afterStart }: WorkerStartupHooks): Promise<void> {
+    this.throwIfStopping();
+    if (connect !== undefined) {
+      await connect();
+      this.throwIfStopping();
     }
     const installation = await this.state.loadInstallation();
+    this.throwIfStopping();
     if (installation === undefined) {
       throw new Error("The platform Installation must be bootstrapped before starting the worker.");
     }
     this.installation = installation;
-    validatePersistedNativeIAMState(await this.loadIAMState());
+    const iamState = await this.loadIAMState();
+    this.throwIfStopping();
+    validatePersistedNativeIAMState(iamState);
     this.attachLifecycleDrivers(this.iam);
     const provisioningOptions = {
       preparedTokens: this.preparedTokens,
@@ -1472,13 +1514,21 @@ export class ControllerWorker {
       );
     }
     const protectedDriver = this.protectedDriver;
-    if (protectedDriver !== undefined) {
+    const packagedGatewayRegistration = this.packagedGatewayRegistration;
+    if (packagedGatewayRegistration !== undefined) {
+      installPackagedGatewayRegistration(provisioning, packagedGatewayRegistration, {
+        sandbox: this.sandbox,
+        gateway: this.credentialGateway,
+        protectedOwner: protectedDriver,
+        proxy: this.proxyDriver,
+      });
+    } else if (protectedDriver !== undefined) {
       provisioning.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
     }
     for (const driver of [
       this.configuration,
-      ...(protectedDriver ? [] : [this.sandbox, this.proxyDriver]),
-      this.credentialGateway,
+      ...(protectedDriver || packagedGatewayRegistration ? [] : [this.sandbox, this.proxyDriver]),
+      ...(packagedGatewayRegistration ? [] : [this.credentialGateway]),
       this.credentialRefresh,
       this.iam,
       this.secretDriver,
@@ -1491,10 +1541,15 @@ export class ControllerWorker {
       }
     }
     provisioning.installPluginDrivers(this.pluginDrivers);
+    if (packagedGatewayRegistration !== undefined) {
+      this.validatePackagedGatewayBackends(packagedGatewayRegistration);
+    }
+    this.throwIfStopping();
     this.provisioningController = provisioning;
     const compute = this.compute;
     if (typeof compute.preflight === "function") {
       const result = await compute.preflight();
+      this.throwIfStopping();
       if (result !== undefined) {
         for (const warning of result.warnings) {
           this.emit({
@@ -1507,13 +1562,41 @@ export class ControllerWorker {
     } else if (this.requireComputePreflight) {
       throw new Error("The selected bundled production Compute Driver requires preflight.");
     }
+    this.throwIfStopping();
     this.emit({
       event: "worker.started",
       computeDriverId: this.compute.id,
       ...(this.sandbox === undefined ? {} : { sandboxDriverId: this.sandbox.id }),
     });
+    this.throwIfStopping();
     this.loop = this.run();
     this.connectionMaintenance = this.maintainConnections(provisioning, installation.id);
+    this.throwIfStopping();
+    afterStart?.();
+  }
+
+  private validatePackagedGatewayBackends(owner: InstalledDriver): void {
+    // Only the API constructs the ChatGPT ServiceAccount Driver and reads its admin key.
+    // The Worker binds that Backend to the configured identity and validates the views it uses.
+    const chatgpt = this.backends.find((backend) => backend.type === "chatgpt");
+    if (chatgpt?.drivers.service_account !== this.configuredServiceAccountDriverId) {
+      throw new DriverSelectionError("The configured Backend requires its ServiceAccount Driver.");
+    }
+    const selected = [
+      this.repositoryPolicy,
+      this.sandbox,
+      this.credentialGateway,
+      this.credentialRefresh,
+      this.proxyDriver,
+    ];
+    validateSelectedBackendDrivers(
+      this.backends.filter((backend) => backend.type !== "chatgpt"),
+      Object.fromEntries(
+        selected.flatMap((driver) => (driver ? [[driver.capability, driver]] : [])),
+      ),
+      this.protectedDriver,
+      owner,
+    );
   }
 
   /**
@@ -1521,26 +1604,42 @@ export class ControllerWorker {
    * in flight end, so shutdown closes the worker's other parts only after the loop that uses
    * them (finding 2997). The database pool stays open until `stop()`.
    */
-  async stopLoop(): Promise<void> {
-    if (!this.stopping) {
-      this.stopping = true;
-      this.abort.abort();
-    }
-    // Let an in-flight OAuth exchange persist a rotated grant before closing its dependencies.
-    await Promise.all([this.loop, this.connectionMaintenance]);
-    // A claim's heartbeat starts health checks that the loop does not await.
-    await this.pendingHealth;
+  stopLoop(): Promise<void> {
+    this.stopping = true;
+    return (this.draining ??= Promise.resolve().then(() => this.drainWork()));
   }
 
-  async stop(): Promise<void> {
-    if (this.closing) {
-      return;
+  private async drainWork(): Promise<void> {
+    this.abort.abort();
+    // Startup can still be using these resources. Its caller owns its outcome.
+    await this.starting?.catch(() => {});
+    // Wait for every owner user, including the independent health and OAuth work,
+    // before closing dependencies even when one rejects.
+    const settled = await Promise.allSettled([
+      this.loop,
+      this.connectionMaintenance,
+      this.pendingHealth,
+    ]);
+    for (const result of settled) {
+      if (result.status === "rejected") {
+        throw result.reason;
+      }
     }
-    this.closing = true;
-    await this.stopLoop();
-    // A failed protected Driver close must not leave the database pool open.
-    await closeResources(this.protectedDriver, this.state);
-    this.emit({ event: "worker.stopped" });
+  }
+
+  stop(): Promise<void> {
+    this.stopping = true;
+    return (this.closing ??= Promise.resolve()
+      .then(() =>
+        closeResources(
+          { close: () => this.stopLoop() },
+          this.packagedGatewayRegistration ?? this.protectedDriver,
+          this.state,
+        ),
+      )
+      .then(() => {
+        this.emit({ event: "worker.stopped" });
+      }));
   }
 
   private async run(): Promise<void> {
@@ -1824,7 +1923,8 @@ export class ControllerWorker {
     if (this.configuration?.computeLifecycleHooks !== undefined) {
       lifecycleDrivers.push(this.configuration);
     }
-    const lifecycle = this.protectedDriver ? this.protectedDriver.lifecycleDriver : this.sandbox;
+    const owner = this.packagedGatewayRegistration ?? this.protectedDriver;
+    const lifecycle = owner === undefined ? this.sandbox : owner.lifecycleDriver;
     if (lifecycle?.computeLifecycleHooks !== undefined) {
       lifecycleDrivers.push(lifecycle);
     }
@@ -4235,8 +4335,10 @@ export class ControllerWorker {
   private assertCredentialWithdrawalOwner(revision: AgentRevision, source: CredentialSource): void {
     const snapshot = revisionCredentialSourceSnapshot(revision, source.id);
     const owner =
-      source.ownerCapability === "credential_gateway" ? this.credentialGateway : this.proxyDriver;
-    if (source.driverId !== owner?.id || !credentialSourceMatchesSnapshot(source, snapshot)) {
+      source.ownerCapability === "credential_gateway"
+        ? this.ownsCredentialGatewaySource(source)
+        : source.driverId === this.proxyDriver?.id;
+    if (!owner || !credentialSourceMatchesSnapshot(source, snapshot)) {
       throw new CredentialWithdrawalRefusedError(
         "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
         "The source and selected owner must match the revision's credential source admission.",
@@ -5686,12 +5788,22 @@ export class ControllerWorker {
         source:
           withdrawal === undefined &&
           source?.state === "ready" &&
+          (source.ownerCapability !== "credential_gateway" ||
+            this.ownsCredentialGatewaySource(source)) &&
           credentialSourceMatchesSnapshot(source, snapshot)
             ? source
             : undefined,
         withdrawal,
       };
     });
+  }
+
+  private ownsCredentialGatewaySource(source: CredentialSource): boolean {
+    return credentialSourceOwnedByGateway(
+      source,
+      this.credentialGateway?.id,
+      this.packagedGatewayRegistration?.credentialGatewayOwnerId,
+    );
   }
 
   private async resolveRevisionSecretContext(

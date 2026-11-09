@@ -16,7 +16,9 @@ import {
 } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { loadRepositoryPolicy } from "../../apps/controller/src/composition/repository-credentials/policy.ts";
 import type { RepositorySelectionMode } from "../helpers/repository-selection-load.ts";
@@ -24,11 +26,15 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "node:https";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { join } from "node:path";
-import test, { afterEach } from "node:test";
+import { setImmediate as nextTurn } from "node:timers/promises";
+import test, { afterEach, type TestContext } from "node:test";
+import { Pool } from "pg";
 import type {
   AgentRevision,
   ComputeDriver,
   CredentialProxyDriver,
+  CredentialSource,
+  CredentialSourceSnapshot,
   Driver,
   EgressInstallation,
   Namespace,
@@ -38,21 +44,47 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import {
   InstalledDriver,
+  CredentialSourceDriverError,
+  CredentialWithdrawalRefusedError,
+  InMemoryPlatformState,
   OpenClawController,
+  PostgresPlatformState,
   type PostgresPool,
 } from "../../packages/occ/src/index.ts";
+import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/index.ts";
+import { createExternalSandboxRegistration } from "../../apps/controller/src/composition/driver-packages.ts";
+import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import {
+  installPackagedGatewayRegistration,
   loadInstallationConfiguration,
   type InstallationRuntimeDrivers,
 } from "../../apps/controller/src/composition/installation-config.ts";
+import { createControllerWorker } from "../../apps/controller/src/worker.ts";
+import { composeProduction } from "../../apps/controller/src/composition/production.ts";
+import {
+  closeWorkerComposition,
+  startWorkerComposition,
+} from "../../apps/controller/src/worker/shutdown.ts";
 import { installEgressAuthority } from "../../apps/controller/src/composition/egress-authority.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import { ComputeLifecycleDispatcher } from "../../apps/controller/src/drivers/compute/lifecycle-hooks.ts";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import {
+  createCredentialProxyInstallationConfiguration,
+  createInstallationDriverConfiguration,
+} from "../helpers/installation-driver-configuration.mjs";
 import { routedRevision } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { listen } from "../helpers/listen.mjs";
+import {
+  backendDefinition,
+  databaseUrl,
+  ensureInstallation,
+  serviceAccountDriverId,
+  requiresPostgres,
+} from "../helpers/postgres-backend-state.mjs";
 
 // Every field the OpenShell Git runtime emits reaches the worker log (finding 2244).
 afterEach(() => assert.deepEqual(takeUnloggedRuntimeFields(), []));
@@ -1056,5 +1088,986 @@ test("repository scope changes invalidate the external Driver identity while a r
       bindings: [{ repositoryRef: "application", profile: "git-write" }],
     }),
     binding,
+  );
+});
+
+test("an installed Sandbox can explicitly select its packaged Credential Gateway", async (t) => {
+  const id = "model-gateway-fixture";
+  const { directory, entry } = await protectedDriverPackage(t, id);
+  const source = await readFile(
+    new URL(
+      "../fixtures/driver-packages/protected-execution-driver/model-gateway.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  await writeFile(
+    join(entry, "model-gateway.mjs"),
+    stripTypeScriptTypes(source).replaceAll("./index.ts", "./index.mjs"),
+  );
+  await writeFile(
+    join(entry, "package.json"),
+    JSON.stringify({ name: id, version: "1.0.0", exports: "./model-gateway.mjs" }),
+  );
+  const fixture = (await import(
+    join(entry, "model-gateway.mjs")
+  )) as typeof import("../fixtures/driver-packages/protected-execution-driver/model-gateway.ts");
+  const sandbox = {
+    id,
+    package: id,
+    configuration: { endpoint: "https://127.0.0.1:1", ca: "unused-fixture" },
+  };
+  const gateway = { id, configuration: {} };
+  const base = createInstallationDriverConfiguration();
+  const load = async (
+    drivers: Record<string, unknown>,
+    backend?: unknown,
+    packageRoot = directory,
+  ) => {
+    const path = join(packageRoot, "installation.yaml");
+    await writeFile(
+      path,
+      JSON.stringify({
+        ...base,
+        presets: { includeDefaults: false },
+        ...(backend === undefined ? {} : { backend }),
+        drivers: { ...base.drivers, sandbox, ...drivers },
+      }),
+    );
+    return (await loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: path },
+      packageRoot,
+    }))!;
+  };
+  const newController = () =>
+    new OpenClawController({
+      id: "installation",
+      name: "installation",
+      createdAt: "2026-10-01T00:00:00Z",
+    });
+
+  await t.test(
+    "same-ID packaged owners cannot adopt another Gateway's stored Secret references",
+    async (scenario) => {
+      const actor = "gateway-owner-test-principal";
+      const state = new InMemoryPlatformState();
+      let now = Date.parse("2026-10-01T00:00:00Z");
+      const iamState: NativeIAMState = {
+        identities: [{ kind: "principal", id: actor, issuer: "owner-fixture", subject: actor }],
+        groups: [],
+        memberships: [],
+        roles: [
+          {
+            id: "gateway-owner-test-role",
+            permissions: [
+              { action: "administer", resourceKind: "installation" },
+              { action: "create", resourceKind: "namespace" },
+              { action: "read", resourceKind: "namespace" },
+              { action: "create", resourceKind: "secret" },
+              { action: "operate", resourceKind: "secret" },
+              { action: "create", resourceKind: "credential_source" },
+              { action: "update", resourceKind: "credential_source" },
+              { action: "delete", resourceKind: "credential_source" },
+            ],
+          },
+        ],
+        bindings: [
+          {
+            id: "gateway-owner-test-binding",
+            subjectKind: "identity",
+            subjectId: actor,
+            roleId: "gateway-owner-test-role",
+          },
+        ],
+        restrictions: [],
+      };
+      const secretDriver = createTestSecretDriver();
+      const iam = new NativeIAMDriver({ loadNativeIAMState: async () => iamState });
+      const compute = {
+        ...createDevelopmentComputeDriver(),
+        setLifecycleDrivers() {},
+        async resolveSandboxNamespace(namespace: Namespace) {
+          return namespace;
+        },
+      };
+      const packaged = await load({ credential_gateway: gateway });
+      const restarted = await load({ credential_gateway: gateway });
+      const changed = await load({
+        credential_gateway: gateway,
+        sandbox: {
+          ...sandbox,
+          configuration: { ...sandbox.configuration, endpoint: "https://127.0.0.1:1/different" },
+        },
+      });
+      const firstOwner = packaged.packagedGatewayRegistration!;
+      const sameOwner = restarted.packagedGatewayRegistration!;
+      const changedOwner = changed.packagedGatewayRegistration!;
+      const selection = packaged.installation.drivers.sandbox!;
+      const withProxy = await createExternalSandboxRegistration(
+        fixture,
+        selection,
+        ["credential_gateway", "credential_proxy"],
+        "git-only-authority",
+      );
+      const alternateName = "other-model-gateway-fixture";
+      const alternate = await protectedDriverPackage(scenario, alternateName);
+      await writeFile(
+        join(alternate.entry, "model-gateway.mjs"),
+        stripTypeScriptTypes(source).replaceAll("./index.ts", "./index.mjs"),
+      );
+      await writeFile(
+        join(alternate.directory, "package.json"),
+        JSON.stringify({ dependencies: { [alternateName]: "2.0.0" } }),
+      );
+      await writeFile(
+        join(alternate.entry, "package.json"),
+        JSON.stringify({ name: alternateName, version: "2.0.0", exports: "./model-gateway.mjs" }),
+      );
+      const alternateDrivers = await load(
+        {
+          credential_gateway: gateway,
+          sandbox: { ...sandbox, package: alternateName },
+        },
+        undefined,
+        alternate.directory,
+      );
+      const otherPackage = alternateDrivers.packagedGatewayRegistration!;
+      assert.equal(otherPackage.require("credential_gateway").id, id);
+      assert.equal(otherPackage.ref.implementation, alternateName + "@2.0.0");
+      const owners = [firstOwner, sameOwner, changedOwner, withProxy, otherPackage];
+      scenario.after(() => Promise.all(owners.map((owner) => owner.close())));
+
+      const catalog = [
+        {
+          type: "owner-static",
+          config: [],
+          secrets: [{ name: "input", required: true }],
+          rotation: "none",
+        },
+      ] as const;
+      const operations: string[] = [];
+      const methods = {
+        async listSourceTypes() {
+          operations.push("catalog");
+          return catalog;
+        },
+        validateSourceConfig() {},
+        async registerSource() {
+          operations.push("register");
+          return { state: "ready" as const };
+        },
+        async updateSource() {
+          operations.push("update");
+          return { state: "ready" as const };
+        },
+        async sourceStatus() {
+          operations.push("status");
+          return { state: "ready" as const };
+        },
+        async removeSource() {
+          operations.push("remove");
+        },
+      };
+      for (const owner of owners) {
+        const view = owner.require("credential_gateway");
+        for (const key of [
+          "listSourceTypes",
+          "validateSourceConfig",
+          "registerSource",
+          "updateSource",
+          "sourceStatus",
+          "removeSource",
+        ] as const) {
+          scenario.mock.method(view, key, methods[key]);
+        }
+      }
+      const legacyGateway = {
+        ...firstOwner.require("credential_gateway"),
+        implementation: "openshell",
+        ...methods,
+      };
+      const controller = (owner?: InstalledDriver, proxy = false) => {
+        const occ = new OpenClawController(
+          { id: "installation", name: "installation", createdAt: "2026-10-01T00:00:00Z" },
+          { state, now: () => new Date(now) },
+        );
+        for (const driver of [iam, compute, secretDriver]) {
+          occ.registerDriver(driver);
+          occ.selectDriver(driver.capability, driver.id);
+        }
+        if (owner === undefined) {
+          for (const driver of [firstOwner.require("sandbox"), legacyGateway]) {
+            occ.registerDriver(driver);
+            occ.selectDriver(driver.capability, driver.id);
+          }
+        } else {
+          installPackagedGatewayRegistration(occ, owner, {
+            sandbox: owner.require("sandbox"),
+            gateway: owner.require("credential_gateway"),
+            protectedOwner: proxy ? owner : undefined,
+            proxy: proxy ? owner.require("credential_proxy") : undefined,
+          });
+        }
+        return occ;
+      };
+      assert.throws(
+        () =>
+          installPackagedGatewayRegistration(newController(), firstOwner, {
+            sandbox: firstOwner.require("sandbox"),
+            gateway: sameOwner.require("credential_gateway"),
+            protectedOwner: undefined,
+            proxy: undefined,
+          }),
+        {
+          message:
+            "The selected Credential Gateway and Sandbox must use the same installed Driver.",
+        },
+      );
+      const legacy = controller();
+      const original = controller(firstOwner);
+      const namespace = await legacy.createNamespace(actor, { name: "Gateway owner test" });
+      await legacy.handleNamespaceLifecycle(actor, namespace.id, "ready");
+      const secret = await legacy.createSecret(actor, {
+        namespaceId: namespace.id,
+        name: "fixture-input",
+        value: "invented-fixture-value",
+      });
+      const input = {
+        namespaceId: namespace.id,
+        type: "owner-static",
+        secrets: { input: secret.ref },
+      };
+      const legacySource = await legacy.createCredentialSource(actor, { ...input, name: "legacy" });
+      const packagedSource = await original.createCredentialSource(actor, {
+        ...input,
+        name: "packaged",
+      });
+      // The old and new source registrations have both passed their settlement fence.
+      now += 71_000;
+      const update = (occ: OpenClawController, sourceId: string) =>
+        occ.updateCredentialSource(actor, {
+          namespaceId: namespace.id,
+          credentialSourceId: sourceId,
+        });
+      const remove = (occ: OpenClawController, sourceId: string) =>
+        occ.deleteCredentialSource(actor, namespace.id, sourceId);
+      const refuse = async (occ: OpenClawController, sourceId: string) => {
+        const before = { secretCalls: secretDriver.calls.length, operations: operations.length };
+        await assert.rejects(update(occ, sourceId), CredentialSourceDriverError);
+        await assert.rejects(remove(occ, sourceId), CredentialSourceDriverError);
+        assert.deepEqual(
+          { secretCalls: secretDriver.calls.length, operations: operations.length },
+          before,
+        );
+      };
+      await refuse(original, legacySource.id);
+      await refuse(legacy, packagedSource.id);
+      await refuse(controller(changedOwner), packagedSource.id);
+      await refuse(controller(otherPackage), packagedSource.id);
+      assert.notDeepEqual(firstOwner.ref, withProxy.ref);
+      assert.equal((await update(legacy, legacySource.id)).state, "ready");
+      assert.equal((await update(controller(sameOwner), packagedSource.id)).state, "ready");
+      assert.equal((await update(controller(withProxy, true), packagedSource.id)).state, "ready");
+      await remove(controller(withProxy, true), packagedSource.id);
+      assert.equal(operations.at(-1), "remove");
+    },
+  );
+
+  await t.test(
+    "an early API failure closes exactly one packaged owner with or without Proxy",
+    async () => {
+      for (const withProxy of [false, true]) {
+        const closed = fixture.calls.close;
+        const drivers = await load({
+          credential_gateway: gateway,
+          ...(withProxy ? { credential_proxy: gateway } : {}),
+        });
+        try {
+          await assert.rejects(
+            composeProduction({
+              mode: "production",
+              host: "127.0.0.1",
+              databaseUrl: "unused",
+              drivers,
+              authSecret: "fixture",
+              authBaseURL: "http://localhost:3000",
+              serviceAccountDriverFactory: () => {},
+            }),
+            /requires API-only PostgreSQL initialization/,
+          );
+          assert.equal(fixture.calls.close, closed + 1);
+        } finally {
+          await drivers.packagedGatewayRegistration!.close();
+        }
+        assert.equal(fixture.calls.close, closed + 1);
+      }
+    },
+  );
+
+  await t.test("Installation selects exact views before and after adding the Proxy", async () => {
+    for (const withProxy of [false, true]) {
+      const created = fixture.calls.create;
+      const closed = fixture.calls.close;
+      const options = {
+        credential_gateway: gateway,
+        ...(withProxy ? { credential_proxy: gateway } : {}),
+      };
+      const api = await load(options);
+      const owner = api.packagedGatewayRegistration;
+      assert.ok(owner);
+      try {
+        assert.equal(api.sandboxDriver, owner.require("sandbox"));
+        assert.equal(api.credentialGatewayDriver, owner.require("credential_gateway"));
+        assert.equal(api.credentialGatewayDriver?.implementation, id + "@1.0.0");
+        assert.deepEqual(api.installation.drivers.credential_gateway?.startupConfiguration, {});
+        assert.equal(api.protectedDriver, withProxy ? owner : undefined);
+        assert.equal(api.proxyDriver, withProxy ? owner.require("credential_proxy") : undefined);
+        assert.equal(fixture.calls.create, created + 1);
+        const controller = newController();
+        installPackagedGatewayRegistration(controller, owner, {
+          sandbox: api.sandboxDriver,
+          gateway: api.credentialGatewayDriver,
+          proxy: api.proxyDriver,
+          protectedOwner: api.protectedDriver,
+        });
+        assert.equal(controller.selectedDriver("credential_gateway"), api.credentialGatewayDriver);
+        assert.equal(controller.selectedDriver("sandbox"), api.sandboxDriver);
+        if (withProxy) {
+          assert.equal(controller.selectedDriver("credential_proxy"), api.proxyDriver);
+        } else {
+          assert.throws(() => controller.selectedDriver("credential_proxy"), {
+            name: "DriverSelectionError",
+            message: /selected Driver is unavailable/,
+          });
+        }
+        await controller.validateBackendConfiguration();
+
+        const workerDrivers = await load(options);
+        const workerOwner = workerDrivers.packagedGatewayRegistration;
+        assert.ok(workerOwner);
+        assert.notEqual(workerOwner, owner);
+        assert.notEqual(workerDrivers.credentialGatewayDriver, api.credentialGatewayDriver);
+        assert.deepEqual(workerOwner.ref, owner.ref);
+        assert.equal(fixture.calls.create, created + 2);
+        const pool = new Pool({ connectionString: "postgresql://127.0.0.1:1/unused" });
+        const worker = createControllerWorker({
+          pool,
+          mode: "production",
+          drivers: workerDrivers,
+          emit: () => {},
+        });
+        await worker.stop();
+        await worker.stop();
+        assert.equal(fixture.calls.close, closed + 1);
+      } finally {
+        await owner.close();
+      }
+      assert.equal(fixture.calls.close, closed + 2);
+    }
+  });
+
+  await t.test(
+    "only requested package views are required and unselected views are not exposed",
+    async (scenario) => {
+      const gatewayOnly = await load({
+        sandbox: {
+          ...sandbox,
+          configuration: { ...sandbox.configuration, endpoint: "https://127.0.0.1:1/gateway-only" },
+        },
+        credential_gateway: gateway,
+      });
+      scenario.after(() => gatewayOnly.packagedGatewayRegistration!.close());
+      assert.deepEqual(gatewayOnly.packagedGatewayRegistration?.capabilities, [
+        "sandbox",
+        "credential_gateway",
+      ]);
+      assert.equal(gatewayOnly.proxyDriver, undefined);
+
+      const proxyOnly = await load({ credential_proxy: gateway });
+      try {
+        assert.ok(proxyOnly.protectedDriver?.require("credential_gateway"));
+        assert.equal(proxyOnly.credentialGatewayDriver, undefined);
+        assert.equal(proxyOnly.packagedGatewayRegistration, undefined);
+      } finally {
+        await proxyOnly.protectedDriver?.close();
+      }
+    },
+  );
+
+  await t.test("invalid Gateway selections and foreign package views fail closed", async () => {
+    const created = fixture.calls.create;
+    await assert.rejects(load({ credential_gateway: { ...gateway, package: id } }), /package/);
+    await assert.rejects(
+      load({ credential_gateway: { ...gateway, id: "other-driver" } }),
+      /same installed Driver/,
+    );
+    await assert.rejects(
+      load({ credential_gateway: { ...gateway, configuration: { unexpected: true } } }),
+      /configuration/,
+    );
+    const bundled = createCredentialProxyInstallationConfiguration();
+    assert.ok("backend" in bundled);
+    await assert.rejects(
+      load({ credential_gateway: gateway }, bundled.backend),
+      /cannot use a bundled OpenShell Backend/,
+    );
+    assert.equal(fixture.calls.create, created);
+    const closed = fixture.calls.close;
+    for (const variant of ["missing-gateway", "wrong-id", "wrong-implementation"]) {
+      await assert.rejects(
+        load({
+          sandbox: {
+            ...sandbox,
+            configuration: { ...sandbox.configuration, endpoint: "https://127.0.0.1:1/" + variant },
+          },
+          credential_gateway: gateway,
+        }),
+        /selected capability/,
+      );
+    }
+    assert.equal(fixture.calls.create, created + 3);
+    assert.equal(fixture.calls.close, closed + 3);
+  });
+
+  await t.test("OCC accepts only views from the same registered owner", async () => {
+    const selection = { id, implementation: id + "@1.0.0", configuration: sandbox.configuration };
+    const owner = new InstalledDriver(selection, fixture.createDriver(selection));
+    try {
+      const controller = newController();
+      controller.installDriver(owner, ["sandbox", "credential_gateway"]);
+      assert.equal(controller.selectedDriver("sandbox"), owner.require("sandbox"));
+      assert.equal(
+        controller.selectedDriver("credential_gateway"),
+        owner.require("credential_gateway"),
+      );
+      await controller.validateBackendConfiguration();
+      const unowned = newController();
+      const gatewayView = owner.require("credential_gateway");
+      unowned.registerDriver(owner.require("sandbox"));
+      unowned.registerDriver(gatewayView);
+      unowned.selectDriver("sandbox", id);
+      unowned.selectDriver("credential_gateway", id);
+      await assert.rejects(unowned.validateBackendConfiguration(), /Credential Gateway Driver/);
+
+      const foreign = newController();
+      const foreignGateway = { ...gatewayView, id: "another-registration" };
+      const foreignOwner = new InstalledDriver(
+        { ...selection, id: foreignGateway.id },
+        { capabilities: { credential_gateway: foreignGateway } },
+      );
+      foreign.installDriver(owner, ["sandbox"]);
+      foreign.installDriver(foreignOwner, ["credential_gateway"]);
+      await assert.rejects(foreign.validateBackendConfiguration(), /same registered Driver/);
+    } finally {
+      await owner.close();
+    }
+  });
+
+  const prepareWorkerStartup = (scenario: TestContext) => {
+    scenario.mock.method(PostgresPlatformState.prototype, "loadInstallation", async () => ({
+      id: "worker-startup",
+      name: "worker-startup",
+      createdAt: "2026-10-01T00:00:00Z",
+    }));
+    scenario.mock.method(
+      PostgresPlatformState.prototype,
+      "loadNativeIAMState",
+      async (): Promise<NativeIAMState> => ({
+        identities: [
+          { kind: "principal", id: "principal", issuer: "fixture", subject: "principal" },
+        ],
+        groups: [],
+        memberships: [],
+        roles: [
+          { id: "admin", permissions: [{ action: "administer", resourceKind: "installation" }] },
+        ],
+        bindings: [
+          { id: "admin", subjectKind: "identity", subjectId: "principal", roleId: "admin" },
+        ],
+        restrictions: [],
+      }),
+    );
+    return (drivers: InstallationRuntimeDrivers) => {
+      const events: unknown[] = [];
+      const pool = new Pool();
+      const poolClose = scenario.mock.method(pool, "end");
+      const poolConnect = scenario.mock.method(pool, "connect", () => {
+        throw new Error("unexpected startup database connection");
+      });
+      const worker = createControllerWorker({
+        mode: "production",
+        drivers,
+        pool,
+        emit: (event) => events.push(event.event),
+      });
+      // These background tasks are independent of the startup preflight.
+      const tasks = worker as unknown as {
+        run(): Promise<void>;
+        maintainConnections(): Promise<void>;
+      };
+      const run = scenario.mock.method(tasks, "run", async () => {});
+      const maintenance = scenario.mock.method(tasks, "maintainConnections", async () => {});
+      return { worker, events, poolClose, poolConnect, run, maintenance };
+    };
+  };
+
+  await t.test(
+    "Worker starts with a matching API-only ChatGPT Backend in both Proxy modes",
+    async (scenario) => {
+      const createWorker = prepareWorkerStartup(scenario);
+      const backend = backendDefinition({ apiKeyPath: join(directory, "absent-admin-key") });
+      for (const withProxy of [false, true]) {
+        const selected = {
+          credential_gateway: gateway,
+          ...(withProxy ? { credential_proxy: gateway } : {}),
+        };
+        await assert.rejects(
+          load({ ...selected, service_account: { id: "foreign-account", configuration: {} } }, [
+            backend,
+          ]),
+          /must match the selected drivers.service_account.id/,
+        );
+        const matching = {
+          ...selected,
+          service_account: { id: serviceAccountDriverId, configuration: {} },
+        };
+        const drivers = await load(matching, [backend]);
+        assert.equal(drivers.installation.drivers.service_account?.id, serviceAccountDriverId);
+        assert.ok(drivers.computeDriver instanceof KubernetesComputeDriver);
+        const preflight = scenario.mock.method(drivers.computeDriver, "preflight", async () => ({
+          warnings: [],
+        }));
+        const closed = fixture.calls.close;
+        const { worker, events, poolClose, poolConnect } = createWorker(drivers);
+        const afterStart = scenario.mock.fn();
+        try {
+          await startWorkerComposition(
+            { worker, closeMetrics: async () => {} },
+            undefined,
+            afterStart,
+          );
+          assert.equal(preflight.mock.callCount(), 1);
+          assert.equal(afterStart.mock.callCount(), 1);
+          assert.deepEqual(events, ["worker.started"]);
+        } finally {
+          await worker.stop();
+        }
+        assert.equal(poolConnect.mock.callCount(), 0);
+        assert.equal(poolClose.mock.callCount(), 1);
+        assert.equal(fixture.calls.close, closed + 1);
+
+        const foreign = await load(matching, [backend]);
+        assert.ok(foreign.computeDriver instanceof KubernetesComputeDriver);
+        const foreignPreflight = scenario.mock.method(
+          foreign.computeDriver,
+          "preflight",
+          async () => ({ warnings: [] }),
+        );
+        assert.ok(foreign.credentialGatewayDriver);
+        const invalid = createWorker({
+          ...foreign,
+          credentialGatewayDriver: { ...foreign.credentialGatewayDriver },
+        });
+        await assert.rejects(
+          startWorkerComposition({ worker: invalid.worker, closeMetrics: async () => {} }),
+          /same installed Driver/,
+        );
+        assert.equal(foreignPreflight.mock.callCount(), 0);
+        assert.equal(invalid.poolClose.mock.callCount(), 1);
+        assert.equal(fixture.calls.close, closed + 2);
+      }
+    },
+  );
+
+  await t.test(
+    "Worker stop waits for pending startup before closing resources in both Proxy modes",
+    async (scenario) => {
+      const createWorker = prepareWorkerStartup(scenario);
+      for (const withProxy of [false, true]) {
+        const drivers = await load({
+          credential_gateway: gateway,
+          ...(withProxy ? { credential_proxy: gateway } : {}),
+        });
+        assert.ok(drivers.computeDriver instanceof KubernetesComputeDriver);
+        const entered = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        scenario.mock.method(drivers.computeDriver, "preflight", async () => {
+          entered.resolve();
+          await release.promise;
+          return { warnings: [] };
+        });
+        const closed = fixture.calls.close;
+        const { worker, events, poolClose, run, maintenance } = createWorker(drivers);
+        const afterStart = scenario.mock.fn();
+        const closeMetrics = scenario.mock.fn(async () => {});
+        const composition = { worker, closeMetrics };
+        const startup = startWorkerComposition(composition, undefined, afterStart).then(
+          () => ({ started: true as const }),
+          (error: unknown) => ({ started: false as const, error }),
+        );
+        await entered.promise;
+        const shutdown = worker.stop();
+        const compositionShutdown = closeWorkerComposition(composition);
+        try {
+          await nextTurn();
+          assert.equal(poolClose.mock.callCount(), 0);
+          assert.equal(fixture.calls.close, closed);
+        } finally {
+          release.resolve();
+          await Promise.all([startup, shutdown, compositionShutdown]);
+        }
+        const result = await startup;
+        assert.equal(result.started, false);
+        if (!result.started) {
+          assert.match(String(result.error), /stopped during startup/);
+        }
+        assert.deepEqual(events, ["worker.stopped"]);
+        assert.equal(run.mock.callCount(), 0);
+        assert.equal(maintenance.mock.callCount(), 0);
+        assert.equal(afterStart.mock.callCount(), 0);
+        assert.equal(closeMetrics.mock.callCount(), 1);
+        assert.equal(poolClose.mock.callCount(), 1);
+        assert.equal(fixture.calls.close, closed + 1);
+      }
+    },
+  );
+
+  await t.test(
+    "production API and Worker start and close their own exact registration",
+    requiresPostgres,
+    async (scenario) => {
+      assert.ok(databaseUrl);
+      const bootstrapPool = new Pool({ connectionString: databaseUrl });
+      try {
+        await ensureInstallation(new PostgresPlatformState(bootstrapPool), "packaged-gateway");
+      } finally {
+        await bootstrapPool.end();
+      }
+      const registrations = scenario.mock.method(OpenClawController.prototype, "installDriver");
+      for (const withProxy of [false, true]) {
+        const created = fixture.calls.create;
+        const closed = fixture.calls.close;
+        const options = {
+          credential_gateway: gateway,
+          ...(withProxy ? { credential_proxy: gateway } : {}),
+        };
+        const apiDrivers = await load(options);
+        const workerDrivers = await load(options);
+        const apiOwner = apiDrivers.packagedGatewayRegistration;
+        const workerOwner = workerDrivers.packagedGatewayRegistration;
+        assert.ok(apiOwner && workerOwner && apiOwner !== workerOwner);
+        // Admission and wiring use the actual bundled Compute object; its cluster
+        // readiness probe is outside this local PostgreSQL startup check.
+        for (const runtime of [apiDrivers, workerDrivers]) {
+          assert.ok(runtime.computeDriver instanceof KubernetesComputeDriver);
+          scenario.mock.method(runtime.computeDriver, "preflight", async () => ({ warnings: [] }));
+        }
+        const pool = new Pool({ connectionString: databaseUrl });
+        const worker = createControllerWorker({
+          mode: "production",
+          drivers: workerDrivers,
+          pool,
+          emit: () => {},
+        });
+        let app: Awaited<ReturnType<typeof composeProduction>> | undefined;
+        try {
+          app = await composeProduction({
+            mode: "production",
+            host: "127.0.0.1",
+            databaseUrl,
+            drivers: apiDrivers,
+            authSecret: "packaged-gateway-startup-fixture-secret",
+            authBaseURL: "http://127.0.0.1:3000",
+          });
+          assert.equal((await app.inject("/healthz")).statusCode, 200);
+          await worker.start();
+          for (const owner of [apiOwner, workerOwner]) {
+            const observed = registrations.mock.calls.filter((call) => call.arguments[0] === owner);
+            assert.equal(observed.length, 1);
+            const registry = observed[0]?.this;
+            assert.ok(registry instanceof OpenClawController);
+            assert.equal(registry.selectedDriver("sandbox"), owner.require("sandbox"));
+            assert.equal(
+              registry.selectedDriver("credential_gateway"),
+              owner.require("credential_gateway"),
+            );
+            if (withProxy) {
+              assert.equal(
+                registry.selectedDriver("credential_proxy"),
+                owner.require("credential_proxy"),
+              );
+            } else {
+              assert.throws(() => registry.selectedDriver("credential_proxy"), {
+                name: "DriverSelectionError",
+                message: /selected Driver is unavailable/,
+              });
+            }
+            await registry.validateBackendConfiguration();
+          }
+          assert.equal(fixture.calls.create, created + 2);
+        } finally {
+          await worker.stop();
+          if (app !== undefined) {
+            await app.close();
+          } else {
+            await apiOwner.close();
+          }
+        }
+        assert.equal(fixture.calls.close, closed + 2);
+      }
+    },
+  );
+
+  await t.test(
+    "production startup and shutdown settle the acquired owner and database after failure",
+    requiresPostgres,
+    async (scenario) => {
+      assert.ok(databaseUrl);
+      const bootstrap = new Pool({ connectionString: databaseUrl });
+      try {
+        await ensureInstallation(new PostgresPlatformState(bootstrap), "gateway-failure-cleanup");
+      } finally {
+        await bootstrap.end();
+      }
+      for (const withProxy of [false, true]) {
+        const selected = {
+          credential_gateway: gateway,
+          ...(withProxy ? { credential_proxy: gateway } : {}),
+        };
+        const api = await load(selected);
+        let closed = fixture.calls.close;
+        const earlyFailure = new Error("controlled failure after API pool acquisition");
+        const poolClose = scenario.mock.method(Pool.prototype, "end");
+        try {
+          await assert.rejects(
+            composeProduction({
+              mode: "production",
+              host: "127.0.0.1",
+              databaseUrl,
+              drivers: api,
+              authSecret: "gateway-failure-fixture-secret",
+              authBaseURL: "http://127.0.0.1:3000",
+              onStartupPhase(phase) {
+                if (phase === "database") {
+                  throw earlyFailure;
+                }
+              },
+            }),
+            (error) => error === earlyFailure,
+          );
+          assert.equal(poolClose.mock.callCount(), 1);
+          assert.equal(fixture.calls.close, closed + 1);
+        } finally {
+          poolClose.mock.restore();
+          await api.packagedGatewayRegistration!.close();
+        }
+
+        const startup = await load(selected);
+        closed = fixture.calls.close;
+        assert.ok(startup.computeDriver instanceof KubernetesComputeDriver);
+        const preflightFailure = new Error("controlled Compute preflight failure");
+        scenario.mock.method(startup.computeDriver, "preflight", async () => {
+          throw preflightFailure;
+        });
+        const startupPool = new Pool({ connectionString: databaseUrl });
+        const startupPoolClose = scenario.mock.method(startupPool, "end");
+        const failedWorker = createControllerWorker({
+          mode: "production",
+          drivers: startup,
+          pool: startupPool,
+          emit: () => {},
+        });
+        await assert.rejects(
+          startWorkerComposition({
+            worker: failedWorker,
+            closeMetrics: () => {
+              throw new Error("secondary cleanup failure");
+            },
+          }),
+          (error) => error === preflightFailure,
+        );
+        assert.equal(startupPoolClose.mock.callCount(), 1);
+        assert.equal(fixture.calls.close, closed + 1);
+        await failedWorker.stop();
+        assert.equal(startupPoolClose.mock.callCount(), 1);
+        assert.equal(fixture.calls.close, closed + 1);
+
+        const active = await load(selected);
+        closed = fixture.calls.close;
+        assert.ok(active.computeDriver instanceof KubernetesComputeDriver);
+        scenario.mock.method(active.computeDriver, "preflight", async () => ({ warnings: [] }));
+        const activePool = new Pool({ connectionString: databaseUrl });
+        const activePoolClose = scenario.mock.method(activePool, "end");
+        const worker = createControllerWorker({
+          mode: "production",
+          drivers: active,
+          pool: activePool,
+          emit: () => {},
+        });
+        // Inject at the two Worker task boundaries. The real start/shutdown path
+        // must wait for both users before closing the actual registration and pool.
+        const loop = Promise.withResolvers<void>();
+        const connection = Promise.withResolvers<void>();
+        const tasks = worker as unknown as {
+          run(): Promise<void>;
+          maintainConnections(): Promise<void>;
+        };
+        scenario.mock.method(tasks, "run", () => loop.promise);
+        scenario.mock.method(tasks, "maintainConnections", () => connection.promise);
+        const composition = { worker, closeMetrics: async () => {} };
+        await startWorkerComposition(composition);
+        const inFlightFailure = new Error("controlled in-flight connection failure");
+        const shutdown = assert.rejects(
+          closeWorkerComposition(composition),
+          (error) => error === inFlightFailure,
+        );
+        try {
+          connection.reject(inFlightFailure);
+          await nextTurn();
+          assert.equal(activePoolClose.mock.callCount(), 0);
+          assert.equal(fixture.calls.close, closed);
+        } finally {
+          loop.resolve();
+          await shutdown;
+        }
+        assert.equal(activePoolClose.mock.callCount(), 1);
+        assert.equal(fixture.calls.close, closed + 1);
+        await assert.rejects(worker.stop(), (error) => error === inFlightFailure);
+        assert.equal(activePoolClose.mock.callCount(), 1);
+        assert.equal(fixture.calls.close, closed + 1);
+      }
+    },
+  );
+
+  await t.test(
+    "Worker revision resolution and withdrawal reread the stored Gateway owner",
+    requiresPostgres,
+    async (scenario) => {
+      assert.ok(databaseUrl);
+      const sourceOptions = { credential_gateway: gateway };
+      const original = await load(sourceOptions);
+      const sameWithProxy = await load({ ...sourceOptions, credential_proxy: gateway });
+      const changed = await load({
+        ...sourceOptions,
+        sandbox: {
+          ...sandbox,
+          configuration: { ...sandbox.configuration, endpoint: "https://127.0.0.1:1/replaced" },
+        },
+      });
+      const pin = original.packagedGatewayRegistration?.credentialGatewayOwnerId;
+      assert.ok(pin);
+      const pool = new Pool({ connectionString: databaseUrl });
+      scenario.after(() => pool.end());
+      const state = new PostgresPlatformState(pool);
+      await ensureInstallation(state, "gateway-worker-source");
+      const namespace: Namespace = {
+        id: `ns_${randomUUID()}`,
+        name: `Gateway owner ${randomUUID()}`,
+        status: "ready",
+        createdAt: new Date().toISOString(),
+      };
+      const source = (name: string, credentialGatewayOwnerId?: string): CredentialSource => ({
+        id: `cs_${randomUUID()}`,
+        namespaceId: namespace.id,
+        name,
+        type: "owner-static",
+        config: {},
+        secrets: {},
+        state: "ready",
+        ownerCapability: "credential_gateway",
+        driverId: id,
+        createdAt: namespace.createdAt,
+        ...(credentialGatewayOwnerId === undefined ? {} : { credentialGatewayOwnerId }),
+      });
+      const legacySource = source("Legacy source");
+      const packagedSource = source("Packaged source", pin);
+      await state.transact(async (unit) => {
+        await unit.namespaces.createNamespace(namespace);
+        await unit.credentialSources.createCredentialSource(legacySource);
+        await unit.credentialSources.createCredentialSource(packagedSource);
+      });
+      assert.equal(
+        (
+          await state.read((unit) =>
+            unit.credentialSources.findCredentialSource(namespace.id, packagedSource.id),
+          )
+        )?.credentialGatewayOwnerId,
+        pin,
+      );
+      const legacyPool = new Pool({ connectionString: databaseUrl });
+      assert.ok(original.sandboxDriver && original.credentialGatewayDriver);
+      const legacyWorker = createControllerWorker({
+        pool: legacyPool,
+        computeDriver: createDevelopmentComputeDriver(),
+        emit: () => {},
+        sandboxDriver: original.sandboxDriver,
+        credentialGatewayDriver: original.credentialGatewayDriver,
+      });
+      const checks: readonly (readonly [
+        worker: ReturnType<typeof createControllerWorker>,
+        legacy: boolean,
+        packaged: boolean,
+      ])[] = [
+        [legacyWorker, true, false],
+        ...[original, sameWithProxy, changed].map(
+          (drivers, index) =>
+            [
+              createControllerWorker({
+                mode: "production",
+                drivers,
+                pool: new Pool({ connectionString: databaseUrl }),
+                emit: () => {},
+              }),
+              false,
+              index < 2,
+            ] as const,
+        ),
+      ];
+      scenario.after(() => Promise.all(checks.map(([worker]) => worker.stop())).then(() => {}));
+      for (const [worker, legacyAllowed, packagedAllowed] of checks) {
+        // Call the actual Worker decision boundaries without sending a Compute or
+        // Gateway request. Source rows come from the real PostgreSQL repository.
+        const decision = worker as unknown as {
+          resolveRevisionCredentialSource(
+            revision: AgentRevision,
+            snapshot: CredentialSourceSnapshot,
+          ): Promise<{ readonly source?: CredentialSource }>;
+          assertCredentialWithdrawalOwner(revision: AgentRevision, source: CredentialSource): void;
+        };
+        for (const [record, allowed] of [
+          [legacySource, legacyAllowed],
+          [packagedSource, packagedAllowed],
+        ] as const) {
+          const snapshot = {
+            sourceId: record.id,
+            sourceType: record.type,
+            credentialGatewayId: id,
+          };
+          const revision = routedRevision(createDevelopmentComputeDriver(), {
+            id: `rev_${randomUUID()}`,
+            namespaceId: namespace.id,
+            harnessAuth: { method: "credential_source", loginMode: "api_key", ...snapshot },
+            credentialSources: [snapshot],
+          });
+          assert.equal(
+            (await decision.resolveRevisionCredentialSource(revision, snapshot)).source?.id,
+            allowed ? record.id : undefined,
+          );
+          const stored = await state.read((unit) =>
+            unit.credentialSources.findCredentialSource(namespace.id, record.id),
+          );
+          assert.ok(stored);
+          if (allowed) {
+            decision.assertCredentialWithdrawalOwner(revision, stored);
+          } else {
+            assert.throws(
+              () => decision.assertCredentialWithdrawalOwner(revision, stored),
+              CredentialWithdrawalRefusedError,
+            );
+          }
+        }
+      }
+    },
   );
 });

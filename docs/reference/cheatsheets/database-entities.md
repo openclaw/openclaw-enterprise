@@ -214,7 +214,7 @@ Tracks the Token Service secret reference, the published access token version an
 
 ### `credential_sources`
 
-Records the owner of each source. A Credential Gateway or Credential Proxy source identifies its admitting Driver. The Token Service owns saved account sources.
+Records the owner of each source. A Credential Gateway or Credential Proxy source identifies its admitting Driver. A packaged Credential Gateway source also identifies its configured Gateway owner. The Token Service owns saved account sources.
 
 - `id`
 - `namespace_id`
@@ -222,8 +222,9 @@ Records the owner of each source. A Credential Gateway or Credential Proxy sourc
 - `type`
 - `config`
 - `egress` (optional admitted source and versioned resolver references)
-- `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service` for a saved account)
-- `driver_id` (Gateway and Proxy sources)
+- `owner_capability` (`credential_gateway` for a legacy Gateway, `packaged_credential_gateway` for a packaged Gateway, `credential_proxy`, or `token_service` for a saved account)
+- `driver_id` (required for Gateway and Proxy sources; null for saved accounts)
+- `credential_gateway_owner_id` (immutable ID of 64 lowercase hexadecimal characters; required for `packaged_credential_gateway` and null otherwise)
 - `state`
 - `created_at`
 

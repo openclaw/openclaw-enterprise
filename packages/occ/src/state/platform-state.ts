@@ -1746,6 +1746,9 @@ function assertCredentialSource(source: CredentialSource): void {
         source.driverId.length <= 200 &&
         source.driverId === source.driverId.trim();
   if (
+    (source.credentialGatewayOwnerId !== undefined &&
+      (source.ownerCapability !== "credential_gateway" ||
+        !/^[a-f0-9]{64}$/.test(source.credentialGatewayOwnerId))) ||
     !credentialSourceIdentifier.test(source.id) ||
     !namespaceIdentifier.test(source.namespaceId) ||
     typeof source.name !== "string" ||

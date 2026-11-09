@@ -47,6 +47,7 @@ import {
   repositoryGitAuthorization,
   credentialFreeMetadataType,
   credentialSourceMatchesSnapshot,
+  credentialSourceOwnedByGateway,
   revisionCredentialSourceSnapshot,
   credentialFreeProviderRef,
   pluginRuntimeHarnessRequirement,
@@ -2499,6 +2500,12 @@ export class OpenClawController {
   }
 
   async validateBackendConfiguration(): Promise<void> {
+    const gatewayOwner = this.selections.get("credential_gateway")?.owner;
+    if (gatewayOwner !== undefined && gatewayOwner !== this.selections.get("sandbox")?.owner) {
+      throw new DriverSelectionError(
+        "The selected packaged Credential Gateway and Sandbox must come from the same registered Driver.",
+      );
+    }
     validateSelectedBackendDrivers(
       this.backends,
       Object.fromEntries(
@@ -2508,6 +2515,7 @@ export class OpenClawController {
         ]),
       ),
       this.selections.has("credential_proxy") ? this.selectedProxyOwner() : undefined,
+      gatewayOwner,
     );
   }
 
@@ -8450,6 +8458,8 @@ export class OpenClawController {
         egress === undefined
           ? await this.readCredentialSourceSecrets(state, principalId, locked, secretRefs)
           : {};
+      const gatewayOwnerId =
+        this.selections.get("credential_gateway")?.owner?.credentialGatewayOwnerId;
 
       const registering = await state.credentialSources.createCredentialSource(
         Object.freeze({
@@ -8460,8 +8470,15 @@ export class OpenClawController {
           type: type.type,
           config,
           secrets: secretRefs,
-          ownerCapability: protectedType ? "credential_proxy" : "credential_gateway",
-          driverId: protectedType ? protectedType.driver.id : selected!.id,
+          ...(protectedType
+            ? { ownerCapability: "credential_proxy" as const, driverId: protectedType.driver.id }
+            : {
+                ownerCapability: "credential_gateway" as const,
+                driverId: selected!.id,
+                ...(gatewayOwnerId === undefined
+                  ? {}
+                  : { credentialGatewayOwnerId: gatewayOwnerId }),
+              }),
           state: "registering",
           createdAt: this.timestamp(),
         }),
@@ -16704,7 +16721,8 @@ export class OpenClawController {
    */
   private ownedCredentialGatewayDriver(source: CredentialSource): CredentialGatewayDriver {
     const driver = this.credentialGatewayDriver();
-    if (source.ownerCapability !== "credential_gateway" || driver.id !== source.driverId) {
+    const ownerId = this.selections.get("credential_gateway")?.owner?.credentialGatewayOwnerId;
+    if (!credentialSourceOwnedByGateway(source, driver.id, ownerId)) {
       throw new CredentialSourceDriverError();
     }
     return driver;

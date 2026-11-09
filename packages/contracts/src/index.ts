@@ -549,10 +549,21 @@ export type CredentialSourceState = "registering" | "ready" | "deleting";
 /** Driver-owned sources pin the selected Driver. The Token Service owns saved accounts directly. */
 type CredentialSourceOwner =
   | {
-      readonly ownerCapability: "credential_gateway" | "credential_proxy";
+      readonly ownerCapability: "credential_gateway";
       readonly driverId: string;
+      /** Private durable owner identity for packaged Gateways; legacy records have no pin. */
+      readonly credentialGatewayOwnerId?: string;
     }
-  | { readonly ownerCapability: "token_service"; readonly driverId?: never };
+  | {
+      readonly ownerCapability: "credential_proxy";
+      readonly driverId: string;
+      readonly credentialGatewayOwnerId?: never;
+    }
+  | {
+      readonly ownerCapability: "token_service";
+      readonly driverId?: never;
+      readonly credentialGatewayOwnerId?: never;
+    };
 
 export type CredentialSourceOwnerCapability = CredentialSourceOwner["ownerCapability"];
 
@@ -568,6 +579,19 @@ export type CredentialSource = CredentialSourceOwner & {
   readonly state: CredentialSourceState;
   readonly createdAt: string;
 };
+
+/** Match the selected Gateway and its durable owner; an unpinned source belongs only to legacy. */
+export function credentialSourceOwnedByGateway(
+  source: CredentialSource,
+  driverId: string | undefined,
+  ownerId: string | undefined,
+): boolean {
+  return (
+    source.ownerCapability === "credential_gateway" &&
+    source.driverId === driverId &&
+    source.credentialGatewayOwnerId === ownerId
+  );
+}
 
 export interface CredentialSourceMetadata {
   readonly ownerCapability: CredentialSourceOwnerCapability;

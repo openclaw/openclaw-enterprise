@@ -1,7 +1,10 @@
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
-import { installationControllerOptions } from "./installation-config.ts";
+import {
+  installationControllerOptions,
+  installPackagedGatewayRegistration,
+} from "./installation-config.ts";
 import type { AuditEvent } from "@openclaw-enterprise/contracts";
 import {
   validateAuthAccountPrincipalSeed,
@@ -98,9 +101,6 @@ export async function composeProduction(
   config: ProductionConfig,
   dependencies: CompositionDependencies = {},
 ) {
-  if (config.mode !== "production") {
-    throw new Error("Production OCC composition requires explicit production mode.");
-  }
   const {
     installation,
     computeDriver,
@@ -108,6 +108,7 @@ export async function composeProduction(
     secretDriver,
     sandboxDriver,
     credentialGatewayDriver,
+    packagedGatewayRegistration,
     credentialRefreshDriver,
     protectedDriver,
     preparedGitHub,
@@ -115,41 +116,51 @@ export async function composeProduction(
     repositoryPolicy,
     createIAMDriver,
   } = config.drivers;
-  if (
-    (installation.drivers.service_account === undefined) !==
-    (config.serviceAccountDriverFactory === undefined)
-  ) {
-    throw new Error(
-      "The selected ServiceAccount Driver requires API-only PostgreSQL initialization.",
-    );
-  }
-
-  const driverId = installation.drivers.iam.id;
-  if (config.github !== undefined && config.nativeAdmin?.enabled === true) {
-    throw new Error("GitHub sign-in does not support native administration.");
-  }
-  if (config.google !== undefined && config.nativeAdmin?.enabled === true) {
-    throw new Error("Google sign-in does not support native administration.");
-  }
-  if (config.oidc !== undefined && config.nativeAdmin?.enabled === true) {
-    throw new Error("OIDC sign-in does not support native administration.");
-  }
-
-  let phaseStartedAt = performance.now();
-  const phaseCompleted = (phase: ProductionStartupPhase) => {
-    const now = performance.now();
-    config.onStartupPhase?.(phase, Math.round(now - phaseStartedAt));
-    phaseStartedAt = now;
-  };
-
-  const pool = await createPostgresPool(config.databaseUrl, {
-    ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
-  });
-
+  let acquiredPool: Awaited<ReturnType<typeof createPostgresPool>> | undefined;
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
-  const close = (database: { close(): Promise<void> }) =>
-    closeResources(exchange, protectedDriver, preparedGitHub, database);
+  const close = (database?: { close(): Promise<void> }) =>
+    closeResources(
+      exchange,
+      packagedGatewayRegistration ?? protectedDriver,
+      preparedGitHub,
+      database,
+    );
   try {
+    if (config.mode !== "production") {
+      throw new Error("Production OCC composition requires explicit production mode.");
+    }
+    if (
+      (installation.drivers.service_account === undefined) !==
+      (config.serviceAccountDriverFactory === undefined)
+    ) {
+      throw new Error(
+        "The selected ServiceAccount Driver requires API-only PostgreSQL initialization.",
+      );
+    }
+
+    const driverId = installation.drivers.iam.id;
+    if (config.github !== undefined && config.nativeAdmin?.enabled === true) {
+      throw new Error("GitHub sign-in does not support native administration.");
+    }
+    if (config.google !== undefined && config.nativeAdmin?.enabled === true) {
+      throw new Error("Google sign-in does not support native administration.");
+    }
+    if (config.oidc !== undefined && config.nativeAdmin?.enabled === true) {
+      throw new Error("OIDC sign-in does not support native administration.");
+    }
+
+    let phaseStartedAt = performance.now();
+    const phaseCompleted = (phase: ProductionStartupPhase) => {
+      const now = performance.now();
+      config.onStartupPhase?.(phase, Math.round(now - phaseStartedAt));
+      phaseStartedAt = now;
+    };
+
+    const pool = await createPostgresPool(config.databaseUrl, {
+      ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
+    });
+
+    acquiredPool = pool;
     const state = new PostgresPlatformState(pool, {
       preparedTokenProof: config.drivers.tokenService?.postgresCurrentProof,
     });
@@ -322,13 +333,20 @@ export async function composeProduction(
     controller.selectDriver("secret", secretDriver.id);
     controller.registerDriver(channelDriver);
     controller.selectDriver("channel", channelDriver.id);
-    if (protectedDriver !== undefined) {
+    if (packagedGatewayRegistration !== undefined) {
+      installPackagedGatewayRegistration(controller, packagedGatewayRegistration, {
+        sandbox: sandboxDriver,
+        gateway: credentialGatewayDriver,
+        protectedOwner: protectedDriver,
+        proxy: config.drivers.proxyDriver,
+      });
+    } else if (protectedDriver !== undefined) {
       controller.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
     } else if (sandboxDriver !== undefined) {
       controller.registerDriver(sandboxDriver);
       controller.selectDriver("sandbox", sandboxDriver.id);
     }
-    if (credentialGatewayDriver !== undefined) {
+    if (credentialGatewayDriver !== undefined && packagedGatewayRegistration === undefined) {
       controller.registerDriver(credentialGatewayDriver);
       controller.selectDriver("credential_gateway", credentialGatewayDriver.id);
     }
@@ -427,7 +445,10 @@ export async function composeProduction(
     return app;
   } catch (error) {
     // Preserve the startup failure after attempting each cleanup.
-    await close({ close: () => pool.end() }).catch(() => undefined);
+    const pool = acquiredPool;
+    await close(pool === undefined ? undefined : { close: () => pool.end() }).catch(
+      () => undefined,
+    );
     throw error;
   }
 }

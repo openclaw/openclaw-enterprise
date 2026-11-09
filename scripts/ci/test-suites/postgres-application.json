@@ -18,10 +18,22 @@
     "tests/integration/postgres-native-iam-policy-barrier.test.mjs",
     "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
     "tests/integration/postgres-worker-harness-exposure.test.mjs",
+    "tests/integration/protected-driver-registration.test.ts",
     "tests/integration/auth-maintain.test.mjs",
     "tests/integration/occ-metrics.test.mjs"
   ],
   "files": [
+    {
+      "path": "tests/integration/protected-driver-registration.test.ts",
+      "expectedTests": [
+        "one installed Driver owns both protected capabilities, lifecycle and verified release",
+        "OpenShell registration pairs its capabilities using only a Repo delivery resolver",
+        "repository scope changes invalidate the external Driver identity while a reload preserves it",
+        "production API and Worker start and close their own exact registration",
+        "production startup and shutdown settle the acquired owner and database after failure",
+        "Worker revision resolution and withdrawal reread the stored Gateway owner"
+      ]
+    },
     {
       "path": "tests/integration/occ-metrics.test.mjs",
       "expectedTests": [
