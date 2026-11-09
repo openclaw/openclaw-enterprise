@@ -762,8 +762,8 @@ test("Agent sharing grants existing people exact discovery and native access, th
     [],
   );
   // Removing the sharing grant does not remove the independent operate grant.
-  // It still authorizes the browser status read. A completed stop has no active
-  // revision, so the response has no launch target or access mode.
+  // It still authorizes the browser status read. For this operate-only caller,
+  // a stopped Agent has no launch target or access mode.
   const retainedChat = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
