@@ -1,5 +1,8 @@
 # Enable OIDC sign-in
 
+For the proposed replacement of direct GitHub sign-in, see the
+[draft OIDC upgrade procedure](oidc-upgrade.md). That replacement is not yet implemented.
+
 Generic OpenID Connect (OIDC) sign-in lets enrolled accounts sign in through one
 identity provider (IdP) such as Keycloak, Okta, Microsoft Entra ID or Auth0. It works
 like [Google sign-in](google-sign-in.md): an Installation administrator attaches a

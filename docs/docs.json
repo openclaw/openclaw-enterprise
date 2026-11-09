@@ -794,6 +794,7 @@
             ],
             "hidden": [
               "guides/deploy/service-keys",
+              "guides/deploy/oidc-upgrade",
               "guides/deploy/local-operations",
               "flows/installation-profile-rendering",
               "guides/deploy/published-images",
