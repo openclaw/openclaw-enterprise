@@ -83,12 +83,13 @@ auth:
     tokenAuth: client_secret_post # or client_secret_basic
     displayName: Acme SSO # optional button label, up to 40 characters
     egressCidrs: [] # optional IPv4 CIDRs
-agentNativeAdmin:
-  enabled: false
 ```
 
-Rendering fails on the URL rules above, a shared Secret, an HTTP base URL, native
-administration, an unknown `tokenAuth`, a label over 40 characters, or an invalid CIDR;
+OIDC supports [native browser access](native-admin.md); enable it separately
+when users need Agent chat or administration.
+
+Rendering fails on the URL rules above, a shared Secret, an HTTP base URL,
+an unknown `tokenAuth`, a label over 40 characters, or an invalid CIDR;
 the API refuses the same values at startup. The chart adds the API-only NetworkPolicy
 `openclaw-enterprise-api-oidc-login-egress` on TCP 443. Empty `egressCidrs` allows any
 address except link-local `169.254.0.0/16`; list the IdP's ranges to narrow it.

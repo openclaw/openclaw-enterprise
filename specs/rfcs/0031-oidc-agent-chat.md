@@ -173,8 +173,9 @@ is presentation; native scope enforcement is the boundary.
 Expose only the non-secret browser-access capabilities needed by an ordinary
 Agent creator. Enabling access in a draft uses existing Configuration/Agent
 write and deploy permissions. Derive hosts, routes and authentication settings
-on the server. `operate` alone cannot configure, provision, deploy or stop an
-Agent. Do not broaden every guided-provisioning operation merely to enable UI.
+on the server. `operate` alone cannot configure, provision or deploy an Agent;
+its existing permission to stop an Agent is unchanged. Do not broaden every
+guided-provisioning operation merely to enable UI.
 
 Bind each socket permanently to its admitted OCE session, Principal, Agent,
 revision and access mode. Keep the existing 25-second renewal and 5-second

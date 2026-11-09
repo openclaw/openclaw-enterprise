@@ -121,6 +121,7 @@ test(
       databaseUrl,
       authBaseURL: "https://console.oce.localhost",
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
     };
     const email = "service-principal-admin@openclaw.local";
     const password = "service-principal-development-password";
@@ -143,8 +144,9 @@ test(
       configurationDriver: createTestConfigurationDriver(),
     });
     const session = await signInToControllerApp(app, { email, password });
-    const admin = (method, url, body) => injectJson(app, method, url, { session, body });
-    const withKey = (key, method, url, body) => injectJson(app, method, url, { key, body });
+    const host = new URL(config.authBaseURL).host;
+    const admin = (method, url, body) => injectJson(app, method, url, { session, body, host });
+    const withKey = (key, method, url, body) => injectJson(app, method, url, { key, body, host });
     const namespaceIds = [];
     for (const name of [
       `sp-team-${randomUUID().slice(0, 8)}`,

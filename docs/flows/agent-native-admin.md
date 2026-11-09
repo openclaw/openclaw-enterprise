@@ -16,13 +16,18 @@ The console checks exact-Agent `operate` or `administer` and returns its stable 
 - Source: `scripts/first-agent.mjs:nativeConfiguration`
 - Source: `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
-- Assumptions: The API has a valid controller session, `agentNativeAdmin.enabled` is true, an HTTPS Console origin and `agentNativeAdmin.domain` are configured, Better Auth derives their shared session cookie domain, and private Agent gateway routing can return a `ComputeDriver.getGatewayEndpoint` value.
+- Assumptions: A valid OCE session, enabled `agentNativeAdmin`, configured HTTPS Console origin and Agent domain with a derived shared cookie domain. Compute supplies `getGatewayChatEndpoint` for chat or `getGatewayEndpoint` for administration.
 
 ## Flow
 
 ```mermaid
 graph TD
-  C0["Create Agent opts into Native admin UI"] --> C1["Authorize provisioning and reserve Agent identity"]
+  C0["Create Agent enables browser chat"] --> C1["Authorize provisioning and reserve Agent identity"]
+  C0 --> O1["Ordinary create: authorize Agent creation<br/>and Configuration update"]
+  O1 --> O2["Check generation and no Agent references<br/>then prepare origin and policy"]
+  O2 -->|refused| C3
+  O2 -->|valid| O3["Save Configuration and Agent together<br/>then deploy through normal workflow"]
+  O3 --> A
   C1 --> C2["Prepare exact origin and trusted-proxy policy"]
   C2 -->|conflicting policy or feature disabled| C3["Refuse before queueing work"]
   C2 -->|valid| C4["Save prepared plan, Configuration and first version"]
@@ -76,16 +81,20 @@ graph TD
 `apps/controller/src/console/agents/create.mts:renderCreateAgent`
 `apps/controller/src/http/agents.ts:createAgentHandlers`
 `apps/controller/src/gateway/native-admin.ts:prepareNativeAdminConfiguration`
+`packages/occ/src/index.ts:createAgent`
 `packages/occ/src/index.ts:provisionAgent`
 
-The unchecked checkbox requires Installation and runtime support. It sends
-`nativeAdmin: true`. After authorization,
-provisioning reserves an Agent ID. The HTTP adapter prepares Configuration from
-the configured public origin and Agent domain, never a browser-supplied origin.
-It merges the policy or refuses conflicts before queueing. The request fingerprint
-includes the preparation choice; retries reuse the saved plan and identity.
-The worker creates that Agent and deploys its initial Configuration through
-the normal provisioning lifecycle, without a later patch or second deployment.
+**Enable browser chat** sends `nativeAdmin: true`. The adapter derives the origin
+from Installation settings and refuses conflicting policy.
+
+Ordinary creation also sends `expectedConfigurationGeneration`. `createAgent`
+authorizes Agent creation and Configuration update, checks the generation and
+absence of Agent references, then prepares the new Agent's policy. It saves
+Configuration and Agent in one transaction. The caller deploys normally.
+
+Guided provisioning authorizes, reserves an Agent ID, and prepares policy before
+queueing. The request fingerprint includes this choice; retries reuse the saved
+plan and identity. The worker creates and deploys the Agent.
 
 ### 0a. Local first-Agent opts into native admin
 
@@ -104,15 +113,14 @@ An existing helper-owned name cannot change this selection.
 
 `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
 
-Agent detail reads `${path}/native-admin` only when the Agent permission answer
-allows `operate` or `administer`, or is unknown. Disabled or denied access stays hidden;
-other refusals explain why. Only `available` enables the header **Open chat** or **Open Agent UI** link for the selected mode, opening directly
-with `noopener noreferrer`. An audited `403` in the session owner’s tab
-`sessionStorage` suppresses reads until logout, sign-in, or a new tab. Changes to
-`activeRevisionId` or `desiredRuntimeState` refresh access, coalescing concurrent
-requests into one follow-up. Stopped and
-unsupported states offer **Open draft**. An unavailable deployment offers **View deployment**
-when a readable version exists. Other unavailable states keep Refresh access.
+Agent detail reads `${path}/native-admin` when `operate` or `administer` is allowed
+or unknown. Disabled/denied access stays hidden; other refusals explain why.
+Only `available` enables **Open chat** or **Open Agent UI**, with
+`noopener noreferrer`. An audited `403` in tab `sessionStorage` suppresses reads
+until logout, sign-in, or a new tab. `activeRevisionId` or `desiredRuntimeState`
+changes refresh access; concurrent requests coalesce into one follow-up.
+Stopped/unsupported states offer **Open draft**. Unavailable states offer
+**View deployment** for readable versions, otherwise **Refresh access**.
 
 The warning points administrators to OCE for durable configuration. Runtime
 managed-mode notices come from
@@ -143,7 +151,7 @@ After the authorization and existence checks above, enabled access requires a pu
 
 With a selected version, OCC derives its native target. Non-running Agents return `stopped` with host/origin; a newer exclusive replacement returns `unavailable`. Unsupported trusted-proxy auth, machine admin grants/device auto-approval, `controlUi.enabled`, exact `allowedOrigins`, or host-header/device-auth settings return `unsupported` with the target.
 
-Then the selected Compute Driver's `id` and `implementation` must match `revision.compute`. Selection changes do not migrate versions. A mismatch raises status `503 DEPENDENCY_UNAVAILABLE` before endpoint/key/transport. Matching ownership proceeds to endpoint validation; a missing or unclean private `wss:` endpoint returns `unsupported`. Only `available` carries `gatewayBase`, which `nativeAdminAvailabilityData` omits from browser responses.
+Compute `id` and `implementation` must match `revision.compute`; changing selection does not migrate versions. A mismatch raises `503 DEPENDENCY_UNAVAILABLE` before endpoint/key/transport. Chat selects `getGatewayChatEndpoint`, administration selects `getGatewayEndpoint`. Missing or unclean private `wss:` endpoints return `unsupported`; chat never falls back to administration. Only `available` carries `gatewayBase`, omitted from browser responses by `nativeAdminAvailabilityData`.
 
 ### 4. OCC derives the isolated Agent host
 

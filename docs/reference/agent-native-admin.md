@@ -15,18 +15,29 @@ sign-in still reject native access enablement. All providers use the same
 
 ## Enable during creation
 
-In **Create Agent**, select **Enable Native admin UI** for supported Dedicated
-provisioning. Unchecked by default, it requires Installation native admin
-enablement. API callers set `nativeAdmin: true` on
-`POST /namespaces/:namespaceId/agents/provision`.
+In **Create Agent**, select **Enable browser chat**. Unchecked by default, it
+requires Installation native access enablement and compatible gateway support.
+Ordinary Agent owners can use this option without Installation administration.
 
-Provisioning saves `controlUi.enabled`, the exact derived HTTPS origin (including
+API callers set `nativeAdmin: true` on `POST /namespaces/:namespaceId/agents`
+and supply `expectedConfigurationGeneration`. In addition to ordinary Agent
+creation permissions, this requires `update` on the selected Configuration,
+which must not be referenced by any Agent. OCC checks the generation, prepares
+the Configuration, and creates the Agent in one transaction. Deploy the Agent
+through the normal workflow after creation.
+
+Supported guided provisioning accepts `nativeAdmin: true` on
+`POST /namespaces/:namespaceId/agents/provision` and prepares the initial
+Configuration before queueing its deployment. Its existing provisioning
+permissions still apply.
+
+Both paths save `controlUi.enabled`, the exact derived HTTPS origin (including
 its port), `gateway.publicOrigin`, and trusted-proxy admin device approval in the
 initial Configuration. It preserves existing allowed origins, Secret bindings,
 and unrelated settings. Conflicting authentication modes, unsupported auth fields,
 disabled device authentication, and host-header origin fallback are refused.
-Retries retain the Agent identity and prepared Configuration. This option grants
-no Agent `administer` permission.
+Guided-provisioning retries retain the Agent identity and prepared Configuration.
+Browser preparation does not change the creator's Agent permissions.
 
 ## Requirements
 
@@ -36,8 +47,9 @@ no Agent `administer` permission.
 - Private gateway routing (enabled by default). [Prepare its prerequisites](../guides/deploy/workspace-routing.md#requirements) before installation. Helm rejects native admin when routing is disabled; the API needs each Agent's private route.
 - `OCC_AUTH_BASE_URL` set to the public OCC origin that serves the console, for example `https://console.oce.example.com`.
 - Private Agent gateway routing configured through [Gateway routing with Envoy](gateway-routing.md).
-- The Agent must be running with a selected version owned by the selected Compute Driver: both Driver ID and implementation must match the version. Its `ComputeDriver.getGatewayEndpoint` value must map from private `wss:` to private `https:`.
+- The Agent must be running with a selected version owned by the selected Compute Driver: both Driver ID and implementation must match the version. The [mode-specific endpoint](#agent-host-identity) must map from private `wss:` to private `https:`.
 - The native Agent configuration must keep the trusted-proxy `occ-workspace-files` identity with `operator.admin`, enable native `controlUi`, allow the derived Agent origin, and enable trusted-proxy device auto-approval. The machine identity grant supplies admin authority; device auto-approval can stay limited to read/write. The support check rejects token auth, disabled device auth, and host-header origin fallback.
+- Chat additionally requires `gateway.auth.trustedProxy.requiredHeaders` to include `x-openclaw-scopes` in the saved Configuration and a runtime that enforces the [chat authority ceiling](#native-authority-and-drift). Preserve other required headers when adding it.
 
 Local development uses the existing loopback HTTPS proxy for Console sessions in
 Compose and Kubernetes-only profiles. Compose with Kubernetes Compute and
@@ -102,13 +114,19 @@ https://agent-<opaque-hash>.<agentNativeAdmin.domain>/
 
 The host hash is not reversible, so native-host admission resolves the host to the exact Agent using existing platform state. Unknown hosts, wrong suffixes, deleted Agents, and hosts that do not map to exactly one Agent fail closed. This lookup does not require a persistent registry or cache.
 
-The private upstream base remains the Compute Driver's existing gateway endpoint:
+Administration and workspace-file access use the Compute Driver's
+`getGatewayEndpoint`, typically:
 
 ```text
 wss://<private-host>/namespaces/<namespaceId>/agents/<agentId>
 ```
 
-For browser proxying, OCC maps that value to the same authority and Agent path over `https:`. Workspace-file access continues to use the original `wss:` endpoint. Native admin HTTP requests and WebSocket upgrades both pass through the OCC API process before reaching the private gateway. The HTTP proxy blocks native service-worker script requests and appends `worker-src 'none'` to proxied Content Security Policy so Agent content cannot register a browser service worker on the isolated Agent origin.
+Chat uses the optional [`getGatewayChatEndpoint`](drivers/compute.md#method-get-gateway-chat-endpoint),
+which must enforce the chat authority ceiling. Missing support returns
+`unsupported`; OCC never falls back to the administrative endpoint. Kubernetes
+uses a separate `/native-chat/` route on the existing managed HTTPRoute.
+
+For browser proxying, OCC maps the selected endpoint to the same authority and path over `https:`. Workspace-file access continues to use the original `wss:` endpoint. Native HTTP requests and WebSocket upgrades both pass through the OCC API process before reaching the private gateway. The HTTP proxy blocks native service-worker script requests and appends `worker-src 'none'` to proxied Content Security Policy so Agent content cannot register a browser service worker on the isolated Agent origin.
 
 ## Shared session boundary
 
