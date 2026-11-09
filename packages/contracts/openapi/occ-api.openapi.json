@@ -15601,7 +15601,7 @@
                       "properties": {
                         "capabilities": {
                           "additionalProperties": false,
-                          "description": "The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It omits nativeAdmin and agentProvisioning, which apply only to guided provisioning and need Installation administration.",
+                          "description": "The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It includes browser-access availability and omits agentProvisioning, which needs Installation administration.",
                           "properties": {
                             "credentialSources": {
                               "additionalProperties": false,
@@ -15685,6 +15685,7 @@
                               "required": ["types"],
                               "type": "object"
                             },
+                            "nativeAdmin": { "const": true, "type": "boolean" },
                             "nativeWorkers": {
                               "additionalProperties": false,
                               "description": "Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from.",
@@ -16562,6 +16563,11 @@
                       { "const": "dedicated", "type": "string" }
                     ]
                   },
+                  "expectedConfigurationGeneration": {
+                    "maximum": 9007199254740991,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
                   "gatewayManagedMode": {
                     "description": "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
                     "type": "boolean"
@@ -16694,6 +16700,10 @@
                     "minLength": 1,
                     "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
                     "type": "string"
+                  },
+                  "nativeAdmin": {
+                    "description": "Enable Agent browser access with server-derived settings. Requires Configuration update permission, expectedConfigurationGeneration, and an unreferenced Configuration. Chat requires Agent operate; full administration requires Agent administer.",
+                    "type": "boolean"
                   },
                   "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                   "plugins": { "$ref": "#/components/schemas/def-6" },
@@ -27238,7 +27248,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/native-admin": {
       "get": {
-        "description": "Requires a human session with administer permission on the exact Agent. Service API keys cannot launch or inspect native admin UI access.",
+        "description": "Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Service API keys cannot launch or inspect native admin UI access.",
         "operationId": "getAgentNativeAdmin",
         "parameters": [
           {
@@ -27288,6 +27298,7 @@
                       "properties": {
                         "activeRevisionId": { "type": "string" },
                         "host": { "type": "string" },
+                        "mode": { "enum": ["admin", "chat"], "type": "string" },
                         "origin": { "format": "uri", "type": "string" },
                         "status": {
                           "enum": [
@@ -27361,7 +27372,18 @@
         "summary": "Resolve native admin UI launch availability for one Agent",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+          {
+            "action": "operate",
+            "condition": "native_chat",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "administer",
+            "condition": "native_admin_alternative",
+            "resourceKind": "agent",
+            "scope": "requested"
+          }
         ]
       }
     },
@@ -43473,7 +43495,7 @@
     },
     "/native-admin/return/{agentKey}": {
       "get": {
-        "description": "Requires a human session with administer permission on the exact Agent. Unknown and inaccessible Agents both return 404. This lookup does not launch or start the Agent.",
+        "description": "Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Unknown and inaccessible Agents both return 404. This lookup does not launch or start the Agent.",
         "operationId": "resolveAgentNativeAdminReturn",
         "parameters": [
           {
@@ -43594,7 +43616,18 @@
         "summary": "Resolve an authorized Agent from a copied native chat link",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+          {
+            "action": "operate",
+            "condition": "native_chat",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "administer",
+            "condition": "native_admin_alternative",
+            "resourceKind": "agent",
+            "scope": "requested"
+          }
         ]
       }
     },

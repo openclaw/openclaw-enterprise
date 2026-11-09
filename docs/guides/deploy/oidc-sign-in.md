@@ -18,7 +18,9 @@ together with GitHub and Google. One issuer is supported per Installation.
 
 - Everything the [GitHub profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
   requires: one serving controller, PostgreSQL State, native IAM, one canonical HTTPS
-  Console origin, and `agentNativeAdmin.enabled: false`.
+  Console origin, and an Agent DNS suffix under the same non-public domain.
+  OIDC can enable [native chat and administration](native-admin.md); the existing
+  `operate` and `administer` permissions select access.
 - A controller image that includes OIDC sign-in.
   [Build a compatible image](production-installation.md#build-and-publish-production-images).
 - An IdP that serves its issuer, authorization, token and JWKS URLs over HTTPS on port

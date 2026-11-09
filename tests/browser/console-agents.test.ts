@@ -2686,12 +2686,10 @@ test("Create Agent offers native admin only on an enabled installation and submi
     development: { enabled: false },
     originHost: "console.example.test",
     publicOrigin: true,
-    authCookieDomain: "example.test",
     authSecureCookies: true,
     nativeAdmin: {
       enabled: true,
       domain: "agents.example.test",
-      sharedCookieDomain: "example.test",
     },
     nativeAdminGatewayApiKey: async () => "synthetic-native-admin-gateway-key",
     agentProvisioning: true,

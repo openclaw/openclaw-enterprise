@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: kevinlin-openai
 ---
 

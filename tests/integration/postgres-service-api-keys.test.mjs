@@ -37,9 +37,10 @@ test(
       pool,
       installationId,
       mode: "development",
-      baseURL: "http://127.0.0.1",
+      baseURL: "https://console.oce.localhost",
+      agentDomain: "agents.oce.localhost",
       secret: `storage-test-${randomUUID()}`,
-      secureCookies: false,
+      secureCookies: true,
     };
     const issuer = await createPostgresControllerAuth(options);
     const verifier = await createPostgresControllerAuth(options);
@@ -118,7 +119,7 @@ test(
       mode: "development",
       host: "127.0.0.1",
       databaseUrl,
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL: "https://console.oce.localhost",
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
     };
     const email = "service-principal-admin@openclaw.local";

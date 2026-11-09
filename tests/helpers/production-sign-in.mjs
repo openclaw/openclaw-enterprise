@@ -66,7 +66,7 @@ export function memoryLogger() {
 }
 
 export const consoleOrigin = "https://console.oce.example.internal";
-export const sessionCookieName = "__Host-openclaw_occ.session_token";
+export const sessionCookieName = "__Secure-openclaw_occ_shared.session_token";
 const gatewayApiKeyPath = "/etc/openclaw/gateway-api-key/key";
 const secretRef = (name, key) => ({ secretKeyRef: { name, key } });
 
@@ -80,7 +80,6 @@ export const defaultInstallSettings = Object.freeze({
   OCC_AUTH_BASE_URL: consoleOrigin,
   OCC_AGENT_NATIVE_ADMIN_ENABLED: "true",
   OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
-  OCC_AUTH_COOKIE_DOMAIN: "oce.example.internal",
   OCC_GATEWAY_API_KEY_PATH: gatewayApiKeyPath,
 });
 
@@ -101,6 +100,7 @@ export function githubUpgradeSettings(recoveryUserId) {
     OCC_AUTH_GITHUB_CLIENT_SECRET: secretRef("occ-github-login", "client-secret"),
     OCC_AUTH_GITHUB_RECOVERY_USER_ID: recoveryUserId,
     OCC_AGENT_NATIVE_ADMIN_ENABLED: "false",
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
     OCC_GATEWAY_API_KEY_PATH: gatewayApiKeyPath,
   });
 }
@@ -131,6 +131,7 @@ export function googleUpgradeSettings(recoveryUserId, allowedDomains = []) {
       : { OCC_AUTH_GOOGLE_ALLOWED_DOMAINS: allowedDomains.join(",") }),
     OCC_AUTH_GITHUB_RECOVERY_USER_ID: recoveryUserId,
     OCC_AGENT_NATIVE_ADMIN_ENABLED: "false",
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
     OCC_GATEWAY_API_KEY_PATH: gatewayApiKeyPath,
   });
 }
@@ -175,6 +176,7 @@ export function oidcUpgradeSettings(recoveryUserId, issuer = fixtureOidcIssuer, 
     ...(extra.displayName === undefined ? {} : { OCC_AUTH_OIDC_DISPLAY_NAME: extra.displayName }),
     OCC_AUTH_GITHUB_RECOVERY_USER_ID: recoveryUserId,
     OCC_AGENT_NATIVE_ADMIN_ENABLED: "false",
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
     OCC_GATEWAY_API_KEY_PATH: gatewayApiKeyPath,
   });
 }
@@ -230,15 +232,10 @@ export async function productionSignInConfiguration(
     ...(environment.OCC_GATEWAY_API_KEY_PATH === undefined ? {} : { gatewayApiKeyPath: keyFile }),
     ...humanLogin,
     ...(clientAddress === undefined ? {} : { clientAddress }),
-    ...(nativeAdminEnabled
-      ? {
-          nativeAdmin: {
-            enabled: true,
-            domain: environment.OCC_AGENT_NATIVE_ADMIN_DOMAIN,
-            sharedCookieDomain: environment.OCC_AUTH_COOKIE_DOMAIN,
-          },
-        }
-      : {}),
+    nativeAdmin: {
+      enabled: nativeAdminEnabled,
+      domain: environment.OCC_AGENT_NATIVE_ADMIN_DOMAIN,
+    },
     ...(logger === undefined ? {} : { logger }),
     ...(metrics === undefined ? {} : { metrics }),
     ...(passwordSlowLaneFloors === undefined ? {} : { passwordSlowLaneFloors }),
@@ -278,7 +275,7 @@ export function passwordSignIn(app, origin, { email, password }, remoteAddress =
     method: "POST",
     url: "/api/auth/sign-in/email",
     remoteAddress,
-    headers: { origin },
+    headers: { host: new URL(origin).host, origin },
     payload: { email, password },
   });
 }
@@ -288,7 +285,11 @@ export async function signedInHeaders(app, origin, account, remoteAddress) {
   if (response.statusCode !== 200) {
     throw new Error(`Password sign-in failed with ${response.statusCode}: ${response.body}`);
   }
-  return { cookie: cookieHeaderFromSetCookie(response.headers["set-cookie"]), origin };
+  return {
+    host: new URL(origin).host,
+    cookie: cookieHeaderFromSetCookie(response.headers["set-cookie"]),
+    origin,
+  };
 }
 
 export async function currentSession(app, cookie) {

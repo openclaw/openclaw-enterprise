@@ -1,6 +1,6 @@
 # Deploy native admin UI access
 
-Enable Agent native admin UI access only for a trusted-operator pilot. The feature lets exact Agent administrators open the stock native UI through OCC on an isolated per-Agent browser host using their ordinary OCE console session. For a local installation, use [local development](#local-development) below. For an existing cluster, start with [production installation](production-installation.md) and [private Agent workspace routing](workspace-routing.md).
+Enable native browser access for users with exact Agent `operate` or `administer` permission. They open chat or administration through OCC on an isolated per-Agent browser host using their ordinary OCE console session. For a local installation, use [local development](#local-development) below. For an existing cluster, start with [production installation](production-installation.md) and [private Agent workspace routing](workspace-routing.md).
 
 ## Local development
 
@@ -8,7 +8,7 @@ Local setup prepares private routing and the browser endpoint. When you
 [create an Agent in the console](../../reference/console/create-and-deploy.md),
 select **Enable Native admin UI** before **Create Agent**. After deployment,
 select **Open Agent UI** on the Agent detail page. Your account needs
-`administer` permission on that exact Agent.
+`operate` for chat or `administer` for administration on that exact Agent.
 
 The checkbox requires supported Dedicated provisioning and installation native
 admin access. For an existing Agent, follow [Configure each Agent](#configure-each-agent).
@@ -20,13 +20,13 @@ browser onboarding and reopening the same conversation.
 
 ## Production requirements
 
-- Use the supported password sign-in profile. Native admin cannot be enabled with GitHub, Google, or OIDC sign-in; see [authentication limits](../../reference/agent-native-admin.md#who-can-open-it).
+- Use password or OIDC sign-in. Native access remains unavailable with GitHub or Google; see [authentication limits](../../reference/agent-native-admin.md#who-can-open-it).
 - Private workspace routing already works for the target Agents. Private routing is enabled by default, but its controllers, GatewayClass, service-key Secret, and matching Installation settings must be ready. Helm rejects an explicit routing opt-out while native admin is enabled.
 - A public wildcard DNS name and HTTPS certificate route traffic to the OCC API Service, not to Envoy. Use a previously unused `agentNativeAdmin.domain` for the first pilot rollout; do not reuse a domain from prior native UI experiments because OCC does not evict already registered browser service workers.
 - The configured Agent domain is separate from the console host and does not include a wildcard, scheme, port, or path.
-- The configured `agentNativeAdmin.sharedCookieDomain` is the shared OCE session cookie parent domain. The console host and Agent domain must both be inside it on DNS-label boundaries, for example `console.oce.example.com`, `agents.oce.example.com`, and cookie domain `oce.example.com`. All matching subdomains that can receive the OCE session cookie must be trusted OCE ingress endpoints.
+- Configure HTTPS Console and Agent DNS hosts under a common non-public suffix. OCC derives the shared session cookie domain; for `console.oce.example.com` and `agents.oce.example.com`, it is `oce.example.com`. Every host that receives this cookie must be a trusted OCE ingress endpoint. The Agent suffix is required even when native access is disabled.
 - Each pilot Agent uses native trusted-proxy authentication with `occ-workspace-files` granted `operator.admin`, native `controlUi.enabled: true`, the derived Agent origin in `controlUi.allowedOrigins`, and trusted-proxy device auto-approval.
-- Operators who use the console have exact Agent `administer` permission.
+- Users have exact Agent `operate` for chat or `administer` for administration. A runtime must enforce the narrow chat scopes before chat-only access is available.
 
 <a id="steps"></a>
 
@@ -42,7 +42,6 @@ gatewayRouting:
 agentNativeAdmin:
   enabled: true
   domain: agents.oce.example.com
-  sharedCookieDomain: oce.example.com
 ```
 
 Expose the API Service through your existing public ingress layer. The chart does not create this route. This example shows the required shape; adapt the Ingress class, certificate, and selectors to your cluster:
@@ -113,18 +112,13 @@ Verify Helm passes these API environment variables:
 ```text
 OCC_AGENT_NATIVE_ADMIN_ENABLED=true
 OCC_AGENT_NATIVE_ADMIN_DOMAIN=agents.oce.example.com
-OCC_AUTH_COOKIE_DOMAIN=oce.example.com
 ```
 
-Verify that the Better Auth session cookie is emitted once at the shared domain
-with `Secure`, `HttpOnly`, and the configured `SameSite` behavior. On HTTPS,
-the shared cookie name is `__Secure-openclaw_occ_shared.session_token`; it cannot
-use a host-only `__Host-` prefix because it has a `Domain` attribute. Sign in
-again after changing an existing installation to the shared-cookie scope so OCC
-can clear old host-only `openclaw_occ` and `openclaw_occ_shared` session-cookie
-names before testing Agent hosts. If `agentNativeAdmin.enabled` is false, OCC
-ignores the shared cookie-domain value and keeps the legacy host-only
-`openclaw_occ` session cookie behavior.
+Verify that the session cookie is emitted once at the derived domain as
+`__Secure-openclaw_occ_shared.session_token`, with `Secure`, `HttpOnly`, and
+the configured `SameSite` behavior. Sign-in and sign-out clear known prior cookie
+names at the current domain and host-only scope. They cannot clear an unknown
+historical cookie domain. See [shared sessions](../../reference/authentication.md#native-admin-shared-sessions).
 
 Kubernetes Compute renders baseline gateway trust from Installation settings.
 Native admin availability still checks the explicit Agent policy below; keep
@@ -194,7 +188,7 @@ may try the Agent hostname on port 8081 and report a refused connection.
 
 Provision a wildcard HTTPS certificate and DNS for a separate preview domain,
 for example `*.previews.example.net`. This domain must be outside
-`agentNativeAdmin.sharedCookieDomain`; it must not receive OCE session cookies.
+the derived shared cookie domain; it must not receive OCE session cookies.
 Keep it to 214 characters or fewer so each `agent-<32 hex>.` hostname fits.
 Store the wildcard certificate in a TLS Secret in the Helm release namespace.
 Enable a separate Envoy listener with explicit public ingress peers:
@@ -264,12 +258,12 @@ Full runtime proof still requires a real browser test that loads native assets t
 
 | Symptom                                             | Check                                                                                                                                                                                  |
 | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Helm render fails                                   | `agentNativeAdmin.enabled` requires `gatewayRouting.enabled`, a DNS-only `agentNativeAdmin.domain`, and a valid `agentNativeAdmin.sharedCookieDomain` parent.                          |
+| Helm render fails                                   | Native access requires private gateway routing. All browser sessions require HTTPS and an Agent DNS suffix sharing a non-public suffix with the Console.                               |
 | An Agent root or chat link opens the console        | Sign in if prompted, then open chat from the Agent detail page. The link does not reopen the original chat session. A link that cannot be resolved lands on Agents with a notice.      |
-| Helm render fails on `auth.baseUrl`                 | With native admin, `auth.baseUrl` must be HTTPS and its host inside `agentNativeAdmin.sharedCookieDomain`.                                                                             |
-| API startup fails with `AUTH_BASE_URL_INVALID`      | `auth.baseUrl` is an HTTPS origin whose host is inside `agentNativeAdmin.sharedCookieDomain`, which must not be a public suffix. Better Auth checks these first.                       |
+| Helm render fails on `auth.baseUrl`                 | `auth.baseUrl` must use HTTPS; Console and Agent hosts must share a non-public DNS suffix.                                                                                             |
+| API startup fails with `AUTH_BASE_URL_INVALID`      | Check that Console and Agent DNS hosts share a non-public suffix. IP addresses and missing Agent domains are refused.                                                                  |
 | API startup fails with `AUTH_SECRET_INVALID`        | The `auth.secretKey` value in the `auth.secretName` Secret has at least 32 characters.                                                                                                 |
-| API startup fails with `AGENT_NATIVE_ADMIN_INVALID` | `agentNativeAdmin.domain`, `agentNativeAdmin.sharedCookieDomain`, `OCC_AUTH_BASE_URL`, cookie-scope compatibility, auth secret length, and gateway routing.                            |
+| API startup fails with `AGENT_NATIVE_ADMIN_INVALID` | Native access enablement, Agent domain, public origin and private gateway routing.                                                                                                     |
 | Console panel is hidden                             | Feature enablement and exact Agent `administer` permission.                                                                                                                            |
 | Panel or status API reports `stopped`               | A stopped Agent with no selected version returns only `data.status: "stopped"`, without an origin. Deploy the Agent if native admin access is intended.                                |
 | Panel or status API reports `unavailable`           | No version is serving: there is no selected version yet, or a newer dedicated deployment stopped it and is starting or failed. Check Deployment activity, fix a failure, and redeploy. |

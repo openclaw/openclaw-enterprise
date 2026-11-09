@@ -123,9 +123,9 @@ async function transportOwner(t, { authorize, append }) {
       async resolveAgentReference(predicate) {
         return predicate(agent) ? agent : undefined;
       },
-      getAdministerableActiveAgentRevision() {
+      getBrowserAccessibleActiveAgentRevision() {
         entered.resolve();
-        return authorize({ agent, revision, denied });
+        return authorize({ agent, revision, denied, mode: "admin" });
       },
       selectedDriver: () => ({
         id: "compute_test",
@@ -164,7 +164,7 @@ async function transportOwner(t, { authorize, append }) {
         },
       },
     },
-    nativeAdmin: { enabled: true, domain, sharedCookieDomain: "example.com" },
+    nativeAdmin: { enabled: true, domain },
     nativeAdminGatewayApiKey: async () => "transport-fixture-key",
     webSocketLeaseIntervalMs: 50,
     auditSink: {
@@ -265,7 +265,7 @@ test(
     let refuseLease = false;
     const owner = await transportOwner(t, {
       authorize: ({ agent, revision, denied }) =>
-        refuseLease ? Promise.reject(denied) : Promise.resolve({ agent, revision }),
+        refuseLease ? Promise.reject(denied) : Promise.resolve({ agent, revision, mode: "admin" }),
       append: () =>
         audit.promise.then(() => {
           auditSettled = true;
@@ -486,8 +486,11 @@ function denialOwner(t, overrides = {}) {
       async resolveAgentReference(predicate) {
         return predicate(agent) ? agent : undefined;
       },
-      getAdministerableActiveAgentRevision() {
-        return overrides.authorize?.({ agent, revision, denied }) ?? Promise.reject(denied);
+      getBrowserAccessibleActiveAgentRevision() {
+        return (
+          overrides.authorize?.({ agent, revision, denied, mode: "admin" }) ??
+          Promise.reject(denied)
+        );
       },
       selectedDriver: () => ({
         id: "compute_test",
@@ -526,7 +529,7 @@ function denialOwner(t, overrides = {}) {
         },
       },
     },
-    nativeAdmin: { enabled: true, domain, sharedCookieDomain: "example.com" },
+    nativeAdmin: { enabled: true, domain },
     nativeAdminGatewayApiKey: overrides.transport ?? (async () => "synthetic"),
     webSocketLeaseIntervalMs: undefined,
     auditSink: {
@@ -1016,7 +1019,7 @@ test("a client reset during a pending native-admin denial still records the deni
         async resolveAgentReference(predicate) {
           return predicate(agent) ? agent : undefined;
         },
-        getAdministerableActiveAgentRevision() {
+        getBrowserAccessibleActiveAgentRevision() {
           admissionEntered = true;
           return admissionGate;
         },
@@ -1059,7 +1062,7 @@ test("a client reset during a pending native-admin denial still records the deni
         },
       },
     },
-    nativeAdmin: { enabled: true, domain, sharedCookieDomain: "example.com" },
+    nativeAdmin: { enabled: true, domain },
     nativeAdminGatewayApiKey: "gateway-test-key",
     webSocketLeaseIntervalMs: undefined,
     auditSink: {
@@ -1136,7 +1139,7 @@ for (const phase of ["admission", "gateway key"]) {
       });
     };
     const revision = nativeAdminRevision(origin);
-    const selection = { agent, revision };
+    const selection = { agent, revision, mode: "admin" };
     const crashes = [];
     const onUncaught = (error) => {
       crashes.push(error);
@@ -1157,7 +1160,7 @@ for (const phase of ["admission", "gateway key"]) {
           async resolveAgentReference(predicate) {
             return predicate(agent) ? agent : undefined;
           },
-          getAdministerableActiveAgentRevision() {
+          getBrowserAccessibleActiveAgentRevision() {
             return phase === "admission" ? gated("admission", selection) : selection;
           },
           selectedDriver() {
@@ -1206,7 +1209,7 @@ for (const phase of ["admission", "gateway key"]) {
           },
         },
       },
-      nativeAdmin: { enabled: true, domain, sharedCookieDomain: "example.com" },
+      nativeAdmin: { enabled: true, domain },
       nativeAdminGatewayApiKey() {
         return gated("gateway key", "gateway-test-key");
       },

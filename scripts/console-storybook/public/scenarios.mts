@@ -53,7 +53,8 @@ import { signInScenarios } from "./scenario-groups/sign-in.mts";
 type FixtureRule = Parameters<typeof createFixtureFetch>[0][number];
 type AgentPermissions = NonNullable<Parameters<typeof agentSaveGap>[0]>;
 // These historical four-flag responses intentionally omit the newer permission fields.
-type PermissionSnapshot = Pick<AgentPermissions, "update" | "deploy" | "operate" | "delete">;
+type PermissionSnapshot = Pick<AgentPermissions, "update" | "deploy" | "operate" | "delete"> &
+  Partial<AgentPermissions>;
 type AuthoredRule = Omit<FixtureRule, "data"> &
   (
     | { data?: never }
@@ -85,6 +86,7 @@ type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
     };
     nativeAdmin?: "available" | "stopped" | "unsupported" | "denied";
     nativeAdminUrl?: string;
+    nativeAdminMode?: "admin" | "chat";
     observabilityUrl?: string;
     observabilityDenied?: boolean;
     readOnlyPermissionSummary?: boolean;
@@ -1273,6 +1275,36 @@ const authoredScenarios = {
   ...credentialsScenarios({ draft, reservedConfigurationWrite }),
   ...agentDetailScenarios.saveAccess,
   ...credentialsRecoveryScenarios({ draft }),
+  nativeOperatorChat: {
+    group: "Components/Native admin",
+    name: "Operator chat",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "available",
+    nativeAdminMode: "chat",
+    observabilityDenied: true,
+    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    agentPermissionSummary: {
+      update: false,
+      deploy: false,
+      operate: true,
+      delete: false,
+      administer: false,
+      configurationRead: true,
+      configurationUpdate: false,
+      configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: [],
+      agentSourcesOperate: false,
+      sandboxPolicyRead: false,
+      readLogs: false,
+    },
+    description:
+      "An operator opens chat through the Agent’s restricted browser route. The card explains the shared conversations without promising administrative access. API responses are simulated.",
+    steps: [
+      "Open chat and confirm the simulated native page opens in another tab.",
+      "Return to the Agent and refresh access.",
+    ],
+  } satisfies LocalScenario,
   nativeAdmin: {
     group: "Components/Native admin",
     name: "Available",

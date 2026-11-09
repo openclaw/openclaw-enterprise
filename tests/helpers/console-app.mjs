@@ -241,13 +241,14 @@ export async function createConsoleAppFixture(t, options = {}) {
   const appPort = await reservePort();
   t.after(appPort.release);
   const port = appPort.port;
-  const originHost = options.originHost ?? "127.0.0.1";
-  const browserReservation = options.https === true ? await reservePort() : null;
+  const originHost = options.originHost ?? "console.oce.localhost";
+  const https = options.https !== false;
+  const browserReservation = https ? await reservePort() : null;
   if (browserReservation !== null) {
     t.after(browserReservation.release);
   }
   const browserPort = browserReservation?.port ?? port;
-  const origin = `${options.https === true ? "https" : "http"}://${originHost}:${browserPort}`;
+  const origin = `${https ? "https" : "http"}://${originHost}:${browserPort}`;
   const browserArgs = [];
   const transportOrigin = `http://127.0.0.1:${port}`;
   const { rawRequest, fetchThroughLoopback } = createConsoleFixtureTransport(
@@ -271,11 +272,9 @@ export async function createConsoleAppFixture(t, options = {}) {
     installationId,
     mode: authMode,
     baseURL: authBaseURL,
+    agentDomain: options.nativeAdmin?.domain ?? `agents.${new URL(authBaseURL).hostname}`,
     secret: `console-test-secret-${randomUUID()}-${randomUUID()}`,
     memoryDatabase,
-    ...(options.authCookieDomain === undefined
-      ? {}
-      : { sharedCookieDomain: options.authCookieDomain }),
     ...(options.authSecureCookies === undefined
       ? {}
       : { secureCookies: options.authSecureCookies }),
@@ -402,7 +401,14 @@ export async function createConsoleAppFixture(t, options = {}) {
     auth,
     iamDriver,
     auditSink,
-    development: { enabled: true, installationId, ...options.development },
+    development: {
+      enabled: true,
+      installationId,
+      ...(options.development?.enabled === false
+        ? {}
+        : { browserOrigin: new URL(authBaseURL).origin }),
+      ...options.development,
+    },
     computeDriver:
       options.computeDriver ??
       computeDriver({
@@ -522,7 +528,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   t.after(close);
   const fixtureResponse = createFixtureResponse(app.getSchemas());
 
-  if (options.https === true) {
+  if (https) {
     // Exercise browser Secure/Domain cookies through a real TLS ingress to the HTTP API.
     const ingress = await startHttpsIngress({
       tls: options.ingressTLS,

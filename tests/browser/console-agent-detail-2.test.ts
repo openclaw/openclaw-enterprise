@@ -181,8 +181,8 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   );
   assert.equal(initiallyStopped.status, 200);
   assert.deepEqual(initiallyStopped.data, { status: "stopped" });
-  await page.getByText("Start this Agent before opening its native admin UI.").waitFor();
-  await expectNativeAdminUnavailable(page, "Start this Agent before opening its native admin UI.");
+  await page.getByText("Start this Agent before opening its browser UI.").waitFor();
+  await expectNativeAdminUnavailable(page, "Start this Agent before opening its browser UI.");
 
   // A real deployment requests running before reconciliation selects the admitted revision.
   const pending = await fixture.deployAgent(namespace.id, agent.id);
@@ -195,12 +195,12 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await page.getByRole("button", { name: "Refresh access" }).click();
   await page
     .getByText(
-      "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
+      "Browser access is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
     )
     .waitFor({ timeout: 5_000 });
   await expectNativeAdminUnavailable(
     page,
-    "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
+    "Browser access is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
   );
 
   let active = { revision: pending };
@@ -223,7 +223,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await page.locator(".native-admin-access").waitFor();
   await page
     .getByText(
-      "Native admin UI is not enabled in this Agent’s current version. Someone who can edit its Configuration can enable it (see the native admin UI guide) and deploy a new version.",
+      "Browser access is not supported by this Agent’s current version. Ask someone who can edit its Configuration to check browser access and Compute support, then deploy a supported version.",
     )
     .waitFor();
   assert.equal(
@@ -235,6 +235,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     namespaceId: namespace.id,
     resourceId: agent.id,
   });
+  restrict(fixture.policy, "operate", "agent", { namespaceId: namespace.id, resourceId: agent.id });
   await page.reload();
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
   await expectNativeAdminHidden(page);
@@ -267,7 +268,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await page.reload();
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
   await page.locator(".native-admin-access").waitFor();
-  await page.getByText("Start this Agent before opening its native admin UI.").waitFor();
+  await page.getByText("Start this Agent before opening its browser UI.").waitFor();
   assert.equal(
     await page.getByRole("link", { name: "Open Agent UI", exact: true }).isVisible(),
     false,
@@ -294,6 +295,24 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.equal(access.bootstrapUrl, undefined);
   assert.equal(new URL(access.url).origin, access.origin);
   assert.match(new URL(access.url).hostname, new RegExp(`\\.${nativeDomain}$`));
+
+  // Removing administration leaves an existing operator with chat, including on a fresh page.
+  restrict(fixture.policy, "administer", "agent", {
+    namespaceId: namespace.id,
+    resourceId: agent.id,
+  });
+  await page.reload();
+  await page.getByRole("link", { name: "Open chat", exact: true }).waitFor();
+  assert.equal(await page.locator("#native-admin-warning").isVisible(), false);
+  assert.equal(await page.getByRole("link", { name: "Open Agent UI", exact: true }).count(), 0);
+  const operatorAccess = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+  );
+  assert.equal(operatorAccess.data.mode, "chat");
+  fixture.policy.restrictions.length = 0;
+  await page.reload();
+  await page.getByRole("link", { name: "Open Agent UI", exact: true }).waitFor();
 
   // Viewing an older configuration snapshot must still open the current active gateway.
   await page.getByLabel("Viewing version").selectOption(historicalRevisionId);
@@ -417,7 +436,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   const card = page.locator(".native-admin-access");
   await card
     .getByText(
-      "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
+      "Browser access is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
     )
     .waitFor();
   assert.equal(pathRequests(requests, "GET", nativeAdminPath).length, 1);
@@ -429,7 +448,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   await expectDeploymentOutcome(page, "Completed", { folded: false });
   await card
     .getByText(
-      "Native admin UI is not enabled in this Agent’s current version. Someone who can edit its Configuration can enable it (see the native admin UI guide) and deploy a new version.",
+      "Browser access is not supported by this Agent’s current version. Ask someone who can edit its Configuration to check browser access and Compute support, then deploy a supported version.",
     )
     .waitFor();
   assert.equal(pathRequests(requests, "GET", nativeAdminPath).length, 2);

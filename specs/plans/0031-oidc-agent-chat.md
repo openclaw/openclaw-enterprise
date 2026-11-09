@@ -5,7 +5,7 @@ rfc: ../rfcs/0031-oidc-agent-chat.md
 # Implementation plan: OIDC sign-in through Agent chat
 
 - **ID:** RFC-0031
-- **Delivery status:** Planned
+- **Delivery status:** In progress
 - **Authority:** [OIDC sessions and operator chat](../rfcs/0031-oidc-agent-chat.md)
 - **Source baseline:** OCE `8b9b105b6398`; OpenClaw `513c12703ad9` from
   [the runtime pin](../../deploy/runtime/openclaw-source.json).
@@ -18,8 +18,8 @@ open chat, stream a real reply, stop a turn and reconnect. The implementation
 must distinguish `operate` chat from `administer` native administration.
 Automatic account creation and the RFC's other exclusions remain out of scope.
 
-This is a draft delivery plan for user review. No product changes, runtime
-tests, deployments or publication are authorized by this document alone.
+Implementation started after the user approved execution and the RFC was
+submitted for human review in PR #5136.
 
 ## Contract and source touchpoints
 
@@ -59,8 +59,8 @@ top-level contracts export. Update Driver contract checks and test adapters
 that implement the changed contract; do not make unsupported Drivers advertise
 chat support.
 
-Kubernetes Compute creates an additional private HTTPRoute for the same Agent
-Service. Use an exact base and segment-bounded prefix beneath a new disjoint
+Kubernetes Compute adds private chat rules to the existing managed HTTPRoute
+for the same Agent Service. Use an exact base and segment-bounded prefix beneath a new disjoint
 prefix, such as `/native-chat/namespaces/<namespaceId>/agents/<agentId>`.
 Administrative fallback must be impossible if that route is absent. Reuse
 service-key authentication, suffix validation, TLS trust and network isolation.
@@ -182,10 +182,16 @@ generation/checks and documentation checks for the eventual implementation.
 
 ## Delivery record
 
-Only source and documentation inspection has occurred. Cookie integration,
-scope enforcement, ordinary-owner UI setup and real IdP/model proof remain
-unimplemented and unverified. No current feature reference is changed by this
-draft. Review the RFC's shared-cookie tradeoff and action semantics before work.
+The working implementation includes automatic shared cookies, OIDC/native
+composition, exact-Agent access modes, restricted Compute routing, socket
+revalidation and ordinary-owner browser setup. Current behavior is documented
+in [Agent browser access](../../docs/reference/agent-native-admin.md) and
+[authentication](../../docs/reference/authentication.md).
+
+Real Keycloak browser sign-in and PostgreSQL session checks pass. Native runtime
+qualification, the combined IdP-to-Agent journey and independent review remain
+in progress. No authorized PingFederate test deployment is available; provider
+qualification remains unverified.
 
 ## Manual Notes
 
