@@ -30,7 +30,6 @@ import type { InstallationRuntimeDrivers } from "../../apps/controller/src/compo
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
@@ -368,6 +367,14 @@ async function repositoryGitJourney(
   const stopped: string[] = [];
   runtime.connectRouteStore(f.observerPool, recordTransport);
   let bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
+  const replaceRuntime = async () => {
+    await bound.close();
+    ({ runtime, sandbox, proxy, owner } = createRuntimeOwner());
+    runtime.connectRouteStore(f.observerPool, recordTransport);
+    bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
+    await runtime["running"];
+    middleware = openShellMiddlewareClient(t, port, tls.caBundle);
+  };
   t.after(() => bound.close());
   // The authority listens now. Release the hold before the first request: while both listen, the
   // kernel may hand a connection to the hold, which resets it.
@@ -1056,14 +1063,6 @@ async function repositoryGitJourney(
           ).rows[0];
         const route = await readRoute();
         assert.ok(route.worker_instance, "the original runtime committed its route ownership");
-        const replaceRuntime = async () => {
-          await bound.close();
-          ({ runtime, sandbox, proxy, owner } = createRuntimeOwner());
-          runtime.connectRouteStore(f.observerPool, recordTransport);
-          bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
-          await runtime["running"];
-          middleware = openShellMiddlewareClient(t, port, tls.caBundle);
-        };
         // Replace the actual runtime owner and listener, not only its worker loop. The
         // durable route remains owned by the departed process and must not be adopted.
         const approval = await f.state.read((v) =>
@@ -1487,10 +1486,7 @@ async function repositoryGitJourney(
           stopped,
           async restart() {
             await f.stop();
-            await runtime.close();
-            ({ runtime, sandbox, proxy, owner } = createRuntimeOwner());
-            runtime.connectRouteStore(f.observerPool, (event) => events.push(event));
-            await runtime.bindRepositoryGit(peer.prepared.protectedGit!);
+            await replaceRuntime();
             await start();
           },
         },
@@ -1816,10 +1812,7 @@ async function repositoryGitJourney(
       null,
       "the replacement must recover an unconfirmed detach",
     );
-    await runtime.close();
-    ({ runtime, sandbox, proxy, owner } = createRuntimeOwner());
-    runtime.connectRouteStore(f.observerPool, (event) => events.push(event));
-    await runtime.bindRepositoryGit(peer.prepared.protectedGit!);
+    await replaceRuntime();
     events.length = 0;
     await start();
     await waitForRevisionPass(
