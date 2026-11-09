@@ -85,6 +85,7 @@ type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
     };
     nativeAdmin?: "available" | "stopped" | "unsupported" | "denied";
     nativeAdminUrl?: string;
+    nativeReturnKey?: string;
     observabilityUrl?: string;
     observabilityDenied?: boolean;
     readOnlyPermissionSummary?: boolean;
@@ -1284,6 +1285,36 @@ const authoredScenarios = {
     steps: [
       "Check the selected version, completed deployment, and unverified live serving at desktop and phone widths.",
       "Open Deployment and expand Deployment details, then use Open Agent UI directly. Compare Denied and hidden: there is no launch or access warning there.",
+    ],
+  } satisfies LocalScenario,
+  nativeRecovery: {
+    group: "Components/Native admin",
+    name: "Unreadable Agent recovery",
+    path: `/console/#native-agent=${"a".repeat(32)}`,
+    emptyNamespaces: true,
+    deployed: true,
+    nativeAdmin: "available",
+    nativeReturnKey: "a".repeat(32),
+    description:
+      "An operator who can administer an Agent but cannot read its Namespace or details can still open its native admin UI. This preview uses simulated API data.",
+    steps: [
+      "Confirm that no Namespace or Agent details appear and that Open Agent UI is available.",
+      "Open the launch fixture, then return and use Refresh access to recheck authorization.",
+    ],
+  } satisfies LocalScenario,
+  nativeRecoveryDenied: {
+    group: "Components/Native admin",
+    name: "Recovery access revoked",
+    path: `/console/#native-agent=${"b".repeat(32)}`,
+    emptyNamespaces: true,
+    deployed: true,
+    nativeAdmin: "denied",
+    nativeReturnKey: "b".repeat(32),
+    description:
+      "A recovery link that resolves before administration access is revoked shows an explicit denied outcome and retry action without exposing Agent details. This preview uses simulated API data.",
+    steps: [
+      "Confirm that the page explains the changed access and does not show Open Agent UI.",
+      "Use Refresh access to repeat the authorization check without revealing Namespace or Agent data.",
     ],
   } satisfies LocalScenario,
   nativeStopped: {

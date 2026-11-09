@@ -30,7 +30,8 @@ graph TD
   B -->|Valid account and binding| D["Confirm session"]
   D -->|page intent| E["Authorize page reads"]
   D -->|Agent key| F["Resolve authorized Agent"]
-  F -->|allowed| E
+  F -->|Agent detail readable| E
+  F -->|administer only| I["Show native administration recovery"]
   F -->|unavailable| G["Select Agents"]
   G --> E
   E --> H["Render allowed page"]
@@ -110,9 +111,18 @@ A native Agent recovery link can supply a 32-character lowercase hexadecimal key
 in the console root fragment. `loadPage` removes the fragment before sign-in and
 retains it across a failed session check, and resolves it only after session
 confirmation with `GET /native-admin/return/:key`.
-A valid authorized response routes to ordinary Agent detail; failed or malformed
-responses open Agents, and a failed lookup says so once. The [native Agent host](../agent-native-admin.md) redirects
+A valid authorized response routes to ordinary Agent detail when the account can read it. An
+account with exact-Agent `administer` but no Agent read instead sees only the native administration
+availability and launch control; the console does not reveal Agent detail, whether or not the
+Namespace itself is readable. Failed or malformed responses open Agents, and a failed lookup
+says so once. The [native Agent host](../agent-native-admin.md) redirects
 a qualifying root or chat navigation here. Opening native chat still requires a separate user action.
+If that recovery view's session expires, sign-in retains the opaque key and resolves it again
+rather than trusting the prior result. A successful return also clears a same-session cached
+native-status denial before the independently authorized availability read. If that status read
+is denied, the recovery view explains that administration access changed and lets the operator
+retry after access is restored. The recovery state is tab-local: reload and Back clear it, so the
+operator must open the original native link again.
 `authError=<provider>` shows a generic, one-time error; with `authError=github`, an
 `authReason` of `membership` or `membership-unavailable` explains a GitHub
 [allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist)
@@ -130,9 +140,12 @@ CLI requests remain supported. The browser stores no credentials.
 
 `apps/controller/src/console/console.mts:loadPage` confirms the account and
 session binding before loading readable Namespaces or opening the requested
-page. Agent and Namespace reads then follow their usual authorization rules.
-An inaccessible resource remains unavailable. A foreground recheck of an open
-Agent also confirms the session before refreshing private reads.
+page. Agent and Namespace reads then follow their usual authorization rules; an
+inaccessible resource remains unavailable. The admitted native recovery destination
+is the exception to page rendering, not to authorization: it calls the existing
+exact-Agent native-admin status endpoint and shows no Namespace or Agent fields. A
+foreground recheck of an open Agent also confirms the session before refreshing
+private reads.
 When the Namespace read fails after the session resolved, the page offers **Sign
 out** beside **Retry**, so an account refused with `403` is not stranded.
 A session or Namespace read that does not reach the API (the browser is offline,
@@ -144,10 +157,12 @@ See the [parent flow](../platform-console.md#3-authorize-the-selected-page-resou
 ## Debugging and Verification
 
 The focused cases in `tests/browser/console.test.ts` exercise the console
-against controller sessions and resource reads, including a late startup observer
-after a native entry failure and during a pending session read. Their external provider exchange
-and recovery endpoint are modeled; they do not establish a deployed OAuth or
-native-gateway integration.
+against controller sessions and resource reads, including a late startup
+observer after a native entry failure and during a pending session read. The
+external-provider cases model their provider exchange, while the readable-Agent
+native-return case intercepts the return lookup. The restricted-account cases
+use the local Controller for return resolution and native-admin status. They do
+not establish a deployed OAuth or native-gateway integration.
 
 The registered case “a session reply missing its binding blocks private reads
 until Retry” in `tests/browser/console-refocus-focus.test.ts` checks that a
@@ -172,6 +187,7 @@ reads. After **Retry**, Namespace and Agent reads carry the confirmed binding.
 - 2026-11-04 12:29: Document recovery from a malformed Console session reply. (authoring-run/e5be3034-9c43-4cba-9ba7-e7e2f487f042 - 9f1dcbeb2361006e7bea52d0cee595d9616ed16a)
 
 - 2026-10-26 18:00: A Secrets page link's Secret ID survives sign-in. (2645)
+- 2026-10-25: Preserve an exact-Agent native administration recovery path when Namespace read is unavailable.
 
 - 2026-10-19 22:11: Document return to the requested page after session expiry. (authoring-run/e63eaa44-e02d-49aa-b1c6-4711bd49d919 - 332455338271720ef29c63e5e7fb209fa3da6ec2)
 
