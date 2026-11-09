@@ -7,7 +7,8 @@ last_verified: "2026-11-04"
 # Rehearse a populated controller return
 
 Use this local test to check whether the previous OpenClaw Control Plane (OCC)
-controller can serve a draft that the candidate saved. The test creates a new
+controller can serve a draft that the candidate saved after recovering an
+interrupted upgrade. The test creates a new
 installation and PostgreSQL instance, then uses the
 [local image upgrade command](../guides/deploy/local-k3d-image-upgrade.md)
 to change the controller image.
@@ -72,7 +73,23 @@ OCC_TEST_PRODUCTION_TUI_REHEARSAL=1 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/production-tui-k3d-real.test.mjs
 ```
 
-Require the rehearsal to pass without a skip. The archive taken before the upgrade
+Require the rehearsal to pass without a skip. During the forward upgrade, the
+test suspends the exact Helm client after observing its attempt-bound initializer
+Job. Kubernetes finishes the real initialization while Helm remains pending.
+The test terminates and reaps that client, checks the committed PostgreSQL
+history with the candidate's migrator, and runs the supported
+`--resume --recover-helm --migration-history-checked --recovery-reviewed` path.
+The baseline selects an unused documentation-range directory proxy; the candidate
+clears it. Recovery must first refuse the retained egress NetworkPolicy, then
+refuse the retained API environment entry. The fixture explicitly reconciles
+those two removals with UID/resource-version guards while writers remain stopped,
+then retries the same recovery command. Product recovery performs no deletion.
+Recovery must advance exactly one revision without replacing the completed
+initializer Job or Pod or changing the committed migration history. The test
+does not edit Helm storage or disable hooks. If Helm finishes before the
+interruption, the rehearsal fails rather than claiming recovery coverage.
+
+The archive taken before the upgrade
 must omit the candidate's acknowledged draft. The archive taken after the write
 must contain it. The previous controller must accept the restored migration
 history. After the return, both OCC components must use the restored database.
@@ -110,7 +127,10 @@ Inspect retained fixture resources after a failure. Set
 `OCC_TEST_PRODUCTION_TUI_KEEP=1` to retain fixture resources after a success.
 Remove the disposable cluster when you finish inspecting the evidence.
 
-A result applies only to the selected source and image pair. A historical
+A result applies only to the selected source and image pair. A pair with
+identical migration catalogs proves the real idempotent initialization and
+committed-history path, not a schema-changing migration. This draft-only
+rehearsal does not prove active Agent, model, or Slack continuity. A historical
 compatible pair does not qualify later schema changes or a deployment of current
 main. Recheck migration, restore and saved-configuration compatibility when
 selecting another pair; retain those limits with the evidence.

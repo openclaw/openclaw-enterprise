@@ -164,11 +164,11 @@ jobs:
               {"lane": "images-runtime-startup-2", "title": "Image Runtime Startup 2", "profile": "images", "timeout": 30, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup-3", "title": "Image Runtime Startup 3", "profile": "images", "timeout": 30, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
-              {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-network", "title": "k3d Network Isolation", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
-              {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-4vcpu-ubuntu-2404"},
+              {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-2vcpu-ubuntu-2404"},
               {"lane": "repository-credentials-container", "title": "Repository Credentials", "profile": "images", "timeout": 40, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "keycloak-oidc", "title": "Keycloak OIDC", "profile": "postgres", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"}
             ]
@@ -453,7 +453,9 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Set up CI tools
-        run: bash scripts/ci/setup-tools.sh k3d
+        uses: ./.github/actions/setup-ci-tools
+        with:
+          profile: k3d
       # Pull Docker Hub images through mirror.gcr.io without the runner's
       # Docker Hub sign-in (finding 973). This restarts the Engine, so it runs
       # before Buildx starts its builder container.

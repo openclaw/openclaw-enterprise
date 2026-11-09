@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
@@ -38,10 +38,16 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
-import { loadYaml } from "../helpers/qa-utils.mjs";
+import { loadYaml, yamlDocuments } from "../helpers/qa-utils.mjs";
 import { registerDispatchRestoreTests } from "../helpers/production-upgrade-dispatch-restore.ts";
 
 const execute = promisify(execFile);
+const helmTargetOverrides = [
+  "HELM_KUBEAPISERVER",
+  "HELM_KUBECAFILE",
+  "HELM_KUBETLS_SERVER_NAME",
+  "HELM_KUBEINSECURE_SKIP_TLS_VERIFY",
+];
 const readyCapability = { status: 200, body: '{"durableAdmissionVersion":1}' };
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const sourceRevision = (
@@ -108,12 +114,20 @@ const yqOr = (value, alternative) =>
 
 // Unless a case selects the real chart, a stand-in renders only what the startup
 // preflight reads: each controller container's image and Installation mount.
-async function standInChart(file, policy) {
+async function standInChart(
+  file,
+  policy,
+  recoveryHooks = false,
+  initializationResources,
+  ordinary = [],
+  installationCheck = false,
+) {
   const values = await yamlFile(file);
   const secretName = yqRaw(yqOr(values?.installation?.secretName, "occ-installation-startup"));
   const key = yqRaw(yqOr(values?.installation?.key, "installation.yaml"));
   const image = yqRaw(values?.images?.controller);
   const deployment = (component, placement) => ({
+    apiVersion: "apps/v1",
     kind: "Deployment",
     metadata: { name: "openclaw-enterprise-" + component },
     spec: {
@@ -132,6 +146,14 @@ async function standInChart(file, policy) {
               image,
               env: [
                 { name: "OCC_CONFIG_PATH", value: "/etc/openclaw/installation/installation.yaml" },
+                ...(component === "api" && values.api?.channelDirectoryProxyUrl
+                  ? [
+                      {
+                        name: "OCC_CHANNEL_DIRECTORY_PROXY_URL",
+                        value: values.api.channelDirectoryProxyUrl,
+                      },
+                    ]
+                  : []),
               ],
               volumeMounts: [
                 {
@@ -146,10 +168,107 @@ async function standInChart(file, policy) {
       },
     },
   });
-  const repository = yqRaw(yqOr(values?.repositoryCredentials?.enabled, false)) === "true";
+  const repositoryEnabled = yqRaw(yqOr(values?.repositoryCredentials?.enabled, false)) === "true";
   return [
     deployment("api", "containers"),
-    deployment("worker", repository ? "initContainers" : "containers"),
+    deployment("worker", repositoryEnabled ? "initContainers" : "containers"),
+    ...ordinary,
+    ...(recoveryHooks
+      ? [
+          {
+            apiVersion: "batch/v1",
+            kind: "Job",
+            metadata: {
+              name: "oce-initialization",
+              annotations: {
+                "helm.sh/hook": "pre-install,pre-upgrade",
+                "openclaw.dev/upgrade-attempt": values.installation.upgradeAttemptId,
+              },
+            },
+            spec: {
+              backoffLimit: 0,
+              template: {
+                metadata: {
+                  annotations: {
+                    "openclaw.dev/upgrade-attempt": values.installation.upgradeAttemptId,
+                  },
+                },
+                spec: {
+                  restartPolicy: "Never",
+                  ...(installationCheck
+                    ? {
+                        volumes: [
+                          {
+                            name: "installation-startup",
+                            secret: { secretName, items: [{ key, path: "installation.yaml" }] },
+                          },
+                        ],
+                      }
+                    : {}),
+                  securityContext: {
+                    runAsUser: 1000,
+                    runAsGroup: 1000,
+                    runAsNonRoot: true,
+                    seccompProfile: { type: "RuntimeDefault" },
+                  },
+                  containers: [
+                    {
+                      name: "bootstrap",
+                      image,
+                      args: ["scripts/bootstrap-installation.mjs"],
+                      ...(initializationResources ? { resources: initializationResources } : {}),
+                      securityContext: { capabilities: { drop: ["ALL"] } },
+                    },
+                  ],
+                  initContainers: [
+                    ...(installationCheck
+                      ? [
+                          {
+                            name: "installation-check",
+                            image,
+                            env: [
+                              {
+                                name: "OCC_CONFIG_PATH",
+                                value: "/etc/openclaw/installation/installation.yaml",
+                              },
+                            ],
+                            volumeMounts: [
+                              {
+                                name: "installation-startup",
+                                mountPath: "/etc/openclaw/installation",
+                                readOnly: true,
+                              },
+                            ],
+                            command: ["node"],
+                            args: [
+                              "--input-type=module",
+                              "-e",
+                              readFileSync(
+                                join(
+                                  repository,
+                                  "deploy/helm/openclaw-enterprise/files/check-installation.mjs",
+                                ),
+                                "utf8",
+                              ),
+                            ],
+                            securityContext: { capabilities: { drop: ["ALL"] } },
+                          },
+                        ]
+                      : []),
+                    {
+                      name: "migration",
+                      image,
+                      args: ["scripts/migrate-production.mjs"],
+                      ...(initializationResources ? { resources: initializationResources } : {}),
+                      securityContext: { capabilities: { drop: ["ALL"] } },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        ]
+      : []),
     ...(policy
       ? [
           {
@@ -369,9 +488,36 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
     }
   } else if (tool === "helm") {
     if (args[0] === "status") {
+      if (
+        state.api === 0 &&
+        state.worker === 0 &&
+        existsSync(join(root, "fail-before-helm-intent")) &&
+        (await yamlFile(join(root, "values.json")))?.installation?.upgradeAttemptId !==
+          (await yamlFile(join(root, "live-values")))?.installation?.upgradeAttemptId &&
+        take("fail-before-helm-intent")
+      ) {
+        return fail(9);
+      }
       out(
         args.includes("json")
-          ? { version: state.version, info: { status: state.helmStatus } }
+          ? {
+              name: state.release,
+              namespace: "system",
+              config: await yamlFile(join(root, "live-values")),
+              ...(state.recoveryHooks && !state.recoveryRelease
+                ? {
+                    manifest:
+                      (await standInChart(join(root, "live-values"), false)) +
+                      (state.recoveryBaselineResources ?? [])
+                        .map((item) => "---\n" + JSON.stringify(item) + "\n")
+                        .join(""),
+                  }
+                : {}),
+              ...state.installationRelease,
+              ...state.recoveryRelease,
+              version: state.version,
+              info: { ...state.recoveryRelease?.info, status: state.helmStatus },
+            }
           : state.helmStatus,
       );
     } else if (args[0] === "get") {
@@ -385,7 +531,36 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       }
       out(rendered.stdout);
     } else if (args[0] === "template") {
-      out(await standInChart(fileArg("--values"), state.preflightPolicy));
+      out(
+        await standInChart(
+          fileArg("--values"),
+          state.preflightPolicy,
+          state.recoveryHooks,
+          state.initializationResources,
+          state.recoveryCandidateResources,
+          Boolean(state.installationSuccessor),
+        ),
+      );
+    } else if (args[0] === "rollback") {
+      assert.ok(!args.includes("--no-hooks"));
+      assert.equal(Number(args[2]), state.version);
+      log("rollback");
+      state.recoveryRelease.info.description = `Rollback to ${state.version}`;
+      state.version += 1;
+      state.helmStatus = "deployed";
+      state.api = 1;
+      state.worker = 1;
+      state.rollbackSubmissions = (state.rollbackSubmissions ?? 0) + 1;
+      save();
+      if (take("lost-rollback-response")) {
+        return fail(9);
+      }
+    } else if (
+      args[0] === "upgrade" &&
+      args.includes("--dry-run=server") &&
+      take("fail-server-dry-run")
+    ) {
+      return fail(9, "synthetic server dry-run diagnostic");
     } else if (args[0] === "upgrade" && !args.includes("--dry-run=server")) {
       if (state.api !== 0 || state.worker !== 0) {
         return fail(2, "old writers were not stopped");
@@ -407,6 +582,70 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       const values = await yamlFile(fileArg("--values"));
       state.controller = yqRaw(values?.images?.controller);
       state.checksum = yqRaw(values?.controlPlane?.installationChecksum);
+      if (state.installationSuccessor) {
+        // The accepted Helm submission creates the selected initializer and its
+        // completed child; later reads can diverge independently of the manifest.
+        const rendered = await standInChart(
+          fileArg("--values"),
+          state.preflightPolicy,
+          true,
+          state.initializationResources,
+          state.recoveryCandidateResources,
+          true,
+        );
+        const documents = yamlDocuments(rendered).map(loadYaml);
+        const desiredJob = documents.find((object) => object.kind === "Job");
+        // Store the accepted release separately from live objects so a later
+        // same-values Helm record can be checked independently of running Pods.
+        state.installationRelease = {
+          manifest: documents
+            .filter((object) => object !== desiredJob)
+            .map((object) => JSON.stringify(object))
+            .join("\n---\n"),
+          hooks: [
+            {
+              name: desiredJob.metadata.name,
+              manifest: JSON.stringify(desiredJob),
+              events: ["pre-install", "pre-upgrade"],
+              last_run: { phase: "Succeeded" },
+            },
+          ],
+        };
+        const job = structuredClone(desiredJob);
+        Object.assign(job.metadata, { namespace: "system", uid: "initializer-job" });
+        job.status = { conditions: [{ type: "Complete", status: "True" }], succeeded: 1 };
+        state.installationInitializer = {
+          job,
+          pod: {
+            apiVersion: "v1",
+            kind: "Pod",
+            metadata: {
+              ...structuredClone(job.spec.template.metadata),
+              namespace: "system",
+              name: "initializer-pod",
+              uid: "initializer-pod-uid",
+              ownerReferences: [
+                {
+                  apiVersion: "batch/v1",
+                  kind: "Job",
+                  name: job.metadata.name,
+                  uid: job.metadata.uid,
+                  controller: true,
+                },
+              ],
+            },
+            spec: structuredClone(job.spec.template.spec),
+            status: {
+              phase: "Succeeded",
+              initContainerStatuses: job.spec.template.spec.initContainers.map(({ name }) => ({
+                name,
+                state: { terminated: { exitCode: 0 } },
+              })),
+              containerStatuses: [{ name: "bootstrap", state: { terminated: { exitCode: 0 } } }],
+            },
+          },
+        };
+      }
       state.api = 1;
       state.worker = 1;
       save();
@@ -415,6 +654,92 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       }
     }
   } else if (tool === "kubectl") {
+    if (args.includes("create") && args.includes("--raw")) {
+      assert.equal(fileArg("--raw"), "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews");
+      const review = JSON.parse(await io.readInput());
+      assert.deepEqual(review, {
+        apiVersion: "authorization.k8s.io/v1",
+        kind: "SelfSubjectAccessReview",
+        spec: {
+          resourceAttributes: {
+            namespace: "system",
+            verb: "update",
+            group: "",
+            resource: "secrets",
+            name: state.secret.metadata.name,
+          },
+        },
+      });
+      state.installationUpdateReviews = (state.installationUpdateReviews ?? 0) + 1;
+      save();
+      if (state.reviewUnavailable) {
+        return fail(1, "private self-review diagnostic");
+      }
+      delete review.spec.resourceAttributes.group; // Kubernetes omits the empty core API group.
+      out({
+        ...review,
+        status: { allowed: !state.denyInstallationUpdate, reason: "private self-review reason" },
+      });
+      return io.exit(0);
+    }
+    if (
+      !state.recoveryResources &&
+      state.installationInitializer &&
+      args.includes("get") &&
+      args.includes("--filename")
+    ) {
+      const requested = JSON.parse(await io.readInput());
+      assert.equal(requested.kind, "Job");
+      assert.equal(requested.metadata.name, state.installationInitializer.job.metadata.name);
+      out({ apiVersion: "v1", kind: "List", items: [state.installationInitializer.job] });
+      return io.exit(0);
+    }
+    if (
+      !state.recoveryPod &&
+      state.installationInitializer &&
+      args.includes("get") &&
+      args.includes("--selector") &&
+      fileArg("--selector") ===
+        `batch.kubernetes.io/controller-uid=${state.installationInitializer.job.metadata.uid}`
+    ) {
+      out({ items: [state.installationInitializer.pod] });
+      return io.exit(0);
+    }
+    if (state.recoveryResources && args.includes("get") && args.includes("--filename")) {
+      const requested = JSON.parse(await io.readInput());
+      const key = `${requested.kind}/${requested.metadata.name}`;
+      if (args.includes("--ignore-not-found")) {
+        state.retiredResourceReads = (state.retiredResourceReads ?? 0) + 1;
+        if (state.retiredResourceAppearsAt === state.retiredResourceReads) {
+          state.recoveryResources[key] = state.recoveryBaselineResources[0];
+        }
+        save();
+        if (state.retiredResourceReadError) {
+          return fail(1, "Forbidden: cannot read selected retired resource");
+        }
+        assert.equal(fileArg("--output"), "name");
+        out(state.recoveryResources[key] ? `${requested.kind}/${requested.metadata.name}\n` : "");
+        return io.exit(0);
+      }
+      const actual =
+        requested.kind === "Secret"
+          ? [state.secret, state.installationSuccessor].find(
+              (secret) => secret?.metadata.name === requested.metadata.name,
+            )
+          : state.recoveryResources[key];
+      assert.ok(actual, `known recovery resource ${key}`);
+      out({ apiVersion: "v1", kind: "List", items: [actual] });
+      return io.exit(0);
+    }
+    if (
+      state.recoveryPod &&
+      args.includes("get") &&
+      args.includes("--selector") &&
+      fileArg("--selector").startsWith("batch.kubernetes.io/controller-uid=")
+    ) {
+      out({ items: [state.recoveryPod] });
+      return io.exit(0);
+    }
     state.preflight ??= {
       secrets: {},
       pods: {},
@@ -435,6 +760,9 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       const source = fileArg("--filename");
       const manifest = source === "-" ? await io.readInput() : readFileSync(source, "utf8");
       const object = JSON.parse(manifest);
+      if (state.installationSuccessor) {
+        (state.preflight.requested ??= []).push(structuredClone(object));
+      }
       const kind = {
         Secret: "secret",
         NetworkPolicy: "networkpolicy.networking.k8s.io",
@@ -667,6 +995,12 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       if (args.includes("logs")) {
         const component = object.spec.containers[0].name;
         (state.preflight.logRequests ??= []).push(component);
+        if (state.replaceInstallationDuringPreflight) {
+          // A separately accepted Secret replacement happens while the temporary
+          // startup Job runs, after the upgrade captured both immutable identities.
+          state[state.replaceInstallationDuringPreflight].metadata.uid += "-replacement";
+          delete state.replaceInstallationDuringPreflight;
+        }
         if (
           state.preflightFault?.target === component &&
           state.preflightFault.mode === "replace-during-logs"
@@ -734,7 +1068,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
         .find((a) => a.startsWith("deployment/"))
         .split("-")
         .at(-1);
-      if (component === "worker" && take("fail-scale-worker")) {
+      if (take("fail-scale-" + component)) {
         if (take("block-failure-receipt")) {
           mkdirSync(join(root, "evidence", "native-command-failures.tsv"));
         }
@@ -783,8 +1117,17 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       log("scale-" + component);
     } else if (args.includes("replace")) {
       const secret = JSON.parse(await io.readInput());
+      if (state.denyInstallationUpdate) {
+        return fail(1, "fixture denied named Secret update");
+      }
       if (secret.metadata.resourceVersion !== state.secret.metadata.resourceVersion) {
         return fail(11);
+      }
+      if (
+        state.secret.immutable &&
+        secret.data["installation.yaml"] !== state.secret.data["installation.yaml"]
+      ) {
+        return fail(1, "Secret data is immutable");
       }
       secret.metadata.resourceVersion = String(Number(secret.metadata.resourceVersion) + 1);
       state.secret = secret;
@@ -795,13 +1138,17 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       }
     } else if (args.includes("get") && args.includes("secret")) {
       const name = args[args.indexOf("secret") + 1];
-      if (name !== state.secret.metadata.name && name === state.collectorSecretName) {
+      if (name === state.installationSuccessor?.metadata.name) {
+        out(state.installationSuccessor);
+      } else if (name !== state.secret.metadata.name && name === state.collectorSecretName) {
         if (!state.collectorSecret) {
           return fail(1, 'secrets "' + name + '" not found');
         }
         out(state.collectorSecret);
-      } else {
+      } else if (name === state.secret.metadata.name) {
         out(state.secret);
+      } else {
+        return fail(1, 'secrets "' + name + '" not found');
       }
     } else if (args.includes("get") && args.includes("nodes")) {
       const architecture = process.arch === "x64" ? "amd64" : "arm64";
@@ -851,6 +1198,28 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
         component === "worker" ? (state.workerObservedImage ?? state.controller) : state.controller;
       const container = { name: component, image };
       const podSpec = { containers: [container] };
+      if (state.installationSuccessor) {
+        const values = await yamlFile(join(root, "live-values"));
+        podSpec.volumes = [
+          {
+            name: "installation-startup",
+            secret: {
+              secretName: values.installation.secretName,
+              items: [{ key: values.installation.key, path: "installation.yaml" }],
+            },
+          },
+        ];
+        container.env = [
+          { name: "OCC_CONFIG_PATH", value: "/etc/openclaw/installation/installation.yaml" },
+        ];
+        container.volumeMounts = [
+          {
+            name: "installation-startup",
+            mountPath: state.installationDeploymentMountPath ?? "/etc/openclaw/installation",
+            readOnly: true,
+          },
+        ];
+      }
       if (component === "worker" && state.workerPlacement !== "container") {
         podSpec.containers =
           state.workerPlacement === "ambiguous"
@@ -925,7 +1294,54 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
         : args.some((a) => a.includes("app.kubernetes.io/component=api"))
           ? "api"
           : null;
-      if (pairComponent && state.simulatePair) {
+      if (pairComponent && state.installationSuccessor && !state.simulatePair) {
+        const values = await yamlFile(join(root, "live-values"));
+        out({
+          items: state[pairComponent]
+            ? [
+                {
+                  metadata: { name: `${pairComponent}-pod`, uid: `${pairComponent}-pod-uid` },
+                  spec: {
+                    containers: [
+                      {
+                        name: pairComponent,
+                        image: state.controller,
+                        env: [
+                          {
+                            name: "OCC_CONFIG_PATH",
+                            value: "/etc/openclaw/installation/installation.yaml",
+                          },
+                        ],
+                        volumeMounts: [
+                          {
+                            name: "installation-startup",
+                            mountPath:
+                              state.installationPodMountPath ?? "/etc/openclaw/installation",
+                            readOnly: true,
+                          },
+                        ],
+                      },
+                    ],
+                    volumes: [
+                      {
+                        name: "installation-startup",
+                        secret: {
+                          secretName:
+                            state.installationPodSecretName ?? values.installation.secretName,
+                          items: [{ key: values.installation.key, path: "installation.yaml" }],
+                        },
+                      },
+                    ],
+                  },
+                  status: {
+                    phase: "Running",
+                    conditions: [{ type: "Ready", status: "True" }],
+                  },
+                },
+              ]
+            : [],
+        });
+      } else if (pairComponent && state.simulatePair) {
         const proof = JSON.parse(readFileSync(join(root, "evidence", "pair-proof.json"), "utf8"));
         const status = (name, image) => ({
           name,
@@ -1404,6 +1820,8 @@ async function fixture(
     collector = null,
     chart = null,
     preflightResults = null,
+    recoveryHooks = false,
+    initializationResources,
     preflightPolicy = false,
     preflightFault = null,
     kubernetesNamespaces = [],
@@ -1418,6 +1836,7 @@ async function fixture(
     olderDraftRules = false,
     unavailableDraftResolver = false,
     afterDeploy,
+    environment = {},
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "occ-upgrade-recovery-"));
@@ -1602,6 +2021,8 @@ async function fixture(
     themeConfigMaps: chart?.configMaps ?? {},
     kubeconfig: api?.kubeconfig ?? null,
     preflightResults,
+    recoveryHooks,
+    initializationResources,
     preflightPolicy,
     preflightFault,
     installationName,
@@ -1626,6 +2047,8 @@ async function fixture(
     collectorSecretName,
     collectorSecret: await collectorConfigSecret(collectorSecretName, collector),
     secret: {
+      apiVersion: "v1",
+      kind: "Secret",
       metadata: {
         name: "occ-installation-startup",
         uid: "secret-uid",
@@ -1707,6 +2130,9 @@ async function fixture(
     OCC_URL: "https://occ.example.invalid",
     OCC_SERVICE_KEY_FILE: join(directory, "key"),
   };
+  for (const variable of helmTargetOverrides) {
+    delete env[variable];
+  }
   return {
     directory,
     evidence,
@@ -1724,7 +2150,10 @@ async function fixture(
     executionReads: api?.executionReads ?? [],
     accessReviews: api?.reviews ?? [],
     run: (...extra) => {
-      const result = execute(script, [...args, ...extra], { cwd: repository, env });
+      const result = execute(script, [...args, ...extra], {
+        cwd: repository,
+        env: { ...env, ...environment },
+      });
       upgradeProcess = result.child;
       return result;
     },
@@ -2075,6 +2504,51 @@ test("Agent continuity finishes before the terminal Helm identity check", async 
   assert.equal(state.dispatches, 0);
 });
 
+test("Upgrade rejects inherited Helm target overrides before external calls or evidence writes", async (t) => {
+  for (const variable of helmTargetOverrides) {
+    await t.test(variable, async (t) => {
+      const value = "private-target-override";
+      const f = await fixture(t, { controllerOnly: true, environment: { [variable]: value } });
+      // Helm accepts these independently of --kubeconfig/--kube-context. Refuse
+      // before either command protocol or recovery evidence can use another target.
+      await assert.rejects(f.run(), (error) => {
+        assert.match(error.stderr, new RegExp(`unset ${variable}`));
+        assert.match(error.stderr, /selected kubeconfig/);
+        assert.equal(error.stderr.includes(value), false);
+        return true;
+      });
+      assert.equal(f.commands.length, 0);
+      assert.equal(existsSync(f.evidence), false);
+    });
+  }
+});
+
+test("Resume refuses inherited Helm target changes without altering accepted upgrade evidence", async (t) => {
+  const environment = {};
+  const f = await fixture(t, { controllerOnly: true, environment });
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  const parameters = await readFile(join(f.evidence, "parameters.json"), "utf8");
+  const submission = await readFile(join(f.evidence, "helm-started"), "utf8");
+  const commands = f.commands.length;
+  const events = await f.events();
+  // A changed shell environment must not redirect reconciliation of an accepted
+  // submission, even when the recorded kubeconfig and all arguments still match.
+  for (const variable of helmTargetOverrides) {
+    environment[variable] = "private-target-override";
+    await assert.rejects(f.run("--resume"), new RegExp(`unset ${variable}`));
+    delete environment[variable];
+    assert.equal(f.commands.length, commands);
+    assert.deepEqual(await f.events(), events);
+    assert.equal(await readFile(join(f.evidence, "parameters.json"), "utf8"), parameters);
+    assert.equal(await readFile(join(f.evidence, "helm-started"), "utf8"), submission);
+    assert.equal(existsSync(join(f.evidence, ".upgrade-lock")), false);
+  }
+  await f.run("--resume");
+  assert.ok(existsSync(join(f.evidence, "completed")));
+  assert.equal((await f.state()).helmSubmissions, 1);
+});
+
 test("Agent continuity rejects explicitly empty selection before external calls", async (t) => {
   for (const flags of [
     ["--verify-agent", "", "--verify-agent-namespace", ""],
@@ -2303,6 +2777,469 @@ test("controller compatibility requires a value and an explicit controller selec
   assert.deepEqual(await f.events(), []);
 });
 
+for (const preflightOnly of [true, false]) {
+  test(`mutable Installation update denial on fresh ${preflightOnly ? "preflight" : "apply"}`, async (t) => {
+    const f = await fixture(t);
+    const state = await f.state();
+    state.denyInstallationUpdate = true;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    const installation = join(f.directory, "installation.json");
+    const before = await readFile(installation);
+    await assert.rejects(f.run(...(preflightOnly ? ["--preflight-only"] : [])), (error) => {
+      assert.match(
+        error.stderr,
+        /Kubernetes denied update on Installation Secret system\/occ-installation-startup/,
+      );
+      assert.doesNotMatch(error.stderr, /private self-review reason/);
+      return true;
+    });
+    assert.deepEqual(await f.events(), []);
+    const after = await f.state();
+    assert.equal(after.installationUpdateReviews, 1);
+    assert.equal(after.api, 1);
+    assert.equal(after.worker, 1);
+    assert.deepEqual(after.secret, state.secret);
+    assert.deepEqual(await readFile(installation), before);
+  });
+}
+
+test("unavailable mutable Installation update review warns and permits the actual update", async (t) => {
+  const f = await fixture(t);
+  const state = await f.state();
+  state.reviewUnavailable = true;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  const result = await f.run();
+  assert.match(result.stderr, /Could not verify update access to the Installation Secret/);
+  assert.doesNotMatch(result.stderr, /private self-review diagnostic/);
+  assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "secret-replaced", "migration"]);
+});
+
+for (const preflightOnly of [false, true]) {
+  test(`immutable Installation Secret refuses changed data before ${preflightOnly ? "preflight-only succeeds" : "stopping writers"}`, async (t) => {
+    const f = await fixture(t);
+    const state = await f.state();
+    state.secret.immutable = true;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    await assert.rejects(
+      f.run(...(preflightOnly ? ["--preflight-only"] : [])),
+      /Installation Secret .* is immutable/,
+    );
+    assert.deepEqual(await f.events(), []);
+    const after = await f.state();
+    assert.equal(after.api, 1);
+    assert.equal(after.worker, 1);
+    assert.equal(after.helmSubmissions ?? 0, 0);
+  });
+}
+
+test("immutable Installation Secret permits an upgrade with equivalent YAML", async (t) => {
+  const f = await fixture(t, { controllerOnly: true });
+  const state = await f.state();
+  state.secret.immutable = true;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  const installation = join(f.directory, "installation.json");
+  appendFileSync(installation, "\n");
+  await f.run();
+  assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "migration"]);
+  assert.deepEqual((await f.state()).secret, state.secret);
+  assert.equal((await f.state()).installationUpdateReviews ?? 0, 0);
+});
+
+test("resume refuses a pending Installation write if the Secret became immutable", async (t) => {
+  const f = await fixture(t);
+  await f.failNext("fail-scale-worker");
+  await assert.rejects(f.run(), injectedFault);
+  const events = await f.events();
+  assert.deepEqual(events, ["scale-api"]);
+  const state = await f.state();
+  state.secret.immutable = true;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  await assert.rejects(f.run("--resume"), /Installation Secret .* is immutable/);
+  assert.deepEqual(await f.events(), events);
+  assert.equal((await f.state()).helmSubmissions ?? 0, 0);
+  assert.equal((await f.state()).installationUpdateReviews, 1);
+});
+
+async function immutableInstallationSwitch(t, options = {}) {
+  const f = await fixture(t, {
+    preflightPolicy: true,
+    recoveryHooks: true,
+    ...options,
+  });
+  const state = await f.state();
+  state.secret.immutable = true;
+  state.secret.type = "Opaque";
+  state.secret.metadata.namespace = "system";
+  const installation = JSON.parse(
+    Buffer.from(state.secret.data["installation.yaml"], "base64").toString(),
+  );
+  installation.drivers.compute.configuration.images = { agent: runtime, gateway: runtime };
+  // The operator stages equivalent configuration with independent formatting.
+  // The mounted bytes, rather than a reserialization, must determine the checksum.
+  const staged =
+    "# Operator-staged configuration\n" +
+    JSON.stringify(Object.fromEntries(Object.entries(installation).reverse()), null, 4) +
+    "\n\n";
+  state.installationSuccessor = structuredClone(state.secret);
+  state.installationSuccessor.metadata.name = "occ-installation-successor";
+  state.installationSuccessor.metadata.uid = "successor-secret-uid";
+  state.installationSuccessor.data["installation.yaml"] = Buffer.from(staged).toString("base64");
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  const values = await yamlFile(join(f.directory, "values.json"));
+  values.installation.secretName = state.installationSuccessor.metadata.name;
+  const candidate = join(f.directory, "immutable-values.json");
+  await writeFile(candidate, JSON.stringify(values), { mode: 0o600 });
+  return {
+    ...f,
+    original: state.secret,
+    successor: state.installationSuccessor,
+    staged,
+    run: (...args) => f.run("--candidate-values", candidate, ...args),
+  };
+}
+
+async function assertImmutableInstallationRetained(f) {
+  const state = await f.state();
+  assert.equal(state.installationUpdateReviews ?? 0, 0);
+  assert.deepEqual(state.secret, f.original);
+  assert.deepEqual(state.installationSuccessor, f.successor);
+  assert.ok(!(await f.events()).includes("secret-replaced"));
+  const values = await yamlFile(join(f.directory, "live-values"));
+  assert.equal(values.installation.secretName, f.successor.metadata.name);
+  assert.equal(
+    values.controlPlane.installationChecksum,
+    createHash("sha256").update(f.staged).digest("hex"),
+  );
+}
+
+test("immutable Installation reference uses staged bytes in preflight and Helm without replacing either Secret", async (t) => {
+  const f = await immutableInstallationSwitch(t);
+  await f.run("--preflight-only");
+  assert.deepEqual(await f.events(), []);
+  const prepared = await f.state();
+  const secret = prepared.preflight.requested.find((object) => object.kind === "Secret");
+  assert.equal(Buffer.from(secret.data["installation.yaml"], "base64").toString(), f.staged);
+  const jobs = prepared.preflight.requested.filter((object) => object.kind === "Job");
+  assert.equal(jobs.length, 2);
+  for (const job of jobs) {
+    assert.ok(
+      job.spec.template.spec.volumes.some(
+        (volume) => volume.secret?.secretName === secret.metadata.name,
+      ),
+      "both startup checks must mount the temporary Secret containing the successor bytes",
+    );
+    assert.ok(
+      !job.spec.template.spec.volumes.some(
+        (volume) => volume.secret?.secretName === f.original.metadata.name,
+      ),
+    );
+  }
+  assert.equal(await readFile(join(f.evidence, "candidate-installation.yaml"), "utf8"), f.staged);
+  // Preflight-only evidence is deliberately not resumable. A fresh normal
+  // attempt proves that Helm receives the same staged bytes and reference.
+  const deployment = await immutableInstallationSwitch(t);
+  await deployment.run();
+  await assertImmutableInstallationRetained(deployment);
+  assert.deepEqual(await deployment.events(), ["scale-api", "scale-worker", "migration"]);
+  assert.ok(existsSync(join(deployment.evidence, "completed")));
+});
+
+test("immutable Installation reference refuses an unavailable or mismatched successor before stopping writers", async (t) => {
+  for (const [name, change, refusal] of [
+    ["missing", (state) => delete state.installationSuccessor, /not found/],
+    [
+      "wrong Installation",
+      (state) =>
+        (state.installationSuccessor.metadata.annotations["openclaw.dev/installation-id"] =
+          "ins_other"),
+      /staged immutable Installation Secret/,
+    ],
+    [
+      "wrong configuration",
+      (state) =>
+        (state.installationSuccessor.data["installation.yaml"] =
+          state.secret.data["installation.yaml"]),
+      /candidate Installation configuration/,
+    ],
+    [
+      "mutable",
+      (state) => (state.installationSuccessor.immutable = false),
+      /staged immutable Installation Secret/,
+    ],
+    [
+      "lost unrelated data",
+      (state) => delete state.installationSuccessor.data.retained,
+      /staged immutable Installation Secret/,
+    ],
+  ]) {
+    await t.test(name, async (subtest) => {
+      const f = await immutableInstallationSwitch(subtest);
+      const state = await f.state();
+      change(state);
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      await assert.rejects(f.run(), refusal);
+      assert.deepEqual(await f.events(), []);
+      const after = await f.state();
+      assert.equal(after.api, 1);
+      assert.equal(after.worker, 1);
+      assert.equal(after.helmSubmissions ?? 0, 0);
+      assert.equal(after.preflight?.created?.length ?? 0, 0);
+      assert.deepEqual(after.secret, f.original);
+    });
+  }
+});
+
+test("immutable Installation preflight rechecks both pins after temporary Jobs finish", async (t) => {
+  for (const key of ["secret", "installationSuccessor"]) {
+    await t.test(key, async (subtest) => {
+      const f = await immutableInstallationSwitch(subtest);
+      const state = await f.state();
+      state.replaceInstallationDuringPreflight = key;
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      await assert.rejects(f.run("--preflight-only"), (error) => {
+        assert.match(error.stderr, /Installation Secret identity or data changed/);
+        assert.doesNotMatch(error.stdout, /Preflight passed/);
+        return true;
+      });
+      await assertStoppedBeforeWriters(f);
+      const after = await f.state();
+      assert.equal(after[key].metadata.uid, state[key].metadata.uid + "-replacement");
+      assert.equal(after.preflight.logRequests.length, 2);
+      for (const kind of ["jobs", "pods", "secrets", "networkpolicies"]) {
+        assert.deepEqual(
+          after.preflight[kind],
+          {},
+          "temporary preflight resources must be cleaned",
+        );
+      }
+    });
+  }
+});
+
+test("immutable Installation completion verifies mounted consumers and the owned initializer", async (t) => {
+  const f = await immutableInstallationSwitch(t, { agent: true });
+  const state = await f.state();
+  // The volume declaration remains correct, but the controller cannot read it
+  // at its configured path. Helm success alone must not authorize Agent dispatch.
+  state.installationDeploymentMountPath = "/not-the-config-directory";
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  await assert.rejects(f.run(), /Installation consumer mount differs/);
+  const accepted = await f.state();
+  delete accepted.installationDeploymentMountPath;
+  const mutations = [
+    [
+      "controller Pod mount",
+      (value) => {
+        value.installationPodMountPath = "/wrong-directory";
+      },
+    ],
+    [
+      "initializer Job mount",
+      (value) => {
+        value.installationInitializer.job.spec.template.spec.initContainers[0].volumeMounts[0].mountPath =
+          "/wrong-directory";
+      },
+    ],
+    [
+      "initializer Pod mount",
+      (value) => {
+        value.installationInitializer.pod.spec.initContainers[0].volumeMounts[0].mountPath =
+          "/wrong-directory";
+      },
+    ],
+    [
+      "foreign initializer Pod",
+      (value) => {
+        value.installationInitializer.pod.metadata.ownerReferences[0].uid = "another-job";
+      },
+    ],
+    [
+      "unfinished initializer",
+      (value) => {
+        value.installationInitializer.job.status = { active: 1 };
+      },
+    ],
+  ];
+  for (const [name, mutate] of mutations) {
+    await t.test(name, async () => {
+      const changed = structuredClone(accepted);
+      mutate(changed);
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(changed));
+      await assert.rejects(
+        f.run("--resume"),
+        /Installation consumer mount differs|initializer (Job|Pod)/,
+      );
+      const refused = await f.state();
+      assert.equal(refused.helmSubmissions, 1);
+      assert.equal(refused.dispatches, 0);
+      assert.equal(existsSync(join(f.evidence, "completed")), false);
+    });
+  }
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(accepted));
+  await f.run("--resume");
+  const completed = await f.state();
+  assert.equal(completed.helmSubmissions, 1);
+  assert.equal(completed.dispatches, 1);
+  const receipt = JSON.parse(
+    await readFile(join(f.evidence, "installation-initializer.json"), "utf8"),
+  );
+  assert.equal(receipt.jobUid, accepted.installationInitializer.job.metadata.uid);
+  assert.equal(receipt.podUid, accepted.installationInitializer.pod.metadata.uid);
+  await assertImmutableInstallationRetained(f);
+});
+
+test("immutable Installation refuses non-string YAML mapping keys on either side", async (t) => {
+  for (const plainSide of ["intended", "staged"]) {
+    await t.test(plainSide, async (subtest) => {
+      const f = await immutableInstallationSwitch(subtest);
+      const state = await f.state();
+      const original = loadYaml(
+        Buffer.from(state.secret.data["installation.yaml"], "base64").toString(),
+      );
+      const successor = loadYaml(f.staged);
+      for (const config of [original, successor]) {
+        config.drivers.compute.configuration.network ??= {};
+        config.drivers.compute.configuration.network.dns = {
+          namespace: "kube-system",
+          podLabels: { "0x10": "resolver" },
+        };
+      }
+      const originalBytes = JSON.stringify(original).replace(
+        '"0x10":',
+        plainSide === "intended" ? "0x10: " : '"0x10":',
+      );
+      const stagedBytes = JSON.stringify(successor).replace(
+        '"0x10":',
+        plainSide === "staged" ? "0x10: " : '"0x10":',
+      );
+      // Both are valid YAML, but the startup parser sees different DNS selectors.
+      assert.notDeepEqual(
+        loadYaml(originalBytes).drivers.compute.configuration.network.dns,
+        loadYaml(stagedBytes).drivers.compute.configuration.network.dns,
+      );
+      state.secret.data["installation.yaml"] = Buffer.from(originalBytes).toString("base64");
+      state.installationSuccessor.data["installation.yaml"] =
+        Buffer.from(stagedBytes).toString("base64");
+      await writeFile(join(f.directory, "installation.json"), originalBytes);
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      await assert.rejects(f.run(), /string mapping keys/);
+      const after = await f.state();
+      assert.equal(after.api, 1);
+      assert.equal(after.worker, 1);
+      assert.equal(after.version, 1);
+      assert.deepEqual(await f.events(), []);
+      assert.equal(after.helmSubmissions ?? 0, 0);
+      assert.equal(after.preflight?.created?.length ?? 0, 0);
+      assert.deepEqual(after.secret, state.secret);
+      assert.deepEqual(after.installationSuccessor, state.installationSuccessor);
+    });
+  }
+});
+
+test("immutable Installation resume rejects same-values Helm manifest or hook substitution", async (t) => {
+  for (const field of ["manifest", "hook"]) {
+    await t.test(field, async (subtest) => {
+      const f = await immutableInstallationSwitch(subtest, { agent: true });
+      await f.failNext("lost-helm-response");
+      await assert.rejects(f.run(), injectedFault);
+      const accepted = await f.state();
+      const changed = structuredClone(accepted);
+      if (field === "manifest") {
+        const documents = yamlDocuments(changed.installationRelease.manifest).map(loadYaml);
+        documents.find(
+          (object) => object.kind === "Deployment",
+        ).spec.template.spec.containers[0].image = oldRuntime;
+        changed.installationRelease.manifest = documents
+          .map((object) => JSON.stringify(object))
+          .join("\n---\n");
+      } else {
+        const hook = JSON.parse(changed.installationRelease.hooks[0].manifest);
+        hook.spec.template.spec.initContainers[0].volumeMounts[0].mountPath = "/another-config";
+        changed.installationRelease.hooks[0].manifest = JSON.stringify(hook);
+      }
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(changed));
+      await assert.rejects(f.run("--resume"), /Helm.*(manifest|hook set).*differ/);
+      const refused = await f.state();
+      assert.equal(refused.helmSubmissions, 1);
+      assert.equal(refused.dispatches, 0);
+      assert.equal(existsSync(join(f.evidence, "completed")), false);
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(accepted));
+      await f.run("--resume");
+      assert.equal((await f.state()).helmSubmissions, 1);
+      assert.equal((await f.state()).dispatches, 1);
+      await assertImmutableInstallationRetained(f);
+    });
+  }
+});
+
+test("immutable Installation reference rechecks both captured UIDs before resumed quiescence", async (t) => {
+  const f = await immutableInstallationSwitch(t);
+  // Interrupt a prepared attempt before the first write, then change each
+  // retained object's identity independently before resuming that attempt.
+  await f.failNext("fail-scale-api");
+  await assert.rejects(f.run(), injectedFault);
+  const prepared = await f.state();
+  for (const key of ["secret", "installationSuccessor"]) {
+    const changed = structuredClone(prepared);
+    changed[key].metadata.uid += "-replacement";
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(changed));
+    await assert.rejects(f.run("--resume"), /Installation Secret|immutable Installation/);
+    assert.deepEqual(await f.events(), []);
+    assert.equal((await f.state()).api, 1);
+    assert.equal((await f.state()).worker, 1);
+    assert.equal((await f.state()).helmSubmissions ?? 0, 0);
+  }
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(prepared));
+  await f.run("--resume");
+  await assertImmutableInstallationRetained(f);
+});
+
+test("immutable Installation reference resumes partial quiescence and accepted submission without duplicate dispatch", async (t) => {
+  const f = await immutableInstallationSwitch(t, { agent: true });
+  await f.failNext("fail-scale-worker");
+  await assert.rejects(f.run(), injectedFault);
+  assert.deepEqual(await f.events(), ["scale-api"]);
+  assert.equal((await f.state()).worker, 1);
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run("--resume"), injectedFault);
+  assert.equal((await f.state()).helmSubmissions, 1);
+  assert.equal((await f.state()).dispatches, 0);
+  // A Ready Pod still mounting the predecessor is not adoption of the staged
+  // reference, even if Helm accepted the values and its rollout command passed.
+  const stale = await f.state();
+  stale.installationPodSecretName = f.original.metadata.name;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(stale));
+  await assert.rejects(f.run("--resume"), /Installation.*volume differs/);
+  assert.equal((await f.state()).helmSubmissions, 1);
+  assert.equal((await f.state()).dispatches, 0);
+  delete stale.installationPodSecretName;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(stale));
+  await f.run("--resume");
+  await assertImmutableInstallationRetained(f);
+  assert.equal((await f.state()).helmSubmissions, 1);
+  assert.equal((await f.state()).dispatches, 1);
+  const completed = await f.events();
+  await assert.rejects(f.run("--resume"), /completion marker exists/);
+  assert.deepEqual(await f.events(), completed);
+});
+
+test("immutable Installation reference survives same-candidate Helm recovery and acknowledged resume", async (t) => {
+  const f = await immutableInstallationSwitch(t, { recoveryHooks: true });
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  await completedHookInPendingRelease(f);
+  await f.failNext("fail-rollout-api");
+  await assert.rejects(f.run(...recoverHelm), injectedFault);
+  assert.equal((await f.state()).version, 3);
+  assert.equal((await f.state()).rollbackSubmissions, 1);
+  await f.run("--resume");
+  await assertImmutableInstallationRetained(f);
+  assert.equal((await f.state()).helmSubmissions, 1);
+  assert.equal((await f.state()).rollbackSubmissions, 1);
+  assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+  assert.ok(existsSync(join(f.evidence, "completed")));
+});
+
 test("an image upgrade can select curated Codex while preserving both plugin registrations", async (t) => {
   const pluginDrivers = [
     { id: "occ-plugin", configuration: {} },
@@ -2452,6 +3389,8 @@ test("resume reads an accepted Secret write before Helm and preserves its other 
     Buffer.from(interrupted.secret.data["installation.yaml"], "base64").toString(),
     /bbbbbbbbbbbbbbbb/,
   );
+  interrupted.secret.immutable = true;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(interrupted));
   await f.run("--resume");
   assert.deepEqual(await f.events(), [
     "scale-api",
@@ -2479,6 +3418,19 @@ async function assertPrivateReceipt(path, expected) {
   }
 }
 
+async function assertHelmIntent(f, previousRevision, expectedRevision) {
+  const intent = JSON.parse(await readFile(join(f.evidence, "helm-started"), "utf8"));
+  assert.equal(intent.previousRevision, previousRevision);
+  assert.equal(intent.expectedRevision, expectedRevision);
+  const attempt = join(f.evidence, "helm-attempts", intent.attempt.nonce);
+  assert.equal(
+    (await yamlFile(join(attempt, "values.yaml"))).installation.upgradeAttemptId,
+    intent.attempt.nonce,
+  );
+  assert.deepEqual(JSON.parse(await readFile(join(attempt, "intent.json"), "utf8")), intent);
+  return intent;
+}
+
 test("resume recognizes a committed Helm release without rerunning its migration", async (t) => {
   for (const [fault, operation, component] of [
     ["lost-helm-response", "helm-upgrade", "release"],
@@ -2503,10 +3455,7 @@ test("resume recognizes a committed Helm release without rerunning its migration
       assert.equal(state.helmStatus, "deployed");
       assert.equal(state.api, 1);
       assert.equal(state.worker, 1);
-      assert.deepEqual(JSON.parse(await readFile(join(f.evidence, "helm-started"), "utf8")), {
-        previousRevision: 1,
-        expectedRevision: 2,
-      });
+      await assertHelmIntent(f, 1, 2);
       await f.run("--resume");
       await assertPrivateReceipt(path, receipt);
       assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
@@ -2537,16 +3486,18 @@ test("resume refuses missing, empty or malformed Helm submission evidence", asyn
   await assert.rejects(f.run(), injectedFault);
   const events = await f.events();
   const path = join(f.evidence, "helm-started");
+  const original = JSON.parse(await readFile(path, "utf8"));
   // Evidence loss must not turn a newer deployed release into an attributed success.
   await rm(path);
   await assert.rejects(f.run("--resume", "--migration-history-checked"), /revision changed/);
   for (const intent of [
     "",
     "{",
-    JSON.stringify({ previousRevision: 0, expectedRevision: 1 }),
-    JSON.stringify({ previousRevision: 1.5, expectedRevision: 2.5 }),
-    JSON.stringify({ previousRevision: 1, expectedRevision: 3 }),
-    JSON.stringify({ previousRevision: 1, expectedRevision: 2 }) + "\n{}",
+    JSON.stringify({ ...original, previousRevision: 0, expectedRevision: 1 }),
+    JSON.stringify({ ...original, previousRevision: 1.5, expectedRevision: 2.5 }),
+    JSON.stringify({ ...original, previousRevision: 1, expectedRevision: 3 }),
+    JSON.stringify(original) + "\n{}",
+    JSON.stringify({ previousRevision: 1, expectedRevision: 2 }),
   ]) {
     await writeFile(path, intent, { mode: 0o600 });
     await assert.rejects(f.run("--resume", "--migration-history-checked"), /submission intent/);
@@ -2619,10 +3570,7 @@ test("a nonaccepted Helm submission retries the same successor after checked his
   await assert.rejects(f.run("--resume"), /migration --check/);
   await f.failNext("lost-helm-response");
   await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
-  assert.deepEqual(JSON.parse(await readFile(join(f.evidence, "helm-started"), "utf8")), {
-    previousRevision: 1,
-    expectedRevision: 2,
-  });
+  await assertHelmIntent(f, 1, 2);
   await f.run("--resume");
   assert.equal((await f.state()).version, 2);
   assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
@@ -2792,10 +3740,7 @@ test("failed Helm migration keeps old writers stopped and requires checked histo
   // losing its response must still resume without a third submission.
   await f.failNext("lost-helm-response");
   await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
-  assert.deepEqual(JSON.parse(await readFile(join(f.evidence, "helm-started"), "utf8")), {
-    previousRevision: 2,
-    expectedRevision: 3,
-  });
+  await assertHelmIntent(f, 2, 3);
   await f.run("--resume");
   assert.equal((await f.state()).version, 3);
   assert.equal((await f.events()).filter((event) => event === "migration").length, 2);
@@ -3843,7 +4788,7 @@ test(
 );
 
 test(
-  "candidate cannot redirect the Installation Secret or change an image outside the selected flags",
+  "candidate cannot redirect a mutable Installation Secret or change an image outside the selected flags",
   { concurrency: true },
   async (t) => {
     const cases = [];
@@ -3862,7 +4807,12 @@ test(
             candidate.drivers.compute.configuration.images.agent = runtime;
           }
           await writeFile(path, JSON.stringify(candidate));
-          await assert.rejects(f.run(), /candidate (values|Installation) change/);
+          await assert.rejects(
+            f.run(),
+            field === "secret"
+              ? /switching the Installation reference requires an immutable predecessor/
+              : /candidate Installation change/,
+          );
           assert.deepEqual(await f.events(), []);
         }),
       );
@@ -5838,4 +6788,718 @@ test("startup preflight without a child points to available timeout evidence", a
   assert.equal(existsSync(join(f.evidence, "preflight-api-status.json")), false);
   assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
   await assertStoppedBeforeWriters(f);
+});
+
+// These cases exercise the actual upgrade command against controlled Helm and
+// Kubernetes protocols. The separate disposable-cluster proof checks Helm itself.
+async function completedHookInPendingRelease(f) {
+  const intent = await assertHelmIntent(f, 1, 2);
+  const directory = join(f.evidence, "helm-attempts", intent.attempt.nonce);
+  const docs = yamlDocuments(await readFile(join(directory, "rendered.yaml"), "utf8")).map(
+    loadYaml,
+  );
+  const hook = docs.find((doc) => doc.kind === "Job");
+  const ordinary = docs.filter((doc) => doc !== hook);
+  const state = await f.state();
+  state.helmStatus = "pending-upgrade";
+  state.recoveryRelease = {
+    name: state.release,
+    namespace: "system",
+    version: 2,
+    config: await yamlFile(join(directory, "values.yaml")),
+    manifest: ordinary.map((doc) => JSON.stringify(doc)).join("\n---\n"),
+    hooks: [
+      {
+        name: hook.metadata.name,
+        manifest: JSON.stringify(hook),
+        events: ["pre-install", "pre-upgrade"],
+        last_run: { phase: "Running" },
+      },
+    ],
+    info: { status: "pending-upgrade" },
+  };
+  state.recoveryResources = Object.fromEntries(
+    docs.map((desired) => {
+      const actual = structuredClone(desired);
+      const component = desired.metadata.name.endsWith("api") ? "api" : "worker";
+      Object.assign(actual.metadata, {
+        namespace: "system",
+        resourceVersion: "1",
+        uid: desired.kind === "Job" ? "initializer-job" : `${component}-deployment-uid`,
+      });
+      if (desired.kind === "Job") {
+        actual.status = { conditions: [{ type: "Complete", status: "True" }], succeeded: 1 };
+      } else {
+        actual.metadata.annotations = {
+          "meta.helm.sh/release-name": state.release,
+          "meta.helm.sh/release-namespace": "system",
+        };
+      }
+      return [`${desired.kind}/${desired.metadata.name}`, actual];
+    }),
+  );
+  state.recoveryPod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      ...structuredClone(hook.spec.template.metadata),
+      name: "initializer-pod",
+      namespace: "system",
+      uid: "initializer-pod-uid",
+      resourceVersion: "1",
+      ownerReferences: [
+        {
+          apiVersion: "batch/v1",
+          kind: "Job",
+          name: hook.metadata.name,
+          uid: "initializer-job",
+          controller: true,
+        },
+      ],
+    },
+    spec: structuredClone(hook.spec.template.spec),
+    status: {
+      phase: "Succeeded",
+      initContainerStatuses: hook.spec.template.spec.initContainers.map(({ name }) => ({
+        name,
+        state: { terminated: { exitCode: 0 } },
+      })),
+      containerStatuses: [{ name: "bootstrap", state: { terminated: { exitCode: 0 } } }],
+    },
+  };
+  state.recoveryResources["Pod/initializer-pod"] = state.recoveryPod;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  return state;
+}
+
+const recoverHelm = [
+  "--resume",
+  "--recover-helm",
+  "--migration-history-checked",
+  "--recovery-reviewed",
+];
+
+// Clearing this proxy is an allowed candidate-values change. Stock Helm can
+// leave its old NetworkPolicy behind when interrupted before ordinary updates.
+async function interruptedProxyRemoval(t, selectedProxy = "") {
+  const f = await fixture(t, { recoveryHooks: true });
+  const values = await yamlFile(join(f.directory, "values.json"));
+  values.api = { ...values.api, channelDirectoryProxyUrl: "http://198.51.100.25:3128" };
+  for (const file of ["values.json", "live-values"]) {
+    await writeFile(join(f.directory, file), JSON.stringify(values));
+  }
+  const candidate = structuredClone(values);
+  candidate.api.channelDirectoryProxyUrl = selectedProxy;
+  const candidatePath = join(f.directory, "remove-proxy.json");
+  await writeFile(candidatePath, JSON.stringify(candidate), { mode: 0o600 });
+  const policy = {
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: {
+      name: "openclaw-enterprise-api-channel-directory-egress",
+      namespace: "system",
+      uid: "old-egress-policy",
+      resourceVersion: "1",
+    },
+    spec: {
+      podSelector: { matchLabels: { "app.kubernetes.io/component": "api" } },
+      policyTypes: ["Egress"],
+      egress: [
+        {
+          to: [{ ipBlock: { cidr: "198.51.100.25/32" } }],
+          ports: [{ protocol: "TCP", port: 3128 }],
+        },
+      ],
+    },
+  };
+  const state = await f.state();
+  state.recoveryBaselineResources = selectedProxy ? [] : [policy];
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  const run = (...args) => f.run("--candidate-values", candidatePath, ...args);
+  await f.failNext("lost-helm-response");
+  await assert.rejects(run(), injectedFault);
+  const pending = await completedHookInPendingRelease(f);
+  return { f, run, pending, policy, key: `${policy.kind}/${policy.metadata.name}` };
+}
+
+test("same-candidate recovery refuses retained predecessor resources and checks their absence on resume", async (t) => {
+  const { f, run, pending, policy, key } = await interruptedProxyRemoval(t);
+  const originalIntent = await readFile(join(f.evidence, "helm-started"), "utf8");
+  for (const mode of ["live", "deleting", "keep", "forbidden"]) {
+    await t.test(mode, async () => {
+      const state = structuredClone(pending);
+      state.recoveryResources[key] = structuredClone(policy);
+      if (mode === "deleting") {
+        state.recoveryResources[key].metadata.deletionTimestamp = "2026-01-01T00:00:00Z";
+      } else if (mode === "keep") {
+        state.recoveryResources[key].metadata.annotations = { "helm.sh/resource-policy": "keep" };
+      } else if (mode === "forbidden") {
+        delete state.recoveryResources[key];
+        state.retiredResourceReadError = true;
+      }
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      await assert.rejects(
+        run(...recoverHelm),
+        mode === "forbidden"
+          ? /Helm evidence command failed/
+          : /predecessor-only resource still exists/,
+      );
+      assert.equal((await f.state()).rollbackSubmissions, undefined);
+      assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+    });
+  }
+  const withRetiredEnv = structuredClone(pending);
+  const oldEnv = { name: "OCC_CHANNEL_DIRECTORY_PROXY_URL", value: "http://198.51.100.25:3128" };
+  withRetiredEnv.recoveryResources[
+    "Deployment/openclaw-enterprise-api"
+  ].spec.template.spec.containers[0].env.push(oldEnv);
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(withRetiredEnv));
+  await assert.rejects(run(...recoverHelm), /live environment differs/);
+  assert.equal((await f.state()).rollbackSubmissions, undefined);
+  assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+  // Explicit operator reconciliation removes the retired policy and env entry. If a later
+  // acceptance step fails, its recreation must also block ordinary resume.
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
+  await f.failNext("fail-rollout-api");
+  await assert.rejects(run(...recoverHelm), injectedFault);
+  assert.ok(existsSync(join(f.evidence, "helm-recovery", "acknowledged.json")));
+  const recovered = await f.state();
+  recovered.recoveryResources[key] = policy;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(recovered));
+  await assert.rejects(run("--resume"), /predecessor-only resource still exists/);
+  assert.equal(existsSync(join(f.evidence, "completed")), false);
+  delete recovered.recoveryResources[key];
+  const apiEnv =
+    recovered.recoveryResources["Deployment/openclaw-enterprise-api"].spec.template.spec
+      .containers[0].env;
+  apiEnv.push(oldEnv);
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(recovered));
+  await assert.rejects(run("--resume"), /live environment differs/);
+  assert.equal(existsSync(join(f.evidence, "completed")), false);
+  apiEnv.pop();
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(recovered));
+  await run("--resume");
+  assert.equal((await f.state()).rollbackSubmissions, 1);
+  assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+  assert.equal(await readFile(join(f.evidence, "helm-started"), "utf8"), originalIntent);
+});
+
+test("same-candidate recovery verifies a changed retained environment selection after rollback", async (t) => {
+  const { f, run, pending } = await interruptedProxyRemoval(t, "http://198.51.100.26:3128");
+  // A retained scalar can legitimately differ before rollback. This protocol
+  // fault keeps its old value afterward; it must not receive acknowledgement.
+  const entries =
+    pending.recoveryResources["Deployment/openclaw-enterprise-api"].spec.template.spec.containers[0]
+      .env;
+  entries.find((entry) => entry.name === "OCC_CHANNEL_DIRECTORY_PROXY_URL").value =
+    "http://198.51.100.25:3128";
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
+  await assert.rejects(run(...recoverHelm), /live environment differs/);
+  assert.equal((await f.state()).rollbackSubmissions, 1);
+  assert.equal(existsSync(join(f.evidence, "helm-recovery", "acknowledged.json")), false);
+});
+
+for (const [stage, read, rollbacks] of [
+  ["before dispatch", 2, 0],
+  ["after rollback", 3, 1],
+]) {
+  test(`same-candidate recovery refuses a predecessor resource recreated ${stage}`, async (t) => {
+    const { f, run, pending } = await interruptedProxyRemoval(t);
+    pending.retiredResourceAppearsAt = read;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
+    await assert.rejects(run(...recoverHelm), /predecessor-only resource still exists/);
+    assert.equal((await f.state()).rollbackSubmissions ?? 0, rollbacks);
+    assert.ok(existsSync(join(f.evidence, "helm-recovery", "intent.json")));
+    assert.equal(existsSync(join(f.evidence, "helm-recovery", "acknowledged.json")), false);
+    assert.equal(existsSync(join(f.evidence, "completed")), false);
+  });
+}
+
+test("same-candidate recovery refuses a retired regular worker placement", async (t) => {
+  const f = await fixture(t, { recoveryHooks: true });
+  // Chart change 24ae029557 moves the broker-enabled worker to a restartable
+  // init container. A same-candidate patch cannot remove its old placement.
+  const worker = { name: "worker", image: controller, args: ["apps/controller/src/worker.mjs"] };
+  const previous = {
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: { name: "broker-worker", namespace: "system" },
+    spec: { template: { spec: { containers: [worker] } } },
+  };
+  const candidate = structuredClone(previous);
+  candidate.spec.template.spec = {
+    initContainers: [{ ...worker, restartPolicy: "Always" }],
+    containers: [{ name: "repository-credentials", image: controller }],
+  };
+  const initial = await f.state();
+  initial.recoveryBaselineResources = [previous];
+  initial.recoveryCandidateResources = [candidate];
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(initial));
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  const pending = await completedHookInPendingRelease(f);
+  const podSpec = pending.recoveryResources["Deployment/broker-worker"].spec.template.spec;
+  podSpec.containers.push(worker);
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
+  await assert.rejects(f.run(...recoverHelm), /retired container placement still exists/);
+  assert.equal((await f.state()).rollbackSubmissions, undefined);
+  assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+  podSpec.containers.pop();
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
+  await f.failNext("fail-rollout-api");
+  await assert.rejects(f.run(...recoverHelm), injectedFault);
+  const acknowledged = await f.state();
+  const live = acknowledged.recoveryResources["Deployment/broker-worker"].spec.template.spec;
+  live.containers.push(worker);
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(acknowledged));
+  await assert.rejects(f.run("--resume"), /retired container placement still exists/);
+  assert.equal(existsSync(join(f.evidence, "completed")), false);
+  live.containers.pop();
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(acknowledged));
+  await f.run("--resume");
+  assert.equal((await f.state()).rollbackSubmissions, 1);
+});
+
+test("same-candidate recovery requires changed custom-resource specs already reconciled", async (t) => {
+  const f = await fixture(t, { recoveryHooks: true });
+  // The real EnvoyProxy shape added node placement in chart change 78131ffa33.
+  // This controlled protocol proves admission, not a running Envoy controller.
+  const previous = {
+    apiVersion: "gateway.envoyproxy.io/v1alpha1",
+    kind: "EnvoyProxy",
+    metadata: { name: "gateway", namespace: "system" },
+    spec: {
+      provider: {
+        type: "Kubernetes",
+        kubernetes: { envoyService: { name: "gateway", type: "ClusterIP" } },
+      },
+    },
+  };
+  const candidate = structuredClone(previous);
+  candidate.spec.provider.kubernetes.envoyDeployment = {
+    pod: { nodeSelector: { "oce-role": "control" } },
+  };
+  const initial = await f.state();
+  initial.recoveryBaselineResources = [previous];
+  initial.recoveryCandidateResources = [candidate];
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(initial));
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  const pending = await completedHookInPendingRelease(f);
+  pending.recoveryResources["EnvoyProxy/gateway"].metadata.uid = "envoy-proxy-uid";
+  for (const spec of [previous.spec, { ...candidate.spec, admissionDefault: true }]) {
+    const state = structuredClone(pending);
+    state.recoveryResources["EnvoyProxy/gateway"].spec = spec;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    await assert.rejects(f.run(...recoverHelm), /changed custom-resource spec is not reconciled/);
+    assert.equal((await f.state()).rollbackSubmissions, undefined);
+    assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+  }
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
+  await f.failNext("fail-rollout-api");
+  await assert.rejects(f.run(...recoverHelm), injectedFault);
+  const acknowledged = await f.state();
+  acknowledged.recoveryResources["EnvoyProxy/gateway"].spec = previous.spec;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(acknowledged));
+  await assert.rejects(f.run("--resume"), /changed custom-resource spec is not reconciled/);
+  acknowledged.recoveryResources["EnvoyProxy/gateway"].spec = candidate.spec;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(acknowledged));
+  await f.run("--resume");
+  assert.equal((await f.state()).rollbackSubmissions, 1);
+});
+
+test("same-candidate recovery uses completed attempt-bound hooks and never repeats an acknowledged rollback", async (t) => {
+  const f = await fixture(t, { recoveryHooks: true });
+  // Recovery cannot act before the operator supplies both required attestations.
+  await assert.rejects(
+    f.run("--resume", "--recover-helm"),
+    /requires --resume --migration-history-checked --recovery-reviewed/,
+  );
+  await assert.rejects(f.run("--recovery-reviewed"), /requires --recover-helm/);
+  assert.deepEqual(await f.events(), []);
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  await completedHookInPendingRelease(f);
+  const original = await readFile(join(f.evidence, "helm-started"), "utf8");
+  // Rollback is acknowledged but ordinary acceptance is interrupted. Resume
+  // must finish acceptance without rerunning migration or rollback.
+  await f.failNext("fail-rollout-api");
+  await assert.rejects(f.run(...recoverHelm), injectedFault);
+  assert.equal((await f.state()).version, 3);
+  const acknowledged = await f.state();
+  for (const resource of [
+    "Deployment/openclaw-enterprise-api",
+    "Deployment/openclaw-enterprise-worker",
+    "Job/oce-initialization",
+    "Pod/initializer-pod",
+  ]) {
+    const changed = structuredClone(acknowledged);
+    const actual = resource.startsWith("Secret/")
+      ? changed.secret
+      : changed.recoveryResources[resource];
+    actual.metadata.uid += "-replacement";
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(changed));
+    await assert.rejects(f.run("--resume"), /recovery resource identity changed/);
+    assert.equal((await f.state()).rollbackSubmissions, 1);
+    assert.equal(existsSync(join(f.evidence, "completed")), false);
+  }
+  // Rollout changes resource versions without replacing the acknowledged objects.
+  for (const resource of Object.values(acknowledged.recoveryResources)) {
+    resource.metadata.resourceVersion = "later-version";
+  }
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(acknowledged));
+  await f.run("--resume");
+  assert.equal(await readFile(join(f.evidence, "helm-started"), "utf8"), original);
+  assert.equal((await f.state()).rollbackSubmissions, 1);
+  assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+  assert.ok(existsSync(join(f.evidence, "completed")));
+});
+
+test("recovery refuses stale hooks, wrong Pod ownership and changed execution without submitting Helm", async (t) => {
+  const f = await fixture(t, { recoveryHooks: true });
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  const original = await completedHookInPendingRelease(f);
+  for (const [name, change, refusal] of [
+    [
+      "stale nonce",
+      (state) => {
+        state.recoveryResources["Job/oce-initialization"].metadata.annotations[
+          "openclaw.dev/upgrade-attempt"
+        ] = randomUUID();
+      },
+      /original upgrade attempt/,
+    ],
+    [
+      "wrong owner",
+      (state) => {
+        state.recoveryPod.metadata.ownerReferences[0].uid = "another-job";
+      },
+      /Pod identity/,
+    ],
+    [
+      "changed command",
+      (state) => {
+        state.recoveryPod.spec.initContainers[0].args = ["unrelated.mjs"];
+      },
+      /Pod identity/,
+    ],
+    [
+      "added entrypoint",
+      (state) => {
+        state.recoveryPod.spec.containers[0].command = ["unreviewed"];
+      },
+      /Pod identity/,
+    ],
+    [
+      "post-upgrade hook",
+      (state) => {
+        state.recoveryRelease.hooks[0].events.push("post-upgrade");
+      },
+      /other hook events/,
+    ],
+  ]) {
+    await t.test(name, async () => {
+      const state = structuredClone(original);
+      change(state);
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      await assert.rejects(f.run(...recoverHelm), refusal);
+      assert.equal((await f.state()).rollbackSubmissions, undefined);
+      assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+    });
+  }
+});
+
+test("a staged retry cannot replace the published Helm attempt and an actual retry gets a fresh nonce", async (t) => {
+  const f = await fixture(t);
+  await f.failNext("fail-migration");
+  await assert.rejects(f.run(), injectedFault);
+  const original = await assertHelmIntent(f, 1, 2);
+  const preparation = await readFile(join(f.evidence, "parameters.json"), "utf8");
+  // The new candidate is staged before quiescence; stopping here must leave
+  // the accepted failed submission authoritative on the next resume.
+  await f.failNext("fail-scale-worker");
+  await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
+  assert.deepEqual(await assertHelmIntent(f, 1, 2), original);
+  await assert.rejects(f.run("--resume"), /migration --check/);
+  assert.equal((await f.state()).helmSubmissions, 1);
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
+  const retry = await assertHelmIntent(f, 2, 3);
+  assert.notEqual(retry.attempt.nonce, original.attempt.nonce);
+  assert.deepEqual(
+    JSON.parse(
+      await readFile(
+        join(f.evidence, "helm-attempts", original.attempt.nonce, "intent.json"),
+        "utf8",
+      ),
+    ),
+    original,
+  );
+  assert.equal(await readFile(join(f.evidence, "parameters.json"), "utf8"), preparation);
+  await f.run("--resume");
+});
+
+test("a retry published before Helm accepts it can resume from its exact predecessor", async (t) => {
+  const f = await fixture(t);
+  await f.failNext("fail-migration");
+  await assert.rejects(f.run(), injectedFault);
+  const original = await assertHelmIntent(f, 1, 2);
+  // B is published, but Helm refuses it before creating a revision. A remains live.
+  await f.failNext("reject-helm-submission");
+  await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
+  const retry = await assertHelmIntent(f, 2, 3);
+  assert.notEqual(retry.attempt.nonce, original.attempt.nonce);
+  const predecessor = await f.state();
+  assert.equal(predecessor.version, 2);
+  const events = await f.events();
+  // The retained values belong only to the exact predecessor revision.
+  await writeFile(join(f.directory, "state.json"), JSON.stringify({ ...predecessor, version: 3 }));
+  await assert.rejects(f.run("--resume", "--migration-history-checked"), /live Helm values/);
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(predecessor));
+  const liveValues = await readFile(join(f.directory, "live-values"), "utf8");
+  await writeFile(
+    join(f.directory, "live-values"),
+    JSON.stringify({ ...loadYaml(liveValues), unrelated: true }),
+  );
+  await assert.rejects(f.run("--resume", "--migration-history-checked"), /live Helm values/);
+  await writeFile(join(f.directory, "live-values"), liveValues);
+  assert.deepEqual(await f.events(), events);
+  await f.run("--resume", "--migration-history-checked");
+  assert.equal((await f.state()).version, 3);
+  assert.equal((await f.events()).filter((event) => event === "migration").length, 2);
+});
+
+test("a first intent interrupted before publication can finish its identical staged write", async (t) => {
+  for (const stagedFileExists of [false, true]) {
+    await t.test(stagedFileExists ? "after staging" : "before staging", async (subtest) => {
+      const f = await fixture(subtest);
+      await f.failNext("reject-helm-submission");
+      await assert.rejects(f.run(), injectedFault);
+      const intent = await assertHelmIntent(f, 1, 2);
+      const original = await readFile(join(f.evidence, "helm-started"), "utf8");
+      const directory = join(f.evidence, "helm-attempts", intent.attempt.nonce);
+      // Retain the exact real intent, modeling interruption after its exclusive
+      // creation but before publication. No Helm revision or migration was created.
+      await rm(join(f.evidence, "helm-started"));
+      if (stagedFileExists) {
+        const staged = join(directory, "helm-started.tmp");
+        await writeFile(staged, JSON.stringify({ ...intent, expectedRevision: 3 }), {
+          mode: 0o600,
+        });
+        await assert.rejects(f.run("--resume"), /staged Helm submission intent changed/);
+        assert.equal((await f.state()).helmSubmissions, 1);
+        await writeFile(staged, original);
+      }
+      await f.run("--resume");
+      assert.equal(await readFile(join(directory, "intent.json"), "utf8"), original);
+      assert.equal((await f.state()).version, 2);
+      assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+    });
+  }
+});
+
+test("ordinary resume rejects a well-formed revision pair that differs from the immutable intent", async (t) => {
+  const f = await fixture(t);
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  const original = await assertHelmIntent(f, 1, 2);
+  const state = await f.state();
+  state.version = 3;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  await writeFile(
+    join(f.evidence, "helm-started"),
+    JSON.stringify({
+      ...original,
+      previousRevision: 2,
+      expectedRevision: 3,
+    }),
+  );
+  const events = await f.events();
+  await assert.rejects(f.run("--resume"), /submission intent/);
+  assert.deepEqual(await f.events(), events);
+  assert.equal(existsSync(join(f.evidence, "completed")), false);
+});
+
+test("recovery rejects admission-added execution settings even when absent from the candidate", async (t) => {
+  const f = await fixture(t, { recoveryHooks: true });
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  const original = await completedHookInPendingRelease(f);
+  for (const [field, value] of [
+    ["lifecycle", { postStart: { exec: { command: ["unreviewed"] } } }],
+    ["env", [{ name: "NODE_OPTIONS", value: "--require=/unreviewed.js" }]],
+    ["envFrom", [{ secretRef: { name: "unreviewed" } }]],
+    ["workingDir", "/unreviewed"],
+    ["startupProbe", { exec: { command: ["unreviewed"] } }],
+    ["volumeMounts", [{ name: "unreviewed", mountPath: "/unreviewed" }]],
+    ["volumeDevices", [{ name: "unreviewed", devicePath: "/dev/unreviewed" }]],
+  ]) {
+    await t.test(field, async () => {
+      const state = structuredClone(original);
+      state.recoveryPod.spec.containers[0][field] = value;
+      if (field === "volumeMounts" || field === "volumeDevices") {
+        state.recoveryPod.spec.volumes = [
+          {
+            name: "unreviewed",
+            ...(field === "volumeDevices"
+              ? { persistentVolumeClaim: { claimName: "unreviewed-block" } }
+              : { emptyDir: {} }),
+          },
+        ];
+      }
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      await assert.rejects(f.run(...recoverHelm), /Pod identity/);
+      assert.equal((await f.state()).rollbackSubmissions, undefined);
+      assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+    });
+  }
+});
+
+test("an unacknowledged same-candidate rollback cannot be replayed or silently adopted", async (t) => {
+  const f = await fixture(t, { recoveryHooks: true });
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  await completedHookInPendingRelease(f);
+  await f.failNext("lost-rollback-response");
+  await assert.rejects(f.run(...recoverHelm), /outcome is unresolved/);
+  // The controlled server accepted recovery, but the helper did not acknowledge
+  // it. A healthy successor alone must not authorize replay or adoption.
+  assert.equal((await f.state()).version, 3);
+  const intent = await readFile(join(f.evidence, "helm-recovery", "intent.json"), "utf8");
+  await assert.rejects(f.run(...recoverHelm), /Do not replay recovery/);
+  assert.equal((await f.state()).rollbackSubmissions, 1);
+  assert.equal(await readFile(join(f.evidence, "helm-recovery", "intent.json"), "utf8"), intent);
+  assert.equal(existsSync(join(f.evidence, "completed")), false);
+});
+
+test("a staged retry with replaced local values still cannot replace the published attempt", async (t) => {
+  const f = await fixture(t);
+  await f.failNext("fail-migration");
+  await assert.rejects(f.run(), injectedFault);
+  const original = await assertHelmIntent(f, 1, 2);
+  const preparation = await readFile(join(f.evidence, "parameters.json"), "utf8");
+  // Simulate loss at the last native read after local values replacement, before
+  // publishing the next intent. Resume must require explicit reconciliation.
+  await f.failNext("fail-before-helm-intent");
+  await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
+  assert.notEqual(
+    (await yamlFile(join(f.directory, "values.json"))).installation.upgradeAttemptId,
+    original.attempt.nonce,
+  );
+  await assert.rejects(
+    f.run("--resume", "--migration-history-checked"),
+    /protected Helm values changed/,
+  );
+  assert.deepEqual(await assertHelmIntent(f, 1, 2), original);
+  assert.equal((await f.state()).helmSubmissions, 1);
+  assert.equal(await readFile(join(f.evidence, "parameters.json"), "utf8"), preparation);
+});
+
+test("failed attempt preparation preserves native dry-run diagnostics before stopping writers", async (t) => {
+  const f = await fixture(t);
+  await f.failNext("fail-server-dry-run");
+  await assert.rejects(f.run(), (error) => {
+    assert.equal(error.code, 9);
+    assert.match(error.stderr, /Helm preparation failed/);
+    return true;
+  });
+  const attempts = await readdir(join(f.evidence, "helm-attempts"));
+  assert.equal(attempts.length, 1);
+  await assertPrivateReceipt(
+    join(f.evidence, "helm-attempts", attempts[0], "server-dry-run-error.log"),
+    "synthetic server dry-run diagnostic\n",
+  );
+  assert.deepEqual(await f.events(), []);
+  assert.equal(existsSync(join(f.evidence, "prepared")), false);
+});
+
+test("recovery refuses a container override of the inherited initializer identity", async (t) => {
+  const f = await fixture(t, { recoveryHooks: true });
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  const original = await completedHookInPendingRelease(f);
+  // Admission may leave the Job intact and override identity only on its Pod.
+  for (const placement of ["initContainers", "containers"]) {
+    for (const [key, value] of [
+      ["runAsUser", 1001],
+      ["runAsGroup", 1001],
+      ["runAsNonRoot", false],
+    ]) {
+      await t.test(`${placement} ${key}`, async () => {
+        const state = structuredClone(original);
+        state.recoveryPod.spec[placement][0].securityContext[key] = value;
+        await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+        await assert.rejects(f.run(...recoverHelm), /Pod identity/);
+        assert.equal((await f.state()).rollbackSubmissions, undefined);
+        assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+      });
+    }
+  }
+});
+
+test("recovery compares initializer resource quantities by value and refuses changed limits", async (t) => {
+  const f = await fixture(t, {
+    recoveryHooks: true,
+    initializationResources: {
+      requests: { cpu: "0.1", memory: "128Mi" },
+      limits: { cpu: "0.5", memory: "1.5Gi" },
+    },
+  });
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  const original = await completedHookInPendingRelease(f);
+  // Kubernetes serializes equivalent fixed-point quantities canonically on
+  // the Job and Pod; the stored Helm manifest retains the original spelling.
+  for (const spec of [
+    original.recoveryResources["Job/oce-initialization"].spec.template.spec,
+    original.recoveryPod.spec,
+  ]) {
+    for (const container of [...spec.initContainers, ...spec.containers]) {
+      container.resources.requests.cpu = "100m";
+      container.resources.limits = { cpu: "500m", memory: "1536Mi" };
+    }
+  }
+  for (const [placement, section, resource, value] of [
+    ["containers", "limits", "memory", "1537Mi"],
+    ["initContainers", "requests", "cpu", "101m"],
+  ]) {
+    const changed = structuredClone(original);
+    changed.recoveryPod.spec[placement][0].resources[section][resource] = value;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(changed));
+    await assert.rejects(f.run(...recoverHelm), /Pod identity/);
+    assert.equal((await f.state()).rollbackSubmissions, undefined);
+    assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+  }
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(original));
+  await f.run(...recoverHelm);
+  assert.equal((await f.state()).rollbackSubmissions, 1);
+  assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+});
+
+test("recovery refuses admission changes to Pod and container security settings", async (t) => {
+  for (const change of ["Pod sysctls", "container seccomp", "init capabilities"]) {
+    await t.test(change, async (subtest) => {
+      const f = await fixture(subtest, { recoveryHooks: true });
+      await f.failNext("lost-helm-response");
+      await assert.rejects(f.run(), injectedFault);
+      const state = await completedHookInPendingRelease(f);
+      // Admission can preserve every requested field while adding privileges or
+      // overriding a profile inherited from the Pod onto one container.
+      const spec = state.recoveryPod.spec;
+      if (change === "Pod sysctls") {
+        spec.securityContext.sysctls = [
+          { name: "net.ipv4.ip_local_port_range", value: "1024 65535" },
+        ];
+      } else if (change === "container seccomp") {
+        spec.containers[0].securityContext.seccompProfile = { type: "Unconfined" };
+      } else {
+        spec.initContainers[0].securityContext.capabilities.add = ["NET_ADMIN"];
+      }
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      await assert.rejects(f.run(...recoverHelm), /Pod identity/);
+      assert.equal((await f.state()).rollbackSubmissions, undefined);
+      assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+    });
+  }
 });

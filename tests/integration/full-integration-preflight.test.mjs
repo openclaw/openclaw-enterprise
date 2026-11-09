@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
 import { join } from "node:path";
@@ -275,26 +275,132 @@ test("full integration plans fresh fallback and attributes only published reuse 
   const script = workflow
     .split("- name: Write selected job state")[1]
     .match(/node <<'NODE'\n([\s\S]*?)\n\s+NODE/)[1];
-  for (const result of ["success", "failure", "skipped"]) {
+  const { loadYaml } = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  )("@kubernetes/client-node");
+  const jobs = loadYaml(workflow).jobs["full-aggregate"].needs;
+  const execute = async (result, reused = ["postgres"], parent = "failure") => {
     const aggregated = spawnSync(process.execPath, ["--input-type=commonjs"], {
       input: script,
       encoding: "utf8",
       env: {
         RUNNER_TEMP: directory,
         SELECTED_LANE: "all",
-        REUSED_LANES: '["postgres"]',
+        REUSED_LANES: JSON.stringify(reused),
         NEEDS_JSON: JSON.stringify({
+          ...Object.fromEntries(jobs.map((name) => [name, { result: "success" }])),
           "ci-reuse": { result },
-          "pr-safe-same-sha": { result: "failure" },
+          "pr-safe-same-sha": { result: parent },
         }),
       },
     });
     assert.equal(aggregated.status, 0, aggregated.stderr);
-    const needs = JSON.parse(await readFile(join(directory, "needs.json"), "utf8"));
-    assert.equal(needs.postgres.result, result === "success" ? "success" : "failure");
-    assert.equal(needs["postgres-auth"].result, "failure");
-    assert.equal(needs["images-packaging"].result, "missing");
+    return JSON.parse(await readFile(join(directory, "needs.json"), "utf8"));
+  };
+  for (const result of ["success", "failure", "skipped"]) {
+    const needs = await execute(result);
+    assert.deepEqual(needs.postgres, result === "success" ? { result: "success" } : undefined);
+    assert.equal(needs["pr-safe-same-sha"].result, "failure");
+    assert.equal(needs["pr-safe-same-sha"].lanes.includes("postgres"), result !== "success");
+    assert.ok(needs["pr-safe-same-sha"].lanes.includes("postgres-auth"));
+    assert.equal(needs["postgres-auth"], undefined);
+    assert.ok(needs["image-lanes-same-sha"].lanes.includes("images-packaging"));
   }
+  // Even when every eligible lane is reused, the two fresh-only lanes retain
+  // the real parent outcome. Reused lanes must not also belong to that parent.
+  const { rows, sha } = await reuseFixture();
+  const allReused = await execute(
+    "success",
+    rows.map((row) => row.lane),
+  );
+  assert.deepEqual(allReused["pr-safe-same-sha"], {
+    result: "failure",
+    lanes: ["k3d-observability-demo", "repository-credentials-container"],
+  });
+  for (const { lane } of rows) {
+    assert.deepEqual(allReused[lane], { result: "success" });
+  }
+
+  // Feed the shipped workflow's output into the real aggregator with receipts
+  // made by its runner. This proves mixed direct/matrix ownership, not merely
+  // the shape of needs.json; these tiny cases do not exercise PostgreSQL.
+  const lanes = ["postgres", "postgres-auth"];
+  await mkdir(join(directory, "tests/integration"), { recursive: true });
+  await writeFile(
+    join(directory, "manifest.json"),
+    JSON.stringify({
+      version: 1,
+      lanes: Object.fromEntries(
+        lanes.map((lane) => [
+          lane,
+          {
+            files: [{ path: `tests/integration/${lane}.test.mjs`, expectedTests: [lane] }],
+          },
+        ]),
+      ),
+      groups: { ci: lanes },
+    }),
+  );
+  const runner = (args) =>
+    spawnSync(
+      process.execPath,
+      ["scripts/ci/run-tests.mjs", ...args, "--root", directory, "--manifest", "manifest.json"],
+      {
+        encoding: "utf8",
+        env: { ...process.env, GITHUB_SHA: sha, GIT_CEILING_DIRECTORIES: directory },
+      },
+    );
+  for (const lane of lanes) {
+    await writeFile(
+      join(directory, `tests/integration/${lane}.test.mjs`),
+      `import test from "node:test"; test(${JSON.stringify(lane)}, () => {});\n`,
+    );
+    const result = runner([
+      "run",
+      lane,
+      "--state",
+      `state/${lane}.json`,
+      "--results",
+      `results/${lane}.json`,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+  }
+  const aggregate = () =>
+    runner(["aggregate", "ci", "--results-dir", "results", "--needs", "needs.json"]);
+  await execute("success");
+  const failed = aggregate();
+  assert.equal(failed.status, 1, failed.stderr);
+  const summary = JSON.parse(failed.stdout);
+  assert.deepEqual(
+    summary.issues.map(({ code, need }) => ({ code, need })),
+    [{ code: "need-not-success", need: "pr-safe-same-sha" }],
+  );
+  assert.ok(summary.lanes.every((lane) => lane.status === "passed"));
+  await execute(
+    "success",
+    rows.map((row) => row.lane),
+  );
+  assert.deepEqual(
+    JSON.parse(aggregate().stdout).issues.map((issue) => issue.code),
+    ["need-not-success"],
+  );
+  await execute(
+    "success",
+    rows.map((row) => row.lane),
+    "success",
+  );
+  assert.equal(aggregate().status, 0);
+  // A success entry cannot replace the reused lane's missing or stale receipt.
+  const receipt = join(directory, "results/postgres.json");
+  const original = await readFile(receipt, "utf8");
+  await writeFile(receipt, JSON.stringify({ ...JSON.parse(original), sourceSha: "0".repeat(40) }));
+  assert.ok(
+    JSON.parse(aggregate().stdout).issues.some((issue) => issue.code === "source-sha-mismatch"),
+  );
+  await rm(receipt);
+  assert.ok(
+    JSON.parse(aggregate().stdout).issues.some((issue) => issue.code === "missing-lane-output"),
+  );
 });
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));

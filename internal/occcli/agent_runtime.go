@@ -71,7 +71,9 @@ func (app *application) agentRevision(
 		if err != nil {
 			return "", nil, err
 		}
-		noticef(notices, "notice: agent %s has no active revision; using %s, the latest revision you can read", agentID, latest)
+		if err := noticef(notices, "notice: agent %s has no active revision; using %s, the latest revision you can read", agentID, latest); err != nil {
+			return "", nil, err
+		}
 		return latest, nil, nil
 	}
 	// A newer revision than the active one is being deployed or has failed; while
