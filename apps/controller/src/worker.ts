@@ -150,7 +150,7 @@ import {
 import {
   RepositoryCredentialAuthorityError,
   repositoryCleanupFailureCode,
-  disposedRepositorySessions,
+  repositorySessionDisposal,
   RepositoryCredentialLifecycle,
   StandingRepositorySessionDisposingError,
 } from "./worker/repository-credentials.ts";
@@ -2430,7 +2430,10 @@ export class ControllerWorker {
       if (
         disposedSessions !== undefined &&
         expiryRevision !== undefined &&
-        !isDeepStrictEqual(disposedSessions, disposedRepositorySessions(expiryRevision, attempts))
+        !isDeepStrictEqual(
+          { kind: "disposed", sessions: disposedSessions },
+          repositorySessionDisposal(expiryRevision, attempts),
+        )
       ) {
         complete = false;
       }
@@ -2575,10 +2578,10 @@ export class ControllerWorker {
           revision.repositoryCredentials?.standingApprovalId === undefined &&
           this.observeRepositoryWithdrawal !== undefined
         ) {
-          let disposedSessions: readonly RepositoryCredentialMaterialRef[] | undefined;
+          let disposal: ReturnType<typeof repositorySessionDisposal>;
           try {
-            disposedSessions = await this.state.read(async (view) =>
-              disposedRepositorySessions(
+            disposal = await this.state.read(async (view) =>
+              repositorySessionDisposal(
                 revision,
                 await view.repositorySessions.listRevisionAttempts({
                   namespaceId,
@@ -2593,27 +2596,35 @@ export class ControllerWorker {
             }
             // Unavailable disposal evidence cannot suppress another topology's withdrawal owner.
           }
-          const observed = await this.observeRepositoryWithdrawal(
-            revision,
-            disposedSessions,
-            signal,
-          );
-          if (observed !== "unsupported") {
-            if (observed !== "verified" || disposedSessions === undefined) {
-              return { withdrawal: "pending" };
+          // Legacy sessions still belong to the original withdrawal owner.
+          if (disposal?.kind !== "legacy") {
+            const disposedSessions = disposal?.sessions;
+            let observed: "verified" | "unknown" | "unsupported" = "unknown";
+            try {
+              observed = await this.observeRepositoryWithdrawal(revision, disposedSessions, signal);
+            } catch (error) {
+              if (signal.aborted || error instanceof WorkClaimLostError) {
+                throw error;
+              }
             }
-            const currentAuthority = await this.repositoryWithdrawalAuthority(
-              claim,
-              agent,
-              revision,
-              signal,
-            );
-            if (currentAuthority !== undefined) {
-              return currentAuthority;
+            if (observed !== "unsupported") {
+              // Even an inconclusive observation may span an independent authority withdrawal.
+              const currentAuthority = await this.repositoryWithdrawalAuthority(
+                claim,
+                agent,
+                revision,
+                signal,
+              );
+              if (currentAuthority !== undefined) {
+                return currentAuthority;
+              }
+              if (observed !== "verified" || disposedSessions === undefined) {
+                return { withdrawal: "pending" };
+              }
+              const currentResources = await this.repositoryWithdrawalResources(revision);
+              signal.throwIfAborted();
+              return currentResources ?? { withdrawal: "withdrawn", disposedSessions };
             }
-            const currentResources = await this.repositoryWithdrawalResources(revision);
-            signal.throwIfAborted();
-            return currentResources ?? { withdrawal: "withdrawn", disposedSessions };
           }
         }
         const result =

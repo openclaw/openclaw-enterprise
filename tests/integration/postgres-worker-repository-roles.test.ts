@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import test, { after } from "node:test";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
@@ -9,6 +10,10 @@ import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { RepositoryCredentialLifecycle } from "../../apps/controller/src/worker/repository-credentials.ts";
 import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
+import type {
+  ComputeReadiness,
+  ComputeRevisionContext,
+} from "../../packages/contracts/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
@@ -33,9 +38,14 @@ after(cleanup);
 
 for (const scenario of [
   "ready",
+  "repaired history",
   "changed material",
+  "stale gateway endpoint",
+  "stale harness endpoint",
   "revoked deployer",
   "deployer revoked during observation",
+  "deployer revoked during unknown observation",
+  "deployer revoked during failed observation",
   "invalidated history",
 ] as const) {
   test(
@@ -130,6 +140,15 @@ for (const scenario of [
         },
       );
       const { driver: compute, revision } = runtime;
+      const transformDrivers = (
+        drivers: InstallationRuntimeDrivers,
+      ): InstallationRuntimeDrivers => ({
+        ...drivers,
+        repositoryPolicy: policy,
+        nativeRepositorySender: sender,
+        observeRepositoryWithdrawal: (selectedRevision, disposedSessions, signal) =>
+          compute.observeRepositoryWithdrawal(selectedRevision, disposedSessions, signal),
+      });
       // Helm owns the initially closed broker ingress policy and its internal Service.
       // Compute must admit this exact Harness through its normal reconciliation path.
       const brokerLabels = { "app.kubernetes.io/component": "worker" };
@@ -281,6 +300,52 @@ for (const scenario of [
       };
       assert.equal((await compute.prepareRevision(revision, computeContext)).ready, true);
       await compute.activateRevision(revision, computeContext);
+      if (scenario === "repaired history") {
+        // Losing a delivered Secret requires a real broker replacement. Keep the disposed
+        // attempt: withdrawal must prove the mounted replacement without discarding history.
+        const material = [...runtime.objects.entries()].find(
+          ([, object]) =>
+            object.kind === "Secret" &&
+            object.metadata.annotations?.["openclaw.dev/repository-session-id"] ===
+              opened.session.sessionId,
+        );
+        assert.ok(material);
+        runtime.objects.delete(material[0]);
+        assert.ok(await queue.heartbeat(claim));
+        await f.start(compute, { transformDrivers });
+        // Enter the real worker's preparation path with the retained deploy claim. Its
+        // Compute observation must trigger repair with actual authorization and heartbeat.
+        const worker = [...f.database.workers].at(-1);
+        assert.ok(worker);
+        const repaired = (await Reflect.apply(Reflect.get(worker, "prepareRevision"), worker, [
+          claim,
+          revision,
+          computeContext,
+        ])) as { observation: ComputeReadiness; context: ComputeRevisionContext };
+        await f.stop();
+        assert.equal(repaired.observation.ready, true);
+        assert.ok(repaired.context.repositoryCredentials?.[0]);
+        assert.notEqual(
+          repaired.context.repositoryCredentials[0].sessionId,
+          opened.session.sessionId,
+        );
+        await compute.activateRevision(revision, repaired.context);
+        const history = await repositoryAttempts(f, revision);
+        assert.equal(history.length, 2);
+        assert.equal(
+          history.find(
+            (entry: { sessionId: string }) => entry.sessionId === opened.session.sessionId,
+          )?.phase,
+          "disposed",
+        );
+        assert.equal(
+          history.find(
+            (entry: { sessionId: string }) =>
+              entry.sessionId === repaired.context.repositoryCredentials?.[0]?.sessionId,
+          )?.phase,
+          "open",
+        );
+      }
       await f.state.transactWithQueue(async (unit, work) => {
         await unit.namespaces.lockNamespace(f.namespace.id);
         await unit.agents.lockAgent(f.namespace.id, owner.id);
@@ -348,6 +413,34 @@ for (const scenario of [
           },
         });
       }
+      const listEndpoints = runtime.clients.discovery.listNamespacedEndpointSlice;
+      if (scenario === "stale gateway endpoint" || scenario === "stale harness endpoint") {
+        // A ready but stale endpoint must not stand in for either verified runtime Pod.
+        const servicePrefix = scenario === "stale gateway endpoint" ? "gateway-" : "agent-";
+        const service = [...runtime.objects.values()].find(
+          (object) => object.kind === "Service" && object.metadata.name.startsWith(servicePrefix),
+        );
+        assert.ok(service);
+        runtime.clients.discovery.listNamespacedEndpointSlice = async (request) => {
+          const result = await listEndpoints(request);
+          if (request.labelSelector === `kubernetes.io/service-name=${service.metadata.name}`) {
+            return {
+              ...result,
+              items: result.items.map((slice) => ({
+                ...slice,
+                endpoints: slice.endpoints.map((endpoint) => {
+                  assert.ok(endpoint.targetRef);
+                  return {
+                    ...endpoint,
+                    targetRef: { ...endpoint.targetRef, uid: "stale-runtime-pod" },
+                  };
+                }),
+              })),
+            };
+          }
+          return result;
+        };
+      }
       const revokeDeployer = () =>
         f.observerPool.query("DELETE FROM occ.iam_access_bindings WHERE identity_subject_id=$1", [
           f.actor.id,
@@ -356,14 +449,19 @@ for (const scenario of [
         await revokeDeployer();
       }
       let revokedDuringObservation = false;
-      if (scenario === "deployer revoked during observation") {
+      const revokeDuringObservation = scenario.startsWith("deployer revoked during");
+      if (revokeDuringObservation) {
         // Authority can change while the authenticated node observation is in flight.
-        // Keep the real connectivity result; change only the actual persisted IAM grant.
+        // Exercise connected, disconnected, and failed node observations against real IAM loss.
         const connected = compute.nodeEnrollment.isConnected.bind(compute.nodeEnrollment);
         compute.nodeEnrollment.isConnected = async (...args: Parameters<typeof connected>) => {
           await revokeDeployer();
           revokedDuringObservation = true;
-          return connected(...args);
+          const result = await connected(...args);
+          if (scenario === "deployer revoked during failed observation") {
+            throw new Error("node observation unavailable");
+          }
+          return scenario === "deployer revoked during unknown observation" ? false : result;
         };
       }
       const events: { code?: unknown; revisionId?: unknown }[] = [];
@@ -374,16 +472,15 @@ for (const scenario of [
               events.push(event);
             }
           },
-          transformDrivers: (drivers: InstallationRuntimeDrivers): InstallationRuntimeDrivers => ({
-            ...drivers,
-            repositoryPolicy: policy,
-            nativeRepositorySender: sender,
-            observeRepositoryWithdrawal: (selectedRevision, disposedSessions, signal) =>
-              compute.observeRepositoryWithdrawal(selectedRevision, disposedSessions, signal),
-          }),
+          transformDrivers,
         });
       await start();
-      if (scenario === "changed material" || scenario === "invalidated history") {
+      if (
+        scenario === "changed material" ||
+        scenario === "stale gateway endpoint" ||
+        scenario === "stale harness endpoint" ||
+        scenario === "invalidated history"
+      ) {
         await waitFor("native withdrawal remains unverified", async () =>
           events.find(
             (event) =>
@@ -403,19 +500,34 @@ for (const scenario of [
           assert.equal(attempts.length, 2);
           assert.ok(attempts.some((attempt: { phase: string }) => attempt.phase === "invalidated"));
           assert.ok(attempts.some((attempt: { phase: string }) => attempt.phase === "disposed"));
-          assert.deepEqual([...runtime.objects], resources);
+          assert.ok(
+            isDeepStrictEqual([...runtime.objects], resources),
+            "unknown evidence preserves every Kubernetes object",
+          );
           return;
         }
         runtime.objects.set(...agentDeployment);
+        runtime.clients.discovery.listNamespacedEndpointSlice = listEndpoints;
         // A new worker must recover from durable disposal evidence without reopening Git.
         await makeWorkDue(f.observerPool, { state: "queued", key: removal.idempotencyKey });
         await start();
       }
+      if (scenario === "repaired history") {
+        const completion = await waitFor("repaired history withdrawal outcome", async () =>
+          events.find(
+            (event) =>
+              event.revisionId === revision.id &&
+              (event.code === "REPOSITORY_CLEANUP_PENDING" ||
+                event.code === "REPOSITORY_ACCESS_WITHDRAWN"),
+          ),
+        );
+        assert.equal(completion.code, "REPOSITORY_ACCESS_WITHDRAWN");
+      }
       await f.work(removal, "succeeded");
       await f.stop();
       const result = await f.workResult(removal);
-      if (scenario === "revoked deployer" || scenario === "deployer revoked during observation") {
-        if (scenario === "deployer revoked during observation") {
+      if (scenario === "revoked deployer" || revokeDuringObservation) {
+        if (revokeDuringObservation) {
           assert.equal(revokedDuringObservation, true);
         }
         assert.equal(result.rows[0]?.reason_code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
@@ -425,15 +537,20 @@ for (const scenario of [
       assert.equal(result.rows[0]?.reason_code, "REPOSITORY_ACCESS_WITHDRAWN");
       assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
       const attempts = await repositoryAttempts(f, revision);
-      assert.equal(attempts.length, 1, "withdrawal never admits a replacement session");
-      assert.equal(attempts[0]?.phase, "disposed");
       assert.equal(
-        (await sender.status(opened.session.sessionId, AbortSignal.timeout(5_000)))?.state,
-        "DISPOSED",
+        attempts.length,
+        scenario === "repaired history" ? 2 : 1,
+        "withdrawal never admits a replacement session",
       );
-      assert.deepEqual(
-        [...runtime.objects],
-        resources,
+      for (const attempt of attempts) {
+        assert.equal(attempt.phase, "disposed");
+        assert.equal(
+          (await sender.status(attempt.sessionId, AbortSignal.timeout(5_000)))?.state,
+          "DISPOSED",
+        );
+      }
+      assert.ok(
+        isDeepStrictEqual([...runtime.objects], resources),
         "withdrawal preserves workload identities and settings",
       );
       assert.equal(

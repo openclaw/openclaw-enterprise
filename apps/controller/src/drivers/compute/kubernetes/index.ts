@@ -297,6 +297,7 @@ import {
   REPOSITORY_MATERIAL_GENERATION,
   repositoryMaterialCurrent,
   repositoryMaterialGeneration,
+  repositoryMaterialSessions,
   repositoryMaterialSpec,
   repositoryMaterialDeployment,
   type RepositoryMaterialSpec,
@@ -8623,7 +8624,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const operation = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
     return withComputeAbortSignal(operation, async (): Promise<"verified" | "unknown"> => {
       const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
-      const generation = repositoryMaterialGeneration(disposedSessions);
       const observe = async () => {
         const observedNamespace = await this.getNamespace(namespace);
         if (
@@ -8640,7 +8640,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
         const workloads = await Promise.all(
           (["agent", "gateway"] as const).map((role) =>
-            this.repositoryWithdrawalWorkload(revision, namespace, role, generation),
+            this.repositoryWithdrawalWorkload(revision, namespace, role, disposedSessions),
           ),
         );
         if (workloads.some((workload) => workload === undefined)) {
@@ -8655,11 +8655,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       const deviceId = await this.workspaceNodeDeviceId(revision, namespace);
       if (
         deviceId === undefined ||
-        !(await this.gatewayReady(
-          { namespaceId: revision.namespaceId, agentId: revision.agentId },
-          `gateway-${sha256Hex(revision.agentId, 12)}`,
-          this.gatewayNamespace(revision, namespace),
-        )) ||
         !(await enrollment.isConnected(endpoint, deviceId, operation)) ||
         (this.usesWorkspaceNodeBinding(revision) &&
           !(await this.pollWorkspaceNodeBindingAck(
@@ -8688,7 +8683,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: Readonly<AgentRevision>,
     namespace: KubernetesNamespaceAddress,
     role: "agent" | "gateway",
-    generation: string,
+    disposedSessions: readonly RepositoryCredentialMaterialRef[],
   ) {
     const consumer = this.repositoryConsumer(revision);
     const serviceName = `${role}-${sha256Hex(revision.agentId, 12)}`;
@@ -8709,6 +8704,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
       this.getOwned("Service", serviceName, target, serviceOwner),
     ]);
     const template = asRecord(asRecord(deployment?.spec?.template)?.metadata);
+    const sessions =
+      role === "agent"
+        ? repositoryMaterialSessions(
+            revision,
+            disposedSessions,
+            asRecord(asRecord(deployment?.spec?.template)?.spec)?.volumes,
+          )
+        : undefined;
+    const generation = sessions === undefined ? undefined : repositoryMaterialGeneration(sessions);
     const port = role === "agent" ? AGENT_TRANSPORT_PORT : this.options.network.gatewayPort;
     const ports = Array.isArray(service?.spec?.ports) ? service.spec.ports : [];
     if (
@@ -8734,7 +8738,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       (role === "gateway" &&
         deployment.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] !== revision.id) ||
       (role === "agent" &&
-        (deployment.metadata.annotations?.[REPOSITORY_MATERIAL_GENERATION] !== generation ||
+        (sessions === undefined ||
+          deployment.metadata.annotations?.[REPOSITORY_MATERIAL_GENERATION] !== generation ||
           asRecord(template?.annotations)?.[REPOSITORY_MATERIAL_GENERATION] !== generation))
     ) {
       return undefined;
@@ -8801,8 +8806,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
           asRecord(condition)?.type === "Ready" && asRecord(condition)?.status === "True",
       ) ||
       (role === "agent" &&
-        asRecord(metadata.annotations)?.[REPOSITORY_MATERIAL_GENERATION] !== generation)
+        (asRecord(metadata.annotations)?.[REPOSITORY_MATERIAL_GENERATION] !== generation ||
+          !isDeepStrictEqual(
+            sessions,
+            repositoryMaterialSessions(revision, disposedSessions, asRecord(pod.spec)?.volumes),
+          )))
     ) {
+      return undefined;
+    }
+    if (!(await this.repositoryWithdrawalEndpoints(service, target, metadata, status, port))) {
       return undefined;
     }
     return {
@@ -8814,7 +8826,77 @@ export class KubernetesComputeDriver implements ComputeDriver {
       routeVersion: route?.metadata.resourceVersion,
       podUid: metadata.uid,
       containerId,
+      sessions,
     };
+  }
+
+  private async repositoryWithdrawalEndpoints(
+    service: ManagedKubernetesObject<"Service">,
+    namespace: KubernetesNamespaceAddress,
+    podMetadata: KubernetesRecord,
+    podStatus: KubernetesRecord,
+    port: number,
+  ): Promise<boolean> {
+    const addresses = new Set([
+      podStatus.podIP,
+      ...(Array.isArray(podStatus.podIPs)
+        ? podStatus.podIPs.map((entry) => asRecord(entry)?.ip)
+        : []),
+    ]);
+    const servicePorts = Array.isArray(service.spec?.ports) ? service.spec.ports : [];
+    const portName = asRecord(servicePorts.find((entry) => asRecord(entry)?.port === port))?.name;
+    const clients = await this.clients(namespace.plane);
+    const slices = completeKubernetesList(
+      await this.request(() =>
+        clients.discovery.listNamespacedEndpointSlice({
+          namespace: namespace.name,
+          labelSelector: `kubernetes.io/service-name=${service.metadata.name}`,
+        }),
+      ),
+    );
+    let ready = 0;
+    for (const slice of slices) {
+      if (
+        slice.metadata?.namespace !== namespace.name ||
+        slice.metadata.labels?.["kubernetes.io/service-name"] !== service.metadata.name ||
+        !slice.metadata.ownerReferences?.some(
+          (owner) =>
+            owner.kind === "Service" &&
+            owner.name === service.metadata.name &&
+            owner.uid === service.metadata.uid,
+        ) ||
+        !Array.isArray(slice.endpoints)
+      ) {
+        return false;
+      }
+      const usable = slice.endpoints.filter(
+        (endpoint) => endpoint.conditions?.ready !== false || endpoint.conditions.serving === true,
+      );
+      if (usable.length === 0) {
+        continue;
+      }
+      const ports = slice.ports?.filter((entry) => entry.name === portName) ?? [];
+      if (ports.length !== 1 || ports[0]?.port !== port || (ports[0].protocol ?? "TCP") !== "TCP") {
+        return false;
+      }
+      for (const endpoint of usable) {
+        const target = endpoint.targetRef;
+        if (
+          endpoint.conditions?.ready !== true ||
+          endpoint.conditions.terminating === true ||
+          target?.kind !== "Pod" ||
+          target.namespace !== namespace.name ||
+          target.name !== podMetadata.name ||
+          target.uid !== podMetadata.uid ||
+          endpoint.addresses.length === 0 ||
+          endpoint.addresses.some((address) => !addresses.has(address))
+        ) {
+          return false;
+        }
+        ready += 1;
+      }
+    }
+    return ready > 0;
   }
 
   async stopRevision(revision: AgentRevision): Promise<void> {

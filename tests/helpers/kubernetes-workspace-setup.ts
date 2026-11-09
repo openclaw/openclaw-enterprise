@@ -34,6 +34,21 @@ type FixtureObject = {
 type Address = { name: string; namespace?: string | undefined };
 type DeleteRequest = Address & { body: { preconditions: { uid: string } } };
 type PodRequest = { namespace: string; labelSelector?: string };
+type FixtureEndpointSlice = {
+  addressType: string;
+  metadata: {
+    name?: string;
+    namespace?: string;
+    labels: Record<string, string>;
+    ownerReferences: { apiVersion: string; kind: string; name: string; uid: string }[];
+  };
+  ports?: { name: string; port: number; protocol: string }[];
+  endpoints: {
+    addresses: string[];
+    conditions: { ready: boolean; terminating?: boolean };
+    targetRef?: { kind: string; namespace: string; name: string; uid: string };
+  }[];
+};
 type RuntimeDeployment = FixtureObject & {
   spec: {
     replicas?: number;
@@ -476,16 +491,74 @@ export function workspaceSetupFixture(
       deleteNamespacedNetworkPolicy: remove("NetworkPolicy"),
     },
     discovery: {
-      async listNamespacedEndpointSlice({ labelSelector }: { labelSelector: string }) {
-        const name = labelSelector.split("=")[1];
+      async listNamespacedEndpointSlice({
+        namespace: target = namespace,
+        labelSelector,
+      }: {
+        namespace?: string;
+        labelSelector: string;
+      }): Promise<{ items: FixtureEndpointSlice[] }> {
+        const name = labelSelector.split("=")[1]!;
+        if (observedRuntimePods) {
+          const service = objects.get(key("Service", name, target));
+          if (service === undefined) {
+            return { items: [] };
+          }
+          const spec = service.spec as {
+            selector: Record<string, string>;
+            ports: { name: string; targetPort: number; protocol?: string }[];
+          };
+          const pods = await core.listNamespacedPod({
+            namespace: target,
+            labelSelector: Object.entries(spec.selector)
+              .map(([key, value]) => `${key}=${value}`)
+              .join(","),
+          });
+          return {
+            items: [
+              {
+                addressType: "IPv4",
+                metadata: {
+                  name: `${name}-slice`,
+                  namespace: target,
+                  labels: { "kubernetes.io/service-name": name },
+                  ownerReferences: [
+                    { apiVersion: "v1", kind: "Service", name, uid: service.metadata.uid! },
+                  ],
+                },
+                ports: spec.ports.map((port) => ({
+                  name: port.name,
+                  port: port.targetPort,
+                  protocol: port.protocol ?? "TCP",
+                })),
+                endpoints: (
+                  pods.items as {
+                    metadata: { name: string; uid: string };
+                    status: { podIP: string };
+                  }[]
+                ).map((pod) => ({
+                  addresses: [pod.status.podIP],
+                  conditions: { ready: state.ready, terminating: false },
+                  targetRef: {
+                    kind: "Pod",
+                    namespace: target,
+                    name: pod.metadata.name,
+                    uid: pod.metadata.uid,
+                  },
+                })),
+              },
+            ],
+          };
+        }
         return {
           items: [
             {
+              addressType: "IPv4",
               metadata: {
                 labels: { "kubernetes.io/service-name": name },
-                ownerReferences: [{ kind: "Service", name, uid: `${name}-uid` }],
+                ownerReferences: [{ apiVersion: "v1", kind: "Service", name, uid: `${name}-uid` }],
               },
-              endpoints: [{ conditions: { ready: state.ready } }],
+              endpoints: [{ addresses: [], conditions: { ready: state.ready } }],
             },
           ],
         };

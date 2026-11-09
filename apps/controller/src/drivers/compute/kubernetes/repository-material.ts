@@ -8,6 +8,7 @@ import type {
   RepositoryCredentialSessionFiles,
 } from "@openclaw-enterprise/contracts";
 import type { RepositoryCredentialClientConfiguration } from "../../repo/credentials/client-contracts.ts";
+import { asRecord } from "@openclaw-enterprise/utils";
 import {
   hasControlCharacter,
   normalizePushRefAllowlist,
@@ -133,6 +134,52 @@ export function repositoryMaterialSecretName(
   binding: { readonly repositoryRef: string; readonly sessionId: string },
 ): string {
   return `oce-repository-${digest([revision.namespaceId, revision.agentId, revision.id, binding.repositoryRef, binding.sessionId]).slice(0, 48)}`;
+}
+
+/** Identify mounted sessions from their nonsecret projected Secret references. */
+export function repositoryMaterialSessions(
+  revision: AgentRevision,
+  candidates: readonly RepositoryCredentialMaterialRef[],
+  volumes: unknown,
+): readonly RepositoryCredentialMaterialRef[] | undefined {
+  const admitted = revision.repositoryCredentials?.bindings;
+  if (admitted === undefined || admitted.length === 0 || !Array.isArray(volumes)) {
+    return undefined;
+  }
+  const projections = volumes.filter(
+    (volume) => asRecord(volume)?.name === "repository-material-projection",
+  );
+  const sources =
+    projections.length === 1 ? asRecord(asRecord(projections[0])?.projected)?.sources : undefined;
+  if (!Array.isArray(sources) || sources.length !== admitted.length) {
+    return undefined;
+  }
+  const bySecret = new Map(
+    candidates.map((candidate) => [repositoryMaterialSecretName(revision, candidate), candidate]),
+  );
+  if (bySecret.size !== candidates.length) {
+    return undefined;
+  }
+  const remaining = new Set(admitted.map(({ repositoryRef }) => repositoryRef));
+  const selected: RepositoryCredentialMaterialRef[] = [];
+  for (const source of sources) {
+    const entry = asRecord(source);
+    const secret = asRecord(entry?.secret);
+    const candidate = typeof secret?.name === "string" ? bySecret.get(secret.name) : undefined;
+    if (
+      entry === undefined ||
+      Object.keys(entry).length !== 1 ||
+      secret?.optional !== false ||
+      candidate === undefined ||
+      !remaining.delete(candidate.repositoryRef)
+    ) {
+      return undefined;
+    }
+    selected.push({ repositoryRef: candidate.repositoryRef, sessionId: candidate.sessionId });
+  }
+  return remaining.size === 0
+    ? selected.sort((left, right) => left.repositoryRef.localeCompare(right.repositoryRef))
+    : undefined;
 }
 
 function clientField(value: unknown): string {

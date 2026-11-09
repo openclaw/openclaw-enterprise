@@ -128,11 +128,13 @@ unknown, inspect the remote ref before deciding what to do; do not replay it.
 Native retention supports the built-in Kubernetes Compute with dedicated Codex,
 prepared ingress and Gateway routing in one cluster, without Sandbox or protected
 egress. After finite removal, the worker retains the existing Agent only after all
-mounted sessions are disposed and its current revision and runtime are verified.
-It does not restart the Agent or replace Git material. Missing disposal evidence,
-multiple historical sessions for a repository, mismatched material or unavailable
-readiness leave cleanup pending. Independent model or deployment authority loss
-still retires the runtime. Other topologies retain their existing withdrawal behavior.
+retained sessions are disposed and its current revision, runtime and serving endpoints
+are verified.
+It identifies mounted sessions by their Secret references, including after material
+repair. It does not restart the Agent or replace Git material. Missing disposal
+evidence, mismatched material or unavailable readiness leave cleanup pending. Independent
+model or deployment authority loss still retires the runtime, including after inconclusive
+readiness checks. Legacy sessions and other topologies retain their existing withdrawal behavior.
 
 ## Read broker refusals
 

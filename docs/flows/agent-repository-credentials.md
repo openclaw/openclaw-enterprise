@@ -341,10 +341,9 @@ survives re-add, Stop supersession and lease transfer. Pending/denied Stop permi
 Git detachment; completion awaits running intent unless authority loss, replacement or retirement wins.
 
 For [native removal](../reference/repository-credentials/prepared-native-git.md#install-and-check),
-`disposedRepositorySessions` requires one protocol-3 disposed attempt per admitted ref.
-`KubernetesComputeDriver.observeRepositoryWithdrawal` checks its generation and serving
-runtime without repair. Authority is rechecked afterward; finalization locks and rechecks
-owner, removal and sessions.
+`repositorySessionDisposal` requires disposed protocol-3 history; legacy retains its owner. `KubernetesComputeDriver.observeRepositoryWithdrawal` matches mounted
+Secret references, generation and serving endpoints. Inconclusive observations
+also recheck authority. Finalization rechecks owner, removal and history.
 
 `PostgresWorkQueue.repositoryExpiryState` prioritizes retirement. `completeActivatedRevision` preserves active removal supervision; `REPOSITORY_ACCESS_WITHDRAWN` is not activation proof. `PostgresOpenShellGitRouteStore.adopt` blocks removed Git. Its `expire` and V2 `reduceCredentialPolicy` require committed finite removal while stopped. Stopped maintenance defers its claim. Git cleanup may observe pending source effects without replay or completing source withdrawal, then awaits detachment. Other withdrawals remain running-only.
 
@@ -386,7 +385,7 @@ Verify live PR updates, denial before provider contact and continued chat separa
 
 ## Changelog
 
-- 2026-11-09 13:46: Trace native runtime retention. (authoring-run/d127ba8f-38a1-4e53-bcb9-644a68253422 - b6a07b787ec9d082f44e8566f69a5db5b3d9b3f6)
+- 2026-11-09 13:46: Trace native runtime retention. (authoring-run/d127ba8f-38a1-4e53-bcb9-644a68253422 - aa7c6a65b81ce628fb6e3c7dd9a844d777f5776b)
 
 - 2026-11-08 07:45: Preserve withdrawal across Stop. (authoring-run/0bed479f-9c58-4dbb-bb72-972d7dfe9790 - d9dc87c351a0046df90915d66cbcc931ec649bb6)
 
