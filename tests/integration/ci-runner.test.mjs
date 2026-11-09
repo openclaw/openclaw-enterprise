@@ -13,7 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
 import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
@@ -197,6 +197,58 @@ async function writePrepare(root) {
   );
 }
 
+test(
+  "memory samples identify renamed processes without exposing executable paths or arguments",
+  { skip: process.platform !== "linux" && "reads /proc" },
+  async (t) => {
+    const root = await fixture(t);
+    const bin = join(root, "bin");
+    const output = join(root, "memory.log");
+    await mkdir(bin);
+    const pgid = procStat(process.pid).pgid;
+    // Fix the process inventory, but resolve the real executable through /proc.
+    // The second PID represents a process that exited after ps sampled it.
+    await writeFile(
+      join(bin, "ps"),
+      `#!/bin/sh\nprintf '%s\\n' '2048 ${process.pid} ${process.ppid} ${pgid} MainThread' '1024 2147483647 1 1 vanished'\n`,
+      { mode: 0o755 },
+    );
+    await writeFile(join(bin, "docker"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const child = spawn(
+      "bash",
+      [join(repositoryRoot, "scripts/ci/memory-sampler.sh"), output, "60"],
+      {
+        env: { ...runnerEnv(), PATH: `${bin}:${process.env.PATH}` },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    t.after(() => child.kill("SIGTERM"));
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => child.kill("SIGTERM"), 5_000);
+    child.stdout.on("data", (data) => {
+      stdout += data;
+      if (stdout.includes("memory-sampler")) {
+        child.kill("SIGTERM");
+      }
+    });
+    child.stderr.on("data", (data) => (stderr += data));
+    await new Promise((resolvePromise, reject) => {
+      child.on("error", reject);
+      child.on("close", resolvePromise);
+    }).finally(() => clearTimeout(timer));
+    const samples = await readFile(output, "utf8");
+    const executable = basename(await realpath(process.execPath));
+    assert.ok(
+      samples.includes(`2048 ${process.pid} ${process.ppid} ${pgid} ${executable} MainThread`),
+      samples,
+    );
+    assert.ok(samples.includes("1024 2147483647 1 1 unknown vanished"), samples);
+    assert.ok(stdout.includes(`top=${executable}:2MiB`), stdout);
+    assert.doesNotMatch(samples + stdout + stderr, /secretauthvalue|--test|\/proc\/|\/bin\//);
+  },
+);
+
 test("run resolves lane documents relative to the manifest and preserves ordered case accounting", async (t) => {
   const root = await fixture(t);
   const statePath = join(root, "state/lane.jsonl");
@@ -207,7 +259,9 @@ test("run resolves lane documents relative to the manifest and preserves ordered
     join(root, "tests/integration/first.test.mjs"),
     [
       'import assert from "node:assert/strict";',
+      'import { writeFileSync } from "node:fs";',
       'import test from "node:test";',
+      "writeFileSync(process.env.CI_RUNNER_PROCESS_RECORD, String(process.ppid));",
       'test("first file sees scoped env", () => {',
       '  assert.equal(process.env.CI_RUNNER_SCOPED_VALUE, "one");',
       "  assert.equal(process.env.ACTIONS_RUNTIME_TOKEN, undefined);",
@@ -272,6 +326,7 @@ test("run resolves lane documents relative to the manifest and preserves ordered
       resultsPath,
     ],
     {
+      CI_RUNNER_PROCESS_RECORD: join(root, "state/process-group"),
       ACTIONS_RUNTIME_TOKEN: "synthetic-cache-token",
       ACTIONS_RESULTS_URL: "https://cache.example.test/",
       OCC_PROBE_CONTROLLER_IMAGE: `private.example/current-controller@sha256:${"b".repeat(64)}`,
@@ -294,6 +349,11 @@ test("run resolves lane documents relative to the manifest and preserves ordered
     ["tests/integration/first.test.mjs", "tests/integration/second.test.mjs"],
   );
   assert.equal(summary.files[0].cleanup.status, "passed");
+  // The test child reports its real parent, the detached Node runner's group leader.
+  assert.equal(
+    summary.files[0].processGroupId,
+    Number(await readFile(join(root, "state/process-group"), "utf8")),
+  );
   assert.ok(
     summary.files.every(
       (file) => Number.isInteger(file.wallDurationMs) && file.wallDurationMs >= 0,
@@ -920,7 +980,7 @@ test("QA lane forwards selected models and observer input and retains outcomes a
     join(root, file),
     `import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test from "node:test";
 import { selectQaMatrix } from ${JSON.stringify(qaSelectionHelper)};
 test("QA inputs", async () => {
@@ -1158,6 +1218,8 @@ waitingTest(
     // The Node test runner leads its own process group, apart from this test's.
     assert(Number.isSafeInteger(pids.runner) && pids.runner > 1, String(pids.runner));
     assert.equal(pids.pgid, pids.runner);
+    const summary = JSON.parse(await readFile(join(root, "results/orphan.json"), "utf8"));
+    assert.equal(summary.files[0].processGroupId, pids.pgid);
     assert.equal(pids.grandchildPgid, pids.runner);
     assert.notEqual(pids.pgid, procStat(process.pid).pgid);
   },

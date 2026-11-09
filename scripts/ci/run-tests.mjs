@@ -926,6 +926,7 @@ function runNode(args, { cwd, env, timeout }) {
         status,
         signal,
         stdout: Buffer.concat(chunks).toString("utf8"),
+        processGroupId: pgid,
         ...(error ? { error } : {}),
       });
     };
@@ -1646,6 +1647,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     status,
     nodeExitCode,
     signal: nodeResult?.signal ?? null,
+    ...(nodeResult?.processGroupId ? { processGroupId: nodeResult.processGroupId } : {}),
     ...(fileFailure ? { fileFailure } : {}),
     counts,
     tests,
