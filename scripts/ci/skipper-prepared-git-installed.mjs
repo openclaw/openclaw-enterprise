@@ -334,8 +334,8 @@ try {
         tlsErrors,
       );
     }
-    if (records.includes("repository-binding-withdrawn-discovery-released")) {
-      console.error("Repository binding withdrawn and held discovery released.");
+    if (records.includes("native-session-disposed-and-provider-token-retired")) {
+      console.error("Native Git session disposed and provider token retired.");
     }
     const completion = entries.find((e) => e.phase === "native-command-completion-mismatch");
     if (completion) {
@@ -363,7 +363,6 @@ try {
       "observe-installed-agent-readonly-skill-directories",
       "gateway-chat-refused",
       "native-command-started",
-      "repository-binding-withdrawn-discovery-released",
       "native-command-completion-mismatch",
       "native-command-and-model-observed",
     ];

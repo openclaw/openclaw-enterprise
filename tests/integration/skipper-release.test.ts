@@ -41,7 +41,7 @@ function receipt() {
         cleanup: { status: "passed" },
         tests: [
           {
-            name: "same Compute-owned Skipper chats, authors private Git, loses Git during an authenticated fetch, and still chats",
+            name: "same Compute-owned Skipper chats, authors private Git, disposes withdrawn Git access, and still chats",
             status: "passed",
             durationMs: 1,
           },
@@ -54,7 +54,7 @@ function receipt() {
       "prepared-before-native-git",
       "native-commit-confirmed-by-independent-fetch",
       "wrong-repository-hook-refusal-and-broker-denied-mixed-push",
-      "native-authenticated-post-after-withdrawal-refused",
+      "native-session-disposed-and-provider-token-retired",
       "fresh-authenticated-fetch-after-effective-withdrawal-refused",
       "same-compute-owned-skipper-chat-after-git-withdrawal-verified",
       "same-compute-owned-skipper-chat-git-and-live-withdrawal-observed",

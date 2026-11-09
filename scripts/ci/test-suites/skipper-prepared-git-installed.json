@@ -14,7 +14,7 @@
     {
       "path": "tests/integration/skipper-prepared-git-installed.test.mjs",
       "expectedTests": [
-        "same Compute-owned Skipper chats, authors private Git, loses Git during an authenticated fetch, and still chats"
+        "same Compute-owned Skipper chats, authors private Git, disposes withdrawn Git access, and still chats"
       ]
     }
   ]

@@ -172,15 +172,26 @@ protected runtime behavior require separate integration evidence.
 The [installed prepared Git lane](../../scripts/ci/test-suites/skipper-prepared-git-installed.json)
 uses a dedicated Codex Agent in a fresh installation with controlled private Git and model peers.
 Its authorized run proves the packaged sender in a real cluster; it is separate from ordinary CI.
-The PostgreSQL tests cover receipt recovery and no-replay behavior, while the runtime image tests
-cover stock Codex and generated client material. These checks do not replace the installed lane.
+After withdrawing Git, it waits for the exact native session's recorded disposal and provider-token
+retirement. A fresh authenticated fetch must receive HTTP 401 without any new credential use or
+origin traffic, and the same Agent, revision, Gateway and harness must still answer chat.
+
+The [PostgreSQL broker test](../../tests/integration/postgres-prepared-repository-git-broker.test.mjs)
+separately holds an admitted request body across the API withdrawal and requires HTTP 503 with no
+new credential use or origin request. That fixture runs no cleanup worker. Session cleanup can
+cancel active I/O or remove the bearer before a subsequent request, so the installed test does
+not require that admission-time status or claim to prove active-request cancellation. The transport
+cancellation tests use the static-token profile; prepared native cancellation through worker
+cleanup still needs separate integration proof.
+
+PostgreSQL tests also cover receipt recovery and no-replay behavior. Runtime image tests cover
+stock Codex and generated client material. Those checks do not replace the installed lane.
 
 On a native-command chat completion mismatch, the lane attempts to report matching
 synthetic model request/result counts and whether any result contained the completion
-marker, or state that model observations are unavailable. A separate message confirms
-binding withdrawal and discovery release when that checkpoint was recorded. Without
-that message, the stage is unknown. These diagnostics do not expose chat or command
-output and do not replace the Git assertions or qualify the release.
+marker, or state that model observations are unavailable. The session-disposal checkpoint
+identifies completed withdrawal. These diagnostics do not expose chat or command output
+and do not replace the Git assertions or qualify the release.
 
 To bind its receipt to a [selected OCE release](../guides/deploy/production-upgrade.md#prepare-the-release),
 prepare an independent JSON control file with `sourceSha` (the full OCE checkout SHA)

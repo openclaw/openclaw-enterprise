@@ -5,7 +5,6 @@ import test from "node:test";
 import {
   assertOnlyTokenRetirement,
   fetchAfterWithdrawalCommand,
-  withdrawDuringFetchCommand,
 } from "../fixtures/skipper-private-git-origin.mjs";
 import { runTeamReview } from "../fixtures/skipper-team-review-journey.mjs";
 import { assertNativeRepositoryCommit } from "../helpers/repository-native-journey.mjs";
@@ -16,7 +15,7 @@ const selected = socketPath !== undefined || process.env.OCC_TEST_SKIPPER_PREPAR
 const input = process.env.OCC_TEST_SKIPPER_COMPUTE_INPUTS;
 
 test(
-  "same Compute-owned Skipper chats, authors private Git, loses Git during an authenticated fetch, and still chats",
+  "same Compute-owned Skipper chats, authors private Git, disposes withdrawn Git access, and still chats",
   {
     timeout: 30 * 60_000,
     skip: selected
@@ -57,11 +56,12 @@ test(
       { repositoryRef: git.repositoryRef, profile: "git-write" },
     ]);
     const sessions = await query(
-      "SELECT admission_id,session_id FROM occ.repository_session_attempts WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3 AND phase='open'",
+      "SELECT admission_id,session_id,broker_protocol FROM occ.repository_session_attempts WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3 AND phase='open'",
       [namespaceId, agent.id, revision.id],
     );
     assert.equal(sessions.rowCount, 1, "one live, durable admission for this Compute revision");
     const session = sessions.rows[0];
+    assert.equal(session.broker_protocol, 3, "the installed Agent uses a prepared native session");
     const uses = async (operation = null) =>
       (
         await query(
@@ -196,86 +196,53 @@ test(
       writePermits,
     });
 
-    // Hold discovery at the private origin, PATCH away the binding, release discovery, require the
-    // same Git operation to get 503 for its authenticated upload POST. The broker uses one request per TLS.
-    await witness("/hold-next-discovery", "POST");
-    const outcome = sendScript(
-      withdrawDuringFetchCommand(dir),
-      "withdraw-during-native-fetch",
-    ).then(
-      (value) => ({ value }),
-      (error) => ({ error }),
-    );
-    try {
-      await waitFor(
-        "the same native Git process's authenticated discovery",
-        () => witness("/discovery-held"),
-        60_000,
+    // Admission-time denial is covered with a held request body in the PostgreSQL broker
+    // test. Here the real cleanup worker runs concurrently: wait for its confirmed disposal
+    // before checking the closed session, rather than racing it for an HTTP 503.
+    const prior = await witness("/evidence");
+    const permits = await uses();
+    assert.ok(permits > 0);
+    const removed = await api("PATCH", agentPath, {
+      configurationId: current.configurationId,
+      repositoryBindings: [],
+    });
+    assert.equal(Object.hasOwn(removed, "repositoryBindings"), false);
+    assert.equal(removed.activeRevisionId, revision.id);
+    await waitFor("native Git session disposal", async () => {
+      const state = await query(
+        "SELECT phase FROM occ.repository_session_attempts WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3 AND admission_id=$4 AND session_id=$5",
+        [namespaceId, agent.id, revision.id, session.admission_id, session.session_id],
       );
-      const prior = await witness("/evidence");
-      const permits = await uses();
-      assert.ok(permits > 0);
-      const removed = await api("PATCH", agentPath, {
-        configurationId: current.configurationId,
-        repositoryBindings: [],
-      });
-      assert.equal(Object.hasOwn(removed, "repositoryBindings"), false);
-      assert.equal(removed.activeRevisionId, revision.id);
-      await witness("/release-discovery", "POST");
-      // A diagnostic write must not replace the pending native completion failure.
-      await checkpoint("repository-binding-withdrawn-discovery-released").catch(() => {});
-      const done = await outcome;
-      if (done.error) {
-        throw done.error;
-      }
-      const after = await witness("/evidence");
-      const uploads = (s) =>
-        Object.fromEntries(Object.entries(s.endpoints).filter(([k]) => k.startsWith("upload-")));
-      assert.deepEqual(
-        uploads(after),
-        uploads(prior),
-        "zero additional authenticated or unauthenticated Git upload requests",
-      );
-      assert.equal(after.issued, 1, "single background issuance, no fallback issuer");
-      assert.equal(
-        await uses(),
-        permits,
-        "zero new permit after withdrawing repository binding from this running Agent",
-      );
-      await checkpoint("native-authenticated-post-after-withdrawal-refused", {
-        gitSessionId: session.session_id,
-        permits,
-        uploads: uploads(after),
-      });
+      assert.equal(state.rowCount, 1, "the admitted native session retains its disposal evidence");
+      return state.rows[0].phase === "disposed";
+    });
+    const bound = await api("GET", agentPath);
+    assert.equal(bound.activeRevisionId, revision.id);
+    assert.deepEqual(bound.repositoryBindings ?? [], []);
+    const retired = await waitFor("provider confirms retirement of the only token", async () => {
+      const state = await witness("/evidence");
+      return state.endpoints["revoke:204"] ? state : undefined;
+    });
+    assertOnlyTokenRetirement(prior, retired);
+    assert.equal(await uses(), permits, "withdrawal must not release another provider credential");
+    await checkpoint("native-session-disposed-and-provider-token-retired", {
+      gitSessionId: session.session_id,
+      permits,
+    });
 
-      // The previous request crossed withdrawal. Now start a separate authenticated fetch, after
-      // observing both the denial and the committed binding change. The prepared-material owner
-      // records a use before releasing a provider credential; the origin counts even raw TCP opens.
-      const bound = await api("GET", agentPath);
-      assert.equal(bound.activeRevisionId, revision.id);
-      assert.deepEqual(bound.repositoryBindings ?? [], []);
-      // Admission already refused the in-flight upload. Observe the background owner's one
-      // expected provider call before measuring that the fresh denied fetch opens no connection.
-      const retired = await waitFor("provider confirms retirement of the only token", async () => {
-        const state = await witness("/evidence");
-        return state.endpoints["revoke:204"] ? state : undefined;
-      });
-      assertOnlyTokenRetirement(prior, retired);
-      const label = "fresh-authenticated-fetch-after-effective-withdrawal";
-      await sendScript(fetchAfterWithdrawalCommand(dir), label);
-      const denied = await witness("/evidence");
-      assert.deepEqual(denied, retired, "no new origin connection, request, issuance or token use");
-      assert.equal(await uses(), permits, "no new provider credential release by this admission");
-      await checkpoint(label + "-refused", {
-        gitSessionId: session.session_id,
-        permits,
-        connections: denied.connections,
-        requests: denied.requests,
-      });
-    } finally {
-      await witness("/release-if-held", "POST");
-      await outcome;
-    }
+    // A disposed session no longer recognizes its bearer. Require an authenticated 401,
+    // not an anonymous challenge, network failure, or upstream refusal.
+    const label = "fresh-authenticated-fetch-after-effective-withdrawal";
+    await sendScript(fetchAfterWithdrawalCommand(dir, 401), label);
+    const denied = await witness("/evidence");
+    assert.deepEqual(denied, retired, "no new origin connection, request, issuance or token use");
+    assert.equal(await uses(), permits, "no new provider credential release by this admission");
+    await checkpoint(label + "-refused", {
+      gitSessionId: session.session_id,
+      permits,
+      connections: denied.connections,
+      requests: denied.requests,
+    });
     await ordinaryChat("same-compute-owned-skipper-chat-after-git-withdrawal");
     assert.deepEqual(await witness("/review/" + sha, "DELETE"), {
       "refs/heads/main": git.initialSha,
