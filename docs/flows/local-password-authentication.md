@@ -179,13 +179,12 @@ tokens are not persisted. The
 owns OAuth scopes, token disposal, App private-key custody, and fixed
 redirects.
 
-`attemptId` authenticates the attempt-state digest with HMAC. Success sets a signed,
-two-minute `SameSite=Strict` v2 receipt binding provider, session and attempt. The
-same-origin result handler verifies signature, expiry and provider before State
-lookup. Legacy attempts must restart; wrong-provider requests leave receipts
-unchanged. Matching attempt and session permit one exchange per process-local
-ledger, retained until expiry: clear the receipt and return the session key without
-extending sessions. Password sign-in returns that key directly.
+`attemptId` authenticates the attempt-state digest with HMAC. State records the
+result and its two-minute deadline with the session. The signed `SameSite=Strict`
+v3 receipt binds provider, session and attempt. With matching origin, attempt
+and session cookie, any compatible instance can consume the result through State.
+After commit, the handler clears the receipt and returns the current session’s
+key without extending it. Incompatible receipts require fresh sign-in. Password sign-in returns that key directly.
 `refuseUnmatched` rejects malformed, unbound, replayed or expired callbacks without
 audit, incrementing
 [`occ_sign_in_unmatched_callbacks_total`](../reference/metrics.md#application-families).
