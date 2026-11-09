@@ -23,7 +23,7 @@ import {
   IAMAccessBindingListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   persistedDeploymentError,
@@ -157,9 +157,11 @@ declare global {
   }
 }
 
+// Picker cases share setup, with a separate Namespace and browser context per test.
+const secretPickerApp = fileConsoleApp();
+
 test("Agent credentials choose existing Secrets for harness authentication", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await secretPickerApp(t);
   const namespace = await fixture.createNamespace("Harness Secret picker", { ready: true });
   const originalSecret = await fixture.createSecret(
     namespace.id,
@@ -253,8 +255,7 @@ test("Agent credentials choose existing Secrets for harness authentication", asy
 });
 
 test("Agent credentials bind a Secret typed by its exact name without picking the suggestion", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await secretPickerApp(t);
   const namespace = await fixture.createNamespace("Typed Secret name", { ready: true });
   const originalSecret = await fixture.createSecret(namespace.id, "Original key", "hidden-a");
   const typedSecret = await fixture.createSecret(namespace.id, "Typed key", "hidden-b");
@@ -314,8 +315,7 @@ test("Agent credentials bind a Secret typed by its exact name without picking th
 });
 
 test("Agent credential Secret picker distinguishes action labels from Secret names", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await secretPickerApp(t);
   const namespace = await fixture.createNamespace("Secret action names", { ready: true });
   const original = await fixture.createSecret(namespace.id, "Hidden binding", "original-value");
   const bound = await fixture.createSecret(namespace.id, "Bound Secret", "bound-value");
@@ -381,8 +381,7 @@ test("Agent credential Secret picker distinguishes action labels from Secret nam
 });
 
 test("Tab leaves a scrolling Secret list for the next control, and the list keeps focus in the picker", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await secretPickerApp(t);
   const namespace = await fixture.createNamespace("Scrolling Secret list", { ready: true });
   const secrets = [];
   // Nine readable Secrets overflow the open list, which then scrolls.
@@ -512,8 +511,7 @@ for (const listOutcome of ["arrives", "fails"]) {
 }
 
 test("a different Secret in a create response cannot stage a binding or repeat the write", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await secretPickerApp(t);
   const namespace = await fixture.createNamespace("Unconfirmed Secret", { ready: true });
   const original = await fixture.createSecret(namespace.id, "Original picker Secret", "synthetic");
   const agent = await fixture.createAgent(
@@ -569,8 +567,7 @@ test("a different Secret in a create response cannot stage a binding or repeat t
 // create; the inline Create Secret action in the Credentials tab offered the same refused write
 // (finding 2442). It stays listed, disabled with the reason, until a grant.
 test("the Credentials tab's inline Create Secret follows the Secret create answer", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await secretPickerApp(t);
   const namespace = await fixture.createNamespace("Inline create answer", { ready: true });
   const bound = await fixture.createSecret(namespace.id, "Bound harness Secret", "synthetic");
   const agent = await fixture.createAgent(
