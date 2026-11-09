@@ -246,7 +246,40 @@ test("production composition separates repository policy from protected and expl
       environment: { OCC_CONFIG_PATH: path },
     }))!;
   };
+  const builtInConfiguration = {
+    ...configuration,
+    repository: { ...configuration.repository, policyMode: "built-in" },
+  };
+  const builtIn = await load(builtInConfiguration);
+  assert.equal(Object.hasOwn(builtIn, "repositoryPolicy"), false);
+  assert.equal(builtIn.repositoryAdmission?.policyMode, "built-in");
+  const builtInPolicy = builtIn.repositoryAdmission!.policy;
+  assert.equal((await builtInPolicy.listCatalog({ namespaceId })).options.length, 1);
+  assert.throws(
+    () =>
+      builtInPolicy.resolveBindings({
+        namespaceId,
+        bindings: [{ repositoryRef: "not-authorized", profile: "git-write" }],
+      }),
+    { name: "ScopeViolationError", message: /not permitted/ },
+  );
+  await assert.rejects(
+    load({
+      ...builtInConfiguration,
+      repository: { ...builtInConfiguration.repository, policyMode: "custom" },
+    }),
+    { name: "Error", message: /repository.policyMode/ },
+  );
+  await assert.rejects(
+    load({
+      ...builtInConfiguration,
+      repository: { ...builtInConfiguration.repository, policy: "custom-veto" },
+    }),
+    { name: "Error", message: /repository.*policy/ },
+  );
   const protectedGit = await load(configuration);
+  assert.ok(builtIn.protectedDriver);
+  assert.deepEqual(builtIn.protectedDriver.ref, protectedGit.protectedDriver?.ref);
   const policy = protectedGit.repositoryPolicy!;
   assert.equal((await policy.listOptions({ namespaceId })).options.length, 1);
   const binding = policy.resolve({
