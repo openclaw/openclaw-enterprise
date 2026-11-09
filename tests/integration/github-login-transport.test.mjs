@@ -483,7 +483,10 @@ test(
             const maxAge = Number(/Max-Age=(\d+)/i.exec(cookie)?.[1]);
             assert.ok(maxAge > 0 && maxAge < 28_800, "Session cookie must subtract elapsed time");
             assert.deepEqual(await response.json(), { authenticated: true });
-            assert.match(response.headers.get("set-cookie"), /__Host-occ_login_receipt=/);
+            assert.ok(
+              response.headers.get("set-cookie")?.includes("__Host-occ_login_receipt="),
+              "successful callback sets a receipt cookie",
+            );
           }
         },
       );
@@ -532,12 +535,21 @@ test(
           }
           response.end(JSON.stringify({ id: 12345678 }));
         };
+        const readJson = (response) =>
+          response.json().catch(() => {
+            throw new Error("Login transport returned invalid JSON");
+          });
         const started = await login.start();
-        const other = await (await login.start()).json();
-        const { url, attemptId } = await started.json();
-        assert.match(attemptId, /^[A-Za-z0-9_-]{43}$/);
-        assert.notEqual(attemptId, other.attemptId, "each attempt has its own public id");
-        const attemptState = new URL(url).searchParams.get("state");
+        const other = await readJson(await login.start());
+        const { url, attemptId } = await readJson(started);
+        assert.ok(
+          typeof attemptId === "string" && /^[A-Za-z0-9_-]{43}$/.test(attemptId),
+          "start returns a valid attempt ID",
+        );
+        assert.ok(attemptId !== other.attemptId, "each attempt has its own public id");
+        const redirect = URL.parse(url);
+        assert.ok(redirect, "provider redirect must be a valid URL");
+        const attemptState = redirect.searchParams.get("state");
         assert.equal(url.includes(attemptId), false, "the provider never sees the attemptId");
 
         const callback = await login.callback(`state=${attemptState}&code=fixture-code`);
@@ -546,28 +558,43 @@ test(
           .getSetCookie()
           .find((value) => value.startsWith("__Host-occ_login_receipt="));
         assert.ok(receipt, "successful callback sets the login receipt");
-        assert.match(receipt, /Max-Age=120/);
-        assert.match(receipt, /Path=\//);
-        assert.match(receipt, /HttpOnly/i);
-        assert.match(receipt, /Secure/i);
-        assert.match(receipt, /SameSite=Strict/i);
+        assert.ok(/Max-Age=120/.test(receipt), "receipt sets the expected lifetime");
+        assert.ok(/Path=\//.test(receipt), "receipt sets its path");
+        assert.ok(/HttpOnly/i.test(receipt), "receipt is HTTP-only");
+        assert.ok(/Secure/i.test(receipt), "receipt is secure");
+        assert.ok(/SameSite=Strict/i.test(receipt), "receipt uses strict SameSite");
         // The receipt names the session without carrying its bearer token.
         assert.equal(receipt.includes(issued.token), false);
         const cookies = cookiePairs(callback);
 
         // Another tab's attempt cannot claim this session.
-        await expectDenied(await login.result(other.attemptId, cookies));
+        await expectDenied(await login.result(other.attemptId, cookies)).catch(() => {
+          throw new Error("Mismatched attempt must return the standard denial and no login cookie");
+        });
         const uncertain = await login.result(attemptId, cookies);
         assert.equal(uncertain.status, 503);
-        assert.doesNotMatch(await uncertain.text(), /sessionKey|Uncertain transaction outcome/);
-        assert.equal(uncertain.headers.get("set-cookie"), null);
+        assert.ok(
+          !/sessionKey|Uncertain transaction outcome/.test(await uncertain.text()),
+          "uncertain collection must omit the key and transaction details",
+        );
+        assert.ok(
+          !uncertain.headers.has("set-cookie"),
+          "uncertain collection must not set cookies",
+        );
         commitUncertain = false;
         const exchanged = await login.result(attemptId, cookies);
         assert.equal(exchanged.status, 200);
-        assert.doesNotMatch(exchanged.headers.get("set-cookie") ?? "", /session_token/);
-        assert.match(exchanged.headers.get("set-cookie") ?? "", /occ_login_receipt=;.*Max-Age=0/);
-        const { sessionKey } = await exchanged.json();
-        assert.match(sessionKey, /^[A-Za-z0-9_-]{43}$/);
+        const setCookie = exchanged.headers.get("set-cookie") ?? "";
+        assert.ok(!/session_token/.test(setCookie), "collection must not set a session cookie");
+        assert.ok(
+          /occ_login_receipt=;.*Max-Age=0/.test(setCookie),
+          "collection must clear the receipt",
+        );
+        const { sessionKey } = await readJson(exchanged);
+        assert.ok(
+          typeof sessionKey === "string" && /^[A-Za-z0-9_-]{43}$/.test(sessionKey),
+          "collection must return a valid session key",
+        );
         assert.equal(sessionKey.includes(issued.id), false);
       },
     );
