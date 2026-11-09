@@ -18,9 +18,9 @@ The admin selects a compatible Connection Template or creates one inline. Today 
 
 ## An Agent creator reuses it
 
-[PR #4544](https://github.com/openclaw/openclaw-enterprise/pull/4544) proposes entering a custom endpoint during Agent creation. With a saved provider, the creator first chooses **Internal vLLM** and a compatible **Harness**. Next they choose the authentication method and a saved credential, here **Research inference key**. The **Model** field comes last. The creator can keep the provider’s default, **qwen3-8b**, or choose another listed model their credential can access. A second Agent can reuse the key with permission. Another team can use its own key with the same provider.
+[PR #4544](https://github.com/openclaw/openclaw-enterprise/pull/4544) proposes entering a custom endpoint during Agent creation. With a saved provider, the creator first chooses **Internal vLLM** and a compatible **Harness**. Next they choose the authentication method and a saved credential, here **Research inference key**. The **Models offered by this provider** picker comes last. It lists the models the admin configured, with **qwen3-8b** selected by default. The inference endpoint decides whether the selected credential can use that model. A second Agent can reuse the key with permission. Another team can use its own key with the same provider.
 
-![Create Agent mockup showing provider and Harness first, authentication and credential next, and model last](agent-selection.png)
+![Create Agent mockup showing provider and Harness first, authentication and credential next, and Models offered by this provider last](agent-selection.png)
 
 ## Data model
 
