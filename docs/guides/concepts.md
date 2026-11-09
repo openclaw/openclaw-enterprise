@@ -19,7 +19,7 @@ one Compute Driver; the [SSH Compute Driver](../reference/drivers/ssh-compute.md
 runs embedded OpenClaw on Linux hosts instead.
 
 OCC is a service because it owns three things that Kubernetes resources do not
-define: IAM policy that the API checks on every request, audit records in
+define: IAM policy that the API checks on every resource operation, audit records in
 PostgreSQL, and Compute Drivers for targets other than Kubernetes. Manage Agents
 through the console, CLI, or HTTP API, not with `kubectl apply`.
 
