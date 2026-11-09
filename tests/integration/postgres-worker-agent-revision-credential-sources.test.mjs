@@ -4115,6 +4115,8 @@ function attachedGitExpires({
       );
       assert.equal((await fetchFromPrivateOrigin()).decision, 2);
       assert.deepEqual([originRequests, world.detaches.length, world.writes], [1, 1, 1]);
+      assert.equal(peer.gh.issuesOfTokens.length, 1);
+      await assertOriginalSession();
     }
   };
 }
