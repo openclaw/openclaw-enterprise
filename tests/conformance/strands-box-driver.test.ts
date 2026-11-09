@@ -61,7 +61,7 @@ const revision: AgentRevision = {
   configurationGeneration: 1,
   configuration: {},
   gatewayManagedMode: false,
-  harness: { id: "codex", mode: "dedicated", version: "1" },
+  harness: { id: "codex", mode: "dedicated", version: "1", overrides: {}, configuration: {} },
   compute: { id: "compute-kubernetes", implementation: "kubernetes" },
   sandboxDriverId: id,
   executionAdmission: { version: 2, mode: "unprotected" },

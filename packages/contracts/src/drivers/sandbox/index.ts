@@ -110,6 +110,20 @@ export interface SandboxHarnessEndpoint {
   readonly codexPermissionProfile?: ":danger-full-access";
 }
 
+/** Endpoint pinned to the one workspace process admitted for this protected revision. */
+export interface ProtectedWorkspaceEndpoint {
+  readonly url: string;
+  readonly tls: { readonly caBundle: string };
+  readonly workspaceRoot: string;
+  readonly original: {
+    readonly purpose: "normal-protected-codex-workspace";
+    readonly generationSha256: string;
+  } & (
+    | { readonly state: "reserved" }
+    | { readonly state: "release-acknowledged"; readonly startupSha256: string }
+  );
+}
+
 export interface SandboxNamespaceContext {
   readonly namespace: Readonly<Namespace>;
   readonly kubernetes: unknown;
@@ -136,6 +150,12 @@ export type SandboxHarnessWithdrawalContext = Omit<SandboxHarnessContext, "requi
 
 export interface SandboxHarnessStatusContext extends SandboxHarnessContext {
   /** The Agent transport token the Agent Gateway presents to the Harness. */
+  readonly transportToken: string;
+}
+
+/** A bound serving read. The Driver restores its retained admitted requirements. */
+export interface SandboxProtectedWorkspaceStatusContext extends SandboxHarnessWithdrawalContext {
+  readonly protectedWorkspaceEndpoint: true;
   readonly transportToken: string;
 }
 
@@ -352,4 +372,17 @@ export interface SandboxDriver extends Driver {
    * after it exited, as opposed to a first start.
    */
   observeHarness?(context: SandboxLogContext): Promise<SandboxHarnessObservation>;
+}
+
+/** Opt-in extension for a protected dedicated Codex workspace. The Driver must authenticate
+ * the original independently of the endpoint caller and the status dispatch field. */
+export interface ProtectedWorkspaceSandboxDriver extends SandboxDriver {
+  provisionHarness: NonNullable<SandboxDriver["provisionHarness"]>;
+  enrollHarness: NonNullable<SandboxDriver["enrollHarness"]>;
+  protectedWorkspaceEndpoint(
+    context: SandboxHarnessWithdrawalContext,
+  ): Promise<ProtectedWorkspaceEndpoint | undefined>;
+  harnessStatus: (
+    context: SandboxHarnessStatusContext | SandboxProtectedWorkspaceStatusContext,
+  ) => Promise<SandboxHarnessStatus>;
 }
