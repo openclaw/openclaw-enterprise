@@ -164,14 +164,16 @@ availability or a working deployment. For local use, follow the
    instead. The tag can contain up to 128 ASCII letters, digits, underscores,
    periods, and hyphens; it must start with a letter, digit, or underscore.
    Tags beginning with `sha-` or `bootstrap-` are reserved, case-insensitively.
-   The selected alias is mutable and an existing tag can be replaced. Preparation
-   builds both platforms in one OCI archive, checks the index and child manifest/config
-   digests, and loads each platform into Docker separately. Its config ID must
-   match that index entry. Both platforms run the existing controller or runtime
-   startup smoke before sealing/uploading. AMD64 and ARM64 builds and smoke tests
-   run on their matching native Linux architectures. The publisher copies those exact
-   archive and all child manifests with Skopeo and verifies the remote index digests. Source, CI attempt,
-   environment branch policy, and package visibility are rechecked before transfer.
+   The selected alias is mutable and an existing tag can be replaced.
+   Each native Linux runner builds and loads its own platform's OCI export.
+   Preparation verifies the loaded config against the export using Docker's image
+   ID on the legacy store or the verified config digest on the containerd store,
+   where the image ID identifies a manifest or index. After both platforms pass
+   startup smoke, the workflow [assembles and seals those exports](../flows/container-publication.md#2-verify-and-assemble-both-platform-variants)
+   from the same run and attempt into one archive per image. The publisher
+   rechecks the source, CI attempt, environment branch policy, and package
+   visibility, then copies each sealed archive with all child manifests using
+   Skopeo and verifies the remote index digest.
 4. Use the `image@sha256:...` references in the image job summary and
    `container-publication-<run-id>-<attempt>` receipt for deployment. Each image
    receives an immutable `sha-<source-sha>` tag, the selected mutable alias,
@@ -273,8 +275,8 @@ repositories, use [Docker Hub promotion](container-promotion.md).
 Four existing CI lanes gate the selected source: Images and Packaging, and the three Image Runtime
 Startup lanes. Preparation reuses their controller/runtime startup tests against the newly prepared bytes:
 source CI alone cannot prove a subsequent build with newly resolved npm
-transitives. Loading does not rebuild; each loaded config ID, its index entry, and the
-unchanged archive hash bind both platform smokes to the prepared image. Skopeo preserves manifest
+transitives. Loading does not rebuild an image. The assembler checks each platform export
+against its smoke receipt before including it in the final archive. Skopeo preserves manifest
 digests during publication. These are not provider, cluster, or registry
 end-to-end tests.
 
