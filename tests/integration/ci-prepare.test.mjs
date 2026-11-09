@@ -2908,6 +2908,20 @@ if (args[0] === "pull") {
     const owner = "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";
     const other = "tests/integration/local-first-agent-openshell-real.test.mjs";
     const cases = [
+      // Imported releases run dedicated OpenClaw even when the surrounding job selects Codex.
+      {
+        lane: "openshell-policy",
+        harness: "codex",
+        credentials: ["OPENAI_API_KEY"],
+        file: "tests/integration/openshell-imported-skill-real.test.ts",
+      },
+      {
+        lane: "openshell-policy",
+        harness: "codex",
+        credentials: ["CODEX_ACCESS_TOKEN"],
+        missing: "OPENAI_API_KEY",
+        file: "tests/integration/openshell-imported-mcp-real.test.ts",
+      },
       { harness: "codex", credentials: ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY"] },
       { harness: "codex", credentials: ["CODEX_ACCESS_TOKEN"] },
       { harness: "codex", credentials: ["OPENAI_API_KEY"], missing: "CODEX_ACCESS_TOKEN" },
@@ -2981,12 +2995,14 @@ if (args[0] === "pull") {
     }
     for (const [index, value] of cases.entries()) {
       const statePath = join(root, `credential-${index}.json`);
+      const lane = value.lane ?? "openshell";
       const env = {
         OPENAI_API_KEY: "",
         CODEX_ACCESS_TOKEN: "",
         ...Object.fromEntries(
           value.credentials.map((name) => [name, "synthetic-fixture-credential"]),
         ),
+        OCC_CI_SUITE_VIEW: lane === "openshell" ? "default" : "full-integration",
         OCC_TEST_OPENAI_MODEL: "fixture-model",
         OCC_TEST_OPENSHELL_HARNESS: value.harness,
         OCC_TEST_OPENSHELL_MODEL_BASE_URL: value.endpoint ? "https://api.openai.com/v1" : "",
@@ -2996,19 +3012,13 @@ if (args[0] === "pull") {
       const result = value.prepareLane
         ? await runProgram(
             `const { prepareLane } = await import(process.argv[1]);
-             await prepareLane({ lane: "openshell", statePath: process.argv[2], file: ${JSON.stringify(value.file)} });`,
+             await prepareLane({ lane: ${JSON.stringify(lane)}, statePath: process.argv[2], file: ${JSON.stringify(value.file)} });`,
             statePath,
             { ...process.env, GITHUB_ENV: "", GITHUB_OUTPUT: "", ...env },
             10_000,
           )
         : await runPrepare(
-            [
-              "--lane",
-              "openshell",
-              "--state",
-              statePath,
-              ...(value.file ? ["--file", value.file] : []),
-            ],
+            ["--lane", lane, "--state", statePath, ...(value.file ? ["--file", value.file] : [])],
             env,
           );
       assert.equal(result.status, 1);
