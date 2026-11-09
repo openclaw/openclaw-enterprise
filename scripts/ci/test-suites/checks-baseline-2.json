@@ -4,6 +4,7 @@
   },
   "fileConcurrency": 8,
   "parallelFiles": [
+    "tests/integration/prepared-refresh-enrollment.test.ts",
     "tests/integration/staging-upgrade-return.test.ts",
     "tests/integration/controlled-tls-origin.test.ts",
     "tests/integration/ci-prepare-k3d.test.mjs",
@@ -130,6 +131,14 @@
     "tests/conformance/schema-auth-boundary-v1.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
   },
   "files": [
+    {
+      "path": "tests/integration/prepared-refresh-enrollment.test.ts",
+      "expectedTests": [
+        "prepared refresh enrollment refuses before effects (legacy Refresh installed)",
+        "prepared refresh enrollment refuses before effects (legacy Refresh missing)",
+        "non-refresh prepared enrollment uses only its issuer with legacy Refresh installed"
+      ]
+    },
     {
       "path": "tests/integration/staging-upgrade-return.test.ts",
       "expectedTests": [

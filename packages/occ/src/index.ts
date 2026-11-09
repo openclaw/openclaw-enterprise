@@ -8407,6 +8407,13 @@ export class OpenClawController {
           : (selected!.validateSourceConfig({ type: type.type, config: written }) ?? written)),
       });
       credentialSourceFieldsMatch(type, "config", config);
+      // TODO: Admit prepared refresh sources once their owner supports on-demand rotation.
+      if (protectedType?.issuer && type.rotation === "refresh") {
+        throw new NotImplementedError(
+          "credential_source_refresh",
+          "This prepared issuer does not support on-demand rotation. Use a Credential Gateway-owned refresh source instead.",
+        );
+      }
       const refreshDriver =
         type.rotation === "refresh" ? this.credentialRefreshDriver() : undefined;
       if (
