@@ -398,9 +398,13 @@ export async function gitExpiryGateway(
       assert.equal(req.provider, gitName);
       assert.equal(req.workspace_scope.workspace, workspace);
       assert.deepEqual(world.detaches, []);
-      assert.equal(req.expected_resource_version, "14", "only send against a fresh observation");
+      assert.equal(
+        req.expected_resource_version,
+        String(world.version),
+        "only send against the current Sandbox version",
+      );
       world.detaches.push(req.request_id);
-      world.version = 15;
+      world.version++;
       // Stock committed the conditional removal; its reply was lost. No DETACH receipt
       // is available, only OBSERVE of the reduced installation on a subsequent read.
       throw Object.assign(Error("reply lost"), { code: grpc.status.UNAVAILABLE });
