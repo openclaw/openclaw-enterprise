@@ -3638,6 +3638,307 @@ test("run retains redacted Skill exercise and restoration failures within its me
   );
 });
 
+test("finite conversation failures retain safe stages through the reporter", async (t) => {
+  const root = await fixture(t);
+  const resultsPath = join(root, "results/conversation.json");
+  const statePath = join(root, "state/conversation.json");
+  const fixtureProcess = new URL("../fixtures/repository-credentials/process.mjs", import.meta.url)
+    .href;
+  const helper = new URL("../helpers/finite-git-conversation.ts", import.meta.url).href;
+  // Scripted command responses exercise the real diagnostic producer, not a model or cluster.
+  // Readback cases exercise the Gateway reader after one accepted synthetic model turn.
+  await writeFile(
+    join(root, "tests/integration/conversation.test.mjs"),
+    `import test from "node:test";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
+import { run } from ${JSON.stringify(fixtureProcess)};
+import { createHash } from "node:crypto";
+import { createFiniteGitConversation, finiteGitConversationFailureStage } from ${JSON.stringify(helper)};
+const agent = { id: "agent", namespaceId: "namespace", revision: { id: "revision" } };
+const hash = (s) => createHash("sha256").update(s).digest("hex").slice(0, 12);
+const pod = {
+  metadata: {
+    name: "gateway", namespace: "tenant", uid: "pod-uid",
+    labels: {
+      "app.kubernetes.io/managed-by": "openclaw-enterprise",
+      "openclaw.dev/workload-role": "gateway",
+      "openclaw.dev/namespace": agent.namespaceId,
+      "openclaw.dev/agent": agent.id,
+    },
+  },
+  spec: {
+    containers: [{ name: "gateway" }],
+    volumes: [{ configMap: { name: "gateway-" + hash(agent.id) + "-rev-" + hash(agent.revision.id) } }],
+  },
+  status: {
+    phase: "Running", conditions: [{ type: "Ready", status: "True" }],
+    containerStatuses: [{ name: "gateway", containerID: "container", imageID: "image", restartCount: 0,
+      state: { running: { startedAt: "2026-01-01T00:00:00Z" } } }],
+  },
+};
+const privateFailure = () => { throw Object.assign(new Error("private-command-data"), {
+  stdout: "private-command-stdout", stderr: "private-command-stderr",
+  cause: new Error("private-command-cause"),
+}); };
+const interval = { start: 1794140000000, end: 1794140001000 };
+const line = (message, time = interval.start + 500) => new Date(time).toISOString() + " " + message + "\\n";
+const signature = "chat completion failed: WorkspaceAccessUnavailableError: Remote workspace skill discovery failed";
+const warning = (message = signature, time = interval.start + 500) => JSON.stringify({
+  time: new Date(time).toISOString().replace("Z", "+00:00"), level: "warn", subsystem: "openai-compat", message,
+});
+const failureLine = line(warning());
+const observations = [
+  { name: "unique Gateway failure", observation: "workspace_skill_discovery_failure_observed", logs: failureLine },
+  { name: "quoted subsystem prefix", observation: "unclassified", logs: line("[workspace] [openai-compat] " + signature) },
+  { name: "missing producer time", observation: "observation_unavailable", logs: failureLine + line(JSON.stringify({level: "warn", subsystem: "openai-compat", message: signature})) },
+  { name: "invalid producer time", observation: "observation_unavailable", logs: line(JSON.stringify({time: "private-command-invalid-time", level: "warn", subsystem: "openai-compat", message: signature})) },
+  { name: "delayed capture", observation: "workspace_skill_discovery_failure_observed", logs: line(warning(), interval.end + 1) },
+  { name: "early capture", observation: "workspace_skill_discovery_failure_observed", logs: line(warning(), interval.start - 1) },
+  { name: "delayed competing warning", observation: "ambiguous", logs: failureLine + line(warning("chat completion failed: private-command-data"), interval.end + 1) },
+  { name: "old producer time", observation: "unclassified", logs: line(warning(signature, interval.start - 1)) },
+  { name: "later producer time", observation: "unclassified", logs: line(warning(signature, interval.end + 1)) },
+  { name: "ambiguous Gateway failure", observation: "ambiguous", logs: failureLine + line(warning("chat completion failed: private-command-data")) },
+  { name: "unclassified Gateway failure", observation: "unclassified", logs: line(warning("chat completion failed: private-command-data")) },
+  { name: "background disconnect", observation: "unclassified", logs: line("[workspace] " + signature) },
+  { name: "truncated Gateway logs", observation: "observation_unavailable", logs: failureLine + "x".repeat(65536) },
+  { name: "incomplete Gateway record", observation: "observation_unavailable", logs: failureLine.trimEnd() },
+  { name: "log read failure", observation: "observation_unavailable" },
+  { name: "Gateway replaced before read", observation: "observation_unavailable", drift: 2, logs: failureLine },
+  { name: "Gateway restarted during read", observation: "observation_unavailable", drift: 3, logs: failureLine },
+  { name: "invalid request interval", observation: "observation_unavailable", interval: { start: "private-command-data", end: interval.end }, logs: failureLine },
+];
+const cases = [
+  ...["execution identity", "target discovery", "gateway identity", "model turn"].map(stage => ({
+    name: stage, stage, detail: stage === "model turn" ? "model turn; probe=execution" : stage,
+  })),
+  ...["command", "timeout", "integrity", "answer_missing", "source", "session_missing", "transcript"].map(read => ({
+    name: "read " + read, stage: "persisted reply", detail: "persisted reply; read=" + read, read,
+  })),
+  ...[
+    ["direct", "success"], ["recovered", "success"], ["foreign answer", "run"],
+    ["foreign prompt", "run"], ["missing run", "run"], ["nonterminal", "run"],
+    ["foreign thread", "source"], ["item suffix", "source"], ["empty turn", "source"],
+    ["duplicate before", "integrity"], ["duplicate after", "integrity"],
+    ["unmarked before", "integrity"], ["unmarked after", "integrity"],
+    ["prior error", "integrity"], ["later answer", "integrity"], ["stale sequence", "sequence"],
+  ].map(([read, outcome]) => ({name: read, read, stage: "persisted reply", detail: "persisted reply; read=" + outcome, outcome})),
+  ...observations.map(item => ({
+    ...item, stage: "model turn", detail: "model turn; probe=upstream; HTTP=500; gateway=" + item.observation,
+    output: JSON.stringify({ error: "upstream", status: 500, requestInterval: item.interval ?? interval }),
+  })),
+  { name: "unauthenticated HTTP 500", stage: "model turn", detail: "model turn; probe=unauthenticated; HTTP=500", output: JSON.stringify({ error: "unauthenticated", status: 500 }) },
+  { name: "upstream status", stage: "model turn", detail: "model turn; probe=upstream; HTTP=503", output: JSON.stringify({ error: "upstream", status: 503, extra: "private-command-data" }) },
+  { name: "unknown probe", stage: "model turn", detail: "model turn; probe=unexpected", output: JSON.stringify({ error: "private-command-data", status: 503 }) },
+  { name: "invalid status", stage: "model turn", detail: "model turn; probe=unexpected", output: JSON.stringify({ error: "upstream", status: "private-command-data" }) },
+];
+for (const { name, stage, detail, output, logs, drift, observation, read, outcome } of cases) {
+  test(name, async () => {
+    let logReads = 0;
+    let probeCompleted = false;
+    let posts = 0;
+    const runId = "chatcmpl_20000000-0000-4000-8000-000000000001";
+    let guards = 0;
+    const conversation = createFiniteGitConversation({
+      agent, signal: new AbortController().signal, originalIdentity: "original",
+      readExecution: async () => stage === "execution identity" ? privateFailure() : { identity: "original" },
+      kube: async (args, options) => {
+        if (args[0] === "get") {
+          if (stage === "target discovery") return privateFailure();
+          if (args[1] === "namespaces") return JSON.stringify({ items: [{ metadata: { name: "tenant" } }] });
+          if (args[1] === "pods") return JSON.stringify({ items: [pod] });
+          if (stage === "gateway identity") return privateFailure();
+          if (probeCompleted && ++guards === drift) {
+            return JSON.stringify({ ...pod, status: { ...pod.status, containerStatuses: [{ ...pod.status.containerStatuses[0], restartCount: 1 }] } });
+          }
+          return JSON.stringify(pod);
+        }
+        if (args[0] === "logs") {
+          logReads++;
+          assert.deepEqual(args, ["logs", "gateway", "--namespace", "tenant", "-c", "gateway",
+            "--timestamps=true", "--tail=-1", "--limit-bytes=65536", "--since-time=" + new Date(interval.start).toISOString()]);
+          assert.ok(options.timeout > 0 && options.timeout <= 5000);
+          if (logs === undefined) return privateFailure();
+          return logs;
+        }
+        if (args[1] === "-i" && output !== undefined) { probeCompleted = true; return output; }
+        if (args[1] === "-i" && stage === "persisted reply") {
+          posts++;
+          return JSON.stringify({ nonce: options.input.match(/FIRST_AGENT_[0-9a-f-]+/)[0], runId });
+        }
+        if (read && args[0] === "exec") {
+          if (read === "command") return privateFailure();
+          if (read === "timeout") return run(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {timeout: 1});
+          const [script, key, marker] = args.slice(args.indexOf("-e") + 1);
+          if (args.at(-1) === "conversation-reply" && read !== "session_missing") {
+            return JSON.stringify({ sessionId: "session", threadId: "thread" });
+          }
+          if (read === "transcript") return JSON.stringify({failure:"private-command-forged"});
+          const file = name.replaceAll(" ", "-") + ".sqlite";
+          const db = new DatabaseSync(file);
+          db.exec("CREATE TABLE session_nodes(session_key, current_session_id); CREATE TABLE transcript_events(session_id, seq INTEGER, event_json TEXT, event_zstd, event_utf8_bytes)");
+          if (read !== "session_missing") {
+            db.prepare("INSERT INTO session_nodes VALUES (?, 'session')").run(key);
+            const prompt = {role:"user", content:marker, __openclaw:{mirrorOrigin:"codex-app-server",
+              mirrorIdentity:"turn:prompt",mirrorSourceFingerprint:"promptFingerprint",runId:read === "foreign prompt" ? "other" : runId}};
+            const insert = db.prepare("INSERT INTO transcript_events VALUES ('session', ?, ?, null, null)");
+            insert.run(1, read === "integrity" ? "malformed" : JSON.stringify({type:"message",message:prompt}));
+            if (outcome) {
+              const identity = read === "item suffix" ? "turn:assistant:assistant" : read === "empty turn" ? ":assistant" :
+                read === "direct" ? "turn:assistant" : "next:assistant";
+              const answer = {role:"assistant",content:marker,stopReason:"stop",
+                idempotencyKey:"codex-app-server:" + (read === "foreign thread" ? "other" : "thread") + ":" + identity,
+                __openclaw:{mirrorOrigin:"codex-app-server",mirrorSourceFingerprint:"answerFingerprint",mirrorIdentity:identity,
+                  runId:read === "foreign answer" ? "other" : read === "missing run" ? undefined : runId,
+                  runTerminal:read !== "nonterminal"}};
+              if (read.startsWith("duplicate ") || read.startsWith("unmarked ")) {
+                const duplicate = {...answer, content:read.startsWith("duplicate ") ? marker : "earlier or later",
+                  idempotencyKey:"codex-app-server:thread:turn:assistant",
+                  __openclaw:{...answer.__openclaw, mirrorIdentity:"turn:assistant"}};
+                insert.run(read.endsWith("before") ? 2 : 4, JSON.stringify({type:"message",message:duplicate}));
+              }
+              if (read === "prior error") insert.run(2,JSON.stringify({type:"message",message:{role:"assistant",stopReason:"error"}}));
+              insert.run(3, JSON.stringify({type:"message",message:answer}));
+              if (read === "later answer") insert.run(4, JSON.stringify({type:"message",message:{role:"assistant",content:"later"}}));
+            }
+            if (read === "source") insert.run(2, JSON.stringify({type:"message",message:{role:"assistant",content:marker,stopReason:"stop"}}));
+          }
+          db.close();
+          const local = script.replaceAll("/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite", file)
+            .replaceAll("/home/node/.openclaw/state/openclaw.sqlite", file);
+          return execFileSync(process.execPath, ["-e", local, ...args.slice(args.indexOf("-e") + 2)], {encoding:"utf8"});
+        }
+        return privateFailure();
+      },
+    });
+    try {
+      const prior = read === "stale sequence" ? {sessionId:"session",threadId:"thread",userSeq:0,assistantSeq:1} : undefined;
+      const tuple = await conversation.turn(prior, 1000);
+      if (outcome === "success") {
+        assert.equal(posts, 1);
+        assert.deepEqual(tuple, {sessionId:"session",threadId:"thread",userSeq:1,assistantSeq:3});
+        return;
+      }
+    }
+    catch (error) {
+      if (read) assert.equal(posts, 1);
+      assert.equal(finiteGitConversationFailureStage(error), detail);
+      const needsRead = observation && name !== "invalid request interval" && drift !== 2;
+      assert.equal(logReads, needsRead ? 1 : 0, "one bounded read only after an eligible model failure");
+      assert.equal(finiteGitConversationFailureStage({ stage, message: error.message }), undefined);
+      assert.equal(finiteGitConversationFailureStage(new Error(error.message)), undefined);
+      assert.equal(error.cause, undefined);
+      throw error;
+    }
+    assert.fail("Expected the selected diagnostic boundary to fail");
+  });
+}
+`,
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { conversation: { files: [{ path: "tests/integration/conversation.test.mjs" }] } },
+    groups: { ci: ["conversation"] },
+  });
+  const result = run(root, [
+    "run",
+    "conversation",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    statePath,
+    "--results",
+    resultsPath,
+  ]);
+  assert.equal(result.status, 1, result.stderr);
+  const summaryText = await readFile(resultsPath, "utf8");
+  const detailText = await readFile(`${statePath}.diagnostics.json`, "utf8");
+  const summary = JSON.parse(summaryText);
+  const detail = JSON.parse(detailText).failures[0];
+  const details = detail.tests;
+  assert.equal(details.length, 20);
+  assert.equal(detail.omittedTests, 27);
+  assert.equal(summary.files[0].tests.length, 49);
+  const expected = {
+    ...Object.fromEntries(
+      ["foreign answer", "foreign prompt", "missing run", "nonterminal"].map((name) => [
+        name,
+        "persisted reply; read=run",
+      ]),
+    ),
+    ...Object.fromEntries(
+      ["foreign thread", "item suffix", "empty turn"].map((name) => [
+        name,
+        "persisted reply; read=source",
+      ]),
+    ),
+    ...Object.fromEntries(
+      [
+        "duplicate before",
+        "duplicate after",
+        "unmarked before",
+        "unmarked after",
+        "prior error",
+      ].map((name) => [name, "persisted reply; read=integrity"]),
+    ),
+    "later answer": "persisted reply; read=integrity",
+    "stale sequence": "persisted reply; read=sequence",
+    "model turn": "model turn; probe=execution",
+    "upstream status": "model turn; probe=upstream; HTTP=503",
+    "unauthenticated HTTP 500": "model turn; probe=unauthenticated; HTTP=500",
+    "unknown probe": "model turn; probe=unexpected",
+    "invalid status": "model turn; probe=unexpected",
+  };
+  const observations = {
+    "unique Gateway failure": "workspace_skill_discovery_failure_observed",
+    "quoted subsystem prefix": "unclassified",
+    "missing producer time": "observation_unavailable",
+    "invalid producer time": "observation_unavailable",
+    "delayed capture": "workspace_skill_discovery_failure_observed",
+    "early capture": "workspace_skill_discovery_failure_observed",
+    "delayed competing warning": "ambiguous",
+    "old producer time": "unclassified",
+    "later producer time": "unclassified",
+    "ambiguous Gateway failure": "ambiguous",
+    "unclassified Gateway failure": "unclassified",
+    "background disconnect": "unclassified",
+    "truncated Gateway logs": "observation_unavailable",
+    "incomplete Gateway record": "observation_unavailable",
+    "log read failure": "observation_unavailable",
+    "Gateway replaced before read": "observation_unavailable",
+    "Gateway restarted during read": "observation_unavailable",
+    "invalid request interval": "observation_unavailable",
+  };
+  let failures = 0;
+  for (const failure of summary.files[0].tests) {
+    if (["direct", "recovered"].includes(failure.name)) {
+      assert.equal(failure.status, "passed");
+      continue;
+    }
+    const detail = observations[failure.name]
+      ? `model turn; probe=upstream; HTTP=500; gateway=${observations[failure.name]}`
+      : failure.name.startsWith("read ")
+        ? "persisted reply; read=" + failure.name.slice(5)
+        : (expected[failure.name] ?? failure.name);
+    const message = `Finite Git conversation verification failed (${detail}).`;
+    assert.equal(failure.status, "failed");
+    assert.equal(failure.error.message, message);
+    const retained = details.find((entry) => entry.name === failure.name);
+    if (++failures <= 20) {
+      assert.equal(retained.message, message);
+    } else {
+      assert.equal(retained, undefined);
+    }
+  }
+  assert.doesNotMatch(
+    `${summaryText}\n${detailText}\n${result.stdout}\n${result.stderr}`,
+    /private-command-/,
+  );
+});
+
 test("the reporter sends interrupted tests and the output tail, newest first, on a timeout", async () => {
   const { default: reporter } = await import("../../scripts/ci/reporter.mjs");
   const render = async (events) => {
@@ -5698,6 +5999,8 @@ test("first-Agent command timing pairs runtime outcomes before CI projection", a
     outcome + "signaled",
     "[occ-dev-timing] stage=controller-build elapsed_ms=5 failed=true",
     outcome + "signaled",
+    "[occ-dev-timing] stage=openshell-workspace-render elapsed_ms=7 failed=true",
+    "[occ-dev-timing] stage=private-outcome-canary elapsed_ms=9 failed=true",
     "[occ-dev-startup] primary_stage=routing cleanup_failed=true parent_context_done=false",
   ];
   await writeFile(
@@ -5785,6 +6088,14 @@ test("a failed local setup reports only paired outcomes", async (t) => {
         failed: 1,
         elapsedMs: 5,
       },
+      {
+        kind: "local-first-agent-command",
+        phase: "setup",
+        stage: "openshell-workspace-render",
+        count: 1,
+        failed: 1,
+        elapsedMs: 7,
+      },
     ],
   );
   assert.deepEqual(
@@ -5802,7 +6113,10 @@ test("a failed local setup reports only paired outcomes", async (t) => {
     join(root, "state/runtime-outcomes.jsonl.diagnostics.json"),
     "utf8",
   );
-  assert.doesNotMatch(artifact + diagnostics, /private-outcome-canary|invented-fixture-input/);
+  assert.match(diagnostics, /setup failed/);
+  for (const text of [artifact, diagnostics]) {
+    assert.doesNotMatch(text, /private-outcome-canary|invented-fixture-input/);
+  }
   assert.match(diagnostics, /ordinary setup diagnostic survives/);
 });
 
@@ -5991,6 +6305,8 @@ test("run records only allowlisted measurements from test diagnostics", async (t
         namespaceMatches: false,
         repository: "mismatch",
         outcome: "retire-runtime",
+        failure: "failed",
+        grpcStatus: 10,
       },
       {
         ...expiryObservation,
@@ -6039,6 +6355,14 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   );
   const captured = expiryDiagnostic.observations.map(projectOpenShellGitExpiryObservation);
   assert.ok(!JSON.stringify(captured).includes(forbidden));
+  assert.equal(captured[1].failure, "failed");
+  assert.equal(captured[1].grpcStatus, 10);
+  for (const grpcStatus of [-1, 0, 17, 1.5, "10", forbidden]) {
+    assert.equal(
+      projectOpenShellGitExpiryObservation({ ...expiryObservation, grpcStatus }),
+      undefined,
+    );
+  }
   assert.equal(captured[4].code, "unrecognized");
   assert.equal(captured[5].cause, "unrecognized");
   for (const field of [
@@ -6063,7 +6387,44 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     requestsAfter: 1 + index,
     originUnchanged: index === 0,
   }));
-  const policyDenials = ["after-expiry", "after-worker-restart"].map((stage) => ({
+  const withdrawalWitnesses = [
+    ["live witness before denial", "accepted", 200],
+    ["live witness after denial", "refused", 401],
+    ["replacement witness before denial", "refused", 403],
+    ["replacement witness after denial", "unconfirmed", null],
+  ].map(([stage, outcome, status], index) => ({
+    event: "withdrawal-origin-witness",
+    stage,
+    outcome,
+    status,
+    targetedRetirementRefusals: index,
+  }));
+  const withdrawalDecision = {
+    event: "withdrawal-decision-unconfirmed",
+    mode: "live",
+    workerReady: true,
+    workerComparison: "unchecked",
+    freshRequests: 2,
+    logReads: 3,
+    logReadSuccesses: 2,
+    logReadFailures: 1,
+    linesRead: 2004,
+    parsedEvents: 2000,
+    parseFailures: 4,
+    tailLimitReads: 1,
+    candidates: 5,
+    rejectedCode: 1,
+    rejectedReason: 1,
+    rejectedOperation: 1,
+    rejectedRequestId: 0,
+  };
+  const withdrawalRetirement = {
+    event: "withdrawal-retirement-refused",
+    outcome: "passed",
+    status: 503,
+    targetedRetirementRefusals: 1,
+  };
+  const policyDenials = ["after-expiry", "after-worker-restart", "after-removal"].map((stage) => ({
     event: "git-policy-denied",
     stage,
     reason: "transparent_tcp_policy_denied",
@@ -6125,16 +6486,77 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     "unrecognized",
   ];
   const restartStages = [
+    "controller-image",
     "ready-worker",
+    "before-worker-image",
     "durable-before",
     "rollout-restart",
     "rollout-ready",
     "replacement-worker",
+    "after-worker-image",
     "revision-maintenance",
     "durable-after",
     "durable-retention-assertion",
   ];
+  const finiteRemoval = [
+    {
+      event: "finite-removal-live-denial",
+      boundary: "signed-access-withdrawn",
+      signer: "exercised",
+      requestId: opaque,
+      workerUid: uuid,
+    },
+    {
+      event: "finite-removal-live-denial",
+      boundary: "supervisor-policy",
+      signer: "unexercised",
+      requestId: null,
+      workerUid: uuid,
+    },
+    {
+      event: "finite-removal-reduced",
+      revisionId: opaque,
+      workId: opaque,
+      workerUid: uuid,
+      code: "REPOSITORY_ACCESS_WITHDRAWN",
+      sessionId: opaque,
+      processInstanceId: opaque,
+      networkInstanceId: opaque,
+      attachmentEpoch: opaque,
+      providerEnvRevision: "3",
+      configRevision: "4",
+      policyHash: sha256,
+    },
+    {
+      event: "finite-removal-conversation",
+      stage: "after-replacement",
+      revisionId: opaque,
+      sessionId: opaque,
+      threadId: opaque,
+      userSeq: 10,
+      assistantSeq: 11,
+    },
+    {
+      event: "finite-removal-retired",
+      revisionId: opaque,
+      cause: "required-model-withdrawn",
+      deadlineWallMs: 1800000000000,
+      observedAt: 1799999999000,
+      activeRevisionCleared: true,
+      sandboxAbsent: true,
+      agentPodsAbsent: true,
+    },
+  ];
   const retentionReceipts = [
+    ...finiteRemoval.map((receipt) => ({ ...receipt, credential: forbidden, output: forbidden })),
+    ...withdrawalWitnesses.map((receipt) => ({ ...receipt, error: forbidden, token: forbidden })),
+    { ...withdrawalRetirement, token: forbidden },
+    ...["unchecked", "same", "different"].map((workerComparison) => ({
+      ...withdrawalDecision,
+      workerComparison,
+      requestIds: [forbidden],
+      error: forbidden,
+    })),
     ...maintenanceReasons.map((reason) => ({ ...maintenanceDiagnostic, reason })),
     ...restartStages.map((stage) => ({
       event: "worker-restart-unconfirmed",
@@ -6201,6 +6623,10 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       event: "worker-restarted",
       beforeUid: uuid,
       afterUid: uuid,
+      controllerImageDigest: `sha256:${sha256}`,
+      controllerConfigDigest: `sha256:${"b".repeat(64)}`,
+      beforeImageDigest: `sha256:${"b".repeat(64)}`,
+      afterImageDigest: `sha256:${sha256}`,
       databaseUid: uuid,
       custodyUid: uuid,
       custodyVersion: "234",
@@ -6232,6 +6658,55 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     { event: "cleanup", outcome: "passed" },
   ].map((value) => ({ kind: retentionKind, ...value, unexpected: forbidden }));
   const invalidRetention = [
+    ...[
+      "controllerImageDigest",
+      "controllerConfigDigest",
+      "beforeImageDigest",
+      "afterImageDigest",
+    ].flatMap((field) => [
+      {
+        ...retentionReceipts.find(({ event }) => event === "worker-restarted"),
+        [field]: forbidden,
+      },
+      {
+        ...retentionReceipts.find(({ event }) => event === "worker-restarted"),
+        [field]: undefined,
+      },
+    ]),
+    { ...finiteRemoval[0], signer: "unexercised" },
+    { ...finiteRemoval[0], requestId: null },
+    { ...finiteRemoval[1], requestId: opaque },
+    { ...finiteRemoval[2], code: "REPOSITORY_RUNTIME_RETIREMENT_QUEUED" },
+    { ...finiteRemoval[2], policyHash: forbidden },
+    { ...finiteRemoval[3], assistantSeq: 10 },
+    { ...finiteRemoval[4], observedAt: 1800000000000 },
+    { ...finiteRemoval[4], sandboxAbsent: false },
+    ...["stage", "outcome", "status", "targetedRetirementRefusals"].map((field) => ({
+      ...withdrawalWitnesses[0],
+      [field]: forbidden,
+    })),
+    { ...withdrawalWitnesses[0], targetedRetirementRefusals: -1 },
+    ...[
+      ["accepted", 401],
+      ["accepted", 403],
+      ["accepted", null],
+      ["refused", 200],
+      ["refused", null],
+      ["unconfirmed", 200],
+      ["unconfirmed", 401],
+      ["unconfirmed", 403],
+    ].map(([outcome, status]) => ({ ...withdrawalWitnesses[0], outcome, status })),
+    { ...withdrawalRetirement, status: 204 },
+    { ...withdrawalDecision, mode: forbidden },
+    { ...withdrawalDecision, freshRequests: -1 },
+    { ...withdrawalDecision, workerComparison: forbidden },
+    { ...withdrawalDecision, workerComparison: true },
+    ...[0, 2].map((targetedRetirementRefusals) => ({
+      ...withdrawalRetirement,
+      targetedRetirementRefusals,
+    })),
+    { ...withdrawalRetirement, outcome: forbidden },
+    { ...withdrawalRetirement, targetedRetirementRefusals: forbidden },
     ...[
       ["stage", "before-expiry"],
       ["reason", "transparent_tcp_identity_unavailable"],
@@ -6768,6 +7243,87 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
   const receipts = summary.files[0].measurements.filter(({ kind }) => kind === retentionKind);
   assert.deepEqual(
+    receipts.filter(({ event }) => event.startsWith("finite-removal-")),
+    [
+      {
+        kind: retentionKind,
+        event: "finite-removal-live-denial",
+        boundary: "signed-access-withdrawn",
+        signer: "exercised",
+        requestIdHash: opaqueHash,
+        workerUid: uuid,
+      },
+      {
+        kind: retentionKind,
+        event: "finite-removal-live-denial",
+        boundary: "supervisor-policy",
+        signer: "unexercised",
+        requestIdHash: null,
+        workerUid: uuid,
+      },
+      {
+        kind: retentionKind,
+        event: "finite-removal-reduced",
+        revisionIdHash: opaqueHash,
+        workIdHash: opaqueHash,
+        workerUid: uuid,
+        code: "REPOSITORY_ACCESS_WITHDRAWN",
+        sessionIdHash: opaqueHash,
+        processInstanceIdHash: opaqueHash,
+        networkInstanceIdHash: opaqueHash,
+        attachmentEpochHash: opaqueHash,
+        providerEnvRevision: "3",
+        configRevision: "4",
+        policyHash: sha256,
+      },
+      {
+        kind: retentionKind,
+        event: "finite-removal-conversation",
+        stage: "after-replacement",
+        revisionIdHash: opaqueHash,
+        sessionIdHash: opaqueHash,
+        threadIdHash: opaqueHash,
+        userSeq: 10,
+        assistantSeq: 11,
+      },
+      {
+        kind: retentionKind,
+        event: "finite-removal-retired",
+        revisionIdHash: opaqueHash,
+        cause: "required-model-withdrawn",
+        deadlineWallMs: 1800000000000,
+        observedAt: 1799999999000,
+        activeRevisionCleared: true,
+        sandboxAbsent: true,
+        agentPodsAbsent: true,
+      },
+    ],
+  );
+  assert.deepEqual(
+    receipts.find(({ event }) => event === "worker-restarted"),
+    {
+      kind: retentionKind,
+      event: "worker-restarted",
+      beforeUid: uuid,
+      afterUid: uuid,
+      controllerImageDigest: `sha256:${sha256}`,
+      controllerConfigDigest: `sha256:${"b".repeat(64)}`,
+      beforeImageDigest: `sha256:${"b".repeat(64)}`,
+      afterImageDigest: `sha256:${sha256}`,
+      databaseUid: uuid,
+      custodyUid: uuid,
+      custodyVersion: "234",
+    },
+  );
+  assert.deepEqual(
+    receipts.filter(({ event }) => event === "withdrawal-origin-witness"),
+    withdrawalWitnesses.map((receipt) => ({ kind: retentionKind, ...receipt })),
+  );
+  assert.deepEqual(
+    receipts.find(({ event }) => event === "withdrawal-retirement-refused"),
+    { kind: retentionKind, ...withdrawalRetirement },
+  );
+  assert.deepEqual(
     receipts.map(({ event }) => event),
     retentionReceipts.map(({ event }) => event),
   );
@@ -6813,6 +7369,14 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       binaryHash: sha256,
       configDigest: `sha256:${sha256}`,
     },
+  );
+  assert.deepEqual(
+    receipts.filter(({ event }) => event === "withdrawal-decision-unconfirmed"),
+    ["unchecked", "same", "different"].map((workerComparison) => ({
+      kind: retentionKind,
+      ...withdrawalDecision,
+      workerComparison,
+    })),
   );
   assert.deepEqual(receipts.find(({ event }) => event === "git-expiry-observed").expiry, {
     event: "worker.openshell-git-expiry",

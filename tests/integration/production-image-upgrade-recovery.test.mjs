@@ -944,6 +944,12 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       if (secret.metadata.resourceVersion !== state.secret.metadata.resourceVersion) {
         return fail(11);
       }
+      if (
+        state.secret.immutable &&
+        secret.data["installation.yaml"] !== state.secret.data["installation.yaml"]
+      ) {
+        return fail(1, "Secret data is immutable");
+      }
       secret.metadata.resourceVersion = String(Number(secret.metadata.resourceVersion) + 1);
       state.secret = secret;
       save();
@@ -2519,6 +2525,50 @@ test("controller compatibility requires a value and an explicit controller selec
   assert.deepEqual(await f.events(), []);
 });
 
+for (const preflightOnly of [false, true]) {
+  test(`immutable Installation Secret refuses changed data before ${preflightOnly ? "preflight-only succeeds" : "stopping writers"}`, async (t) => {
+    const f = await fixture(t);
+    const state = await f.state();
+    state.secret.immutable = true;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    await assert.rejects(
+      f.run(...(preflightOnly ? ["--preflight-only"] : [])),
+      /Installation Secret .* is immutable/,
+    );
+    assert.deepEqual(await f.events(), []);
+    const after = await f.state();
+    assert.equal(after.api, 1);
+    assert.equal(after.worker, 1);
+    assert.equal(after.helmSubmissions ?? 0, 0);
+  });
+}
+
+test("immutable Installation Secret permits an upgrade with equivalent YAML", async (t) => {
+  const f = await fixture(t, { controllerOnly: true });
+  const state = await f.state();
+  state.secret.immutable = true;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  const installation = join(f.directory, "installation.json");
+  appendFileSync(installation, "\n");
+  await f.run();
+  assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "migration"]);
+  assert.deepEqual((await f.state()).secret, state.secret);
+});
+
+test("resume refuses a pending Installation write if the Secret became immutable", async (t) => {
+  const f = await fixture(t);
+  await f.failNext("fail-scale-worker");
+  await assert.rejects(f.run(), injectedFault);
+  const events = await f.events();
+  assert.deepEqual(events, ["scale-api"]);
+  const state = await f.state();
+  state.secret.immutable = true;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  await assert.rejects(f.run("--resume"), /Installation Secret .* is immutable/);
+  assert.deepEqual(await f.events(), events);
+  assert.equal((await f.state()).helmSubmissions ?? 0, 0);
+});
+
 test("an image upgrade can select curated Codex while preserving both plugin registrations", async (t) => {
   const pluginDrivers = [
     { id: "occ-plugin", configuration: {} },
@@ -2668,6 +2718,8 @@ test("resume reads an accepted Secret write before Helm and preserves its other 
     Buffer.from(interrupted.secret.data["installation.yaml"], "base64").toString(),
     /bbbbbbbbbbbbbbbb/,
   );
+  interrupted.secret.immutable = true;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(interrupted));
   await f.run("--resume");
   assert.deepEqual(await f.events(), [
     "scale-api",

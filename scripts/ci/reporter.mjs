@@ -339,6 +339,19 @@ function safeMeasurement(value) {
         "k3d-image-import",
         "kubernetes-readiness",
         "helm-install",
+        "openshell-image-selection",
+        "openshell-image-validation",
+        "openshell-assets-directory",
+        "openshell-charts",
+        "openshell-agent-sandbox-manifest",
+        "openshell-runtime-class",
+        "openshell-agent-sandbox-apply",
+        "openshell-agent-sandbox-rollout",
+        "openshell-workspace-render",
+        "openshell-gateway-import",
+        "openshell-sandbox-import",
+        "openshell-supervisor-import",
+        "openshell-prepare",
       ].includes(value.stage) ||
       !Number.isInteger(value.count) ||
       value.count < 1 ||
@@ -1704,8 +1717,8 @@ export default async function* jsonLinesReporter(source) {
         continue;
       }
       const value = parseMeasurement(message);
-      // Per-test diagnostics name their file; the run summary counts do not.
-      // OpenShell measurements belong only in the projected record, even on failure.
+      // Structured receipts, including malformed or unknown kinds, belong only
+      // to safeMeasurement. Never duplicate their raw text into failure output.
       if (typeof event.data.file === "string" && !message.startsWith(measurementPrefix)) {
         output.diagnostic(message);
       }

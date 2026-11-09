@@ -210,13 +210,14 @@ so the next valid page can recover. Follow likewise appends no rows and keeps it
 cannot be prepared. A changed selection or loss of log access still clears old output.
 Pod cards show state/exit; Gateway links Harness output or Deployment activity.
 
-CLI flags, follow polling and `Retry-After` handling (`internal/occclient/transport.go:apiError`): see the
-[CLI reference](../reference/cli.md#runtime-status-and-logs). Cancellation succeeds only for `runAgentLogs --follow`.
-`internal/occcli/agent_runtime.go:runAgentLogs` returns a text-mode stderr write
-error for a no-running-Pod notice. It also returns errors from
-`internal/occcli/agent_runtime_output.go:printRuntimeLogPage` when a gap or withheld
-notice fails to write to stderr in text mode. `cmd/occ/main.go:main` exits nonzero
-on these errors.
+See the [CLI reference](../reference/cli.md#runtime-status-and-logs) for flags,
+polling and `Retry-After` (`internal/occclient/transport.go:apiError`).
+Cancellation succeeds only for `runAgentLogs --follow`.
+
+When an Agent has no active revision, a failed fallback notice stops
+`agentRevision` before the CLI reads status or logs. `runAgentLogs` and `printRuntimeLogPage` return
+text-mode stderr errors for no-Pod, gap or withheld notices.
+`cmd/occ/main.go:main` exits nonzero on these errors.
 
 `cmd/occ/main.go:main` restores default signal handling after the first
 cancellation. A subsequent Ctrl-C or `SIGTERM` can terminate a command blocked
@@ -246,6 +247,8 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-09 02:46: Propagate fallback notice errors. (authoring-run/f0458286-baf0-414b-845d-eb460e02a598 - 23136d13b45ab43688ea14e771971bfc66378edf)
 
 - 2026-11-08 03:13: Document CLI exits on text notice write errors. (authoring-run/8719abbf-9776-4ebb-970d-9575222fe52b - 143419c5a957dfacc399e72fccceeb9f3ebfa403)
 

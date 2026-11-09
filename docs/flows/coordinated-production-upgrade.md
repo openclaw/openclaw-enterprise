@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-08"
-last_updated_session: "authoring-run/453b61bd-c21e-4f98-a7a8-3fdfbb549103"
+updated: "2026-11-09"
+last_updated_session: "authoring-run/8664c38b-fe94-43f6-8922-8aa139b809e6"
 ---
 
 # Production image upgrade flow
@@ -78,9 +78,8 @@ Before reads or writes, reject nonempty
 `HEAD` must match `--source-revision`; chart changes, symlinks and internal
 evidence/baseline aliases are rejected. Other edits and image provenance remain unchecked.
 
-Resume binds the evidence directory's path, device and inode; aliases share its
-lock. Resume checks saved parameters under lock, then rejects `completed`.
-Runtime upgrades lock the private sibling dispatch journal separately from evidence.
+Resume binds evidence path, device and inode. Aliases share the lock protecting
+parameter and completion checks. Runtime upgrades separately lock their private sibling dispatch journal.
 
 `matches_yaml` compares ordered candidate YAML mappings, including images, with
 the [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
@@ -109,8 +108,7 @@ freezing active identity and Driver-declared roles in hashed `agent-continuity.j
 editable Agent topology is not authoritative.
 
 Repository-enabled releases require explicit immutable controller and broker images.
-All nodes matching the control plane selector, even unready or cordoned nodes,
-must share one architecture. `scripts/upgrade-image-identity.py:read_platform`
+Every matching control plane node, including unready and cordoned nodes, must share one architecture. `scripts/upgrade-image-identity.py:read_platform`
 verifies the selected platform and blob hashes in Docker's OCI export
 (2 MiB per blob, 32 MiB total metadata).
 `scripts/upgrade-repository-image-probe.mjs` tests recovery and refused reservations
@@ -120,6 +118,7 @@ This verifies the Driver and broker protocol; Kubernetes image availability,
 receipt durability and disposal remain unverified. The broker hostname
 stays fixed. For restart recovery, see the [broker procedure](../guides/repository-credentials/installation.md#install-and-verify).
 
+Preparation refuses changed Installation YAML in an immutable Secret before startup Jobs.
 After Helm's server dry run, `scripts/upgrade-startup-preflight.mjs` copies
 API/worker images, environment, mounts and service accounts into single-completion,
 single-Pod Jobs with the candidate Installation Secret, no retries and the selected
@@ -187,12 +186,11 @@ drafts per the [production guide](../guides/deploy/production-upgrade.md).
 `scripts/upgrade-production-images` binds resume to the prepared inputs, directory,
 source and cluster, requalifies images, and rejects changed eligible nodes.
 Values must match baseline, candidate or the recorded predecessor and revision.
-Installation identity and unrelated Secret data remain unchanged. Resume checks
-immutable intent equality. Retries require migration-history review and terminal
+Resume checks immutable intent, Secret identity and unrelated data. Pending Installation
+writes require a mutable Secret before scaling. Retries require migration-history review and terminal
 initializer Jobs/Pods. `new_attempt` fsyncs attempt-directory ancestors before
 publishing pointers.
-Ordinary resume skips Helm only at the exact submitted deployed revision;
-unattributed higher revisions remain refused.
+Ordinary resume skips Helm only at the exact submitted deployed revision.
 
 For [same-candidate recovery](../guides/deploy/production-helm-recovery.md),
 `scripts/upgrade-helm-state.py:recover` checks the original Helm payload, ownership,
@@ -353,6 +351,8 @@ undoing prior merges. Rename keys are literal, including `constructor` and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-09 03:26: Check immutable Installation Secrets before stopping writers. (authoring-run/8664c38b-fe94-43f6-8922-8aa139b809e6 - ce1d22e17a)
 
 - 2026-11-08 15:25: Refuse unreconciled resources, environment entries and container placements during recovery. (authoring-run/453b61bd-c21e-4f98-a7a8-3fdfbb549103 - d4333fb16c)
 

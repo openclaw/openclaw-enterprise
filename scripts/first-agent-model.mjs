@@ -150,6 +150,82 @@ const probeMessages = {
     "The gateway could not complete the model check. Check the gateway logs and run the command again.",
 };
 
+const modelFailureMessages = {
+  ...probeMessages,
+  execution:
+    "Could not run the model check in the Agent's gateway. Check that the Pod is still Ready and that your Kubernetes identity can exec into it.",
+  invalid_result:
+    "The model check returned an invalid result. Check the gateway logs and run the command again.",
+};
+
+function validProbeStatus(code, status) {
+  switch (code) {
+    case "authorization":
+      return status === 401 || status === 403;
+    case "endpoint":
+      return status === 404;
+    case "rate_limit":
+      return status === 429;
+    case "unauthenticated":
+    case "upstream":
+      return (
+        Number.isInteger(status) &&
+        status >= 100 &&
+        status <= 599 &&
+        !(code === "upstream" ? [200, 401, 403, 404, 429] : [401, 403]).includes(status)
+      );
+    default:
+      return status === undefined;
+  }
+}
+
+// Keep the operator explanation and machine-readable classification together.
+// Neither probe output nor an underlying command error is retained.
+export class FirstAgentModelError extends Error {
+  #code;
+  #status;
+  #requestInterval;
+
+  constructor(code, status = undefined, requestInterval = undefined) {
+    const known =
+      typeof code === "string" && Object.hasOwn(modelFailureMessages, code) ? code : "unexpected";
+    const httpStatus =
+      ["unauthenticated", "authorization", "endpoint", "rate_limit", "upstream"].includes(known) &&
+      Number.isInteger(status) &&
+      status >= 100 &&
+      status <= 599
+        ? status
+        : undefined;
+    super(modelFailureMessages[known].replace("{status}", String(httpStatus ?? "unknown")));
+    this.#code = known;
+    this.#status = httpStatus;
+    // Diagnostic coordinates only: never retain arbitrary probe output or errors.
+    const { start, end } = requestInterval ?? {};
+    if (
+      known === "upstream" &&
+      httpStatus === 500 &&
+      Number.isSafeInteger(start) &&
+      Number.isSafeInteger(end) &&
+      start >= 0 &&
+      end <= 8_640_000_000_000_000 &&
+      end >= start &&
+      end - start <= 180_000
+    ) {
+      this.#requestInterval = Object.freeze({ start, end });
+    }
+  }
+
+  get code() {
+    return this.#code;
+  }
+  get status() {
+    return this.#status;
+  }
+  get requestInterval() {
+    return this.#requestInterval;
+  }
+}
+
 function idHash(id) {
   return createHash("sha256").update(id).digest("hex").slice(0, 12);
 }
@@ -170,7 +246,7 @@ function readItems(output) {
   return data.items;
 }
 
-async function findGateway(kubectl, namespaceId, agentId, revisionId) {
+async function findGateway(kubectl, namespaceId, agentId, revisionId, signal) {
   const deadline = Date.now() + readinessTimeout;
   const configMap = `gateway-${idHash(agentId)}-rev-${idHash(revisionId)}`;
   const selector = [
@@ -182,6 +258,7 @@ async function findGateway(kubectl, namespaceId, agentId, revisionId) {
   let state = "cluster";
 
   while (Date.now() < deadline) {
+    signal?.throwIfAborted();
     let namespaces;
     try {
       namespaces = readItems(
@@ -201,6 +278,7 @@ async function findGateway(kubectl, namespaceId, agentId, revisionId) {
       state = "cluster";
     }
 
+    signal?.throwIfAborted();
     if (namespaces?.length > 1) {
       throw new Error(
         "More than one Kubernetes namespace matches this Agent's gateway placement. Inspect their labels before retrying.",
@@ -237,20 +315,34 @@ async function findGateway(kubectl, namespaceId, agentId, revisionId) {
       }
     }
 
+    signal?.throwIfAborted();
     const remaining = deadline - Date.now();
     if (remaining > 0) {
-      await delay(Math.min(readinessInterval, remaining));
+      await delay(Math.min(readinessInterval, remaining), undefined, { signal });
     }
   }
 
   throw new Error(`Timed out waiting for the Agent's gateway. ${discoveryMessages[state]}`);
 }
 
-// This function is serialized to stdin and executed inside the gateway container.
-async function probeInGateway({ nonce, prompt, expectProviderKey }) {
+export function isGatewayCompletionId(value) {
+  return (
+    typeof value === "string" &&
+    value.length === 45 &&
+    /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value)
+  );
+}
+
+// Serialized with its completion-ID validator and executed inside the Gateway container.
+async function probeInGateway() {
   const emit = (value) => process.stdout.write(JSON.stringify(value));
   const failure = (code, status) => ({ error: code, ...(status === undefined ? {} : { status }) });
   try {
+    let input = "";
+    for await (const chunk of process.stdin.setEncoding("utf8")) {
+      input += chunk;
+    }
+    const { nonce, prompt, expectProviderKey, sessionKey } = JSON.parse(input);
     const providerKey = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
     const password = process.env.OPENCLAW_GATEWAY_PASSWORD;
@@ -274,6 +366,9 @@ async function probeInGateway({ nonce, prompt, expectProviderKey }) {
       const headers = { "content-type": "application/json" };
       if (authorized) {
         headers.authorization = `Bearer ${password}`;
+        if (sessionKey !== undefined) {
+          headers["x-openclaw-session-key"] = sessionKey;
+        }
       }
       try {
         return await fetch(url, {
@@ -293,7 +388,9 @@ async function probeInGateway({ nonce, prompt, expectProviderKey }) {
     }
 
     async function getAssistant(content) {
+      const start = Date.now();
       const response = await request(content, true);
+      const end = Date.now();
       if (!response) {
         return failure("unavailable");
       }
@@ -306,7 +403,12 @@ async function probeInGateway({ nonce, prompt, expectProviderKey }) {
             : response.status === 429
               ? "rate_limit"
               : "upstream";
-        return failure(code, response.status);
+        return {
+          ...failure(code, response.status),
+          ...(sessionKey !== undefined && response.status === 500
+            ? { requestInterval: { start, end } }
+            : {}),
+        };
       }
       let body;
       try {
@@ -333,7 +435,7 @@ async function probeInGateway({ nonce, prompt, expectProviderKey }) {
       if (text.length > 20_000) {
         return failure("response_size");
       }
-      return { text };
+      return { text, runId: body.id };
     }
 
     const denied = await request(noncePrompt, false);
@@ -357,25 +459,53 @@ async function probeInGateway({ nonce, prompt, expectProviderKey }) {
       return;
     }
 
+    const receipt = { nonce };
+    if (sessionKey !== undefined) {
+      if (!isGatewayCompletionId(proof.runId)) {
+        emit(failure("response_format"));
+        return;
+      }
+      receipt.runId = proof.runId;
+    }
     if (prompt !== undefined) {
       const result = await getAssistant(prompt);
       if (result.error) {
         emit(result);
         return;
       }
-      emit({ nonce, response: result.text });
+      emit({ ...receipt, response: result.text });
       return;
     }
-    emit({ nonce });
+    emit(receipt);
   } catch {
     emit(failure("unexpected"));
   }
 }
 
-export async function verifyFirstAgentModel(
-  kubectl,
-  { namespaceId, agentId, revisionId, prompt, apiKey, expectProviderKey = true },
-) {
+// Only source-owned code goes in the command. The prompt and per-request values travel on stdin.
+export const gatewayProbeCommand = Object.freeze([
+  "node",
+  "--input-type=module",
+  "--eval",
+  `${isGatewayCompletionId.toString()}\n(${probeInGateway.toString()})();`,
+]);
+
+/**
+ * @param {{ namespaceId: string, agentId: string, revisionId: string,
+ *   prompt?: string | undefined, apiKey?: string | undefined, expectProviderKey?: boolean | undefined,
+ *   sessionKey?: string | undefined, signal?: AbortSignal | undefined }} options
+ */
+export async function verifyFirstAgentModel(kubectl, options) {
+  const {
+    namespaceId,
+    agentId,
+    revisionId,
+    prompt,
+    apiKey,
+    expectProviderKey = true,
+    sessionKey,
+    signal,
+  } = options;
   if (
     !isKubernetesLabel(namespaceId) ||
     !isKubernetesLabel(agentId) ||
@@ -386,6 +516,17 @@ export async function verifyFirstAgentModel(
       "A valid namespace ID, Agent ID, and deployed revision ID are required to check the model.",
     );
   }
+  // Limit this internal QA selector to synthetic git-withdrawal conversations.
+  if (
+    sessionKey !== undefined &&
+    (typeof sessionKey !== "string" ||
+      sessionKey.length !== 62 ||
+      !/^agent:main:git-withdrawal-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+        sessionKey,
+      ))
+  ) {
+    throw new Error("The QA session key must be a synthetic git-withdrawal UUID key.");
+  }
   if (prompt !== undefined && (typeof prompt !== "string" || !prompt.trim())) {
     throw new Error("The model prompt must contain text.");
   }
@@ -395,12 +536,11 @@ export async function verifyFirstAgentModel(
     );
   }
 
-  const { namespace, pod } = await findGateway(kubectl, namespaceId, agentId, revisionId);
+  const { namespace, pod } = await findGateway(kubectl, namespaceId, agentId, revisionId, signal);
   const nonce = `FIRST_AGENT_${randomUUID()}`;
-  const script = `await (${probeInGateway.toString()})(${JSON.stringify({ nonce, prompt, expectProviderKey })});`;
-  let result;
+  let output;
   try {
-    const output = await kubectl(
+    output = await kubectl(
       "exec",
       "-i",
       "--namespace",
@@ -409,35 +549,47 @@ export async function verifyFirstAgentModel(
       "-c",
       "gateway",
       "--",
-      "node",
-      "--input-type=module",
-      "-",
-      { input: script, timeout: 420_000 },
+      ...gatewayProbeCommand,
+      { input: JSON.stringify({ nonce, prompt, expectProviderKey, sessionKey }), timeout: 420_000 },
     );
+  } catch {
+    throw new FirstAgentModelError("execution");
+  }
+  let result;
+  try {
     result = JSON.parse(output);
   } catch {
-    throw new Error(
-      "Could not run the model check in the Agent's gateway. Check that the Pod is still Ready and that your Kubernetes identity can exec into it.",
-    );
+    throw new FirstAgentModelError("invalid_result");
   }
   if (result?.error) {
-    const message = probeMessages[result.error] ?? probeMessages.unexpected;
-    const status =
-      Number.isInteger(result.status) && result.status >= 100 && result.status <= 599
-        ? result.status
-        : "unknown";
-    throw new Error(message.replace("{status}", String(status)));
+    // Wire failures must match the probe's branches. Execution/JSON failures
+    // belong only to the local catches above, never to a returned payload.
+    if (
+      typeof result.error !== "string" ||
+      !Object.hasOwn(probeMessages, result.error) ||
+      !validProbeStatus(result.error, result.status)
+    ) {
+      throw new FirstAgentModelError("unexpected");
+    }
+    throw new FirstAgentModelError(
+      result.error,
+      result.status,
+      sessionKey === undefined ? undefined : result.requestInterval,
+    );
   }
   if (
     result?.nonce !== nonce ||
+    (sessionKey !== undefined && !isGatewayCompletionId(result.runId)) ||
     (prompt !== undefined && (typeof result.response !== "string" || !result.response.trim()))
   ) {
-    throw new Error(
-      "The model check returned an invalid result. Check the gateway logs and run the command again.",
-    );
+    throw new FirstAgentModelError("invalid_result");
   }
   if (typeof apiKey === "string" && apiKey && result.response?.includes(apiKey)) {
-    throw new Error(probeMessages.credential);
+    throw new FirstAgentModelError("credential");
   }
-  return prompt === undefined ? { nonce } : { nonce, response: result.response };
+  return {
+    nonce,
+    ...(sessionKey !== undefined && { runId: result.runId }),
+    ...(prompt !== undefined && { response: result.response }),
+  };
 }

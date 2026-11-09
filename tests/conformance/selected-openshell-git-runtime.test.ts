@@ -23,6 +23,7 @@ import {
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
 } from "../../packages/occ/src/errors.ts";
+import { selectOpenShellGitWithdrawalDenials } from "../../scripts/ci/openshell-git-retention.mjs";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 import { deferred } from "../helpers/deferred.ts";
 import {
@@ -1517,8 +1518,13 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
       return provider;
     };
     const expiry = {
-      async expire(r, workspace, sandbox) {
+      async expire(r, workspace, sandbox, finiteScopeIsCurrent) {
         expires++;
+        // Natural expiry retains only a current scope; the production store separately
+        // permits the exact committed removal, covered by the PostgreSQL journey.
+        if (!finiteScopeIsCurrent) {
+          return;
+        }
         assert.equal(r, revision);
         assert.deepEqual(r.repositoryCredentials, admittedCredentials);
         assert.equal(workspace, originalRow.workspace);
@@ -1694,7 +1700,7 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
         pass.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
         throw pass.signal.reason;
       }
-      if (fault === "Sandbox moved before send") {
+      if (fault === "Sandbox moved before send" || fault === "string conflict code") {
         Object.assign(expiryBox, { resourceVersion: "2" });
       }
       ledger.set(conditional.requestId, {
@@ -1702,7 +1708,11 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
         applied: false,
       });
       if (conditional.expectedResourceVersion !== expiryBox.resourceVersion) {
-        throw Object.assign(Error("RESOURCE_VERSION_CONFLICT"), { grpcStatus: 10 });
+        // String codes remain fail-closed without becoming numeric supplier evidence.
+        throw Object.assign(
+          Error("RESOURCE_VERSION_CONFLICT"),
+          fault === "string conflict code" ? { code: "10" } : { grpcStatus: 10 },
+        );
       }
       if (["outcome uncertain at gateway", "first send still applying"].includes(fault)) {
         throw Object.assign(Error("deadline exceeded"), { grpcStatus: 4 });
@@ -1759,7 +1769,7 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
     try {
       assert.equal(await cleanup(), "retire-runtime");
       assert.equal(substitutions, 1);
-      assert.equal(expires, 0);
+      assert.equal(expires, 1);
       assert.equal(intents, 0);
       assert.equal(sends, 0);
       unchanged();
@@ -1805,6 +1815,7 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
       firstNoAdmission ||
       [
         "Sandbox moved before send",
+        "string conflict code",
         "outcome uncertain at gateway",
         "first send still applying",
       ].includes(fault);
@@ -1853,6 +1864,21 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
       }
       assert.equal(confirmations, [first, second, third].filter((v) => v === "withdrawn").length);
     } else {
+      const event = events.at(-1)!;
+      assert.equal(
+        event.failure,
+        ["Sandbox moved before send", "string conflict code", "unimplemented detach"].includes(
+          fault,
+        )
+          ? "failed"
+          : "unconfirmed",
+      );
+      assert.equal(
+        event.grpcStatus,
+        ({ "Sandbox moved before send": 10, "unimplemented detach": 12 } as Record<string, number>)[
+          fault
+        ],
+      );
       const noSend = ["replacement Pod", "Git profile scope changed"].includes(fault);
       assert.equal(sends, noSend ? 0 : 1);
       assert.equal(intents, noSend ? 0 : 1);
@@ -1869,7 +1895,8 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
           "repositoryRef",
           "outcome",
           "check",
-          ...(event.outcome === "pending" ? ["failure"] : []),
+          ...(event.outcome !== "withdrawn" ? ["failure"] : []),
+          ...(event.grpcStatus === undefined ? [] : ["grpcStatus"]),
         ].sort(),
       );
     }
@@ -1908,6 +1935,7 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
     ["admission limit", "pending", "pending", "withdrawn"],
     ["Sandbox moved after intent", "pending", "retire-runtime"],
     ["Sandbox moved before send", "retire-runtime"],
+    ["string conflict code", "retire-runtime"],
     ["replacement Pod", "retire-runtime"],
     ["Git profile scope changed", "retire-runtime"],
     ["model profile belongs to another workspace", "retire-runtime"],
@@ -2001,6 +2029,16 @@ for (const reason of ["withdrawn", "repository_expired", "worker_replaced"] as c
         );
       } else {
         assert.equal(f.denials().at(-1)?.reasonCode, "access_withdrawn");
+        const selected = { sandboxId: f.identity.sandboxId, revisionId: revision.id };
+        assert.deepEqual(selectOpenShellGitWithdrawalDenials(f.denials(), selected).requestIds, [
+          f.identity.requestId,
+        ]);
+        const contradictory = selectOpenShellGitWithdrawalDenials(
+          [{ ...f.denials().at(-1), operation: "advertise-upload-pack" }],
+          selected,
+        );
+        assert.deepEqual(contradictory.requestIds, []);
+        assert.equal(contradictory.rejectedOperation, 1);
         assert.deepEqual(f.runtime.route(revision.id), { state: "blocked", reason });
         assert.deepEqual(store.rows.get(revision.id), { ...before, blocked: reason });
       }
@@ -2797,6 +2835,13 @@ test("selected route readiness separates no material, access refusal, and replac
   const read = f.owner.readOpenShellMaterial;
   const route = () => f.runtime.route(revision.id);
   const readiness = () => openShellGitRouteReadiness(route());
+  const selected = {
+    namespaceId: revision.namespaceId,
+    agentId: revision.agentId,
+    revisionId: revision.id,
+    repositoryRef: "application",
+    sandboxId: sandbox.id,
+  };
   assert.equal(
     prepared.middlewares["oce-prepared-git"]?.config.fields.binding_id?.stringValue,
     executionId,
@@ -2908,6 +2953,25 @@ test("selected route readiness separates no material, access refusal, and replac
     assert.equal(await lookup(), undefined);
     assert.equal(f.denials().at(-1)?.reason, "material_unavailable");
     assert.equal(f.denials().at(-1)?.reasonCode, reasonCode);
+    const denial = f.denials().at(-1)!;
+    assert.deepEqual(
+      selectOpenShellGitWithdrawalDenials([denial], selected).requestIds,
+      absent === "withdrawn" ? [f.identity.requestId] : [],
+    );
+    if (absent === "withdrawn") {
+      // Lookup refuses before selecting an operation; a claimed operation contradicts it.
+      for (const operation of ["advertise-upload-pack", null]) {
+        const rejected = selectOpenShellGitWithdrawalDenials([{ ...denial, operation }], selected);
+        assert.deepEqual(rejected.requestIds, []);
+        assert.equal(rejected.rejectedOperation, 1);
+      }
+      for (const mismatch of [{ sandboxId: "other-sandbox" }, { revisionId: "other-revision" }]) {
+        assert.deepEqual(
+          selectOpenShellGitWithdrawalDenials([denial], { ...selected, ...mismatch }).requestIds,
+          [],
+        );
+      }
+    }
     assert.equal(materialWarnings().length, 1, "one warning per outage");
   }
   const startOfRestore = f.events.length;

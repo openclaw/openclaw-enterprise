@@ -274,6 +274,11 @@ matches_yaml() {
   [[ "$actual_text" == "$yaml_object_text" ]]
 }
 
+require_mutable_installation_secret() {
+  jq -e '.immutable != true' "$1" >/dev/null ||
+    die "Installation Secret $installation_secret is immutable and the candidate requires different data. Choose a candidate that preserves the live Installation configuration or defer this upgrade."
+}
+
 # Prints the quoted name of the resource that the OCC read ARGS returns, or
 # nothing when the read fails. tojson escapes C0 controls and DEL; C1 controls
 # are replaced too, so a name cannot forge lines or terminal sequences.
@@ -1498,6 +1503,7 @@ if [[ -n "$runtime_image" ]]; then
     "$candidate_installation"
 fi
 if ! matches_yaml "$candidate_installation" "$evidence_dir/before-live-installation.yaml"; then
+  require_mutable_installation_secret "$live_installation_secret"
   touch "$evidence_dir/installation-changed"
   installation_checksum=$(
     python3 -c \
@@ -1699,6 +1705,12 @@ if [[ -f "$evidence_dir/helm-started" ]] && ((helm_complete == 0)); then
 fi
 
 if ((helm_complete == 0)); then
+  replace_installation_secret=0
+  if [[ -f "$evidence_dir/installation-changed" ]] &&
+    ! matches_yaml "$evidence_dir/current-live-installation.yaml" "$candidate_installation"; then
+    require_mutable_installation_secret "$live_secret"
+    replace_installation_secret=1
+  fi
   if [[ -f "$evidence_dir/helm-started" ]]; then
     # Every submitted retry has a fresh hook identity; retain earlier attempts.
     helm_attempt=$(python3 scripts/upgrade-helm-state.py new "$evidence_dir" "$release" "${helm_args[@]}")
@@ -1770,7 +1782,7 @@ if ((helm_complete == 0)); then
   install_atomically "$candidate_values" "$values"
   if [[ -f "$evidence_dir/installation-changed" ]]; then
     install_atomically "$candidate_installation" "$installation"
-    if ! matches_yaml "$evidence_dir/current-live-installation.yaml" "$candidate_installation"; then
+    if ((replace_installation_secret)); then
       python3 - "$live_secret" "$candidate_installation" "$installation_key" <<'PYTHON' |
 import base64, json, sys
 with open(sys.argv[1]) as f:
