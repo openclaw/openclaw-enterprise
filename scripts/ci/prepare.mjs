@@ -3569,7 +3569,18 @@ async function prepareLane({ lane, statePath, file }) {
         saveState: () => writeState(resolvedStatePath, state),
       }),
     );
+    const existingCaPath = env.NODE_EXTRA_CA_CERTS;
     Object.assign(env, keycloak.env);
+    if (existingCaPath && existingCaPath !== env.NODE_EXTRA_CA_CERTS) {
+      // The same test process verifies both private Gateway TLS and the IdP.
+      const certificates = await Promise.all([
+        readFile(existingCaPath, "utf8"),
+        readFile(env.NODE_EXTRA_CA_CERTS, "utf8"),
+      ]);
+      const combinedCaPath = join(dirname(resolvedStatePath), "combined-test-ca.pem");
+      await writeFile(combinedCaPath, certificates.join("\n"), { mode: 0o600 });
+      env.NODE_EXTRA_CA_CERTS = combinedCaPath;
+    }
     await markResourceReady(resolvedStatePath, state, keycloak.resource);
   }
 

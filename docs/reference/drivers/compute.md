@@ -44,6 +44,7 @@ kind: reference/driver
   - [`requiresStoppedPredecessors`](#method-requires-stopped-predecessors)
   - [`describePrepareRevisionFailure`](#method-describe-prepare-revision-failure)
   - [`getGatewayEndpoint`](#method-get-gateway-endpoint)
+  - [`getGatewayChatEndpoint`](#method-get-gateway-chat-endpoint)
   - [`getAgentRuntimeCredentialStatus`](#method-get-agent-runtime-credential-status)
   - [`provisionAgentRuntimeCredentials`](#method-provision-agent-runtime-credentials)
   - [`deleteAgentRuntimeCredentials`](#method-delete-agent-runtime-credentials)
@@ -63,9 +64,8 @@ kind: reference/driver
 
 ## Overview
 
-Compute manages Namespaces, Agent workloads, identity, isolation, and readiness
-for OpenClaw Control Plane (OCC). A paired [Sandbox Driver](sandbox.md) can provision
-Harnesses; Compute retains gateway routing.
+Compute manages Namespaces, Agent workloads, identity, isolation, readiness, and
+gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 
 ## Interface
 
@@ -116,7 +116,8 @@ Harnesses; Compute retains gateway routing.
 | <a id="method-activate-revision"></a>`activateRevision`, <a id="method-deactivate-revision"></a>`deactivateRevision` | Optional    | Switch traffic to a ready revision or withdraw an unpublished candidate. Production startup checks for both. A Driver selecting `beforeCommit` must also implement activation in development.                                                                                                                                                             |
 | <a id="method-requires-stopped-predecessors"></a>`requiresStoppedPredecessors`                                       | Optional    | Return `true` to stop older revisions before preparing a replacement. Otherwise the previous route can serve during preparation.                                                                                                                                                                                                                          |
 | <a id="method-describe-prepare-revision-failure"></a>`describePrepareRevisionFailure`                                | Optional    | Supply safe diagnostic fields for a rejected preparation. The worker validates the fields and excludes raw provider errors.                                                                                                                                                                                                                               |
-| <a id="method-get-gateway-endpoint"></a>`getGatewayEndpoint`                                                         | Optional    | Return the selected revision's private WSS address, or `undefined`. Workspace-file access and Agent native admin need this endpoint.                                                                                                                                                                                                                      |
+| <a id="method-get-gateway-endpoint"></a>`getGatewayEndpoint`                                                         | Optional    | Private WSS address for workspace-file access and native administration, or `undefined`.                                                                                                                                                                                                                                                                  |
+| <a id="method-get-gateway-chat-endpoint"></a>`getGatewayChatEndpoint`                                                | Optional    | Revision's WSS chat endpoint and equivalent HTTPS UI. Enforce [`operator.sessions.write`](../agent-native-admin.md#native-authority-and-drift) across HTTP, WebSocket, and device grants. Omission/`undefined` means unsupported; never fall back to `getGatewayEndpoint`.                                                                                |
 | <a id="method-get-agent-runtime-credential-status"></a>`getAgentRuntimeCredentialStatus`                             | Optional    | Report whether the Agent's generated transport credentials are stored. Missing support prevents the status read.                                                                                                                                                                                                                                          |
 | <a id="method-provision-agent-runtime-credentials"></a>`provisionAgentRuntimeCredentials`                            | Optional    | Create initial transport credentials for the approved Agent. Missing support prevents provisioning.                                                                                                                                                                                                                                                       |
 | <a id="method-delete-agent-runtime-credentials"></a>`deleteAgentRuntimeCredentials`                                  | Optional    | Remove Agent-owned credentials after revision retirement. A Driver that provisions them but omits deletion fails Agent deletion permanently.                                                                                                                                                                                                              |
@@ -146,13 +147,12 @@ uses a 10-second timeout and accepts up to 4 MiB per response, ten pages, and
 ### Namespace and gateway results
 
 Return the requested `namespaceId`. Failures are `retryable` or `permanent`;
-a true ready or deleted flag succeeds only without a failure. Worker-log
-failure reasons allow up to 256 characters: letters, digits, spaces, and
-`. _ : / @ -`. Exclude provider output and other tenants' values.
+ready/deleted flags succeed only without failure. Worker-log failure reasons allow
+256 characters: letters, digits, spaces, and `. _ : / @ -`. Exclude provider
+output and other tenants' values.
 
-Derive a [gateway endpoint](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
-from trusted settings and the approved resource IDs. Returning an address does
-not establish readiness or authorize a connection.
+Derive [gateway endpoints](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
+from trusted settings and approved resource IDs, independently of readiness and authorization.
 
 ### Optional initial runtime credential provisioning
 

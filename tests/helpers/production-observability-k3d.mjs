@@ -190,6 +190,7 @@ export async function installObservabilityControlPlane(
     suffix,
     configuration,
     authBaseURL: "https://observability.example.invalid",
+    agentNativeAdminDomain: "agents.example.invalid",
     installationName: "Observability acceptance",
     repositoryCredentials,
     databaseName: `openclaw_k8s_observability_${suffix}`,

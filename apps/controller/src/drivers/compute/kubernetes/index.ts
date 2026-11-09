@@ -4890,6 +4890,30 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return `wss://${authority}${this.gatewayRoutePath(revision)}`;
   }
 
+  getGatewayChatEndpoint(revision: AgentRevision): string | undefined {
+    if (!this.usesWritableNativeAdminConfig(revision.configuration)) {
+      return undefined;
+    }
+    const gateway = asRecord(revision.configuration.gateway);
+    const requiredHeaders = asRecord(asRecord(gateway?.auth)?.trustedProxy)?.requiredHeaders;
+    if (
+      !Array.isArray(requiredHeaders) ||
+      !requiredHeaders.some(
+        (header) =>
+          typeof header === "string" && header.toLowerCase() === TRUSTED_PROXY_SCOPES_HEADER,
+      )
+    ) {
+      return undefined;
+    }
+    const endpoint = this.getGatewayEndpoint(revision);
+    if (endpoint === undefined) {
+      return undefined;
+    }
+    const url = new URL(endpoint);
+    url.pathname = `/native-chat${url.pathname}`;
+    return url.href;
+  }
+
   async getAgentRuntimeCredentialStatus(
     binding: ComputeAgentBinding,
   ): Promise<AgentRuntimeCredentialStatus> {
@@ -13642,9 +13666,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
     // Native HTTP APIs such as /tools/invoke and /sessions/<key>/kill ignore identityScopes:
     // a trusted-proxy request without x-openclaw-scopes receives OpenClaw's default operator
-    // scopes, operator.admin included. Once a human is admitted, the Gateway must refuse
-    // requests that do not carry the header; the operator HTTPRoute sends the machine
-    // identity's exact grant, so OCC's own access keeps working.
+    // scopes, operator.admin included. Routed access must therefore require the scope
+    // header even for the shared machine identity: chat and admin routes set distinct
+    // ceilings. Explicit human ingress needs the same fail-closed requirement.
     const admitsHumans =
       Array.isArray(allowUsers) && allowUsers.some((user) => user !== TRUSTED_PROXY_IDENTITY);
     const requiredHeadersWithScopes = (requiredHeaders as readonly string[] | undefined)?.some(
@@ -13689,7 +13713,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           mode: "trusted-proxy",
           trustedProxy: {
             ...trustedProxy,
-            ...(admitsHumans ? { requiredHeaders: requiredHeadersWithScopes } : {}),
+            ...(admitsHumans || this.options.gatewayRouting !== undefined
+              ? { requiredHeaders: requiredHeadersWithScopes }
+              : {}),
             userHeader: TRUSTED_PROXY_HEADER,
             allowUsers: allowUsers ?? [TRUSTED_PROXY_IDENTITY],
           },
@@ -13836,18 +13862,20 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   private gatewayRouteHeaderFilter(
-    access: "operator" | "node" | "node-transfer",
+    access: "operator" | "chat" | "node" | "node-transfer",
   ): KubernetesRecord {
     return {
       type: "RequestHeaderModifier",
       requestHeaderModifier: {
         set: [
-          ...(access === "operator"
+          ...(access === "operator" || access === "chat"
             ? [
                 { name: TRUSTED_PROXY_HEADER, value: TRUSTED_PROXY_IDENTITY },
-                // The machine identity's exact grant. The Gateway requires this header
-                // once humans are admitted, and a client value must never cap or widen it.
-                { name: TRUSTED_PROXY_SCOPES_HEADER, value: "operator.admin" },
+                // Replace client authority before either HTTP or WebSocket reaches native auth.
+                {
+                  name: TRUSTED_PROXY_SCOPES_HEADER,
+                  value: access === "chat" ? "operator.sessions.write" : "operator.admin",
+                },
               ]
             : []),
           {
@@ -13882,6 +13910,30 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       kind: "Service",
       name: service.metadata.name,
       port: this.options.network.gatewayPort,
+    };
+  }
+
+  private gatewayRootRouteRule(
+    service: ManagedKubernetesObject<"Service">,
+    path: string,
+    access: "operator" | "chat" | "node",
+    match: "Exact" | "PathPrefix",
+  ): KubernetesRecord {
+    return {
+      matches: [{ path: { type: match, value: path } }],
+      filters: [
+        {
+          type: "URLRewrite",
+          urlRewrite: {
+            path:
+              match === "Exact"
+                ? { type: "ReplaceFullPath", replaceFullPath: "/" }
+                : { type: "ReplacePrefixMatch", replacePrefixMatch: "/" },
+          },
+        },
+        this.gatewayRouteHeaderFilter(access),
+      ],
+      backendRefs: [this.gatewayRouteBackendRef(service)],
     };
   }
 
@@ -14040,24 +14092,28 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                 },
               ]
             : [
-                {
-                  matches: [
-                    {
-                      path: {
-                        type: "Exact",
-                        value: `${this.gatewayRoutePath(revision)}${access === "node" ? "/node" : ""}`,
-                      },
-                    },
-                  ],
-                  filters: [
-                    {
-                      type: "URLRewrite",
-                      urlRewrite: { path: { type: "ReplaceFullPath", replaceFullPath: "/" } },
-                    },
-                    this.gatewayRouteHeaderFilter(access),
-                  ],
-                  backendRefs: [this.gatewayRouteBackendRef(service)],
-                },
+                this.gatewayRootRouteRule(
+                  service,
+                  `${this.gatewayRoutePath(revision)}${access === "node" ? "/node" : ""}`,
+                  access,
+                  "Exact",
+                ),
+                ...(access === "operator" && this.getGatewayChatEndpoint(revision) !== undefined
+                  ? [
+                      this.gatewayRootRouteRule(
+                        service,
+                        `/native-chat${this.gatewayRoutePath(revision)}`,
+                        "chat",
+                        "Exact",
+                      ),
+                      this.gatewayRootRouteRule(
+                        service,
+                        `/native-chat${this.gatewayRoutePath(revision)}/`,
+                        "chat",
+                        "PathPrefix",
+                      ),
+                    ]
+                  : []),
                 ...(access === "node"
                   ? [
                       {
@@ -14138,26 +14194,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                   : []),
                 ...(access === "operator"
                   ? [
-                      {
-                        matches: [
-                          {
-                            path: {
-                              type: "PathPrefix",
-                              value: `${this.gatewayRoutePath(revision)}/`,
-                            },
-                          },
-                        ],
-                        filters: [
-                          {
-                            type: "URLRewrite",
-                            urlRewrite: {
-                              path: { type: "ReplacePrefixMatch", replacePrefixMatch: "/" },
-                            },
-                          },
-                          this.gatewayRouteHeaderFilter(access),
-                        ],
-                        backendRefs: [this.gatewayRouteBackendRef(service)],
-                      },
+                      this.gatewayRootRouteRule(
+                        service,
+                        `${this.gatewayRoutePath(revision)}/`,
+                        access,
+                        "PathPrefix",
+                      ),
                     ]
                   : []),
               ],

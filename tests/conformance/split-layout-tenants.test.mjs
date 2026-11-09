@@ -45,7 +45,10 @@ async function createFixture() {
   });
   assert.equal(bootstrap.response.status, 201);
   // The script's own transport, sent to the real app as the signed-in administrator.
-  fixture.api = createOccApi({ baseUrl: "http://127.0.0.1", fetchImpl: asAdministrator(fixture) });
+  fixture.api = createOccApi({
+    baseUrl: "https://console.oce.localhost",
+    fetchImpl: asAdministrator(fixture),
+  });
   return fixture;
 }
 
@@ -133,7 +136,7 @@ test("export reads every tenant resource the import needs, without Secret values
   // missing envelope must stop export, not become an empty Namespace inventory.
   for (const damage of ["malformed", "empty", "missing-data"]) {
     const api = createOccApi({
-      baseUrl: "http://127.0.0.1",
+      baseUrl: "https://console.oce.localhost",
       async fetchImpl(url, init) {
         const response = await asAdministrator(fixture)(url, init);
         assert.equal(response.status, 200);
@@ -411,7 +414,7 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
       response.writeHead(401).end();
       return;
     }
-    const answer = await asAdministrator(fixture)(`http://127.0.0.1${request.url}`, {
+    const answer = await asAdministrator(fixture)(`https://console.oce.localhost${request.url}`, {
       method: request.method,
       headers: request.headers["content-type"]
         ? { "content-type": request.headers["content-type"] }
@@ -791,7 +794,7 @@ test("import refuses non-array destination inventories before adopting a populat
     let saves = 0;
     let writes = 0;
     const api = createOccApi({
-      baseUrl: "http://127.0.0.1",
+      baseUrl: "https://console.oce.localhost",
       async fetchImpl(url, init) {
         if (init.method !== "GET") {
           writes += 1;

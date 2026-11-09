@@ -20,11 +20,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Socket } from "node:net";
 import type { AdmittedCaller } from "../admission/admission-verifier.ts";
-import {
-  hostnameMatchesSharedCookieDomain,
-  normalizeSharedCookieDomain,
-  type ControllerAuth,
-} from "../auth/index.ts";
+import { hostnameMatchesSharedCookieDomain, type ControllerAuth } from "../auth/index.ts";
 import {
   proxyNativeAdminWebSocket,
   proxyNativeAdminHttp as streamNativeAdminHttp,
@@ -70,6 +66,7 @@ interface NativeAdminOptions {
 }
 
 interface NativeAdminProxyResolution {
+  readonly mode: "admin" | "chat";
   readonly parentSessionId: string;
   readonly actorId: string;
   readonly actorIssuer: string;
@@ -151,16 +148,25 @@ const nativeAdminStatusDataSchema = {
     origin: { type: "string", format: "uri" },
     activeRevisionId: { type: "string" },
     url: { type: "string", format: "uri" },
+    mode: { type: "string", enum: ["admin", "chat"] },
   },
 };
 export const nativeAdminStatusSchema = {
   operationId: nativeAdminStatusOperation.operationId,
   summary: nativeAdminStatusOperation.summary,
   description:
-    "Requires a human session with administer permission on the exact Agent. Service API keys cannot launch or inspect native admin UI access.",
+    "Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Service API keys cannot launch or inspect native admin UI access.",
   tags: [...nativeAdminStatusOperation.tags],
   security: [{ sessionCookie: [] }],
-  "x-openclaw-permissions": [{ action: "administer", resourceKind: "agent", scope: "requested" }],
+  "x-openclaw-permissions": [
+    { action: "operate", resourceKind: "agent", scope: "requested", condition: "native_chat" },
+    {
+      action: "administer",
+      resourceKind: "agent",
+      scope: "requested",
+      condition: "native_admin_alternative",
+    },
+  ],
   params: nativeAdminParamsSchema,
   response: {
     200: {
@@ -181,10 +187,18 @@ export const nativeAdminReturnSchema = {
   operationId: nativeAdminReturnOperation.operationId,
   summary: nativeAdminReturnOperation.summary,
   description:
-    "Requires a human session with administer permission on the exact Agent. Unknown and inaccessible Agents both return 404. This lookup does not launch or start the Agent.",
+    "Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Unknown and inaccessible Agents both return 404. This lookup does not launch or start the Agent.",
   tags: [...nativeAdminReturnOperation.tags],
   security: [{ sessionCookie: [] }],
-  "x-openclaw-permissions": [{ action: "administer", resourceKind: "agent", scope: "requested" }],
+  "x-openclaw-permissions": [
+    { action: "operate", resourceKind: "agent", scope: "requested", condition: "native_chat" },
+    {
+      action: "administer",
+      resourceKind: "agent",
+      scope: "requested",
+      condition: "native_admin_alternative",
+    },
+  ],
   params: {
     type: "object",
     required: ["agentKey"],
@@ -304,6 +318,11 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     getContext,
     getAdmission,
   } = options;
+  if (options.nativeAdmin && Object.hasOwn(options.nativeAdmin, "sharedCookieDomain")) {
+    throw new Error(
+      "nativeAdmin.sharedCookieDomain was removed; the shared cookie domain is derived from the Console and Agent domains.",
+    );
+  }
   const nativeAdminDomain = normalizeNativeAdminDomain(options.nativeAdmin?.domain);
   if (options.nativeAdmin?.enabled === true) {
     if (publicOrigin === undefined) {
@@ -316,11 +335,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       throw new Error("Native admin UI access requires an Agent domain.");
     }
     const sharedCookieDomain = options.auth.sharedCookieDomain;
-    if (
-      sharedCookieDomain === undefined ||
-      normalizeSharedCookieDomain(options.nativeAdmin.sharedCookieDomain) !== sharedCookieDomain ||
-      !hostnameMatchesSharedCookieDomain(new URL(publicOrigin).hostname, sharedCookieDomain)
-    ) {
+    if (!hostnameMatchesSharedCookieDomain(new URL(publicOrigin).hostname, sharedCookieDomain)) {
       throw new Error("Native admin UI access requires a shared cookie domain containing OCC.");
     }
     if (!hostnameMatchesSharedCookieDomain(nativeAdminDomain, sharedCookieDomain)) {
@@ -417,7 +432,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         iamDriverId: selectedIAMDriver().id,
         authorization: {
           principalId: resolution.actorId,
-          action: "administer",
+          action: resolution.mode === "admin" ? "administer" : "operate",
           resource: {
             kind: "agent",
             id: resolution.agentId,
@@ -439,6 +454,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
               ? {}
               : { closeReason: socketEvent.closeReason }),
             parentSessionId: resolution.parentSessionId,
+            mode: resolution.mode,
             revisionId: resolution.revisionId,
             host: resolution.target.host,
           },
@@ -688,6 +704,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   }
 
   type NativeAdminTargetStatus = {
+    readonly mode: "admin" | "chat";
     readonly agent: Agent;
     readonly revision: AgentRevision;
     readonly target: NativeAdminTarget;
@@ -725,7 +742,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
     }
     if (options.nativeAdmin?.enabled !== true) {
-      await controller.getAdministerableAgent(input.actorId, input.namespaceId, input.agentId);
+      await controller.getAgentBrowserAccess(input.actorId, input.namespaceId, input.agentId);
       return { status: "disabled" };
     }
     if (publicOrigin === undefined || nativeAdminDomain === undefined) {
@@ -733,7 +750,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     }
     let selection;
     try {
-      selection = await controller.getAdministerableActiveAgentRevision(
+      selection = await controller.getBrowserAccessibleActiveAgentRevision(
         input.actorId,
         input.namespaceId,
         input.agentId,
@@ -750,7 +767,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       }
       throw error;
     }
-    const { agent, revision, successor } = selection;
+    const { agent, revision, successor, mode } = selection;
     const target = nativeAdminTarget({
       publicOrigin,
       installationId,
@@ -759,13 +776,13 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       domain: nativeAdminDomain,
     });
     if (agent.desiredRuntimeState !== "running") {
-      return { status: "stopped", agent, revision, target };
+      return { status: "stopped", agent, revision, target, mode };
     }
     if (successor !== undefined && replacesActiveWorkload(successor)) {
       return { status: "unavailable" };
     }
     if (!nativeAdminConfigurationSupported(revision, target.origin)) {
-      return { status: "unsupported", agent, revision, target };
+      return { status: "unsupported", agent, revision, target, mode };
     }
     let compute: ComputeDriver;
     try {
@@ -781,11 +798,15 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       warnComputeOwnerMismatch(revision, compute);
       throw dependencyUnavailable();
     }
-    const gatewayBase = nativeAdminGatewayHttpBase(compute.getGatewayEndpoint?.(revision) ?? "");
+    const endpoint =
+      mode === "admin"
+        ? compute.getGatewayEndpoint?.(revision)
+        : compute.getGatewayChatEndpoint?.(revision);
+    const gatewayBase = nativeAdminGatewayHttpBase(endpoint ?? "");
     if (gatewayBase === undefined) {
-      return { status: "unsupported", agent, revision, target };
+      return { status: "unsupported", agent, revision, target, mode };
     }
-    return { status: "available", agent, revision, target, gatewayBase };
+    return { status: "available", agent, revision, target, gatewayBase, mode };
   }
 
   async function resolveNativeAdminAgentHost(
@@ -807,6 +828,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     }
     return {
       status: availability.status,
+      mode: availability.mode,
       host: availability.target.host,
       origin: availability.target.origin,
       activeRevisionId: availability.revision.id,
@@ -884,7 +906,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       if (!controller) {
         throw dependencyUnavailable();
       }
-      const authorized = await controller.getAdministerableAgent(
+      const { agent: authorized } = await controller.getAgentBrowserAccess(
         context.actorId,
         agent.namespaceId,
         agent.id,
@@ -958,22 +980,18 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     readonly actorIssuer: string;
     readonly actorSubject: string;
   }): Promise<string | undefined> {
-    try {
-      const identity = await selectedIAMDriver().lookupIdentity({
-        issuer: input.actorIssuer,
-        subject: input.actorSubject,
-      });
-      if (
-        identity?.kind !== "principal" ||
-        identity.issuer !== input.actorIssuer ||
-        identity.subject !== input.actorSubject
-      ) {
-        return undefined;
-      }
-      return identity.id;
-    } catch {
+    const identity = await selectedIAMDriver().lookupIdentity({
+      issuer: input.actorIssuer,
+      subject: input.actorSubject,
+    });
+    if (
+      identity?.kind !== "principal" ||
+      identity.issuer !== input.actorIssuer ||
+      identity.subject !== input.actorSubject
+    ) {
       return undefined;
     }
+    return identity.id;
   }
 
   function nativeAdminProxyDenial(
@@ -1047,13 +1065,19 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     }
     const actorIssuer = admitted.externalIdentity.issuer;
     const actorSubject = admitted.externalIdentity.subject;
-    const currentActor = await resolveNativeAdminActor({ actorIssuer, actorSubject });
-    if (currentActor === undefined) {
-      return nativeAdminProxyDenial("authorization_denied", { unprovisioned: true });
-    }
-    const agent = await resolveNativeAdminAgentHost(hostname);
-    if (agent === undefined) {
-      return nativeAdminProxyDenial("authorization_denied");
+    let currentActor: string | undefined;
+    let agent: Pick<Agent, "id" | "namespaceId"> | undefined;
+    try {
+      currentActor = await resolveNativeAdminActor({ actorIssuer, actorSubject });
+      if (currentActor === undefined) {
+        return nativeAdminProxyDenial("authorization_denied", { unprovisioned: true });
+      }
+      agent = await resolveNativeAdminAgentHost(hostname);
+      if (agent === undefined) {
+        return nativeAdminProxyDenial("authorization_denied");
+      }
+    } catch {
+      return nativeAdminProxyDenial("dependency_failure");
     }
     try {
       const resolved = await requireAvailableNativeAdminTarget({
@@ -1069,6 +1093,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       }
       return {
         parentSessionId: session.id,
+        mode: resolved.mode,
         actorId: currentActor,
         actorIssuer,
         actorSubject,
@@ -1273,6 +1298,21 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         }
         if (!isNativeAdminProxyResolution(renewed)) {
           return renewed.reason;
+        }
+        if (
+          renewed.parentSessionId !== admission.parentSessionId ||
+          renewed.actorId !== admission.actorId ||
+          renewed.actorIssuer !== admission.actorIssuer ||
+          renewed.actorSubject !== admission.actorSubject
+        ) {
+          return "session_invalid";
+        }
+        if (
+          renewed.mode !== admission.mode ||
+          renewed.agentId !== admission.agentId ||
+          renewed.namespaceId !== admission.namespaceId
+        ) {
+          return "authorization_denied";
         }
         return undefined;
       },

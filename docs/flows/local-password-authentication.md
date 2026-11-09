@@ -158,14 +158,14 @@ account and method checks and the State transaction. Password verification captu
 credential and account versions for the session transaction to recheck. Both methods
 pass a private proof to guarded session creation; session and audit commit before
 Better Auth releases the cookie. Session reads check the current account, method,
-version, and Principal; sessions expire after eight hours without refresh. HTTPS uses
-a `__Host-` cookie that sibling hosts cannot plant; session reads and logout reject
-duplicate active-session cookies.
+version, and Principal; sessions expire after eight hours without refresh. HTTPS uses the [shared session cookie](../reference/authentication.md#native-admin-shared-sessions);
+session reads and logout reject duplicates.
 
 For GitHub, the Console reads `GET /api/auth/providers` and sends a same-origin
 `POST /api/auth/providers/github/start`. The server stores a five-minute attempt with state and browser
 secret digests, provider instance, callback, and PKCE verifier. A host-only
-HttpOnly cookie binds the browser; this profile rejects shared-domain sessions.
+HttpOnly attempt cookie binds the browser. The eventual session cookie uses
+the shared Console and Agent domain.
 Callback consumption commits before exchange; a losing, expired, or invalid
 attempt does not exchange a code.
 `apps/controller/src/auth/github.ts:exchangeGithubSubject` exchanges the code
@@ -238,7 +238,7 @@ and exit codes.
 
 Activation requires stopped admission, drained or terminated requests, and stopped
 old controllers; startup does not fence live readers. Both PostgreSQL compositions
-reject GitHub with native administration, including without its cookie domain.
+reject GitHub and Google with native administration; OIDC permits it.
 `apps/controller/src/auth/index.ts:createPostgresControllerAuth` checks the secret,
 canonical origin and profile before activation. Invalid configuration leaves
 sessions, enrollment and recovery designation unchanged.
