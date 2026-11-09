@@ -123,7 +123,13 @@ async function createQueueRevision(
     configuration_id: configuration.rows[0].configuration_id,
     configuration_kind: "agent",
     configuration_generation: 1,
-    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    harness: {
+      id: "openclaw",
+      version: "1.0.0",
+      mode: "embedded",
+      overrides: {},
+      configuration: {},
+    },
     compute: { id: "compute-queue", implementation: "deterministic-queue" },
     execution_admission: { version: 2, mode: "unprotected" },
     ...(repositoryCredentials === undefined

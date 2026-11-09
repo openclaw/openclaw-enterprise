@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -26,8 +26,8 @@ import {
   stageReleaseChart,
   validateImageReceipt,
 } from "../../scripts/ci/chart-release.mjs";
-import { setEnvironment } from "../helpers/environment.mjs";
-import { writeCommand } from "../helpers/fake-commands.mjs";
+import { setEnvironment } from "../helpers/environment.ts";
+import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const sourceSha = "a".repeat(40);
@@ -759,7 +759,7 @@ test("metadata GET transport retries are bounded, diagnostic and do not retry de
   }
 });
 
-test("separate platform exports assemble into a digest-bound archive and reject corrupt inputs", async (t) => {
+test("native platform exports verify offline and assemble into a digest-bound archive", async (t) => {
   const directory = await temporaryDirectory(t, "container-platform-assembly-");
   async function prepare(name, fault, created = "2026-09-25T07:23:02Z") {
     const output = join(directory, name);
@@ -773,12 +773,14 @@ test("separate platform exports assemble into a digest-bound archive and reject 
       GITHUB_RUN_ATTEMPT: "1",
       CI_RUN_ID: "456",
       CI_ATTEMPT: "1",
-      NODE_BASE_IMAGE: "pinned-node",
+      NODE_BASE_IMAGE: `docker.io/library/node:24@sha256:${"c".repeat(64)}`,
     };
     const expected = [];
+    const roots = [];
     for (const arch of ["amd64", "arm64"]) {
       const layout = join(output, arch);
       await mkdir(join(layout, "blobs/sha256"), { recursive: true });
+      await writeFile(join(layout, "oci-layout"), '{"imageLayoutVersion":"1.0.0"}');
       const blob = async (value, mediaType) => ({
         ...(await writeOciBlob(layout, value)),
         mediaType,
@@ -824,6 +826,7 @@ test("separate platform exports assemble into a digest-bound archive and reject 
               },
               "application/vnd.oci.image.index.v1+json",
             );
+      roots.push(descriptor.digest);
       await writeFile(
         join(layout, "index.json"),
         JSON.stringify({ schemaVersion: 2, manifests: [descriptor] }),
@@ -837,22 +840,22 @@ test("separate platform exports assemble into a digest-bound archive and reject 
           attempt: fault === "attempt" ? "2" : "1",
           ciRunId: "456",
           ciAttempt: "1",
-          nodeBaseImage: "pinned-node",
+          nodeBaseImage: `docker.io/library/node:24@sha256:${"c".repeat(64)}`,
           image: fault === "image" ? "controller" : "runtime",
           platforms: ["linux/amd64", "linux/arm64"],
           platform: `linux/${arch}`,
-          native: fault !== "emulated",
+          native: fault === "emulated" ? undefined : true,
           digest: fault === "output-digest" ? `sha256:${"a".repeat(64)}` : descriptor.digest,
         }),
       );
-      if (fault === "layer" && arch === "arm64") {
+      if (["layer", "layer-size"].includes(fault) && arch === "arm64") {
         await writeFile(
           join(layout, "blobs/sha256", layer.digest.slice(7)),
-          "corrupted layer bytes",
+          fault === "layer-size" ? "short" : Buffer.alloc(layer.size),
         );
       }
     }
-    return { output, env, expected };
+    return { output, env, expected, roots };
   }
   function run(input) {
     return execFileSync(
@@ -866,6 +869,81 @@ test("separate platform exports assemble into a digest-bound archive and reject 
     );
   }
   const valid = await prepare("valid");
+  function verify(arch, overrides = {}) {
+    const i = arch === "amd64" ? 0 : 1;
+    return JSON.parse(
+      execFileSync(
+        process.execPath,
+        ["scripts/ci/container-release.mjs", "verify-platform", join(valid.output, arch)],
+        {
+          env: {
+            ...valid.env,
+            PLATFORM: valid.expected[i].platform,
+            IMAGE_DIGEST: valid.roots[i],
+            ...overrides,
+          },
+          encoding: "utf8",
+          stdio: "pipe",
+        },
+      ),
+    );
+  }
+  const snapshot = () => execFileSync("tar", ["-cf", "-", "-C", valid.output, "amd64", "arm64"]);
+  execFileSync("chmod", ["-R", "a-w", valid.output]);
+  try {
+    const before = snapshot();
+    for (const [i, arch] of ["amd64", "arm64"].entries()) {
+      const { platform, digest, configDigest } = valid.expected[i];
+      assert.deepEqual(verify(arch), {
+        platform,
+        rootDigest: valid.roots[i],
+        manifestDigest: digest,
+        configDigest,
+      });
+    }
+    for (const overrides of [
+      { GITHUB_RUN_ID: "124" },
+      { GITHUB_RUN_ATTEMPT: "2" },
+      { SOURCE_SHA: "d".repeat(40) },
+      { GITHUB_WORKFLOW_SHA: "e".repeat(40) },
+      { IMAGE: "controller" },
+      { PLATFORM: "linux/arm64" },
+      { IMAGE_DIGEST: valid.roots[1] },
+    ]) {
+      assert.throws(() => verify("amd64", overrides), /mismatch/);
+    }
+    assert.throws(() => verify("amd64", { PLATFORM: "linux/s390x" }), /Expected linux/);
+    assert.throws(() => verify("amd64", { IMAGE_DIGEST: undefined }), /native build output digest/);
+    assert.deepEqual(snapshot(), before);
+  } finally {
+    execFileSync("chmod", ["-R", "u+w", valid.output]);
+  }
+  const manual = { CI_RUN_ID: "", CI_ATTEMPT: "" };
+  const receiptPath = join(valid.output, "amd64/platform.json");
+  const original = await readFile(receiptPath);
+  const receipt = JSON.parse(original);
+  await writeFile(receiptPath, JSON.stringify({ ...receipt, ciRunId: "", ciAttempt: "" }));
+  verify("amd64", manual);
+  assert.throws(() => verify("amd64", { ...manual, CI_ATTEMPT: "1" }), /Expected a CI run ID/);
+  await writeFile(
+    receiptPath,
+    JSON.stringify({ ...receipt, ciRunId: undefined, ciAttempt: undefined }),
+  );
+  assert.throws(() => verify("amd64", manual), /receipt ciRunId mismatch/);
+  assert.throws(
+    () => verify("amd64", { CI_RUN_ID: undefined, CI_ATTEMPT: undefined }),
+    /Expected a CI run ID/,
+  );
+  await writeFile(receiptPath, original);
+  for (const entry of ["oci-layout", "blobs/sha256"]) {
+    const path = join(valid.output, "amd64", entry);
+    const outside = join(valid.output, "outside");
+    await rename(path, outside);
+    await symlink(outside, path);
+    assert.throws(() => verify("amd64"), /Expected (a regular OCI file|an OCI layout directory)/);
+    await unlink(path);
+    await rename(outside, path);
+  }
   run(valid);
   const digest = (await readFile(valid.env.GITHUB_OUTPUT, "utf8")).trim().slice("digest=".length);
   assert.deepEqual(readArchivePlatforms(join(valid.output, "image.tar"), digest), valid.expected);
@@ -896,6 +974,7 @@ test("separate platform exports assemble into a digest-bound archive and reject 
     "platform",
     "output-digest",
     "layer",
+    "layer-size",
     "source",
     "attempt",
     "image",
@@ -972,4 +1051,90 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
     laneFiles.filter((path) => !Object.hasOwn(notInSmoke, path)).sort(),
     "Keep the release smoke list equal to the Image Runtime Startup lane files.",
   );
+});
+
+test("native smoke rejects a transported image with another configuration before startup", async (t) => {
+  const directory = await temporaryDirectory(t, "oce-smoke-config-");
+  const binary = join(directory, "bin");
+  const blobs = join(directory, "blobs/sha256");
+  await mkdir(binary);
+  await mkdir(blobs, { recursive: true });
+  async function blob(value) {
+    const bytes = JSON.stringify(value);
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    await writeFile(join(blobs, hash), bytes);
+    return { digest: `sha256:${hash}`, size: Buffer.byteLength(bytes) };
+  }
+  const architecture = process.arch === "x64" ? "amd64" : process.arch;
+  const config = {
+    architecture,
+    os: "linux",
+    config: {},
+    rootfs: { type: "layers", diff_ids: [] },
+  };
+  const original = await blob(config);
+  const replacement = await blob({ ...config, config: { Cmd: ["unexpected"] } });
+  const manifest = (selected) => ({
+    schemaVersion: 2,
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    config: { mediaType: "application/vnd.oci.image.config.v1+json", ...selected },
+    layers: [],
+  });
+  const sealed = await blob(manifest(original));
+  const transported = await blob(manifest(replacement));
+  const descriptor = {
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    ...transported,
+  };
+  await writeFile(join(directory, "index.json"), JSON.stringify({ manifests: [sealed] }));
+  await writeFile(
+    join(directory, "inspect.json"),
+    JSON.stringify([
+      { Id: transported.digest, Descriptor: descriptor, Os: "linux", Architecture: architecture },
+    ]),
+  );
+  execFileSync("tar", ["-cf", join(directory, "export.tar"), "-C", directory, "blobs"]);
+  // Command stand-ins supply a real hash-addressed OCI metadata archive. The
+  // supported smoke command and Python verifier must reject its substituted
+  // config; this checks identity admission, not a Docker load or runtime.
+  await writeCommand(
+    binary,
+    "skopeo",
+    `
+case "$1" in
+  inspect) cat "$SMOKE_FIXTURE/blobs/sha256/${sealed.digest.slice(7)}" ;;
+  copy) ;;
+  *) exit 91 ;;
+esac`,
+  );
+  await writeCommand(
+    binary,
+    "docker",
+    `
+case "$2" in
+  inspect) cat "$SMOKE_FIXTURE/inspect.json" ;;
+  save) cat "$SMOKE_FIXTURE/export.tar" ;;
+  rm) ;;
+  *) exit 92 ;;
+esac`,
+  );
+  const result = spawnSync(
+    process.execPath,
+    ["scripts/ci/container-release.mjs", "smoke", directory],
+    {
+      env: {
+        ...process.env,
+        PATH: `${binary}:${process.env.PATH}`,
+        SMOKE_FIXTURE: directory,
+        IMAGE: "controller",
+        PLATFORM: `linux/${architecture}`,
+        IMAGE_DIGEST: sealed.digest,
+      },
+      encoding: "utf8",
+      timeout: 30000,
+    },
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Loaded image configuration differs from the sealed OCI export/);
+  assert.equal(result.stdout.includes("Smoke controller"), false);
 });

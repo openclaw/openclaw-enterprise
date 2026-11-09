@@ -46,6 +46,7 @@ import {
 import { calendarPlugin, pluginCapabilities, pluginSetup } from "./plugin-scenario-data.mts";
 import { namespacesScenarios } from "./scenario-groups/namespaces.mts";
 import { secretsScenarios } from "./scenario-groups/secrets.mts";
+import { connectionTemplateScenarios } from "./scenario-groups/connection-templates.mts";
 import { settingsScenarios } from "./scenario-groups/settings.mts";
 import { signInScenarios } from "./scenario-groups/sign-in.mts";
 
@@ -70,6 +71,7 @@ type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
     description: string;
     path?: string;
     buildRevision?: string;
+    debugEnabled?: boolean;
     actions?: readonly StoryAction[];
     rules?: readonly AuthoredRule[];
     steps?: readonly string[];
@@ -255,7 +257,8 @@ const authoredScenarios = {
   runtimeImages: {
     group: "Pages/Navigation",
     name: "Debug runtime images",
-    path: "/console/agents?debug=true",
+    path: "/console/agents",
+    debugEnabled: true,
     buildRevision: "1234567890abcdef1234567890abcdef12345678",
     runtimeImages: {
       status: "observed",
@@ -280,13 +283,14 @@ const authoredScenarios = {
     },
     actions: [{ selector: ".runtime-debug-images summary", click: true }],
     description:
-      "Inspect the OCE commit and each Agent's observed runtime images. Expand an Agent, compare the gateway image ID, Enterprise source commit, and upstream OpenClaw commit, then navigate to Namespaces: debug=true remains enabled. Remove the flag to hide diagnostics.",
+      "Inspect the OCE commit and each Agent's observed runtime images. Expand an Agent, compare the gateway image ID, Enterprise source commit, and upstream OpenClaw commit, then navigate to Namespaces: Debug mode remains enabled. Turn it off in Settings to hide diagnostics.",
     gap: "Simulated image identities demonstrate presentation. Native Driver integration verifies actual Docker and Kubernetes observations separately.",
   } satisfies LocalScenario,
   runtimeImagesUnavailable: {
     group: "Pages/Navigation",
     name: "Debug metadata unavailable",
-    path: "/console/agents?debug=true",
+    path: "/console/agents",
+    debugEnabled: true,
     rules: [{ suffix: "/runtime-images", status: 503 }],
     actions: [{ selector: ".runtime-debug-images summary", click: true }],
     description:
@@ -638,6 +642,25 @@ const authoredScenarios = {
       "At 390 px, scroll until the note Not deleted: see above sits at the bottom of the window, with Delete Research assistant focused. Switch to another window, then return. The row reads Deleting, and Delete and its note are both in view.",
     ],
   } satisfies LocalScenario,
+  agentsNamespaceFocusDuringRefresh: {
+    group: "Pages/Agents",
+    name: "Namespace focus during list refresh",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        skip: 1,
+        once: true,
+        delayMs: 6500,
+      },
+    ],
+    description:
+      "The simulated Agents list refresh waits briefly so you can move keyboard focus to the Namespace selector. When the list returns, focus stays on the selector.",
+    steps: [
+      "Tab to Research assistant. Switch to another window, then return to start the list refresh.",
+      "While the list refreshes, Tab to the Namespace selector. Wait for the list to return and check that the selector still has focus.",
+      "Press Tab to continue from the selector, then Shift+Tab to return to it.",
+    ],
+  } satisfies LocalScenario,
   agentsRowRefocusStopped: {
     group: "Pages/Agents",
     name: "Refocus after another person's stop",
@@ -907,6 +930,7 @@ const authoredScenarios = {
       "A caller without Installation access is told Backends apply to the whole Installation. The Namespace selector is hidden, since another Namespace would not change the answer.",
   } satisfies LocalScenario,
   ...namespacesScenarios,
+  ...connectionTemplateScenarios,
   ...settingsScenarios,
   notFound: {
     group: "Pages/Navigation",
@@ -1152,7 +1176,8 @@ const authoredScenarios = {
   buildRevision: {
     group: "Components/Navigation",
     name: "OCC build revision",
-    path: "/console/agents?debug=true",
+    path: "/console/agents",
+    debugEnabled: true,
     buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
     description:
       "Approved OpenClaw mech mascot beside the OpenClaw Enterprise wordmark and an eight-character OCC commit. Check the mascot at desktop and mobile widths, then hover the version for the full hash. This revision is simulated.",
@@ -1160,7 +1185,8 @@ const authoredScenarios = {
   developmentBuild: {
     group: "Components/Navigation",
     name: "OCC development build",
-    path: "/console/agents?debug=true",
+    path: "/console/agents",
+    debugEnabled: true,
     description:
       "Approved OpenClaw mech mascot beside the OpenClaw Enterprise wordmark with an adjacent dev label when OCC build metadata is unavailable. No checkout or gateway revision is inferred.",
   } satisfies LocalScenario,

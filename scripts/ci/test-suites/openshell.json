@@ -21,10 +21,86 @@
     ],
     "selfProvisionedFiles": [
       "tests/integration/local-first-agent-openshell-real.test.mjs",
-      "tests/integration/local-first-agent-openshell-k3d-real.test.mjs"
+      "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+      "tests/integration/dev-up-openshell-k3d-real.test.mjs",
+      "tests/integration/openshell-git-retention-real.test.ts",
+      "tests/integration/openshell-git-finite-removal-real.test.ts"
+    ],
+    "sourceBuildFiles": [
+      "tests/integration/dev-up-openshell-k3d-real.test.mjs",
+      "tests/integration/openshell-git-retention-real.test.ts",
+      "tests/integration/openshell-git-finite-removal-real.test.ts"
     ]
   },
   "files": [
+    {
+      "path": "tests/integration/openshell-refresh-real.test.ts",
+      "expectedTests": ["OpenShell gateway recovery preserves OAuth refresh and revocation"],
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ]
+    },
+    {
+      "path": "tests/integration/openshell-withdrawal-real.test.ts",
+      "expectedTests": ["OpenShell credential withdrawal revokes live model access"],
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ]
+    },
+    {
+      "path": "tests/integration/openshell-credentials-real.test.ts",
+      "expectedTests": ["OpenShell credential replacement preserves isolation"],
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ]
+    },
+    {
+      "path": "tests/integration/openshell-upstream-real.test.ts",
+      "expectedTests": ["OpenShell model and tool upstream outages fail closed"],
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ]
+    },
     {
       "path": "tests/integration/local-first-agent-openshell-real.test.mjs",
       "expectedTests": [
@@ -37,6 +113,12 @@
       "expectedTests": [
         "dev-up installs the pinned OpenShell profile in its owned k3d cluster",
         "dev-up runs OCC in Compose with OpenShell and Kubernetes Compute in k3d"
+      ]
+    },
+    {
+      "path": "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+      "expectedTests": [
+        "OpenShell dedicated Agents enforce Gateway tool policy during normal work"
       ],
       "requiredEnv": [
         "OCC_TEST_KUBERNETES_KUBECONFIG",
@@ -54,10 +136,7 @@
     },
     {
       "path": "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
-      "expectedTests": [
-        "OpenShell enforces provider delivery and authenticated Codex exposure",
-        "OpenShell dedicated Agents enforce Gateway tool policy during normal work"
-      ],
+      "expectedTests": ["OpenShell enforces provider delivery and authenticated Codex exposure"],
       "requiredEnv": [
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
@@ -94,6 +173,19 @@
         "OCC_TEST_OPENSHELL_HELM_CHART",
         "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
         "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ]
+    },
+    {
+      "path": "tests/integration/openshell-git-retention-real.test.ts",
+      "expectedTests": [
+        "OpenShell retains its runtime after Git expiry and worker restart",
+        "OpenShell isolates Git withdrawal before worker replacement and retains denial afterward"
+      ]
+    },
+    {
+      "path": "tests/integration/openshell-git-finite-removal-real.test.ts",
+      "expectedTests": [
+        "OpenShell retains a finite Agent after repository removal until model authority is withdrawn"
       ]
     }
   ],

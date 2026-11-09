@@ -104,6 +104,73 @@ function killGroup(child, signal) {
   child.kill(signal);
 }
 
+// The CLI emits one final stdout record on failed startup. This is diagnostic
+// evidence from a shared stream, not authentication of its writer.
+export function startupFailureObservation() {
+  let partial = "";
+  let candidates = 0;
+  let final;
+  let invalid = false;
+  let size = 0;
+  return {
+    write(chunk) {
+      size += Buffer.byteLength(chunk);
+      if (size > 16 * 1024 * 1024) {
+        invalid = true;
+        return;
+      }
+      const lines = (partial + chunk).split("\n");
+      partial = lines.pop();
+      if (partial.length > 4096) {
+        invalid = true;
+        partial = "";
+      }
+      for (const line of lines) {
+        if (line.length > 4096) {
+          invalid = true;
+        }
+        if (!line.trim()) {
+          continue;
+        }
+        final = undefined;
+        if (!line.startsWith("[occ-dev-startup")) {
+          continue;
+        }
+        candidates++;
+        const match =
+          /^\[occ-dev-startup\] primary_stage=(unknown|canceled|deadline|routing|network-verification|network-cleanup|registry-detach|platform-namespace|openshell-preparation|rollback) cleanup_failed=(true|false) parent_context_done=(true|false)(?: routing_operation=(manifest-download|gateway-api-readiness|manifest-filter|manifest-write|manifest-apply|controller-crd-readiness|controller-rollout|gateway-class-apply|gateway-class-readiness|node-pod-cidr)(?: routing_controller=(cert-manager|envoy-gateway))?)?$/.exec(
+            line,
+          );
+        if (
+          match &&
+          (!match[4] || match[1] === "routing") &&
+          !(match[4] === "node-pod-cidr" && match[5])
+        ) {
+          final = {
+            kind: "local-first-agent-startup-failure",
+            primaryStage: match[1],
+            cleanupFailed: match[2] === "true",
+            parentContextDone: match[3] === "true",
+            ...(match[4] ? { routingOperation: match[4] } : {}),
+            ...(match[5] ? { routingController: match[5] } : {}),
+          };
+        }
+      }
+    },
+    finish(code, signal, interrupted = false) {
+      return !invalid &&
+        !interrupted &&
+        !signal &&
+        Number.isSafeInteger(code) &&
+        code > 0 &&
+        candidates === 1 &&
+        partial === ""
+        ? final
+        : undefined;
+    },
+  };
+}
+
 function run(
   command,
   args,
@@ -115,6 +182,10 @@ function run(
   timingPhase = "setup",
 ) {
   const started = performance.now();
+  const startup =
+    command === cli && args[0] === "dev" && args[1] === "up"
+      ? startupFailureObservation()
+      : undefined;
   const observed = new Set();
   const commands = new Map();
   return new Promise((resolve, reject) => {
@@ -138,8 +209,13 @@ function run(
     }, timeout);
     for (const [index, stream] of [child.stdout, child.stderr].entries()) {
       let partial = "";
+      let partialClipped = false;
+      let previousRuntimeFailure = false;
       stream.setEncoding("utf8");
       stream.on("data", (chunk) => {
+        if (index === 0) {
+          startup?.write(chunk);
+        }
         if (collect && index === 0) {
           outputSize += Buffer.byteLength(chunk);
           if (outputSize <= 4 * 1024 * 1024) {
@@ -148,20 +224,44 @@ function run(
         }
         partial += chunk;
         const lines = partial.split("\n");
-        partial = lines.pop().slice(-4_096);
+        const tail = lines.pop();
+        let lineClipped = partialClipped;
+        partialClipped = tail.length > 4_096 || (lines.length === 0 && partialClipped);
+        partial = tail.slice(-4_096);
         for (const line of lines) {
+          // Pair only adjacent, complete lines on the same child stream.
+          if (previousRuntimeFailure && !lineClipped) {
+            const outcome =
+              /^\[occ-dev-outcome\] stage=runtime-build outcome=(nonzero-exit|signaled)$/.exec(
+                line,
+              );
+            if (outcome) {
+              const total = commands.get("runtime-build");
+              const key = outcome[1] === "nonzero-exit" ? "nonzeroExitCount" : "signaledCount";
+              total[key] = (total[key] ?? 0) + 1;
+            }
+          }
           const timing =
             context &&
             /^\[occ-dev-timing\] stage=([a-z0-9-]+) elapsed_ms=([0-9]+) failed=(true|false)$/.exec(
               line,
             );
+          previousRuntimeFailure = false;
           if (timing) {
+            const elapsedMs = Number(timing[2]);
             const total = commands.get(timing[1]) ?? { count: 0, elapsedMs: 0, failed: 0 };
             total.count++;
-            total.elapsedMs += Number(timing[2]);
+            total.elapsedMs += elapsedMs;
             total.failed += Number(timing[3] === "true");
             commands.set(timing[1], total);
+            previousRuntimeFailure =
+              !lineClipped &&
+              timing[1] === "runtime-build" &&
+              timing[3] === "true" &&
+              Number.isSafeInteger(elapsedMs) &&
+              String(elapsedMs) === timing[2];
           }
+          lineClipped = false;
           const known = phases.find(([prefix]) => line.startsWith(prefix));
           if (known) {
             phase = known[1];
@@ -189,6 +289,10 @@ function run(
       }
     });
     child.once("close", (code, signal) => {
+      const observation = startup?.finish(code, signal, timedOut || !!spawnCode);
+      if (context && observation) {
+        context.diagnostic("openclaw-ci-measurement " + JSON.stringify(observation));
+      }
       for (const [stage, total] of commands) {
         context.diagnostic(
           "openclaw-ci-measurement " +
@@ -368,7 +472,10 @@ async function availablePorts() {
   }
 }
 
-export async function localFirstAgentStack(context) {
+export async function localFirstAgentStack(context, { modelCredential } = {}) {
+  if (modelCredential !== undefined && modelCredential !== "openai") {
+    throw new Error("Unsupported local first-Agent model credential selection.");
+  }
   if (process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL !== "1") {
     throw new Error("The protected local first-Agent test must be explicitly enabled.");
   }
@@ -397,7 +504,9 @@ export async function localFirstAgentStack(context) {
     );
   }
   const credentialVariable =
-    sandboxDriver === "openshell" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY";
+    sandboxDriver === "openshell" && modelCredential !== "openai"
+      ? "CODEX_ACCESS_TOKEN"
+      : "OPENAI_API_KEY";
   if (!process.env[credentialVariable]?.trim()) {
     throw new Error(
       `${credentialVariable} is required to provision the protected local first-Agent test.`,

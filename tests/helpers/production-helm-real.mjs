@@ -21,6 +21,7 @@ export async function prepareProductionHelmControlPlane({
   authBaseURL,
   installationName,
   apiClients,
+  channelDirectoryProxyUrl = undefined,
   repositoryCredentials,
   gatewayRouting,
   controlPlane,
@@ -209,7 +210,10 @@ export async function prepareProductionHelmControlPlane({
     bootstrap: { adminEmail, password: { claimName: "bootstrap-password" } },
     database: { cidrs: [`${postgresIP}/32`] },
     cluster: { cidrs: [`${endpoint.addresses[0].ip}/32`], port: endpoint.ports[0].port },
-    api: { clients: apiClients },
+    api: {
+      clients: apiClients,
+      ...(channelDirectoryProxyUrl !== undefined && { channelDirectoryProxyUrl }),
+    },
     resources,
     // Callers without prepared routing exercise the supported direct-access installation.
     gatewayRouting: { enabled: false },

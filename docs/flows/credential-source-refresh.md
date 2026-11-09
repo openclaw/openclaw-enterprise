@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-10-31
-last_updated_session: authoring-run/0e8d85fa-aa72-48b7-bc35-06b23a663182
+updated: 2026-11-05
+last_updated_session: codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676
 ---
 
 # Credential source refresh Flow
@@ -15,7 +15,7 @@ In [Codex device flow](#device-authorization-and-configuration), OpenShell keeps
 the refresh grant; the Harness gets a placeholder and account metadata.
 Authorized discovery can retrieve an access token. These [OAuth checks](../testing/openshell-oauth.md) do not qualify protected egress.
 
-The worker owns [GitHub issuance](#6-issue-and-renew-a-github-installation-token).
+The Token Service owns [GitHub issuance](#6-issue-and-renew-a-github-installation-token).
 [Git and draft pull requests](../reference/repository-credentials/prepared-native-git.md)
 use committed tokens and cannot trigger issuance.
 
@@ -232,17 +232,13 @@ the record `deleting` for retry.
 
 `apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts:createGitHubPreparationOwner`
 
-The worker records `issuing`, signs a five-minute JWT with the App key and rechecks
-ownership before `POST /app/installations/{installation_id}/access_tokens`.
-The Installation selects the HTTPS issuer and trust roots.
+The Token Service records `issuing`, signs a five-minute App JWT and rechecks ownership before posting to the configured installation token endpoint.
 
-The worker logs `PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC` with the first failure
-stage, fixed enums and status/booleans. `requestEndCalled` means possible send,
-not delivery. Reporting cannot change custody or retries.
+Issuer diagnostics record the first failure stage. `requestEndCalled` indicates a possible send.
 
 ```mermaid
 graph TD
-  W["<b>Worker</b><br/>Holds App key"] -->|Signed JWT| G["<b>GitHub</b><br/>Issues token"]
+  W["<b>Token Service</b><br/>Reads registered App key"] -->|Signed JWT| G["<b>GitHub</b><br/>Issues token"]
   G -->|Installation token| W
   W -->|Verify and commit| P[("<b>PostgreSQL</b><br/>Encrypted token")]
   P -->|Eligible token| R["<b>OCC and resolver</b>"]
@@ -256,17 +252,9 @@ graph TD
   linkStyle default stroke:#89919a
 ```
 
-PostgreSQL custody requires a
-persistent 32-byte encryption key. Cold or expired reads return `not_ready`.
-Native Git uses a [private broker request](../reference/repository-credentials.md#native-git-from-the-agent-to-github).
+OCC registers `github_app_installation` with the scoped grant and signing-key reference. PostgreSQL encrypts tokens with a persistent 32-byte key. Authorized metadata requests reuse valid tokens or join issuance until their deadline. Native Git uses its [private broker](../reference/repository-credentials.md#native-git-from-the-agent-to-github).
 
-For `acme/widgets`, the worker requests repository ID `12345` and
-`metadata: read`. It checks the returned ID, name, permissions and expiry.
-The approved `github-installation` profile sends `{}` and inherits installation scope.
-
-**Renewal.** Eligible tokens serve requests during renewal. Committing the replacement
-retires the old version. OCC rechecks grant and version before authorizing a
-[protected send](credential-source-egress.md#3-resolve-versioned-material-and-authorize-its-sole-send).
+For `acme/widgets`, the Token Service requests ID `12345` and `metadata: read`. It verifies the ID, name, permissions and expiry. The approved `github-installation` profile sends `{}` for installation scope. Committing a replacement retires the old version. OCC rechecks the grant and version [before sending](credential-source-egress.md#3-resolve-versioned-material-and-authorize-its-sole-send).
 
 | Limit                                | Effect                                                                                                                                                                                                              |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -320,7 +308,7 @@ detached reads. Clearing bytes cannot revoke a token.
   reach `token_url`; check its NetworkPolicy and trust of the issuer's CA.
 - `reauthorize` requires new authorization: replace Secret-backed material with
   `PATCH`; for device-authorized sources, sign in again and rebind the Agent.
-- `tests/integration/sandbox-driver-openshell-k3d-real.test.mjs` proves minting,
+- `tests/helpers/openshell-sandbox-workflows.mjs` proves minting,
   background re-minting, forced rotation, reauthorization, a failed update, and deletion against
   a real Keycloak. `tests/conformance/credential-source-occ.test.mjs` covers OCC
   ordering and cleanup.
@@ -337,6 +325,8 @@ detached reads. Clearing bytes cannot revoke a token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 23:21: Trace GitHub request-time issuance. (codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676 - 614169814)
 
 - 2026-10-31 21:13: Reconcile diagnostics. (authoring-run/0e8d85fa-aa72-48b7-bc35-06b23a663182 - 9c45357338431ec9334642aca5eac91de862ae95)
 

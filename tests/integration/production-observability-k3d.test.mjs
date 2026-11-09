@@ -27,7 +27,17 @@ test(
         }
       }
     };
-    assert.equal((await f.request("GET", "/installation", undefined, false)).status, 401);
+    const unauthenticated = await f.request("GET", "/installation", undefined, false);
+    try {
+      assert.equal(unauthenticated.status, 401);
+    } catch (error) {
+      throw Object.assign(error, {
+        openclawCiDiagnostic: {
+          kind: "observability-installation-status",
+          status: unauthenticated.status,
+        },
+      });
+    }
     assert.ok((await f.api("GET", "/installation")).id);
     assert.equal((await f.kubernetes.resources("daemonsets", f.system)).length, 0);
     const listeners = [];

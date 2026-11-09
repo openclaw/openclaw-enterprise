@@ -1,10 +1,11 @@
 import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
+import type { OpenShellCredentialAttachments } from "../../sandbox/openshell-credential-attachments.ts";
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
   assertExecutionAdmission,
   codexProxiesRepositoryBroker,
   codexRepositoryBrokerNetworkProxy,
-  type PreparedTokenService,
+  type TokenService,
 } from "@openclaw-enterprise/contracts";
 import {
   harnessEgressEnrollment,
@@ -222,6 +223,9 @@ import { nodeProgramArguments } from "../node-program.ts";
 import { codexGatewayModelConfiguration } from "../codex-model-configuration.ts";
 import {
   modelProviderBaseUrl,
+  normalizeHarnessSettings,
+  savedModelProvider,
+  DEFAULT_MODEL_BASE_URL,
   modelProviderReferenceSetting,
   MODEL_PROVIDER_REFERENCE_REQUIREMENT,
   modelProviderConfiguration,
@@ -318,6 +322,9 @@ import {
   REPOSITORY_CLIENT_BIN,
   repositoryNativeConfiguration,
 } from "./repository-native-configuration.ts";
+import { harnessWorkspacePreparationScript } from "./harness-workspace-preparation.ts";
+
+export { harnessWorkspacePreparationScript } from "./harness-workspace-preparation.ts";
 
 type KubernetesRecord = Record<string, unknown>;
 type ManagedResourceKind =
@@ -1441,79 +1448,6 @@ const HARNESS_WORKSPACE_CATEGORIES = Object.freeze([
   // persist; the rest of CODEX_HOME, including credentials and configuration, is Pod-local.
   ["codex-sessions", "/home/node/.codex/sessions"],
 ] as const);
-/**
- * Init script that makes each Harness claim subdirectory a process-owned 0700
- * directory. The 2026-09-28 release had no Harness init, so the kubelet created
- * `workspace` and `generated-images` for their subPath mounts: root-owned and
- * group- and world-writable, which uid 1000 cannot chmod (EPERM, finding 752).
- * The claim root is writable without a sticky bit, so such a directory is
- * renamed aside, recreated by uid 1000, and its entries are renamed back. Every
- * step is a rename on one filesystem, and a retried init resumes an interrupted
- * move. An entry already present in the new directory stays aside, and is logged.
- * A directory the tenant made read-only (chmod 0555) moves too (finding 884).
- * The move assumes no other Pod writes the claim (dedicated Harnesses with node
- * enrollment roll with Recreate).
- */
-export function harnessWorkspacePreparationScript(paths: readonly string[]): string {
-  return `{
-  const fs = require("node:fs");
-  const uid = process.getuid();
-  const move = (from, to) => {
-    // Moving a directory to a new parent needs write on the directory itself, so an owned
-    // directory the tenant made read-only gets u+w for the rename and its mode back after
-    // (an init stopped in between leaves it owner-writable).
-    const stat = fs.lstatSync(from);
-    const locked = stat.isDirectory() && stat.uid === uid && (stat.mode & 0o200) === 0;
-    if (locked) fs.chmodSync(from, (stat.mode & 0o7777) | 0o200);
-    try {
-      fs.renameSync(from, to);
-    } catch (error) {
-      error.message += "; uid " + uid + " cannot move " + from + (stat.uid === uid
-        ? " (owned by uid " + uid + "): make its parent directory writable by uid " + uid
-        : " (owner uid " + stat.uid + "): chown it to uid " + uid) + " on the node";
-      if (locked) {
-        try {
-          fs.chmodSync(from, stat.mode & 0o7777);
-        } catch {}
-      }
-      throw error;
-    }
-    if (locked) fs.chmodSync(to, stat.mode & 0o7777);
-  };
-  for (const path of ${JSON.stringify(paths)}) {
-    const aside = path.replace(/\\/([^/]+)$/u, "/.$1.kubelet-created");
-    if (
-      fs.lstatSync(aside, { throwIfNoEntry: false }) === undefined &&
-      fs.lstatSync(path, { throwIfNoEntry: false })?.isDirectory()
-    ) {
-      try {
-        fs.chmodSync(path, 0o700);
-      } catch (error) {
-        if (error.code !== "EPERM") throw error;
-        move(path, aside);
-      }
-    }
-    fs.mkdirSync(path, { recursive: true, mode: 0o700 });
-    if (fs.lstatSync(aside, { throwIfNoEntry: false }) !== undefined) {
-      const kept = [];
-      for (const entry of fs.readdirSync(aside)) {
-        if (fs.lstatSync(path + "/" + entry, { throwIfNoEntry: false }) === undefined) {
-          move(aside + "/" + entry, path + "/" + entry);
-        } else {
-          kept.push(entry);
-        }
-      }
-      if (kept.length === 0) {
-        fs.rmdirSync(aside);
-      } else {
-        console.error("kept in " + aside + ", already in " + path + ": " +
-          JSON.stringify(kept.slice(0, 20)) + (kept.length > 20 ? " and " + (kept.length - 20) + " more" : ""));
-      }
-    }
-    fs.chmodSync(path, 0o700);
-  }
-}`;
-}
 const GATEWAY_SESSION_DIRECTORY = "/home/node/.openclaw/agents/main/sessions";
 const RESOURCE_REQUIREMENTS_SCHEMA = Object.freeze({
   type: "object",
@@ -1736,6 +1670,17 @@ function validateResources(value: V1ResourceRequirements, description: string, p
       `${description} ${kind} limit`,
       `${path}.limits.${resource}`,
     );
+    for (const [field, quantity] of [
+      ["requests", request],
+      ["limits", limit],
+    ] as const) {
+      if ((compareResourceQuantities(quantity, "0") ?? 0) < 0) {
+        throw configurationConstraintFailure(
+          `${description} ${kind} ${field} must be non-negative Kubernetes quantity strings, such as ${resource === "cpu" ? "500m" : "128Mi"}.`,
+          `/${path.replaceAll(".", "/")}/${field}/${resource}`,
+        );
+      }
+    }
     const compared = compareResourceQuantities(request, limit);
     if (compared === undefined) {
       throw configurationConstraintFailure(
@@ -3364,13 +3309,11 @@ function gatewayDocumentBeforeLanBind(
 
 /** Compute observes prepared-source readiness; it does not resolve warm credentials. */
 type PreparedTokenReadinessIssuer = Pick<
-  NonNullable<ReturnType<PreparedTokenService["issuer"]>>,
+  NonNullable<ReturnType<TokenService["issuer"]>>,
   "sourceFromRoute" | "ready"
 >;
 type PreparedTokenReadinessService = {
-  issuer(
-    ...args: Parameters<PreparedTokenService["issuer"]>
-  ): PreparedTokenReadinessIssuer | undefined;
+  issuer(...args: Parameters<TokenService["issuer"]>): PreparedTokenReadinessIssuer | undefined;
 };
 
 function preparedTokenReadiness(
@@ -3647,6 +3590,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private readonly preparedRepositoryIngress: boolean;
   private readonly preparedTokens: PreparedTokenReadinessService | undefined;
   private readonly credentialGatewayDriver: CredentialGatewayDriver | undefined;
+  private readonly openShellAttachments: OpenShellCredentialAttachments | undefined;
   private readonly protectedExecution: ProtectedExecutionDriver | undefined;
 
   private get proxyDriver() {
@@ -4183,9 +4127,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
       readonly lifecycleDrivers?: readonly Driver[];
       readonly sandboxDriver?: SandboxDriver;
       readonly preparedRepositoryIngress?: true;
-      readonly preparedTokens?: PreparedTokenService;
+      readonly preparedTokens?: TokenService;
       readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
       readonly credentialGatewayDriver?: CredentialGatewayDriver;
+      /** Internal composition data for the exact built-in same-Backend pair. */
+      readonly openShellAttachments?: {
+        readonly sandboxDriver: SandboxDriver;
+        readonly credentialGatewayDriver: CredentialGatewayDriver;
+        readonly attachments: OpenShellCredentialAttachments;
+      };
       readonly protectedDriver?: InstalledDriver;
       readonly nodeEnrollment?: GatewayNodeEnrollment;
       readonly readNodeCa?: () => Promise<string | undefined>;
@@ -4229,6 +4179,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     this.credentialGatewayDriver = selection.credentialGatewayDriver;
+    const openShellAttachments = selection.openShellAttachments;
+    if (
+      openShellAttachments !== undefined &&
+      (openShellAttachments.sandboxDriver !== this.sandboxDriver ||
+        openShellAttachments.credentialGatewayDriver !== this.credentialGatewayDriver)
+    ) {
+      throw new ConfigurationFailure(
+        "OpenShell attachments require the exact composed Sandbox and Credential Gateway.",
+      );
+    }
+    this.openShellAttachments = openShellAttachments?.attachments;
     this.nodeEnrollment = selection.nodeEnrollment;
     this.readNodeCa = selection.readNodeCa;
     const lifecycleDrivers = selection.lifecycleDrivers ?? [];
@@ -4543,7 +4504,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     this.verifyGatewayRoutingConfiguration({
       configuration: this.namedGatewayConfigurationDocument(input.configuration),
-      harness: { id: "codex", version: "provisioning", mode: "dedicated" },
+      harness: { mode: "dedicated" },
     });
   }
 
@@ -4738,11 +4699,26 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const models = nativeOpenAiModelSelections(configuration)?.map(({ reference }) => reference);
     const authentication = harnessModelAuthentication(configuration, embedded);
-    configuration = modelProviderConfiguration(
-      configuration,
-      harness,
-      this.providerForHarness(harness, auth, configuration),
-    );
+    if (
+      stage === "preparation" &&
+      this.usesModelProvider(harness, auth, configuration) !==
+        (savedModelProvider(harness.configuration) !== undefined)
+    ) {
+      throw new ConfigurationFailure(
+        "Saved Harness settings do not match its authentication and model selection.",
+      );
+    }
+    if (!agentSave) {
+      configuration = modelProviderConfiguration(
+        configuration,
+        harness,
+        savedModelProvider(
+          stage === "admission" && harness.configuration === undefined
+            ? this.resolveHarnessConfiguration(harness, auth, configuration)
+            : harness.configuration,
+        ),
+      );
+    }
 
     // Every model selection (fallbacks, subagents, image, PDF, per-channel, ...) and every Agent
     // entry uses the primary model's provider, named by the setting (finding 1291). Dedicated
@@ -6237,7 +6213,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (admission?.startsWith("model-provider:v1:")) {
       if (provider === undefined || !admission.startsWith(`model-provider:v1:${provider}:`)) {
         throw new ConfigurationFailure(
-          "The Installation model provider changed; deploy a new Agent revision.",
+          "The saved model provider does not match the Agent revision admission.",
         );
       }
     } else if (provider !== undefined) {
@@ -6461,7 +6437,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           modelProviderConfiguration(
             nativeConfiguration,
             revision.harness,
-            this.providerForHarness(revision.harness, revision.harnessAuth, nativeConfiguration),
+            savedModelProvider(revision.harness.configuration),
           ),
         ),
       ),
@@ -7193,10 +7169,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
           this.sandboxNamespaceForRevision(revision, namespace),
           namespace,
         );
-        const sources = [
+        const boundSources = [
           ...(harnessAuth.credentialSource === undefined ? [] : [harnessAuth.credentialSource]),
           ...credentialSources,
-        ].filter((source) => source.egress === undefined);
+        ];
+        const directAttachments = this.staticOpenAiAttachmentsForRevision(revision, boundSources);
+        const sources = boundSources.filter((source) => source.egress === undefined);
         const credentialContext =
           sources.length === 0
             ? undefined
@@ -7209,7 +7187,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         const attachments =
           credentialContext === undefined
             ? []
-            : await this.requireCredentialGateway().attachForRevision(credentialContext);
+            : await (directAttachments ?? this.requireCredentialGateway()).attachForRevision(
+                credentialContext,
+              );
         const sourceIds = new Set(credentialContext?.sources.map(({ id }) => id));
         const attachedSourceIds = new Set(attachments.map(({ sourceId }) => sourceId));
         if (
@@ -7499,7 +7479,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
           await withdrawProviderExposure();
         }
         if (credentialContext !== undefined) {
-          const statuses = await this.requireCredentialGateway().attachmentStatus({
+          const statuses = await (
+            directAttachments ?? this.requireCredentialGateway()
+          ).attachmentStatus({
             ...credentialContext,
             sandbox,
           });
@@ -7756,7 +7738,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           modelProviderConfiguration(
             nativeConfiguration,
             revision.harness,
-            this.providerForHarness(revision.harness, revision.harnessAuth, nativeConfiguration),
+            savedModelProvider(revision.harness.configuration),
           ),
         ),
       ),
@@ -8525,7 +8507,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const sandbox = sandboxDriver.harnessResource({ namespace: sandboxNamespace, revision });
     this.verifySandboxResourceRef(sandbox, revision, namespace);
-    const status = await this.requireCredentialGateway().withdraw({
+    const directAttachments = this.staticOpenAiAttachmentsForRevision(revision, [source]);
+    const status = await (directAttachments ?? this.requireCredentialGateway()).withdraw({
       namespace: sandboxNamespace,
       revision,
       sandbox,
@@ -10216,7 +10199,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         (!approved.has(metadata.name) ||
           !isDeepStrictEqual(
             networkPolicySpecToJson(policy.spec as V1NetworkPolicySpec | undefined),
-            approved.get(metadata.name),
+            networkPolicySpecToJson(approved.get(metadata.name) as V1NetworkPolicySpec | undefined),
           ))
       ) {
         throw new OwnershipFailure(
@@ -11349,6 +11332,58 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return catalog.find((entry) => entry.type === sourceType);
   }
 
+  /** Admission selects the route; a changed or missing live source cannot change that route. */
+  private staticOpenAiAttachmentsForRevision(
+    revision: Readonly<AgentRevision>,
+    sources: readonly Readonly<CredentialSource>[],
+  ): OpenShellCredentialAttachments | undefined {
+    const auth = revision.harnessAuth;
+    if (
+      this.openShellAttachments === undefined ||
+      revision.executionAdmission.mode !== "unprotected" ||
+      revision.egressPlan !== undefined ||
+      revision.harness.mode !== "dedicated" ||
+      (revision.harness.id !== "codex" && revision.harness.id !== "openclaw") ||
+      auth.method !== "credential_source" ||
+      auth.sourceType !== "openai" ||
+      auth.loginMode !== "api_key" ||
+      auth.credentialGatewayId !== this.credentialGatewayDriver?.id
+    ) {
+      return undefined;
+    }
+    // OCC lists the Harness credential too. Only its exact snapshot is redundant;
+    // additional, duplicate, or inconsistent admission stays on the public Gateway.
+    // An absent/empty list remains supported for revisions predating this source list.
+    const admitted = revision.credentialSources ?? [];
+    if (
+      admitted.length > 1 ||
+      admitted.some(
+        (snapshot) =>
+          snapshot.sourceId !== auth.sourceId ||
+          snapshot.sourceType !== auth.sourceType ||
+          snapshot.credentialGatewayId !== auth.credentialGatewayId ||
+          snapshot.credentialProxyId !== undefined,
+      )
+    ) {
+      return undefined;
+    }
+    // Selection is final: a source refusal must never retry through Gateway compatibility.
+    const source = sources[0];
+    if (
+      sources.length !== 1 ||
+      source === undefined ||
+      source.ownerCapability !== "credential_gateway" ||
+      source.namespaceId !== revision.namespaceId ||
+      source.egress !== undefined ||
+      !credentialSourceMatchesSnapshot(source, auth)
+    ) {
+      throw new OwnershipFailure(
+        "The direct OpenShell attachment requires the exact admitted Harness source and Namespace.",
+      );
+    }
+    return this.openShellAttachments;
+  }
+
   private requireCredentialGateway(): CredentialGatewayDriver {
     if (this.credentialGatewayDriver === undefined) {
       throw new ConfigurationFailure(
@@ -11368,7 +11403,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return [];
     }
     if (source?.type === "openai") {
-      requireModelSourceDestination(source.config, this.options.runtime?.modelProvider);
+      requireModelSourceDestination(
+        source.config,
+        savedModelProvider(revision.harness.configuration),
+      );
     }
     const sourceId = revision.harnessAuth.sourceId;
     const attachment = attachments.find((entry) => entry.sourceId === sourceId);
@@ -13857,9 +13895,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     )}.${routing.envoyNamespace}.svc`;
   }
 
-  private verifyGatewayRoutingConfiguration(
-    revision: Pick<AgentRevision, "configuration" | "harness">,
-  ): void {
+  private verifyGatewayRoutingConfiguration(revision: {
+    readonly configuration: OpenClawConfigurationDocument;
+    readonly harness: Pick<RevisionHarnessDescriptor, "mode">;
+  }): void {
     if (this.options.executionCluster !== undefined && revision.harness.mode !== "dedicated") {
       throw new ConfigurationFailure("Two-cluster execution supports only dedicated Harnesses.");
     }
@@ -14331,35 +14370,101 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return true;
   }
 
-  private providerForHarness(
+  private usesModelProvider(
     harness: RevisionHarnessDescriptor,
     auth: HarnessAuthSnapshot,
     configuration: OpenClawConfigurationDocument,
-  ): ModelProviderConfiguration | undefined {
-    if (this.options.runtime?.modelProvider === undefined) {
-      return undefined;
-    }
+  ): boolean {
+    return (
+      (auth.method === "api_key" ||
+        (auth.method === "credential_source" && auth.loginMode === "api_key")) &&
+      (harness.id === "codex" ||
+        (harness.id === "openclaw" &&
+          nativeOpenAiModelSelections(configuration)?.[0]?.provider === "openai"))
+    );
+  }
+
+  normalizeHarnessOverrides(overrides: Readonly<Record<string, unknown>>) {
+    return normalizeHarnessSettings(overrides);
+  }
+
+  resolveHarnessConfiguration(
+    harness: RevisionHarnessDescriptor,
+    auth: HarnessAuthSnapshot,
+    configuration: OpenClawConfigurationDocument,
+  ): Readonly<Record<string, unknown>> {
+    const overrides = normalizeHarnessSettings(harness.overrides ?? {});
+    const applicable = this.usesModelProvider(harness, auth, configuration);
     if (
-      auth.method !== "api_key" &&
-      !(auth.method === "credential_source" && auth.loginMode === "api_key")
+      overrides.modelProvider !== undefined &&
+      (!applicable || auth.method !== "credential_source")
     ) {
-      return undefined;
+      throw new ConfigurationHarnessError(
+        "An explicit modelProvider override requires source-backed OpenAI API-key authentication.",
+      );
     }
-    if (
-      harness.id === "openclaw" &&
-      harnessModelAuthentication(configuration, harness.mode === "embedded").providerId !== "openai"
-    ) {
-      return undefined;
+    if (!applicable) {
+      return {};
     }
-    return this.options.runtime?.modelProvider;
+    const native = asRecord(asRecord(asRecord(configuration.models)?.providers)?.openai);
+    const protocol =
+      harness.id === "codex"
+        ? "openai-responses"
+        : (native?.api ??
+          nativeOpenAiModelSelections(configuration)?.[0]?.matches[0]?.entry.api ??
+          "openai-responses");
+    const provider =
+      overrides.modelProvider ??
+      normalizeHarnessSettings({
+        modelProvider: this.options.runtime?.modelProvider ?? {
+          protocol,
+          baseUrl: DEFAULT_MODEL_BASE_URL,
+          supportsStandaloneWebSearch: false,
+        },
+      }).modelProvider!;
+    modelProviderConfiguration(configuration, harness, provider);
+    return { modelProvider: provider };
+  }
+
+  validateHarnessCredentialSources(
+    harness: RevisionHarnessDescriptor,
+    sources: readonly Readonly<CredentialSource>[],
+  ): void {
+    const provider = savedModelProvider(harness.configuration);
+    for (const source of sources) {
+      if (source.type === "openai") {
+        requireModelSourceDestination(source.config, provider);
+      }
+    }
   }
 
   private providerAdmission(revision: Readonly<AgentRevision>): string | undefined {
-    const provider = this.providerForHarness(
-      revision.harness,
-      revision.harnessAuth,
-      revision.configuration,
-    );
+    let provider: ModelProviderConfiguration | undefined;
+    try {
+      provider = savedModelProvider(revision.harness.configuration);
+      const requested = normalizeHarnessSettings(revision.harness.overrides);
+      if (
+        !isDeepStrictEqual(requested, revision.harness.overrides) ||
+        (revision.harness.id === "codex" &&
+          (revision.harnessAuth.method === "api_key" ||
+            (revision.harnessAuth.method === "credential_source" &&
+              revision.harnessAuth.loginMode === "api_key")) !==
+            (provider !== undefined)) ||
+        (revision.harness.id === "codex" &&
+          provider !== undefined &&
+          provider.protocol !== "openai-responses") ||
+        (requested.modelProvider !== undefined &&
+          (revision.harnessAuth.method !== "credential_source" ||
+            revision.harnessAuth.loginMode !== "api_key" ||
+            !isDeepStrictEqual(requested.modelProvider, provider)))
+      ) {
+        throw new Error("Inconsistent saved Harness settings");
+      }
+    } catch {
+      throw new ConfigurationFailure(
+        "Saved Harness settings are missing, malformed, or unsupported.",
+      );
+    }
     return provider === undefined
       ? undefined
       : sha256Hex(
@@ -14520,11 +14625,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     revision: AgentRevision,
     repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
   ): PluginRuntimeSnapshot | undefined {
-    const provider = this.providerForHarness(
-      revision.harness,
-      revision.harnessAuth,
-      revision.configuration,
-    );
+    const provider = savedModelProvider(revision.harness.configuration);
     let openaiBaseUrl: string | undefined;
     if (
       provider !== undefined ||
@@ -16638,6 +16739,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               value: providerEndpoint.workspaceRoot,
             });
           }
+        }
+        if (dedicated) {
+          // The worker bytecode cache can outgrow the Gateway's 64 MiB temporary volume.
+          variables.push({ name: "NODE_DISABLE_COMPILE_CACHE", value: "1" });
         }
         if (configuration?.usesGatewayPasswordEnv === true) {
           variables.push(

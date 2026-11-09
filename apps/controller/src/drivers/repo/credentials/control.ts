@@ -47,8 +47,7 @@ export function createControlAdmission(
   service: SessionControl & Pick<CredentialServiceOwner, "prepareOpen">,
   config: ServiceConfig,
   clock: Clock,
-  durableRequired: boolean,
-  preparedAuthority = false,
+  preparedAuthority: boolean,
 ) {
   const records = new Map<string, AdmissionRecord>();
   const sessions = new Map<string, string>();
@@ -58,7 +57,7 @@ export function createControlAdmission(
   >();
   // Fences that sweep retries for unfenced reservations; an open of the same id waits on them.
   const refencing = new Map<string, Promise<boolean>>();
-  const journal = durableRequired
+  const journal = preparedAuthority
     ? new RepositoryReceiptClient(config.gateway.controlSocket, randomUUID())
     : undefined;
   let disposed = false;

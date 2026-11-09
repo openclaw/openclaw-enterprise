@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isIP } from "node:net";
 import { checkServerIdentity } from "node:tls";
@@ -1685,6 +1685,8 @@ test(
 test("production settings coexist in fresh and upgrade chart renders", tooling, async () => {
   const settings = {
     ...agentNativeAdminValues,
+    "installation.attemptId": "eac2f079-cff2-4488-8e2e-3322df9b0bd6",
+    "installation.upgradeAttemptId": "df44c039-3515-4d0e-b2eb-759e177f1ff5",
     ...repositoryCredentialValues,
     "repositoryCredentials.serviceName": "git",
     "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128",
@@ -1697,6 +1699,23 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
       : values["images.controller"];
     const objects = await resources(
       (await render({ ...settings, "images.controller": controllerImage }, { isUpgrade })).stdout,
+    );
+    // Recovery joins the submitted attempt to all live hooks and its owned Pod;
+    // install-only attribution remains separate when both values are retained.
+    for (const hook of objects.filter((object) => object.metadata.annotations?.["helm.sh/hook"])) {
+      assert.equal(
+        hook.metadata.annotations["openclaw.dev/upgrade-attempt"],
+        isUpgrade ? settings["installation.upgradeAttemptId"] : undefined,
+      );
+    }
+    const initializer = objects.find(({ kind }) => kind === "Job");
+    assert.equal(
+      initializer.metadata.annotations["openclaw.dev/installation-attempt"],
+      isUpgrade ? undefined : settings["installation.attemptId"],
+    );
+    assert.equal(
+      initializer.spec.template.metadata.annotations?.["openclaw.dev/upgrade-attempt"],
+      isUpgrade ? settings["installation.upgradeAttemptId"] : undefined,
     );
     const deployment = (component) =>
       objects.find(
@@ -2653,7 +2672,12 @@ esac
         `${controllerImage}|${brokerImage}|linux/amd64\n`,
       );
       if (!failure) {
-        const candidate = await resources(await readFile(join(evidence, "rendered.yaml"), "utf8"));
+        // A failed dry-run has a render but no successful-preparation pointer.
+        const attempts = await readdir(join(evidence, "helm-attempts"));
+        assert.equal(attempts.length, 1);
+        const candidate = await resources(
+          await readFile(join(evidence, "helm-attempts", attempts[0], "rendered.yaml"), "utf8"),
+        );
         const deployment = candidate.find(
           ({ kind, metadata }) =>
             kind === "Deployment" && metadata.name === "openclaw-enterprise-worker",
@@ -4071,6 +4095,55 @@ test(
         },
       );
     }
+  },
+);
+
+test(
+  "OCC can manage private OAuth client Secrets without access to Secrets in the release namespace",
+  tooling,
+  async () => {
+    const releaseNamespace = "oauth-control-plane";
+    const objects = await resources((await render({}, { namespace: releaseNamespace })).stdout);
+    const privateNamespaces = new Set();
+    for (const [component, verbs] of [
+      ["api", ["get", "create", "update", "delete"]],
+      ["worker", ["get", "delete"]],
+    ]) {
+      const pod = objects.find(
+        ({ kind, metadata }) =>
+          kind === "Deployment" && metadata.labels?.["app.kubernetes.io/component"] === component,
+      ).spec.template.spec;
+      const namespace = pod.containers[0].env.find(
+        ({ name }) => name === "OCC_INSTALLATION_SECRET_NAMESPACE",
+      ).value;
+      privateNamespaces.add(namespace);
+      // Check the effective RoleBinding for the ServiceAccount the chart actually deploys.
+      const binding = objects.find(
+        ({ kind, metadata, subjects }) =>
+          kind === "RoleBinding" &&
+          metadata.namespace === namespace &&
+          subjects?.some((subject) => subject.name === pod.serviceAccountName),
+      );
+      assert.notEqual(namespace, releaseNamespace);
+      assert.deepEqual(binding.subjects, [
+        {
+          kind: "ServiceAccount",
+          name: pod.serviceAccountName,
+          namespace: releaseNamespace,
+        },
+      ]);
+      const role = objects.find(
+        ({ kind, metadata }) =>
+          kind === binding.roleRef.kind &&
+          metadata.namespace === namespace &&
+          metadata.name === binding.roleRef.name,
+      );
+      assert.deepEqual(role.rules, [{ apiGroups: [""], resources: ["secrets"], verbs }]);
+      assert.ok(
+        objects.some(({ kind, metadata }) => kind === "Namespace" && metadata.name === namespace),
+      );
+    }
+    assert.equal(privateNamespaces.size, 1);
   },
 );
 

@@ -944,6 +944,18 @@ function signInProvider(source, name, diagnostics) {
       "controlPlane.github.allowedOrgs and allowedTeams list at most 10 entries together.",
     );
   }
+  if (source.autoEnrollGroupId !== undefined) {
+    rendered.autoEnrollGroupId = optionalString(
+      source,
+      [...path, "autoEnrollGroupId"],
+      diagnostics,
+    );
+    if (!rendered.allowedTeams?.length || rendered.allowedOrgs?.length) {
+      diagnostics.errors.push(
+        "controlPlane.github.autoEnrollGroupId requires allowedTeams and no allowedOrgs.",
+      );
+    }
+  }
   if (source.egressCidrs !== undefined) {
     rendered.egressCidrs = stringArray(source, [...path, "egressCidrs"], diagnostics, {
       validate: isIpv4Cidr,
@@ -1272,7 +1284,15 @@ function buildInput(rawInput, diagnostics) {
   closed(
     github,
     "controlPlane.github",
-    ["secretName", "clientIdKey", "clientSecretKey", "allowedOrgs", "allowedTeams", "egressCidrs"],
+    [
+      "secretName",
+      "clientIdKey",
+      "clientSecretKey",
+      "allowedOrgs",
+      "allowedTeams",
+      "autoEnrollGroupId",
+      "egressCidrs",
+    ],
     diagnostics,
   );
   const google = section(controlPlane, "google", diagnostics, false);
