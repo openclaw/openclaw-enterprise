@@ -5916,6 +5916,384 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     outcome: "passed",
     elapsedMs: 39_000,
   };
+  // These receipts travel through the real reporter and runner into the uploaded
+  // result, including after a later failure. Unknown text must never reach a tail.
+  const uuid = "12345678-1234-1234-1234-123456789abc";
+  const sha256 = "a".repeat(64);
+  const opaque = "supplier-instance-123";
+  const opaqueHash = createHash("sha256").update(opaque).digest("hex");
+  const time = "2026-11-05T12:00:00.123456789Z";
+  const retentionKind = "openshell-git-retention";
+  const forbidden = "unregistered-retention-private-text";
+  const runtimeReceipt = {
+    revisionId: opaque,
+    sandboxId: opaque,
+    sandboxUid: uuid,
+    podUid: uuid,
+    mainProcessInstanceId: opaque,
+    mainProcessStartedAt: time,
+    containers: [
+      {
+        name: opaque,
+        id: opaque,
+        imageId: `containerd://sha256:${sha256}`,
+        startedAt: time,
+        restartCount: 0,
+        output: forbidden,
+      },
+    ],
+    credential: forbidden,
+  };
+  const launchReceipt = {
+    workspace: opaque,
+    sandboxId: opaque,
+    requestId: uuid,
+    executionSeconds: 120,
+    observerMs: 180_000,
+  };
+  const expiryObservation = {
+    event: "worker.openshell-git-expiry",
+    workerUid: uuid,
+    namespaceMatches: true,
+    repository: "match",
+    outcome: "pending",
+    check: "retained-provider-profiles",
+    failure: "gateway_unavailable",
+    rawLog: forbidden,
+  };
+  const expiryDiagnostic = {
+    event: "git-expiry-unconfirmed",
+    namespaceId: opaque,
+    agentId: opaque,
+    revisionId: opaque,
+    repositoryRef: opaque,
+    lastWorkerUid: uuid,
+    polls: 4,
+    workerReadFailures: 0,
+    noReadyWorkerPolls: 1,
+    logReads: 3,
+    logReadSuccesses: 2,
+    logReadFailures: 1,
+    linesRead: 2005,
+    parsedEvents: 2002,
+    parseFailures: 3,
+    tailLimitReads: 1,
+    workerChanges: 1,
+    matchingEventReads: 5,
+    rejectedEventReads: 1,
+    driverSuccessSeen: true,
+    workerAcknowledgementSeen: false,
+    observationsTruncated: true,
+    observations: [
+      expiryObservation,
+      {
+        ...expiryObservation,
+        namespaceMatches: false,
+        repository: "mismatch",
+        outcome: "retire-runtime",
+      },
+      {
+        ...expiryObservation,
+        outcome: "withdrawn",
+        check: "record-reduced-generation",
+      },
+      {
+        event: "worker.completed",
+        workerUid: uuid,
+        namespaceMatches: true,
+        repository: "absent",
+        outcome: "success",
+        code: "REPOSITORY_RUNTIME_RETIREMENT_QUEUED",
+        error: forbidden,
+      },
+      {
+        event: "worker.completed",
+        workerUid: uuid,
+        namespaceMatches: true,
+        repository: "absent",
+        outcome: "pending",
+        code: forbidden,
+      },
+      {
+        event: "worker.repository-cleanup-warning",
+        workerUid: uuid,
+        namespaceMatches: true,
+        repository: "absent",
+        code: "REPOSITORY_CLEANUP_STALLED",
+        cause: forbidden,
+      },
+    ],
+  };
+  // The live observer uses this same projection before retaining or emitting a
+  // record. Malicious fields must disappear there, not just in the reporter.
+  const { projectOpenShellGitExpiryObservation, projectOpenShellGitMaintenanceCompletion } =
+    await import("../../scripts/ci/openshell-git-retention.mjs");
+  assert.deepEqual(
+    projectOpenShellGitMaintenanceCompletion({
+      outcome: forbidden,
+      code: forbidden,
+      failure: forbidden,
+      error: forbidden,
+    }),
+    { outcome: "unrecognized", code: "unrecognized", failure: "UNRECOGNIZED" },
+  );
+  const captured = expiryDiagnostic.observations.map(projectOpenShellGitExpiryObservation);
+  assert.ok(!JSON.stringify(captured).includes(forbidden));
+  assert.equal(captured[4].code, "unrecognized");
+  assert.equal(captured[5].cause, "unrecognized");
+  for (const field of [
+    "outcome",
+    "check",
+    "failure",
+    "workerUid",
+    "namespaceMatches",
+    "repository",
+  ]) {
+    assert.equal(
+      projectOpenShellGitExpiryObservation({ ...expiryObservation, [field]: forbidden }),
+      undefined,
+    );
+  }
+  const retainedFailures = ["after-expiry", "after-worker-restart"].map((stage, index) => ({
+    event: "retained-execution-failed",
+    stage,
+    connectionsBefore: 2,
+    connectionsAfter: 2 + index,
+    requestsBefore: 1,
+    requestsAfter: 1 + index,
+    originUnchanged: index === 0,
+  }));
+  const policyDenials = ["after-expiry", "after-worker-restart"].map((stage) => ({
+    event: "git-policy-denied",
+    stage,
+    reason: "transparent_tcp_policy_denied",
+    policyReason: "endpoint-not-admitted",
+    marker: "policy-dns-ineligible",
+    host: "github.com",
+    port: 443,
+    executable: "/usr/lib/git-core/git-remote-http",
+    count: 1,
+    startedAt: 1_800_000_000_000,
+    endedAt: 1_800_000_001_000,
+  }));
+  const maintenanceDiagnostic = {
+    event: "worker-maintenance-unconfirmed",
+    reason: "own-budget-exhausted",
+    logReads: 3,
+    logReadSuccesses: 2,
+    logReadFailures: 1,
+    linesRead: 2004,
+    parsedEvents: 2000,
+    parseFailures: 4,
+    tailLimitReads: 1,
+    completionsTruncated: false,
+    completions: [
+      { outcome: "pending", code: "REPOSITORY_CLEANUP_PENDING", error: forbidden },
+      { outcome: "retry", code: forbidden, failure: forbidden },
+      { outcome: "permanent", code: "REPOSITORY_ACCESS_WITHDRAWN" },
+      // Ordinary revision readiness must remain distinguishable from Git cleanup.
+      { outcome: "pending", code: "REPOSITORY_GIT_ROUTE_PENDING" },
+      { outcome: "pending", code: "REPOSITORY_GIT_MATERIAL_PENDING" },
+      { outcome: "pending", code: "WORKSPACE_NODE_PENDING" },
+      { outcome: "pending", code: "WORKSPACE_NODE_BINDING_PENDING" },
+      { outcome: "pending", code: "WORKSPACE_NODE_RECONNECT_PENDING" },
+      { outcome: "pending", code: "WORKSPACE_SETUP_RETRYING" },
+      // Keep the optional runtime failure separate from the maintenance wait code.
+      {
+        outcome: "pending",
+        code: "REVISION_INCOMPLETE",
+        failure: "REPOSITORY_ROUTE_BLOCKED",
+      },
+      {
+        outcome: "pending",
+        code: "REVISION_FINALIZATION_INCOMPLETE",
+        failure: "MODEL_PROBE_FAILED",
+      },
+      {
+        outcome: "pending",
+        code: `REPOSITORY_GIT_ROUTE_PENDING_${forbidden}`,
+        failure: { code: "REPOSITORY_ROUTE_BLOCKED", message: forbidden },
+      },
+    ],
+    error: forbidden,
+  };
+  const maintenanceReasons = [
+    "permanent",
+    "read-failure",
+    "cancelled",
+    "own-budget-exhausted",
+    "unrecognized",
+  ];
+  const restartStages = [
+    "ready-worker",
+    "durable-before",
+    "rollout-restart",
+    "rollout-ready",
+    "replacement-worker",
+    "revision-maintenance",
+    "durable-after",
+    "durable-retention-assertion",
+  ];
+  const retentionReceipts = [
+    ...maintenanceReasons.map((reason) => ({ ...maintenanceDiagnostic, reason })),
+    ...restartStages.map((stage) => ({
+      event: "worker-restart-unconfirmed",
+      stage,
+      error: forbidden,
+    })),
+    ...policyDenials.map((receipt) => ({ ...receipt, message: forbidden, credential: forbidden })),
+    ...retainedFailures.map((receipt) => ({
+      ...receipt,
+      credential: forbidden,
+      stdout: forbidden,
+      stderr: forbidden,
+    })),
+    expiryDiagnostic,
+    {
+      event: "supervisor-trust",
+      parent: `ghcr.io/example/stock@sha256:${sha256}`,
+      reference: `docker.io/library/test@sha256:${sha256}`,
+      binaryHash: sha256,
+      configDigest: `sha256:${sha256}`,
+    },
+    { event: "finite-git-grant", revisionId: opaque, deadlineWallMs: 1_800_000_000_000 },
+    { event: "initial-runtime", ...runtimeReceipt },
+    {
+      event: "installed-supervisor",
+      sandboxId: opaque,
+      workloadPodUid: uuid,
+      supervisorPodUid: uuid,
+      image: `docker.io/library/test@sha256:${sha256}`,
+      imageId: `containerd://sha256:${sha256}`,
+      containerId: opaque,
+      binaryHash: sha256,
+    },
+    ...["before-expiry", "after-expiry", "after-worker-restart"].map((stage) => ({
+      event: "model-turn-succeeded",
+      stage,
+      nonce: `FIRST_AGENT_${uuid}`,
+    })),
+    {
+      event: "initial-git-succeeded",
+      revisionId: opaque,
+      sha: "b".repeat(40),
+      connections: 2,
+      requests: 1,
+    },
+    {
+      event: "git-expiry-observed",
+      deadlineWallMs: 1_800_000_000_000,
+      workId: opaque,
+      code: "REPOSITORY_ACCESS_WITHDRAWN",
+      workerUid: uuid,
+      expiry: {
+        event: "worker.openshell-git-expiry",
+        namespaceId: opaque,
+        agentId: opaque,
+        revisionId: opaque,
+        repositoryRef: opaque,
+        outcome: "withdrawn",
+        check: "record-reduced-generation",
+        output: forbidden,
+      },
+    },
+    {
+      event: "worker-restarted",
+      beforeUid: uuid,
+      afterUid: uuid,
+      databaseUid: uuid,
+      custodyUid: uuid,
+      custodyVersion: "234",
+    },
+    ...["after-expiry", "after-worker-restart"].map((event) => ({
+      event,
+      ...runtimeReceipt,
+      nonGit: "succeeded",
+      freshGit: "transparent-policy-denied",
+      connections: 2,
+      requests: 1,
+    })),
+    { event: "managed-workload-exec-dispatch-unknown", ...launchReceipt },
+    {
+      event: "managed-workload-exec-result",
+      ...launchReceipt,
+      outcome: "terminal-exit",
+      exitCode: 0,
+      grpcStatus: 0,
+      stdoutBytes: 12,
+      stderrBytes: 0,
+    },
+    {
+      event: "managed-workload-exec-unconfirmed",
+      ...launchReceipt,
+      grpcStatus: "unknown",
+      reason: "stream-failure",
+    },
+    { event: "cleanup", outcome: "passed" },
+  ].map((value) => ({ kind: retentionKind, ...value, unexpected: forbidden }));
+  const invalidRetention = [
+    ...[
+      ["stage", "before-expiry"],
+      ["reason", "transparent_tcp_identity_unavailable"],
+      ["policyReason", forbidden],
+      ["marker", forbidden],
+      ["host", forbidden],
+      ["port", 80],
+      ["executable", forbidden],
+      ["count", 0],
+      ["count", 2001],
+      ["count", { toString: 0, credential: forbidden }],
+      ["startedAt", forbidden],
+      ["endedAt", -1],
+    ].map(([field, value]) => ({ ...policyDenials[0], [field]: value })),
+    ...[
+      ["stage", "before-expiry"],
+      ["stage", forbidden],
+      ["connectionsBefore", forbidden],
+      ["connectionsAfter", -1],
+      ["requestsBefore", 0.5],
+      ["requestsAfter", Number.MAX_SAFE_INTEGER + 1],
+      ["originUnchanged", forbidden],
+    ].map(([field, value]) => ({ ...retainedFailures[0], [field]: value })),
+    { ...expiryDiagnostic, polls: -1 },
+    { ...expiryDiagnostic, logReadSuccesses: 0.5 },
+    { ...expiryDiagnostic, driverSuccessSeen: forbidden },
+    { ...expiryDiagnostic, lastWorkerUid: forbidden },
+    { ...expiryDiagnostic, observations: Array(17).fill(expiryObservation) },
+    {
+      ...expiryDiagnostic,
+      observations: [{ ...expiryObservation, check: forbidden }],
+    },
+    {
+      ...expiryDiagnostic,
+      observations: [{ ...expiryObservation, failure: forbidden }],
+    },
+    { event: forbidden },
+    { event: "initial-runtime", ...runtimeReceipt, podUid: forbidden },
+    {
+      event: "initial-runtime",
+      ...runtimeReceipt,
+      containers: [{ ...runtimeReceipt.containers[0], imageId: forbidden }],
+    },
+    {
+      event: "initial-runtime",
+      ...runtimeReceipt,
+      containers: Array(17).fill(runtimeReceipt.containers[0]),
+    },
+    { event: "finite-git-grant", revisionId: opaque, deadlineWallMs: -1 },
+    { event: "model-turn-succeeded", stage: "before-expiry", nonce: forbidden },
+    { event: "model-turn-succeeded", stage: forbidden, nonce: `FIRST_AGENT_${uuid}` },
+    { ...maintenanceDiagnostic, reason: forbidden },
+    { ...maintenanceDiagnostic, logReadFailures: -1 },
+    { ...maintenanceDiagnostic, logReadSuccesses: forbidden },
+    { ...maintenanceDiagnostic, tailLimitReads: 0.5 },
+    { ...maintenanceDiagnostic, completionsTruncated: forbidden },
+    { ...maintenanceDiagnostic, completions: Array(17).fill({ outcome: "retry", code: "x" }) },
+    { ...maintenanceDiagnostic, completions: [forbidden] },
+    { event: "worker-restart-unconfirmed", stage: forbidden },
+    { event: "worker-restart-unconfirmed" },
+    { event: "cleanup", outcome: forbidden },
+  ].map((value) => ({ kind: retentionKind, ...value }));
   // Observation metadata can survive unavailable probes; payloads and raw identities cannot.
   const unavailableTurnover = {
     kind: "openshell-initial-turnover",
@@ -6228,6 +6606,9 @@ test("run records only allowlisted measurements from test diagnostics", async (t
         measurement({ ...openshellPhase, outcome: "secretauthvalue-phase-outcome" }),
         measurement({ ...openshellPhase, elapsedMs: 2_400_001 }),
         measurement({ ...openshellPhase, elapsedMs: 0.5 }),
+        ...retentionReceipts.map(measurement),
+        ...invalidRetention.map(measurement),
+        `openclaw-ci-measurement {"kind":"openshell-git-retention","private":"${forbidden}",`,
         ...[unavailableTurnover, unexercisedTurnover, turnContinuity].map((value) =>
           measurement({
             ...value,
@@ -6295,93 +6676,250 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   const artifact = await readFile(resultsPath, "utf8");
   const summary = JSON.parse(artifact);
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(summary.files[0].measurements, [
-    { kind: "openshell-stage", stage: "oauth-refresh", outcome: "passed", elapsedMs: 123 },
-    {
-      kind: "local-first-agent-command",
-      phase: "setup",
-      stage: "runtime-build",
-      count: 1,
-      failed: 0,
-      elapsedMs: 100,
-    },
-    { ...runtimeFailure, nonzeroExitCount: 1, signaledCount: 1 },
-    { ...runtimeFailure, elapsedMs: 201 },
-    { ...runtimeFailure, elapsedMs: 202 },
-    { ...runtimeFailure, elapsedMs: 203, stage: "controller-build" },
-    {
-      kind: "local-first-agent-pod",
-      stage: "native-initial",
-      role: "harness",
-      restarts: 0,
-      createdAfterRequestMs: 100,
-      scheduledMs: 100,
-      initializedMs: 200,
-      runningMs: 200,
-      readyMs: 300,
-      observedMs: 400,
-    },
+  assert.deepEqual(
+    summary.files[0].measurements.filter(({ kind }) => kind !== retentionKind),
+    [
+      { kind: "openshell-stage", stage: "oauth-refresh", outcome: "passed", elapsedMs: 123 },
+      {
+        kind: "local-first-agent-command",
+        phase: "setup",
+        stage: "runtime-build",
+        count: 1,
+        failed: 0,
+        elapsedMs: 100,
+      },
+      { ...runtimeFailure, nonzeroExitCount: 1, signaledCount: 1 },
+      { ...runtimeFailure, elapsedMs: 201 },
+      { ...runtimeFailure, elapsedMs: 202 },
+      { ...runtimeFailure, elapsedMs: 203, stage: "controller-build" },
+      {
+        kind: "local-first-agent-pod",
+        stage: "native-initial",
+        role: "harness",
+        restarts: 0,
+        createdAfterRequestMs: 100,
+        scheduledMs: 100,
+        initializedMs: 200,
+        runningMs: 200,
+        readyMs: 300,
+        observedMs: 400,
+      },
 
-    { kind: "local-first-agent", stage: "setup", outcome: "passed", elapsedMs: 1234 },
-    {
-      kind: "kubelet-volume-refresh",
-      volume: "secret",
-      nudge: "pod-annotation",
-      sample: 1,
-      seconds: 1.2,
-    },
-    {
-      kind: "runtime-model-probe",
-      case: "gateway-500m-answer",
-      code: "READY",
-      elapsedMs: 61_234,
-      capMs: 110_000,
-      cpuWaitMs: 4_321,
-      setupMs: 2_345,
-      probeDoneMs: 63_456,
-      readyMs: null,
-    },
-    {
-      kind: "runtime-model-probe",
-      case: "gateway-1cpu-answer",
-      code: "other",
-      elapsedMs: 1,
-      capMs: 65_000,
-      cpuWaitMs: null,
-      setupMs: 1,
-      probeDoneMs: 1,
-      readyMs: 1,
-    },
-    {
-      kind: "runtime-model-probe",
-      case: "gateway-500m-contended",
-      code: null,
-      elapsedMs: null,
-      capMs: null,
-      cpuWaitMs: null,
-      setupMs: 1,
-      probeDoneMs: null,
-      readyMs: null,
-    },
-    {
-      kind: "runtime-sigterm",
-      case: "gateway-model-probe",
-      stopped: true,
-      elapsedMs: 4_321,
-      budgetMs: 15_000,
-    },
-    openshellPhase,
-    unavailableTurnover,
-    unexercisedTurnover,
-    turnContinuity,
-    conflictingSettings,
-    unchangedProvider,
-    missingTurnoverEvent,
-    changedGateway,
-    earlyRelay,
-    lateTurnover,
-  ]);
+      { kind: "local-first-agent", stage: "setup", outcome: "passed", elapsedMs: 1234 },
+      {
+        kind: "kubelet-volume-refresh",
+        volume: "secret",
+        nudge: "pod-annotation",
+        sample: 1,
+        seconds: 1.2,
+      },
+      {
+        kind: "runtime-model-probe",
+        case: "gateway-500m-answer",
+        code: "READY",
+        elapsedMs: 61_234,
+        capMs: 110_000,
+        cpuWaitMs: 4_321,
+        setupMs: 2_345,
+        probeDoneMs: 63_456,
+        readyMs: null,
+      },
+      {
+        kind: "runtime-model-probe",
+        case: "gateway-1cpu-answer",
+        code: "other",
+        elapsedMs: 1,
+        capMs: 65_000,
+        cpuWaitMs: null,
+        setupMs: 1,
+        probeDoneMs: 1,
+        readyMs: 1,
+      },
+      {
+        kind: "runtime-model-probe",
+        case: "gateway-500m-contended",
+        code: null,
+        elapsedMs: null,
+        capMs: null,
+        cpuWaitMs: null,
+        setupMs: 1,
+        probeDoneMs: null,
+        readyMs: null,
+      },
+      {
+        kind: "runtime-sigterm",
+        case: "gateway-model-probe",
+        stopped: true,
+        elapsedMs: 4_321,
+        budgetMs: 15_000,
+      },
+      openshellPhase,
+      unavailableTurnover,
+      unexercisedTurnover,
+      turnContinuity,
+      conflictingSettings,
+      unchangedProvider,
+      missingTurnoverEvent,
+      changedGateway,
+      earlyRelay,
+      lateTurnover,
+    ],
+  );
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
+  const receipts = summary.files[0].measurements.filter(({ kind }) => kind === retentionKind);
+  assert.deepEqual(
+    receipts.map(({ event }) => event),
+    retentionReceipts.map(({ event }) => event),
+  );
+  assert.deepEqual(
+    receipts.filter(({ event }) => event === "retained-execution-failed"),
+    retainedFailures.map((receipt) => ({ kind: retentionKind, ...receipt })),
+  );
+  assert.deepEqual(
+    receipts.filter(({ event }) => event === "git-policy-denied"),
+    policyDenials.map((receipt) => ({ kind: retentionKind, ...receipt })),
+  );
+  assert.equal(summary.sourceSha, currentSha());
+  assert.equal(summary.files[0].path, "tests/integration/measurements.test.mjs");
+  assert.deepEqual(
+    receipts.find(({ event }) => event === "initial-runtime"),
+    {
+      kind: retentionKind,
+      event: "initial-runtime",
+      revisionIdHash: opaqueHash,
+      sandboxIdHash: opaqueHash,
+      sandboxUid: uuid,
+      podUid: uuid,
+      mainProcessInstanceIdHash: opaqueHash,
+      mainProcessStartedAt: time,
+      containers: [
+        {
+          nameHash: opaqueHash,
+          idHash: opaqueHash,
+          imageDigest: `sha256:${sha256}`,
+          startedAt: time,
+          restartCount: 0,
+        },
+      ],
+    },
+  );
+  assert.deepEqual(
+    receipts.find(({ event }) => event === "supervisor-trust"),
+    {
+      kind: retentionKind,
+      event: "supervisor-trust",
+      parentDigest: `sha256:${sha256}`,
+      imageDigest: `sha256:${sha256}`,
+      binaryHash: sha256,
+      configDigest: `sha256:${sha256}`,
+    },
+  );
+  assert.deepEqual(receipts.find(({ event }) => event === "git-expiry-observed").expiry, {
+    event: "worker.openshell-git-expiry",
+    namespaceIdHash: opaqueHash,
+    agentIdHash: opaqueHash,
+    revisionIdHash: opaqueHash,
+    repositoryRefHash: opaqueHash,
+    outcome: "withdrawn",
+    check: "record-reduced-generation",
+  });
+  assert.deepEqual(
+    receipts.filter(({ event }) => event === "worker-restart-unconfirmed"),
+    restartStages.map((stage) => ({
+      kind: retentionKind,
+      event: "worker-restart-unconfirmed",
+      stage,
+    })),
+  );
+  assert.deepEqual(
+    receipts.filter(({ event }) => event === "worker-maintenance-unconfirmed"),
+    maintenanceReasons.map((reason) => ({
+      kind: retentionKind,
+      event: "worker-maintenance-unconfirmed",
+      reason,
+      logReads: 3,
+      logReadSuccesses: 2,
+      logReadFailures: 1,
+      linesRead: 2004,
+      parsedEvents: 2000,
+      parseFailures: 4,
+      tailLimitReads: 1,
+      completionsTruncated: false,
+      completions: [
+        { outcome: "pending", code: "REPOSITORY_CLEANUP_PENDING" },
+        { outcome: "retry", code: "unrecognized", failure: "UNRECOGNIZED" },
+        { outcome: "permanent", code: "REPOSITORY_ACCESS_WITHDRAWN" },
+        { outcome: "pending", code: "REPOSITORY_GIT_ROUTE_PENDING" },
+        { outcome: "pending", code: "REPOSITORY_GIT_MATERIAL_PENDING" },
+        { outcome: "pending", code: "WORKSPACE_NODE_PENDING" },
+        { outcome: "pending", code: "WORKSPACE_NODE_BINDING_PENDING" },
+        { outcome: "pending", code: "WORKSPACE_NODE_RECONNECT_PENDING" },
+        { outcome: "pending", code: "WORKSPACE_SETUP_RETRYING" },
+        {
+          outcome: "pending",
+          code: "REVISION_INCOMPLETE",
+          failure: "REPOSITORY_ROUTE_BLOCKED",
+        },
+        {
+          outcome: "pending",
+          code: "REVISION_FINALIZATION_INCOMPLETE",
+          failure: "MODEL_PROBE_FAILED",
+        },
+        { outcome: "pending", code: "unrecognized", failure: "UNRECOGNIZED" },
+      ],
+    })),
+  );
+  const unconfirmed = receipts.find(({ event }) => event === "git-expiry-unconfirmed");
+  assert.deepEqual(unconfirmed.observations, captured);
+  assert.equal(unconfirmed.namespaceIdHash, opaqueHash);
+  assert.equal(unconfirmed.agentIdHash, opaqueHash);
+  assert.equal(unconfirmed.revisionIdHash, opaqueHash);
+  assert.equal(unconfirmed.repositoryRefHash, opaqueHash);
+  assert.equal(unconfirmed.lastWorkerUid, uuid);
+  assert.equal(unconfirmed.tailLimitReads, 1);
+  assert.equal(unconfirmed.workerChanges, 1);
+  assert.equal(unconfirmed.driverSuccessSeen, true);
+  assert.equal(unconfirmed.workerAcknowledgementSeen, false);
+  assert.equal(unconfirmed.observationsTruncated, true);
+  for (const output of [result.stdout, result.stderr, artifact]) {
+    assert.ok(!output.includes(forbidden));
+    assert.ok(!output.includes(opaque));
+  }
+
+  // A later failure makes the reporter emit its raw output buffer. Invalid
+  // receipts and unselected fields must still not fall through into that buffer.
+  const fixtureFile = join(root, "tests/integration/measurements.test.mjs");
+  await writeFile(
+    fixtureFile,
+    (await readFile(fixtureFile, "utf8")) +
+      '\ntest("fails after receipts", () => { throw new Error("controlled failure"); });\n',
+  );
+  const failed = run(root, [
+    "run",
+    "measure",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    "state/failed-measurements.json",
+    "--results",
+    resultsPath,
+  ]);
+  assert.equal(failed.status, 1, failed.stderr);
+  const failedArtifact = await readFile(resultsPath, "utf8");
+  const diagnostics = await readFile(
+    join(root, "state/failed-measurements.json.diagnostics.json"),
+    "utf8",
+  );
+  assert.deepEqual(
+    JSON.parse(failedArtifact).files[0].measurements.filter(({ kind }) => kind === retentionKind),
+    receipts,
+  );
+  for (const output of [failed.stdout, failed.stderr, failedArtifact, diagnostics]) {
+    assert.ok(!output.includes(forbidden));
+    assert.ok(!output.includes(opaque));
+  }
 });
 
 test("run reports a cleanup that fails once a cancelled job's shell is gone as cancelled", async (t) => {

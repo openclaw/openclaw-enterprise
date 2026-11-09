@@ -22,7 +22,8 @@
     "selfProvisionedFiles": [
       "tests/integration/local-first-agent-openshell-real.test.mjs",
       "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
-      "tests/integration/dev-up-openshell-k3d-real.test.mjs"
+      "tests/integration/dev-up-openshell-k3d-real.test.mjs",
+      "tests/integration/openshell-git-retention-real.test.ts"
     ],
     "sourceBuildFiles": ["tests/integration/dev-up-openshell-k3d-real.test.mjs"]
   },
@@ -168,6 +169,10 @@
         "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
         "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
       ]
+    },
+    {
+      "path": "tests/integration/openshell-git-retention-real.test.ts",
+      "expectedTests": ["OpenShell retains its runtime after Git expiry and worker restart"]
     }
   ],
   "optionalEnv": [
