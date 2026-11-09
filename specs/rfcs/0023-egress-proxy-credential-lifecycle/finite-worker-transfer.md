@@ -74,11 +74,13 @@ route use. A late acknowledgment from a fenced or withdrawn owner cannot restore
 access. Do not infer acknowledgment from a launch hash, readiness, a socket, a
 successful earlier Git request or the absence of a pending write.
 
-A crash after sending release but before recording its acknowledgment leaves no
-transferable authority. Do not resend release, repeat an uncertain provider write,
-or mint a replacement token to repair that gap. If a commit reply is lost, reconcile
-the exact durable record; absence or uncertainty keeps Git closed. Legacy records
-without this evidence remain ineligible, as do already blocked or expired routes.
+A PostgreSQL storage experiment used an experimental nullable delivery field and
+synthetic authority. After restart, a read-only transaction found the committed
+acknowledgment. After an uncommitted write was abandoned, recovery found no
+acknowledgment. An identical write was idempotent, and conflicting startup or deadline values were refused. This
+establishes storage behavior only. If the launcher reply is lost, or no exact
+record survives, keep Git closed. Reconcile an uncertain commit by reading the
+record and rechecking authority. Never replay release, provider writes or Git.
 
 ### Verify the current recipient, then transfer ownership
 
@@ -89,26 +91,24 @@ substitute the current Agent draft, a different supervisor or another admission.
 Missing or inconsistent observations, an uncertain provider operation, or an
 unsupported profile cannot produce a positive result.
 
-After observation, the proposed PostgreSQL transfer transaction must validate the
-expected original worker and fence against the delivery and verify that the
-replacement holds the live work claim for this revision and operation. After
-activation, that means checking the applicable maintenance claim. The queue's
-claim token alone does not identify the replacement worker. Recheck the
-release record, admission and deadlines in that transaction before moving ownership.
-Losing the claim after observation but before commit must leave the fence unchanged. Serialize this transition with binding withdrawal,
-Agent stop/replacement and per-request authorization. Only the successful successor
-may authorize new requests; competing successors and the old worker must fail their
-fence checks. Observation alone never opens the route.
-
-This requires an extension: the current
+A replacement in the scheduled maintenance pass must present the live claim for
+this revision and operation. The queue token identifies a claim. The worker's
+selected Git runtime identifies the successor. After lock waits, check both,
+the expected predecessor and fence, the original acknowledgment, admission,
+withdrawal and database-time expiry before moving the fence. The existing
 [`CredentialDeliveries.adopt`](../../../packages/occ/src/state/credential-deliveries.ts)
-advances an open row without comparing an expected predecessor owner/fence.
-In an experimental two-session PostgreSQL race, both contenders observed fence 1.
-Exercising unrestricted adoption directly on the open delivery
-let the first contender take fence 2 and the loser advance it to 3. A prototype
-that compared the expected owner and fence left the winner at fence 2. The
-shipped replacement path closes the route. The experiment isolates the race
-that a transfer implementation would introduce if it simply removed that closure.
+can advance the fence twice when two contenders observed the same predecessor.
+A conditional update comparing that predecessor allowed one winner.
+
+A real PostgreSQL experiment ran two worker instances sequentially in one
+process with synthetic deliveries. After ordinary reconciliation finished, the
+replacement claimed scheduled maintenance and advanced its delivery from fence
+1 to 2 once. A different Agent's claim, withdrawal committed during a lock wait,
+and a claim that expired during a lock wait all left the predecessor in place.
+The experiment performed no protected Git request. The deployer permission check
+read IAM separately from the fence update. Authorization owners must specify how
+participating permission writers, transfer and request checks serialize before
+relying on that check during replacement.
 
 Withdrawal that commits first prevents transfer. Withdrawal after transfer denies
 the next authorization even if GitHub still accepts the token. An operation already
@@ -159,8 +159,23 @@ Update the current reference and flow only when behavior changes.
    after transfer. Neither the transfer nor this separate expiry case may extend
    that deadline or replace the pre-expiry withdrawal proof.
 
-The PostgreSQL experiment covers competing ownership updates. Successful
-transfer through the installed Worker and Git request path remains unproven.
+Pair the installed positive in case 3 with a real restart of the protected
+process under the stock workspace launcher. For the positive, verify the admitted
+sandbox and execution, restart policy and count, main instance and start time,
+workload Pod and container, recipient evidence above, and authenticated serving
+through that sandbox's bearer-passthrough service. For the negative, keep the
+outer identities and original grant, restart just the protected process, and
+observe its new held startup ID. Require refusal before the fence moves, with no
+second release, Git authorization or origin request.
+
+The stock workspace launcher holds each replacement at a fresh startup ID. A
+controlled launcher probe rejected the previous release there. Separately, an
+independently started listener outside that launcher reproduced the serving
+probe's responses. The serving check alone cannot identify a particular
+descendant. Neither probe exercised the complete installed transfer. Qualify
+the stock pair first. If hostile in-sandbox listener substitution is in scope,
+evaluate whether it can pass the complete checks and obtain a protected read
+before proposing a new challenge.
 
 ## Alternatives and review questions
 
@@ -170,11 +185,9 @@ but interrupts B despite its otherwise valid finite admission. Merely removing
 cold replacement. Converting the grant to standing approval changes its duration
 and is outside this proposal.
 
-Should OCC record the original release acknowledgment once on the existing
-delivery and transfer that delivery only when the expected original worker and
-fence, the replacement's live claim and the independently observed recipient
-all match? OpenShell Git, credential-custody and authorization reviewers should
-confirm the transaction boundary with withdrawal and per-request checks. Sandbox
-reviewers should confirm which live observations identify the same recipient.
-Broader renewal redesign, new trust modes and changes to running installations are outside
-this amendment.
+The existing human review owns the decision. The proposed division is for OCC
+to record the original startup acknowledgment once on the delivery, OpenShell
+Git and Sandbox to qualify the stock recipient checks, and repository
+authorization to order permission changes with transfer and request checks.
+Every path preserves the original finite deadline. Installed transfer and
+protected Git use by a successor remain unproven.
