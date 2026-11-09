@@ -220,8 +220,8 @@ new token in a new Secret, and reference it.
 
 ## Rotate a refresh source
 
-The Gateway renews `refresh` tokens before expiry. Running Agents keep the same
-placeholder. To rotate immediately, call
+For sources with `rotation: refresh`, the Gateway renews the access token before
+it expires. Running Agents keep the same placeholder. To rotate immediately, call
 `POST /namespaces/:namespaceId/credential-sources/:credentialSourceId/rotate`
 or run `occ credential-source rotate ID`. Rotation requires exact
 `credential_source:update`, reads no Secret, and needs no redeploy. It does
