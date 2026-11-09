@@ -155,29 +155,11 @@ runs:
         driver-opts: |
           ${{ steps.image-mode.outputs.first-agent == 'true' && 'network=host' || '' }}
           ${{ steps.image-mode.outputs.source-build == 'true' && 'default-load=true' || '' }}
-    - name: Restore pinned yq and k3d downloads
-      id: tool-cache
-      if: inputs.profile == 'postgres' || inputs.profile == 'images' || inputs.profile == 'k3d' || inputs.profile == 'full'
-      continue-on-error: true
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ${{ runner.temp }}/pinned-tool-downloads
-        key: pinned-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci/setup-tools.sh', 'scripts/ci/download-pinned.sh') }}-${{ inputs.profile }}
-        restore-keys: |
-          pinned-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci/setup-tools.sh', 'scripts/ci/download-pinned.sh') }}-
     - name: Set up CI tools
       id: setup-ci-tools
-      shell: bash
-      env:
-        CI_PINNED_TOOL_CACHE: ${{ runner.temp }}/pinned-tool-downloads
-      run: bash scripts/ci/setup-tools.sh "${{ inputs.profile }}"
-    - name: Save verified yq and k3d downloads
-      if: (inputs.profile == 'postgres' || inputs.profile == 'images' || inputs.profile == 'k3d' || inputs.profile == 'full') && steps.tool-cache.outputs.cache-hit != 'true'
-      continue-on-error: true
-      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      uses: ./.github/actions/setup-ci-tools
       with:
-        path: ${{ runner.temp }}/pinned-tool-downloads
-        key: pinned-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci/setup-tools.sh', 'scripts/ci/download-pinned.sh') }}-${{ inputs.profile }}
+        profile: ${{ inputs.profile }}
     - name: Install registry transport for image tests
       id: install-registry-transport
       if: inputs.lane == 'images-packaging' || inputs.runtime-artifact-id != ''
