@@ -60,8 +60,8 @@ and does not move traffic off the serving predecessor.
    permits activation.
 2. **The Gateway checks every connection.** It authenticates the pinned origin
    using only the pinned CA before sending the HTTP Upgrade or bearer. The
-   relay verifies the bearer and that A is still current, then returns HTTP 101
-   with exactly one generation proof header. If the proof is missing, duplicated,
+   relay verifies the bearer and that the original workspace is still current,
+   then returns HTTP 101 with exactly one generation proof header. If the proof is missing, duplicated,
    or different, the Gateway closes without sending or accepting a native frame.
    The provider must keep the TLS identity for this origin exclusive to the
    admitted Host: the bearer is already sent by the time the proof arrives.
