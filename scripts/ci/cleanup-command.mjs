@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 
 // This process leads the detached POSIX group. Its private IPC channel belongs
-// only to the cleanup caller, so even that caller's SIGKILL or process.exit()
+// only to its preparation or cleanup caller, so even that caller's SIGKILL or process.exit()
 // closes the channel. Descendants inherit output pipes, never this channel.
 function stopGroup() {
   process.kill(-process.pid, "SIGKILL");
@@ -9,9 +9,10 @@ function stopGroup() {
 
 process.once("disconnect", stopGroup);
 process.once("exit", stopGroup);
-// The caller sends TERM to the group at the deadline. Keep its leader alive
-// until output drains or the caller escalates, even if the command exits first.
+// The caller sends TERM at the deadline and forwards INT on cancellation.
+// Keep the leader alive until output drains, escalation, or IPC disconnection.
 process.on("SIGTERM", () => {});
+process.on("SIGINT", () => {});
 
 process.once("message", ({ command, args }) => {
   if (!process.connected) {

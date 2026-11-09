@@ -110,6 +110,26 @@ the runner accepted a shared-store commit.
 
 For each Kubernetes fixture lane, `scripts/ci/prepare.mjs` creates one server and one worker with a shared task-owned local-path mount. It reads the worker Pod CIDR and the server route to that network, validates the route source, and exports its single-address `/32` as `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS`. Image preparation registers and checks the imported digest alias on both nodes. A minimal DaemonSet keeps that local-only image active on each node for the lane so kubelet image garbage collection cannot remove it between fixture tests. The DaemonSet exposes no Service and is removed with the disposable cluster. The status suite schedules the runtime on the worker so a node-local bypass cannot conceal a missing proxy ingress rule.
 
+`scripts/ci/prepare.mjs:buildFixtureImage` reports separate engine-version and
+fixture-build stages. The engine probe uses the existing image-command
+limit (30 seconds by default); the fixture build has a 30-minute cap to allow slow builds. These are execution limits, not
+expected durations. Both commands also respect the remaining lane deadline less
+the test reserve, recalculated before each command. Without a valid lane deadline,
+the finite command limits still apply. Unsupported timer values are rejected.
+An exhausted budget reports the stage that could not start. On POSIX, timeouts
+terminate the command's owned process group, including local descendants. The
+shared `scripts/ci/cleanup-command.mjs` supervisor anchors the group ID through
+its last signal, including when preparation receives SIGINT cancellation; after
+it exits, preparation sends no further group signals. Windows retains direct-child
+termination. A failed build reports up to eight numbered FROM, RUN or COPY steps
+and their reported completion states from the last 32,768 characters of each captured stream.
+The step summary omits arguments, container output and arbitrary error text. This partial
+summary identifies steps in the fixture Dockerfile; it does not establish the
+current build phase or cause of a stall. The timeout keeps its concise stage error
+and original cause. The owned image tag is recorded before
+building and becomes ready only after success, so failed preparation remains
+available to cleanup.
+
 Preparation checks the storage controller before fixture setup, then restarts it
 after image registration and requires the replacement to become ready before
 publishing test inputs. Per-file cleanup repeats the health check while preserving
