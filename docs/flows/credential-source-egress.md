@@ -294,16 +294,16 @@ independent confirmation for registered recipients; snapshots require their rese
 worker, including bootstrap. Neither grants request authority.
 
 `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:reconcile`
-cancels only definitely unsent writes. Uncertain writes stay pending and blocked.
-`release` drops closed routes whose Sandbox is gone; refusal stays.
-`prepare` requires held launch or explicit installation preview and closes another
-worker's persisted route before credential access. `verifyExecution` refuses historical
-installation-wide routes before the worker can renew their sessions.
-`retireExpiredRepositoryAccess` still settles the original fenced detach.
-Before transport starts, the background owner discovers sessions.
-`openshell-repository-git-evidence.ts:openShellGitRecipientEvidence` requires online
-or observed-hook authorization for issuance. Historical v4 and online installation-wide
-routes cannot issue; selected delivery and explicit observed-hook preview remain supported.
+cancels definitely unsent writes. Uncertain writes remain blocked.
+`release` drops closed routes after Sandbox deletion, preserving refusal.
+`prepare` requires a held launch or explicit installation preview and closes
+another worker's persisted route before credential access. `verifyExecution`
+refuses historical installation-wide renewal. `retireExpiredRepositoryAccess`
+settles the original fenced detach.
+
+Before transport startup, `openshell-repository-git-evidence.ts:openShellGitRecipientEvidence`
+checks discovered sessions. Issuance requires selected online delivery or explicit
+observed-hook preview. Historical v4 and installation-wide v5 cannot issue.
 See [restart behavior](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery).
 
 Deletion retains custody but stops use.
