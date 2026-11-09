@@ -98,7 +98,12 @@ terminate the command's owned process group, including local descendants. The
 shared `scripts/ci/cleanup-command.mjs` supervisor anchors the group ID through
 its last signal, including when preparation receives SIGINT cancellation; after
 it exits, preparation sends no further group signals. Windows retains direct-child
-termination. The timeout reports the failed stage without printing captured output. The owned image tag is recorded before
+termination. A failed build reports up to eight numbered FROM, RUN or COPY steps
+and their reported completion states from the last 32,768 characters of each captured stream.
+Arguments, container output and arbitrary error text are omitted. This partial
+summary identifies steps in the fixture Dockerfile; it does not establish the
+current build phase or cause of a stall. The timeout keeps its concise stage error
+and original cause. The owned image tag is recorded before
 building and becomes ready only after success, so failed preparation remains
 available to cleanup.
 

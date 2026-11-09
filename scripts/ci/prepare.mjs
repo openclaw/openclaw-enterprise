@@ -2158,6 +2158,47 @@ async function validateLoopbackKubeconfig(
   }
 }
 
+// Retain only the fixed fixture Dockerfile's numbered operations and states.
+// Build arguments, container output and error details can contain credentials.
+function fixtureBuildProgress(error) {
+  const steps = new Map();
+  for (const output of [error.stdout, error.stderr]) {
+    if (typeof output !== "string") {
+      continue;
+    }
+    const start = Math.max(0, output.length - 32_768);
+    const lines = output.slice(start).split(/[\r\n]/);
+    if (start > 0 && !/[\r\n]/.test(output[start - 1])) {
+      lines.shift();
+    }
+    for (const line of lines) {
+      if (/\p{Cc}/u.test(line)) {
+        continue;
+      }
+      const operation = /^#([0-9]{1,4}) \[([0-9]{1,4}\/[0-9]{1,4})\] (FROM|RUN|COPY)(?: |$)/.exec(
+        line,
+      );
+      if (operation) {
+        steps.set(operation[1], { label: `#${operation[1]} [${operation[2]}] ${operation[3]}` });
+      } else {
+        const state = /^#([0-9]{1,4}) (DONE|CACHED|ERROR)(?:$|:| [0-9]+(?:\.[0-9]+)?s$)/.exec(line);
+        const step = state && steps.get(state[1]);
+        if (step) {
+          step.state = state[2];
+        }
+      }
+      if (steps.size > 8) {
+        steps.delete(steps.keys().next().value);
+      }
+    }
+  }
+  return (
+    [...steps.values()]
+      .map(({ label, state }) => (state ? `${label} ${state}` : label))
+      .join("; ") || "no numbered Dockerfile steps captured"
+  );
+}
+
 // The fixture build needs no cluster, so lanes can overlap it with k3d creation.
 async function buildFixtureImage(statePath, state) {
   const run = (stage, args, limitMs) =>
@@ -2181,6 +2222,16 @@ async function buildFixtureImage(statePath, state) {
           processGroup: process.platform !== "win32",
         });
       } catch (error) {
+        if (stage === "fixture-image-build") {
+          try {
+            progress(
+              state.lane,
+              `Fixture image build steps (captured tail): ${fixtureBuildProgress(error)}`,
+            );
+          } catch {
+            // Diagnostics must preserve the original build failure.
+          }
+        }
         if (error.timedOut) {
           throw new Error(`Fixture image preparation ${stage} timed out after ${timeoutMs} ms.`, {
             cause: error,

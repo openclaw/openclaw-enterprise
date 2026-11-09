@@ -19,6 +19,7 @@ import {
 } from "../helpers/ci-prepare-fixture.mjs";
 import { eachSettled } from "../helpers/child-processes.mjs";
 import { waitFor, waitUntil, within } from "../helpers/wait-for.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { bashString, startCommandServer } from "../helpers/fixture-command-server.mjs";
 
 test("native container preparation summaries", async (t) => {
@@ -116,6 +117,18 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         CI_RUNNER_DEADLINE_MS: version ? "invalid" : String(Date.now() + 8_000),
       });
       const pidFile = join(dirname(commands.statePath), "fixture-command-pids");
+      const privateUrl = syntheticCredentialUrl({
+        username: "fixture-user",
+        password: "fixture-password",
+        host: "example.test",
+      });
+      // Only Docker's step identity is public; command arguments and arbitrary
+      // container output can contain credentials and terminal control sequences.
+      const buildTail = `#9 [9/9] RUN partial line\n#1 [1/4] FROM ${privateUrl}\n#1 DONE 0.1s\n#2 [2/4] RUN fetch ${privateUrl}\n#2 0.1 private build output\n#3 [3/4] COPY \u001b[31mprivate terminal text\n`;
+      // Clipping lands inside the first line, immediately before a valid-looking
+      // step prefix. Neither that fragment nor the control-bearing step is evidence.
+      const buildOutput = `prefix${buildTail}${"x".repeat(32_768 - buildTail.length)}`;
+
       await interceptFixtureDocker(t, commands, (args) => {
         const selected = version
           ? args.join(" ") === "version --format {{.Server.Version}}"
@@ -129,6 +142,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
             const { spawn, spawnSync } = require("node:child_process");
             appendFileSync(${JSON.stringify(pidFile)}, process.pid + "\\n");
             process.stderr.write("private build output\\n");
+            if (!${version}) process.stderr.write(${JSON.stringify(buildOutput)});
             const descendant = ${version} ? undefined : spawn(process.execPath, ["-e", ${JSON.stringify(`
               require("node:fs").appendFileSync(${JSON.stringify(pidFile)}, process.pid + "\\n");
               process.on("SIGTERM", () => {});
@@ -187,6 +201,14 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         // group number for the three-second escalation timer to fire.
         assert.ok(elapsedMs < 3000, `prompt timeout settlement took ${elapsedMs} ms`);
       }
+      if (!version) {
+        assertStderrMatch(
+          result.stderr,
+          /Fixture image build steps \(captured tail\): #1 \[1\/4\] FROM DONE; #2 \[2\/4\] RUN$/m,
+        );
+      }
+      assert.ok(!result.stderr.includes(privateUrl));
+      assert.doesNotMatch(result.stderr, /fixture-password|private terminal text|\u001b/);
       assert.doesNotMatch(result.stderr, /private build output/);
       const state = await commands.readState();
       const image = state.resources.find(({ kind }) => kind === "image-tag");
