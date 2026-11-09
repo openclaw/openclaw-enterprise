@@ -30,6 +30,7 @@ import {
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
+import { authorizedPrincipal } from "../helpers/postgres-backend-state.mjs";
 
 // This exercises the production use service over real PostgreSQL and a synthetic
 // HTTPS GitHub App issuer. It does not prove a Git subprocess or live GitHub push.
@@ -37,6 +38,7 @@ export async function fixture(
   t,
   {
     openBroker,
+    recordDeploymentOperation = false,
     draftPull = false,
     draftPullLimit = /** @type {"none" | undefined} */ (undefined),
     draftResponse,
@@ -193,7 +195,24 @@ export async function fixture(
     repository: fixtureRepository,
   });
   const sessionId = broker?.opened.session.sessionId ?? `session-${randomUUID()}`;
+  const deployer = recordDeploymentOperation
+    ? authorizedPrincipal(await state.loadNativeIAMState())
+    : undefined;
   await state.transact(async (unit) => {
+    if (recordDeploymentOperation) {
+      // Record original deployment ownership before publishing the active pointer.
+      // This component fixture does not prove Worker or Compute activation.
+      assert.ok(deployer);
+      await unit.namespaces.lockNamespace(namespaceId);
+      await unit.agents.lockAgent(namespaceId, agent.id);
+      await unit.operations.append({
+        kind: "agent_revision",
+        action: "reconcile",
+        namespaceId,
+        resourceId: revision.id,
+        actorId: deployer.id,
+      });
+    }
     assert.ok(
       await unit.agents.compareAndSetActiveRevision(namespaceId, agent.id, undefined, revision.id),
     );

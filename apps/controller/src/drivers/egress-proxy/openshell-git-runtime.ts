@@ -1146,21 +1146,17 @@ export class OpenShellGitRuntime {
     if (!this.routes || !this.owner || !credentials) {
       return "retire-runtime";
     }
+    let finiteScopeIsCurrent = true;
     if (!credentials.standingApprovalId) {
-      if (credentials.deadlineWallMs > Date.now()) {
-        return "retire-runtime";
-      }
       try {
-        // A finite grant substitution remains a refusal even if first seen after the deadline.
         this.scope(revision);
       } catch {
-        return "retire-runtime";
+        finiteScopeIsCurrent = false;
       }
     }
-    // Standing withdrawal may precede the first deadline, or be caused by removal of the
-    // policy itself. The store requires the exact durable withdrawal and original installation;
-    // asking for current Git permission here would prevent subtracting that permission.
-    const saved = await this.routes.expire(revision, workspace, sandbox);
+    // Only the exact committed removal can bypass current finite Git permission.
+    // Pass the natural-expiry check before the store records any reduction intent.
+    const saved = await this.routes.expire(revision, workspace, sandbox, finiteScopeIsCurrent);
     if (!saved) {
       return "retire-runtime";
     }
@@ -1186,13 +1182,14 @@ export class OpenShellGitRuntime {
           throw error; // a failed read is not a finding about the retained authority
         }
       },
-      (outcome, check, failure) =>
+      (outcome, check, failure, grpcStatus) =>
         this.emit?.({
           event: "worker.openshell-git-expiry",
           ...revisionIdentity(revision),
           outcome,
           check,
           ...(failure === undefined ? {} : { failure }),
+          ...(grpcStatus === undefined ? {} : { grpcStatus }),
         }),
     );
   }

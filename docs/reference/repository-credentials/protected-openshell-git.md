@@ -213,11 +213,13 @@ Credential paths are case-sensitive: mixed-case URLs or those missing `.git`
 receive no credential. Git reports `could not read Username` or
 `The requested URL returned error: 403`.
 
-[OCC access rules](../../flows/agent-repository-credentials.md) own grant lifetime
-and standing approval. Access is finite unless separately approved as standing;
-each token and session still expires. Remove standing approval with its current
-approval generation **before** clearing the repository binding. An already
-authorized request can finish after withdrawal.
+Finite access ends at its deadline or when an admitted binding is removed.
+Removal withdraws that revision's whole Git set; re-adding cannot restore it.
+Remove standing approval with its current generation **before** clearing bindings.
+An authorized request can finish after withdrawal.
+Removal during incomplete activation can fail deployment while retaining the independently
+verified runtime; workspace setup stays pending.
+See [withdrawal and retained supervision](../../flows/agent-repository-credentials.md#6-maintain-recover-and-retire-ownership).
 
 For `git-write` grants permitting draft pull requests, `draftPullLimit: one-per-grant` allows one
 draft, and every Agent and version that has the grant shares it. To let Agents open a new
@@ -246,7 +248,7 @@ GIT_TRACE_CURL=1 git ls-remote origin 2>&1 | sed -n 's/.*<= Recv data: //p' \
   | tr -d '\n' | grep -o '"reason_code":"[a-z_]*"'
 ```
 
-The draft helper prints the code and advice:
+The draft helper reports
 `Draft not created: the repository route refused it (access_withdrawn); GitHub did not receive it.`
 
 ### Reason codes
@@ -263,7 +265,8 @@ The draft helper prints the code and advice:
 
 Retry advice above applies only to a known pre-send refusal, never an uncertain send.
 
-A deploying version has no credential; requests answer `route_not_ready` until activation.
+A deploying version has no credential, so requests answer
+`route_not_ready` until it is active.
 
 ### Worker log
 
@@ -298,9 +301,8 @@ endpoint and credential lists. Exact identity and Git overlap checks still apply
 
 Standing succession confirms the original predecessor and generation with a fresh
 `WITHHELD / CREDENTIAL_EXPIRED` report, then rechecks Sandbox readiness and main
-process identity. Observation age plus monotonic read time must total under 15 seconds
-at nanosecond precision. Evaluation and observation must each fall within 30 seconds
-of local time. An elapsed budget leaves the route pending. A contradictory witness
+process identity. Observation age plus monotonic read time must stay under 15 seconds at nanosecond
+precision. Both timestamps must fall within 30 seconds of local time. An elapsed budget leaves the route pending. A contradictory witness
 cannot authorize issuance, preparation or a new route fence. New installations and
 post-detach model completion require ready credentials and independent model authorization.
 
@@ -309,17 +311,14 @@ model and workspace connections despite runtime, conversation and authorization
 retention. Inspect uncertain turn outcomes before retrying.
 
 Transient observation failures close access until the same installation verifies
-(1–10 s retry backoff). Replacement workers cannot adopt held launches
+(1–10 s retry backoff). Withdrawal preserves peers’ independent grants. Replacement workers cannot adopt held launches
 (`github-repository`, protected `git-write` and installation preview).
 Redeploy after `worker_replaced` or terminal `bootstrap_failed`.
-After verified replacement of v5 held launches, deployment detail preserves history
-and reports `repositoryAccess.state: redeploy-required` and
-`REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`. OCE closes Git and checks withdrawal
-and model authority. Historical v4 and installation-wide v5 cannot prepare, issue or renew
-Git credentials. Only the explicit observed-hook preview supports installation-wide issuance.
-Replacement workers may finish the original detach using recorded custody. Never replay
-an uncertain write. See [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
-For prepared-material expiry, quarantine and retirement, see
+After verified v5 held-launch replacement, deployment detail retains history and reports `repositoryAccess.state: redeploy-required` and
+`REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`. OCE verifies withdrawal and model authority. Historical v4 and installation-wide v5 cannot
+prepare, issue or renew credentials. Installation-wide issuance requires observed-hook preview.
+Replacement workers finish detach using recorded custody. Never replay uncertain writes. See [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
+For prepared-material expiry, quarantine and retirement:
 [Token Service lifecycle](../repository-credentials.md#token-service-lifecycle) and
 its [source flow](../../flows/credential-source-refresh.md#6-oce-prepared-github-core).
 

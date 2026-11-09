@@ -419,6 +419,7 @@
     {
       "path": "tests/integration/postgres-openshell-git-routes.test.ts",
       "expectedTests": [
+        "finite Git removal is revision scoped and wins concurrent cold route adoption",
         "OpenShell Git routes persist identity and custody facts under one fenced holder",
         "a replacement lease cannot settle or replay an uncertain rotate installation",
         "settlement policy and operation identity cannot be substituted",
@@ -446,6 +447,7 @@
         "an installed external Driver uses an explicit GitHub installation for private Git fetch, push, REST and GraphQL until withdrawal",
         "an online sender uses the admitted GitHub installation for real Git and API requests until withdrawal",
         "a capable external Driver reduces Git on the original running execution through cleanup and worker replacement",
+        "a capable external Driver reduces finite Git binding removal on the original execution across worker replacement",
         "a capable registered Driver observes only the original lost rotation across worker replacement and withdrawal",
         "production composition separates repository policy from protected and explicitly selected native senders",
         "external Git reduction authenticates and observes exact policy without mutation replay"

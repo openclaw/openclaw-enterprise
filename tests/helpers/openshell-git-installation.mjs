@@ -13,6 +13,7 @@ import {
   projectOpenShellGitExpiryObservation,
   projectOpenShellGitMaintenanceCompletion,
   projectOpenShellGitRetention,
+  selectOpenShellGitWithdrawalDenials,
 } from "../../scripts/ci/openshell-git-retention.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
 import { startSkipperPrivateGitOrigin } from "../fixtures/skipper-private-git-origin.mjs";
@@ -88,6 +89,21 @@ export function createOpenShellGitApi({ origin, key, signal, after }) {
       throw new Error(`OCC ${method} ${path} returned invalid JSON`);
     }
   };
+}
+
+// A terminal decision cannot later satisfy this scenario's same-runtime retention.
+// Keep the failure fixed even when the supplier record contains private details.
+export function assertOpenShellGitExpiryRetained(event, identity) {
+  if (
+    event.event === "worker.openshell-git-expiry" &&
+    event.outcome === "retire-runtime" &&
+    event.namespaceId === identity.namespaceId &&
+    event.agentId === identity.agentId &&
+    event.revisionId === identity.revisionId &&
+    event.repositoryRef === identity.repositoryRef
+  ) {
+    throw new Error("Git expiry required runtime retirement; same-runtime retention failed.");
+  }
 }
 
 async function waitUntil(description, operation, timeout, signal) {
@@ -324,11 +340,11 @@ async function trustedSupervisor({ command, cleanup, directory, cluster, ca, che
 }
 
 /** Installs the supported model + selected-repository path in its own k3d cluster. */
-export function createOpenShellGitInstallation(t) {
-  return ownFirstAgentWork(t)(installOpenShellGit(t));
+export function createOpenShellGitInstallation(t, { witnessIssuedGit = false } = {}) {
+  return ownFirstAgentWork(t)(installOpenShellGit(t, witnessIssuedGit));
 }
 
-async function installOpenShellGit(t) {
+async function installOpenShellGit(t, witnessIssuedGit) {
   const eventually = (description, operation, timeout = 120_000) =>
     waitUntil(description, operation, timeout, t.signal);
   let tearingDown = false;
@@ -496,6 +512,7 @@ async function installOpenShellGit(t) {
   const origin = await startSkipperPrivateGitOrigin({
     host: bridge,
     advertisedHost: originHost,
+    witnessIssuedGit,
     tls: { ...tls.origin, ca: tls.ca },
   });
   cleanup.push(() => origin.close());
@@ -952,19 +969,27 @@ async function installOpenShellGit(t) {
     };
   };
   const workerEvents = async (pod, diagnostics) => {
-    diagnostics.logReads++;
+    if (diagnostics) {
+      diagnostics.logReads++;
+    }
     let logs;
     try {
       logs = await kube(["logs", pod.metadata.name, "-n", platform, "-c", "worker", "--tail=2000"]);
     } catch (error) {
-      diagnostics.logReadFailures++;
+      if (diagnostics) {
+        diagnostics.logReadFailures++;
+      }
       throw error;
     }
-    diagnostics.logReadSuccesses++;
+    if (diagnostics) {
+      diagnostics.logReadSuccesses++;
+    }
     const lines = logs.split("\n").filter((line) => line.length > 0);
-    diagnostics.linesRead += lines.length;
-    if (lines.length >= 2000) {
-      diagnostics.tailLimitReads++;
+    if (diagnostics) {
+      diagnostics.linesRead += lines.length;
+      if (lines.length >= 2000) {
+        diagnostics.tailLimitReads++;
+      }
     }
     const events = [];
     for (const line of lines) {
@@ -972,16 +997,39 @@ async function installOpenShellGit(t) {
         const event = JSON.parse(line);
         if (event !== null && typeof event === "object") {
           events.push(event);
-          diagnostics.parsedEvents++;
+          if (diagnostics) {
+            diagnostics.parsedEvents++;
+          }
         }
       } catch {
         // Container startup can write non-JSON lines; only structured events qualify.
-        diagnostics.parseFailures++;
+        if (diagnostics) {
+          diagnostics.parseFailures++;
+        }
       }
     }
     return events;
   };
-  const completedWork = (pod, { agentId, revisionId }, accepts, events) => {
+  const gitWithdrawalDenials = async (identity, diagnostics) => {
+    if (diagnostics) {
+      diagnostics.workerReady = false;
+      diagnostics.workerComparison = "unchecked";
+    }
+    const pod = await worker();
+    assert.ok(pod, "expected ready Worker for Git denial observation");
+    if (diagnostics) {
+      diagnostics.workerReady = true;
+    }
+    const events = await workerEvents(pod, diagnostics);
+    const { requestIds, ...counts } = selectOpenShellGitWithdrawalDenials(events, identity);
+    // Counts describe the latest successful tail read, not repeated copies of the same event.
+    if (diagnostics) {
+      Object.assign(diagnostics, counts);
+    }
+    return { workerUid: pod.metadata.uid, requestIds };
+  };
+  const completedWork = async (pod, { agentId, revisionId }, accepts, observed) => {
+    const events = observed ?? (await workerEvents(pod));
     for (const event of events) {
       if (
         event.event === "worker.completed" &&
@@ -1070,14 +1118,21 @@ async function installOpenShellGit(t) {
             outcome: event.outcome,
             check: event.check,
             failure: event.failure,
+            grpcStatus: event.grpcStatus,
             code: event.code,
             cause: event.cause,
             workerUid: pod.metadata.uid,
             namespaceMatches: event.namespaceId === namespace.id,
             repository,
           });
+          const expiryIdentity = {
+            namespaceId: namespace.id,
+            ...identity,
+            repositoryRef: origin.repositoryRef,
+          };
           if (!observation) {
             diagnostics.rejectedEventReads++;
+            assertOpenShellGitExpiryRetained(event, expiryIdentity);
             continue;
           }
           if (
@@ -1108,6 +1163,7 @@ async function installOpenShellGit(t) {
             diagnostics.observations.shift();
             diagnostics.observationsTruncated = true;
           }
+          assertOpenShellGitExpiryRetained(event, expiryIdentity);
         }
         // This bundled Driver event follows the retained-provider profile read and
         // recording of the reduced generation. A generic cleanup acknowledgement
@@ -1125,7 +1181,7 @@ async function installOpenShellGit(t) {
         if (!expiry) {
           return undefined;
         }
-        const completion = completedWork(
+        const completion = await completedWork(
           pod,
           identity,
           (event) => event.code === "REPOSITORY_ACCESS_WITHDRAWN",
@@ -1156,11 +1212,47 @@ async function installOpenShellGit(t) {
     }
   };
   const restartWorker = async (identity) => {
-    let stage = "ready-worker";
+    let stage = "controller-image";
     let maintenance;
     const maintenanceWait = "replacement worker revision maintenance";
     try {
+      const selected = values.images.controller;
+      assert.match(selected, /@sha256:[a-f0-9]{64}$/);
+      const controllerImageDigest = selected.split("@")[1];
+      const imported = JSON.parse(
+        await command("docker", [
+          "exec",
+          `k3d-${state.cluster}-server-0`,
+          "crictl",
+          "inspecti",
+          selected,
+        ]),
+      );
+      const controllerConfigDigest = imported.status.id;
+      assert.match(controllerConfigDigest, /^sha256:[a-f0-9]{64}$/);
+      const workerImageDigest = (pod) => {
+        const container = [...(pod.spec.initContainers ?? []), ...pod.spec.containers].find(
+          ({ name }) => name === "worker",
+        );
+        const status = [
+          ...(pod.status.initContainerStatuses ?? []),
+          ...(pod.status.containerStatuses ?? []),
+        ].find(({ name }) => name === "worker");
+        assert.ok(container && status?.ready && status.state.running);
+        assert.equal(container.image, selected, "the worker must select the imported controller");
+        const digest = status.imageID.match(/sha256:[a-f0-9]{64}$/)?.[0];
+        // CRI can report the selected image or its config. Resolve both from the
+        // Local Setup import, rather than trusting a mutable tag or the old Pod.
+        assert.ok(
+          [controllerImageDigest, controllerConfigDigest].includes(digest),
+          "the running worker must match the imported controller image",
+        );
+        return digest;
+      };
+      stage = "ready-worker";
       const before = await eventually("ready worker", worker);
+      stage = "before-worker-image";
+      const beforeImageDigest = workerImageDigest(before);
       stage = "durable-before";
       const durable = await durableIdentity();
       stage = "rollout-restart";
@@ -1182,6 +1274,8 @@ async function installOpenShellGit(t) {
         const pod = await worker();
         return pod?.metadata.uid !== before.metadata.uid ? pod : undefined;
       });
+      stage = "after-worker-image";
+      const afterImageDigest = workerImageDigest(after);
       stage = "revision-maintenance";
       maintenance = {
         logReads: 0,
@@ -1194,7 +1288,7 @@ async function installOpenShellGit(t) {
         completions: [],
         completionsTruncated: false,
       };
-      await eventually(maintenanceWait, async () => {
+      const completion = await eventually(maintenanceWait, async () => {
         const events = await workerEvents(after, maintenance);
         // Each read repeats the current log tail. Retain this snapshot's matching
         // completions once, rather than counting previous polls as new work.
@@ -1223,7 +1317,16 @@ async function installOpenShellGit(t) {
       const retained = await durableIdentity();
       stage = "durable-retention-assertion";
       assert.deepEqual(retained, durable, "worker restart must retain PostgreSQL and custody");
-      return { beforeUid: before.metadata.uid, afterUid: after.metadata.uid, ...durable };
+      return {
+        beforeUid: before.metadata.uid,
+        afterUid: after.metadata.uid,
+        controllerImageDigest,
+        controllerConfigDigest,
+        beforeImageDigest,
+        afterImageDigest,
+        ...durable,
+        completion,
+      };
     } catch (error) {
       try {
         measurement("worker-restart-unconfirmed", { stage });
@@ -1263,6 +1366,7 @@ async function installOpenShellGit(t) {
     gatewayClient,
     workspace: sandboxNamespace,
     sandboxNamespace,
+    gitWithdrawalDenials,
     waitForExpiry,
     verifySupervisorImage,
     restartWorker,

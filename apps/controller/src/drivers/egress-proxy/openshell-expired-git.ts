@@ -13,15 +13,16 @@ import type { OpenShellGitExpiry, OpenShellGitRouteStore } from "./openshell-git
 
 export type OpenShellGitExpiryResult = "withdrawn" | "pending" | "retire-runtime";
 /**
- * Why an expiry pass stayed pending, from a fixed set (never error text or gateway detail):
+ * Why an expiry pass could not confirm withdrawal, from a fixed set (never error text):
  * nothing failed but the step `check` names is not confirmed yet or moved during the pass
- * (`unconfirmed`), the gateway's durable admission limit refused a request (one that never
+ * (`unconfirmed`, including contradictory identity), the gateway's durable admission limit
+ * refused a request (one that never
  * clears points at unresolved admissions in its store), the gateway answered UNAVAILABLE or not
  * at all, a request ran out of time or the pass was aborted (its deadline or the worker
  * stopping), or another request failed, including a route store write. `gateway_unavailable`
  * and `timeout` mean what they mean in `OpenShellGitObservationFailure`.
  */
-export type OpenShellGitExpiryPendingFailure =
+export type OpenShellGitExpiryFailure =
   "unconfirmed" | "admission_limit" | "gateway_unavailable" | "timeout" | "failed";
 /** The steps an expiry pass reports: fixed names that operators can alert on. */
 export const OPENSHELL_GIT_EXPIRY_CHECKS = [
@@ -61,11 +62,14 @@ const unspecified = "PROVIDER_READINESS_REASON_UNSPECIFIED";
 class Unsafe extends Error {}
 /** The gateway client sanitizes some failures into an error with grpcStatus; others retain
  * gRPC's numeric code. */
-function grpcCode(error: unknown): number {
-  const failure = error as { grpcStatus?: number; code?: number } | null;
-  return Number(failure?.grpcStatus ?? failure?.code);
+function rawGrpcCode(error: unknown): unknown {
+  const failure = error as { grpcStatus?: unknown; code?: unknown } | null;
+  return failure?.grpcStatus ?? failure?.code;
 }
-function pendingFailure(error: unknown, signal: AbortSignal): OpenShellGitExpiryPendingFailure {
+function grpcCode(error: unknown): number {
+  return Number(rawGrpcCode(error));
+}
+function expiryFailure(error: unknown, signal: AbortSignal): OpenShellGitExpiryFailure {
   if (error instanceof OpenShellAdmissionLimitError) {
     return "admission_limit";
   }
@@ -395,7 +399,8 @@ export async function subtractExpiredOpenShellGit(
   report?: (
     outcome: OpenShellGitExpiryResult,
     check: OpenShellGitExpiryCheck,
-    failure?: OpenShellGitExpiryPendingFailure,
+    failure?: OpenShellGitExpiryFailure,
+    grpcStatus?: number,
   ) => void,
 ): Promise<OpenShellGitExpiryResult> {
   const { observed: git, retainedLaunchHash, detach } = saved;
@@ -404,9 +409,20 @@ export async function subtractExpiredOpenShellGit(
   const result = (
     outcome: OpenShellGitExpiryResult,
     step = check,
-    failure: OpenShellGitExpiryPendingFailure = "unconfirmed",
+    failure: OpenShellGitExpiryFailure = "unconfirmed",
+    grpcStatus?: unknown,
   ) => {
-    report?.(outcome, step, outcome === "pending" ? failure : undefined);
+    report?.(
+      outcome,
+      step,
+      outcome === "withdrawn" ? undefined : failure,
+      typeof grpcStatus === "number" &&
+        Number.isInteger(grpcStatus) &&
+        grpcStatus >= 1 &&
+        grpcStatus <= 16
+        ? grpcStatus
+        : undefined,
+    );
     return outcome;
   };
   try {
@@ -545,8 +561,13 @@ export async function subtractExpiredOpenShellGit(
     // Permission, failed precondition, unsupported, missing or contradictory evidence cannot
     // authorize retention. Transport loss after our durable fence is an observation to repeat.
     // In particular UNIMPLEMENTED must not become pending.
-    return error instanceof Unsafe || [3, 5, 7, 9, 10, 12, 16].includes(grpcCode(error))
-      ? result("retire-runtime")
-      : result("pending", check, pendingFailure(error, signal));
+    return result(
+      error instanceof Unsafe || [3, 5, 7, 9, 10, 12, 16].includes(grpcCode(error))
+        ? "retire-runtime"
+        : "pending",
+      check,
+      error instanceof Unsafe ? "unconfirmed" : expiryFailure(error, signal),
+      rawGrpcCode(error),
+    );
   }
 }

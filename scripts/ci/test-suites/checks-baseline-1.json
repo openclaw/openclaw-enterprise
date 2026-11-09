@@ -689,7 +689,8 @@
         "Git denial receipt tolerates ring rollover only with unchanged retained history",
         "Git denial receipt refuses foreign, incomplete, and ambiguous log histories",
         "Git denial receipt rejects normalized or noncanonical event dates",
-        "Git denial receipt refuses a replaced supervisor before or during the read"
+        "Git denial receipt refuses a replaced supervisor before or during the read",
+        "Git denial command retains non-403 failure categories without output"
       ]
     },
     {

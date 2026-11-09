@@ -534,6 +534,7 @@ export function createWorkerRevisionFixtures(
         // How far the controller clock that stamps the admission runs ahead of PostgreSQL's
         // (negative: behind). The store restamps admission on its own clock (finding 1195).
         controllerSkewMs = 0,
+        compute: admittedCompute = { id: compute.id, implementation: compute.implementation },
       } = {},
     ) {
       let harnessAuth;
@@ -593,7 +594,7 @@ export function createWorkerRevisionFixtures(
         configurationGeneration: 1,
         executionAdmission: { version: 2, mode: "unprotected" },
         harness: { ...approvedHarness, overrides: {}, configuration: {} },
-        compute: { id: compute.id, implementation: compute.implementation },
+        compute: { ...admittedCompute },
         ...(sandboxDriverId === undefined ? {} : { sandboxDriverId }),
         ...(plugins === undefined ? {} : { plugins }),
         harnessAuth,
@@ -835,6 +836,10 @@ export function createWorkerRevisionFixtures(
     // every resource kind (["delete"] also drops delete secret). The copied roles keep the
     // source role's scope, usually Installation-wide, so Namespace teardown never removes them;
     // like the copied identity they live until the per-file database is dropped.
+    /**
+     * @param {string} actorId
+     * @param {{ withoutActions?: string[] }} [options]
+     */
     async function copyActorGrants(actorId, { withoutActions = [] } = {}) {
       await observerPool.query(
         `INSERT INTO occ.iam_identities (id, kind, issuer, subject)

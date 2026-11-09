@@ -977,3 +977,37 @@ test("with the containerd image store PostgreSQL keeps the archive path", async 
   assert.deepEqual(fixture.pulls, []);
   assert.deepEqual(fixture.commands, [["docker", "info", "--format", "{{json .DriverStatus}}"]]);
 });
+
+test("Git expiry observation stops on exact-scope runtime retirement without exposing supplier text", async () => {
+  const { assertOpenShellGitExpiryRetained } =
+    await import("../helpers/openshell-git-installation.mjs");
+  const identity = {
+    namespaceId: "ns",
+    agentId: "agent",
+    revisionId: "revision",
+    repositoryRef: "repo",
+  };
+  // Shape retained from a real failed expiry: retirement is terminal even though
+  // the worker can later acknowledge successful cleanup of that runtime.
+  const event = {
+    ...identity,
+    event: "worker.openshell-git-expiry",
+    outcome: "retire-runtime",
+    check: "conditional-detach",
+    error: "private-supplier-detail",
+  };
+  assert.throws(() => assertOpenShellGitExpiryRetained(event, identity), {
+    message: "Git expiry required runtime retirement; same-runtime retention failed.",
+  });
+  for (const field of Object.keys(identity)) {
+    assert.doesNotThrow(() =>
+      assertOpenShellGitExpiryRetained({ ...event, [field]: "other" }, identity),
+    );
+  }
+  for (const outcome of ["pending", "withdrawn"]) {
+    assert.doesNotThrow(() => assertOpenShellGitExpiryRetained({ ...event, outcome }, identity));
+  }
+  assert.doesNotThrow(() =>
+    assertOpenShellGitExpiryRetained({ ...event, event: "worker.completed" }, identity),
+  );
+});

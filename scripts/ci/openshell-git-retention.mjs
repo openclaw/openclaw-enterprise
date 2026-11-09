@@ -158,10 +158,16 @@ export function projectOpenShellGitExpiryObservation(value) {
     case "worker.openshell-git-expiry":
       fields.outcome = ["outcome", choice("withdrawn", "pending", "retire-runtime")];
       fields.check = ["check", expiryCheck];
-      if (value.outcome === "pending") {
+      if (value.outcome === "pending" || value.failure !== undefined) {
         fields.failure = [
           "failure",
           choice("unconfirmed", "admission_limit", "gateway_unavailable", "timeout", "failed"),
+        ];
+      }
+      if (value.grpcStatus !== undefined) {
+        fields.grpcStatus = [
+          "grpcStatus",
+          choice(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16),
         ];
       }
       break;
@@ -177,6 +183,47 @@ export function projectOpenShellGitExpiryObservation(value) {
       return undefined;
   }
   return project(value, fields);
+}
+
+/** Classify only the selected runtime's denials; never retain arbitrary event fields. */
+export function selectOpenShellGitWithdrawalDenials(events, { sandboxId, revisionId }) {
+  const result = {
+    requestIds: [],
+    candidates: 0,
+    rejectedCode: 0,
+    rejectedReason: 0,
+    rejectedOperation: 0,
+    rejectedRequestId: 0,
+  };
+  for (const event of events) {
+    if (
+      event.event !== "worker.openshell-git-denied" ||
+      event.sandboxId !== sandboxId ||
+      event.revisionId !== revisionId
+    ) {
+      continue;
+    }
+    result.candidates++;
+    if (event.reasonCode !== "access_withdrawn") {
+      result.rejectedCode++;
+    } else if (
+      !["session_closed", "route_blocked", "material_unavailable"].includes(event.reason)
+    ) {
+      result.rejectedReason++;
+    } else if (
+      event.reason === "session_closed"
+        ? event.operation !== "advertise-upload-pack"
+        : event.operation !== undefined
+    ) {
+      result.rejectedOperation++;
+    } else if (typeof event.requestId !== "string" || event.requestId.length === 0) {
+      result.rejectedRequestId++;
+    } else {
+      // Lookup-level withdrawal precedes operation selection, even in the original Worker.
+      result.requestIds.push(event.requestId);
+    }
+  }
+  return result;
 }
 
 /** Select matching maintenance completions before buffering their diagnostics. */
@@ -260,9 +307,87 @@ for (const name of [
 ]) {
   expiryDiagnostics[name] = [name, count];
 }
+const withdrawalDiagnostics = {
+  mode: ["mode", choice("live", "replacement")],
+  workerReady: ["workerReady", boolean],
+  workerComparison: ["workerComparison", choice("unchecked", "same", "different")],
+};
+for (const name of [
+  "logReads",
+  "logReadSuccesses",
+  "logReadFailures",
+  "linesRead",
+  "parsedEvents",
+  "parseFailures",
+  "tailLimitReads",
+  "candidates",
+  "rejectedCode",
+  "rejectedReason",
+  "rejectedOperation",
+  "rejectedRequestId",
+  "freshRequests",
+]) {
+  withdrawalDiagnostics[name] = [name, count];
+}
 const events = {
+  "withdrawal-decision-unconfirmed": withdrawalDiagnostics,
+  "finite-removal-live-denial": {
+    boundary: ["boundary", choice("signed-access-withdrawn", "supervisor-policy")],
+    signer: ["signer", choice("exercised", "unexercised")],
+    requestIdHash: ["requestId", (value) => (value === null ? null : identityHash(value))],
+    workerUid: ["workerUid", uuid],
+  },
+  "finite-removal-reduced": {
+    revisionIdHash: ["revisionId", identityHash],
+    workIdHash: ["workId", identityHash],
+    workerUid: ["workerUid", uuid],
+    code: ["code", choice("REPOSITORY_ACCESS_WITHDRAWN")],
+    sessionIdHash: ["sessionId", identityHash],
+    processInstanceIdHash: ["processInstanceId", identityHash],
+    networkInstanceIdHash: ["networkInstanceId", identityHash],
+    attachmentEpochHash: ["attachmentEpoch", identityHash],
+    providerEnvRevision: ["providerEnvRevision", text(/^[1-9][0-9]{0,29}$/)],
+    configRevision: ["configRevision", text(/^[1-9][0-9]{0,29}$/)],
+    policyHash: ["policyHash", hash],
+  },
+  "finite-removal-conversation": {
+    stage: ["stage", choice("before-removal", "after-replacement")],
+    revisionIdHash: ["revisionId", identityHash],
+    sessionIdHash: ["sessionId", identityHash],
+    threadIdHash: ["threadId", identityHash],
+    userSeq: ["userSeq", count],
+    assistantSeq: ["assistantSeq", count],
+  },
+  "finite-removal-retired": {
+    revisionIdHash: ["revisionId", identityHash],
+    cause: ["cause", choice("required-model-withdrawn")],
+    deadlineWallMs: ["deadlineWallMs", count],
+    observedAt: ["observedAt", count],
+    activeRevisionCleared: ["activeRevisionCleared", choice(true)],
+    sandboxAbsent: ["sandboxAbsent", choice(true)],
+    agentPodsAbsent: ["agentPodsAbsent", choice(true)],
+  },
+  "withdrawal-origin-witness": {
+    stage: [
+      "stage",
+      choice(
+        "live witness before denial",
+        "live witness after denial",
+        "replacement witness before denial",
+        "replacement witness after denial",
+      ),
+    ],
+    outcome: ["outcome", choice("unconfirmed", "accepted", "refused")],
+    status: ["status", choice(null, 200, 401, 403)],
+    targetedRetirementRefusals: ["targetedRetirementRefusals", count],
+  },
+  "withdrawal-retirement-refused": {
+    outcome: ["outcome", choice("passed")],
+    status: ["status", choice(503)],
+    targetedRetirementRefusals: ["targetedRetirementRefusals", choice(1)],
+  },
   "git-policy-denied": {
-    stage: ["stage", choice("after-expiry", "after-worker-restart")],
+    stage: ["stage", choice("after-expiry", "after-worker-restart", "after-removal")],
     reason: ["reason", choice("transparent_tcp_policy_denied")],
     policyReason: ["policyReason", choice("endpoint-not-admitted")],
     marker: ["marker", choice("policy-dns-ineligible")],
@@ -350,11 +475,14 @@ const events = {
     stage: [
       "stage",
       choice(
+        "controller-image",
         "ready-worker",
+        "before-worker-image",
         "durable-before",
         "rollout-restart",
         "rollout-ready",
         "replacement-worker",
+        "after-worker-image",
         "revision-maintenance",
         "durable-after",
         "durable-retention-assertion",
@@ -364,6 +492,10 @@ const events = {
   "worker-restarted": {
     beforeUid: ["beforeUid", uuid],
     afterUid: ["afterUid", uuid],
+    controllerImageDigest: ["controllerImageDigest", digest],
+    controllerConfigDigest: ["controllerConfigDigest", digest],
+    beforeImageDigest: ["beforeImageDigest", digest],
+    afterImageDigest: ["afterImageDigest", digest],
     databaseUid: ["databaseUid", uuid],
     custodyUid: ["custodyUid", uuid],
     custodyVersion: ["custodyVersion", text(/^[0-9]{1,30}$/)],
@@ -405,6 +537,44 @@ export function projectOpenShellGitRetention(value) {
     return undefined;
   }
   const selected = project(value, events[value.event]);
+  if (
+    selected !== undefined &&
+    value.event === "withdrawal-origin-witness" &&
+    !(
+      (selected.outcome === "accepted" && selected.status === 200) ||
+      (selected.outcome === "refused" && [401, 403].includes(selected.status)) ||
+      (selected.outcome === "unconfirmed" && selected.status === null)
+    )
+  ) {
+    return undefined;
+  }
+  if (selected !== undefined) {
+    if (
+      value.event === "finite-removal-live-denial" &&
+      !(
+        (selected.boundary === "signed-access-withdrawn" &&
+          selected.signer === "exercised" &&
+          selected.requestIdHash !== null) ||
+        (selected.boundary === "supervisor-policy" &&
+          selected.signer === "unexercised" &&
+          selected.requestIdHash === null)
+      )
+    ) {
+      return undefined;
+    }
+    if (
+      value.event === "finite-removal-conversation" &&
+      selected.assistantSeq <= selected.userSeq
+    ) {
+      return undefined;
+    }
+    if (
+      value.event === "finite-removal-retired" &&
+      selected.observedAt >= selected.deadlineWallMs
+    ) {
+      return undefined;
+    }
+  }
   return selected === undefined
     ? undefined
     : { kind: openShellGitRetentionKind, event: value.event, ...selected };
