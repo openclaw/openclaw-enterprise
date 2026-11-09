@@ -1,0 +1,253 @@
+diff --git a/docs/cli/qr.md b/docs/cli/qr.md
+index 89b19e6..e223ed8 100644
+--- a/docs/cli/qr.md
++++ b/docs/cli/qr.md
+@@ -19,6 +19,7 @@ openclaw qr --json
+ openclaw qr --remote
+ openclaw qr --limited
+ openclaw qr --voice-node
++openclaw qr --node-only --json --url wss://gateway.example/node
+ openclaw qr --url wss://gateway.example/ws
+ ```
+
+@@ -42,6 +43,7 @@ The printed approval commands preserve the active profile or container context.
+ - `--password <password>`: override the gateway password the bootstrap flow authenticates against
+ - `--limited`: omit administrative Gateway access from the handed-off operator token
+ - `--voice-node`: issue node credentials plus only `operator.read` and `operator.talk`
++- `--node-only`: issue a node-only setup with no operator scopes. Requires `--json` and an explicit `--url`. Its JSON contains `access`, `gatewayUrl`, `setupId`, `setupCode`, and `expiresAtMs`. Run it under the same local state directory the Gateway uses and keep the output private.
+ - `--setup-code-only`: print only the setup code; `--json` takes precedence and emits the JSON document instead
+ - `--no-ascii`: skip ASCII QR rendering
+ - `--json`: emit JSON (`setupCode`, `gatewayUrl`, optional `gatewayUrls`, `auth`, `access`, optional `accessDowngraded`, `urlSource`)
+diff --git a/src/cli/qr-cli.test.ts b/src/cli/qr-cli.test.ts
+index b2a7094..441a6d2 100644
+--- a/src/cli/qr-cli.test.ts
++++ b/src/cli/qr-cli.test.ts
+@@ -247,6 +247,15 @@ describe("registerQrCli", () => {
+     },
+   );
+
++  it.each([
++    { args: ["--node-only", "--url", "wss://gateway.example.test/node"] },
++    { args: ["--node-only", "--json"] },
++    { args: ["--node-only", "--json", "--url", "wss://gateway.example.test/node", "--voice-node"] },
++  ])("refuses conflicting or incomplete node-only options before issuance ($args)", async ({ args }) => {
++    await expectQrExit(args);
++    expect(issueDevicePairSetupBootstrapToken).not.toHaveBeenCalled();
++  });
++
+   it("uses the bounded bootstrap profile with --limited", async () => {
+     loadConfig.mockReturnValue(createTokenGatewayConfig());
+
+diff --git a/src/cli/qr-cli.ts b/src/cli/qr-cli.ts
+index b39b02d..b2cb951 100644
+--- a/src/cli/qr-cli.ts
++++ b/src/cli/qr-cli.ts
+@@ -11,6 +11,7 @@ import { resolvePairingSetupFromConfig, encodePairingSetupCode } from "../pairin
+ import { runCommandWithTimeout } from "../process/exec.js";
+ import { defaultRuntime } from "../runtime.js";
+ import {
++  NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE,
+   PAIRING_SETUP_BOOTSTRAP_PROFILE,
+   VOICE_NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE,
+ } from "../shared/device-bootstrap-profile.js";
+@@ -31,6 +32,7 @@ type QrCliOptions = {
+   password?: string;
+   limited?: boolean;
+   voiceNode?: boolean;
++  nodeOnly?: boolean;
+ };
+
+ const LIMITED_TRANSPORT_WARNING =
+@@ -75,6 +77,7 @@ export function registerQrCli(program: Command) {
+     .option("--password <password>", "Override gateway password for setup payload")
+     .option("--limited", "Pair with limited operator access (omit operator.admin)", false)
+     .option("--voice-node", "Pair a voice node with node, read, and Talk access only", false)
++    .option("--node-only", "Issue a node-only setup record for an explicit Gateway URL", false)
+     .option("--setup-code-only", "Print only the setup code", false)
+     .option("--no-ascii", "Skip ASCII QR rendering")
+     .option("--json", "Output JSON", false)
+@@ -87,6 +90,23 @@ export function registerQrCli(program: Command) {
+           throw new Error("Use either --limited or --voice-node, not both.");
+         }
+
++        if (opts.nodeOnly) {
++          if (!opts.json || !trimToUndefined(opts.url)) {
++            throw new Error("--node-only requires --json and --url.");
++          }
++          if (
++            opts.remote ||
++            opts.limited ||
++            opts.voiceNode ||
++            opts.publicUrl ||
++            opts.token ||
++            opts.password ||
++            opts.setupCodeOnly
++          ) {
++            throw new Error("--node-only cannot be combined with another pairing or authentication option.");
++          }
++        }
++
+         const token = trimToUndefined(opts.token) ?? "";
+         const password = trimToUndefined(opts.password) ?? "";
+         const wantsRemote = opts.remote === true;
+@@ -167,11 +187,13 @@ export function registerQrCli(program: Command) {
+         const resolved = await resolvePairingSetupFromConfig(cfg, {
+           publicUrl: explicitUrl,
+           preferRemoteUrl: wantsRemote,
+-          ...(opts.voiceNode
+-            ? { bootstrapProfile: VOICE_NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE }
+-            : opts.limited
+-              ? { bootstrapProfile: PAIRING_SETUP_BOOTSTRAP_PROFILE }
+-              : {}),
++          ...(opts.nodeOnly
++            ? { bootstrapProfile: NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE }
++            : opts.voiceNode
++              ? { bootstrapProfile: VOICE_NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE }
++              : opts.limited
++                ? { bootstrapProfile: PAIRING_SETUP_BOOTSTRAP_PROFILE }
++                : {}),
+           runCommandWithTimeout: async (argv, runOpts) =>
+             await runCommandWithTimeout(argv, {
+               timeoutMs: runOpts.timeoutMs,
+@@ -188,6 +210,17 @@ export function registerQrCli(program: Command) {
+
+         const setupCode = encodePairingSetupCode(resolved.payload);
+
++        if (opts.nodeOnly) {
++          defaultRuntime.writeJson({
++            access: resolved.access,
++            gatewayUrl: resolved.payload.url,
++            setupId: resolved.setupId,
++            setupCode,
++            expiresAtMs: resolved.expiresAtMs,
++          });
++          return;
++        }
++
+         if (opts.json) {
+           defaultRuntime.writeJson({
+             setupCode,
+diff --git a/src/cli/qr-node-only.test.ts b/src/cli/qr-node-only.test.ts
+new file mode 100644
+index 0000000..5ea6264
+--- /dev/null
++++ b/src/cli/qr-node-only.test.ts
+@@ -0,0 +1,106 @@
++import { randomUUID } from "node:crypto";
++import fs from "node:fs/promises";
++import path from "node:path";
++import { Command } from "commander";
++import { afterEach, expect, it, vi } from "vitest";
++import {
++  consumeDeviceBootstrapTokenWithSetupCompletion,
++  readDevicePairSetupCompletion,
++  verifyDeviceBootstrapToken,
++} from "../infra/device-bootstrap.js";
++import { decodePairingSetupCode } from "../pairing/setup-code.js";
++import { defaultRuntime } from "../runtime.js";
++import {
++  closeOpenClawStateDatabaseAsync,
++  closeOpenClawStateDatabaseForTest,
++} from "../state/openclaw-state-db.js";
++import { createTrackedTempDirs } from "../test-utils/tracked-temp-dirs.js";
++import { registerQrCli } from "./qr-cli.js";
++
++const tempDirs = createTrackedTempDirs();
++
++afterEach(async () => {
++  vi.restoreAllMocks();
++  vi.unstubAllEnvs();
++  await closeOpenClawStateDatabaseAsync();
++  closeOpenClawStateDatabaseForTest();
++  await tempDirs.cleanup();
++});
++
++it("issues the native node-only setup into the selected Gateway database", async () => {
++  const stateDir = await tempDirs.make("qr-node-only-selected-");
++  const foreign = await tempDirs.make("qr-node-only-foreign-");
++  const configPath = path.join(stateDir, "openclaw.json");
++  await fs.writeFile(
++    configPath,
++    JSON.stringify({
++      gateway: {
++        auth: { mode: "trusted-proxy", trustedProxy: { userHeader: "x-test-user" } },
++      },
++    }),
++    { mode: 0o600 },
++  );
++  vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
++  vi.stubEnv("OPENCLAW_CONFIG_PATH", configPath);
++  for (const name of [
++    "APP_SERVER_URL",
++    "APP_SERVER_TOKEN",
++    "OPENCLAW_GATEWAY_TOKEN",
++    "OPENCLAW_GATEWAY_PASSWORD",
++  ]) {
++    vi.stubEnv(name, undefined);
++  }
++  const output = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
++  const url = "wss://pilot.invalid/agent/node";
++  const command = new Command();
++  registerQrCli(command);
++  await command.parseAsync(["qr", "--node-only", "--json", "--url", url], { from: "user" });
++
++  expect(output.mock.calls.length).toBe(1);
++  const value: unknown = output.mock.calls[0]?.[0];
++  if (
++    typeof value !== "object" ||
++    value === null ||
++    !("access" in value) ||
++    !("gatewayUrl" in value) ||
++    !("setupId" in value) ||
++    !("expiresAtMs" in value) ||
++    !("setupCode" in value) ||
++    typeof value.setupCode !== "string" ||
++    typeof value.setupId !== "string" ||
++    typeof value.expiresAtMs !== "number"
++  ) {
++    throw new Error("Invalid node-only CLI record");
++  }
++  expect(Object.keys(value).sort()).toEqual(["access", "expiresAtMs", "gatewayUrl", "setupCode", "setupId"]);
++  expect(value.access).toBe("node");
++  expect(value.gatewayUrl).toBe(url);
++  expect(value.expiresAtMs).toBeGreaterThan(Date.now());
++  const setup = decodePairingSetupCode(value.setupCode);
++  expect(setup.url).toBe(url);
++  expect(setup.expiresAtMs).toBe(value.expiresAtMs);
++  expect((await fs.stat(path.join(stateDir, "state", "openclaw.sqlite"))).isFile()).toBe(true);
++
++  // Read and consume through the native pairing owner. The verification results
++  // have no secret values. The setup code and SQLite contents stay in this test.
++  const node = {
++    token: setup.bootstrapToken,
++    deviceId: randomUUID(),
++    publicKey: randomUUID(),
++    role: "node",
++    scopes: [],
++  };
++  expect((await verifyDeviceBootstrapToken({ ...node, baseDir: foreign })).ok).toBe(false);
++  expect((await verifyDeviceBootstrapToken({
++    ...node, role: "operator", scopes: ["operator.admin"], baseDir: stateDir,
++  })).ok).toBe(false);
++  expect((await verifyDeviceBootstrapToken({ ...node, baseDir: stateDir })).ok).toBe(true);
++  await consumeDeviceBootstrapTokenWithSetupCompletion({
++    baseDir: stateDir, token: node.token, deviceId: node.deviceId, completedAtMs: Date.now(),
++  });
++  const completion = await readDevicePairSetupCompletion({ baseDir: stateDir, setupId: value.setupId });
++  expect(completion?.setupId).toBe(value.setupId);
++  expect(completion?.deviceId).toBe(node.deviceId);
++  expect(completion?.access).toBe("node");
++  expect(await readDevicePairSetupCompletion({ baseDir: foreign, setupId: value.setupId })).toBeNull();
++});
+diff --git a/test/vitest/vitest.database-worker-core-paths.mjs b/test/vitest/vitest.database-worker-core-paths.mjs
+index 67b19f2..b4778f2 100644
+--- a/test/vitest/vitest.database-worker-core-paths.mjs
++++ b/test/vitest/vitest.database-worker-core-paths.mjs
+@@ -7,6 +7,7 @@ export const databaseWorkerCoreTestFiles = [
+   "src/infra/state-migrations.plugin-doctor-context.postgres.test.ts",
+   "src/gateway/server-methods.workshop-contract.test.ts",
+   "src/cli/skills-cli.workshop-contract.test.ts",
++  "src/cli/qr-node-only.test.ts",
+   "src/auto-reply/reply/commands.workshop-contract.test.ts",
+   // Real fork recap delivery uses the host-owned SQLite broker.
+   "src/auto-reply/reply/commands-fork.test.ts",
