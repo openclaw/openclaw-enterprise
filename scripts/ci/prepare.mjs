@@ -2110,21 +2110,44 @@ async function validateLoopbackKubeconfig(
 
 // The fixture build needs no cluster, so lanes can overlap it with k3d creation.
 async function buildFixtureImage(statePath, state) {
-  await commandAvailable(process.env.OCC_DOCKER_BIN ?? "docker", [
-    "version",
-    "--format",
-    "{{.Server.Version}}",
-  ]);
+  const run = (stage, args, limitMs) =>
+    k3dStage(state, stage, async () => {
+      const budgetMs = imageBuildBudgetMs();
+      if (budgetMs !== undefined && budgetMs < 1_000) {
+        throw imageBuildOutOfTime("fixture", 0);
+      }
+      const timeoutMs = Math.min(limitMs, budgetMs ?? limitMs);
+      try {
+        return await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, { timeoutMs });
+      } catch (error) {
+        if (error.timedOut) {
+          throw new Error(`Fixture image preparation ${stage} timed out after ${timeoutMs} ms.`, {
+            cause: error,
+          });
+        }
+        if (error.code === "ENOENT") {
+          throw new Error(
+            `Missing required command on PATH: ${process.env.OCC_DOCKER_BIN ?? "docker"}`,
+            { cause: error },
+          );
+        }
+        throw error;
+      }
+    });
+  await run(
+    "fixture-engine-version",
+    ["version", "--format", "{{.Server.Version}}"],
+    imageCommandTimeoutMs,
+  );
   const image = `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}/fixture:local`;
   const resource = addResource(state, "image-tag", { name: image, owner: state.prefix });
   await writeState(statePath, state);
-  await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
-    "build",
-    "--pull=false",
-    "-t",
-    image,
-    fixtureDockerContext,
-  ]);
+  // The small fixture build remains bounded even outside a hosted lane.
+  await run(
+    "fixture-image-build",
+    ["build", "--pull=false", "-t", image, fixtureDockerContext],
+    10 * 60_000,
+  );
   await markResourceReady(statePath, state, resource);
   return { image, resourceId: resource.id };
 }

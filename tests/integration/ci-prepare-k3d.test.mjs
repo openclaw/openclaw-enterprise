@@ -101,6 +101,106 @@ async function interceptFixtureDocker(t, commands, scriptFor) {
 // Each case waits on its own fake k3d and container engine processes, mostly for
 // deliberate timeouts, so the cases run concurrently.
 describe("CI k3d preparation", { concurrency: true }, () => {
+  // Only external commands are substituted: the preparation CLI owns child deadlines,
+  // cleanup inventory, and publication. These cases do not exercise Docker or Kubernetes.
+  for (const stage of ["fixture-engine-version", "fixture-image-build"]) {
+    test(`fixture preparation bounds ${stage} before publishing test inputs`, async (t) => {
+      const version = stage === "fixture-engine-version";
+      const commands = await fixtureImageCommands(t, "success", "k3d-fixture-network", {
+        OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: version ? "500" : "30000",
+        OPENCLAW_CI_COMMAND_KILL_GRACE_MS: "100",
+        OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS: "2000",
+        // Invalid deadlines still need a finite engine-probe limit. The build uses
+        // the real remaining lane budget rather than waiting for its ten-minute cap.
+        CI_RUNNER_DEADLINE_MS: version ? "invalid" : String(Date.now() + 8_000),
+      });
+      const pidFile = join(dirname(commands.statePath), "fixture-command-pids");
+      await interceptFixtureDocker(t, commands, (args) => {
+        const selected = version
+          ? args.join(" ") === "version --format {{.Server.Version}}"
+          : args[0] === "build" && args.at(-1).endsWith("/tests/fixtures/kubernetes");
+        if (selected) {
+          // PostgreSQL shares the version probe. Its unmodified caller finishes
+          // normally; no arrival-order assumption selects the fixture's child.
+          const original = join(dirname(commands.statePath), "bin", "docker.mjs.original");
+          const program = `
+            const { appendFileSync } = require("node:fs");
+            const { spawnSync } = require("node:child_process");
+            appendFileSync(${JSON.stringify(pidFile)}, process.pid + "\\n");
+            process.stderr.write("private build output\\n");
+            setTimeout(() => {
+              process.exit(spawnSync(${JSON.stringify(original)}, ${JSON.stringify(args)}, { stdio: "inherit" }).status);
+            }, ${version ? 3000 : 10000});
+          `;
+          return `exec ${bashString(process.execPath)} -e ${bashString(program)}`;
+        }
+        if (
+          !version &&
+          args.slice(0, 3).join(" ") === "image rm -f" &&
+          args[3].endsWith("/fixture:local")
+        ) {
+          // A timed-out build need not have created its planned local image.
+          return "exit 0";
+        }
+        return undefined;
+      });
+      const result = await commands.prepare();
+      assert.equal(
+        result.error,
+        undefined,
+        "the outer test watchdog must not enforce the deadline",
+      );
+      assert.equal(result.status, 1, result.stderr);
+      const pids = (await readFile(pidFile, "utf8")).trim().split("\n").map(Number);
+      assert.equal(pids.length, version ? 2 : 1);
+      for (const pid of pids) {
+        assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+      }
+      assertStderrMatch(
+        result.stderr,
+        new RegExp(`Fixture image preparation ${stage} timed out after [0-9]+ ms`),
+      );
+      assertStderrMatch(result.stderr, new RegExp(`"stage":"${stage}","status":"started"`));
+      assertStderrMatch(result.stderr, new RegExp(`"stage":"${stage}","status":"failed"`));
+      assert.doesNotMatch(result.stderr, /private build output/);
+      const state = await commands.readState();
+      const image = state.resources.find(({ kind }) => kind === "image-tag");
+      if (version) {
+        assert.equal(image, undefined);
+      } else {
+        assert.equal(image.status, "planned");
+      }
+      assert.equal(state.env, undefined);
+      assert.ok(!state.resources.some(({ kind }) => kind === "k3d-image"));
+      await assert.rejects(stat(commands.githubEnv), { code: "ENOENT" });
+      await commands.cleanupSuccessfully();
+      await assert.rejects(stat(commands.statePath), { code: "ENOENT" });
+    });
+  }
+
+  test("fixture preparation refuses an exhausted image budget before probing Docker", async (t) => {
+    const commands = await fixtureImageCommands(t, "success", "k3d-fixture-network", {
+      CI_RUNNER_DEADLINE_MS: String(Date.now()),
+    });
+    const result = await commands.prepare();
+    assert.equal(result.status, 1, result.stderr);
+    assertStderrMatch(
+      result.stderr,
+      /The fixture image did not finish building within this lane's time/,
+    );
+    const state = await commands.readState();
+    assert.ok(!state.resources.some(({ kind }) => kind === "image-tag"));
+    assert.equal(state.env, undefined);
+    // The only version probe belongs to concurrent PostgreSQL preparation.
+    assert.equal(
+      (await commands.commands()).filter(
+        ({ command, args }) => command === "docker" && args[0] === "version",
+      ).length,
+      1,
+    );
+    await commands.cleanupSuccessfully();
+  });
+
   test("preselected runtime preparation publishes the verified host image for Docker relays", async (t) => {
     const preload = join(await fixture(t), "runtime-selection.mjs");
     const commands = await fixtureImageCommands(t, "local-digest", "k3d-model", {

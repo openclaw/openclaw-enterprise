@@ -87,6 +87,17 @@ the runner accepted a shared-store commit.
 
 For each Kubernetes fixture lane, `scripts/ci/prepare.mjs` creates one server and one worker with a shared task-owned local-path mount. It reads the worker Pod CIDR and the server route to that network, validates the route source, and exports its single-address `/32` as `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS`. Image preparation registers and checks the imported digest alias on both nodes. A minimal DaemonSet keeps that local-only image active on each node for the lane so kubelet image garbage collection cannot remove it between fixture tests. The DaemonSet exposes no Service and is removed with the disposable cluster. The status suite schedules the runtime on the worker so a node-local bypass cannot conceal a missing proxy ingress rule.
 
+`scripts/ci/prepare.mjs:buildFixtureImage` reports separate engine-version and
+fixture-build stages. The engine probe uses the existing image-command
+limit (30 seconds by default); the fixture build has a ten-minute cap. These are execution limits, not
+expected durations. Both commands also respect the remaining lane deadline less
+the test reserve, recalculated before each command. Without a valid lane deadline,
+the finite command limits still apply. An exhausted budget prevents dispatch;
+a timeout uses the existing child termination handling and reports the failed
+stage without printing captured output. The owned image tag is recorded before
+building and becomes ready only after success, so failed preparation remains
+available to cleanup.
+
 Preparation checks the storage controller before fixture setup, then restarts it
 after image registration and requires the replacement to become ready before
 publishing test inputs. Per-file cleanup repeats the health check while preserving
