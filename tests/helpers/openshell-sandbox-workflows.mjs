@@ -34,6 +34,7 @@ import { promisify } from "node:util";
 import { inflateRawSync } from "node:zlib";
 import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
+import { selectPolicyProbeCommand } from "./openshell-policy-probe.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   assertNativeCronRunSucceeded,
@@ -42,6 +43,7 @@ import {
   createNativePluginAssertions,
 } from "../helpers/plugin-driver-real.mjs";
 import {
+  assertAllowedCredentialRoute,
   assertExposedCodexInitializes,
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,
@@ -2278,6 +2280,7 @@ async function prepareProductionInstallation(
       createOpenShellBackend: createSandboxDriver.createBackend,
       createSandboxDriver,
     });
+    assert.equal(loaded.credentialGatewayDriver?.id, configuration.drivers.credential_gateway.id);
     // A worker retry intentionally exposes only DEPENDENCY_UNAVAILABLE. Preserve the first
     // underlying Compute failure so a real-runtime regression is actionable rather than a timeout.
     return {
@@ -2292,17 +2295,12 @@ async function prepareProductionInstallation(
     };
   };
   const initialWorkerDrivers = await loadWorkerDrivers();
-  const { workerDrivers } = initialWorkerDrivers;
   assert.equal(drivers.sandboxDriver?.capability, "sandbox");
   assert.equal(drivers.sandboxDriver?.id, configuration.drivers.sandbox.id);
   assert.equal(drivers.credentialGatewayDriver?.capability, "credential_gateway");
   if (keycloak !== undefined) {
     assert.equal(drivers.credentialRefreshDriver?.capability, "credential_refresh");
   }
-  assert.equal(
-    workerDrivers.credentialGatewayDriver?.id,
-    configuration.drivers.credential_gateway.id,
-  );
 
   const observerPool = new pg.Pool({
     connectionString: databaseUrl,
@@ -4533,15 +4531,14 @@ async function diagnosticResource(kind, name, namespace) {
   );
 }
 
-async function diagnosticResources(kind, namespace) {
-  return JSON.parse(await diagnosticKubectl("get", kind, "--namespace", namespace, "-o", "json"))
-    .items;
+async function diagnosticResources(kind, namespace, read = diagnosticKubectl) {
+  return JSON.parse(await read("get", kind, "--namespace", namespace, "-o", "json")).items;
 }
 
 // The network supervisor serving this Harness shares its boundary pair, as in the L7 denial
 // proof below. Anything other than exactly one match reads no supervisor: another Agent's
 // supervisor in the same namespace is not evidence for this Harness.
-async function openShellSupervisorPod(topology) {
+async function openShellSupervisorPod(topology, read = diagnosticKubectl) {
   if (topology.harnessPod === undefined) {
     throw new Error("no Harness Pod was found");
   }
@@ -4549,7 +4546,7 @@ async function openShellSupervisorPod(topology) {
   if (!boundaryPair) {
     throw new Error("the Harness has no openshell.ai/boundary-pair label");
   }
-  const supervisors = (await diagnosticResources("pods", topology.placement)).filter(
+  const supervisors = (await diagnosticResources("pods", topology.placement, read)).filter(
     (pod) =>
       pod.metadata.labels?.["openshell.ai/boundary-role"] === "supervisor" &&
       pod.metadata.labels?.["openshell.ai/boundary-pair"] === boundaryPair,
@@ -5594,7 +5591,7 @@ async function assertAuthenticatedNativePolicyScopes(topology, receipt) {
   }
 }
 
-async function assertAgentNetworkPolicyLifecycle(topology, enterCheck) {
+async function assertAgentNetworkPolicyLifecycle(topology, enterCheck, diagnostic) {
   enterCheck("installation-discovery");
   const base = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
   const policyPath = `${base}/sandbox-policy/networking`;
@@ -5645,16 +5642,11 @@ PYTHON`;
       providerModel,
       prompt: `Run exactly this command once through the exec tool, without changing it or attempting other network tools. Report its exit status and output: ${command}`,
     });
-    const executed = result.items
-      .filter(({ method }) => method === "item/completed")
-      .map(({ params }) => params?.item)
-      .find(
-        (item) => item?.type === "commandExecution" && item.command?.includes("urllib.request"),
-      );
-    assert.ok(executed, "the real Agent must execute the Python command");
-    assert.ok(executed.command.includes("/usr/bin/python3.11"));
-    assert.ok(executed.command.includes(`http://${grant.host}:${port}/policy-probe`));
-    return executed;
+    return selectPolicyProbeCommand(
+      result.items,
+      { uri: `http://${grant.host}:${port}/policy-probe`, port },
+      diagnostic,
+    );
   };
   // Prove both listeners and cluster DNS independently before interpreting a policy denial.
   enterCheck("cluster-target-reachability");
@@ -5969,11 +5961,13 @@ PYTHON`;
     topology.agent.harnessAuth.sourceId,
     [],
   );
+  enterCheck("second-agent-control-request");
   assert.equal(
     (await python(second.agent.id, 8082)).exitCode,
     0,
     "the second Agent retains Installation-default access",
   );
+  enterCheck("second-agent-denied-request");
   const isolated = await python(second.agent.id);
   assert.notEqual(isolated.exitCode, 0, "another Agent must remain denied");
   assert.match(isolated.aggregatedOutput ?? "", /Permission denied|Errno 13/);
@@ -6584,11 +6578,32 @@ async function assertCredentialRouteEnforcement(topology) {
     true,
     "a command must be able to read the Harness model placeholder for this check.",
   );
-  assert.equal(
-    observed.modelHostFromCurl.httpStatus,
-    "200",
-    "a command Codex runs must authenticate at the allowed source endpoint.",
-  );
+  await assertAllowedCredentialRoute({
+    probe: observed.modelHostFromCurl,
+    sourceType: modelSourceType,
+    destination:
+      modelSourceType === "codex-pat"
+        ? "auth.openai.com:443"
+        : `${modelEndpoint.hostname}:${modelPort}`,
+    capture: async () => {
+      // One read per operation: diagnostics never retry the failed curl or Kubernetes reads.
+      const pod = await openShellSupervisorPod(topology, (...args) =>
+        kubectl(diagnosticRequestTimeout, ...args),
+      );
+      return kubectl(
+        diagnosticRequestTimeout,
+        "logs",
+        pod.metadata.name,
+        "--namespace",
+        topology.placement,
+        "--container",
+        "supervisor",
+        "--tail=2000",
+        "--limit-bytes=262144",
+        "--timestamps",
+      );
+    },
+  });
   // Skipping the proxy settings gains nothing: a denied host and a bare address stay unreachable.
   // The allowed host still answers, so the run has an outbound path and these failures are the
   // policy's, not a missing network.
@@ -9067,9 +9082,14 @@ export function registerProviderLifecycleTest(workflow) {
           let policyCheck;
           try {
             await measureOpenShellStage(testContext, "network-policy", () =>
-              assertAgentNetworkPolicyLifecycle(topology, (check) => {
-                policyCheck = check;
-              }),
+              assertAgentNetworkPolicyLifecycle(
+                topology,
+                (check) => {
+                  policyCheck = check;
+                },
+                (measurement) =>
+                  testContext.diagnostic("openclaw-ci-measurement " + JSON.stringify(measurement)),
+              ),
             );
           } catch (error) {
             testContext.diagnostic(

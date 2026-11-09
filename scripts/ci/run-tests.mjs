@@ -926,6 +926,7 @@ function runNode(args, { cwd, env, timeout }) {
         status,
         signal,
         stdout: Buffer.concat(chunks).toString("utf8"),
+        processGroupId: pgid,
         ...(error ? { error } : {}),
       });
     };
@@ -1646,6 +1647,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     status,
     nodeExitCode,
     signal: nodeResult?.signal ?? null,
+    ...(nodeResult?.processGroupId ? { processGroupId: nodeResult.processGroupId } : {}),
     ...(fileFailure ? { fileFailure } : {}),
     counts,
     tests,
@@ -1879,10 +1881,34 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
     );
   }
 
-  const observedFiles = new Map(summary.files.map((file) => [file.path, file]));
+  const observedFiles = Map.groupBy(summary.files, (file) => file.path);
+  for (const [file, records] of observedFiles) {
+    if (records.length > 1) {
+      const expectedFile = lane.files.find((entry) => entry.path === file);
+      if (expectedFile) {
+        issues.push(
+          issue(
+            "duplicate-lane-file",
+            `lane ${laneName} has duplicate file evidence for ${expectedFile.path}`,
+            { lane: laneName, file: expectedFile.path },
+          ),
+        );
+      } else {
+        issues.push(
+          issue(
+            "duplicate-lane-file",
+            `lane ${laneName} has duplicate file evidence for an unregistered file`,
+            {
+              lane: laneName,
+            },
+          ),
+        );
+      }
+    }
+  }
   for (const expectedFile of lane.files) {
-    const observed = observedFiles.get(expectedFile.path);
-    if (!observed) {
+    const records = observedFiles.get(expectedFile.path);
+    if (!records) {
       issues.push(
         issue("missing-lane-evidence", `lane ${laneName} is missing file evidence`, {
           lane: laneName,
@@ -1891,37 +1917,44 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
       );
       continue;
     }
-    if (observed.status !== "passed") {
-      issues.push(
-        issue("lane-file-failed", `lane ${laneName} file did not pass`, {
-          lane: laneName,
-          file: expectedFile.path,
-          status: observed.status,
-        }),
-      );
-    }
-    if (
-      !observed.counts ||
-      !Number.isInteger(observed.counts.total) ||
-      observed.counts.total < 1 ||
-      !Array.isArray(observed.tests)
-    ) {
-      issues.push(
-        issue("missing-lane-evidence", `lane ${laneName} file has no test evidence`, {
-          lane: laneName,
-          file: expectedFile.path,
-        }),
-      );
-    } else {
-      validateExpectedTests(expectedFile.path, expectedFile.expectedTests, observed.tests, issues);
-    }
-    if (observed.cleanup != null && observed.cleanup.status !== "passed") {
-      issues.push(
-        issue("cleanup-failed", `lane ${laneName} file cleanup did not pass`, {
-          lane: laneName,
-          file: expectedFile.path,
-        }),
-      );
+    for (const observed of records) {
+      if (observed.status !== "passed") {
+        issues.push(
+          issue("lane-file-failed", `lane ${laneName} file did not pass`, {
+            lane: laneName,
+            file: expectedFile.path,
+            status: observed.status,
+          }),
+        );
+      }
+      if (
+        !observed.counts ||
+        !Number.isInteger(observed.counts.total) ||
+        observed.counts.total < 1 ||
+        !Array.isArray(observed.tests)
+      ) {
+        issues.push(
+          issue("missing-lane-evidence", `lane ${laneName} file has no test evidence`, {
+            lane: laneName,
+            file: expectedFile.path,
+          }),
+        );
+      } else {
+        validateExpectedTests(
+          expectedFile.path,
+          expectedFile.expectedTests,
+          observed.tests,
+          issues,
+        );
+      }
+      if (observed.cleanup != null && observed.cleanup.status !== "passed") {
+        issues.push(
+          issue("cleanup-failed", `lane ${laneName} file cleanup did not pass`, {
+            lane: laneName,
+            file: expectedFile.path,
+          }),
+        );
+      }
     }
   }
 }
@@ -1998,6 +2031,19 @@ async function aggregateGroup(
               }),
             );
           }
+          if (
+            need?.lanes !== undefined &&
+            (!Array.isArray(need.lanes) ||
+              need.lanes.length === 0 ||
+              new Set(need.lanes).size !== need.lanes.length ||
+              !need.lanes.every((lane) => typeof lane === "string" && lane.length > 0))
+          ) {
+            issues.push(
+              issue("invalid-need-lanes", `needs JSON has invalid lanes for ${needName}`, {
+                need: needName,
+              }),
+            );
+          }
         }
       }
     } catch (error) {
@@ -2009,9 +2055,18 @@ async function aggregateGroup(
 
   for (const laneName of laneNames ?? []) {
     if (needs) {
-      const need = needs[laneName];
-      if (!need) {
+      const owners = Object.entries(needs).filter(
+        ([name, need]) =>
+          name === laneName || (Array.isArray(need?.lanes) && need.lanes.includes(laneName)),
+      );
+      if (owners.length === 0) {
         issues.push(issue("missing-need", `needs JSON is missing ${laneName}`, { lane: laneName }));
+      } else if (owners.length > 1) {
+        issues.push(
+          issue("ambiguous-need", `needs JSON has multiple jobs for ${laneName}`, {
+            lane: laneName,
+          }),
+        );
       }
     }
 
@@ -2029,25 +2084,11 @@ async function aggregateGroup(
     try {
       const summary = await readJson(resultPath);
       const lane = manifest.lanes.get(laneName);
-      lanes.push({
-        lane: summary.lane,
-        status: summary.status,
-        exitCode: summary.exitCode,
-        sourceSha: summary.sourceSha,
-      });
       if (summary.lane !== laneName) {
         issues.push(
           issue("lane-output-mismatch", `result file for ${laneName} reports ${summary.lane}`, {
             lane: laneName,
             reportedLane: summary.lane,
-          }),
-        );
-      }
-      if (summary.status !== "passed") {
-        issues.push(
-          issue("lane-failed", `lane ${laneName} did not pass`, {
-            lane: laneName,
-            status: summary.status,
           }),
         );
       }
@@ -2057,6 +2098,23 @@ async function aggregateGroup(
             lane: laneName,
             expectedSourceSha: currentSha,
             observedSourceSha: summary.sourceSha,
+          }),
+        );
+      }
+      if (summary.lane !== laneName || summary.sourceSha !== currentSha) {
+        continue;
+      }
+      lanes.push({
+        lane: summary.lane,
+        status: summary.status,
+        exitCode: summary.exitCode,
+        sourceSha: summary.sourceSha,
+      });
+      if (summary.status !== "passed") {
+        issues.push(
+          issue("lane-failed", `lane ${laneName} did not pass`, {
+            lane: laneName,
+            status: summary.status,
           }),
         );
       }
@@ -2111,7 +2169,10 @@ async function main() {
   const { command, positionals, options } = parseArgs(process.argv.slice(2));
   const root = resolve(options.root ?? repositoryRoot);
   const manifestPath = resolve(root, options.manifest ?? defaultManifestPath);
-  const manifest = normalizeManifest(loadTestSuites(manifestPath), manifestPath);
+  const manifest = normalizeManifest(
+    loadTestSuites(manifestPath, process.env.OCC_CI_SUITE_VIEW),
+    manifestPath,
+  );
 
   if (command === "check-selection") {
     if (!positionals[0] || options.file === undefined) {

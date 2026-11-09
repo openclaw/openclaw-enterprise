@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
-import { createServer } from "node:https";
+import { IncomingMessage } from "node:http";
+import { createServer, get as httpsGet } from "node:https";
+import { checkServerIdentity } from "node:tls";
 import { isIP } from "node:net";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -23,6 +25,7 @@ export async function startSkipperPrivateGitOrigin({
   repositoryId = "73",
   teamReview = false,
   seedRefs = 0,
+  witnessIssuedGit = false,
 } = {}) {
   if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/.test(repository)) {
     throw new Error("repository must be owner/name");
@@ -39,7 +42,14 @@ export async function startSkipperPrivateGitOrigin({
   const git = (args, options = {}) => run("git", args, { env, ...options });
   const bare = join(directory, `${repository}.git`);
   const children = new Set();
-  const sockets = new Set();
+  // HTTPS exposes a TLSSocket on the request and a net.Socket at TCP accept.
+  // Their live TCP four-tuple identifies the same connection across both events.
+  const socketKey = ({ localAddress, localPort, remoteAddress, remotePort }) =>
+    localAddress && localPort && remoteAddress && remotePort
+      ? JSON.stringify([localAddress, localPort, remoteAddress, remotePort])
+      : undefined;
+  const sockets = new Map();
+  const retirementConnections = new Map();
   const stopChild = (child) => {
     if (child.pid) {
       try {
@@ -51,6 +61,7 @@ export async function startSkipperPrivateGitOrigin({
       }
     }
   };
+  const issuedGit = witnessIssuedGit === true ? new Map() : undefined;
   let server;
   let closing;
   let heldDiscovery;
@@ -58,9 +69,13 @@ export async function startSkipperPrivateGitOrigin({
   let armedDiscovery = false;
   let connections = 0;
   let requests = 0;
+  let witnessRequests = 0;
+  let refusedRetirementIndex;
+  let targetedRetirementRefusals = 0;
   const close = () =>
     (closing ??= (async () => {
-      for (const socket of sockets) {
+      issuedGit?.clear();
+      for (const { socket } of sockets.values()) {
         socket.destroy();
       }
       releaseDiscovery?.();
@@ -223,8 +238,15 @@ export async function startSkipperPrivateGitOrigin({
     };
     const gitPrefix = `/${repository}.git`;
     const tokenPath = `/app/installations/${fixtureInstallationId}/access_tokens`;
-    server = createServer(tls, async (request, response) => {
-      requests++;
+    // Node creates the incoming message once headers are parsed, even for CONNECT
+    // and requests it rejects before dispatching the HTTPS request listener.
+    class OriginRequest extends IncomingMessage {
+      constructor(socket) {
+        super(socket);
+        requests++;
+      }
+    }
+    server = createServer({ ...tls, IncomingMessage: OriginRequest }, async (request, response) => {
       let endpoint = "other";
       const reply = (status, body = {}) => {
         count(endpoint, status);
@@ -262,6 +284,9 @@ export async function startSkipperPrivateGitOrigin({
             reply(403);
             return;
           }
+          if (issuedGit && !closing) {
+            issuedGit.set(authority.tokenIndex(`Bearer ${issued.token}`), issued.token);
+          }
           reply(201, {
             token: issued.token,
             expires_at: new Date(issued.expires).toISOString(),
@@ -273,9 +298,20 @@ export async function startSkipperPrivateGitOrigin({
         }
         if (url.pathname === "/installation/token" && request.method === "DELETE") {
           endpoint = "revoke";
-          if (!authority.authorize(request.headers.authorization)) {
+          if (!authority.authorize(request.headers.authorization, "retirement")) {
             reply(401);
             return;
+          }
+          const tokenIndex = authority.tokenIndex(request.headers.authorization);
+          if (tokenIndex === refusedRetirementIndex) {
+            // Refuse every authenticated attempt for this token, including after worker replacement.
+            // No request is delayed, and the issuer never commits its revocation.
+            targetedRetirementRefusals++;
+            reply(503);
+            return;
+          }
+          if (request.url === "/installation/token") {
+            retirementConnections.set(tokenIndex, sockets.get(socketKey(request.socket))?.ordinal);
           }
           authority.revoke(request.headers.authorization);
           reply(204);
@@ -402,16 +438,27 @@ export async function startSkipperPrivateGitOrigin({
     });
     server.requestTimeout = 30000;
     server.maxRequestsPerSocket = 1;
+    // Pipelined requests over the limit bypass the HTTPS request listener.
+    server.on("dropRequest", () => {
+      count("other", 503);
+    });
     server.on("connection", (socket) => {
       connections++;
-      sockets.add(socket);
-      socket.once("close", () => sockets.delete(socket));
+      // An incomplete tuple can still be closed, but cannot qualify an HTTP request.
+      const key = socketKey(socket) ?? socket;
+      sockets.set(key, { socket, ordinal: connections });
+      socket.once("close", () => {
+        if (sockets.get(key)?.socket === socket) {
+          sockets.delete(key);
+        }
+      });
     });
     await new Promise((resolve, reject) => {
       server.once("error", reject);
       server.listen(port, host, resolve);
     });
     const origin = `https://${isIP(advertisedHost) === 6 ? `[${advertisedHost}]` : advertisedHost}:${server.address().port}`;
+    const listener = server.address();
     const readRefs = async () =>
       Object.fromEntries(
         (await git(["-C", bare, "for-each-ref", "--format=%(refname) %(objectname)"])).stdout
@@ -420,6 +467,15 @@ export async function startSkipperPrivateGitOrigin({
           .filter(Boolean)
           .map((line) => line.split(" ")),
       );
+    const snapshot = () => ({
+      connections,
+      requests,
+      pullCreateRequests,
+      endpoints: { ...counts },
+      issued: authority.issuesOfTokens.length,
+      tokens: authority.tokenState(),
+      targetedRetirementRefusals,
+    });
     return {
       origin,
       apiOrigin: origin,
@@ -446,14 +502,166 @@ export async function startSkipperPrivateGitOrigin({
         const input = `${header}.${payload}`;
         return `${input}.${sign("sha256", Buffer.from(input), privateKey).toString("base64url")}`;
       },
-      snapshot: () => ({
-        connections,
-        requests,
-        pullCreateRequests,
-        endpoints: { ...counts },
-        issued: authority.issuesOfTokens.length,
-        tokens: authority.tokenState(),
-      }),
+      snapshot,
+      observeReplacementOrigin(indexA, indexB) {
+        const before = snapshot();
+        const witnesses = witnessRequests;
+        const tokenB = before.tokens.find(({ index }) => index === indexB);
+        assert.ok(indexA !== indexB && before.tokens.some(({ index }) => index === indexA));
+        assert.equal(tokenB?.revoked, false, "B must enter replacement with its original grant");
+        return (completedWitnesses = 0) => {
+          const after = snapshot();
+          assert.equal(
+            witnessRequests - witnesses,
+            completedWitnesses,
+            "unexpected verifier probe",
+          );
+          const retired = after.tokens.find(({ index }) => index === indexB)?.revoked === true;
+          const ordinal = retirementConnections.get(indexB);
+          if (retired) {
+            assert.ok(Number.isSafeInteger(ordinal), "B retirement lacks an accepted connection");
+          }
+          // Each intentional A witness opens its own fresh connection (agent: false).
+          // B may use a connection already open at the start of the interval.
+          const endpoints = { ...before.endpoints };
+          if (retired) {
+            endpoints["revoke:204"] = (endpoints["revoke:204"] ?? 0) + 1;
+          }
+          if (completedWitnesses) {
+            endpoints["upload-advertise:200"] =
+              (endpoints["upload-advertise:200"] ?? 0) + completedWitnesses;
+          }
+          assert.deepEqual(
+            after,
+            {
+              ...before,
+              connections:
+                before.connections +
+                completedWitnesses +
+                Number(retired && ordinal > before.connections),
+              requests: before.requests + completedWitnesses + Number(retired),
+              endpoints,
+              tokens: before.tokens.map((token) => {
+                const uses =
+                  token.index === indexA
+                    ? completedWitnesses
+                    : Number(retired && token.index === indexB);
+                return {
+                  ...token,
+                  uses: token.uses + uses,
+                  attempts: token.attempts + uses,
+                  revoked: token.revoked || (retired && token.index === indexB),
+                };
+              }),
+            },
+            "unexpected origin traffic after replacement",
+          );
+        };
+      },
+      // The restart assertion compares the whole origin. On failure, identify which
+      // authentication boundaries were reached and which HTTP statuses the origin recorded.
+      // Discovery records its status before a held response is released.
+      observeRestartTraffic(indexA, indexB) {
+        const firstAttempt = authority.authenticationAttempts.length;
+        const initialCounts = { ...counts };
+        const witnesses = witnessRequests;
+        return () => {
+          const labels = new Set();
+          for (const { boundary, tokenIndex } of authority.authenticationAttempts.slice(
+            firstAttempt,
+          )) {
+            const role = tokenIndex === indexA ? "A" : tokenIndex === indexB ? "B" : "other";
+            const channel = boundary === "git" || boundary === "retirement" ? boundary : "api";
+            labels.add(`${channel} auth ${role}`);
+          }
+          for (const [key, value] of Object.entries(counts)) {
+            if (value === initialCounts[key]) {
+              continue;
+            }
+            const [endpoint, status] = key.split(":");
+            labels.add(`${endpoint} HTTP ${status}`);
+          }
+          if (witnesses !== witnessRequests) {
+            labels.add("verifier probe");
+          }
+          return [...labels].sort();
+        };
+      },
+      refuseTokenRetirement(index) {
+        if (!Number.isSafeInteger(index) || !issuedGit?.has(index)) {
+          throw new Error("unknown issued Git witness index");
+        }
+        if (refusedRetirementIndex !== undefined) {
+          throw new Error("token retirement refusal already armed");
+        }
+        refusedRetirementIndex = index;
+      },
+      gitAttemptIndices: () =>
+        authority.authenticationAttempts
+          .filter(
+            ({ boundary, tokenIndex }) => boundary === "git" && Number.isSafeInteger(tokenIndex),
+          )
+          .map(({ tokenIndex }) => tokenIndex),
+      async probeIssuedGit(index) {
+        if (!issuedGit) {
+          throw new Error("issued Git witness disabled");
+        }
+        if (closing || !server.listening) {
+          throw new Error("origin closed");
+        }
+        if (!Number.isSafeInteger(index) || !issuedGit.has(index)) {
+          throw new Error("unknown issued Git index");
+        }
+        // Connect only to this listener; its service DNS name resolves inside the test cluster.
+        const hostname =
+          listener.address === "0.0.0.0"
+            ? "127.0.0.1"
+            : listener.address === "::"
+              ? "::1"
+              : listener.address;
+        witnessRequests++;
+        const response = await new Promise((resolve, reject) => {
+          httpsGet(
+            {
+              hostname,
+              port: listener.port,
+              path: gitPrefix + "/info/refs?service=git-upload-pack",
+              agent: false,
+              ca: tls.ca ?? tls.cert,
+              rejectUnauthorized: true,
+              servername: isIP(advertisedHost) ? "" : advertisedHost,
+              checkServerIdentity: (_host, cert) => checkServerIdentity(advertisedHost, cert),
+              signal: AbortSignal.timeout(5000),
+              auth: "x-access-token:" + issuedGit.get(index),
+              headers: { host: new URL(origin).host },
+            },
+            resolve,
+          ).once("error", reject);
+        });
+        const chunks = [];
+        let length = 0;
+        for await (const chunk of response) {
+          length += chunk.length;
+          assert.ok(length <= 1024 * 1024, "oversized fixture advertisement");
+          chunks.push(chunk);
+        }
+        if (response.statusCode === 401 || response.statusCode === 403) {
+          return response.statusCode;
+        }
+        assert.equal(response.statusCode, 200, "unexpected fixture discovery status");
+        assert.ok(
+          response.complete &&
+            response.headers["content-type"] === "application/x-git-upload-pack-advertisement",
+        );
+        // Positive controls check the actual ref against Git; do not implement a second Git parser.
+        assert.ok(
+          Buffer.concat(chunks)
+            .subarray(0, 34)
+            .equals(Buffer.from("001e# service=git-upload-pack\n0000")),
+          "missing upload-pack advertisement",
+        );
+        return 200;
+      },
       readRefs,
       observePullRequest,
       holdNextDiscovery() {
