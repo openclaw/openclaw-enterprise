@@ -144,9 +144,15 @@ export function renderNamespaces(
         failed: { label: "Failed", tone: "danger" },
       };
       const badge = element("span", { className: "badge" });
-      const setStatus = (status: Namespace["status"]) => {
-        badge.textContent = statuses[status].label;
-        badge.dataset.tone = statuses[status].tone;
+      const setStatus = (status: Namespace["status"] | undefined) => {
+        const presentation =
+          status === undefined ? { label: "Status unknown", tone: "warning" } : statuses[status];
+        if (badge.textContent !== presentation.label) {
+          badge.textContent = presentation.label;
+        }
+        if (badge.dataset.tone !== presentation.tone) {
+          badge.dataset.tone = presentation.tone;
+        }
       };
       setStatus(item.status);
       const name = element("a", { href: context.pageUrl("agents", item.id) }, item.name ?? item.id);

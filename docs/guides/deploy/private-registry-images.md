@@ -68,15 +68,18 @@ investigating or retrying; start a fresh one and authenticate again. The tag
 lookup below can return the expected `ImageNotFoundException`.
 
 ```bash
-set -o pipefail
-umask 077
-export REGISTRY_AUTH="$(mktemp "${TMPDIR:-/tmp}/oce-registry-auth.XXXXXXXX")"
-trap 'rm -f -- "$REGISTRY_AUTH"' EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-printf '{"auths":{}}\n' > "$REGISTRY_AUTH"
-aws ecr get-login-password --region "$AWS_REGION" | \
-  skopeo login --authfile "$REGISTRY_AUTH" --username AWS --password-stdin "$ECR_REGISTRY"
+{
+  set -o pipefail
+  umask 077
+  REGISTRY_AUTH="$(mktemp "${TMPDIR:-/tmp}/oce-registry-auth.XXXXXXXX")" || exit 1
+  export REGISTRY_AUTH
+  trap 'rm -f -- "$REGISTRY_AUTH"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  printf '{"auths":{}}\n' > "$REGISTRY_AUTH" || exit 1
+  aws ecr get-login-password --region "$AWS_REGION" | \
+    skopeo login --authfile "$REGISTRY_AUTH" --username AWS --password-stdin "$ECR_REGISTRY"
+}
 ```
 
 Run `aws sts get-caller-identity` and confirm the selected account before writing

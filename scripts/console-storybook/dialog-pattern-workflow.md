@@ -28,6 +28,10 @@ simulated data.
    **Destructive tools** to **Disabled**, read its hint, and check that
    **Calendar tools enabled by default** still says **Inherit default policy**.
    The preview exercises the form; it does not submit a policy to a Controller.
+   In **Components / Plugins / Install Google Workspace**, confirm Google
+   Workspace appears and its policy controls are visible. This component fixture
+   supplies catalog data directly. The saved-Agent browser test checks discovery
+   through the Controller for a dedicated Agent using the default Harness.
    In **Pages / Create Agent / Short window plugin picker** (1440×480), expand
    and collapse **Access and credential setup**. Scroll the catalog browser:
    plugin names stay readable, Calendar opens its details, and pagination is

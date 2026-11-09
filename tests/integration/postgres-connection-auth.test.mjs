@@ -10,7 +10,7 @@ import { startupDependencyFailure } from "../../apps/controller/src/startup-fail
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 import { certificateAuthority, signedLeaf } from "../helpers/certificates.mjs";
-import { setEnvironment, withEnvironment } from "../helpers/environment.mjs";
+import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
 import { listen } from "../helpers/listen.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";

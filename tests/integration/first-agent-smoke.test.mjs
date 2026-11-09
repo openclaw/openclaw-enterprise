@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
@@ -14,6 +16,7 @@ import {
   bakeReferences,
   clusterEventLines,
   createApi,
+  createStepRecorder,
   observeAgentStop,
   postgresImage,
   providerImageDockerfile,
@@ -27,13 +30,97 @@ import {
   waitFor,
   watchCluster,
 } from "../../scripts/ci/first-agent-smoke.mjs";
-import { withEnvironment } from "../helpers/environment.mjs";
-import { commandPath } from "../helpers/fake-commands.mjs";
+import { withEnvironment } from "../helpers/environment.ts";
+import { commandPath } from "../helpers/fake-commands.ts";
 import { listen } from "../helpers/listen.mjs";
 
 const revision = "rev_00000000-0000-4000-8000-000000000001";
 const chatNonce = "OCE_SMOKE_00000000-0000-4000-8000-000000000001";
 const validChatReply = { status: 200, role: "assistant", content: chatNonce };
+
+test("smoke timing records overlapping admissions on one elapsed timeline", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "first-agent-timing-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let clock = 1000;
+  const recorder = createStepRecorder(() => clock);
+  const embedded = Promise.withResolvers();
+  const codex = Promise.withResolvers();
+  const control = Promise.withResolvers();
+  const started = [];
+  const admission = recorder.initialAdmissions({
+    embedded: () => {
+      started.push("embedded");
+      clock += 2;
+      return embedded.promise;
+    },
+    codex: () => {
+      started.push("codex");
+      clock += 3;
+      return codex.promise;
+    },
+    control: () => {
+      started.push("control");
+      return control.promise;
+    },
+  });
+  assert.deepEqual(started, ["embedded", "codex", "control"]);
+
+  clock = 1010;
+  control.resolve("control");
+  await Promise.resolve();
+  clock = 1020;
+  embedded.resolve("embedded");
+  await Promise.resolve();
+  clock = 1030;
+  codex.resolve("codex");
+  assert.deepEqual(await admission, ["embedded", "codex", "control"]);
+
+  await recorder.writeTimingReport(directory);
+  const report = JSON.parse(
+    await readFile(join(directory, "first-agent-smoke-timing.json"), "utf8"),
+  );
+  assert.deepEqual(report, {
+    version: 1,
+    rows: [
+      { phase: "admit-reader-control", startMs: 5, endMs: 10, status: "ok" },
+      { phase: "admit-embedded", startMs: 0, endMs: 20, status: "ok" },
+      { phase: "admit-codex", startMs: 2, endMs: 30, status: "ok" },
+      { phase: "initial-admissions", startMs: 0, endMs: 30, status: "ok" },
+    ],
+  });
+});
+
+test("smoke timing retains failure and omits pending branches and free-form data", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "first-agent-timing-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let clock = 20;
+  const recorder = createStepRecorder(() => clock);
+  const pending = Promise.withResolvers();
+  const failed = Promise.withResolvers();
+  const error = new Error("unpublished diagnostic sentinel");
+  await recorder.step("free-form timing sentinel", () => "operation result sentinel");
+  const admission = recorder.initialAdmissions({
+    embedded: () => pending.promise,
+    codex: () => failed.promise,
+    control: () => pending.promise,
+  });
+  clock = 28;
+  failed.reject(error);
+  await assert.rejects(admission, (rejection) => rejection === error);
+
+  await recorder.writeTimingReport(directory);
+  const report = JSON.parse(
+    await readFile(join(directory, "first-agent-smoke-timing.json"), "utf8"),
+  );
+  assert.deepEqual(report, {
+    version: 1,
+    rows: [
+      { phase: "admit-codex", startMs: 0, endMs: 8, status: "failed" },
+      { phase: "initial-admissions", startMs: 0, endMs: 8, status: "failed" },
+    ],
+  });
+  pending.resolve();
+});
 
 test("chat proof accepts the deterministic assistant answer", () => {
   for (const content of [chatNonce, ` \t${chatNonce}\r\n`]) {
@@ -107,6 +194,113 @@ test("smoke API refuses a redirect instead of resending its key", async (t) => {
     /^Error: GET \/namespaces: fetch failed: .*unexpected redirect$/,
   );
   assert.deepEqual(requests, []);
+});
+
+test("installed Git API keeps credentials off ambient proxies and redirects", async (t) => {
+  const key = "synthetic-installed-api-key";
+  const secret = "synthetic-installed-secret-body";
+  const received = [];
+  let proxyConnections = 0;
+  let redirectedRequests = 0;
+  const sinkPort = await listen(
+    t,
+    createServer((request, response) => {
+      redirectedRequests += 1;
+      response.end();
+    }),
+  );
+  const apiPort = await listen(
+    t,
+    createServer(async (request, response) => {
+      let body = "";
+      for await (const chunk of request) {
+        body += chunk;
+      }
+      received.push({ path: request.url, key: request.headers["x-api-key"], body });
+      if (request.url === "/redirect") {
+        response.writeHead(307, { location: `http://127.0.0.1:${sinkPort}/collected` }).end();
+      } else if (request.url === "/failure") {
+        response.writeHead(500).end(`${key} ${secret}`);
+      } else if (request.url === "/invalid") {
+        response.end(`${key} ${secret}`);
+      } else {
+        response.end('{"data":"accepted"}');
+      }
+    }),
+  );
+  const proxy = createServer((request, response) => {
+    proxyConnections += 1;
+    response.writeHead(403).end();
+  });
+  proxy.on("connect", (request, socket) => {
+    proxyConnections += 1;
+    socket.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
+  });
+  const proxyPort = await listen(t, proxy);
+  const origin = `http://127.0.0.1:${apiPort}`;
+  const helper = new URL("../helpers/openshell-git-installation.mjs", import.meta.url).href;
+  // A fresh process must actually enable Node's ambient proxy before importing
+  // the same client used by the installed scenario. No real credential is used.
+  const script = `
+    import assert from "node:assert/strict";
+    import { createOpenShellGitApi } from ${JSON.stringify(helper)};
+    const origin = ${JSON.stringify(origin)};
+    await assert.rejects(fetch(origin + "/proxy-control"));
+    const cleanup = [];
+    const request = createOpenShellGitApi({
+      origin, key: ${JSON.stringify(key)}, signal: AbortSignal.timeout(30_000),
+      after: (operation) => cleanup.push(operation),
+    });
+    try {
+      assert.equal(await request("POST", "/ordinary", { value: ${JSON.stringify(secret)} }), "accepted");
+      await assert.rejects(request("POST", "/redirect", { value: ${JSON.stringify(secret)} }), /fetch failed/);
+      await assert.rejects(request("POST", "/failure", { value: ${JSON.stringify(secret)} }),
+        { message: "OCC POST /failure returned HTTP 500" });
+      await assert.rejects(request("POST", "/invalid", { value: ${JSON.stringify(secret)} }),
+        { message: "OCC POST /invalid returned invalid JSON" });
+      await assert.rejects(request("GET", "http://127.0.0.1:${sinkPort}/escape"), /changed origin/);
+    } finally {
+      for (const close of cleanup.reverse()) await close();
+    }
+    console.log("direct API and redirect isolation passed");
+  `;
+  const { stdout, stderr } = await promisify(execFile)(
+    process.execPath,
+    ["--input-type=module", "--eval", script],
+    {
+      timeout: 45_000,
+      env: {
+        ...Object.fromEntries(
+          ["PATH", "HOME", "TMPDIR"]
+            .filter((name) => process.env[name] !== undefined)
+            .map((name) => [name, process.env[name]]),
+        ),
+        NODE_USE_ENV_PROXY: "1",
+        HTTP_PROXY: `http://127.0.0.1:${proxyPort}`,
+        HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`,
+        http_proxy: `http://127.0.0.1:${proxyPort}`,
+        https_proxy: `http://127.0.0.1:${proxyPort}`,
+        NO_PROXY: "",
+        no_proxy: "",
+      },
+    },
+  );
+  // The uncredentialed control must hit the proxy exactly once; none of the
+  // authenticated requests may add a proxy connection or reach the redirect sink.
+  assert.equal(proxyConnections, 1);
+  assert.equal(redirectedRequests, 0);
+  assert.deepEqual(
+    received,
+    ["/ordinary", "/redirect", "/failure", "/invalid"].map((path) => ({
+      path,
+      key,
+      body: JSON.stringify({ value: secret }),
+    })),
+  );
+  assert.equal(stdout.trim(), "direct API and redirect isolation passed");
+  for (const value of [key, secret]) {
+    assert.equal((stdout + stderr).includes(value), false);
+  }
 });
 
 function virtualClock() {
@@ -528,6 +722,21 @@ test("the smoke bake only pushes the controller and runtime images, and loads th
   }
 });
 
+test("an artifact-backed smoke derives trust and provider images without compiling a runtime", () => {
+  const runtimeContext = `oci-layout:///work/verified-runtime@sha256:${"d".repeat(64)}`;
+  for (const load of [false, true]) {
+    const { target } = smokeBakeDefinition({ ...bakeInput, runtimeContext, load });
+    // Both FROM (trust) and COPY --from (provider) must resolve the same verified
+    // image. Keeping the source target here would silently reintroduce a cold build.
+    assert.equal(target["smoke-runtime-base"], undefined);
+    assert.deepEqual(target["smoke-runtime"].contexts, { "smoke-runtime-base": runtimeContext });
+    assert.equal(target["smoke-runtime"].args.RUNTIME_IMAGE, "smoke-runtime-base");
+    if (!load) {
+      assert.deepEqual(target["smoke-provider"].contexts, { "smoke-runtime-base": runtimeContext });
+    }
+  }
+});
+
 test("the prepared-Git bake still loads both images and builds no provider image", () => {
   const { target } = smokeBakeDefinition({ ...bakeInput, load: true });
   assert.deepEqual(target["smoke-controller"].output, [
@@ -767,4 +976,38 @@ test("with the containerd image store PostgreSQL keeps the archive path", async 
   assert.equal(await publishPostgresImage({ registry: "127.0.0.1:5000", ...fixture }), undefined);
   assert.deepEqual(fixture.pulls, []);
   assert.deepEqual(fixture.commands, [["docker", "info", "--format", "{{json .DriverStatus}}"]]);
+});
+
+test("Git expiry observation stops on exact-scope runtime retirement without exposing supplier text", async () => {
+  const { assertOpenShellGitExpiryRetained } =
+    await import("../helpers/openshell-git-installation.mjs");
+  const identity = {
+    namespaceId: "ns",
+    agentId: "agent",
+    revisionId: "revision",
+    repositoryRef: "repo",
+  };
+  // Shape retained from a real failed expiry: retirement is terminal even though
+  // the worker can later acknowledge successful cleanup of that runtime.
+  const event = {
+    ...identity,
+    event: "worker.openshell-git-expiry",
+    outcome: "retire-runtime",
+    check: "conditional-detach",
+    error: "private-supplier-detail",
+  };
+  assert.throws(() => assertOpenShellGitExpiryRetained(event, identity), {
+    message: "Git expiry required runtime retirement; same-runtime retention failed.",
+  });
+  for (const field of Object.keys(identity)) {
+    assert.doesNotThrow(() =>
+      assertOpenShellGitExpiryRetained({ ...event, [field]: "other" }, identity),
+    );
+  }
+  for (const outcome of ["pending", "withdrawn"]) {
+    assert.doesNotThrow(() => assertOpenShellGitExpiryRetained({ ...event, outcome }, identity));
+  }
+  assert.doesNotThrow(() =>
+    assertOpenShellGitExpiryRetained({ ...event, event: "worker.completed" }, identity),
+  );
 });

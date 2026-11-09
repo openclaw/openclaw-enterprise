@@ -1,3 +1,4 @@
+import { admitRevisionHarness } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -233,6 +234,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
       },
     };
   }
+  admitRevisionHarness(driver, revision);
   const objects = new Map();
   const calls = [];
   let pods = [];
@@ -661,6 +663,13 @@ test("Dedicated repository custody and networking belong only to Codex", async (
   delete gatewayConfiguration.plugins.entries.codex.config.appServer.nativeHookRelay;
   const expectedGatewayConfiguration = JSON.parse(original);
   expectedGatewayConfiguration.agents.defaults.workspace = "/home/node/workspace";
+  // Compute translates the saved API-key destination into Codex's provider-qualified model.
+  expectedGatewayConfiguration.agents.defaults.model = "codex/openai-compatible/gpt-5";
+  expectedGatewayConfiguration.agents.defaults.models = {
+    "codex/openai-compatible/gpt-5":
+      expectedGatewayConfiguration.agents.defaults.models["codex/gpt-5"],
+  };
+  expectedGatewayConfiguration.models.providers.codex.models[0].id = "openai-compatible/gpt-5";
   assert.deepEqual(
     gatewayConfiguration,
     expectedGatewayConfiguration,
@@ -1565,7 +1574,7 @@ async function publicReaderAdmission() {
     domains: { [publicReader.address]: "allow" },
   };
   const admission = driver.admitRevision(revision);
-  assert.match(admission, /^public-github-read:v1:[a-f0-9]{64}$/);
+  assert.match(admission, /^model-provider:v1:[a-f0-9]{64}:public-github-read:v1:[a-f0-9]{64}$/);
   return { f, revision, driver, admission };
 }
 
@@ -1579,7 +1588,7 @@ test("protected execution cannot acquire the anonymous reader or use it as a fal
     executionAdmission: { version: 3, mode: "protected" },
     egressPlan: { driver: owner.ref, routes: [] },
   };
-  assert.equal(f.driver.admitRevision(protectedRevision), undefined);
+  assert.match(f.driver.admitRevision(protectedRevision), /^model-provider:v1:[a-f0-9]{64}:$/);
   assert.throws(
     () => pluginRuntimeSpecForRevision(protectedRevision, undefined, undefined, publicReader),
     /public GitHub reader cannot be selected for protected execution/,
@@ -1831,7 +1840,7 @@ test("withdrawing a selected reader narrows access and stops only its revision",
     const selected = f.consumer();
     const successor = { ...structuredClone(f.revision), id: "unselected-successor", revision: 2 };
     successor.configuration.plugins.entries.codex.config.appServer.networkProxy.domains = {};
-    delete successor.compute.admission;
+    successor.compute.admission = f.driver.admitRevision(successor);
     f.enroll(successor);
     await f.driver.prepareRevision(successor, context);
     const successorDeployment = f
@@ -2412,6 +2421,9 @@ test("Kubernetes projects the repository client into native exec paths without c
   // construction; setting only the Kubernetes container PATH is insufficient.
   await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
   const expected = structuredClone(original);
+  expected.models = {
+    providers: { openai: { api: "openai-responses", baseUrl: "https://api.openai.com/v1" } },
+  };
   expected.tools.exec.pathPrepend = [shim, "/operator/bin", "/shared/bin"];
   expected.agents.entries.custom.tools.exec.pathPrepend = [shim, "/agent/bin"];
   expected.agents.entries["own-exec"].tools.exec.pathPrepend = [
@@ -2436,6 +2448,9 @@ test("Kubernetes supplies a native repository exec prefix when no tools configur
       await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
       assert.deepEqual(JSON.parse(preparedNativeDocument(f)), {
         ...original,
+        models: {
+          providers: { openai: { api: "openai-responses", baseUrl: "https://api.openai.com/v1" } },
+        },
         tools: { exec: { pathPrepend: ["/opt/oce/repository-credentials/bin"] } },
       });
       assert.deepEqual(f.revision.configuration, original);
@@ -2443,7 +2458,7 @@ test("Kubernetes supplies a native repository exec prefix when no tools configur
   }
 });
 
-test("Kubernetes preserves native configuration bytes without repository bindings", async (t) => {
+test("Kubernetes preserves native exec settings without repository bindings", async (t) => {
   for (const runtimeBindings of [undefined, []]) {
     await t.test(runtimeBindings === undefined ? "missing" : "empty", async () => {
       const f = await fixture();
@@ -2455,7 +2470,12 @@ test("Kubernetes preserves native configuration bytes without repository binding
       const document = JSON.stringify(f.revision.configuration);
       deepFreeze(f.revision.configuration);
       await f.driver.prepareRevision(f.revision, f.context(runtimeBindings));
-      assert.equal(preparedNativeDocument(f), document);
+      assert.deepEqual(JSON.parse(preparedNativeDocument(f)), {
+        ...JSON.parse(document),
+        models: {
+          providers: { openai: { api: "openai-responses", baseUrl: "https://api.openai.com/v1" } },
+        },
+      });
       assert.equal(JSON.stringify(f.revision.configuration), document);
     });
   }

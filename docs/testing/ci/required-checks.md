@@ -18,9 +18,12 @@ covers the lanes selected for that change, not every registered integration.
 ## Trigger
 
 The workflow runs on pull requests, pushes to `main`, merge groups, and manual
-dispatch. Documentation-only changes run static checks. Recognized test-only
-changes select affected lanes, including TypeScript test checks. Other changes
-run the ordinary lane matrix. Failed main-push CI also prevents release workflows
+dispatch. Documentation-only pull requests and verified, forward main pushes
+run static checks. Main pushes compare the complete `before` to `after` range
+using the policy from `before`; missing history, forced pushes, or a policy that
+does not support push selection run the ordinary lane matrix. Recognized
+test-only pull requests select affected lanes, including TypeScript test checks.
+Other changes run the ordinary lane matrix. Failed main-push CI also prevents release workflows
 that require successful CI for that source.
 
 ## Scenarios
@@ -60,6 +63,11 @@ Open or update a pull request for automatic selection. For local reproduction,
 use the linked suite guide and exact manifest in the table; prerequisites differ
 between browser, PostgreSQL, container, and Kubernetes lanes. Follow the shared
 [prepare, run, and cleanup procedure](run-lanes.md#results-and-cleanup).
+
+Runtime-image bridge tests and typechecks write temporary compiler artifacts to
+disk so memory pressure can reclaim their page cache. Each verification step
+starts with an empty artifact directory and removes it before committing the
+layer. Test selection and the final runtime remain unchanged.
 
 To inspect a run, replace the example PR number with yours:
 

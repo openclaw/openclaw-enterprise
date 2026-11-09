@@ -19,7 +19,12 @@ URLs skip cases, so check the test results for skips.
 The application lane prepares isolated databases and removes its resources on
 exit. Its PostgreSQL server is disposable, so preparation turns off `fsync`,
 `synchronous_commit` and `full_page_writes` there; keep no data in it. Each run
-needs its own state file. With Docker Compose available, run:
+needs its own state file. Preparation stages a container-readable copy of the public
+bootstrap SQL, so restrictive checkout permissions do not need changing. Cleanup
+removes this copy with the disposable server; unexpected files in its directory
+are preserved and reported as a cleanup failure. If directory or SQL creation was
+not durably confirmed, cleanup preserves any unconfirmed contents and state.
+Inspect their ownership before manual removal; a competing process may own the directory. With Docker Compose available, run:
 
 ```sh
 (
@@ -150,6 +155,68 @@ only lowercase letters, digits, and underscores, and contain at most 50
 characters. The test reads the container's administrator password with `docker inspect`,
 connects through the selected port, and drops only databases it created.
 See [migration recovery](../reference/settings/operations.md#migration-history).
+
+### Released controller compatibility
+
+Select two already-loaded, digest-pinned controller images to test their real
+API and worker in two independent disposable databases. Use the PostgreSQL fixture
+selectors above, then set these four image inputs:
+
+```sh
+OCC_TEST_RELEASED_CONTROLLER_IMAGE="$RELEASED_IMAGE" \
+OCC_TEST_RELEASED_CONTROLLER_REVISION="$RELEASED_COMMIT" \
+OCC_TEST_CANDIDATE_CONTROLLER_IMAGE="$CANDIDATE_IMAGE" \
+OCC_TEST_CANDIDATE_CONTROLLER_REVISION="$CANDIDATE_COMMIT" \
+  node --test --test-name-pattern='Released controller remains usable' \
+  tests/integration/postgres-migration-compatibility.test.mjs
+```
+
+For native runner receipts, use the prepare/run/cleanup pattern above with lane
+`postgres`. Prepare the lane without `--file`, then supply the same four inputs
+to `node scripts/ci/run-tests.mjs run postgres` with
+`--file tests/integration/postgres-migration-compatibility.test.mjs`.
+This runs the whole migration file, including both selected compatibility cases.
+Require both selected cases to pass and inspect `releasedController` and `candidateController`
+in the file result's `imageDigests`; passing ordinary migration cases alone does
+not qualify the pair. The selectors are optional and inherited only by this file.
+
+Each image must carry its matching `org.opencontainers.image.revision` label.
+The cases never pull images. They are registered only when at least one image or
+revision input is supplied; partial selection fails. With no inputs, ordinary
+PostgreSQL CI runs its existing cases without an extra skipped test and does not
+qualify released-image compatibility. A failed case means the image pair is not
+qualified, even when the other case passes.
+
+The released image bootstraps and migrates a fresh database with its canonical
+commands. Its real Fastify app, password authentication, Native IAM and worker
+perform namespace reads and writes while the candidate migrator runs, then
+repeat after process restart. The candidate starts a saved connection through
+its API. Both controllers must list the same persisted source ID. The released
+worker must still settle namespace work, including after another restart. The candidate migrator
+then checks the final history without changing it. A failed read is failed
+compatibility; there is no option to accept incompatibility. Use the same
+candidate image for both roles as a positive harness control.
+
+A second case tests configured IAM policy activation independently of saved
+connections. It keeps the same administrator session reading the same Namespace
+before migration and after SQL completes, then starts the candidate with the
+[Default users policy](../reference/authorization.md). The candidate writes its
+configured Installation Group binding through the startup controller method,
+before serving requests.
+Both versions must still authorize the administrator, and a newly provisioned
+member must read the configured Namespace and be denied in another Namespace.
+The released controller must also restart and authorize the same read. The case
+records each phase and reports `qualified: true` only after every assertion and
+controller cleanup succeeds. A refused old read or startup is a compatibility
+failure, not an acceptable outcome. Run only this case with
+`--test-name-pattern='Released controller remains usable after configured IAM activation'`.
+
+This is database/API compatibility proof with passive Compute and Secret test
+Drivers. It does not run the production server entry point, Helm rollout,
+Agent workloads, external OAuth exchange or model turns. Candidate images must
+support both the saved-connection APIs and configured IAM startup policy exercised
+by these cases. Each case removes its containers and database on completion,
+including assertion failure.
 
 ## Azure workload-identity connections
 

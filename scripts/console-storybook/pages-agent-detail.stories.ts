@@ -68,7 +68,9 @@ export const InvalidConfigurationInvisibleCharacters = story(
 );
 export const InvalidConfigurationCurlyQuotes = story("invalidConfigurationCurlyQuotes");
 export const ConfigurationChangedElsewhereMerged = story("configurationChangedElsewhereMerged");
+export const ConfigurationConflictFocus = story("configurationConflictFocus");
 export const Admitted = story("admitted");
+export const RepositoryAccessRedeployRequired = story("repositoryAccessRedeployRequired");
 export const RepositoryDraft = {
   ...story("repositoryDraft"),
   name: "Repository access in new version",
@@ -85,6 +87,10 @@ export const DeploymentRunningActivates = story("deploymentRunningActivates");
 export const DeploymentCompletionFocus = {
   ...story("deploymentCompletionFocus", { openInNewTab: true }),
   name: "Diagnostics focus when deployment completes",
+};
+export const DeploymentRefreshFocus = {
+  ...story("deploymentRefreshFocus", { openInNewTab: true }),
+  name: "Refresh deployment focus when a newer version appears",
 };
 export const DeploymentCompletesRereadFails = story("deploymentCompletesRereadFails");
 export const DeploymentStatusReadRecovers = {
@@ -150,6 +156,7 @@ export const RuntimeLogsFailedRedeploy = story("runtimeLogsFailedRedeploy");
 export const RuntimeLogsFilteredDownload = story("runtimeLogsFilteredDownload");
 export const RuntimeLogsRateLimited = story("runtimeLogsRateLimited");
 export const RuntimeLogsRefreshRateLimited = story("runtimeLogsRefreshRateLimited");
+export const RuntimeLogsSourceSwitchAfterRateLimit = story("runtimeLogsSourceSwitchAfterRateLimit");
 export const RuntimeLogsDenied = story("runtimeLogsDenied");
 export const RuntimeLogPodReplaced = story("runtimeLogPodReplaced");
 export const RuntimeLogAccessLost = story("runtimeLogAccessLost");
@@ -307,3 +314,8 @@ export const ConfigurationSaveReadDenied = {
   ...story("configurationSaveReadDenied"),
   name: "Configuration Save read denied",
 };
+
+export const HarnessOverrides = story("harnessOverrides");
+
+export const HarnessDeploymentPending = story("harnessDeploymentPending");
+export const HarnessDeploymentDenied = story("harnessDeploymentDenied");

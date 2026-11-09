@@ -54,6 +54,12 @@ func validDevelopmentCodexSeccompResult(mode, profileName string) bool {
 
 func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolicies []any, ceiling []any) (result error) {
 	r := newRunner(opts)
+	defer func() {
+		if result != nil {
+			stage, cleanupFailed := startupFailureDetails(result)
+			fmt.Fprintf(r.opts.Out, "\n[occ-dev-startup] primary_stage=%s cleanup_failed=%t parent_context_done=%t%s\n", stage, cleanupFailed, ctx.Err() != nil, routingFailureSuffix(result))
+		}
+	}()
 	if len(opts.ComposeArgs) != 0 {
 		return fmt.Errorf("the Kubernetes-only profile does not accept Compose options")
 	}
@@ -232,7 +238,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 			}
 		}
 		if cleanupErr != nil {
-			result = errors.Join(result, fmt.Errorf("rollback incomplete; preserving %s for occ dev down: %w", directory, cleanupErr))
+			result = joinStartupCleanup(result, startupError("rollback", fmt.Errorf("rollback incomplete; preserving %s for occ dev down: %w", directory, cleanupErr)))
 		}
 	}()
 	if err := exclusiveWrite(filepath.Join(directory, ".openclaw-development"), []byte(stateMarker), 0600); err != nil {
@@ -280,11 +286,11 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	// deferred detach (which runs before the rollback deletes the network)
 	// cover images that were never pulled.
 	if err := r.attachDevelopmentImageRegistry(ctx, state); err != nil {
-		return errors.Join(err, r.detachDevelopmentImageRegistry(ctx))
+		return joinStartupCleanup(err, startupError("registry-detach", r.detachDevelopmentImageRegistry(ctx)))
 	}
 	defer func() {
 		if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
-			result = errors.Join(result, err)
+			result = joinStartupCleanup(result, startupError("registry-detach", err))
 		}
 	}()
 
@@ -318,7 +324,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		fmt.Fprintln(r.opts.Out, "Installing pinned private routing controllers...")
 		routingPodCIDR, err = r.installDevelopmentRoutingControllers(ctx, state, timeout)
 		if err != nil {
-			return fmt.Errorf("install the private routing controllers: %w", err)
+			return startupError("routing", fmt.Errorf("install the private routing controllers: %w", err))
 		}
 		return nil
 	}, func(ctx context.Context, r *runner) error {
@@ -359,7 +365,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 				fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
 				assets, err = r.prepareOpenShell(ctx, state, timeout)
 				if err != nil {
-					return err
+					return startupError("openshell-preparation", err)
 				}
 			}
 			return nil
@@ -369,7 +375,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		return err
 	}
 	if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
-		return err
+		return startupError("registry-detach", err)
 	}
 	if err := r.installDevelopmentPlatform(ctx, state, developmentPlatformInputs{
 		openShell: assets, runtimeImage: runtimeImage, controllerImage: controllerImage,
@@ -455,7 +461,7 @@ type developmentPlatformInputs struct {
 
 func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developmentState, inputs developmentPlatformInputs, timeout time.Duration) error {
 	if err := r.ensureKubernetesNamespace(ctx, state.PlatformNamespace); err != nil {
-		return err
+		return startupError("platform-namespace", err)
 	}
 	if state.SandboxDriver == "openshell" {
 		fmt.Fprintf(r.opts.Out, "Installing OpenShell Gateway and OCE in Namespace %s...\n", state.PlatformNamespace)
@@ -607,8 +613,18 @@ func (r *runner) importDevelopmentController(ctx context.Context, state *develop
 			return "", err
 		}
 	} else {
+		checkout, err := r.output(ctx, "git", "rev-parse", "--verify", "HEAD")
+		if err != nil {
+			return "", fmt.Errorf("resolve the checkout revision for the controller build: %w", err)
+		}
+		revision := string(checkout)
+		if len(revision) != 40 || strings.Trim(revision, "0123456789abcdef") != "" {
+			return "", fmt.Errorf("the checkout must have a full Git commit revision")
+		}
 		base := r.setting("OCC_DEVELOPMENT_NODE_BASE_IMAGE", developmentNodeBase)
-		if err := r.run(ctx, r.engine, "build", "--target", "runtime", "--build-arg", "NODE_BASE_IMAGE="+base, "--tag", image, "."); err != nil {
+		// Keep the engine as the runner's direct child for cancellation and timing.
+		if err := r.run(ctx, r.engine, "build", "--target", "runtime", "--build-arg", "NODE_BASE_IMAGE="+base,
+			"--build-arg", "OCC_BUILD_REVISION="+revision, "--label", "org.opencontainers.image.revision="+revision, "--tag", image, "."); err != nil {
 			return "", err
 		}
 	}

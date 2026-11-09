@@ -1,6 +1,7 @@
 import type {
   AgentCredentialSourceBinding,
   AgentDeploymentStatusWire,
+  AgentRevisionSummaryWire,
   AgentRuntimeHarnessStatus,
   OpenClawConfigurationDocument,
   PluginApprovers,
@@ -44,7 +45,8 @@ type AgentDetailScenario = {
   rules?: Parameters<typeof createFixtureFetch>[0];
   nextStory?: string;
   deployed?: true;
-  auth?: "oauth" | "codex_pat" | null;
+  auth?: "oauth" | "codex_pat" | "api-source" | null;
+  harnessOverrides?: Record<string, unknown>;
   agentPlugins?: PluginDesiredState;
   agentPluginApprovers?: PluginApprovers;
   pluginCapabilities?: PluginFieldsOptions["capabilities"];
@@ -131,6 +133,54 @@ export function createAgentDetailScenarios({
   currentVersion: string;
   candidateVersion: string;
 }) {
+  const newerDeployment: AgentRevisionSummaryWire = {
+    id: "rev_00000000-0000-4000-8000-000000000008",
+    namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+    agentId: "agt_00000000-0000-4000-8000-000000000001",
+    revision: 8,
+    backendId: null,
+    configurationId: "cfg_00000000-0000-4000-8000-000000000001",
+    configurationGeneration: 2,
+    harness: { id: "codex", version: "demo", mode: "dedicated", overrides: {}, configuration: {} },
+    createdAt: "2026-09-26T23:10:00.000Z",
+    deploymentStatus: "queued",
+    deploymentErrorCode: null,
+  };
+
+  const configurationConflictDraft = {
+    group: "Pages/Agent detail",
+    path: draft,
+    configurationChangedElsewhere: {
+      values: {
+        gateway: { bind: "loopback" },
+        agents: { defaults: { model: "codex/gpt-5.1" } },
+      },
+    },
+    actions: [
+      click("Edit Configuration"),
+      {
+        selector: "#configuration-json",
+        value: JSON.stringify(
+          {
+            gateway: { mode: "local", bind: "lan" },
+            agents: {
+              defaults: {
+                model: "codex/gpt-4.1",
+                models: { "codex/gpt-4.1": { agentRuntime: { id: "codex" } } },
+              },
+            },
+            channels: {},
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  } satisfies Pick<
+    AgentDetailScenario,
+    "group" | "path" | "configurationChangedElsewhere" | "actions"
+  >;
+
   const runtimeLogsPage = {
     group: "Pages/Agent detail",
     path: `${candidateVersion}&tab=logs`,
@@ -140,6 +190,16 @@ export function createAgentDetailScenarios({
     AgentDetailScenario,
     "group" | "path" | "deployed" | "candidateDeploymentStatus"
   >;
+
+  const candidateRuntimeLogs =
+    "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/runtime/logs";
+  const agentLogStream = {
+    source: "agent",
+    pod: "agent-9194e1800111-rev-997042d6ce64-6b5bbd9699-v5rcp",
+    podUid: "8d6b1c2e-3f4a-4b5c-9d6e-7f8a9b0c1d2e",
+    container: "agent",
+    restartCount: 0,
+  };
 
   // The current version, v8, which the viewer cannot read, opened on its Logs tab.
   const hiddenCurrentLogsPage = {
@@ -204,6 +264,41 @@ export function createAgentDetailScenarios({
     } satisfies Record<string, AgentDetailScenario>,
 
     configuration: {
+      harnessOverrides: {
+        group: "Pages/Agent detail",
+        name: "Harness destination override",
+        path: draft,
+        deployed: true,
+        auth: "api-source",
+        harnessOverrides: {
+          modelProvider: {
+            baseUrl: "https://evaluation.example.com/v1",
+            protocol: "openai-responses",
+            supportsStandaloneWebSearch: false,
+          },
+        },
+        description:
+          "Submit requested overrides and inspect the resolved settings after deployment.",
+        steps: [
+          "Read the requested destination beside the deployment checklist. Open Harness destination, choose Override model provider, enter an authorized HTTPS /v1 endpoint, then deploy and inspect requested and resolved settings.",
+        ],
+        gap: "Simulated UI proof only; source consent, persistence and inference routing require integration checks.",
+      },
+      harnessDeploymentPending: {
+        group: "Pages/Agent detail",
+        name: "Harness deployment pending",
+        path: draft,
+        description:
+          "The actual deployment request is pending; duplicate submission is unavailable.",
+        rules: [{ method: "POST", suffix: "/deploy", hold: true }],
+      },
+      harnessDeploymentDenied: {
+        group: "Pages/Agent detail",
+        name: "Harness deployment denied",
+        path: draft,
+        description: "Admission refuses the requested settings without creating a version.",
+        rules: [{ method: "POST", suffix: "/deploy", status: 403 }],
+      },
       draft: {
         group: "Pages/Agent detail",
         name: "First version",
@@ -558,6 +653,11 @@ export function createAgentDetailScenarios({
         actions: [{ selector: "#agent-plugins", value: "[]" }, click("Save plugin selections")],
         description:
           "Save with Plugin selections JSON that is not an object: the error shows under the JSON and focus moves to it, with no browser bubble.",
+        steps: [
+          "Confirm the array error appears below the raw JSON editor and the editor has focus.",
+          'Replace the draft with {"sample":{"enabled":true,"driverPolicy":{"destructiveEnabled":1e400}}}. Collapse the JSON editor and choose Save plugin selections. The editor opens and takes focus with a number-range error; no save request starts.',
+          "Open Configure plugins. The existing invalid-JSON guidance appears, focus stays in the dialog, and the raw draft remains unchanged. Correct the number before using policy controls.",
+        ],
       },
       agentAuthenticationRequiredFields: {
         group: "Pages/Agent detail",
@@ -1238,6 +1338,12 @@ export function createAgentDetailScenarios({
         ],
         description:
           "Invalid JSON is reported under the editor with its line and column. The editor keeps its contents and sends no Configuration write.",
+        steps: [
+          "Check the initial syntax error, then Cancel and reopen Edit Configuration. Expand Advanced settings to restore a complete Configuration JSON draft.",
+          'Set plugins.entries.knowledge to {"enabled":true,"config":{"thresholds":[1,1e400,3]}}, preserving the rest of the document. This is valid JSON syntax, but the middle number is outside the supported range. Select Save Configuration.',
+          "Read the error under the editor: A number is too large or too small to save. Use a number closer to zero. Check that the editor has focus, its exact text is unchanged, and no Configuration write occurs.",
+          "Change only 1e400 to 2 and save again. Reopen the editor and check that thresholds is [1,2,3], with no null substituted. This is simulated UI evidence only.",
+        ],
       },
       invalidConfigurationInvisibleCharacters: {
         group: "Pages/Agent detail",
@@ -1276,34 +1382,10 @@ export function createAgentDetailScenarios({
         ],
       },
       configurationChangedElsewhereMerged: {
-        group: "Pages/Agent detail",
+        ...configurationConflictDraft,
         name: "Configuration edits merged over another browser's save",
-        path: draft,
-        configurationChangedElsewhere: {
-          values: {
-            gateway: { bind: "loopback" },
-            agents: { defaults: { model: "codex/gpt-5.1" } },
-          },
-        },
         actions: [
-          click("Edit Configuration"),
-          {
-            selector: "#configuration-json",
-            value: JSON.stringify(
-              {
-                gateway: { mode: "local", bind: "lan" },
-                agents: {
-                  defaults: {
-                    model: "codex/gpt-4.1",
-                    models: { "codex/gpt-4.1": { agentRuntime: { id: "codex" } } },
-                  },
-                },
-                channels: {},
-              },
-              null,
-              2,
-            ),
-          },
+          ...configurationConflictDraft.actions,
           click("Save Configuration"),
           click("Reload draft"),
         ],
@@ -1312,6 +1394,29 @@ export function createAgentDetailScenarios({
         steps: [
           "Check the note names /gateway/bind with the saved value, and the editor keeps the other browser's model with this reader's bind.",
         ],
+      },
+      configurationConflictFocus: {
+        ...configurationConflictDraft,
+        name: "Configuration conflict preserves moved focus",
+        rules: [
+          {
+            method: "GET",
+            suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+            skip: 1,
+            once: true,
+            // Leave time for a person to move focus during the simulated preflight.
+            delayMs: 10000,
+          },
+        ],
+        description:
+          "The first save waits 10 seconds for its simulated preflight read, then reports a conflict. Compare recovery focus with focus moved to the editor or navigation.",
+        steps: [
+          "Focus Save Configuration and press Enter. Stay on Checking Configuration: the conflict moves focus to Reload draft and announces an alert.",
+          "Reset. Save, then click Configuration JSON and use Select All during the 10-second check. The conflict keeps focus and active selection in the read-only editor without scrolling to the alert.",
+          "Reset and repeat, moving focus to the Agents link during the check. Focus stays on that link.",
+          "Choose Reload draft to merge the edits. Check that the saved model and this reader's bind remain, with a note naming /gateway/bind.",
+        ],
+        gap: "Simulated preflight conflict only; the browser regression checks a real Controller PATCH race.",
       },
       admitted: {
         group: "Pages/Agent detail",
@@ -1323,6 +1428,45 @@ export function createAgentDetailScenarios({
         steps: [
           "Open Deployment details with Enter to inspect the completed stages. Refresh deployment; your disclosure choice is preserved.",
         ],
+      },
+      repositoryAccessRedeployRequired: {
+        group: "Pages/Agent detail",
+        name: "Repository access needs redeployment after completion",
+        path: `${candidateVersion}&tab=deployment`,
+        deployed: true,
+        candidateDeploymentStatus: "succeeded",
+        candidateSelected: true,
+        rules: [
+          {
+            method: "GET",
+            suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+            skip: 1,
+            data: {
+              deploymentId: "rev_00000000-0000-4000-8000-000000000007",
+              namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+              agentId: "agt_00000000-0000-4000-8000-000000000001",
+              status: "succeeded",
+              cleanup: null,
+              error: null,
+              progress: null,
+              warnings: [],
+              repositoryAccess: {
+                state: "redeploy-required",
+                code: "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED",
+                message:
+                  "The controller can no longer renew this version's repository access on its current runtime. Deploy again to restore repository access.",
+              },
+            } satisfies AgentDeploymentStatusWire,
+          },
+        ],
+        description:
+          "A completed version acquires a repository access condition on refresh. The original deployment remains Completed and the API guidance appears beside it.",
+        steps: [
+          "Open Deployment and choose Refresh record. Both the version record and expanded Deployment activity show the repository access guidance while keeping Completed.",
+          "View v6 and open Deployment. Its record has no repository notice; Deployment activity still describes v7. Browsing and refreshing send no deployment request.",
+          "Return to v7 and choose Refresh deployment. The guidance stays with v7. Repeat at phone width and check the full message wraps without horizontal scrolling.",
+        ],
+        gap: "Simulated UI proof only; no repository renewal, deployment, or runtime is exercised. Absence of the condition does not establish healthy Git access.",
       },
       repositoryDraft: {
         group: "Pages/Agent detail",
@@ -1529,6 +1673,40 @@ export function createAgentDetailScenarios({
           "Wait for the recorded status to read Completed. The details open and the same button stays focused and fully in view. Repeat at desktop and phone widths.",
           "At phone width, reload the preview and repeat, this time scrolling all the way to the top without changing focus. The details open on completion and the reader stays at the top with the focused button still offscreen.",
         ],
+      },
+      deploymentRefreshFocus: {
+        group: "Pages/Agent detail",
+        name: "Refresh deployment focus when a newer version appears",
+        path: `${candidateVersion}&tab=deployment`,
+        deployed: true,
+        candidateDeploymentStatus: "queued",
+        rules: [
+          {
+            suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+            skip: 1,
+            once: true,
+            delayMs: 6_000,
+          },
+          {
+            suffix: `/agents/${newerDeployment.agentId}/revisions`,
+            skip: 1,
+            data: [newerDeployment],
+          },
+          {
+            suffix: `/deployments/${newerDeployment.id}`,
+            delayMs: 1_800,
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+          },
+        ],
+        description:
+          "A quiet poll for queued v7 is still running when you request a refresh. The refresh discovers v8, whose deployment record is temporarily unavailable.",
+        steps: [
+          "Fold Deployment details and Tab to Refresh deployment. About five seconds after v7 appears, the quiet poll starts. The button stays enabled and focused.",
+          "Press Enter while that poll is pending. The button becomes busy and keeps focus. When the refresh discovers v8 and replaces the panel, its Refresh deployment button keeps focus in the same position.",
+          "Wait for the v8 retry notice. Refresh deployment is enabled again and remains focused. Reset the story to repeat.",
+        ],
+        gap: "Storybook simulates the version list and the failed deployment read. The Controller browser regression covers the real version discovery and read failure.",
       },
       deploymentCompletesRereadFails: {
         group: "Pages/Agent detail",
@@ -2535,6 +2713,59 @@ export function createAgentDetailScenarios({
           "Wait 5 seconds. The message changes to 'Too many requests. You can try again now.' without another read.",
           "Select Include debug. That read is for another selection, so the old rows clear before its rate-limited answer.",
         ],
+      },
+      runtimeLogsSourceSwitchAfterRateLimit: {
+        ...runtimeLogsPage,
+        name: "Switch log sources after a rate-limited refresh",
+        runtimePod: "dedicatedPair",
+        rules: [
+          // The expected reads are Gateway, Agent, Agent refresh, then Gateway again.
+          // Check the last read's delay first so every earlier read advances its skip count.
+          { path: candidateRuntimeLogs, skip: 3, once: true, delayMs: 10_000 },
+          {
+            path: candidateRuntimeLogs,
+            skip: 2,
+            once: true,
+            status: 429,
+            code: "RUNTIME_LOGS_RATE_LIMITED",
+            retryAfter: 5,
+          },
+          {
+            path: candidateRuntimeLogs,
+            skip: 1,
+            once: true,
+            data: {
+              revisionId: "rev_00000000-0000-4000-8000-000000000007",
+              source: "agent",
+              stream: agentLogStream,
+              observedAt: "2026-09-27T12:00:00.000Z",
+              records: [
+                {
+                  type: "line",
+                  time: "2026-09-27T11:40:01.120Z",
+                  stream: agentLogStream,
+                  contentClass: "operational",
+                  kind: "text",
+                  level: "info",
+                  message: "Agent harness ready",
+                },
+              ],
+              withheld: 0,
+              truncated: false,
+              cursor: `v1.${"a".repeat(40)}.${"b".repeat(43)}`,
+            },
+          },
+        ],
+        description:
+          "An Agent (Harness) refresh is rate limited for five seconds. Switching to Gateway clears the old feedback while its read is pending.",
+        steps: [
+          "Wait for Gateway output, select Agent (Harness) under Source, and wait for “Agent harness ready.” Keep Follow off.",
+          "Choose Refresh logs. Check that the Agent output stays visible with “Too many requests. Try again in 5 seconds.”",
+          "Switch Source to Gateway while the message is visible. Check for “Reading output…” with neither the Agent output nor its rate-limit message.",
+          "After five seconds, confirm the retry message has not returned and the Gateway read is still pending. After about ten seconds from the switch, confirm “gateway listening” appears.",
+          "Reload the preview to repeat the sequence.",
+        ],
+        gap: "Storybook simulates the response and delay. The controller-backed Logs browser regression checks the same interaction through the Console API.",
       },
       runtimeLogsDenied: {
         group: "Pages/Agent detail",

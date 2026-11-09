@@ -28,6 +28,32 @@ and [repository layout](../layout.md#source-ownership) to find its owner. Bundle
 infrastructure implementations live under `apps/controller/src/drivers/`; native
 IAM lives in `packages/iam/`. Composition lives in `apps/controller/src/composition/`.
 
+### Use the contracts in a separate Driver project
+
+From the OpenClaw Enterprise repository root, with dependencies installed via
+`pnpm install --frozen-lockfile`, pack both packages from the same revision.
+Set `archives` to the absolute path of the `vendor` directory in your Driver
+project.
+
+```sh
+archives=/absolute/path/to/driver-project/vendor
+mkdir -p "$archives"
+pnpm --dir packages/utils pack --out "$archives/utils.tgz"
+pnpm --dir packages/contracts pack --out "$archives/contracts.tgz"
+```
+
+In the Driver project's root `pnpm-workspace.yaml`, add this entry to the
+top-level `overrides` mapping. The path is relative to the workspace root.
+
+```yaml
+overrides:
+  "@openclaw-enterprise/utils": "file:./vendor/utils.tgz"
+```
+
+From that same root, run `pnpm add ./vendor/contracts.tgz`. The override resolves
+the contracts package's dependency on `@openclaw-enterprise/utils` to the local
+archive. Your TypeScript code can then import from `@openclaw-enterprise/contracts`.
+
 ## 2. Implement and register it
 
 For an installed implementation, export a closed `configurationSchema`,

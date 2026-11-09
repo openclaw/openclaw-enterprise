@@ -18,6 +18,9 @@ metadata:
     {{- if and .Release.IsInstall .Values.installation.attemptId }}
     openclaw.dev/installation-attempt: {{ .Values.installation.attemptId | quote }}
     {{- end }}
+    {{- if and .Release.IsUpgrade .Values.installation.upgradeAttemptId }}
+    openclaw.dev/upgrade-attempt: {{ .Values.installation.upgradeAttemptId | quote }}
+    {{- end }}
     helm.sh/hook: pre-install,pre-upgrade
     helm.sh/hook-weight: "-10"
     helm.sh/hook-delete-policy: before-hook-creation
@@ -25,6 +28,10 @@ spec:
   backoffLimit: 0
   template:
     metadata:
+      {{- if and .Release.IsUpgrade .Values.installation.upgradeAttemptId }}
+      annotations:
+        openclaw.dev/upgrade-attempt: {{ .Values.installation.upgradeAttemptId | quote }}
+      {{- end }}
       labels:
         {{- include "openclaw.labels" (dict "root" . "component" "initialization") | nindent 8 }}
     spec:

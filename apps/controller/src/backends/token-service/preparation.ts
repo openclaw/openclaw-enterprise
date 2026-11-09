@@ -43,7 +43,7 @@ interface PreparationOptions<A extends TokenAdmission> {
 }
 
 /**
- * One background worker owner, invoked independently of requests/provisioning.
+ * One fenced issuance attempt shared by scheduled and authorized request-time preparation.
  */
 export function createTokenPreparation<A extends TokenAdmission>(options: PreparationOptions<A>) {
   const { store, clock, renewBeforeMs, minimumValidityMs } = options;

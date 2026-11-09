@@ -1,5 +1,8 @@
 import type { FastifyError, FastifyReply } from "fastify";
-import { PresetValidationError } from "@openclaw-enterprise/contracts";
+import {
+  ConnectionTemplateValidationError,
+  PresetValidationError,
+} from "@openclaw-enterprise/contracts";
 import { UNTRUSTED_ORIGIN_MESSAGE } from "../admission/admission-verifier.ts";
 import {
   AgentCredentialSourceBindingError,
@@ -22,6 +25,7 @@ import {
   CredentialWithdrawalNotFoundError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
+  BrowserAuthorizationError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
   IAMRoleInUseError,
@@ -781,6 +785,11 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
       pointerDetail(`/${error.group}`, error.field),
     );
   }
+  if (error instanceof ConnectionTemplateValidationError) {
+    return failure(400, "INVALID_REQUEST", error.message, [
+      { path: `/${error.field}`, code: "INVALID_VALUE" },
+    ]);
+  }
   if (error instanceof CredentialGatewayNotConfiguredError) {
     return failure(409, "CREDENTIAL_GATEWAY_NOT_CONFIGURED", error.message);
   }
@@ -871,6 +880,15 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   }
   if (error instanceof AgentDeletingError) {
     return failure(409, "AGENT_DELETING", "The requested Agent is being deleted.");
+  }
+  if (error instanceof BrowserAuthorizationError) {
+    return failure(
+      409,
+      "RESOURCE_CONFLICT",
+      error.recoveryAction === "fix_configuration"
+        ? "An administrator must correct the connection template before connecting this account."
+        : "The connection did not complete. Connect again.",
+    );
   }
   if (error instanceof NotImplementedError) {
     return failure(501, "NOT_IMPLEMENTED", error.message);
