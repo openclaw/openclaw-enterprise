@@ -28,9 +28,9 @@ import {
 import { codexAccountMetadata } from "../credential-refresh/codex-device-authorization.ts";
 import {
   modelProviderBaseUrl,
+  savedModelProvider,
   modelProviderConfiguration,
   requireModelSourceDestination,
-  type ModelProviderConfiguration,
 } from "../compute/model-provider.ts";
 import { nativeOpenAiModelSelections } from "../native-openai-catalog.ts";
 import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
@@ -70,24 +70,18 @@ interface OpenShellAttachmentSources {
 export class OpenShellCredentialAttachments {
   private readonly id: string;
   private readonly backend: Backend<OpenShellGateway>;
-  private readonly modelProvider: ModelProviderConfiguration | undefined;
   private readonly sources: OpenShellAttachmentSources;
 
-  constructor(
-    id: string,
-    backend: Backend<OpenShellGateway>,
-    modelProvider: ModelProviderConfiguration | undefined,
-    sources: OpenShellAttachmentSources,
-  ) {
+  constructor(id: string, backend: Backend<OpenShellGateway>, sources: OpenShellAttachmentSources) {
     this.id = id;
     this.backend = backend;
-    this.modelProvider = modelProvider;
     this.sources = sources;
   }
 
   async attachForRevision(
     context: CredentialRevisionContext,
   ): Promise<readonly CredentialSourceAttachment[]> {
+    const modelProvider = savedModelProvider(context.revision.harness.configuration);
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
     const binding = managedCredentialBinding(
@@ -114,7 +108,7 @@ export class OpenShellCredentialAttachments {
       const conflict = context.sources.some((other) => {
         const host =
           other.type === "openai"
-            ? new URL(modelProviderBaseUrl(this.modelProvider)).hostname
+            ? new URL(modelProviderBaseUrl(modelProvider)).hostname
             : (other.config.host ?? "");
         return (
           other.id !== source.id &&
@@ -157,7 +151,7 @@ export class OpenShellCredentialAttachments {
       }
       const type = this.sources.sourceType(source.type);
       if (type.catalog.type === "openai") {
-        requireModelSourceDestination(source.config, this.modelProvider);
+        requireModelSourceDestination(source.config, modelProvider);
         if (
           (context.revision.harness.id !== "codex" && context.revision.harness.id !== "openclaw") ||
           context.revision.harness.mode !== "dedicated"
@@ -171,9 +165,9 @@ export class OpenShellCredentialAttachments {
             modelProviderConfiguration(
               context.revision.configuration,
               context.revision.harness,
-              this.modelProvider,
+              modelProvider,
             ),
-            modelProviderBaseUrl(this.modelProvider),
+            modelProviderBaseUrl(modelProvider),
           );
         }
       }

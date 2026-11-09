@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-11-05
-last_updated_session: authoring-run/33ffb317-d84b-4de5-b946-70b58f35af74
+updated: 2026-11-08
+last_updated_session: authoring-run/0ff5cd21-1ead-46fb-bb5f-9f578872634a
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -93,13 +93,12 @@ Gateway/supervisor/sandbox images. Importing OCE images first prevents k3s garba
 collection. `writeInstallation` selects curated Codex plugins; the selected
 Credential Gateway supplies credentials.
 
-Agent Sandbox downloads use
-`internal/occdev/routing_manifest.go`; CI bootstrap uses
-`scripts/ci/routing.mjs:downloadPinnedArtifact`. Transient network failures
-and HTTP 408/429/5xx allow eight attempts, each limited to 60 seconds;
-retries are scheduled only when their delay fits the 120-second budget. Other failures
-are terminal. Verified manifests are limited to 32 MiB and written `0600`; archives
-are unchanged.
+`internal/occdev/openshell_assets.go:downloadVerified` streams archives;
+`internal/occdev/routing_manifest.go` and CI's
+`scripts/ci/routing.mjs:downloadPinnedArtifact` fetch manifests (32 MiB maximum).
+Transient network errors and HTTP 408/429/5xx allow eight 60-second attempts,
+starting within 120 seconds. Local downloads honor cancellation. Other errors
+are terminal. Archive retries remove failed `0600` files, preserving existing files.
 
 `dev-up` validates Kubernetes/OpenShell before `occ dev up`.
 `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only: in-cluster
@@ -217,10 +216,8 @@ with `SANDBOX_POD_LABELS_NOT_PERMITTED`.
 `provisionHarness` creates or adopts the provider. Renewal checks its version
 and updates only `node_setup_json` through `UpdateProvider`.
 `internal/occdev/kubernetes.go:openShellInstallationConfiguration` omits the
-optional startup delay in development. `harnessStatus` treats a service that
-does not listen yet as starting and requires an authenticated WebSocket
-handshake before it reports serving. Compute rolls the Gateway before checking
-enrollment; a reported Harness failure still blocks readiness.
+development startup delay. Compute rolls the Gateway before checking enrollment;
+`harnessStatus` below gates readiness.
 
 Dedicated Codex requires one lowercase `APP_TOKEN_SHA` and two runtime files,
 each at most 65,536 bytes. `APP_SERVER_TOKEN` is forbidden. A second model proxy,
@@ -229,7 +226,7 @@ malformed files and other Secret-backed environment fail before Gateway mutation
 After login, `agentRuntimeEntrypoint` calls
 `apps/controller/src/drivers/compute/kubernetes/codex-plugin-stdio.ts:withCodexPluginStdio`.
 Clean exit permits verifier WebSocket startup; failure triggers group TERM/KILL.
-Provider Gateway readiness checks transport, not HMAC plugin status.
+Readiness does not attest HMAC plugin status.
 
 `oce-codex-runtime`/`oce-openclaw-runtime` provide read-only setup and Gateway CA.
 Only Codex accepts `runtime.json`/`config.toml`. `harnessRuntimeCredentials` reads
@@ -304,11 +301,16 @@ After dispatch it stops local gRPC, but remote mutations may require recovery.
 WebSocket origin and `sandboxDataMount.mountPath` (default `/sandbox/enterprise`).
 Native hooks use `harnessHome` (`0700`). Invalid/changed exposure fails closed.
 
-`apps/controller/src/drivers/sandbox/openshell.ts:harnessStatus` probes the
-authenticated WebSocket handshake before reading a held-failure document;
-unanswered reads are transient `SANDBOX_GATEWAY_UNAVAILABLE`.
-`apps/controller/src/drivers/sandbox/openshell-service-transport.ts:serviceWebSocketHandshake`
-destroys HTTP refusals at once, releasing their connections.
+`apps/controller/src/drivers/sandbox/openshell.ts:harnessStatus` uses
+`apps/controller/src/drivers/sandbox/openshell-service-transport.ts:serviceCodexPatStatus`
+for dedicated `credential_source`/`codex_pat` revisions. After bearer-authenticated
+initialization, it requests `getAuthStatus` with `includeToken:false`
+and `refreshToken:false`. Only `personalAccessToken`, null `authToken` and
+`requiresOpenaiAuth:true` report `serving`; absent, mismatched or malformed
+authentication stays `starting`. This neither repairs login nor proves inference.
+Other modes retain `serviceWebSocketHandshake`. TLS and cancellation persist;
+unavailable WebSockets permit held-failure reads. Timeouts yield transient
+`SANDBOX_GATEWAY_UNAVAILABLE`.
 
 Provider files use reported absolute paths. Gateway failure blocks readiness.
 Providers survive uncertain creates; cleanup deletes their Sandbox first.
@@ -410,6 +412,10 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 12:06: Bound archive retries. (authoring-run/0ff5cd21-1ead-46fb-bb5f-9f578872634a - 4566d20b8ef66a3268e27bceac946765ecd5d336)
+
+- 2026-11-08 06:54: Trace serving-process PAT readiness. (authoring-run/cc85b8e8-41ee-4b88-9807-456c25e0fa77 - 12582b2da6c58b020cff462d6d8ecfe2bbedde8a)
 
 - 2026-11-05 14:34: Reuse bounded retries for the pinned Agent Sandbox manifest. (authoring-run/33ffb317-d84b-4de5-b946-70b58f35af74 - a383313636fc348a2325c0b1f6e05ae80327fd30)
 

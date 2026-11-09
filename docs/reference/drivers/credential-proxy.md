@@ -123,6 +123,12 @@ also binds provider, attachment epoch, process and network identities. These
 fields must describe authenticated backend observations. Matching names or a
 shared registration do not prove no-bypass networking.
 
+Provider `routes` receives the resolved revision Harness configuration during
+admission. Request-time authority calls the same provider with the saved settings
+and current source, then compares the requested route with that result. A mismatch
+refuses credential delivery, send authorization, or refresh. Source registration
+never chooses the Agent's inference destination. See the [model provider contract](kubernetes-compute/model-provider.md).
+
 ### Request-time exchange
 
 [API binding](../../../apps/controller/src/composition/egress-authority.ts)

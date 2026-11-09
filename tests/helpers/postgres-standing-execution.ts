@@ -8,8 +8,6 @@ import type { Pool } from "pg";
 import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
-import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
-import { databaseUrl } from "../helpers/postgres-database.mjs";
 
 export async function standingExecutionFixture(
   t: TestContext,
@@ -32,15 +30,21 @@ export async function standingExecutionFixture(
     };
   }>,
   driverSelections: Partial<InstallationStartupConfiguration["drivers"]> = {},
+  firstAdmissionDurationMs = 120_000,
 ) {
   const f = await standingExecutionPlatform(t, testUrl, driverSelections);
   const external = await setupRepository?.(f.observerPool, f.namespace.id);
-  if (external?.modelProvider) {
+  if (external?.modelProvider || external?.credentialGateway) {
     // Preserve production admission while the fixture supplies unrelated infrastructure.
     const admission = createTestKubernetesComputeDriver(f.compute.id, {
-      modelProvider: external.modelProvider,
+      gatewayRuntime: true,
+      ...(external.modelProvider ? { modelProvider: external.modelProvider } : {}),
     });
-    Object.assign(f.compute, { admitRevision: admission.admitRevision.bind(admission) });
+    Object.assign(f.compute, {
+      normalizeHarnessOverrides: admission.normalizeHarnessOverrides.bind(admission),
+      resolveHarnessConfiguration: admission.resolveHarnessConfiguration.bind(admission),
+      admitRevision: admission.admitRevision.bind(admission),
+    });
   }
   const registry =
     external?.registry ??
@@ -148,7 +152,7 @@ export async function standingExecutionFixture(
   const credentials = {
     driver: { id: driver.id, implementation: driver.implementation },
     bindings: [binding],
-    deadlineWallMs: Date.now() + 120_000,
+    deadlineWallMs: Date.now() + firstAdmissionDurationMs,
     standingApprovalId: approval.id,
     standingApprovalGeneration: approval.generation,
     standingApprovalScopeFingerprint: fingerprint,
@@ -200,22 +204,7 @@ export async function standingExecutionPlatform(
   driverSelections: Partial<InstallationStartupConfiguration["drivers"]> = {},
   backends: import("../../packages/contracts/src/index.ts").BackendDefinition[] = [],
 ) {
-  await ensurePostgresAgentBootstrap(t, {
-    label: "standing-execution",
-    authSecret: "standing-execution-local-test-secret-32",
-  });
-  const database = {
-    url: databaseUrl!,
-    pools: new Set<Pool>(),
-    workers: new Set(),
-  };
-  t.after(async () => {
-    for (const pool of database.pools) {
-      if (!("ending" in pool && pool.ending)) {
-        await pool.end();
-      }
-    }
-  });
-  const setupOptions = { database, leaseDurationMs: 30_000, driverSelections, backends };
-  return createWorkerRevisionFixtures(testUrl).setup(t, setupOptions);
+  // Each fixture owns its database: another case's issuer may use the same Driver
+  // identity but a different custody key, so it cannot inherit encrypted retirements.
+  return createWorkerRevisionFixtures(testUrl).setup(t, { driverSelections, backends });
 }

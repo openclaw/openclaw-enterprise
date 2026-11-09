@@ -24,6 +24,7 @@
     "tests/integration/postgres-github-admin-scope.test.mjs",
     "tests/integration/postgres-github-org-allowlist.test.mjs",
     "tests/integration/postgres-github-cookie-commit.test.mjs",
+    "tests/integration/postgres-sign-in-result-processes.test.ts",
     "tests/integration/postgres-sign-in-unmatched-callbacks.test.mjs",
     "tests/integration/postgres-github-session-cookie.test.mjs",
     "tests/integration/postgres-service-api-keys.test.mjs",
@@ -55,6 +56,10 @@
       "expectedTests": [
         "opted-in HTTP login and logout preserve cookies until real State commit acknowledgement"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-sign-in-result-processes.test.ts",
+      "expectedTests": ["sign-in results retain one-use ownership across real API processes"]
     },
     {
       "path": "tests/integration/postgres-github-session-cookie.test.mjs",

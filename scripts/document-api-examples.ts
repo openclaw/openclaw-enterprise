@@ -65,6 +65,10 @@ export function documentApiExamples<T>(document: T): T {
         throw new Error(`Missing or duplicate operationId: ${method} ${path}`);
       }
       used.add(name);
+      // The deployment handler supplies an empty object before validation when the body is omitted.
+      if (name === "deployAgent") {
+        record(operation.requestBody, "deployAgent request body").required = false;
+      }
       operation.description ??= operation.summary;
       const parameters = operation.parameters ?? [];
       if (!Array.isArray(parameters)) {

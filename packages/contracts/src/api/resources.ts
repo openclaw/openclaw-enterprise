@@ -18,6 +18,7 @@ import {
   CredentialSourceType,
   GatewayManagedModeSchema,
   HarnessExecutionModeSchema,
+  RevisionHarnessSchema,
   HarnessAuthBindingSchema,
   AgentCredentialSourcesSchema,
   InstallationId,
@@ -866,6 +867,29 @@ export const NamespaceSecretPermissionsResponse = Type.Object(
   { additionalProperties: false },
 );
 
+// A member who may create Agents here cannot read the Installation; this answer gives that caller
+// the capabilities the Agent create form needs (RFC-0026).
+export const NamespaceAgentCapabilitiesResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        capabilities: Type.Omit(
+          InstallationCapabilitiesSchema,
+          ["nativeAdmin", "agentProvisioning"],
+          {
+            additionalProperties: false,
+            description:
+              "The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It omits nativeAdmin and agentProvisioning, which apply only to guided provisioning and need Installation administration.",
+          },
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
 export const NamespaceCallerPermissionsResponse = Type.Object(
   {
     data: Type.Object(
@@ -1360,14 +1384,7 @@ export const AgentRevisionSchema = Type.Object(
       description:
         "Gateway managed mode requested for this Agent version. It does not report Gateway runtime state.",
     }),
-    harness: Type.Object(
-      {
-        id: Type.String({ minLength: 1 }),
-        version: Type.String({ minLength: 1 }),
-        mode: HarnessExecutionModeSchema,
-      },
-      { additionalProperties: false },
-    ),
+    harness: RevisionHarnessSchema,
     compute: Type.Object(
       { id: Type.String({ minLength: 1 }), implementation: Type.String({ minLength: 1 }) },
       { additionalProperties: false },
@@ -1530,6 +1547,20 @@ export const AgentDeploymentStatusSchema = Type.Object(
       Type.Literal("succeeded"),
       Type.Literal("failed"),
     ]),
+    repositoryAccess: Type.Optional(
+      Type.Object(
+        {
+          state: Type.Literal("redeploy-required"),
+          code: Type.Literal("REPOSITORY_EXECUTION_REDEPLOY_REQUIRED"),
+          message: Type.String(),
+        },
+        {
+          additionalProperties: false,
+          description:
+            "Present when completed maintenance for this exact revision recorded that repository access requires a new revision. This condition does not change the original deployment result. Absence does not establish current repository access health.",
+        },
+      ),
+    ),
     cleanup: Type.Union(
       [
         Type.Null(),
@@ -2038,6 +2069,9 @@ export type AgentRevisionWire = Type.Static<typeof AgentRevisionSchema>;
 export type AgentDeploymentStatusWire = Type.Static<typeof AgentDeploymentStatusSchema>;
 export type AgentDeploymentDiagnosticsWire = Type.Static<typeof AgentDeploymentDiagnosticsSchema>;
 export type InstallationResponse = Type.Static<typeof InstallationResponse>;
+export type NamespaceAgentCapabilitiesResponse = Type.Static<
+  typeof NamespaceAgentCapabilitiesResponse
+>;
 export type InstallationDeploymentInventoryResponse = Type.Static<
   typeof InstallationDeploymentInventoryResponse
 >;

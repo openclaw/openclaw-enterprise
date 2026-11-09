@@ -33,7 +33,10 @@ import {
   writeFixtureObject,
 } from "../helpers/production-rehearsal-custody.ts";
 import {
+  assertInstallationSecretRetained,
+  assertInstallationVolume,
   assertLocalRehearsalSelection,
+  readImmutableInstallationSecret,
   rehearsePopulatedReturn,
   selectRehearsalControllers,
 } from "../helpers/staging-upgrade-return.ts";
@@ -227,10 +230,21 @@ test(
     const fixtureRun = async (command, args, options = {}) => {
       if (command === "kubectl" && options.input && args.slice(-3).join(" ") === "apply -f -") {
         const object = protectedJSON(options.input);
+        if (
+          (rehearsalSelected || upgradeSelected) &&
+          object.kind === "Secret" &&
+          object.metadata.name === "occ-installation-startup"
+        ) {
+          object.immutable = true;
+        }
         if (custody) {
           return custody.create(object);
         }
-        return run(command, args, { ...options, protectedInput: object.kind === "Secret" });
+        return run(command, args, {
+          ...options,
+          input: JSON.stringify(object),
+          protectedInput: object.kind === "Secret",
+        });
       }
       if (custody && command === "helm" && args[0] === "upgrade" && args[1] === "--install") {
         await custody.assertPostgres(true);
@@ -355,6 +369,7 @@ test(
         authBaseURL: baseURL,
         installationName: `Production TUI ${suffix}`,
         apiClients: [{ namespace: system, podLabels: { app: "production-tui-proxy" } }],
+        channelDirectoryProxyUrl: rehearsal ? "http://198.51.100.25:3128" : undefined,
         metrics: rehearsal
           ? undefined
           : {
@@ -1248,6 +1263,37 @@ test(
       const sourceRevision = (await run("git", ["rev-parse", "HEAD"], { timeout: 30_000 })).trim();
       const valuesPath = join(directory, "values.json");
       const installationPath = join(directory, "installation.json");
+      const installationKubeArgs = [...kubeArgs, "--namespace", system];
+      const readInstallation = (name) =>
+        readImmutableInstallationSecret(run, installationKubeArgs, name);
+      const originalSecret = await readInstallation("occ-installation-startup");
+      const assertMountedInstallation = async (name) => {
+        const initialization = await get("job", `${release}-initialization`);
+        assertInstallationVolume(initialization.spec.template.spec, name);
+        const initializationPods = await resourcesFor(
+          "pods",
+          system,
+          "-l",
+          `batch.kubernetes.io/controller-uid=${initialization.metadata.uid}`,
+        );
+        assert.equal(initializationPods.length, 1, "expected the successful initializer Pod");
+        assertInstallationVolume(initializationPods[0].spec, name);
+        for (const component of ["api", "worker"]) {
+          const deployment = await get("deployment", `openclaw-enterprise-${component}`);
+          assertInstallationVolume(deployment.spec.template.spec, name);
+          const pods = await resourcesFor(
+            "pods",
+            system,
+            "-l",
+            `app.kubernetes.io/instance=${release},app.kubernetes.io/component=${component}`,
+          );
+          const running = pods.filter(
+            (pod) => !pod.metadata.deletionTimestamp && pod.status.phase === "Running",
+          );
+          assert.equal(running.length, 1, "expected one serving controller Pod");
+          assertInstallationVolume(running[0].spec, name);
+        }
+      };
       const controllerEvidence = join(directory, "controller-upgrade");
       const controllerOutput = await run(
         "scripts/upgrade-production-images",
@@ -1299,6 +1345,11 @@ test(
         );
         assert.equal(observed, upgradeImages.controller);
       }
+      assertInstallationSecretRetained(
+        await readInstallation(originalSecret.metadata.name),
+        originalSecret,
+      );
+      await assertMountedInstallation(originalSecret.metadata.name);
       const controllerInventory = await waitFor(
         "fleet inventory after the independent controller upgrade",
         async () => {
@@ -1343,6 +1394,51 @@ test(
           configuration: { catalogSource: "openai-curated" },
         },
       ];
+      // Stage the final runtime configuration before stopping either controller.
+      // The original immutable reference remains available for retained releases.
+      const successorName = "occ-installation-successor";
+      const successorConfiguration = structuredClone(candidateInstallation);
+      successorConfiguration.drivers.compute.configuration.images.gateway = upgradeImages.runtime;
+      successorConfiguration.drivers.compute.configuration.images.agent = upgradeImages.runtime;
+      const successorObject = {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: {
+          ...metadata(successorName),
+          annotations: {
+            "openclaw.dev/installation-id":
+              originalSecret.metadata.annotations["openclaw.dev/installation-id"],
+          },
+        },
+        immutable: true,
+        type: originalSecret.type,
+        data: {
+          ...originalSecret.data,
+          "installation.yaml": Buffer.from(JSON.stringify(successorConfiguration)).toString(
+            "base64",
+          ),
+        },
+      };
+      const successorUID = (
+        await writeFixtureObject(
+          run,
+          kubeArgs,
+          "create",
+          successorObject,
+          "jsonpath={.metadata.uid}",
+        )
+      ).trim();
+      const successor = await readInstallation(successorName);
+      assert.equal(successor.metadata.uid, successorUID, "staged Installation Secret was replaced");
+      assert.notEqual(successor.metadata.uid, originalSecret.metadata.uid);
+      candidateValues.installation.secretName = successorName;
+      const retainInstallationSecrets = async () => {
+        assertInstallationSecretRetained(
+          await readInstallation(originalSecret.metadata.name),
+          originalSecret,
+        );
+        assertInstallationSecretRetained(await readInstallation(successorName), successor);
+      };
       await writeFile(candidateValuesPath, JSON.stringify(candidateValues), { mode: 0o600 });
       await writeFile(candidateInstallationPath, JSON.stringify(candidateInstallation), {
         mode: 0o600,
@@ -1383,15 +1479,15 @@ test(
         OPENAI_API_KEY: undefined,
       };
 
-      // Commit the real Secret write, then simulate a lost client response.
-      // Resumption must use the recorded fleet and continue the same release.
+      // Interrupt after real quiescence and local preparation, before the Helm
+      // submission marker. Resume must retain the staged reference and fleet.
       const wrapperDirectory = join(directory, "interrupted-upgrade-bin");
       await mkdir(wrapperDirectory);
-      const realKubectl = (await run("sh", ["-c", "command -v kubectl"])).trim();
-      const wrapper = join(wrapperDirectory, "kubectl");
+      const realHelm = (await run("sh", ["-c", "command -v helm"])).trim();
+      const wrapper = join(wrapperDirectory, "helm");
       await writeFile(
         wrapper,
-        `#!/bin/sh\ncase " $* " in\n  *" replace --filename - "*) ${shellQuote(realKubectl)} "$@" || exit $?; exit 75 ;;\n  *) exec ${shellQuote(realKubectl)} "$@" ;;\nesac\n`,
+        `#!/bin/sh\nif [ "$1" = status ] && [ -f ${shellQuote(join(upgradeEvidence, "quiescence-worker-deployment.json"))} ]; then exit 75; fi\nexec ${shellQuote(realHelm)} "$@"\n`,
         { mode: 0o700 },
       );
       await assert.rejects(
@@ -1404,11 +1500,13 @@ test(
         }),
         /failed \(75\)/u,
       );
-      const installationSecret = await get("secret", "occ-installation-startup");
-      assert.equal(
-        Buffer.from(installationSecret.data["installation.yaml"], "base64").toString(),
-        await readFile(join(upgradeEvidence, "candidate-installation.yaml"), "utf8"),
+      await retainInstallationSecrets();
+      assert.ok(
+        Buffer.from(successor.data["installation.yaml"], "base64").toString() ===
+          (await readFile(join(upgradeEvidence, "candidate-installation.yaml"), "utf8")),
+        "prepared Installation bytes differ from the staged immutable Secret",
       );
+      await assert.rejects(readFile(join(upgradeEvidence, "helm-started")), { code: "ENOENT" });
       for (const component of ["api", "worker"]) {
         assert.equal(
           (await get("deployment", `openclaw-enterprise-${component}`)).spec.replicas,
@@ -1427,6 +1525,8 @@ test(
         output,
         /runtime image; controller image remained unchanged and 2 running Agents selected new revisions/u,
       );
+      await retainInstallationSecrets();
+      await assertMountedInstallation(successorName);
       const apiDeployment = await get("deployment", "openclaw-enterprise-api");
       const apiContainer = apiDeployment.spec.template.spec.containers.find(
         ({ name }) => name === "api",
@@ -1548,7 +1648,13 @@ test(
         assert.ok(!modelOutput.includes(value), "Upgrade TUI output leaked a credential");
       }
       assert.equal(JSON.parse(modelOutput).exitCode, 0);
+      await retainInstallationSecrets();
       await record("Independent runtime image upgrade and fresh model reply", {
+        installationReferences: {
+          original: { name: originalSecret.metadata.name, uid: originalSecret.metadata.uid },
+          successor: { name: successorName, uid: successor.metadata.uid },
+          retained: true,
+        },
         previousRevisionId: finalGateway.revisionId,
         revisionId: upgradedRevision,
         controllerImage: upgradeImages.controller,

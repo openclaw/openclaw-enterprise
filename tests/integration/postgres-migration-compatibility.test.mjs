@@ -24,6 +24,10 @@ import {
 import { migrateWithHistory } from "../../scripts/migration-history.mjs";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import {
+  assertReleasedControllerCompatibility,
+  assertReleasedControllerIAMCompatibility,
+} from "../helpers/released-controller-compatibility.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const migrationsDirectory = join(repositoryRoot, "migrations");
@@ -39,6 +43,16 @@ const providerMigrationTags = new Set([
   "0030_codex_pat_harness_auth",
 ]);
 const execFileAsync = promisify(execFile);
+const controllerImages = {
+  released: {
+    reference: process.env.OCC_TEST_RELEASED_CONTROLLER_IMAGE,
+    revision: process.env.OCC_TEST_RELEASED_CONTROLLER_REVISION,
+  },
+  candidate: {
+    reference: process.env.OCC_TEST_CANDIDATE_CONTROLLER_IMAGE,
+    revision: process.env.OCC_TEST_CANDIDATE_CONTROLLER_REVISION,
+  },
+};
 const dependency = createRequire(new URL("../../packages/occ/package.json", import.meta.url));
 const { drizzle } = dependency("drizzle-orm/node-postgres");
 const { migrate } = dependency("drizzle-orm/node-postgres/migrator");
@@ -233,13 +247,21 @@ test(
           .replaceAll(`"occ"."${table}".`, `"${table}".`);
         await client.query(temporaryDdl);
         const checks = await client.query(
-          `SELECT pg_get_constraintdef(oid) AS definition
+          `SELECT pg_get_constraintdef(oid) AS definition, convalidated, conrelid=$3::regclass AS stored
              FROM pg_constraint
             WHERE conname = $1 AND conrelid IN ($2::regclass, $3::regclass)`,
           [constraint, `pg_temp.${table}`, `occ.${table}`],
         );
         assert.equal(checks.rowCount, 2, `Both tables must have ${constraint}`);
-        assert.equal(checks.rows[0].definition, checks.rows[1].definition);
+        const generated = checks.rows.find((row) => !row.stored);
+        const stored = checks.rows.find((row) => row.stored);
+        // Existing snapshots remain available for cleanup; new writes need resolved settings.
+        const retainedUnsupportedSnapshots = constraint === "agent_revisions_admitted_snapshot";
+        assert.equal(stored.convalidated, !retainedUnsupportedSnapshots);
+        assert.equal(
+          stored.definition,
+          generated.definition + (retainedUnsupportedSnapshots ? " NOT VALID" : ""),
+        );
         await client.query(`DROP TABLE pg_temp."${table}"`);
       }
     } finally {
@@ -1372,6 +1394,7 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.close_repository_standing_execution()", false],
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
+      ["occ.hold_account_administration_policy(text)", true],
       ["occ.record_repository_standing_execution(text,text,text,text,text)", true],
       ["occ.remove_sandbox_policy_access()", false, "search_path=pg_catalog, occ"],
       ["occ.retry_failed_agent_deletion(text,text,text,text)", true],
@@ -1402,7 +1425,12 @@ function receiptsMatchEntries(receipts, entries) {
 
 async function seedCanonicalData(
   db,
-  { preset = false, computeAdmission = false, executionAdmission = false } = {},
+  {
+    preset = false,
+    computeAdmission = false,
+    executionAdmission = false,
+    harnessSettings = false,
+  } = {},
 ) {
   const installation = `ins_${randomUUID()}`;
   const namespace = `ns_${randomUUID()}`;
@@ -1445,7 +1473,12 @@ async function seedCanonicalData(
           configuration_kind: "agent",
           configuration_generation: 1,
           draft_spec: {},
-          harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+          harness: {
+            id: "codex",
+            version: "1.0.0",
+            mode: "dedicated",
+            ...(harnessSettings ? { overrides: {}, configuration: {} } : {}),
+          },
           harness_auth: { method: "runtime" },
           ...(executionAdmission
             ? { execution_admission: { version: 2, mode: "unprotected" } }
@@ -1726,6 +1759,52 @@ async function assertUpgradedAuthentication(db) {
   );
 }
 
+async function assertSignInResultStorage(app) {
+  // An upgraded Better Auth session can own a result only after State binds it.
+  const insert = `INSERT INTO occ.human_authentication_results
+    (installation_id,attempt_id,session_id,provider_id,expires_at)
+    SELECT i.id,$1,s.id,'oidc',clock_timestamp() + $2::interval
+    FROM occ.installation i CROSS JOIN occ.session s`;
+  const expired = "e".repeat(43);
+  const live = "v".repeat(43);
+  await assert.rejects(app.query(insert, [live, "1 minute"]), { code: "23503" });
+  await app.query(
+    `INSERT INTO occ.iam_identities(id,kind,issuer,subject)
+     SELECT 'migration-human','principal','migration-fixture',id FROM occ."user"`,
+  );
+  await app.query(
+    `INSERT INTO occ.human_authentication_accounts(user_id,installation_id,principal_id)
+     SELECT u.id,i.id,'migration-human' FROM occ."user" u CROSS JOIN occ.installation i`,
+  );
+  await app.query(
+    `INSERT INTO occ.human_authentication_sessions(session_id,user_id,method_id,version,method_version)
+     SELECT s.id,s.user_id,a.id,1,a.authentication_version FROM occ.session s
+     JOIN occ.account a ON a.user_id=s.user_id AND a.provider_id='oidc'`,
+  );
+
+  await app.query(insert, [expired, "-1 minute"]);
+  await app.query(insert, [live, "1 minute"]);
+  await assert.rejects(app.query(insert, [live, "1 minute"]), { code: "23505" });
+  await assert.rejects(app.query("UPDATE occ.human_authentication_results SET expires_at=now()"), {
+    code: "42501",
+  });
+  assert.deepEqual(
+    (
+      await app.query(
+        `DELETE FROM occ.human_authentication_results
+         WHERE installation_id=(SELECT id FROM occ.installation) AND expires_at <= clock_timestamp()
+         RETURNING attempt_id`,
+      )
+    ).rows,
+    [{ attempt_id: expired }],
+  );
+  await app.query("DELETE FROM occ.session");
+  assert.equal(
+    (await app.query("SELECT attempt_id FROM occ.human_authentication_results")).rowCount,
+    0,
+  );
+}
+
 const legacyExecutionAdmission = { version: 2, mode: "unprotected" };
 
 // A revision admitted before 0060 carries no execution admission. The upgrade records
@@ -1810,6 +1889,8 @@ async function assertUpgradedRevisionReadable(db) {
   // New rows still fail closed: no snapshot may omit its decision, and a decision that
   // claims protection without the protected plan and reader marker is inconsistent.
   const revisionId = `rev_${randomUUID()}`;
+  // A new writer supplies the current Harness shape while the old row stays unchanged.
+  const currentSpec = `jsonb_set(admitted_spec, '{harness}', (admitted_spec->'harness') || '{"overrides":{},"configuration":{}}'::jsonb)`;
   const insertRevision = (rewrite, ...parameters) =>
     db.app.query(
       `INSERT INTO occ.agent_revisions(id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at)
@@ -1819,8 +1900,8 @@ async function assertUpgradedRevisionReadable(db) {
   const invalidAdmission = (error) =>
     error.code === "23514" && error.constraint === "agent_revisions_execution_admission";
   for (const rewrite of [
-    "admitted_spec - 'execution_admission'",
-    `admitted_spec || '{"execution_admission":{"version":2,"mode":"protected"}}'::jsonb`,
+    `${currentSpec} - 'execution_admission'`,
+    `${currentSpec} || '{"execution_admission":{"version":2,"mode":"protected"}}'::jsonb`,
   ]) {
     await assert.rejects(insertRevision(rewrite), invalidAdmission);
   }
@@ -1829,7 +1910,7 @@ async function assertUpgradedRevisionReadable(db) {
   const plan = { execution: { namespaceId, agentId, revisionId }, routes: [] };
   const insertProtectedV2 = (egressPlan) =>
     insertRevision(
-      `jsonb_set(admitted_spec, '{harness_auth,protectedExecutionVersion}', '2'::jsonb)
+      `jsonb_set(${currentSpec}, '{harness_auth,protectedExecutionVersion}', '2'::jsonb)
        || jsonb_build_object('execution_admission', '{"version":2,"mode":"protected"}'::jsonb,
                              'egress_plan', $3::jsonb)`,
       egressPlan,
@@ -2002,6 +2083,11 @@ test(
       [67, "preAgentPluginDriver"],
       [68, "preConnectionTemplates"],
       [69, "preSavedConnections"],
+      [70, "preDefaultUsers"],
+      [71, "preHarnessOverrides"],
+      [72, "preAccountAdministrationPolicy"],
+      [73, "preFiniteRepositorySessionWithdrawal"],
+      [74, "preHumanAuthenticationResults"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2010,6 +2096,8 @@ test(
           computeAdmission: prefix >= 55,
           // 0060 requires an execution admission on every revision written after it.
           executionAdmission: prefix >= 62,
+          // 0072 requires settings on new rows; earlier prefixes retain their historical shape.
+          harnessSettings: prefix >= 72,
         });
         const assertSourceOwners =
           prefix === 59
@@ -2033,6 +2121,9 @@ test(
         assert.ok(existingBindings.rows.length > 0);
         assert.ok(existingBindings.rows.every((row) => row.first_deployment_digest === null));
         await assertUpgradedAuthentication(db);
+        if (history === "preHumanAuthenticationResults") {
+          await assertSignInResultStorage(db.app);
+        }
         if (history === "preConnectionTemplates") {
           // An Installation-wide template cannot present a Namespace client's credentials,
           // even when an application-role writer bypasses OCC.
@@ -2072,7 +2163,8 @@ test(
           await db.app.query(
             `INSERT INTO occ.agent_revisions
                (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
-             SELECT $1, namespace_id, agent_id, revision_number + 1, backend_id, admitted_spec, now()
+             SELECT $1, namespace_id, agent_id, revision_number + 1, backend_id,
+               jsonb_set(admitted_spec, '{harness}', (admitted_spec->'harness') || '{"overrides":{},"configuration":{}}'::jsonb), now()
              FROM occ.agent_revisions`,
             [`rev_${randomUUID()}`],
           );
@@ -2212,7 +2304,16 @@ test(
       history: "preCanonicalHarnessAuth",
     });
     await assertCompletedHistory(db, receipts);
-    executionAdmission = { execution_admission: { version: 2, mode: "unprotected" } };
+    const originalHarness = (
+      await db.app.query(
+        "SELECT admitted_spec->'harness' AS harness FROM occ.agent_revisions WHERE namespace_id=$1 AND revision_number=1",
+        [namespaceId],
+      )
+    ).rows[0].harness;
+    executionAdmission = {
+      execution_admission: { version: 2, mode: "unprotected" },
+      harness: { ...originalHarness, overrides: {}, configuration: {} },
+    };
     assert.deepEqual((await insertSnapshot(binding)).rows, [{ auth: binding }]);
     const apiKey = { ...binding, loginMode: "api_key" };
     assert.deepEqual((await insertSnapshot(apiKey)).rows, [{ auth: apiKey }]);
@@ -2499,6 +2600,15 @@ test(
   },
 );
 
+async function dumpHistoryArchive(fixture, database) {
+  const { stdout } = await execFileAsync(
+    "docker",
+    ["exec", fixture.container, "pg_dump", "-U", "postgres", "-Fc", database.name],
+    { encoding: "buffer", timeout: 180_000, maxBuffer: 32 * 1024 * 1024 },
+  );
+  return stdout;
+}
+
 async function restoreHistoryArchive(context, fixture, archive) {
   const restored = await historyDatabase(context, fixture, "restore", { schemas: false });
   const command = ["exec", "-i", fixture.container, "pg_restore", "-U", "postgres"];
@@ -2559,14 +2669,11 @@ test(
       const nativeData = prefix ? await canonicalData(source) : undefined;
 
       // Restore a real archive into a distinct database, preserving ownership and grants atomically.
-      const { stdout: archive } = await execFileAsync(
-        "docker",
-        ["exec", fixture.container, "pg_dump", "-U", "postgres", "-Fc", source.name],
-        { encoding: "buffer", timeout: 180_000, maxBuffer: 32 * 1024 * 1024 },
-      );
+      const archive = await dumpHistoryArchive(fixture, source);
       const restored = await restoreHistoryArchive(context, fixture, archive);
       const accepted = await logicalRestoreSnapshot(restored);
       const restoredDigest = catalogDigest(accepted.occ);
+      context.diagnostic(`Restore ${lineage}: ${restoredDigest}`);
       assert.notEqual(restoredDigest, catalogDigest(native.occ));
       assert.deepEqual(accepted.receipts, native.receipts);
       assert.deepEqual(accepted.drizzle, native.drizzle);
@@ -2590,6 +2697,7 @@ test(
           await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
         );
         const upgraded = await logicalRestoreSnapshot(restored);
+        context.diagnostic(`Upgraded restore: ${catalogDigest(upgraded.occ)}`);
         assert.deepEqual(upgraded.identities, native.identities);
         assert.deepEqual(upgraded.receipts.slice(0, 51), native.receipts);
         assert.deepEqual(
@@ -2662,6 +2770,22 @@ test(
         }
       }
     }
+
+    // Tables created after restoring 0074 retain their native catalog spelling.
+    const previous = await historyDatabase(context, fixture, "withdrawal", { prefix: 74 });
+    const restored = await restoreHistoryArchive(
+      context,
+      fixture,
+      await dumpHistoryArchive(fixture, previous),
+    );
+    assert.deepEqual(await runHistoryMigration(restored, "production"), {
+      ok: true,
+      history: "preHumanAuthenticationResults",
+    });
+    assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
+      ok: true,
+      history: "completed",
+    });
   },
 );
 
@@ -3660,3 +3784,43 @@ test(
     assert.equal(await authorize(principals[2], "read"), true);
   },
 );
+
+// An unselected opt-in case must not become an unexpected skip in native PostgreSQL CI.
+if (
+  Object.values(controllerImages).some((image) =>
+    Object.values(image).some((value) => value !== undefined),
+  )
+) {
+  test(
+    "Released controller remains usable across candidate database writes",
+    { timeout: 360_000 },
+    async (t) => {
+      assert.ok(
+        Object.values(controllerImages).every(
+          (image) => typeof image.reference === "string" && typeof image.revision === "string",
+        ),
+        "Both released and candidate controller image references and revisions are required.",
+      );
+      await assertReleasedControllerCompatibility(t, controllerImages, async () => {
+        const fixture = await migrationHistoryFixture();
+        return historyDatabase(t, fixture, "released_controller");
+      });
+    },
+  );
+  test(
+    "Released controller remains usable after configured IAM activation",
+    { timeout: 360_000 },
+    async (t) => {
+      assert.ok(
+        Object.values(controllerImages).every(
+          (image) => typeof image.reference === "string" && typeof image.revision === "string",
+        ),
+        "Both released and candidate controller image references and revisions are required.",
+      );
+      await assertReleasedControllerIAMCompatibility(t, controllerImages, async () => {
+        const fixture = await migrationHistoryFixture();
+        return historyDatabase(t, fixture, "released_iam");
+      });
+    },
+  );
+}
