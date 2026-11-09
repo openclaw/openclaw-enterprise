@@ -1176,7 +1176,9 @@ export type AgentRevisionMetadata = Pick<
  * revisions apart. List routes return it; reading it never decodes the admitted snapshot.
  */
 export type AgentRevisionSummary = AgentRevisionMetadata &
-  Pick<AgentRevision, "configurationId" | "configurationGeneration" | "harness">;
+  Pick<AgentRevision, "configurationId" | "configurationGeneration"> & {
+    readonly harness: RevisionHarnessDescriptor;
+  };
 
 /** One page of revision summaries, newest first, and the revision number the next page starts below. */
 export interface AgentRevisionSummaryPage {

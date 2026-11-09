@@ -29487,6 +29487,7 @@
                           },
                           "harness": {
                             "additionalProperties": false,
+                            "description": "Older revisions omit overrides and configuration when Harness settings were not recorded.",
                             "properties": {
                               "configuration": {
                                 "additionalProperties": {},
@@ -29507,7 +29508,7 @@
                               },
                               "version": { "minLength": 1, "type": "string" }
                             },
-                            "required": ["id", "version", "mode", "overrides", "configuration"],
+                            "required": ["id", "version", "mode"],
                             "type": "object"
                           },
                           "id": {
@@ -29528,8 +29529,8 @@
                           "backendId",
                           "configurationId",
                           "configurationGeneration",
-                          "harness",
                           "createdAt",
+                          "harness",
                           "deploymentStatus",
                           "deploymentErrorCode"
                         ],

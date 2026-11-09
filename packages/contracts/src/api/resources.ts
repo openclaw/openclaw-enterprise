@@ -1488,9 +1488,20 @@ export const AgentRevisionSummarySchema = Type.Object(
       "backendId",
       "configurationId",
       "configurationGeneration",
-      "harness",
       "createdAt",
     ]).properties,
+    harness: Type.Object(
+      {
+        ...RevisionHarnessSchema.properties,
+        overrides: Type.Optional(RevisionHarnessSchema.properties.overrides),
+        configuration: Type.Optional(RevisionHarnessSchema.properties.configuration),
+      },
+      {
+        additionalProperties: false,
+        description:
+          "Older revisions omit overrides and configuration when Harness settings were not recorded.",
+      },
+    ),
     // The outcome a Versions list marks beside each version (finding 2422).
     deploymentStatus: Type.Union(
       [
