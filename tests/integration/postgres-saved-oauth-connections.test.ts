@@ -125,6 +125,16 @@ test(
         secretDriver,
         controllerOptions: {
           preparedTokens,
+          iamConfiguration: {
+            roles: [
+              {
+                id: "creator",
+                permissions: [{ action: "create", resourceKind: "credential_source" }],
+              },
+            ],
+            defaultUserGroups: [],
+            roleBindings: [{ group: "members", role: "creator", scope: "installation" }],
+          },
           githubRosterMappings: [
             {
               id: "members",
@@ -470,26 +480,8 @@ test(
     // Losing create authority while loading the client secret must leave the provider code
     // unspent. Losing it after exchange must keep the returned grant out of the Token Service.
     const groupId = "group_config_members";
-    const creatorRole = `role_${randomUUID()}`;
     const readerPrincipal = human.json().data.principalId;
-    await state.seedNativeIAM({
-      identities: [],
-      groups: [{ id: groupId, name: "Connection creators" }],
-      roles: [
-        { id: creatorRole, permissions: [{ action: "create", resourceKind: "credential_source" }] },
-      ],
-      bindings: [
-        {
-          id: `binding_${randomUUID()}`,
-          namespaceId,
-          roleId: creatorRole,
-          subjectKind: "group",
-          subjectId: groupId,
-        },
-      ],
-      memberships: [],
-      restrictions: [],
-    });
+    await controller.applyIAMConfiguration();
     for (const phase of ["client-secret", "provider-response"] as const) {
       await pool.query(
         "INSERT INTO occ.iam_group_memberships(group_id,principal_id) VALUES ($1,$2)",
