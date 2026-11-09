@@ -12,7 +12,7 @@ import { postgresSuperuserPassword, runPostgresAdmin } from "../../scripts/ci/po
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 import { startFakePostgres } from "../helpers/fake-postgres-server.mjs";
-import { stopProcess } from "../helpers/stop-process.mjs";
+import { stopProcess } from "../helpers/stop-process.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 

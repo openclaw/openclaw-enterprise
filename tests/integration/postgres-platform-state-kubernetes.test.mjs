@@ -22,7 +22,7 @@ import {
   waitForNamespaceReady,
 } from "../helpers/postgres-platform-state.mjs";
 import { jsonLines } from "../helpers/json-lines.mjs";
-import { stopProcess } from "../helpers/stop-process.mjs";
+import { stopProcess } from "../helpers/stop-process.ts";
 import { servedAs } from "../helpers/agent-identity.mjs";
 
 // Revision lists return summaries, newest first (finding 1323), each with its deployment's

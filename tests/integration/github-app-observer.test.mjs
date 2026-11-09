@@ -6,7 +6,7 @@ import { chmod, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { captureChild } from "../helpers/child-processes.mjs";
+import { captureChild } from "../helpers/child-processes.ts";
 import { setEnvironment } from "../helpers/environment.ts";
 import {
   createGitHubAppRepositoryObserver,

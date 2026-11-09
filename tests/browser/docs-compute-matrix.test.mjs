@@ -14,7 +14,7 @@ import {
   waitForDocsPreview,
   writeComputeMatrixReadme,
 } from "../helpers/docs-site.mjs";
-import { stopProcess } from "../helpers/stop-process.mjs";
+import { stopProcess } from "../helpers/stop-process.ts";
 
 const { chromium } = playwright;
 

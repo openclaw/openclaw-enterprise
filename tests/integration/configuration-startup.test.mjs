@@ -33,7 +33,7 @@ import {
 import { validateSelectedBackendDrivers } from "../../packages/occ/src/index.ts";
 import { spawnSync } from "node:child_process";
 import { reservedPortArgs, reservePort } from "../helpers/available-port.mjs";
-import { captureChild, concurrencyLimit, settled } from "../helpers/child-processes.mjs";
+import { captureChild, concurrencyLimit, settled } from "../helpers/child-processes.ts";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {

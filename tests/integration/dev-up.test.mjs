@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { composeConfiguration } from "../helpers/compose.mjs";
 import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.mjs";
-import { stopProcess } from "../helpers/stop-process.mjs";
+import { stopProcess } from "../helpers/stop-process.ts";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import {
   createFixture,

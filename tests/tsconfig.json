@@ -37,6 +37,8 @@
     "../scripts/console/record-walkthrough.ts",
     "../packages/contracts/prepack.ts",
     "../packages/utils/prepack.ts",
+    "helpers/child-processes.ts",
+    "helpers/stop-process.ts",
     "helpers/temporary-directory.ts",
     "helpers/environment.ts",
     "helpers/fake-commands.ts",
