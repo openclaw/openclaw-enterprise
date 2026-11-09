@@ -17,8 +17,8 @@ See [production installation](production-installation.md) and
 Select `--controller-image` for the OCC API and worker, and `--broker-image`
 for the repository broker when credentials are enabled. A broker restart can
 interrupt existing Agent versions. `--runtime-image` updates the gateway and
-runtime image and redeploys every running Agent concurrently. Each upgrade
-stops the API and worker during migration and rollout. Allow capacity for old
+runtime image and redeploys every running Agent concurrently. Upgrades stop the
+API and worker during migration and rollout. Allow capacity for old
 and replacement versions to overlap.
 
 Keep the unchanged checkout exclusive and evidence/baselines outside the chart.
@@ -53,9 +53,11 @@ Prepare:
   database state;
 - the production kubeconfig, Helm values, Installation YAML, OCC service key,
   and optional CA bundle in protected files;
-- Bash, Python 3, Node.js satisfying `engines.node` in the release checkout’s `package.json`, Helm, kubectl, jq, yq, cmp and mktemp on the operator host. The Kubernetes identity must
+- Bash, Python 3, Node.js matching the checkout’s `package.json` `engines.node`, Helm, kubectl, jq, yq, cmp and mktemp on the operator host. The Kubernetes identity must
   create and delete Jobs, Secrets and NetworkPolicies; get Jobs and Pods; list Pods;
-  read Pod logs; and get and patch Deployments in the release namespace;
+  read Pod logs; get and patch Deployments; and get Installation Secrets in the
+  release namespace. Mutable Installation Secret changes require `update` after
+  API/worker shutdown; the helper only reads staged immutable Secrets;
 - for the bundled Collector, [refresh its config Secret](../observability.md#refresh-the-collector-configuration-on-upgrade)
   from the release checkout and restart the Collector, even for image-only
   releases. Helm leaves the Secret as is. The helper stops before mutation if
@@ -87,8 +89,8 @@ fresh Agent revision. Existing Sandboxes require the same launch specification;
 a controller-only upgrade cannot reuse them with a changed command. Plan an
 authorized redeployment from reviewed drafts, even if the runtime image is unchanged.
 
-If a controller-only release changes the rendered Pod specs, the new worker
-restarts affected Agent Pods once on the same image. A broker restart recreates
+If a controller-only release changes Pod specs, the new worker restarts affected
+Agent Pods once on the same image. A broker restart recreates
 dedicated Codex Pods and can leave sessions the worker cannot replace. Plan the
 interruption and authorized replacement versions. Review affected Agents'
 drafts and deploy grants. Stop if recovery is unsafe. Follow the
@@ -279,19 +281,15 @@ API and worker preflight logs in the evidence directory. After a cleanup warning
 or interruption, preserve the evidence and lock and follow
 [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
 
-The helper stops API/worker before updating protected inputs and the Installation
-Secret. Helm migrates and bootstraps before restoring Deployments; the helper
+The helper stops the API and worker before updating protected inputs or replacing
+changed mutable Secret data. Helm migrates and bootstraps before restoring Deployments; the helper
 then verifies rollout and OCC access.
-
-Expected result:
 
 ```text
 Upgraded controller image; no Agent deployments were requested.
 ```
 
 ## Upgrade Agent runtimes
-
-Select the runtime image:
 
 ```bash
 export RUNTIME_IMAGE='<registry>/runtime@sha256:<64-hex-digest>'
@@ -308,7 +306,7 @@ Check preflight warnings. The selected controller image checks saved Agent
 Configurations when it supports draft validation and the drafts fit in the
 temporary Secret. Otherwise, OCC checks them at deployment. If preflight
 refuses a draft, correct it or stop the Agent before running a new preflight.
-Driver, credential, plugin and repository checks still run at deployment.
+Deployment still checks Drivers, credentials, plugins and repositories.
 
 Before mutation, the command requires a complete authorized inventory with no
 deployment in progress. Every running Agent must have a readable selected version
@@ -331,7 +329,7 @@ Agent's deployment, such as for a saved setting the new release refuses, the
 command names the Agent and the refusal; correct it and
 [resume](production-upgrade-recovery.md#correct-a-refused-agent-deployment).
 Stopped and deleting Agents remain untouched. An empty fleet updates the saved
-runtime selection but does not prove that the image starts.
+runtime selection without proving image startup.
 
 OpenClaw runs startup-safe migrations and plugin convergence before each gateway
 becomes ready. This workflow replaces immutable images instead of running
@@ -346,15 +344,12 @@ Doctor, fails the upgrade. Doctor output is saved under `status/*.doctor.*`; see
 Gateways run `doctor --fix` themselves only
 for [older state](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
 
-Expected result:
-
 ```text
 Upgraded runtime image; controller image remained unchanged and <count> running Agents selected new revisions.
 ```
 
-To intentionally release both images together, pass both image options. The
-command applies the controller and runtime changes in one Helm release before
-deploying the recorded fleet.
+To release both images together, pass both image options. The command applies
+both changes in one Helm release before deploying the recorded fleet.
 
 ## Verify the release
 
