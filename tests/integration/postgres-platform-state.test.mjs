@@ -126,7 +126,13 @@ test(
       configurationKind: "agent",
       configurationGeneration: 1,
       configuration: {},
-      harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      harness: {
+        id: "openclaw",
+        version: "1.0.0",
+        mode: "embedded",
+        overrides: {},
+        configuration: {},
+      },
       compute: {
         id: "compute-local-development",
         implementation: "deterministic-local-development",
@@ -577,7 +583,13 @@ test(
         configurationKind: "agent",
         configurationGeneration: 1,
         configuration: { agents: { defaults: { model: "test/model" } } },
-        harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+        harness: {
+          id: "openclaw",
+          version: "1.0.0",
+          mode: "embedded",
+          overrides: {},
+          configuration: {},
+        },
         compute: { id: "compute-provisioning-success", implementation: "deterministic-test" },
         executionAdmission: { version: 2, mode: "unprotected" },
         harnessAuth: { method: "runtime" },
@@ -1437,7 +1449,7 @@ test(
       import("../../apps/controller/src/worker.ts"),
       import("../helpers/development.mjs"),
       import("../../packages/occ/src/state/postgres-state.ts"),
-      import("../helpers/configuration-driver.mjs"),
+      import("../helpers/configuration-driver.ts"),
       import("../helpers/postgres-backend-state.mjs"),
     ]);
     const pool = new Pool({ connectionString: databaseUrl });
@@ -1909,7 +1921,13 @@ test(
         configurationKind: "agent",
         configurationGeneration: 1,
         configuration: configuration.values,
-        harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+        harness: {
+          id: "openclaw",
+          version: "1.0.0",
+          mode: "embedded",
+          overrides: {},
+          configuration: {},
+        },
         compute: {
           id: "compute-local-development",
           implementation: "deterministic-local-development",
@@ -2221,7 +2239,13 @@ test(
           configurationKind: "agent",
           configurationGeneration: 1,
           configuration: configuration.values,
-          harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+          harness: {
+            id: "openclaw",
+            version: "1.0.0",
+            mode: "embedded",
+            overrides: {},
+            configuration: {},
+          },
           compute: {
             id: "compute-local-development",
             implementation: "deterministic-local-development",
@@ -2289,7 +2313,7 @@ test(
       { requestFailure },
     ] = await Promise.all([
       import("pg"),
-      import("../helpers/configuration-driver.mjs"),
+      import("../helpers/configuration-driver.ts"),
       import("../helpers/secret-driver.mjs"),
       import("../../apps/controller/src/http/errors.ts"),
     ]);
@@ -2659,7 +2683,7 @@ test(
       import("../../packages/occ/src/state/postgres-state.ts"),
       import("../../packages/occ/src/index.ts"),
       import("../../packages/iam/src/index.ts"),
-      import("../helpers/configuration-driver.mjs"),
+      import("../helpers/configuration-driver.ts"),
       import("../helpers/secret-driver.mjs"),
       import("../helpers/development.mjs"),
       import("../../apps/controller/src/drivers/channel/slack.ts"),

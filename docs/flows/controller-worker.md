@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-03
-last_updated_session: 01a12074-7896-7f63-99fe-9f42e9041d02
+updated: 2026-11-09
+last_updated_session: 01a1becb-641e-7b63-9791-01de09b1cda6
 ---
 
 # Controller Worker Flow
@@ -118,21 +118,19 @@ reauthorizes normally.
 `apps/controller/src/worker.ts:ControllerWorker.run`,
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.claim`
 
-Each loop calls `recoverStale()`, one native-exposure sweep step
-(`withdrawHarnessExposure` for one listed active-at-start or failed version,
-five logged attempts) on idle passes and after every five claimed passes, then
-`claim()`. The
-[PostgreSQL queue](../../packages/occ/src/state/postgres-work-queue.ts) selects
-eligible work with `FOR UPDATE SKIP LOCKED`, assigning claim token, lease
-deadline and attempt increment. Another live Agent or Namespace claim
-prevents concurrent ownership.
+Passes call `recoverStale()`. When idle and every five claimed passes,
+`withdrawHarnessExposure` sweeps one listed active-at-start or failed version
+(five logged attempts). A stopping worker exits before `claim()`, preserving queued attempts.
+Submitted claims can still succeed. Interrupted claims follow lease recovery.
 
-Empty queues wait for the configured delay. After each pass, `health()` queries work,
-calls `onHealthy`, and emits `worker.health`; both are required. Serialized
-failures emit `HEALTH_UNAVAILABLE`, consuming no retries.
+[PostgreSQL](../../packages/occ/src/state/postgres-work-queue.ts) assigns tokens and leases with
+`FOR UPDATE SKIP LOCKED` and increments attempts.
+Live Agent or Namespace claims prevent concurrent ownership.
 
-At pass start and claim renewal, `onProgress` updates liveness. Packaged probes
-require regular marker files; liveness restarts stale workers. Client
+Empty queues wait as configured. Per pass, `health()` must query work, call
+`onHealthy`, and emit `worker.health`. Serialized `HEALTH_UNAVAILABLE` failures consume no retries.
+
+`onProgress` marks pass start and renewal. Probes require regular marker files and restart stale workers. Client
 `query_timeout` usually frees stuck passes. See
 [worker settings](../reference/settings/operations.md#controller-worker-environment).
 
@@ -403,7 +401,7 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 - [OCC API](../../tests/integration/occ-api.test.mjs) checks deploy audit attribution
   and append-failure rollback after an IAM Driver change.
 - [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.mjs) and
-  [k3d](../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs) tests
+  [k3d](../../tests/helpers/openshell-sandbox-workflows.mjs) tests
   verify composition and infrastructure.
 
 ## Related docs
@@ -422,6 +420,8 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-09 05:35: Stop before claiming. (01a1becb-641e-7b63-9791-01de09b1cda6 - 3b898fdc4a27c5cfcc6cbeb7196d96b02368da8b)
 
 - 2026-11-03 21:08: Reject directory markers. (01a12074-7896-7f63-99fe-9f42e9041d02 - b627f0997c12d10aaa87f764eac1019c67199d2f)
 

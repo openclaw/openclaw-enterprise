@@ -51,9 +51,48 @@ register it in its owning manifest and check that the intended workflow selects
 that lane. A passing inventory audit does not prove that a credentialed or
 manually prepared lane has run.
 
+The runner removes inherited test selectors unless the manifest declares them.
+`requiredEnv` fails when an input is missing or empty; `optionalEnv` forwards an
+input only when supplied. Both may be declared on a lane or a file.
+File-specific test selectors do not reach sibling files, and optional inputs do
+not select a file or change its required-case inventory.
+
+## Shared runtime image in ordinary CI
+
+The four image lanes and First Agent Smoke use one runtime image built from the
+workflow's checked-out commit. On pull requests, that is the tested merge commit.
+The producer uploads an OCI image artifact; each selected consumer verifies its
+source, workflow run, archive checksum and platform before loading it. Packaging
+still builds its controller, and each lane owns its other preparation and tests.
+[First Agent Smoke](first-agent-smoke.md#trigger) adds runtime trust and reuses
+its WebSocket package for the provider loaded into the job's Docker engine.
+
+The shared action passes the downloaded directory in
+`OCC_CI_RUNTIME_ARTIFACT_DIRECTORY` and the producer outputs in
+`OCC_CI_RUNTIME_ARTIFACT_SHA256`, `OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA`,
+`OCC_CI_RUNTIME_ARTIFACT_RUN_ID` and `OCC_CI_RUNTIME_ARTIFACT_ATTEMPT`.
+These are CI preparation inputs, not product configuration. Supply the complete
+selection or omit all five; a partial selection fails.
+
+An invalid or missing selected artifact fails preparation; it does not start a
+replacement source build. A partial rerun may reuse the successful producer's
+artifact from the same workflow run and source. If that artifact has expired,
+rerun the producer as well. Local runs without an artifact selection keep their
+source-building path.
+
+The producer's build has a provisional 180-minute limit within a 240-minute job.
+These limits allow measurement of cold builds; they are not expected build times.
+Inspect producer build/export and consumer download/load timings separately from
+test durations. Ordinary artifacts stay within their workflow and do not replace
+native container verification or authorize publication.
+
 ## Results and cleanup
 
 A lane fails if required cases are missing, skipped, marked TODO, or failed, or if cleanup fails. This includes skipped suites and Go tests. Results prove only selected coverage: inspect outcomes, source, cleanup and image digests. Retries have attempt-specific artifacts and replace the current result. Kubernetes preparation failures retain sanitized diagnostics when collection succeeds. Missing state or empty inventory does not prove cleanup.
+
+For a failed matrix job, inspect each lane's result artifact to find the failing
+lane. The aggregate reports the parent failure once and requires every selected
+lane's same-source evidence, even when other lanes passed.
 
 Prepare infrastructure on a disposable host. Keep the private state file until cleanup completes:
 

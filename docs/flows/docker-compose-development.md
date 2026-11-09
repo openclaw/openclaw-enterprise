@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-04
-last_updated_session: authoring-run/4dc828f0-0acc-4001-b6e2-3f57824db925
+updated: 2026-11-08
+last_updated_session: authoring-run/2c3fb5d2-955a-471d-a236-332a4bdb34c2
 ---
 
 # Compose development flow
@@ -49,8 +49,10 @@ owns the operator procedure and destructive cleanup boundary.
 
 ```mermaid
 graph TD
-  A["./bin/occ dev up"] --> Guard{"Development settings valid?"}
-  Guard -->|No| Refuse["Refuse before startup"]
+  A["./bin/occ dev up"] --> Checkout{"Valid checkout markers<br/>and LF module?"}
+  Checkout -->|No| Refuse["Refuse before startup"]
+  Checkout -->|Yes| Guard{"Development settings valid?"}
+  Guard -->|No| Refuse
   Guard -->|Yes| Profile{"Compute profile"}
   Profile -->|Docker| B["Preflight host tools, resolve Podman machine connection,<br/>and inspect Compose config"]
   Profile -->|Kubernetes| KPre["Pin local engine endpoint<br/>and reject existing resources"]
@@ -109,6 +111,14 @@ graph TD
 
 `internal/occcli/dev.go:developmentCommand`,
 `internal/occdev/egress_k3d.go:CheckDevelopmentProfile`, `scripts/dev-up`
+
+`internal/occcli/dev.go:developmentRepository` selects the nearest enclosing
+checkout with an OCE module declaration and a regular `compose.yaml` file,
+including a symlink to one. An absent Compose marker allows the ancestor search
+to continue. A present marker that is not a regular file or cannot be resolved
+stops both `up` and `down` with its exact path before profile dispatch. CRLF in
+`go.mod` also stops both commands with an LF repair error. These invalid markers
+cannot fall through to an outer checkout and target its stack or volumes.
 
 Before Compute dispatch, the CLI checks protected-egress, database, and host-gateway
 selectors through the existing development validators. Direct Docker script startup
@@ -180,6 +190,8 @@ the registry attachment for `occ dev down` to detach. Kubernetes-only uses its
 owned k3d network; Compose uses its exact recorded Compose network and selects
 only a runtime image with the current checkout label. Both detach after imports
 and on rollback, including recovery after interrupted startup.
+State rewrites set mode `0600` before writing so recovery can read
+`state.json` under a restrictive umask.
 For Kubernetes-only OpenShell, runtime import follows PostgreSQL/repository imports
 in their existing concurrent branch. OpenShell asset preparation follows those
 imports while network probes finish. This installs the Agent Sandbox controller
@@ -318,6 +330,10 @@ describes accepted selectors.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 05:18: Reject invalid or unresolvable Compose markers before development dispatch. (authoring-run/2c3fb5d2-955a-471d-a236-332a4bdb34c2 - 2b6201f1bd74549ffb38bfa910d00b49e6ebc07c)
+
+- 2026-11-06 20:03: Refuse a nearest CRLF checkout before startup or cleanup can select an outer stack. (authoring-run/b63d4772-19f9-4e46-8f8e-bd52bd2ea26f - 7cc3f1b9f2b372bf6da57a980d03eeebf8256506)
 
 - 2026-11-04 20:46: Overlap selected-image setup while retaining joined readiness and rollback gates. (authoring-run/4dc828f0-0acc-4001-b6e2-3f57824db925 - 7951de4edf7abadc02725484771bcd6207ed9b9d)
 

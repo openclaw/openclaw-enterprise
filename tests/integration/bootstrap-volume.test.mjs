@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 
 import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
 import { commandPath as executablePath } from "../helpers/compose.mjs";
-import { commandCalls, commandPath } from "../helpers/fake-commands.mjs";
+import { commandCalls, commandPath } from "../helpers/fake-commands.ts";
 import { commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";

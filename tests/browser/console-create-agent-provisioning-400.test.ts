@@ -41,7 +41,7 @@ import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import {
   apiRequests,
@@ -50,6 +50,7 @@ import {
   login,
   nativeValues,
   newPage,
+  nonAuthWriteRequests,
   operateDeniedSecretOption,
   pathRequests,
   revokeAdministratorGrant,
@@ -65,7 +66,7 @@ import {
   nativeSandboxDriver,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import { createRuntimeAuthFixture as rawRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import { createReadyConsoleNamespace as rawReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
@@ -687,6 +688,26 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
       () => globalThis.document.activeElement?.id === "configuration-json",
     );
   }
+  // A model edit does not repair the unbound Slack reference or own its field error.
+  const writesBeforeModelChange = nonAuthWriteRequests(requests);
+  const model = page.getByLabel("Model ID", { exact: true });
+  await model.fill("gpt-6-sol");
+  await model.press("Tab");
+  const changed = object(JSON.parse(await configuration.inputValue()));
+  assert.equal(object(object(changed.agents).defaults).model, "openai/gpt-6-sol");
+  assert.equal(object(object(changed.channels).slack).botToken, "${SLACK_SPARE_TOKEN}");
+  assert.equal(
+    await jsonError.textContent(),
+    `${unboundReferenceRefusal("channels.slack.botToken", "SLACK_SPARE_TOKEN")} ${CHANNEL_BINDING_FORM_REMEDY}`,
+  );
+  assert.equal(await jsonError.isVisible(), true);
+  assert.equal(await configuration.getAttribute("aria-invalid"), "true");
+  assert.match(
+    (await configuration.getAttribute("aria-describedby")) ?? "",
+    /\bconfiguration-json-error\b/,
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), writesBeforeModelChange);
+
   // Later edits and submits read no bound Secret again.
   assert.equal(secretReads(), settledReads);
   // Refused before Slack was asked, and nothing was saved.

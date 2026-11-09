@@ -195,19 +195,9 @@ Keep the App key there and retain the existing approval scope. The development
 
 ## Token Service lifecycle
 
-The worker signs an App JSON Web Token (JWT), requests approved repository IDs
-and permissions, verifies scope and expiry, and saves the encrypted token in
-PostgreSQL. It owns renewal and retirement; renewal cannot extend the session.
-See [token preparation and withdrawal](../flows/credential-source-refresh.md#6-issue-and-renew-a-github-installation-token).
-Protected metadata reads use `metadata: read`; OCC separately authorizes the
-sender's exact GET.
+The Token Service signs an App JWT, validates the issued token’s scope and expiry, and stores it encrypted in PostgreSQL. An authorized Credential Proxy metadata GET resolves a `github_app_installation` reference. Its provider generation and registered grant determine which installation token can serve the request. Git sessions use background preparation until the session expires. See [issuance, renewal and withdrawal](../flows/credential-source-refresh.md#6-issue-and-renew-a-github-installation-token).
 
-`PREPARED_GITHUB_RECOVERY_REQUIRED` (`quarantined` or `blocked`) stops automatic
-minting. [Recover on the issuing owner](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key),
-preserving the original attempt and custody. Preserve its original bound:
-72 minutes after starting, or known provider expiry plus clock skew, whichever
-is later. A GET does not settle it. Never replay, reset custody, or
-change profiles, families or clusters to bypass recovery.
+`PREPARED_GITHUB_RECOVERY_REQUIRED` stops minting. [Recover the issuing owner](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key) with its original attempt and custody. Wait at least 72 minutes from intent, or through verified provider expiry plus clock skew, whichever is later. A GET cannot settle an uncertain issue.
 
 ## Sessions and closure
 

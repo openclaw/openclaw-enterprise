@@ -12,7 +12,7 @@ import { loadInstallationConfiguration } from "../../apps/controller/src/composi
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
@@ -636,16 +636,14 @@ test(
     const replacedCookie = `${(await passwordLogin()).cookie}; ${receiptCookie}`;
     const replacedSession = await result(attempt.attemptId, replacedCookie);
     assert.equal(replacedSession.statusCode, 401, replacedSession.body);
-    // An expired receipt is refused even while its browser cookie is still sent.
+    // The database owns the receipt deadline even if the receiving API clock is fast.
     t.mock.timers.enable({ apis: ["Date"], now: Date.now() + 121_000 });
-    let expired;
+    let confirmed;
     try {
-      expired = await result(attempt.attemptId, githubCookie);
+      confirmed = await result(attempt.attemptId, githubCookie);
     } finally {
       t.mock.timers.reset();
     }
-    assert.equal(expired.statusCode, 401, expired.body);
-    const confirmed = await result(attempt.attemptId, githubCookie);
     assert.equal(confirmed.statusCode, 200, confirmed.body);
     assert.equal(confirmed.headers["cache-control"], "no-store");
     const { sessionKey } = confirmed.json().data;

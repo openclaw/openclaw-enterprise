@@ -318,6 +318,22 @@ export class DeviceAuthorizationStartError extends Error {
   }
 }
 
+/**
+ * A definite browser authorization failure. `code` is implementation-owned and carries no
+ * provider text; `recoveryAction` tells OCC who acts next.
+ */
+export class BrowserAuthorizationError extends Error {
+  readonly code: string;
+  readonly recoveryAction: "retry" | "fix_configuration";
+
+  constructor(code: string, recoveryAction: BrowserAuthorizationError["recoveryAction"]) {
+    super("The browser authorization did not complete.");
+    this.name = "BrowserAuthorizationError";
+    this.code = /^[a-z][a-z0-9_]{0,63}$/.test(code) ? code : "unclassified";
+    this.recoveryAction = recoveryAction;
+  }
+}
+
 /** Safe discovery outcomes carry no upstream response, credential, or error cause. */
 export class PluginDiscoveryError extends Error {
   readonly reason: "credentials_rejected" | "rate_limited" | "unavailable" | "invalid_response";
@@ -345,6 +361,14 @@ export class ScopeViolationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ScopeViolationError";
+  }
+}
+
+/** A committed revision withdrawal permanently closes its repository session admission. */
+export class RepositorySessionWithdrawnError extends ScopeViolationError {
+  constructor() {
+    super("Repository session admission was withdrawn for this revision.");
+    this.name = "RepositorySessionWithdrawnError";
   }
 }
 
@@ -1068,6 +1092,17 @@ export class ActivationPendingError extends Error {
 /** An activation step that cannot complete for this revision. */
 export type ActivationFailedCode = "AGENT_GATEWAY_UNAUTHORIZED";
 
+/** The selected Driver proved that this execution's repository access cannot be resumed.
+ * Missing evidence or a failed dependency read must not produce this terminal result. */
+export class RepositoryExecutionRequiresRedeployError extends Error {
+  readonly code = "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED";
+
+  constructor() {
+    super("Repository access cannot resume on this execution. Deploy a new revision.");
+    this.name = "RepositoryExecutionRequiresRedeployError";
+  }
+}
+
 /**
  * Compute preparation cannot complete for this revision. The worker records a
  * terminal deployment failure and durable workload retirement in one transaction.
@@ -1385,7 +1420,7 @@ export class CredentialSourceRegistrationConfigError extends ScopeViolationError
 export class StoredCredentialSourceConfigError extends ResourceStateConflictError {
   static message(field: string): string {
     if (field === "base_url") {
-      return "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must match the Installation's runtime.modelProvider.baseUrl. Rebind and redeploy Agents, then delete the old source once unused.";
+      return "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must permit the destination selected by the Agent revision. Rebind and redeploy Agents, then delete the old source once unused.";
     }
     return `This credential source's saved ${field} no longer meets the OpenShell Credential Gateway's rules, so it cannot be used. Create a new source with a valid ${field}, bind it in place of this one, then delete this one.`;
   }

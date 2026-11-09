@@ -30,7 +30,7 @@ import {
   nonAuthWriteRequests,
   shippedPreset,
 } from "./console-agents-browser-helpers.ts";
-import { routeInstallationWithoutProvisioning } from "./console-agents-test-support.mjs";
+import { routeInstallationWithoutProvisioning } from "./console-agents-test-support.ts";
 
 // Form fields share one pattern (UX plan C3): a label, the control, its error, then its help.
 // The console checks required fields itself, so the browser's transient bubble never shows; it

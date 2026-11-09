@@ -334,6 +334,28 @@ try {
         tlsErrors,
       );
     }
+    if (records.includes("repository-binding-withdrawn-discovery-released")) {
+      console.error("Repository binding withdrawn and held discovery released.");
+    }
+    const completion = entries.find((e) => e.phase === "native-command-completion-mismatch");
+    if (completion) {
+      console.error("Native command chat completion did not match the expected marker.");
+      const { modelDiagnosticsAvailable, modelRequests, modelResults, markerSeen } = completion;
+      if (
+        modelDiagnosticsAvailable === true &&
+        [modelRequests, modelResults].every((n) => Number.isSafeInteger(n) && n >= 0) &&
+        typeof markerSeen === "boolean"
+      ) {
+        console.error(
+          "Synthetic model requests=%d, results=%d, completion marker seen in native result=%s.",
+          modelRequests,
+          modelResults,
+          markerSeen,
+        );
+      } else {
+        console.error("Synthetic model completion diagnostics unavailable.");
+      }
+    }
     const known = [
       ...proof.slice(0, -1), // Retirement can follow a failure before the required proof.
       "create-synthetic-model-secret",
@@ -341,6 +363,8 @@ try {
       "observe-installed-agent-readonly-skill-directories",
       "gateway-chat-refused",
       "native-command-started",
+      "repository-binding-withdrawn-discovery-released",
+      "native-command-completion-mismatch",
       "native-command-and-model-observed",
     ];
     const last = records.filter((p) => known.includes(p)).at(-1) ?? "before first test checkpoint";

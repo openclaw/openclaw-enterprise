@@ -129,7 +129,7 @@ Implemented locally on `dev/kevinlin/contributor-recognition`, based on
 `a10baed3c4a551c697c09c2e4a96ef529509a37a`. Implementation commit:
 [`ccaa2af5a`](https://github.com/openclaw/openclaw-enterprise/commit/ccaa2af5a4816b3a1ea98ae912594ec6510f8f64).
 
-- [Generator](../../scripts/update-contributors.mjs), [corrections](../../scripts/contributors.json),
+- [Generator](../../scripts/update-contributors.ts), [corrections](../../scripts/contributors.json),
   package command, and [README wall](../../README.md#contributors) are implemented.
   [Contributor guidance](../../CONTRIBUTING.md#recognize-contributors) owns usage,
   identity corrections, permissions, and recovery.

@@ -6,11 +6,11 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import test from "node:test";
 
-import { documentApiExamples } from "../../scripts/document-api-examples.mjs";
+import { documentApiExamples } from "../../scripts/document-api-examples.ts";
 import {
   generateApiReferenceOutputs,
   httpMethods,
-} from "../../scripts/generate-occ-api-reference.mjs";
+} from "../../scripts/generate-occ-api-reference.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -251,10 +251,8 @@ test("OpenAPI check rejects unexpected generated API child pages in an isolated 
   await mkdir(join(fixture, "scripts"), { recursive: true });
   for (const file of [
     "generate-occ-openapi.mjs",
-    "generate-occ-api-reference.mjs",
-    "document-api-examples.mjs",
+    "generate-occ-api-reference.ts",
     "document-api-examples.ts",
-    "api-examples.mjs",
     "api-examples.ts",
   ]) {
     await copyFile(join(repositoryRoot, "scripts", file), join(fixture, "scripts", file));
