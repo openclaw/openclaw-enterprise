@@ -4,15 +4,17 @@ import type { Pool } from "pg";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
-import { InstalledDriver } from "../../packages/occ/src/index.ts";
+import { InstalledDriver, PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
 import { createOpenShellCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-registration.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createBackendWorkerDrivers } from "./postgres-backend-state.mjs";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
-import { composePostgresDevelopment } from "./password-hasher.mjs";
+import { composePostgresDevelopment, createPostgresControllerAuth } from "./password-hasher.mjs";
+import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
+import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
+import type { standingExecutionPlatform } from "./postgres-standing-execution.ts";
 import { authenticatedHeaders, cookieHeaderFromSetCookie } from "./auth-session.mjs";
-import { databaseUrl } from "./postgres-database.mjs";
 
 /** API composition has its own Git owner and database pool. Only Kubernetes discovery is
  * controlled; the disposition travels through authenticated Fastify, OCC, Compute and Sandbox. */
@@ -20,6 +22,10 @@ export async function repositoryRestartInventory(
   t: TestContext,
   revision: AgentRevision,
   input: Parameters<typeof createOpenShellCapabilities>[0],
+  fixture: Pick<
+    Awaited<ReturnType<typeof standingExecutionPlatform>>,
+    "database" | "observerPool" | "state" | "installation" | "actor"
+  >,
 ) {
   const capabilities = createOpenShellCapabilities(input);
   t.after(() => capabilities.close());
@@ -78,14 +84,40 @@ export async function repositoryRestartInventory(
       },
     },
   };
+  // The worker fixture owns a per-test database and an IAM-only actor. Provision
+  // an actual password account there before exercising the authenticated API.
+  const authSecret = "standing-execution-local-test-secret-32";
+  const credentials = {
+    email: "postgres-admin@openclaw.local",
+    password: "postgres-development-password",
+  };
+  const auth = await createPostgresControllerAuth({
+    mode: "development",
+    installationId: fixture.installation.id,
+    baseURL: "http://127.0.0.1",
+    secret: authSecret,
+    pool: fixture.observerPool,
+  });
+  const iam = await fixture.state.loadNativeIAMState(fixture.installation.id);
+  const roleId = iam.bindings.find((binding) => binding.subjectId === fixture.actor.id)?.roleId;
+  assert.ok(roleId);
+  const prepared = await auth.prepareAccount(credentials);
+  const seed = auth.principalSeed(prepared, { roleId });
+  validateAuthAccountPrincipalSeed(seed, iam, fixture.installation.id);
+  await new PostgresHumanAuthentication(
+    fixture.state,
+    fixture.installation.id,
+    betterAuthIssuer(fixture.installation.id),
+  ).provisionPasswordAccount(prepared, seed);
+
   // Register the same selected owner in Compute and API composition. No exchange or
   // repository sender is configured on this read-only API instance.
   const app = await composePostgresDevelopment(
     {
       mode: "development",
       host: "127.0.0.1",
-      databaseUrl: databaseUrl!,
-      authSecret: "standing-execution-local-test-secret-32",
+      databaseUrl: fixture.database.url,
+      authSecret,
       authBaseURL: "http://127.0.0.1",
     },
     {
@@ -101,10 +133,7 @@ export async function repositoryRestartInventory(
     method: "POST",
     url: "/api/auth/sign-in/email",
     headers: { host: "127.0.0.1", "content-type": "application/json" },
-    payload: JSON.stringify({
-      email: "postgres-admin@openclaw.local",
-      password: "postgres-development-password",
-    }),
+    payload: JSON.stringify(credentials),
   });
   assert.equal(login.statusCode, 200, login.body);
   const cookies = login.headers["set-cookie"];

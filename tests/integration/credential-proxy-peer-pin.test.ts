@@ -537,7 +537,7 @@ test("exchange reserves simultaneous response phases without discarding the winn
 function gate(t: TestContext) {
   const entered = deferred();
   const released = deferred();
-  t.after(released.resolve);
+  t.after(() => released.resolve());
   let calls = 0;
   return {
     entered: entered.promise,

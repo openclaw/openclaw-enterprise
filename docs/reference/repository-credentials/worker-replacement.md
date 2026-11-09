@@ -11,12 +11,18 @@ and Sandbox owners read the saved revision and existing execution evidence:
 | `not-applicable`           | The revision has no repository access, or its identified delivery owner establishes that this worker dependency does not apply.                       |
 | `unknown`                  | Evidence is missing, inconsistent or unsupported, or observation fails.                                                                               |
 
+No current bundled owner returns `reverification-supported`. The generic contract
+permits that result only when an owner can establish the evidence described above;
+accepting the value in the API or upgrade helper does not establish implementation
+support.
+
 This read does not issue credentials, adopt execution, advance fences or change
 `repositoryAccess.state`. A positive result is not a promise of uninterrupted
 Git access or credential renewal. Profile names and successful Git requests do
-not establish restart support. OpenShell classifies the admitted mode and exact
-execution evidence; held launches and observed-hook previews require the original
-worker when identified.
+not establish restart support. OpenShell reports `original-worker-required` for
+supported held launches and observed-hook previews when their admitted mode and
+execution evidence match. Unsupported legacy installation-wide routes return
+`unknown`; historical recovery does not establish current support.
 
 The inventory keeps its existing authorization checks: Installation `administer`,
 Namespace and Agent `read`, plus Agent `deploy` and revision `read` for eligible
@@ -40,9 +46,10 @@ only when repository credentials and the egress plan's `repositoryGit` and
 `repositoryGitAuthorization` are absent. Unsupported delivery modes, including
 broker delivery, remain `unknown`.
 
-OpenShell standing routes need matching durable installation and route evidence.
-The saved execution fingerprint must match the route's observed execution identity.
-A recognized finite held launch can also require its original worker.
+Supported OpenShell standing routes also need matching durable installation and
+route evidence. The saved execution fingerprint must match the route's observed
+execution identity. A recognized finite held launch requires its original worker;
+it does not need standing-route evidence.
 The ten-second API budget ignores late results. Cancellation after a queued
 connection acquisition starts no SQL; cancellation during a transaction prevents
 further reads while permitting rollback and connection cleanup. It does not

@@ -44,6 +44,8 @@ test("production upgrades check the stock chart before recording evidence or con
     "scripts/upgrade-deployment-identity.py",
     "scripts/upgrade-startup-preflight.mjs",
     "scripts/upgrade-evidence.py",
+    "scripts/upgrade-helm-state.py",
+    "apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts",
     "scripts/upgrade-dispatch-state.py",
     "docs/flows/coordinated-production-upgrade.md",
   ]) {

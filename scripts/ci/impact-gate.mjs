@@ -97,7 +97,7 @@ function main(args) {
     issues.push("impact output does not match the selected lanes");
   }
 
-  // Preserve failed and missing job states for the existing artifact aggregator.
+  // Matrix job results describe the parent, not each lane's outcome.
   const state = (job) => ({ result: needs[job]?.result ?? "missing" });
   const expanded = {
     impact: state("impact"),
@@ -112,15 +112,12 @@ function main(args) {
     }
     return lane.startsWith("images-") ? "image-lanes" : "pr-safe";
   };
-  if (mode === "full") {
-    expanded["runtime-image-fixture"] = state("runtime-image-fixture");
-    for (const lane of matrixLanes) {
-      expanded[lane] = state(laneJob(lane));
-    }
-  } else if (mode === "tests") {
-    // Only selected lanes are expanded; the aggregator requires each one's results.
-    for (const lane of lanes) {
-      expanded[lane] = state(laneJob(lane));
+  const selected = mode === "full" ? [...matrixLanes, fixtureLane] : (lanes ?? []);
+  for (const lane of selected) {
+    const job = laneJob(lane);
+    expanded[job] ??= state(job);
+    if (job !== lane) {
+      (expanded[job].lanes ??= []).push(lane);
     }
   }
   writeFileSync(outputPath, JSON.stringify(expanded));
