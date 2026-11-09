@@ -364,6 +364,14 @@ export class ScopeViolationError extends Error {
   }
 }
 
+/** A committed revision withdrawal permanently closes its repository session admission. */
+export class RepositorySessionWithdrawnError extends ScopeViolationError {
+  constructor() {
+    super("Repository session admission was withdrawn for this revision.");
+    this.name = "RepositorySessionWithdrawnError";
+  }
+}
+
 /**
  * Admitted Configuration content cannot select a supported Harness runtime, or a
  * provisioning request names an execution mode the Compute Driver does not provision
@@ -1084,6 +1092,17 @@ export class ActivationPendingError extends Error {
 /** An activation step that cannot complete for this revision. */
 export type ActivationFailedCode = "AGENT_GATEWAY_UNAUTHORIZED";
 
+/** The selected Driver proved that this execution's repository access cannot be resumed.
+ * Missing evidence or a failed dependency read must not produce this terminal result. */
+export class RepositoryExecutionRequiresRedeployError extends Error {
+  readonly code = "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED";
+
+  constructor() {
+    super("Repository access cannot resume on this execution. Deploy a new revision.");
+    this.name = "RepositoryExecutionRequiresRedeployError";
+  }
+}
+
 /**
  * Compute preparation cannot complete for this revision. The worker records a
  * terminal deployment failure and durable workload retirement in one transaction.
@@ -1401,7 +1420,7 @@ export class CredentialSourceRegistrationConfigError extends ScopeViolationError
 export class StoredCredentialSourceConfigError extends ResourceStateConflictError {
   static message(field: string): string {
     if (field === "base_url") {
-      return "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must match the Installation's runtime.modelProvider.baseUrl. Rebind and redeploy Agents, then delete the old source once unused.";
+      return "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must permit the destination selected by the Agent revision. Rebind and redeploy Agents, then delete the old source once unused.";
     }
     return `This credential source's saved ${field} no longer meets the OpenShell Credential Gateway's rules, so it cannot be used. Create a new source with a valid ${field}, bind it in place of this one, then delete this one.`;
   }

@@ -91,7 +91,12 @@ fixed categories, counts, elapsed milliseconds, and nonzero exit counts. Retry
 attempts are counted individually; failure handling stays unchanged. Arguments, output, environment values, and
 resource names are excluded. Concurrent or nested commands can overlap, so do
 not sum these durations as wall time. Fixed setup milestones record offsets from
-startup to place these operations on the wall-clock timeline. Native Pod profiles
+startup to place these operations on the wall-clock timeline. OpenShell asset
+preparation reports its failed operation, such as chart acquisition, rollout,
+workspace rendering, or image import, with elapsed time measured from that
+operation’s start. Success reports the total preparation time. A failed operation
+may reflect cancellation by another setup task; it does not establish the primary
+cause. These records exclude error text, arguments, and output. Native Pod profiles
 report time from the
 deploy request to Pod creation and time from creation to scheduling,
 initialization, running, readiness, and observation. They retain no Pod identity
@@ -101,7 +106,13 @@ worker proof.
 Native first-Agent proof retains the exact run ID, explicit successful exec flag,
 standalone tool-proof line, and exact final nonce. After a turn is terminal, history
 has 30 seconds to settle; a missing proof remains a failure. Failure diagnostics
-report only counts and flags, not marker values, commands or transcripts. Content
+retain counts and flags, plus the numeric exit code (0–255) when a single nested
+exec result is recognized. The proof program reports fixed operation and error
+categories for failed session-file writes, session/workspace-file reads, or proof
+emission. These categories contain no paths, commands, raw output, or stacks;
+unknown error codes become `other`. A failure before Node starts, or without a
+recognized failure marker, remains unclassified. These observations do not relax
+any success predicate. Content
 shape counts distinguish strings, arrays, recognized text and tool-call parts,
 and unsupported parts. Exec observations distinguish an exact requested command,
 nonempty output, and the recognized `value.aggregated` result envelope from other

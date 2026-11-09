@@ -54,6 +54,12 @@ func validDevelopmentCodexSeccompResult(mode, profileName string) bool {
 
 func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolicies []any, ceiling []any) (result error) {
 	r := newRunner(opts)
+	defer func() {
+		if result != nil {
+			stage, cleanupFailed := startupFailureDetails(result)
+			fmt.Fprintf(r.opts.Out, "\n[occ-dev-startup] primary_stage=%s cleanup_failed=%t parent_context_done=%t%s\n", stage, cleanupFailed, ctx.Err() != nil, routingFailureSuffix(result))
+		}
+	}()
 	if len(opts.ComposeArgs) != 0 {
 		return fmt.Errorf("the Kubernetes-only profile does not accept Compose options")
 	}
@@ -232,7 +238,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 			}
 		}
 		if cleanupErr != nil {
-			result = errors.Join(result, fmt.Errorf("rollback incomplete; preserving %s for occ dev down: %w", directory, cleanupErr))
+			result = joinStartupCleanup(result, startupError("rollback", fmt.Errorf("rollback incomplete; preserving %s for occ dev down: %w", directory, cleanupErr)))
 		}
 	}()
 	if err := exclusiveWrite(filepath.Join(directory, ".openclaw-development"), []byte(stateMarker), 0600); err != nil {
@@ -280,11 +286,11 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	// deferred detach (which runs before the rollback deletes the network)
 	// cover images that were never pulled.
 	if err := r.attachDevelopmentImageRegistry(ctx, state); err != nil {
-		return errors.Join(err, r.detachDevelopmentImageRegistry(ctx))
+		return joinStartupCleanup(err, startupError("registry-detach", r.detachDevelopmentImageRegistry(ctx)))
 	}
 	defer func() {
 		if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
-			result = errors.Join(result, err)
+			result = joinStartupCleanup(result, startupError("registry-detach", err))
 		}
 	}()
 
@@ -318,7 +324,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		fmt.Fprintln(r.opts.Out, "Installing pinned private routing controllers...")
 		routingPodCIDR, err = r.installDevelopmentRoutingControllers(ctx, state, timeout)
 		if err != nil {
-			return fmt.Errorf("install the private routing controllers: %w", err)
+			return startupError("routing", fmt.Errorf("install the private routing controllers: %w", err))
 		}
 		return nil
 	}, func(ctx context.Context, r *runner) error {
@@ -359,7 +365,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 				fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
 				assets, err = r.prepareOpenShell(ctx, state, timeout)
 				if err != nil {
-					return err
+					return startupError("openshell-preparation", err)
 				}
 			}
 			return nil
@@ -369,7 +375,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		return err
 	}
 	if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
-		return err
+		return startupError("registry-detach", err)
 	}
 	if err := r.installDevelopmentPlatform(ctx, state, developmentPlatformInputs{
 		openShell: assets, runtimeImage: runtimeImage, controllerImage: controllerImage,
@@ -455,7 +461,7 @@ type developmentPlatformInputs struct {
 
 func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developmentState, inputs developmentPlatformInputs, timeout time.Duration) error {
 	if err := r.ensureKubernetesNamespace(ctx, state.PlatformNamespace); err != nil {
-		return err
+		return startupError("platform-namespace", err)
 	}
 	if state.SandboxDriver == "openshell" {
 		fmt.Fprintf(r.opts.Out, "Installing OpenShell Gateway and OCE in Namespace %s...\n", state.PlatformNamespace)

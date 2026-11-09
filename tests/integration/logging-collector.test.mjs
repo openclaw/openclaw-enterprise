@@ -460,10 +460,26 @@ test(
         "service.name": "forged-service",
         "openclaw.agent.id": "forged-agent",
       });
-    const filtered = async () =>
-      /otelcol_processor_filter_logs_filtered[^\n]* [1-9]/.test(
-        await fetch(`http://${metricsAddress}/metrics`).then((response) => response.text()),
-      );
+    let lastMetrics;
+    const filtered = async () => {
+      const response = await fetch(`http://${metricsAddress}/metrics`);
+      lastMetrics = { httpStatus: response.status };
+      const metrics = await response.text();
+      // Keep counts only: labels and response bodies are not failure diagnostics.
+      for (const [field, name] of [
+        ["accepted", "otelcol_receiver_accepted_log_records"],
+        ["refused", "otelcol_receiver_refused_log_records"],
+        ["filtered", "otelcol_processor_filter_logs_filtered"],
+      ]) {
+        const values = [
+          ...metrics.matchAll(new RegExp(`^${name}(?:_total)?(?:\\{[^\\n]*\\})? ([^\\s]+)$`, "gm")),
+        ]
+          .map(([, value]) => Number(value))
+          .filter(Number.isFinite);
+        lastMetrics[field] = values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+      }
+      return /otelcol_processor_filter_logs_filtered[^\n]* [1-9]/.test(metrics);
+    };
 
     // No other records have entered this fresh Collector, so a filter count
     // proves the near-match was processed and rejected before capture assertions.
@@ -474,7 +490,12 @@ test(
       [],
       ["com.docker.compose.service=worker"],
     );
-    await waitFor("the Collector to count the filtered near-match", filtered, fixture);
+    try {
+      await waitFor("the Collector to count the filtered near-match", filtered, fixture);
+    } catch (error) {
+      t.diagnostic(`Last Collector metrics (null means absent): ${JSON.stringify(lastMetrics)}`);
+      throw error;
+    }
 
     await send("gateway", [
       JSON.stringify({

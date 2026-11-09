@@ -18,6 +18,7 @@ import {
   CredentialSourceType,
   GatewayManagedModeSchema,
   HarnessExecutionModeSchema,
+  RevisionHarnessSchema,
   HarnessAuthBindingSchema,
   AgentCredentialSourcesSchema,
   InstallationId,
@@ -1383,14 +1384,7 @@ export const AgentRevisionSchema = Type.Object(
       description:
         "Gateway managed mode requested for this Agent version. It does not report Gateway runtime state.",
     }),
-    harness: Type.Object(
-      {
-        id: Type.String({ minLength: 1 }),
-        version: Type.String({ minLength: 1 }),
-        mode: HarnessExecutionModeSchema,
-      },
-      { additionalProperties: false },
-    ),
+    harness: RevisionHarnessSchema,
     compute: Type.Object(
       { id: Type.String({ minLength: 1 }), implementation: Type.String({ minLength: 1 }) },
       { additionalProperties: false },
@@ -1553,6 +1547,20 @@ export const AgentDeploymentStatusSchema = Type.Object(
       Type.Literal("succeeded"),
       Type.Literal("failed"),
     ]),
+    repositoryAccess: Type.Optional(
+      Type.Object(
+        {
+          state: Type.Literal("redeploy-required"),
+          code: Type.Literal("REPOSITORY_EXECUTION_REDEPLOY_REQUIRED"),
+          message: Type.String(),
+        },
+        {
+          additionalProperties: false,
+          description:
+            "Present when completed maintenance for this exact revision recorded that repository access requires a new revision. This condition does not change the original deployment result. Absence does not establish current repository access health.",
+        },
+      ),
+    ),
     cleanup: Type.Union(
       [
         Type.Null(),

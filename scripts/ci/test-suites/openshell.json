@@ -22,9 +22,15 @@
     "selfProvisionedFiles": [
       "tests/integration/local-first-agent-openshell-real.test.mjs",
       "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
-      "tests/integration/dev-up-openshell-k3d-real.test.mjs"
+      "tests/integration/dev-up-openshell-k3d-real.test.mjs",
+      "tests/integration/openshell-git-retention-real.test.ts",
+      "tests/integration/openshell-git-finite-removal-real.test.ts"
     ],
-    "sourceBuildFiles": ["tests/integration/dev-up-openshell-k3d-real.test.mjs"]
+    "sourceBuildFiles": [
+      "tests/integration/dev-up-openshell-k3d-real.test.mjs",
+      "tests/integration/openshell-git-retention-real.test.ts",
+      "tests/integration/openshell-git-finite-removal-real.test.ts"
+    ]
   },
   "files": [
     {
@@ -167,6 +173,19 @@
         "OCC_TEST_OPENSHELL_HELM_CHART",
         "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
         "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ]
+    },
+    {
+      "path": "tests/integration/openshell-git-retention-real.test.ts",
+      "expectedTests": [
+        "OpenShell retains its runtime after Git expiry and worker restart",
+        "OpenShell isolates Git withdrawal before worker replacement and retains denial afterward"
+      ]
+    },
+    {
+      "path": "tests/integration/openshell-git-finite-removal-real.test.ts",
+      "expectedTests": [
+        "OpenShell retains a finite Agent after repository removal until model authority is withdrawn"
       ]
     }
   ],

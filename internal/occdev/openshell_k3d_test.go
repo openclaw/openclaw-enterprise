@@ -107,15 +107,37 @@ const hex64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 // The lifecycle is real; all external commands are inert fixtures. HTTP is
 // refused separately because routing downloads do not use the command runner.
-type k3dOrderingTransport struct{ requests atomic.Int32 }
+type k3dOrderingTransport struct {
+	requests        atomic.Int32
+	waitFor         string
+	certManagerOnly bool
+}
 
-func (transport *k3dOrderingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+func (transport *k3dOrderingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if transport.waitFor != "" {
+		for {
+			if _, err := os.Stat(transport.waitFor); err == nil {
+				break
+			}
+			select {
+			case <-request.Context().Done():
+				return nil, request.Context().Err()
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}
 	transport.requests.Add(1)
+	// Keep the Envoy download in flight until the cert-manager refusal cancels
+	// it, so the selected controller is deterministic rather than a race.
+	if transport.certManagerOnly && strings.Contains(request.URL.Path, "/envoyproxy/") {
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	}
 	return nil, errors.New("fixture routing download refused")
 }
 
 func TestK3dCodexPreflightOrdering(t *testing.T) {
-	for _, scenario := range []string{"refused", "invalid result", "cleanup failure", "cancelled", "accepted", "API failure", "OpenShell routing", "controller import failure", "network check failure", "keep on failure"} {
+	for _, scenario := range []string{"refused", "invalid result", "cleanup failure", "cancelled", "accepted", "API failure", "OpenShell routing", "routing and rollback failure", "routing and probe cleanup failure", "controller import failure", "network check failure", "keep on failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			state := filepath.Join(root, "state")
@@ -172,7 +194,19 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				// rolling it back, and must tell the operator how to clean up.
 				t.Setenv("OCC_DEVELOPMENT_KEEP_ON_FAILURE", "1")
 			}
-			transport := &k3dOrderingTransport{}
+			transport := &k3dOrderingTransport{certManagerOnly: true}
+			chartResult := "exit 45"
+			if scenario == "routing and rollback failure" {
+				transport.waitFor = filepath.Join(root, "preparing-assets")
+				chartResult = ": > " + shellQuote(transport.waitFor) + "; while :; do :; done"
+			}
+			if scenario == "routing and probe cleanup failure" {
+				// The first namespace is owned before the second creation blocks.
+				// Routing then cancels the probe; its deletion fails, but rollback succeeds.
+				transport.waitFor = filepath.Join(root, "probe-owned")
+				networkProbe = `name=${3##*-occ-netcheck-}; name=occ-netcheck-${name%.json}; printf '{"kind":"Namespace","metadata":{"name":"%s","uid":"fixture-probe-uid"}}\n' "$name"`
+				chartResult = "while :; do :; done"
+			}
 			previousTransport := http.DefaultTransport
 			http.DefaultTransport = transport
 			t.Cleanup(func() { http.DefaultTransport = previousTransport })
@@ -201,7 +235,7 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				networkProbe = "while [ ! -s " + shellQuote(probePID) + " ]; do :; done; exit 1"
 			}
 			deleteResult := ":"
-			if scenario == "cleanup failure" {
+			if scenario == "cleanup failure" || scenario == "routing and rollback failure" {
 				deleteResult = "exit 43"
 			}
 			apiResult := ":"
@@ -228,13 +262,15 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 "image import --mode direct "*) [ "$KUBECONFIG" = ` + shellQuote(filepath.Join(state, "kubeconfig")) + ` ] && [ -f "$KUBECONFIG" ] && [ -f ` + shellQuote(filepath.Join(state, "container-kubeconfig")) + ` ] ;;
 "cluster delete occ-dev-order") ` + deleteResult + ` ;;`,
 				"kubectl": `"--kubeconfig "*" --context k3d-occ-dev-order get --raw=/version") ` + apiResult + ` ;;
-"create -f ` + filepath.Join(state, "network-probe-") + `"*"-occ-netcheck-other-"*".json -o json") ` + networkProbe + ` ;;`,
-				"helm": `"show chart "*) exit 45 ;;`,
+"create -f ` + filepath.Join(state, "network-probe-") + `"*"-occ-netcheck-other-"*".json -o json") ` + networkProbe + ` ;;
+"create -f ` + filepath.Join(state, "network-probe-") + `"*"-occ-netcheck-target-"*".json -o json") : > ` + shellQuote(transport.waitFor) + `; while :; do :; done ;;
+"delete --raw /api/v1/namespaces/occ-netcheck-other-"*) echo 'probe cleanup refused' >&2; exit 46 ;;`,
+				"helm": `"show chart "*) ` + chartResult + ` ;;`,
 				"node": `"scripts/prepare-development-codex-seccomp.mjs ` + state + ` ` + imported + ` 41") [ -f ` + shellQuote(filepath.Join(state, "state.json")) + ` ] && [ ! -e ` + shellQuote(filepath.Join(state, "installation.yaml")) + ` ] || exit 96
 ` + probe + ` ;;`,
 			})
 			driver := "none"
-			if scenario == "OpenShell routing" {
+			if scenario == "OpenShell routing" || scenario == "routing and rollback failure" || scenario == "routing and probe cleanup failure" {
 				driver = "openshell"
 				t.Setenv("OCC_DEVELOPMENT_OPENSHELL_HELM_CHART", root)
 				t.Setenv("OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART", root)
@@ -261,6 +297,28 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 			var output, diagnostic bytes.Buffer
 			err := upK3d(ctx, Options{Repository: root, Out: &output, Err: &diagnostic}, driver, nil, nil)
 			calls := commands()
+			primary, cleanupFailed := "unknown", false
+			switch scenario {
+			case "accepted", "OpenShell routing":
+				primary = "routing"
+			case "routing and rollback failure", "routing and probe cleanup failure":
+				primary, cleanupFailed = "routing", true
+			case "network check failure":
+				primary = "network-verification"
+			case "cleanup failure":
+				cleanupFailed = true
+			}
+			wantMeasurement := fmt.Sprintf("[occ-dev-startup] primary_stage=%s cleanup_failed=%t parent_context_done=%t", primary, cleanupFailed, scenario == "cancelled")
+			if primary == "routing" {
+				wantMeasurement += " routing_operation=manifest-download routing_controller=cert-manager"
+			}
+			if strings.Count(output.String(), "[occ-dev-startup]") != 1 || !strings.HasSuffix(output.String(), wantMeasurement+"\n") {
+				t.Fatalf("missing safe startup result %q in %s", wantMeasurement, &output)
+			}
+			if (scenario == "routing and rollback failure" || scenario == "routing and probe cleanup failure") && ctx.Err() != nil {
+				t.Fatal("routing must fail before the deadline cancels the held asset preparation")
+			}
+
 			wantError := "dedicated Codex sandbox preparation failed"
 			switch scenario {
 			case "accepted":
@@ -269,7 +327,7 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				wantError = "invalid dedicated Codex sandbox preparation result"
 			case "API failure":
 				wantError = "exit status 44"
-			case "OpenShell routing":
+			case "OpenShell routing", "routing and rollback failure", "routing and probe cleanup failure":
 				wantError = "fixture routing download refused"
 			case "controller import failure":
 				wantError = "import the development controller image: explicitly selected controller image must already exist locally"
@@ -326,6 +384,16 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 			runtimeImport := "k3d image import --mode direct " + filepath.Join(state, developmentImportArchive(staging)) + " "
 			if driver == "none" && scenario != "API failure" {
 				stages = append(stages, "docker tag "+runtimeImage, runtimeImport, "docker exec k3d-occ-dev-order-server-0 ctr -n k8s.io images tag "+staging+" ", "node scripts/prepare-development-codex-seccomp.mjs ")
+			} else if scenario == "routing and rollback failure" {
+				if index(runtimeImport) < 0 || index("helm show chart ") < 0 || index("node ") >= 0 {
+					t.Fatal("expected OpenShell asset preparation before routing refusal")
+				}
+			} else if scenario == "routing and probe cleanup failure" {
+				deletion := index("kubectl delete --raw /api/v1/namespaces/occ-netcheck-other-")
+				rollback := index("k3d cluster delete occ-dev-order")
+				if deletion < 0 || rollback <= deletion || strings.Contains(err.Error(), "exit status 46") {
+					t.Fatal("probe cleanup must precede successful rollback without replacing the routing error")
+				}
 			} else {
 				if index(runtimeImport) >= 0 || index("node ") >= 0 {
 					t.Fatal("runtime work preceded its prerequisite")
@@ -342,7 +410,7 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				previous = i
 			}
 			requests := transport.requests.Load()
-			if scenario == "accepted" || scenario == "OpenShell routing" {
+			if scenario == "accepted" || scenario == "OpenShell routing" || scenario == "routing and rollback failure" || scenario == "routing and probe cleanup failure" {
 				// A refusal cancels its sibling: either or both independent downloads
 				// can have started. Neither may run before a refused sandbox check.
 				if requests < 1 || requests > 2 {
@@ -371,7 +439,7 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				if !strings.Contains(output.String(), "OCC_DEVELOPMENT_KEEP_ON_FAILURE is set") {
 					t.Fatalf("keep-on-failure hid the cleanup hint: %s", &output)
 				}
-			} else if scenario == "cleanup failure" {
+			} else if scenario == "cleanup failure" || scenario == "routing and rollback failure" {
 				if !strings.Contains(err.Error(), "rollback incomplete") || !strings.Contains(err.Error(), "exit status 43") {
 					t.Fatalf("lost cleanup failure: %v", err)
 				}
@@ -383,6 +451,67 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				}
 			} else if _, err := os.Stat(state); !os.IsNotExist(err) {
 				t.Fatalf("rollback retained state: %v", err)
+			}
+		})
+	}
+}
+
+// A cleanup failure must neither replace an unclassified primary nor disappear
+// when cleanup itself is the only failure. Error text and errors.Is remain intact.
+func TestStartupCleanupAttribution(t *testing.T) {
+	original := errors.New("private primary error")
+	cleanup := errors.New("private cleanup error")
+	for _, tc := range []struct {
+		name    string
+		primary error
+		stage   string
+	}{
+		{"unknown primary", original, "unknown"},
+		{"known primary", startupError("routing", original), "routing"},
+		{"cleanup only", nil, "network-cleanup"},
+		{"secondary deadline", errors.Join(original, context.DeadlineExceeded), "unknown"},
+		{"tagged secondary cancellation", startupError("routing", errors.Join(original, context.Canceled)), "routing"},
+		{"successive cleanup", joinStartupCleanup(startupError("routing", original), startupError("network-cleanup", cleanup)), "routing"},
+		{"wrapped cancellation", fmt.Errorf("request failed: %w", context.Canceled), "canceled"},
+		{"wrapped deadline", fmt.Errorf("request failed: %w", context.DeadlineExceeded), "deadline"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := joinStartupCleanup(tc.primary, startupError("network-cleanup", cleanup))
+			stage, failed := startupFailureDetails(got)
+			if stage != tc.stage || !failed {
+				t.Fatalf("got %s/%t", stage, failed)
+			}
+			if got.Error() != errors.Join(tc.primary, cleanup).Error() || !errors.Is(got, cleanup) || (tc.primary != nil && !errors.Is(got, tc.primary)) {
+				t.Fatal("lost original errors")
+			}
+		})
+	}
+}
+
+func TestRoutingFailureKeepsOnlySelectedDetails(t *testing.T) {
+	original := errors.New("primary failure")
+	cleanup := routingError("manifest-apply", "envoy-gateway", errors.New("cleanup failure"))
+	for _, tc := range []struct {
+		name    string
+		primary error
+		want    string
+	}{
+		{"unclassified primary", original, ""},
+		{"base routing receipt", startupError("routing", original), ""},
+		{"joined error has no implicit primary", startupError("routing", errors.Join(original, cleanup)), ""},
+		{"cancellation", routingError("manifest-download", "cert-manager", context.Canceled), ""},
+		{"deadline", routingError("manifest-download", "cert-manager", context.DeadlineExceeded), ""},
+		{"selected routing error", startupError("routing", fmt.Errorf("install controllers: %w", routingError("manifest-download", "cert-manager", original))), " routing_operation=manifest-download routing_controller=cert-manager"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Tagged cleanup must not supply missing primary details, even when
+			// an outer rollback joins another failure after the initial cleanup.
+			got := joinStartupCleanup(joinStartupCleanup(tc.primary, cleanup), cleanup)
+			if suffix := routingFailureSuffix(got); suffix != tc.want {
+				t.Fatalf("got routing suffix %q, want %q", suffix, tc.want)
+			}
+			if !errors.Is(got, tc.primary) || !errors.Is(got, cleanup) {
+				t.Fatal("lost primary or cleanup error chain")
 			}
 		})
 	}

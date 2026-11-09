@@ -167,6 +167,18 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preDefaultUsers";
   }
   if (count === 71 && completedCount > 71) {
+    return "preHarnessOverrides";
+  }
+  if (count === 72 && completedCount > 72) {
+    return "preAccountAdministrationPolicy";
+  }
+  if (count === 73 && completedCount > 73) {
+    return "preFiniteRepositorySessionWithdrawal";
+  }
+  if (count === 74 && completedCount > 74) {
+    return "preHumanAuthenticationResults";
+  }
+  if (count === 75 && completedCount > 75) {
     return "preNativeBrowserAccess";
   }
   if (count === completedCount) {

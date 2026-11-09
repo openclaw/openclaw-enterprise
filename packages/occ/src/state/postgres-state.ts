@@ -86,6 +86,7 @@ import {
   SECRET_NAME_CONFLICT,
   SERVICE_ACCOUNT_NAME_CONFLICT,
   ScopeViolationError,
+  RepositorySessionWithdrawnError,
 } from "../errors.ts";
 import type {
   AgentRepository,
@@ -691,7 +692,13 @@ function revisionSummaryFromRow(row: PostgresRow): Readonly<AgentRevisionSummary
     ...metadata,
     configurationId: text(row, "configuration_id"),
     configurationGeneration,
-    harness: { id: harness.id, version: harness.version, mode: harness.mode },
+    harness: {
+      id: harness.id,
+      version: harness.version,
+      mode: harness.mode,
+      overrides: harness.overrides as Readonly<Record<string, unknown>>,
+      configuration: harness.configuration as Readonly<Record<string, unknown>>,
+    },
   });
 }
 
@@ -914,6 +921,13 @@ function databaseError(error: unknown): Error {
     error.constraint === "held_authentication_session_is_current"
   ) {
     return new CallerStateDeniedError("The assigning session is no longer current.");
+  }
+  if (
+    code === "23514" &&
+    "constraint" in error &&
+    error.constraint === "repository_session_admission_not_withdrawn"
+  ) {
+    return new RepositorySessionWithdrawnError();
   }
   if (code === "23505") {
     const constraint =
@@ -1576,6 +1590,11 @@ export class PostgresPlatformState implements PlatformStateStore {
     return this.execute(false, async (state) => work(state));
   }
 
+  /** Observe changes committed while acquiring locks, regardless of the connection default. */
+  async transactReadCommitted<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
+    return this.execute(false, async (state) => work(state), true);
+  }
+
   /**
    * Run one read-only statement on a pooled connection outside any transaction (one round
    * trip, no BEGIN/COMMIT). Only for a single SELECT that needs no snapshot shared with
@@ -1765,6 +1784,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       "recoverStale",
       "findWork",
       "findWorkAttempt",
+      "hasRepositoryExecutionRedeployRequired",
       "repositoryExpiryState",
       "latestRevisionMaintenanceKey",
       "countRefusedStopWaits",
@@ -5543,6 +5563,10 @@ export class PostgresPlatformState implements PlatformStateStore {
         findWorkAttempt: async (idempotencyKey) => {
           await this.requireInitialized(context);
           return queue.findWorkAttempt(idempotencyKey);
+        },
+        hasRepositoryExecutionRedeployRequired: async (owner) => {
+          await this.requireInitialized(context);
+          return queue.hasRepositoryExecutionRedeployRequired(owner);
         },
         hasOutstandingCredentialWithdrawalWork: async (namespaceId, revisionId) => {
           await this.requireInitialized(context);

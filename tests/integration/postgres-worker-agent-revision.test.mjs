@@ -1753,6 +1753,55 @@ test(
 );
 
 test(
+  "a worker stopped during queue recovery leaves fresh work for its successor",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 1 });
+    const connection = Promise.withResolvers();
+    await fixture.start(fixture.compute, {
+      emit({ event }) {
+        if (event === "worker.started") {
+          // Hold the worker pool's only connection before its first recovery transaction.
+          connection.resolve(fixture.workerPool.connect());
+        }
+      },
+    });
+    const held = await connection.promise;
+    let candidate;
+    let stopping;
+    try {
+      ({ candidate } = await fixture.admitInitialRevision("shutdown-before-claim"));
+      stopping = fixture.stop();
+    } finally {
+      held.release();
+    }
+    await stopping;
+    const work = await fixture.observerPool.query(
+      `SELECT state, attempt_count, claim_token IS NOT NULL AS has_claim,
+              lease_expires_at IS NOT NULL AS has_lease
+       FROM occ.controller_work WHERE idempotency_key = $1`,
+      [candidate.idempotencyKey],
+    );
+    assert.deepEqual(work.rows, [
+      { state: "queued", attempt_count: 0, has_claim: false, has_lease: false },
+    ]);
+
+    const prepared = [];
+    await fixture.start({
+      ...fixture.compute,
+      async prepareRevision(revision, deploymentContext) {
+        prepared.push(revision.id);
+        return fixture.compute.prepareRevision(revision, deploymentContext);
+      },
+    });
+    const succeeded = await fixture.work(candidate, "succeeded");
+    await fixture.stop();
+    assert.equal(succeeded.attempt_count, 1);
+    assert.deepEqual(prepared, [candidate.id]);
+  },
+);
+
+test(
   "a graceful shutdown during Compute preparation logs the interrupted pass, not errors",
   requiresPostgres,
   async (context) => {

@@ -19,6 +19,82 @@ import {
 } from "./kubernetes-real.mjs";
 
 const execute = promisify(execFile);
+
+// Stock OpenShell shorthand timestamps describe rendering, not event occurrence. This
+// bounded tail inventory is deliberately uncorrelated with the failed curl request.
+export async function assertAllowedCredentialRoute(
+  { probe, sourceType, destination, capture, write = (text) => process.stderr.write(text) },
+  { timeoutMs = diagnosticDeadlineMs } = {},
+) {
+  try {
+    assert.equal(
+      probe.httpStatus,
+      "200",
+      "a command Codex runs must authenticate at the allowed source endpoint.",
+    );
+  } catch (failure) {
+    const unavailable = { status: "unavailable" };
+    const supervisorTail = await withinDiagnosticDeadline(
+      async () => {
+        try {
+          const logs = await capture();
+          if (typeof logs !== "string") {
+            return unavailable;
+          }
+          let providerEnvironmentChanges = 0;
+          let selectedDestinationStaleGenerationDenials = 0;
+          for (const line of logs.split("\n")) {
+            // Exact v0.1.6 shorthand grammar; discard both rendering/CRI timestamps.
+            const record = line.match(/^(?:\d{4}-\d{2}-\d{2}T[\d:.]+Z ){1,2}OCSF (.*)$/u)?.[1];
+            if (
+              /^CONFIG:DETECTED \[INFO\] Settings poll: config change detected \[old_revision:\d+ new_revision:\d+ policy_changed:(?:true|false) provider_env_changed:true\]$/u.test(
+                record ?? "",
+              )
+            ) {
+              providerEnvironmentChanges++;
+            }
+            const closed = record?.match(
+              /^NET:OPEN \[MED\] DENIED (\S+) \[reason:L7 tunnel closed before inspection because policy changed: policy generation is stale \[captured_generation:\d+ current_generation:\d+\]\]$/u,
+            );
+            if (closed !== null && closed !== undefined && closed[1] === destination) {
+              selectedDestinationStaleGenerationDenials++;
+            }
+          }
+          return {
+            status:
+              providerEnvironmentChanges + selectedDestinationStaleGenerationDenials > 0
+                ? "recognized"
+                : "no_match",
+            providerEnvironmentChanges,
+            selectedDestinationStaleGenerationDenials,
+          };
+        } catch {
+          return unavailable;
+        }
+      },
+      { timeoutMs, timedOut: unavailable },
+    );
+    const status = (value) => (typeof value === "string" && /^\d{3}$/u.test(value) ? value : null);
+    try {
+      write(
+        `OpenShell integration: allowed credential route failure ${JSON.stringify({
+          sourceType: ["codex-pat", "openai"].includes(sourceType) ? sourceType : null,
+          httpStatus: status(probe.httpStatus),
+          connectStatus: status(probe.connectStatus),
+          exitCode:
+            Number.isInteger(probe.exitCode) && probe.exitCode >= 0 && probe.exitCode <= 255
+              ? probe.exitCode
+              : null,
+          uncorrelatedSupervisorTail: supervisorTail,
+        })}\n`,
+      );
+    } catch {
+      // Diagnostic output failure must not replace the original route assertion.
+    }
+    throw failure;
+  }
+}
+
 const sandboxApiResource = "sandboxes.agents.x-k8s.io";
 const harnessPort = 18790;
 const gatewayPort = 8080;

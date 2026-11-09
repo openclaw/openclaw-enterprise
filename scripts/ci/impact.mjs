@@ -339,8 +339,17 @@ function selectTestLanes(mergeBase, tested, tests, manifests) {
 }
 
 export function classify() {
-  if (process.env.GITHUB_EVENT_NAME !== "pull_request") {
-    return { mode: "full", reason: "event is not a pull request", category: "non_pr_event" };
+  const push = process.env.GITHUB_EVENT_NAME === "push";
+  const canonicalPush =
+    push &&
+    process.env.GITHUB_REPOSITORY === "openclaw/openclaw-enterprise" &&
+    process.env.GITHUB_REF === "refs/heads/main";
+  if (process.env.GITHUB_EVENT_NAME !== "pull_request" && !canonicalPush) {
+    return {
+      mode: "full",
+      reason: "event is not an eligible comparison",
+      category: "non_pr_event",
+    };
   }
   try {
     let eventText;
@@ -355,8 +364,18 @@ export function classify() {
     } catch {
       throw new InspectionError("invalid event", "invalid_event");
     }
-    const base = event?.pull_request?.base?.sha;
-    const head = event?.pull_request?.head?.sha;
+    if (
+      push &&
+      (event?.ref !== "refs/heads/main" ||
+        event?.repository?.full_name !== "openclaw/openclaw-enterprise" ||
+        event?.forced !== false ||
+        event?.deleted !== false ||
+        event?.created !== false)
+    ) {
+      throw new InspectionError("push is not an ordinary canonical main update", "invalid_event");
+    }
+    const base = push ? event.before : event?.pull_request?.base?.sha;
+    const head = push ? event.after : event?.pull_request?.head?.sha;
     const tested = process.env.GITHUB_SHA;
     if (![base, head, tested].every((value) => typeof value === "string" && oid.test(value))) {
       throw new InspectionError("missing or invalid commit identifiers", "invalid_identity");
@@ -378,42 +397,59 @@ export function classify() {
     if (actual !== tested) {
       throw new InspectionError("checkout does not match tested commit", "checkout_mismatch");
     }
-    if (parents.length !== 2 || !oid.test(parents[0]) || parents[1] !== head) {
-      throw new InspectionError(
-        "event commits do not match the tested merge parents",
-        "checkout_mismatch",
-      );
-    }
-    // GitHub merges onto the base branch tip at merge time, which is newer than
-    // the event's base.sha when the base moved after the push. The tested
-    // merge's first parent is the base of the tested tree. A depth-two
-    // checkout lacks an older base.sha; when it is present it must be behind.
-    const mergeBase = parents[0];
-    let present;
-    try {
-      present = commitsPresent(base === mergeBase ? [mergeBase, head] : [mergeBase, head, base]);
-    } catch (error) {
-      if (base === mergeBase) {
-        throw error;
+    let mergeBase;
+    if (push) {
+      if (head !== tested || /^0+$/.test(base) || /^0+$/.test(head)) {
+        throw new InspectionError("push endpoints do not match checkout", "checkout_mismatch");
       }
-      // A failed check of the event base alone reads as absent, as it did when
-      // each name had its own process.
-      present = [...commitsPresent([mergeBase, head]), false];
-    }
-    const [mergeBasePresent, headPresent, basePresent] = present;
-    if (!mergeBasePresent || !headPresent) {
-      throw new InspectionError("Git inspection failed", "git_inspection_failed");
-    }
-    if (basePresent) {
-      const status = gitStatus("merge-base", "--is-ancestor", base, mergeBase);
-      if (status === 1) {
+      if (!commitsPresent([base, head]).every(Boolean)) {
         throw new InspectionError(
-          "event base is not an ancestor of the tested merge base",
+          "push comparison history is unavailable",
+          "git_inspection_failed",
+        );
+      }
+      if (gitStatus("merge-base", "--is-ancestor", base, head) !== 0) {
+        throw new InspectionError("push is not a forward comparison", "checkout_mismatch");
+      }
+      mergeBase = base;
+    } else {
+      if (parents.length !== 2 || !oid.test(parents[0]) || parents[1] !== head) {
+        throw new InspectionError(
+          "event commits do not match the tested merge parents",
           "checkout_mismatch",
         );
       }
-      if (status !== 0) {
+      // GitHub merges onto the base branch tip at merge time, which is newer than
+      // the event's base.sha when the base moved after the push. The tested
+      // merge's first parent is the base of the tested tree. A depth-two
+      // checkout lacks an older base.sha; when it is present it must be behind.
+      mergeBase = parents[0];
+      let present;
+      try {
+        present = commitsPresent(base === mergeBase ? [mergeBase, head] : [mergeBase, head, base]);
+      } catch (error) {
+        if (base === mergeBase) {
+          throw error;
+        }
+        // A failed check of the event base alone reads as absent, as it did when
+        // each name had its own process.
+        present = [...commitsPresent([mergeBase, head]), false];
+      }
+      const [mergeBasePresent, headPresent, basePresent] = present;
+      if (!mergeBasePresent || !headPresent) {
         throw new InspectionError("Git inspection failed", "git_inspection_failed");
+      }
+      if (basePresent) {
+        const status = gitStatus("merge-base", "--is-ancestor", base, mergeBase);
+        if (status === 1) {
+          throw new InspectionError(
+            "event base is not an ancestor of the tested merge base",
+            "checkout_mismatch",
+          );
+        }
+        if (status !== 0) {
+          throw new InspectionError("Git inspection failed", "git_inspection_failed");
+        }
       }
     }
     const diff = git(
@@ -462,7 +498,7 @@ export function classify() {
           : manifestPath.test(path)
             ? "manifest"
             : null;
-      if (!kind) {
+      if (!kind || (push && kind !== "docs")) {
         throw new InspectionError(
           "diff contains a path or change outside the documentation allowlist",
           "ineligible_change",
