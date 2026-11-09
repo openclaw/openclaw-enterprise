@@ -418,16 +418,16 @@ RUN --mount=type=bind,from=curl-packages,source=/out,target=/tmp/curl-packages \
     && rm -rf /var/lib/apt/lists/*
 # Version checks use throwaway state directories: gh writes a random device ID
 # and Codex a randomly named arg0 directory, which would otherwise ship.
-# --retry rides out GitHub's transient release-download errors (HTTP 408, 429,
-# 500, 502, 503, 504); --no-progress-meter keeps curl's retry notices in the log.
+# Retry partial transfers too. -O lets curl reset partial files before retrying;
+# the pinned checksums below must pass before extraction or execution.
 RUN --mount=type=secret,id=build-ca,required=false \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
     architecture="${TARGETARCH:-amd64}"; \
     case "$architecture" in amd64|arm64) ;; *) exit 1 ;; esac; \
     cd /tmp; \
-    curl --fail --location --no-progress-meter --retry 6 -O "https://github.com/cli/cli/releases/download/v2.103.2/gh_2.103.2_linux_${architecture}.tar.gz"; \
-    curl --fail --location --no-progress-meter --retry 6 -O "https://github.com/cli/cli/releases/download/v2.103.2/gh_2.103.2_checksums.txt"; \
+    curl --fail --location --no-progress-meter --retry 6 --retry-all-errors -O "https://github.com/cli/cli/releases/download/v2.103.2/gh_2.103.2_linux_${architecture}.tar.gz"; \
+    curl --fail --location --no-progress-meter --retry 6 --retry-all-errors -O "https://github.com/cli/cli/releases/download/v2.103.2/gh_2.103.2_checksums.txt"; \
     echo '414d6009dc7f9f936d70831af818d1a32aa0ff07a77646861efd207356a36b2d  gh_2.103.2_checksums.txt' | sha256sum --check --strict; \
     grep " gh_2.103.2_linux_${architecture}.tar.gz$" gh_2.103.2_checksums.txt | sha256sum --check --strict; \
     tar -xzf "gh_2.103.2_linux_${architecture}.tar.gz"; \

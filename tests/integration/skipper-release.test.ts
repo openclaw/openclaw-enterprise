@@ -163,7 +163,15 @@ test("aggregate qualifies only the independently selected Skipper image set with
   await denied(receipt(), selection, "missing");
   await denied(receipt(), {});
   await denied(receipt(), { ...selection, sourceSha: "a".repeat(40) });
-  await denied({ ...receipt(), sourceSha: "b".repeat(40) });
+  // Reject another commit's receipt before attempting release qualification.
+  const stale = await aggregate({ ...receipt(), sourceSha: "b".repeat(40) });
+  assert.equal(stale.status, "failed");
+  assert.equal(stale.releaseQualification, undefined);
+  assert.deepEqual(stale.lanes, []);
+  assert.deepEqual(
+    stale.issues.map((issue: { code: string }) => issue.code),
+    ["source-sha-mismatch"],
+  );
   await denied({ ...receipt(), imageScope: undefined });
   await denied({ ...receipt(), imageScope: "published-images" });
   for (const role of ["controller", "runtime", "repository"] as const) {

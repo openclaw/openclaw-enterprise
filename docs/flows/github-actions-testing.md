@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-08
-last_updated_session: authoring-run/d394120a-859d-45f1-ba62-9bf9dd9b66c1
+last_updated_session: authoring-run/7219e3b9-3091-4a5b-8712-c543ff5f0c68
 ---
 
 # GitHub Actions testing flow
@@ -174,13 +174,15 @@ of a stale result; other lanes retain theirs. Each attempt also uploads the same
 file as `attempt-<run attempt>-<artifact-prefix>-<lane>`, which no aggregate
 pattern matches, so a failed attempt's cases survive a `--failed` rerun.
 
-The `k3d-fixture-configuration` lane runs `scripts/ci/memory-sampler.sh`
-beside tests to diagnose runner loss. Every 15 seconds it samples available and container memory, memory pressure,
-root disk and top process RSS by name, excluding arguments and environment. Minute
-summaries reach the job log; failed or cancelled lanes print the last samples.
-Each attempt uploads at most about 1 MiB as
-`memory-<artifact-prefix>-<lane>-attempt-<run attempt>`. Sampler and upload errors
-do not fail the lane; only logged summaries survive runner loss.
+`scripts/ci/memory-sampler.sh` samples memory pressure, RSS, process IDs,
+containers and disk every 15 seconds, excluding arguments and environment.
+`k3d-fixture-configuration` samples during tests and logs live summaries for
+runner-loss diagnosis. Runtime startup and browser lanes sample from before
+preparation through cleanup, then print summaries.
+
+Each attempt uploads `memory-<artifact-prefix>-<lane>-attempt-<run attempt>`
+(about 1 MiB maximum). Sampler and upload errors do not fail the lane.
+Only live summaries survive runner loss.
 
 For `images-packaging`, `scripts/ci/export-image-reconciliation.mjs` attempts to
 retain attempt-specific cleanup records for prepared controller and runtime tags.
@@ -204,39 +206,30 @@ booleans and counters again. Raw errors and identifiers do not enter the record.
 Public RPCs do not expose workspace-binding readiness or restoration; a workspace
 reference does not prove either state.
 
-Per-file cleanup releases its database; job cleanup removes state-owned resources.
-Deleting an owned `k3d-cluster` removes its Collector Namespace and RBAC. Logging
-cleanup removes its Docker backend and JSONL/config directory even without
-Kubernetes. Cleanup failure fails the check except for
-[hosted QA image warnings](github-actions-testing/preparation.md). Private
-state stays on its runner host and path; user databases, contexts, unrelated
-containers and other image references remain outside that ownership.
+Per-file cleanup releases its database; job cleanup removes owned resources. Deleting the
+owned k3d cluster removes Collector RBAC and Namespace. Logging cleanup removes its Docker
+backend and JSONL/config directory without Kubernetes. Cleanup errors fail the check except
+for [hosted QA image warnings](github-actions-testing/preparation.md). Private state stays
+on its original runner and path. User databases, contexts, unrelated containers and other
+image references remain untouched.
 
-`scripts/ci/cleanup.mjs:execFile` waits for exit and drained output.
-On POSIX, `scripts/ci/cleanup-command.mjs` leads each group. Caller exit,
-including SIGKILL or `process.exit()`, closes its private IPC channel;
-the supervisor kills its group. Completion drains output, kills grouped
-descendants, and returns command status.
-At its [deadline](../testing/ci/configuration.md#runner-overrides), TERM then KILL
-bound the group despite direct-child exit. Escaped groups receive no signals;
-retained streams close after another grace. Windows provides direct-child
-termination and stream bounds, without this supervisor.
+`scripts/ci/cleanup.mjs:execFile` awaits exit and drained output. On POSIX,
+`scripts/ci/cleanup-command.mjs` kills its group on caller IPC closure, including caller SIGKILL.
+Completion drains output, kills grouped descendants and returns command status.
+At [timeout](../testing/ci/configuration.md#runner-overrides), TERM then KILL still apply after
+direct-child exit. Escaped groups are unsignaled; retained streams close after grace.
+Windows bounds streams and terminates only the direct child.
 
-`scripts/ci/run-tests.mjs:killDescendants` stops active cleanup groups before
-sweeping descendants and exiting after abandoned work.
-`tests/helpers/postgres-worker-revision-fixture.mjs:disposeStep` records named
-timeouts and continues disposal. Root hooks allow two seconds for reports before
-exit; cleanup failure arms that grace immediately. A 60-second backstop covers
-skipped hooks. The parent runner accounts for failures. Failed resources stay in state; cleanup continues.
+`scripts/ci/run-tests.mjs:killDescendants` stops cleanup groups before sweeping descendants.
+`tests/helpers/postgres-worker-revision-fixture.mjs:disposeStep` records timeouts and continues.
+Root hooks allow two seconds for reports, immediately on cleanup failure; skipped hooks have a
+60-second backstop. The runner reports failures; failed resources stay recorded.
 
-`CI Required` checks jobs even after failures. Full-mode aggregation verifies
-matching commit SHAs, success, required evidence and cleanup; the runner
-validates cases. Docs mode checks documentation, audit and skipped test jobs
-without aggregation, proving only those checks. Full Integration accounts for
-its selected `full` group or lane. `ssh-host` stays outside automatic groups until
-an operator prepares its [disposable host](../testing/ssh.md#ssh-raw-hosts).
-Abrupt runner loss can prevent teardown and loses private `RUNNER_TEMP` state.
-External reconciliation awaits an approved resource ledger.
+`scripts/ci/impact-gate.mjs:main` and Full Integration report matrix failures by job.
+`scripts/ci/run-tests.mjs:aggregateGroup` attributes lane outcomes only to matching lane/SHA
+receipts, even when the parent fails. Reused lanes have independent successful job entries; fresh lanes retain their matrix parent. Passing requires successful jobs, one owner per lane, test evidence and cleanup. Docs mode skips aggregation. Full Integration checks its lane or `full` group; `ssh-host` requires a [disposable host](../testing/ssh.md#ssh-raw-hosts).
+Runner loss can prevent teardown and erase private `RUNNER_TEMP` state; external reconciliation
+awaits an approved resource ledger.
 
 ## Debugging and Verification
 
@@ -260,11 +253,15 @@ External reconciliation awaits an approved resource ledger.
 
 ## Changelog
 
+- 2026-11-08 08:28: Preserve matrix failure attribution alongside admitted CI reuse. (authoring-run/7219e3b9-3091-4a5b-8712-c543ff5f0c68 - 006cf6288913ff8eb56d0fbc2283885bd551ecc9)
+
 - 2026-11-08 16:09: Reuse admitted same-source ordinary CI results before fresh Full Integration execution. (authoring-run/d394120a-859d-45f1-ba62-9bf9dd9b66c1 - 832dbfca29eca2dd3cb98bd9dd5d803d9100911e)
 
 - 2026-11-08 16:02: Select documentation-only main pushes from verified before-tree policy. (authoring-run/bafcfe3a-329e-4d07-8f36-f178b64e37d0 - ca3ad3c4f3ec8ec5660ec2909bd4673adf78ff90)
 
 - 2026-11-04 12:10: Isolate the Codex Git proof queue without Slack. (authoring-run/14bcb9d6-2d4c-449d-8bbc-b64e3ef7e632 - aa60a72115e342ec020d1083fb5e30c139202c84)
+
+- 2026-11-06 09:03: Validate lane identity before attributing outcomes from matrix results. (authoring-run/acefb857-8e57-4f00-b7f5-ed9224944d88 - 048b2cd25cc59087bcb2551fce03a39eef023340)
 
 - 2026-11-04 10:07: Consolidate Full Integration policy and bound the cutover proof routes. (authoring-run/79147f32-199a-48ad-9b7e-fbdf94bf9d60 - 2628dba73edd44e4980711129e48fb7842828019)
 

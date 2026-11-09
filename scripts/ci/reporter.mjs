@@ -1,4 +1,8 @@
 import { failureInputLimit } from "./failure-redaction.mjs";
+import {
+  openShellGitRetentionKind,
+  projectOpenShellGitRetention,
+} from "./openshell-git-retention.mjs";
 
 const safeOccErrorCodes = new Set([
   "INVALID_REQUEST",
@@ -108,15 +112,6 @@ const nativePolicyCleanupChecks = new Set([
   "cleanup.remove-directory",
   "cleanup.resume-worker",
 ]);
-const openShellMeasurementKinds = new Set([
-  openShellStageMeasurementKind,
-  openShellSandboxMeasurementKind,
-  openShellPolicyCheckKind,
-  openShellFixtureTeardownKind,
-  openShellGatewayTurnFailureKind,
-  openShellNativePolicyCheckKind,
-  openShellInitialTurnoverKind,
-]);
 const openShellPolicyChecks = new Set([
   "installation-discovery",
   "cluster-target-reachability",
@@ -172,6 +167,9 @@ function parseMeasurement(message) {
 }
 
 function safeMeasurement(value) {
+  if (isRecord(value) && value.kind === openShellGitRetentionKind) {
+    return projectOpenShellGitRetention(value);
+  }
   if (isRecord(value) && value.kind === openShellInitialTurnoverKind) {
     return safeOpenShellInitialTurnoverMeasurement(value);
   }
@@ -266,6 +264,54 @@ function safeMeasurement(value) {
       ? { kind: value.kind, outcome: value.outcome }
       : undefined;
   }
+  if (isRecord(value) && value.kind === "local-first-agent-startup-failure") {
+    if (
+      ![
+        "unknown",
+        "canceled",
+        "deadline",
+        "routing",
+        "network-verification",
+        "network-cleanup",
+        "registry-detach",
+        "platform-namespace",
+        "openshell-preparation",
+        "rollback",
+      ].includes(value.primaryStage) ||
+      typeof value.cleanupFailed !== "boolean" ||
+      typeof value.parentContextDone !== "boolean" ||
+      (value.routingOperation !== undefined &&
+        (value.primaryStage !== "routing" ||
+          ![
+            "manifest-download",
+            "gateway-api-readiness",
+            "manifest-filter",
+            "manifest-write",
+            "manifest-apply",
+            "controller-crd-readiness",
+            "controller-rollout",
+            "gateway-class-apply",
+            "gateway-class-readiness",
+            "node-pod-cidr",
+          ].includes(value.routingOperation))) ||
+      (value.routingController !== undefined &&
+        (value.routingOperation === undefined ||
+          value.routingOperation === "node-pod-cidr" ||
+          !["cert-manager", "envoy-gateway"].includes(value.routingController)))
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      primaryStage: value.primaryStage,
+      cleanupFailed: value.cleanupFailed,
+      parentContextDone: value.parentContextDone,
+      ...(value.routingOperation !== undefined ? { routingOperation: value.routingOperation } : {}),
+      ...(value.routingController !== undefined
+        ? { routingController: value.routingController }
+        : {}),
+    };
+  }
   if (isRecord(value) && value.kind === "local-first-agent-setup-point") {
     if (
       ![
@@ -315,6 +361,19 @@ function safeMeasurement(value) {
         "k3d-image-import",
         "kubernetes-readiness",
         "helm-install",
+        "openshell-image-selection",
+        "openshell-image-validation",
+        "openshell-assets-directory",
+        "openshell-charts",
+        "openshell-agent-sandbox-manifest",
+        "openshell-runtime-class",
+        "openshell-agent-sandbox-apply",
+        "openshell-agent-sandbox-rollout",
+        "openshell-workspace-render",
+        "openshell-gateway-import",
+        "openshell-sandbox-import",
+        "openshell-supervisor-import",
+        "openshell-prepare",
       ].includes(value.stage) ||
       !Number.isInteger(value.count) ||
       value.count < 1 ||
@@ -1680,9 +1739,9 @@ export default async function* jsonLinesReporter(source) {
         continue;
       }
       const value = parseMeasurement(message);
-      // Per-test diagnostics name their file; the run summary counts do not.
-      // OpenShell measurements belong only in the projected record, even on failure.
-      if (typeof event.data.file === "string" && !openShellMeasurementKinds.has(value?.kind)) {
+      // Structured receipts, including malformed or unknown kinds, belong only
+      // to safeMeasurement. Never duplicate their raw text into failure output.
+      if (typeof event.data.file === "string" && !message.startsWith(measurementPrefix)) {
         output.diagnostic(message);
       }
       // Node diagnostics can quote thrown errors; retain only this fixed failure category.

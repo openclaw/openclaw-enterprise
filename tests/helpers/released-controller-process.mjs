@@ -10,6 +10,7 @@ import { createControllerWorker } from "/app/apps/controller/src/worker.ts";
 import { createReadyComputeDriver } from "./development.ts";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
+import { controllerIAMConfiguration, defaultUsersIAM } from "./default-users-iam.mjs";
 import { NativeIAMDriver } from "/app/packages/iam/src/index.ts";
 
 const { Pool } = createRequire("/app/packages/occ/package.json")("pg");
@@ -17,11 +18,26 @@ const pool = new Pool({ connectionString: process.env.OCC_DATABASE_URL });
 const state = new PostgresPlatformState(pool);
 const installation = await state.loadInstallation();
 const candidate = process.env.OCC_TEST_CONTROLLER_ROLE === "candidate";
+const configuredIAM = process.env.OCC_TEST_CONTROLLER_IAM === "1";
 const preparedTokens = candidate
   ? new (await import("/app/apps/controller/src/backends/token-service/service.ts")).TokenService()
   : undefined;
 const controller = new OpenClawController(installation, {
   state,
+  ...(configuredIAM
+    ? {
+        iamConfiguration: controllerIAMConfiguration({
+          ...defaultUsersIAM(),
+          roleBindings: [
+            {
+              group: "default-user",
+              role: "agent_creator",
+              scope: { namespace: "Compatibility allowed" },
+            },
+          ],
+        }),
+      }
+    : {}),
   ...(candidate ? { preparedTokens } : {}),
 });
 const iamDriver = new NativeIAMDriver(state, { id: "compatibility-iam" });
@@ -56,6 +72,10 @@ if (candidate) {
     ),
   );
 }
+if (configuredIAM) {
+  // This is the same configured-policy write the production composition makes at startup.
+  await controller.applyIAMConfiguration();
+}
 const worker = createControllerWorker({
   pool,
   computeDriver,
@@ -63,7 +83,27 @@ const worker = createControllerWorker({
   emit: (event) => console.log(JSON.stringify({ workerEvent: event })),
 });
 await worker.start();
+let provisionAuthAccount;
+if (configuredIAM) {
+  const { PostgresHumanAuthentication } = await import("/app/packages/occ/src/index.ts");
+  const { betterAuthIssuer } = await import("/app/apps/controller/src/auth/index.ts");
+  const { validateAuthAccountPrincipalSeed } = await import("/app/packages/iam/src/index.ts");
+  const human = new PostgresHumanAuthentication(
+    state,
+    installation.id,
+    betterAuthIssuer(installation.id),
+  );
+  provisionAuthAccount = async (seed, auditEvent, prepared, external) => {
+    validateAuthAccountPrincipalSeed(
+      seed,
+      await state.loadNativeIAMState(installation.id),
+      installation.id,
+    );
+    await human.provisionPasswordAccount(prepared, seed, auditEvent, external);
+  };
+}
 const app = createFastifyApp({
+  ...(provisionAuthAccount ? { provisionAuthAccount } : {}),
   controller,
   iamDriver,
   computeDriver,
@@ -85,13 +125,76 @@ try {
   const raw = login.headers["set-cookie"];
   const cookie = (Array.isArray(raw) ? raw : [raw]).map((x) => x.split(";")[0]).join("; ");
   const headers = { host: "127.0.0.1", origin: "http://127.0.0.1", cookie };
-  console.log(JSON.stringify({ ready: true, pid: process.pid }));
+  const session = await app.inject({ method: "GET", url: "/api/auth/session", headers });
+  assert.equal(session.statusCode, 200, session.body);
+  const accountId = session.json().data.user.id;
+  assert.equal(typeof accountId, "string");
+  assert.ok(accountId.length > 0, "The authenticated session must identify an account.");
+  console.log(JSON.stringify({ ready: true, pid: process.pid, accountId }));
   for await (const line of inputLines) {
     const input = JSON.parse(line);
     if (input.op === "stop") {
       break;
     }
-    if (input.op === "connection") {
+    if (input.op === "namespace") {
+      const result = await app.inject({
+        method: "GET",
+        url: `/namespaces/${input.namespaceId}`,
+        headers,
+      });
+      if (result.statusCode === 200) {
+        assert.equal(result.json().data.id, input.namespaceId);
+      }
+      console.log(
+        JSON.stringify({
+          response: input.id,
+          namespaceId: input.namespaceId,
+          status: result.statusCode,
+          errorCode: result.json().error?.code ?? null,
+        }),
+      );
+    } else if (input.op === "member-controls") {
+      // Provision through the account API: configured default membership must be applied
+      // by the real account transaction, not a fixture-written Group membership.
+      const credentials = {
+        email: "compatibility-member@example.com",
+        password: "local-compatibility-member-password",
+      };
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/auth/accounts",
+        headers,
+        payload: credentials,
+      });
+      assert.equal(created.statusCode, 201, created.body);
+      const signedIn = await app.inject({
+        method: "POST",
+        url: "/api/auth/sign-in/email",
+        headers: { host: "127.0.0.1" },
+        payload: credentials,
+      });
+      assert.equal(signedIn.statusCode, 200, signedIn.body);
+      const rawMemberCookie = signedIn.headers["set-cookie"];
+      const memberCookie = (Array.isArray(rawMemberCookie) ? rawMemberCookie : [rawMemberCookie])
+        .map((x) => x.split(";")[0])
+        .join("; ");
+      const results = [];
+      for (const namespaceId of [input.namespaceId, input.outsideId]) {
+        const result = await app.inject({
+          method: "GET",
+          url: `/namespaces/${namespaceId}`,
+          headers: { ...headers, cookie: memberCookie },
+        });
+        results.push({
+          namespaceId,
+          status: result.statusCode,
+          errorCode: result.json().error?.code ?? null,
+        });
+      }
+      console.log(
+        JSON.stringify({ response: input.id, accountId: created.json().data.id, results }),
+      );
+    } else if (input.op === "connection") {
       const template = await app.inject({
         method: "POST",
         url: "/connection-templates",

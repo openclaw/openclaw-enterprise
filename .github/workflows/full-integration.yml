@@ -653,7 +653,13 @@ jobs:
             out["runtime-artifact"] = needs["runtime-artifact"] ?? { result: "missing" };
             out["runtime-image-fixture"] = needs["runtime-image-fixture"] ?? { result: "missing" };
             for (const name of ["checks-baseline-1", "checks-baseline-2", "checks-browser", "checks-browser-2", "postgres", "postgres-application", "postgres-auth", "postgres-platform", "images-packaging", "images-runtime-startup", "images-runtime-startup-2", "images-runtime-startup-3", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-network", "k3d-fixture-plugins", "k3d-observability", "k3d-observability-demo", "logging-collector", "repository-credentials-container", "keycloak-oidc"]) {
-              out[name] = { result: reused.includes(name) ? "success" : needs[name.startsWith("images-") ? "image-lanes-same-sha" : "pr-safe-same-sha"]?.result ?? "missing" };
+              if (reused.includes(name)) {
+                out[name] = { result: "success" };
+                continue;
+              }
+              const job = name.startsWith("images-") ? "image-lanes-same-sha" : "pr-safe-same-sha";
+              out[job] ??= { result: needs[job]?.result ?? "missing", lanes: [] };
+              out[job].lanes.push(name);
             }
           } else if (lane === "logging-collector") {
             out["logging-collector"] = needs["logging-collector"] ?? { result: "missing" };
