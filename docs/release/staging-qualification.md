@@ -9,8 +9,9 @@ last_verified: "2026-11-04"
 ## Overview
 
 Check published controller and runtime images with trusted startup tests before
-considering a staging installation. This workflow qualifies container startup on
-amd64; it does not install or promote a release. See the [release guides](README.md)
+considering a staging installation. The default mode checks container startup on
+amd64. An optional mode stages a controller pair for a sign-in rehearsal.
+Neither mode installs or promotes a release. See the [release guides](README.md)
 for publication and recovery procedures.
 
 <a id="when-it-runs"></a>
@@ -47,7 +48,7 @@ same-repository `main` push returned by the CI workflow's source-SHA query.
 Only service-derived run IDs and attempts select the exact CI run and job checks.
 The script does not write Actions outputs.
 
-Only the workflow commit is checked out. Setup, dependencies, preparation,
+Only the workflow commit is checked out. In the default startup job, setup, dependencies, preparation,
 tests, manifests, and cleanup come from that checkout. Historical Git objects
 supply only the ordinary `deploy/runtime/Dockerfile` blob, at most 64 KiB, as
 inert data. The current 0.164.0 profile requires the current recipe. The reviewed
@@ -58,7 +59,7 @@ The receipt, recipe, and trusted packaging manifest must agree on the Node base.
 
 After checking GitHub metadata, the command removes GitHub tokens before image
 operations. Git and ZIP decoder subprocesses never receive those tokens. A private
-Docker config supplies GHCR authentication only for the two digest pulls on the
+Docker config supplies GHCR authentication only for digest pulls on the
 runner's local Docker socket. The command removes that config before inspection
 or startup. A failed pull reports the reference and access guidance without
 printing subprocess output.
@@ -108,9 +109,47 @@ Actions output paths, archive tampering, rejection before pulls, and a real
 preparer failure before any suite. Hosted token permissions, registry pulls,
 container startup, and live installations need separate proof.
 
+## Prepare a controller pair
+
+Supply all three optional inputs: `previous_source_sha`,
+`previous_publication_run_id`, and `previous_publication_attempt`. The existing
+source and publication inputs identify the candidate. A partial previous tuple
+fails validation. With all three omitted, the original startup job runs.
+
+The pair job validates two ordered main publications and their underlying CI
+runs and verifies each downloaded receipt before using its registry references.
+It pulls only three Linux/amd64 images: the two controllers and the **previous
+runtime**, which remains fixed. Each selected image needs a publication seal
+with its platform manifest and config digests. An older seal without these
+fields can still be used for the original single-release check. A source tag,
+a local image, or a preparation-only artifact cannot substitute for a
+publication receipt.
+
+Using the local Docker image store, the job checks the root, platform manifest,
+config, and revision in the exported config against the publication. It rejects
+a store without platform descriptors. The existing staging environment and
+read-only package permissions apply. No model or cluster credentials are needed.
+
+A successful job uploads `staging-pair-images.json` and
+`staging-signin-plan.json`. The latter binds the observed images to the intended
+sign-in test: the source inputs must match a reviewed controller reader profile
+and both releases must share its migration tree. A preparatory/activated pair
+and two activated controllers require different receipt behavior. A change to
+the reviewed production inputs requires review of the test expectations.
+
+These artifacts establish **input preparation only**. This job does not start
+the controllers, exercise a callback or rollback, measure availability, or
+write the single-release startup qualification receipt. Publish and retain the
+preparatory release before merging a protocol activation when both generations
+must be tested: a later dispatch of Enterprise Containers cannot select an
+unpublished historical main revision. For a rehearsal publication, set
+`publish: true` and choose a dedicated `image_tag` unless you intend to update
+`latest` for both images. Run pair preparation while both publication receipts
+are available; the publisher retains them for 30 days.
+
 ## Results and limits
 
-The runner selects the controller and runtime startup files from
+The single-release job selects the controller and runtime startup files from
 `images-packaging` and `images-runtime-startup`. Missing, failed, or skipped cases
 fail the lane. Preparation, tests, and cleanup must succeed before the command
 writes `staging-qualification.json`. The always-run upload explicitly retains
