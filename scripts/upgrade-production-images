@@ -279,6 +279,31 @@ require_mutable_installation_secret() {
     die "Installation Secret $installation_secret is immutable and the candidate requires different data. Choose a candidate that preserves the live Installation configuration or defer this upgrade."
 }
 
+check_installation_update_access() {
+  local request decision
+  request=$(jq -n --arg namespace "$namespace" --arg name "$installation_secret" '{
+    apiVersion: "authorization.k8s.io/v1", kind: "SelfSubjectAccessReview",
+    spec: {resourceAttributes: {namespace: $namespace, verb: "update", group: "", resource: "secrets", name: $name}}
+  }')
+  # A failed or incomplete self-review says nothing about the real update.
+  if decision=$(printf '%s\n' "$request" |
+    "${kube[@]}" --request-timeout=15s create --raw /apis/authorization.k8s.io/v1/selfsubjectaccessreviews --filename - 2>/dev/null |
+    jq -ers --argjson request "$request" '
+      select(length == 1) | .[0] |
+      select(.apiVersion == $request.apiVersion and .kind == $request.kind) |
+      select((.spec | .resourceAttributes |= ({group: ""} + .)) == $request.spec) |
+      .status | select(type == "object" and (.allowed | type == "boolean") and
+        ((has("denied") | not) or (.denied | type == "boolean")) and
+        ((has("reason") | not) or (.reason | type == "string")) and
+        ((has("evaluationError") | not) or .evaluationError == "") and
+        ((.allowed and .denied) | not)) | .allowed | tostring' 2>/dev/null); then
+    [[ "$decision" == true ]] ||
+      die "Kubernetes denied update on Installation Secret $namespace/$installation_secret. Obtain update access before upgrading."
+  else
+    warn "Could not verify update access to the Installation Secret. The upgrade requires update permission on that Secret."
+  fi
+}
+
 # Versioned Secrets are operator-staged. Neither reference may be replaced or
 # edited while the helper owns the upgrade, including after Helm acknowledges it.
 verify_pinned_installation_secret() {
@@ -1574,6 +1599,7 @@ if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]] ||
   ! matches_yaml "$candidate_installation" "$evidence_dir/before-live-installation.yaml"; then
   if [[ ! -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
     require_mutable_installation_secret "$live_installation_secret"
+    check_installation_update_access
   fi
   touch "$evidence_dir/installation-changed"
   installation_checksum=$(
