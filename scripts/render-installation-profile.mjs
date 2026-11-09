@@ -1628,16 +1628,17 @@ function buildRendered(profile, parsed, diagnostics) {
     );
   }
 
-  // Same rule the controller applies to Installation observability.url at startup, including
-  // its refusal of any @ before the host (http://@host).
-  // A rewritten IPv4 host gets its own sentence; other URL failures stay on the
-  // absolute HTTP(S) message from optionalString.
   const clusterPort = optionalPositiveInteger(
     controlPlane,
     ["controlPlane", "clusterPort"],
     diagnostics,
     { max: 65535 },
   );
+
+  // Same rule the controller applies to Installation observability.url at startup, including
+  // its refusal of any @ before the host (http://@host).
+  // A rewritten IPv4 host gets its own sentence; other URL failures stay on the
+  // absolute HTTP(S) message from optionalString.
   const rawObservabilityUrl = controlPlane.observabilityUrl;
   const parsedObservability =
     typeof rawObservabilityUrl === "string"
