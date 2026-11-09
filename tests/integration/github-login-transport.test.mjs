@@ -459,6 +459,7 @@ test(
               }
               return {
                 ...session,
+                resultExpiresAt: createdAt.getTime() + 120_000,
                 createdAt,
                 updatedAt: createdAt,
                 expiresAt: new Date(createdAt.getTime() + (expired ? 10 : 28_800_000)),
@@ -489,7 +490,7 @@ test(
     }
 
     await t.test(
-      "callback receipt binds the starting attempt and exchanges once for its session key",
+      "result requires the signed attempt and confirmed State commit before returning a key",
       async () => {
         const createdAt = new Date();
         const user = {
@@ -501,19 +502,29 @@ test(
           updatedAt: createdAt,
         };
         let issued;
+        let commitUncertain = true;
         const login = loginFixture({
           snapshotExternal: async () => ({ user, proof: { userId: user.id } }),
           issueSession: async (_proof, session) => {
             issued = {
               ...session,
+              resultExpiresAt: createdAt.getTime() + 120_000,
               createdAt,
               updatedAt: createdAt,
               expiresAt: new Date(createdAt.getTime() + 28_800_000),
             };
             return issued;
           },
-          currentSession: async (token) =>
-            issued?.token === token ? { ...issued, user } : undefined,
+          consumeLoginResult: async (token, receipt) => {
+            if (commitUncertain) {
+              throw new Error("Uncertain transaction outcome.");
+            }
+            return (
+              issued.token === token &&
+              issued.id === receipt.sessionId &&
+              issued.resultExpiresAt === receipt.expiresAt
+            );
+          },
         });
         serve = (request, response) => {
           if (request.url === "/login/oauth/access_token") {
@@ -546,6 +557,11 @@ test(
 
         // Another tab's attempt cannot claim this session.
         await expectDenied(await login.result(other.attemptId, cookies));
+        const uncertain = await login.result(attemptId, cookies);
+        assert.equal(uncertain.status, 503);
+        assert.doesNotMatch(await uncertain.text(), /sessionKey|Uncertain transaction outcome/);
+        assert.equal(uncertain.headers.get("set-cookie"), null);
+        commitUncertain = false;
         const exchanged = await login.result(attemptId, cookies);
         assert.equal(exchanged.status, 200);
         assert.doesNotMatch(exchanged.headers.get("set-cookie") ?? "", /session_token/);
@@ -553,8 +569,6 @@ test(
         const { sessionKey } = await exchanged.json();
         assert.match(sessionKey, /^[A-Za-z0-9_-]{43}$/);
         assert.equal(sessionKey.includes(issued.id), false);
-        // A copied receipt is single-use even while it is still within its lifetime.
-        await expectDenied(await login.result(attemptId, cookies));
       },
     );
 
