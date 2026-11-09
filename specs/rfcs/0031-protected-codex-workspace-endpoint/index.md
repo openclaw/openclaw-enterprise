@@ -73,13 +73,17 @@ retained admitted requirements for that revision and execution. Compute
 activates only on an authenticated `serving` result. A failed, unavailable,
 or non-serving result leaves the new revision unavailable.
 
-Before returning a successful WebSocket upgrade, the relay checks the existing
-transport bearer and confirms that the released original is still current.
-Its upgrade response includes exactly one generation proof header. The
-Gateway authenticates the canonical origin using only the pinned provider CA
-and matches the single header to the pinned generation before it sends or
-accepts any native frame. A missing, duplicate, or different proof closes the
-connection without exchanging native frames.
+The Gateway authenticates the canonical origin during TLS setup using only
+the pinned provider CA. It sends the HTTP Upgrade request and its transport
+bearer only after that authentication succeeds. If TLS authentication fails,
+the Gateway sends neither the request nor the bearer.
+
+On that authenticated connection, the relay checks the bearer and confirms
+that the released original is still current before returning HTTP 101 with
+exactly one generation proof header. The Gateway matches that proof to the
+pinned generation before it sends or accepts any native frame. A missing,
+duplicate, or different proof closes the connection without exchanging native
+frames.
 
 A reserved original, or an observation that is temporarily unavailable, leaves
 the new revision pending during bounded reconciliation. An invalid, changed, or

@@ -12,7 +12,7 @@ config:
 ---
 sequenceDiagram
   accTitle: Proposed protected workspace lifecycle
-  accDescr: Compute pins a reservation from the selected Sandbox Driver. After the same original acknowledges signed release, Compute compares all four pins and asks the Driver for bearer-authenticated serving status using the retained admitted requirements. Only serving permits activation. The relay checks the bearer and current released original before upgrade. The Gateway checks TLS against the pinned provider CA and exactly one matching generation proof before sending or accepting native frames.
+  accDescr: Compute pins a reservation from the selected Sandbox Driver. After the same original acknowledges signed release, Compute compares all four pins and asks the Driver for bearer-authenticated serving status using the retained admitted requirements. Only serving permits activation. The Gateway authenticates the canonical origin with only the pinned provider CA before it sends the HTTP Upgrade request and bearer. A TLS failure sends neither. On the authenticated connection the relay checks the bearer and released original before returning 101 with one generation proof. The Gateway verifies that proof before sending or accepting native frames.
   participant C as Compute
   participant S as Selected Sandbox Driver
   participant G as Agent Gateway
@@ -30,10 +30,16 @@ sequenceDiagram
     alt Authenticated serving result
       S-->>C: Serving
       C->>G: Activate
-      G->>W: Request WebSocket upgrade
-      Note right of W: Check bearer and current released original
-      W-->>G: Return 101 and one generation proof
-      Note over G,W: Gateway checks pinned TLS and generation before any frame either way
+      G->>W: Start TLS for the canonical origin
+      Note over G,W: Gateway authenticates TLS with only the pinned provider CA
+      alt TLS authenticates the origin
+        G->>W: Send HTTP Upgrade request with bearer
+        Note right of W: Check bearer and current released original
+        W-->>G: Return 101 and one generation proof
+        Note over G,W: Gateway checks for one matching generation before any frame either way
+      else TLS authentication fails
+        Note over G,W: Close without sending Upgrade or bearer
+      end
     else Missing or non-serving result
       S-->>C: Unavailable or not serving
       Note over C,G: Keep the new revision unavailable
