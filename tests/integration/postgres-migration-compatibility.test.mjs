@@ -24,7 +24,10 @@ import {
 import { migrateWithHistory } from "../../scripts/migration-history.mjs";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { assertReleasedControllerCompatibility } from "../helpers/released-controller-compatibility.mjs";
+import {
+  assertReleasedControllerCompatibility,
+  assertReleasedControllerIAMCompatibility,
+} from "../helpers/released-controller-compatibility.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const migrationsDirectory = join(repositoryRoot, "migrations");
@@ -2037,6 +2040,7 @@ test(
       [70, "preDefaultUsers"],
       [71, "preHarnessOverrides"],
       [72, "preAccountAdministrationPolicy"],
+      [73, "preFiniteRepositorySessionWithdrawal"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -3729,6 +3733,22 @@ if (
       await assertReleasedControllerCompatibility(t, controllerImages, async () => {
         const fixture = await migrationHistoryFixture();
         return historyDatabase(t, fixture, "released_controller");
+      });
+    },
+  );
+  test(
+    "Released controller remains usable after configured IAM activation",
+    { timeout: 360_000 },
+    async (t) => {
+      assert.ok(
+        Object.values(controllerImages).every(
+          (image) => typeof image.reference === "string" && typeof image.revision === "string",
+        ),
+        "Both released and candidate controller image references and revisions are required.",
+      );
+      await assertReleasedControllerIAMCompatibility(t, controllerImages, async () => {
+        const fixture = await migrationHistoryFixture();
+        return historyDatabase(t, fixture, "released_iam");
       });
     },
   );

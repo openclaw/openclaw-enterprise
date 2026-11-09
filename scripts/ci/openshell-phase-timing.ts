@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 
 type Stamp = number | null;
 
@@ -81,11 +81,15 @@ if (import.meta.main) {
   if (now !== null && command === "mark") {
     process.stdout.write(`uptime=${uptime}\n`);
   } else if (now !== null && command === "summarize" && process.env.GITHUB_STEP_SUMMARY) {
-    const receipt = phaseTiming(process.env, now);
+    const receipt = JSON.stringify(phaseTiming(process.env, now), null, 2);
     appendFileSync(
       process.env.GITHUB_STEP_SUMMARY,
-      "### OpenShell phase timing\n\n```json\n" + JSON.stringify(receipt, null, 2) + "\n```\n",
+      "### OpenShell phase timing\n\n```json\n" + receipt + "\n```\n",
     );
+    const receiptPath = process.argv[3];
+    if (receiptPath) {
+      writeFileSync(receiptPath, receipt + "\n", { flag: "wx" });
+    }
   } else {
     process.exitCode = 1;
   }
