@@ -1,7 +1,8 @@
-import { TokenService } from "../../../../backends/token-service/service.ts";
+import { runPreparation, TokenService } from "../../../../backends/token-service/service.ts";
 import { githubProviderOrigin, preparationIssuerAuthority } from "./origin.ts";
 import { createHash, createPrivateKey, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -10,8 +11,10 @@ import {
   preparedGitHubSourceFromRoute,
   type PreparedTokenIssuer,
   type CredentialReadLifetime,
+  type EgressSourceKey,
   type PreparedGitHubEgressSource as Source,
   type PreparedTokenSelection,
+  type TokenResolveOptions,
   type Secret,
   type SecretDriver,
 } from "@openclaw-enterprise/contracts";
@@ -22,10 +25,14 @@ import {
 } from "@openclaw-enterprise/occ";
 import { createSystemClock } from "../../credentials/clock.ts";
 import { createGitHubKeyOwner } from "./material.ts";
-import { PreparedGitHubPostgres } from "./prepared-postgres.ts";
+import { tokenLifetimeMs } from "./driver/lifetime.ts";
+import { PreparedGitHubPostgres, type GitHubPreparationRequest } from "./prepared-postgres.ts";
 import { createGitHubPreparationOwner } from "./prepared-owner.ts";
 import { createWarmTokenReader } from "../../../../backends/token-service/warm-reader.ts";
 import { retirePreparedGitHubToken } from "./prepared-retirement.ts";
+
+const renewBeforeMs = 600_000;
+const issueMinimumValidityMs = 60_000;
 
 function grantId({ grant: g }: Source) {
   // Normalize field order using the admission owner's function, including after a jsonb round trip.
@@ -44,7 +51,7 @@ function grantId({ grant: g }: Source) {
 }
 type Metadata = NonNullable<Awaited<ReturnType<PreparedGitHubPostgres["metadata"]>>>;
 
-function evidence(m: Metadata): Omit<PreparedTokenSelection, "value"> {
+function evidence(m: Metadata): Omit<PreparedTokenSelection, "accessToken"> {
   const { admission: a } = m;
   return {
     family: { id: a.familyId, generation: a.generation },
@@ -53,18 +60,21 @@ function evidence(m: Metadata): Omit<PreparedTokenSelection, "value"> {
     preparationAttemptId: m.id,
     materialId: a.familyId,
     materialVersion: m.material_version!,
-    providerExpiresAt: m.provider_expires_at.toISOString(),
+    expiresAt: m.provider_expires_at.toISOString(),
     usableUntil: m.usable_until.toISOString(),
   };
 }
 
 /** The API and worker share the same database and a dedicated 32-byte custody key from a private
- * mount. Only the worker starts the preparation loop; a request never invokes or wakes that loop. */
+ * mount. Scheduled work and exact registered requests share the same durable issuance claim. */
 export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
   private repository: PreparedGitHubPostgres | undefined;
   private custodyKey?: Buffer;
   private readonly clock = createSystemClock();
   private readonly maintenance;
+  private readonly closing = new AbortController();
+  readonly shutdownSignal = this.closing.signal;
+  private readonly requested = new Map<string, Promise<string | undefined>>();
   private report: (
     code:
       | "PREPARED_GITHUB_RECOVERY_REQUIRED"
@@ -73,6 +83,7 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
     context?: Readonly<Record<string, string | number | boolean | undefined>>,
     severity?: "info" | "error",
   ) => void = () => {};
+  readonly tokenKind = "github_app_installation";
   readonly provider = preparedGitHubProviderRef;
   readonly sourceFromRoute = preparedGitHubSourceFromRoute;
   readonly issuerInput = "private_key";
@@ -107,7 +118,7 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
         "Prepared GitHub requires a custody key mount and authoritative issuer Secret Driver.",
       );
     }
-    tokenService.register(this, postgresPreparedGitHubProof);
+    tokenService.registerIssuer(this, postgresPreparedGitHubProof);
     this.maintenance = tokenService.ownFamilies({
       discover: async (signal) => {
         signal.throwIfAborted();
@@ -120,62 +131,84 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
         }
         return result;
       },
-      prepare: async (signal, run) => {
-        const claim = randomUUID();
-        const job = await this.db.claim(claim);
-        if (!job) {
-          return;
-        }
-        const { source, issuer } = job;
-        if (source.origin !== this.apiOrigin) {
-          throw new Error("Prepared GitHub origin changed.");
-        }
-        const input = await this.readIssuer(
-          issuer,
-          AbortSignal.any([signal, AbortSignal.timeout(25_000)]),
-        );
-        const admission = await this.db.observeInput(source, claim, input.version);
-        if (!admission || admission.grant.id !== grantId(source)) {
-          return "fenced";
-        }
-        const clock = this.clock;
-        const key = createGitHubKeyOwner({
-          privateKey: createPrivateKey(input.value),
-          appId: source.grant.appId,
-          clock,
-        });
-        try {
-          const outcome = await run(
-            createGitHubPreparationOwner({
-              admission,
-              store: this.db.store(source, null),
-              clock,
-              getKey: async () => key,
-              apiOrigin: this.apiOrigin,
-              ...(this.ca ? { ca: this.ca } : {}),
-              renewBeforeMs: 600_000,
-              minimumValidityMs: 60_000,
-              observe: ({ error, ...diagnostic }) =>
-                this.report(
-                  "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC",
-                  {
-                    ...diagnostic,
-                    ...(error ? { errorClass: error } : {}),
-                  },
-                  "info",
-                ),
-            }),
-          );
-          if (outcome === "quarantined" || outcome === "blocked") {
-            this.report("PREPARED_GITHUB_RECOVERY_REQUIRED", { reason: outcome });
-          }
-          return outcome;
-        } finally {
-          key.close();
-        }
-      },
+      prepare: (signal) => this.prepare(signal, issueMinimumValidityMs),
       failed: () => this.report("PREPARED_GITHUB_MAINTENANCE_FAILED"),
     });
+  }
+
+  private async prepare(
+    signal: AbortSignal,
+    minimumValidityMs: number,
+    request?: GitHubPreparationRequest,
+  ) {
+    const claim = randomUUID();
+    const job = await this.db.claim(claim, request);
+    if (!job) {
+      return request ? "unclaimed" : undefined;
+    }
+    const { source, issuer } = job;
+    try {
+      if (source.origin !== this.apiOrigin) {
+        throw new Error("Prepared GitHub origin changed.");
+      }
+      const input = await this.readIssuer(
+        issuer,
+        AbortSignal.any([signal, AbortSignal.timeout(25_000)]),
+      );
+      const admission = await this.db.observeInput(source, claim, input.version);
+      if (!admission || admission.grant.id !== grantId(source)) {
+        return "fenced";
+      }
+      if (request?.urgency === "required") {
+        // A different replica may have published after this caller observed a cold token
+        // and before it took the claim. Reuse even a short-lived replacement if it suffices.
+        const current = await this.db.metadata(source);
+        if (
+          current?.material_version &&
+          current.usable_until.getTime() > Date.now() + minimumValidityMs
+        ) {
+          return "ready";
+        }
+      }
+      const clock = this.clock;
+      const key = createGitHubKeyOwner({
+        privateKey: createPrivateKey(input.value),
+        appId: source.grant.appId,
+        clock,
+      });
+      try {
+        const outcome = await runPreparation(
+          createGitHubPreparationOwner({
+            admission,
+            store: this.db.store(source, null),
+            clock,
+            getKey: async () => key,
+            apiOrigin: this.apiOrigin,
+            ...(this.ca ? { ca: this.ca } : {}),
+            renewBeforeMs: Math.max(renewBeforeMs, minimumValidityMs),
+            minimumValidityMs: issueMinimumValidityMs,
+            observe: ({ error, ...diagnostic }) =>
+              this.report(
+                "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC",
+                {
+                  ...diagnostic,
+                  ...(error ? { errorClass: error } : {}),
+                },
+                "info",
+              ),
+          }),
+          signal,
+        );
+        if (outcome === "quarantined" || outcome === "blocked") {
+          this.report("PREPARED_GITHUB_RECOVERY_REQUIRED", { reason: outcome });
+        }
+        return outcome;
+      } finally {
+        key.close();
+      }
+    } finally {
+      await this.db.releaseClaim(source, claim);
+    }
   }
 
   async connect(pool: PostgresPool) {
@@ -279,9 +312,10 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
     return !!m && m.usable_until.getTime() > Date.now() && !signal.aborted;
   }
 
-  async readWarm(
+  private async readWarm(
     source: Source,
     lifetime: CredentialReadLifetime,
+    minimumValidityMs = 0,
   ): Promise<PreparedTokenSelection | undefined> {
     const { signal, deadlineAt } = lifetime;
     const deadline = Date.parse(deadlineAt);
@@ -290,7 +324,7 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
       return;
     }
     const m = await this.db.metadata(source);
-    if (!m?.material_version) {
+    if (!m?.material_version || m.usable_until.getTime() <= Date.now() + minimumValidityMs) {
       return;
     }
     const effectiveUntil = Math.min(deadline, m.usable_until.getTime());
@@ -316,16 +350,82 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
       if (
         attemptId === m.id &&
         materialVersion === m.material_version &&
-        usableUntil > Date.now() &&
+        usableUntil > Date.now() + minimumValidityMs &&
         active(effectiveUntil)
       ) {
         return {
           ...evidence(m),
-          value: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(),
+          accessToken: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(),
         };
       }
     } finally {
       bytes.fill(0);
+    }
+  }
+
+  private requestPreparation(
+    source: Source,
+    minimumValidityMs: number,
+    urgency: GitHubPreparationRequest["urgency"],
+  ) {
+    const id = source.key.source.id;
+    const current = this.requested.get(id);
+    if (current) {
+      return current;
+    }
+    // A use may be cancelled after GitHub accepts the issue. Its owner must still
+    // settle the attempt and make the result available to any other waiter.
+    const work = this.prepare(this.closing.signal, minimumValidityMs, { source, urgency })
+      .catch(() => {
+        this.report("PREPARED_GITHUB_MAINTENANCE_FAILED");
+        return "blocked";
+      })
+      .finally(() => this.requested.delete(id));
+    this.requested.set(id, work);
+    return work;
+  }
+
+  async resolve(
+    reference: EgressSourceKey,
+    options: TokenResolveOptions,
+  ): Promise<PreparedTokenSelection | undefined> {
+    const { minimumValidityMs } = options;
+    if (minimumValidityMs >= tokenLifetimeMs) {
+      return undefined;
+    }
+    const lifetime = options;
+    const deadline = Date.parse(lifetime.deadlineAt);
+    const active = () => !lifetime.signal.aborted && Date.now() < deadline;
+    const source = await this.db.registeredSource(reference);
+    if (!source || source.origin !== this.apiOrigin || !active()) {
+      return;
+    }
+    let waitingForPeer = false;
+    while (active()) {
+      const current = await this.readWarm(source, lifetime, minimumValidityMs);
+      if (!active()) {
+        return;
+      }
+      if (current) {
+        if (!waitingForPeer && Date.parse(current.usableUntil) <= Date.now() + renewBeforeMs) {
+          void this.requestPreparation(source, minimumValidityMs, "proactive");
+        }
+        return current;
+      }
+      const result = await this.requestPreparation(source, minimumValidityMs, "required");
+      if (result === "ready" || result === "committed") {
+        return this.readWarm(source, lifetime, minimumValidityMs);
+      }
+      if (result !== "unclaimed") {
+        return;
+      }
+      // Another replica may own the exact family's claim. Its publication will satisfy
+      // the next read; a lost claim becomes eligible for takeover when its lease expires.
+      if (!active() || !(await this.db.registeredSource(reference))) {
+        return;
+      }
+      waitingForPeer = true;
+      await delay(100, undefined, { signal: lifetime.signal });
     }
   }
 
@@ -344,7 +444,9 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
   }
 
   async close() {
+    this.closing.abort();
     await this.maintenance.close();
+    await Promise.all(this.requested.values());
     this.custodyKey?.fill(0);
     this.repository = undefined;
   }

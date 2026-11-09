@@ -236,7 +236,7 @@ test(
     // Revisions pinned to another driver must never create actual tenant resources.
     assert.deepEqual(
       await driver.prepareRevision(
-        { ...firstRevision, compute: foreignCompute },
+        { ...firstRevision, compute: { ...firstRevision.compute, ...foreignCompute } },
         revisionContext(firstRevision),
       ),
       unreadyFirstRevision,
@@ -717,7 +717,10 @@ test(
     );
 
     await assert.rejects(
-      driver.retireRevision({ ...firstRevision, compute: foreignCompute }),
+      driver.retireRevision({
+        ...firstRevision,
+        compute: { ...firstRevision.compute, ...foreignCompute },
+      }),
       /another Compute Driver/i,
     );
     await resource("deployment", revisionName(secondRevision), owned[0]);
@@ -740,9 +743,15 @@ test(
     const embeddedAgent = `agt_${randomUUID()}`;
     const embeddedRevision = {
       ...revision(driver, first, embeddedAgent, 1),
-      harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      harness: { id: "openclaw", version: "1.0.0", mode: "embedded", overrides: {} },
     };
     embeddedRevision.configuration.agents.defaults.model = "openai/gpt-5";
+    embeddedRevision.harness.configuration = driver.resolveHarnessConfiguration(
+      embeddedRevision.harness,
+      embeddedRevision.harnessAuth,
+      embeddedRevision.configuration,
+    );
+    embeddedRevision.compute.admission = driver.admitRevision(embeddedRevision);
     await waitFor(`embedded AgentRevision ${embeddedRevision.id} to become ready`, async () => {
       const observation = await driver.prepareRevision(
         embeddedRevision,

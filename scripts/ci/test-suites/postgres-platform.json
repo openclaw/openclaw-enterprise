@@ -3,11 +3,13 @@
     "postgres": true,
     "requiresPreparedStateForFile": true
   },
+  "optionalEnv": ["OCC_TEST_STANDING_GIT_CODEX", "OCC_TEST_REQUIRE_STANDING_GIT_CONVERSATION"],
   "fileConcurrency": 4,
   "parallelFiles": [
     "tests/integration/postgres-password-sign-in-limit.test.mjs",
     "tests/integration/postgres-bootstrap-failures.test.mjs",
     "tests/integration/postgres-agent-provisioning.test.mjs",
+    "tests/integration/postgres-plugin-discovery.test.ts",
     "tests/integration/postgres-platform-state.test.mjs",
     "tests/integration/postgres-github-recovery-replacement.test.mjs",
     "tests/integration/postgres-production-wireup.test.mjs",
@@ -22,6 +24,7 @@
     "tests/integration/postgres-worker-stale-claim.test.mjs",
     "tests/integration/postgres-namespace-iam-policy.test.mjs",
     "tests/integration/postgres-agent-update-authority.test.ts",
+    "tests/integration/postgres-connection-templates.test.ts",
     "tests/integration/workspace-setup-worker.test.mjs",
     "tests/integration/postgres-repository-sessions.test.mjs",
     "tests/integration/postgres-secret-state.test.mjs",
@@ -50,6 +53,8 @@
     "tests/integration/postgres-external-protected-git.test.ts",
     "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
     "tests/integration/postgres-openshell-standing-repository-set.test.ts",
+    "tests/integration/postgres-openshell-standing-selected-repository.test.ts",
+    "tests/integration/postgres-openshell-standing-cold-worker.test.ts",
     "tests/integration/postgres-egress-send-receipts.test.mjs",
     "tests/integration/postgres-protected-credential-free.test.mjs",
     "tests/integration/postgres-standing-approval-api.test.ts",
@@ -61,7 +66,8 @@
     "tests/integration/credential-proxy-revision-currentness.test.ts",
     "tests/integration/postgres-egress-policy-transaction.test.ts",
     "tests/integration/postgres-credential-source-revision-owner.test.ts",
-    "tests/integration/postgres-worker-process-shutdown.test.ts"
+    "tests/integration/postgres-worker-process-shutdown.test.ts",
+    "tests/integration/postgres-harness-overrides.test.ts"
   ],
   "files": [
     {
@@ -87,6 +93,12 @@
         "production and development bootstrap refuse an Installation name outside the Name rule before creating anything",
         "API and worker startup refuse a stored Installation name outside the Name rule",
         "development bootstrap preserves credentials when COMMIT acknowledgement is lost"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-plugin-discovery.test.ts",
+      "expectedTests": [
+        "saved Agent catalog discovery releases the database connection while reading Configuration"
       ]
     },
     {
@@ -133,6 +145,17 @@
     {
       "path": "tests/integration/postgres-controller-work-targets.test.mjs",
       "expectedTests": ["PostgreSQL controller work requires exactly one complete target shape"]
+    },
+    {
+      "path": "tests/integration/postgres-connection-templates.test.ts",
+      "expectedTests": [
+        "the Installation starts with an editable Google OAuth template and preserves saved destination versions",
+        "an administrator registers OAuth clients against a pinned template and its availability",
+        "OAuth client rotation updates its stable private reference across an unknown commit",
+        "the worker removes an unpublished OAuth client after interrupted creation",
+        "MCP discovery selects one advertised issuer and saves only the administrator's approved scopes",
+        "revoking a browser session while rotation waits prevents the secret from reaching its Driver"
+      ]
     },
     {
       "path": "tests/integration/postgres-agent-update-authority.test.ts",
@@ -316,6 +339,7 @@
     {
       "path": "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
       "expectedTests": [
+        "authorized GitHub proxy requests mint the registered grant and share one replacement",
         "PostgreSQL prepared custody: source consent, proactive renewal, restart, issuer rotation and withdrawal",
         "current proof preserves caller SQL limits and restores them in its unit",
         "signed PostgreSQL dispatch uses one shared connection for current material proof",
@@ -354,6 +378,7 @@
       "expectedTests": [
         "only the installed Git recipient owner may use its material or retire its ended admission",
         "changing between repository and installation scope waits for the previous owner to settle its token",
+        "OpenShell preparation refuses historical custody and preserves v6 observed-hook custody",
         "selected repository set retires after B session across owner restart",
         "selected repository set retires after B replacement across owner restart",
         "selected repository set retires after B deadline across owner restart",
@@ -387,12 +412,14 @@
       "path": "tests/integration/postgres-openshell-online-git-journey.test.ts",
       "expectedTests": [
         "OCE signed TLS Git authorization: stopping the Agent denies a fresh signed Git request",
+        "another fixture cannot inherit a stopped Agent's custody",
         "OCE signed TLS Git authorization: removing the repository binding denies a fresh signed Git request"
       ]
     },
     {
       "path": "tests/integration/postgres-openshell-git-routes.test.ts",
       "expectedTests": [
+        "finite Git removal is revision scoped and wins concurrent cold route adoption",
         "OpenShell Git routes persist identity and custody facts under one fenced holder",
         "a replacement lease cannot settle or replay an uncertain rotate installation",
         "settlement policy and operation identity cannot be substituted",
@@ -402,9 +429,14 @@
     {
       "path": "tests/integration/postgres-openshell-standing-route.test.ts",
       "expectedTests": [
-        "OpenShell standing rotation preserves custody when unsent",
-        "OpenShell standing rotation preserves custody when lost-reply",
-        "lost initial OpenShell route commit acknowledgement prevents bootstrap and replay across restart"
+        "held OpenShell route stays closed to a cold reader and closes on worker replacement",
+        "selected held OpenShell rotation preserves custody when unsent",
+        "selected held OpenShell rotation preserves custody when lost-reply",
+        "selected held OpenShell rotation preserves custody when withdrawn",
+        "lost initial OpenShell route commit acknowledgement prevents bootstrap and replay across restart",
+        "uncertain preview release preserves fenced retirement with a fault before write",
+        "uncertain preview release preserves fenced retirement with a fault after commit",
+        "uncertain preview release preserves fenced retirement with a fault during worker replacement"
       ]
     },
     {
@@ -415,6 +447,7 @@
         "an installed external Driver uses an explicit GitHub installation for private Git fetch, push, REST and GraphQL until withdrawal",
         "an online sender uses the admitted GitHub installation for real Git and API requests until withdrawal",
         "a capable external Driver reduces Git on the original running execution through cleanup and worker replacement",
+        "a capable external Driver reduces finite Git binding removal on the original execution across worker replacement",
         "a capable registered Driver observes only the original lost rotation across worker replacement and withdrawal",
         "production composition separates repository policy from protected and explicitly selected native senders",
         "external Git reduction authenticates and observes exact policy without mutation replay"
@@ -423,13 +456,29 @@
     {
       "path": "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
       "expectedTests": [
-        "standing OpenShell installation grant crosses both expiries, serves two Git repositories and the API, then loses only GitHub"
+        "historical v5 installation cannot renew and settles the original lost detach without replay"
       ]
     },
     {
       "path": "tests/integration/postgres-openshell-standing-repository-set.test.ts",
       "expectedTests": [
         "one deployed OpenShell Agent pushes A and B with one repository-scoped token and cannot push C"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-openshell-standing-selected-repository.test.ts",
+      "expectedTests": [
+        "one selected repository renews beyond its original session without replacing the execution and denies withdrawn approval",
+        "an expired acknowledged launch refuses a pending successor after recipient changes",
+        "an expired acknowledged launch refuses a pending successor after approval changes"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-openshell-standing-cold-worker.test.ts",
+      "expectedTests": [
+        "a cold worker persists redeploy-required standing Git status without renewing it",
+        "a cold worker after session expiry checks expired-original-pods",
+        "a cold worker after session expiry checks expired-replaced-supervisor"
       ]
     },
     {
@@ -481,7 +530,8 @@
       "path": "tests/integration/postgres-standing-session-worker.test.ts",
       "expectedTests": [
         "standing maintenance supervises missing Git evidence across restart and still withdraws model authority",
-        "standing maintenance refuses withdrawn eligibility with unchanged scope"
+        "standing maintenance refuses withdrawn eligibility with unchanged scope",
+        "bound worker reconciliation retains the original repository admission policy"
       ]
     },
     {
@@ -595,6 +645,12 @@
       "path": "tests/integration/postgres-worker-process-shutdown.test.ts",
       "expectedTests": [
         "worker.mjs exits cleanly on SIGTERM after stopping the worker and its metrics listener"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-harness-overrides.test.ts",
+      "expectedTests": [
+        "PostgreSQL preserves Harness destinations across restart and default replacement"
       ]
     }
   ]

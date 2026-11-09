@@ -5,13 +5,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { promisify } from "node:util";
-import { commandPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
-// scripts/ci/go-test.mjs gates the Go CLI tests in CI. These cases run it over a
+// scripts/ci/go-test.ts gates the Go CLI tests in CI. These cases run it over a
 // scratch module, one package directory at a time: the script tests "./...", so
 // the working directory picks the packages.
-const script = fileURLToPath(new URL("../../scripts/ci/go-test.mjs", import.meta.url));
+const script = fileURLToPath(new URL("../../scripts/ci/go-test.ts", import.meta.url));
 const execFileAsync = promisify(execFile);
 const modulePath = "example.test/gotest";
 
@@ -114,10 +114,23 @@ async function goTest(cwd, { env = {}, args = [] } = {}) {
     );
     return { code: 0, stdout, stderr };
   } catch (error) {
-    assert.equal(error.signal, null, `go-test.mjs was killed: ${error.stderr}`);
+    assert.equal(error.signal, null, `go-test.ts was killed: ${error.stderr}`);
     return { code: error.code, stdout: error.stdout, stderr: error.stderr };
   }
 }
+
+test("go-test handles malformed and nonstandard event records without dropping output", async (t) => {
+  const root = await temporaryDirectory(t, "ci-go-events-");
+  await writeCommand(
+    root,
+    "go",
+    `printf '%s\n' 'not json' '{"Action":"output","Test":"T","Output":"buffered"}' '{"Action":["pass"],"Test":"T"}'
+`,
+  );
+  const result = await goTest(root, { env: { PATH: commandPath(root) } });
+  assert.equal(result.code, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^not json\nbufferedgo-test: 1 passed, 0 failed, 0 skipped\n$/);
+});
 
 test("go-test fails on skips and package failures and passes clean packages", async (t) => {
   const root = await fixtureModule(t);

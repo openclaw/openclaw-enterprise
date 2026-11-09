@@ -11,7 +11,7 @@ const providerResponseLimit = 64 * 1024;
 // The provider step a failure happened at. `authorization` is the provider's own error
 // redirect to the callback; `profile` is GitHub's user lookup; `membership` is GitHub's
 // organization or team membership lookup for the sign-in allowlist.
-export type ProviderStep = "authorization" | "token" | "jwks" | "profile" | "membership";
+export type ProviderStep = "authorization" | "token" | "jwks" | "profile" | "membership" | "email";
 
 /**
  * Why a provider gave no well-formed answer, from a fixed vocabulary. It is logged for
@@ -65,6 +65,10 @@ export type ProviderExchange =
         target: { readonly organizationId: string; readonly teamId: string },
         signal: AbortSignal,
       ) => Promise<"present" | "absent" | "unavailable">;
+      readonly enrollment?: {
+        readonly groupId: string;
+        readonly profile: () => Promise<{ readonly email: string; readonly name: string }>;
+      };
     }
   | { readonly denial: "EXTERNAL_IDENTITY_REJECTED" }
   | { readonly denial: "PROVIDER_UNAVAILABLE"; readonly failure?: ProviderFailure }
@@ -207,6 +211,35 @@ export async function providerJSON(
   }
 }
 
+/** The verified-email endpoint returns an array, bounded like other provider replies. */
+export async function providerEmailAddresses(
+  init: RequestInit,
+  signal: AbortSignal,
+): Promise<unknown[]> {
+  const step = "email";
+  try {
+    const response = await fetch("https://api.github.com/user/emails?per_page=100", {
+      ...init,
+      signal,
+      redirect: "error",
+    });
+    if (response.status !== 200 || !response.body) {
+      await response.body?.cancel();
+      throw new ProviderUnavailableError({ step, cause: "http_status", status: response.status });
+    }
+    return await readBoundedJSON(response, response.body, signal, step, true);
+  } catch (error) {
+    if (error instanceof ProviderUnavailableError) {
+      throw error;
+    }
+    throw new ProviderUnavailableError(
+      error instanceof SyntaxError
+        ? { step, cause: "malformed_response" }
+        : transportFailure(error, step),
+    );
+  }
+}
+
 /**
  * Reads one GitHub membership: `true` for `state: active`, `false` for a 404 (not affiliated)
  * or `state: pending`. Anything else, including 401 and 403 (for example an organization that
@@ -311,8 +344,22 @@ export async function readBoundedJSON(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal,
   step: ProviderStep,
-  decode: (bytes: Buffer) => unknown = (bytes) => JSON.parse(bytes.toString("utf8")),
-): Promise<Record<string, unknown>> {
+  decode?: (bytes: Buffer) => unknown,
+): Promise<Record<string, unknown>>;
+export async function readBoundedJSON(
+  response: Response,
+  body: ReadableStream<Uint8Array>,
+  signal: AbortSignal,
+  step: ProviderStep,
+  array: true,
+): Promise<unknown[]>;
+export async function readBoundedJSON(
+  response: Response,
+  body: ReadableStream<Uint8Array>,
+  signal: AbortSignal,
+  step: ProviderStep,
+  decodeOrArray?: true | ((bytes: Buffer) => unknown),
+): Promise<Record<string, unknown> | unknown[]> {
   const reader = body.getReader();
   try {
     if (Number(response.headers.get("content-length")) > providerResponseLimit) {
@@ -334,11 +381,19 @@ export async function readBoundedJSON(
       }
       chunks.push(value);
     }
-    const data = decode(Buffer.concat(chunks, length));
-    if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    const bytes = Buffer.concat(chunks, length);
+    const data: unknown =
+      typeof decodeOrArray === "function"
+        ? decodeOrArray(bytes)
+        : JSON.parse(bytes.toString("utf8"));
+    if (
+      typeof data !== "object" ||
+      data === null ||
+      Array.isArray(data) !== (decodeOrArray === true)
+    ) {
       throw new ProviderUnavailableError({ step, cause: "malformed_response" });
     }
-    return data as Record<string, unknown>;
+    return data as Record<string, unknown> | unknown[];
   } finally {
     reader.releaseLock();
   }

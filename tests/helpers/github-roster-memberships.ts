@@ -1,6 +1,8 @@
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import assert from "node:assert/strict";
-import { setTimeout as delay } from "node:timers/promises";
+import type { TestContext } from "node:test";
+import { waitForLockWaiter } from "./postgres-lock-waits.mjs";
+import { administrativeActor } from "./administrative-actor.mjs";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import {
@@ -10,23 +12,9 @@ import {
   type PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
 
-async function waitForBlocker(pool: Pool, pid: number): Promise<void> {
-  const deadline = Date.now() + 3000;
-  while (true) {
-    const blocked = await pool.query<{ waiting: boolean }>(
-      "SELECT EXISTS(SELECT FROM pg_stat_activity WHERE $1::integer=ANY(pg_blocking_pids(pid))) AS waiting",
-      [pid],
-    );
-    if (blocked.rows[0]?.waiting) {
-      break;
-    }
-    assert.ok(Date.now() < deadline, "the second transaction must wait for the held authority");
-    await delay(10);
-  }
-}
-
 /** The surrounding guarded-authentication fixture owns an activated Installation and actor. */
 export async function assertGithubRosterMemberships(
+  context: TestContext,
   state: PostgresPlatformState,
   failingAuditState: PostgresPlatformState,
   observedState: PostgresPlatformState,
@@ -66,10 +54,10 @@ export async function assertGithubRosterMemberships(
       assert.ok(unit.installations.syncGithubRosterMappings);
       await unit.installations.syncGithubRosterMappings(mappings);
     });
-  const begin = async (mapping: GithubRosterMapping) => {
+  const begin = async (mapping: GithubRosterMapping, authentication = auth) => {
     const snapshot = await auth.snapshotExternal(providerId, subject);
     assert.ok(snapshot && "proof" in snapshot);
-    const claim = await auth.beginRosterSignIn(snapshot.proof, mapping);
+    const claim = await authentication.beginRosterSignIn(snapshot.proof, mapping);
     assert.ok(claim);
     return { claim, proof: snapshot.proof };
   };
@@ -98,13 +86,13 @@ export async function assertGithubRosterMemberships(
       "DELETE FROM occ.iam_group_memberships WHERE group_id=$1 AND principal_id=$2 AND roster_source_id IS NULL",
       [groupId, principalId],
     );
-  const refresh = async (mapping: GithubRosterMapping) => {
+  const refresh = async (mapping: GithubRosterMapping, authentication = auth) => {
     // Advance the fixture's due time without replacing the production claim or clock.
     await pool.query(
       "UPDATE occ.github_roster_mappings SET next_refresh_at=now() WHERE mapping_id=$1 AND generation IS NOT NULL",
       [mapping.id],
     );
-    const run = await auth.claimRosterRefresh(mapping);
+    const run = await authentication.claimRosterRefresh(mapping);
     assert.ok(run);
     return run;
   };
@@ -126,6 +114,44 @@ export async function assertGithubRosterMemberships(
   await sync([first, second]);
   await activate(first);
   await activate(second);
+  await context.test(
+    "a waiting refresh fences the first sign-in claim committed ahead of it",
+    async () => {
+      const run = await refresh(first, observedAuth);
+      assert.deepEqual(run.subjects, []);
+      const pending = await state.transact(async (unit) => {
+        await unit.installations.holdIAMConfiguration("exclusive");
+        const backend = await state.queryInTransaction(unit, "SELECT pg_backend_pid() AS pid");
+        const holder = (backend.rows[0] as { pid: number }).pid;
+        const signIn = begin(first, observedAuth);
+        void signIn.catch(() => {});
+        const filter = { queryLike: "SELECT pg_advisory_xact_lock(hashtextextended(%" };
+        const firstWaiter = await waitForLockWaiter(
+          pool,
+          holder,
+          "the first sign-in claim to queue",
+          filter,
+        );
+        const refreshResult = observedAuth.finishRosterRefresh(run, {
+          status: "complete",
+          presentSubjects: [],
+          confirmedAbsentSubjects: [],
+        });
+        void refreshResult.catch(() => {});
+        await waitForLockWaiter(
+          pool,
+          firstWaiter,
+          "refresh settlement to queue behind the sign-in claim",
+          filter,
+        );
+        return { signIn, refreshResult };
+      });
+      const [claim, settled] = await Promise.all([pending.signIn, pending.refreshResult]);
+      assert.equal(settled, true);
+      await assert.rejects(finish(claim, "present"), /mapping has changed/);
+      assert.equal(await memberships(), 0);
+    },
+  );
   const initialSuccess = (await readStatus(first)).lastSuccessfulAt;
   for (const manualFirst of [true, false]) {
     if (manualFirst) {
@@ -141,6 +167,44 @@ export async function assertGithubRosterMemberships(
     await removeManual();
     assert.equal(await memberships(), 0);
   }
+  await context.test(
+    "automatic enrollment and roster admission preserve each other’s Group contribution",
+    async () => {
+      const enroll = async () => {
+        const result = await auth.enrollExternal({
+          providerId,
+          subject,
+          groupId,
+          attemptCreatedAt: (await pool.query<{ now: Date }>("SELECT clock_timestamp() AS now"))
+            .rows[0]!.now,
+        });
+        assert.ok(result && "proof" in result && result.proof.principalId === principalId);
+      };
+      for (const enrollFirst of [true, false]) {
+        if (enrollFirst) {
+          await enroll();
+        }
+        await finish(await begin(first), "present");
+        if (!enrollFirst) {
+          await enroll();
+        }
+        await enroll();
+        assert.deepEqual(
+          (
+            await pool.query(
+              "SELECT roster_source_id IS NULL AS enrolled FROM occ.iam_group_memberships WHERE group_id=$1 AND principal_id=$2 ORDER BY enrolled",
+              [groupId, principalId],
+            )
+          ).rows,
+          [{ enrolled: false }, { enrolled: true }],
+        );
+        await finish(await begin(first), "absent");
+        assert.equal(await memberships(), 1);
+        await removeManual();
+        assert.equal(await memberships(), 0);
+      }
+    },
+  );
   const mapped = await begin(first);
   const ordinarySession = await observedAuth.issueSession(mapped.proof, {
     id: randomUUID(),
@@ -238,7 +302,11 @@ export async function assertGithubRosterMemberships(
     [groupBinding, groupId, binding.role_id, binding.resource_kind, binding.resource_id],
   );
   await pool.query("DELETE FROM occ.iam_access_bindings WHERE id=$1", [binding.id]);
-  const rosterAdmin = { principalId, userId, sessionId: liveSession.id };
+  const rosterAdmin = administrativeActor(state, installationId, {
+    principalId,
+    userId,
+    sessionId: liveSession.id,
+  });
   const target = await auth.readRosterOverride(userId, methodId, first, rosterAdmin);
   assert.equal(
     (
@@ -261,6 +329,12 @@ export async function assertGithubRosterMemberships(
       [methodId],
     );
   const previousAudit = (await overrideAudit()).rows;
+  await assert.rejects(auth.readRosterStatuses([first], rosterAdmin), {
+    name: "AuthorizationDeniedError",
+  });
+  await assert.rejects(auth.readRosterOverride(userId, methodId, first, rosterAdmin), {
+    name: "AuthorizationDeniedError",
+  });
   await assert.rejects(
     auth.setRosterOverride(
       userId,
@@ -271,7 +345,7 @@ export async function assertGithubRosterMemberships(
       target.accountVersion,
       target.version,
     ),
-    /cannot administer/,
+    { name: "AuthorizationDeniedError" },
   );
   assert.deepEqual(await auth.readRosterOverride(userId, methodId, first, admin), target);
   assert.deepEqual((await overrideAudit()).rows, previousAudit);
@@ -296,14 +370,18 @@ export async function assertGithubRosterMemberships(
         target.accountVersion,
         target.version,
       ),
-      /IAM policy is changing/,
+      { name: "DependencyUnavailableError", message: /lock timeout/ },
     );
-    assert.deepEqual(await auth.readRosterOverride(userId, methodId, first, admin), target);
-    assert.deepEqual((await overrideAudit()).rows, previousAudit);
+    await assert.rejects(auth.readRosterOverride(userId, methodId, first, admin), {
+      name: "DependencyUnavailableError",
+      message: /lock timeout/,
+    });
   } finally {
     await contending.query("ROLLBACK");
     contending.release();
   }
+  assert.deepEqual(await auth.readRosterOverride(userId, methodId, first, admin), target);
+  assert.deepEqual((await overrideAudit()).rows, previousAudit);
   const beforeDeny = await begin(first);
   const readOverride = () => auth.readRosterOverride(userId, methodId, first, admin);
   const writeOverride = async (deny: boolean, expected = readOverride()) => {
@@ -326,7 +404,7 @@ export async function assertGithubRosterMemberships(
     const backend = await state.queryInTransaction(unit, "SELECT pg_backend_pid() AS pid");
     const holderPid = (backend.rows[0] as { pid: number }).pid;
     held.resolve(holderPid);
-    await waitForBlocker(pool, holderPid);
+    await waitForLockWaiter(pool, holderPid, "the roster override to wait for the held session");
     // This is the same order as OCC's ordinary durable authority writer.
     await unit.installations.holdIAMConfiguration("shared");
   });
@@ -362,17 +440,40 @@ export async function assertGithubRosterMemberships(
 
   assert.equal(await memberships(), 0);
   await assert.rejects(finish(beforeDeny, "present"), /mapping has changed/);
-  const retired = await begin(second);
-  await sync([]);
-  const rejectedSession = { id: randomUUID(), token: randomUUID(), userId };
-  await assert.rejects(
-    observedAuth.issueSession(retired.proof, rejectedSession, undefined, [
-      { claim: retired.claim, result: "present" },
-    ]),
-    /mapping has changed/,
+  await context.test(
+    "mapped sign-in waiting on IAM configuration observes a committed roster retirement",
+    async () => {
+      await finish(await begin(second), "present");
+      assert.equal(await memberships(), 1);
+      const retired = await begin(second);
+      const rejectedSession = { id: randomUUID(), token: randomUUID(), userId };
+      let settlement: Promise<void> | undefined;
+      await state.transact(async (unit) => {
+        assert.ok(unit.installations.syncGithubRosterMappings);
+        await unit.installations.syncGithubRosterMappings([]);
+        const backend = await state.queryInTransaction(unit, "SELECT pg_backend_pid() AS pid");
+        settlement = assert.rejects(
+          observedAuth.issueSession(retired.proof, rejectedSession, undefined, [
+            { claim: retired.claim, result: "present" },
+          ]),
+          /mapping has changed/,
+        );
+        void settlement.catch(() => {});
+        await waitForLockWaiter(
+          pool,
+          (backend.rows[0] as { pid: number }).pid,
+          "mapped session settlement to wait on the retiring configuration",
+          { queryLike: "SELECT pg_advisory_xact_lock(hashtextextended(%" },
+        );
+      });
+      await settlement;
+      assert.equal(
+        (await pool.query("SELECT id FROM occ.session WHERE id=$1", [rejectedSession.id])).rowCount,
+        0,
+      );
+      assert.equal(await memberships(), 0);
+    },
   );
-  assert.equal(await auth.currentSession(rejectedSession.token), undefined);
-  assert.equal(await memberships(), 0);
   await sync([first]);
   await activate(first);
   await finish(await begin(first), "present");
@@ -450,7 +551,11 @@ export async function assertGithubRosterMemberships(
           assert.equal(
             await guarded(async (pid) => {
               mutation = change();
-              await waitForBlocker(pool, pid);
+              await waitForLockWaiter(
+                pool,
+                pid,
+                "the method change to wait for the held IAM configuration",
+              );
               assert.equal(await memberships(), 1);
             }),
             true,
@@ -461,7 +566,11 @@ export async function assertGithubRosterMemberships(
           try {
             await change();
             const incoming = guarded(async () => {});
-            await waitForBlocker(pool, writerPid);
+            await waitForLockWaiter(
+              pool,
+              writerPid,
+              "the guarded read to wait for the method change",
+            );
             await writer.query("COMMIT");
             assert.equal(await incoming, false);
           } finally {

@@ -1,4 +1,5 @@
 import { bindGithubTeamMappings } from "../auth/github-team-mappings.ts";
+import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
@@ -111,7 +112,7 @@ export async function composeProduction(
     credentialRefreshDriver,
     protectedDriver,
     preparedGitHub,
-    pluginDriver,
+    pluginDrivers,
     repositoryPolicy,
     createIAMDriver,
   } = config.drivers;
@@ -308,6 +309,9 @@ export async function composeProduction(
         githubRosterMappings,
         state,
         ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
+        ...(config.drivers.pluginSourceReader === undefined
+          ? {}
+          : { pluginSourceReader: config.drivers.pluginSourceReader }),
         recordOperations: true,
         backends: installation.backend,
         defaultPresets: config.drivers.defaultPresets ?? [],
@@ -341,11 +345,17 @@ export async function composeProduction(
     }
     controller.registerDriver(configurationDriver);
     controller.selectDriver("configuration", configurationDriver.id);
+    // TODO: Select an OpenShell OAuth issuer in the API and worker when its RPC can
+    // take custody of the grant and own refresh. Other installations use the built-in issuer.
+    config.drivers.tokenService?.registerIssuer(
+      new OAuthAccountTokens(
+        state,
+        secretDriver,
+        controller.resolveConnectionClient.bind(controller),
+      ),
+    );
     config.serviceAccountDriverFactory?.(controller, state);
-    if (pluginDriver !== undefined) {
-      controller.registerDriver(pluginDriver);
-      controller.selectDriver("plugin", pluginDriver.id);
-    }
+    controller.installPluginDrivers(pluginDrivers ?? []);
     if (repositoryPolicy !== undefined) {
       controller.registerDriver(repositoryPolicy);
       controller.selectDriver("repo", repositoryPolicy.id);

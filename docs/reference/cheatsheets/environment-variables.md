@@ -36,6 +36,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AUTH_GITHUB_ALLOWED_ORGS` — Optional comma-separated GitHub organization logins; when set (or with the teams), GitHub sign-in requires active membership. See the [allowlist](../authentication/external-sign-in.md#organization-and-team-allowlist).
 - `OCC_AUTH_GITHUB_ALLOWED_TEAMS` — Optional comma-separated `org/team-slug` entries whose active members may use GitHub sign-in; at most 10 entries with the organizations.
 - `OCC_GITHUB_TEAM_TOKEN_FILE` — Absolute path on the worker to the GitHub App installation token used to [refresh team mappings](../authorization/default-users.md#map-a-github-team-to-a-group).
+- `OCC_AUTH_GITHUB_AUTO_ENROLL_GROUP_ID` — Optional existing Installation IAM Group for [automatic GitHub team enrollment](../authentication/team-enrollment.md); requires a team-only allowlist.
 - `OCC_AUTH_GITHUB_RECOVERY_USER_ID` — Existing local password administrator protected for recovery when GitHub, Google or OIDC sign-in is enabled.
 - `OCC_AUTH_PASSWORD_SIGN_IN` — `all` (default) or `recovery-only`, which lets only the recovery account sign in with a password; requires GitHub, Google or OIDC sign-in. See [recovery-only password sign-in](../authentication/external-sign-in.md#recovery-only-password-sign-in).
 - `OCC_AUTH_GOOGLE_CLIENT_ID` — Optional Google OAuth web client ID; selects the provider instance. Requires the client secret and the recovery user ID; see [Google sign-in](../../guides/deploy/google-sign-in.md).
@@ -53,6 +54,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AGENT_NATIVE_ADMIN_DOMAIN` — Agent hostname suffix; required when the pilot is enabled.
 - `OCC_AUTH_COOKIE_DOMAIN` — Shared parent domain for console and Agent cookies; required when the pilot is enabled.
 - `OCC_GATEWAY_API_KEY_PATH` — API/worker absolute path to the private gateway service-key file for operator RPCs and dedicated node enrollment.
+- `OCC_INSTALLATION_SECRET_NAMESPACE` — Kubernetes namespace for private OAuth client secrets on the selected Secret Driver. Helm provisions it and sets the name for the API and worker. For standalone Kubernetes, provision a dedicated namespace (default `oce-installation-secrets`) and grant the controller access to its Secrets.
 - `OCC_PREPROVISIONED_NAMESPACE` — API/worker JSON `{"namespaceId", "uid"}` binding one operator-created tenant namespace; set by Helm `preprovisionedNamespace`. See [preprovisioned namespace](../drivers/kubernetes-compute/preprovisioned-namespace.md).
 - `OCC_CHANNEL_DIRECTORY_PROXY_URL` — Optional API-only HTTP(S) proxy endpoint for production Slack directory lookup and credential validation; set by Helm `slackProxy.enabled` or `api.channelDirectoryProxyUrl`.
 - `OCC_API_HTTPS_EGRESS_OPEN` — `true` when API egress allows TCP 443 to any address, so a Slack check without a proxy can succeed; default: `false`. Set by the chart from sign-in `egressCidrs`.
@@ -128,10 +130,11 @@ for supported engines, images, and security restrictions.
 - `OCC_DOCKER_GATEWAY_IMAGE` — Docker gateway image when a shared image is not used.
 - `OCC_DOCKER_AGENT_IMAGE` — Docker Codex Agent image when a shared image is not used.
 - `OCC_KUBERNETES_RUNTIME_IMAGE` — Existing local or loopback-registry Kubernetes runtime image; Kubernetes-only startup requires a matching controller digest and checkout commit.
+- `OCC_DEVELOPMENT_BUILD_CA_FILE` — Optional host PEM trust bundle for HTTPS downloads during the local Kubernetes runtime image build.
 - `OCC_DEVELOPMENT_CONTROLLER_IMAGE` — Existing local or loopback-registry OCE controller digest matching the runtime and checkout commit for the Kubernetes-only profile.
 - `OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY` — Private local repository registry, App key, and approved upstream IPv4 `/32` endpoint inputs.
 - `OCC_DEVELOPMENT_REPOSITORY_IMAGE` — Optional matching immutable repository service image for the Kubernetes-only profile.
-- `OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER` — Disposable loopback-only registry container the Kubernetes-only k3d node pulls digest-pinned selected images from, instead of archive imports. Controller and runtime images the engine lacks have their labels and platform read from it, checked against their digests.
+- `OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER` — Disposable loopback-only registry for digest-pinned selected images. Kubernetes-only supports its image pair and optional service images; Compose supports only the runtime, with a matching checkout label. Labels and platform are verified against the registry digests.
 - `OCC_DEVELOPMENT_POSTGRES_IMAGE` — Existing local PostgreSQL image for the Kubernetes-only profile; defaults to the pinned PostgreSQL 18.6 image.
 - `OCC_DEVELOPMENT_NODE_BASE_IMAGE` — Immutable Node 24 base used when building the Kubernetes-only OCE controller image.
 - `OCC_DEVELOPMENT_STATE_DIRECTORY` — Private Kubernetes profile state. When unset, the launching process's temporary directory plus `openclaw-development` (`TMPDIR` if that process set it, otherwise `/tmp` on Linux). Use the same value for cleanup.
@@ -176,3 +179,5 @@ Collector or local Docker log forwarding. See [Observability](../../guides/obser
 - `OTEL_COLLECTOR_PORT` — Local Collector Fluent Forward port; default: `24224`.
 - `OTEL_COLLECTOR_METRICS_PORT` — Local Collector metrics port; default: `8888`.
 - `OCC_DOCKER_LOGGING_ADDRESS` — Docker Compute log destination; local override default: `127.0.0.1:24224`.
+- `OCE_WORKER_OBSERVATIONS_FILE` — Exact private JSONL input read by the worker termination Collector; required. See [Worker termination observations](../../guides/observability/worker-terminations.md).
+- `OCE_WORKER_STATE_DIR` — Private persistent directory for worker termination Collector offsets and export queue; required. See [Worker termination observations](../../guides/observability/worker-terminations.md).

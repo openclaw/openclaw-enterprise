@@ -1,7 +1,8 @@
+import { focusedDescription, focusedText, LIVE_BUTTON } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
-import type { Page, Route } from "playwright";
+import type { Locator, Page, Route } from "playwright";
 import type { SandboxPolicyViewWire } from "../../packages/contracts/src/api/sandbox-policy.ts";
 import type {
   Agent,
@@ -14,13 +15,14 @@ import type {
   Permission,
 } from "../../packages/contracts/src/index.ts";
 import { NAMESPACE_NOT_READY_MESSAGE } from "../../apps/controller/src/console/agents/list.mts";
-import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  routeFailedDeployment,
   accessBindingPostRequests,
   AGENT_READ,
   apiRequests,
@@ -38,7 +40,6 @@ import {
   pathRequests,
   recordFocusTrail,
   repositoryCheckbox,
-  routeFailedDeployment,
   secretOptionLabel,
   selectSecret,
   setSlackSelection,
@@ -48,16 +49,14 @@ import {
   waitForEnabled,
   waitForInputValue,
   writeRequests,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
 import {
-  LIVE_BUTTON,
   createRepositoryLaunchFixture,
-  focusedDescription,
-  focusedText,
   withholdPermissionSummary,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import { responseTo } from "./console-action-helpers.ts";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
 import {
   AGENT_SAVE_DENIED,
@@ -173,6 +172,113 @@ function secretFields(value: unknown): SecretMetadata {
     namespaceId: text(data.namespaceId),
     ref: { kind: "secret", id: text(ref.id), namespaceId: text(ref.namespaceId) },
   };
+}
+
+for (const width of [1440, 390]) {
+  test(`Agent policy keyboard focus follows added and removed port ranges at ${width}px`, async (t) => {
+    const {
+      fixture,
+      namespace: rawNamespace,
+      agent: rawAgent,
+      base,
+    }: PolicyConsoleFixture = await createPolicyConsole(t, [
+      {
+        id: "policy-focus-control",
+        binary: "/usr/bin/python3.11",
+        host: "example.org",
+        ports: [{ from: 443, to: 443 }],
+      },
+    ]);
+    const namespace = resource(rawNamespace);
+    const agent = agentFields(rawAgent);
+    const original = await fixture.request("GET", base);
+    assert.equal(original.status, 200);
+    const { page } = await newPage(t, fixture, {
+      context: { viewport: { width, height: 844 } },
+    });
+    await loginThroughForm(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "policy").href,
+    );
+    const requests = apiRequests(page, fixture.origin);
+    function isFocused(control: Locator) {
+      return control.evaluate((node) => node === document.activeElement);
+    }
+
+    // Reach controls through native Tab navigation; a missing focus repair must fail
+    // immediately after activation, before navigation can conceal the lost focus.
+    async function tabTo(control: Locator) {
+      await control.waitFor();
+      for (let step = 0; step < 64; step += 1) {
+        if (await isFocused(control)) {
+          return;
+        }
+        await page.keyboard.press("Tab");
+      }
+      assert.fail("The policy control was not reachable with Tab");
+    }
+    await tabTo(page.getByRole("button", { name: "Manage rules", exact: true }));
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog");
+    await tabTo(dialog.getByRole("button", { name: "Add rule", exact: true }));
+    await page.keyboard.press("Enter");
+    const executable = dialog.getByRole("textbox", { name: "Executable path", exact: true });
+    assert.equal(await isFocused(executable), true, "Add rule focuses Executable path");
+    const add = dialog.getByRole("button", { name: "Add Port ranges", exact: true });
+    const starts = dialog.getByRole("spinbutton", { name: "Start port", exact: true });
+    const ends = dialog.getByRole("spinbutton", { name: "End port", exact: true });
+    await tabTo(add);
+    await page.keyboard.press("Enter");
+    assert.equal(await starts.count(), 1);
+    assert.equal(await isFocused(starts.first()), true, "first Add focuses the new range");
+    // Typing already preserves focus; structural edits must not change that path.
+    await page.keyboard.press("Control+a");
+    await page.keyboard.type("443");
+    assert.equal(await starts.first().inputValue(), "443");
+    assert.equal(await isFocused(starts.first()), true);
+    await page.keyboard.press("Tab");
+    assert.equal(await isFocused(ends.first()), true);
+    await tabTo(add);
+    await page.keyboard.press("Space");
+    assert.equal(await starts.count(), 2);
+    assert.equal(await isFocused(starts.nth(1)), true, "second Add focuses the new range");
+    await page.keyboard.press("Tab");
+    assert.equal(await isFocused(ends.nth(1)), true);
+    await tabTo(dialog.getByRole("button", { name: "Remove Port ranges 1", exact: true }));
+    await page.keyboard.press("Enter");
+    assert.equal(await starts.count(), 1);
+    assert.equal(await starts.first().inputValue(), "1", "the next range survives removal");
+    assert.equal(await isFocused(starts.first()), true, "Remove focuses the next range");
+    await page.keyboard.press("Tab");
+    assert.equal(await isFocused(ends.first()), true);
+    // Removing the last of two ranges selects the preceding range instead.
+    await tabTo(add);
+    await page.keyboard.press("Enter");
+    await tabTo(dialog.getByRole("button", { name: "Remove Port ranges 2", exact: true }));
+    await page.keyboard.press("Space");
+    assert.equal(await starts.count(), 1);
+    assert.equal(await isFocused(starts.first()), true, "Remove last focuses the previous range");
+    assert.equal(
+      await dialog.getByRole("button", { name: "Remove Port ranges 1", exact: true }).isDisabled(),
+      true,
+      "the real schema requires at least one range",
+    );
+    await page.keyboard.press("Tab");
+    assert.equal(await isFocused(ends.first()), true);
+    await page.keyboard.press("Tab");
+    assert.equal(await isFocused(add), true, "Tab skips the disabled minimum-range removal");
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "hidden" });
+    assert.deepEqual(
+      requests.filter(({ method, path }) => path.startsWith(base) && method !== "GET"),
+      [],
+      "the focus journey neither previews nor saves nor applies policy",
+    );
+    const unchanged = await fixture.request("GET", base);
+    assert.equal(unchanged.status, 200);
+    assert.deepEqual(record(unchanged.data).policy, record(original.data).policy);
+  });
 }
 
 test("Agent policy ceiling rejection is announced in view and preserves unsaved additions", async (t) => {
@@ -1610,7 +1716,7 @@ for (const [field, change] of [
     "plugin policy",
     {
       plugins: {
-        "codex-plugin:linear@openai-curated-remote": {
+        "occ-plugin:diffs": {
           enabled: true,
           toolDefaults: { approval: "none" },
         },
@@ -1635,7 +1741,7 @@ for (const [field, change] of [
         })()
       : await createRuntimeAuthFixture(t, `Deployment ${field}`);
     const namespace = resource(rawNamespace);
-    const pluginDriver = new CodexPluginDriver();
+    const pluginDriver = new OCCPluginDriver();
     checkedController(fixture.controller).registerDriver(pluginDriver);
     checkedController(fixture.controller).selectDriver("plugin", pluginDriver.id);
     const agent = agentFields(
@@ -1847,9 +1953,8 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
     assert.deepEqual(pathRequests(requests, "POST", `${path}/deploy`), []);
   }
 
-  // Unknown answer: the first Secret answer fails, so Deploy stays enabled and the API decides.
-  // Its 403 names the grant and the Secret, which the operator may read (finding 2594); the
-  // answer, read again, names the Secret by name.
+  // An unavailable permission summary leaves the decision to actual deployment admission.
+  // Its 403 refreshes the summary and names the missing grant without creating a revision.
   {
     const { page } = await newPage(t, fixture);
     let failed = false;
@@ -1861,26 +1966,28 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
       failed = true;
       await route.abort();
     });
-    await login(page, fixture, url, operator.credentials);
-    await page.getByRole("heading", { name: "Operator Secret Agent" }).waitFor();
-    const deploy = page.getByRole("button", { name: "Deploy new version" });
-    await waitForEnabled(deploy);
+    const requests = apiRequests(page, fixture.origin);
     const refused = page.waitForResponse(
       (response) =>
         response.url() === `${fixture.origin}${path}/deploy` &&
         response.request().method() === "POST",
     );
+    await login(page, fixture, url, operator.credentials);
+    await page.getByRole("heading", { name: "Operator Secret Agent" }).waitFor();
+    const deploy = page.getByRole("button", { name: "Deploy new version" });
+    await waitForEnabled(deploy);
     await deploy.click();
     const response = await refused;
     assert.equal(response.status(), 403);
+    assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 1);
     assert.equal(
       record(record(await response.json()).error).message,
       callerDenied("Secret operate", `Secret ${modelSecret.id}`),
     );
-    const alert = page.getByRole("alert").filter({ hasText: reason });
+    const alert = page.getByText(reason, { exact: true });
     await alert.waitFor();
     assert.equal(await alert.textContent(), reason);
-    // The alert says it once, and Deploy stays disabled until a grant is read.
+    // The deployment note says it once and stays refused until a grant is read.
     assert.equal(await page.getByText(reason).count(), 1);
     assert.equal(await deploy.isDisabled(), true);
   }

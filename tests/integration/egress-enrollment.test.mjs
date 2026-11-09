@@ -27,7 +27,7 @@ import { PROXY_REGISTRATION_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { waitFor } from "../helpers/qa-utils.mjs";
 import { listen } from "../helpers/listen.mjs";
-import { writeCommand } from "../helpers/fake-commands.mjs";
+import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const token = "synthetic-harness-transport";
@@ -81,7 +81,9 @@ test(
     const { port } = reservation;
     const transport = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
     t.after(() => transport.close());
-    const compute = createTestKubernetesComputeDriver("launch-compute", { channelRuntime: true });
+    const admissionCompute = createTestKubernetesComputeDriver("launch-compute", {
+      channelRuntime: true,
+    });
     const f = await staticEgressFixture(t, {
       // Keep local lifecycle observations, but run the actual Compute admission at
       // the normal deploy route and read its immutable result back from State.
@@ -90,14 +92,19 @@ test(
           ...options,
           computeDriver: {
             ...options.computeDriver,
-            id: compute.id,
-            implementation: compute.implementation,
-            admitRevision: compute.admitRevision.bind(compute),
+            id: admissionCompute.id,
+            implementation: admissionCompute.implementation,
+            admitRevision: admissionCompute.admitRevision.bind(admissionCompute),
           },
         }),
       recordInstallation: false,
       physicalPlacement: true,
       serviceTransport: transport,
+    });
+    // Render with the provider the fixture selected for this admitted revision.
+    const compute = createTestKubernetesComputeDriver(admissionCompute.id, {
+      channelRuntime: true,
+      sandboxDriver: f.sandboxDriver,
     });
     f.observed.service = {
       url: serviceUrl,
@@ -133,7 +140,10 @@ test(
     const modelPort = model.address().port;
     const callsPath = join(directory, "calls.jsonl");
     const script = join(directory, "entrypoint.cjs");
-    assert.equal(f.revision.compute.admission, "protected-codex-no-connection-retry:v1");
+    assert.match(
+      f.revision.compute.admission,
+      /^model-provider:v1:[a-f0-9]{64}:protected-codex-no-connection-retry:v1$/,
+    );
     const legacy = { ...f.revision, compute: { ...f.revision.compute, admission: undefined } };
     assert.equal(compute.pluginRuntimeSnapshot(legacy).entrypoint, AGENT_RUNTIME_ENTRYPOINT);
     const ordinary = {
@@ -142,7 +152,7 @@ test(
       egressPlan: undefined,
       sandboxDriverId: undefined,
     };
-    assert.equal(compute.admitRevision(ordinary), undefined);
+    assert.match(compute.admitRevision(ordinary), /^model-provider:v1:[a-f0-9]{64}:$/);
     for (const revision of [
       { ...ordinary, compute: f.revision.compute },
       { ...legacy, compute: { ...legacy.compute, admission: "unknown:v1" } },

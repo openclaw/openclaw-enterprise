@@ -13,7 +13,7 @@ import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
-import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { jsonLineDestination } from "./json-lines.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import {
@@ -431,13 +431,22 @@ export async function serveAsGitHub(t, server) {
  * The authorization code names the GitHub subject: `subject-<id>`; its login is
  * `fixture-<id>`. Modes: "up", "error" (503) and "hang" (never answers). Set
  * `fixture.membership(path, subject)` to answer the allowlist's membership lookups with
- * "active", "pending" or an HTTP status; `fixture.paths` records each request path.
+ * "active", "pending" or an HTTP status; `fixture.emails(subject)` returns an email
+ * response or HTTP status; `fixture.profile(subject)` overrides the authenticated profile.
+ * `fixture.paths` records each request path.
  */
 /** @param {import("node:test").TestContext} t
  * @param {(request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse, body: string) => void} [roster] */
 export async function startFakeGitHub(t, roster) {
   const server = createServer();
-  const fixture = { mode: "up", requests: 0, paths: [], membership: undefined };
+  const fixture = {
+    mode: "up",
+    requests: 0,
+    paths: [],
+    membership: undefined,
+    emails: undefined,
+    profile: undefined,
+  };
   server.on("request", async (request, response) => {
     fixture.requests += 1;
     fixture.paths.push(request.url);
@@ -473,8 +482,29 @@ export async function startFakeGitHub(t, roster) {
         response.end("{}");
         return;
       }
-      response.end(JSON.stringify({ id: Number(subject[1]), login: `fixture-${subject[1]}` }));
-    } else if (roster) {
+      response.end(
+        JSON.stringify(
+          fixture.profile?.(Number(subject[1])) ?? {
+            id: Number(subject[1]),
+            login: `fixture-${subject[1]}`,
+          },
+        ),
+      );
+    } else if (request.url === "/user/emails?per_page=100") {
+      const subject = /^Bearer ghu_fixture_([0-9]+)$/.exec(request.headers.authorization ?? "");
+      const answer = subject === null ? 401 : await fixture.emails?.(Number(subject[1]));
+      if (answer === undefined || typeof answer === "number") {
+        response.writeHead(answer ?? 404);
+        response.end("{}");
+        return;
+      }
+      response.end(JSON.stringify(answer));
+    } else if (
+      roster &&
+      (request.url === "/graphql" ||
+        request.url?.startsWith("/organizations/") ||
+        /^\/user\/\d+$/.test(request.url ?? ""))
+    ) {
       roster(request, response, body);
     } else if (fixture.membership !== undefined) {
       const subject = /^Bearer ghu_fixture_([0-9]+)$/.exec(request.headers.authorization ?? "");

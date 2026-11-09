@@ -7,7 +7,7 @@ import { chmod, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { inspect } from "node:util";
 import test from "node:test";
-import { setEnvironment } from "../helpers/environment.mjs";
+import { setEnvironment } from "../helpers/environment.ts";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const reporterMessageLimit = 16_384;
@@ -89,7 +89,7 @@ const {
   waitForDockerLog,
   waitForGatewayReady,
 } = await import("../helpers/runtime-image-startup.mjs");
-const { followContainer } = await import("../helpers/docker-follow.mjs");
+const { followContainer } = await import("../helpers/docker-follow.ts");
 
 test("failureTail keeps short output and the end of long output from a line start", () => {
   assert.equal(failureTail("short output", 64), "short output");

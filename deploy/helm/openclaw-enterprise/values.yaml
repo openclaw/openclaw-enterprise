@@ -37,6 +37,10 @@ logging:
       sizeLimit: 64Mi
 
 installation:
+  # Set by occ installation install to bind retained initialization evidence.
+  attemptId: ""
+  # Set by upgrade-production-images for one actual Helm submission.
+  upgradeAttemptId: ""
   name: openclaw-enterprise
   secretName: occ-installation-startup
   key: installation.yaml
@@ -72,6 +76,9 @@ auth:
     # Worker-only token supplied and rotated by the operator for configured GitHub team mappings.
     teamRosterTokenSecretName: ""
     teamRosterTokenKey: token
+    # Optional existing Installation IAM Group. Enroll active allowedTeams members on login.
+    # Requires allowedTeams and no allowedOrgs; the GitHub App also needs Email addresses: read.
+    autoEnrollGroupId: ""
     # API Pod HTTPS egress for github.com and api.github.com. Empty allows TCP 443 to any
     # address except link-local 169.254.0.0/16; list the web and api IPv4 ranges from
     # api.github.com/meta to narrow it.

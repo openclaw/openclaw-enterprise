@@ -1,11 +1,9 @@
 import { constants } from "node:fs";
-import { access, lstat, readlink } from "node:fs/promises";
+import { access, lstat, open, readlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, parse, resolve } from "node:path";
 
-import {
-  readBoundedFile,
-  readProtectedFile,
-} from "../composition/repository-credentials/protected-file.ts";
+import { readProtectedFile } from "../composition/repository-credentials/protected-file.ts";
+import { readStableDescriptor } from "../composition/repository-credentials/stable-file-descriptor.ts";
 
 /** Accept a private regular file or the single key exposed by a rotating Kubernetes Secret. */
 export async function readGitHubRosterTokenFile(path: string, maximum: number): Promise<Buffer> {
@@ -92,12 +90,13 @@ async function readGenerationKey(
       throw new Error("invalid-protected-file");
     }
   }
-  return readBoundedFile(
-    path,
-    maximum,
-    (stat) =>
-      (uid === undefined || stat.uid === uid || stat.uid === 0) &&
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  return readStableDescriptor(handle, maximum, {
+    uid,
+    privateFile: false,
+    statName: () => lstat(path),
+    acceptsMode: (stat) =>
       (stat.mode & 0o037) === 0 &&
       ((stat.mode & 0o040) === 0 || process.getgroups?.().includes(stat.gid) === true),
-  );
+  });
 }

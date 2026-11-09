@@ -19,8 +19,8 @@ import type {
 
 /**
  * A revision's OpenShell Git route as the worker holding it last verified it, persisted so
- * a restarted or replacement worker can re-observe the installation and re-adopt the route
- * (finding 2128). Identity and custody facts only: the Sandbox, the binding
+ * a restarted or replacement worker can close the route and settle its retained custody.
+ * Identity and custody facts only: the Sandbox, the binding
  * id the middleware presents, the provider generation this worker wrote, the reference of
  * the material that generation carries and the last verified observation. Never a token.
  *
@@ -84,19 +84,18 @@ export interface OpenShellGitRouteStore {
   /**
    * Takes the route over for this worker: the fence moves, so the previous holder's writes
    * fail from here. A blocked route is answered as it is and never re-fenced; no route
-   * answers undefined.
+   * answers undefined. A replacement cannot inherit an observed hook: taking the fence
+   * closes the route in the same commit.
    */
-  adopt(
-    revisionId: string,
-    workerInstance: string,
-    /** A replacement cannot inherit an observed hook. Take the fence and close it in one commit. */
-    disposition?: "close-preview",
-  ): Promise<OpenShellGitRouteRecord | undefined>;
+  adopt(revisionId: string, workerInstance: string): Promise<OpenShellGitRouteRecord | undefined>;
   /** Read a known standing installation under current authority; never take its fence or open it. */
-  standing(
-    revision: Readonly<AgentRevision>,
-  ): Promise<
-    | { route: OpenShellGitRouteRecord; retainedLaunchHash: string; executionFingerprint: string }
+  standing(revision: Readonly<AgentRevision>): Promise<
+    | {
+        route: OpenShellGitRouteRecord;
+        retainedLaunchHash: string;
+        executionFingerprint: string;
+        workerInstance: string;
+      }
     | undefined
   >;
   /** Reserve a provider write and return its new fence; undefined refuses the write. */
@@ -128,11 +127,12 @@ export interface OpenShellGitRouteStore {
   ): Promise<"confirmed" | "superseded">;
   /** Tombstones every open route of a withdrawn revision or Namespace, whoever holds it. */
   withdraw(selector: OpenShellGitRouteWithdrawal): Promise<void>;
-  /** Irrevocably fences the witnessed Git installation at finite expiry or recorded standing withdrawal. */
+  /** Fences a witnessed installation at authorized expiry or exact committed withdrawal. */
   expire(
     revision: Readonly<AgentRevision>,
     workspace: string,
     sandbox: string,
+    finiteScopeIsCurrent: boolean,
   ): Promise<OpenShellGitExpiry | undefined>;
   beginDetach(
     revision: string,
@@ -318,18 +318,29 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
   async adopt(
     revisionId: string,
     workerInstance: string,
-    disposition?: "close-preview",
   ): Promise<OpenShellGitRouteRecord | undefined> {
     return this.query(async (c) => {
+      // Admission/removal holds Namespace then Agent before session or delivery rows.
+      // Lock the Agent before the route too; never invert that order after key().
+      await c.query(
+        `SELECT FROM occ.agents a JOIN occ.agent_revisions v
+         ON (a.namespace_id,a.id)=(v.namespace_id,v.agent_id) WHERE v.id=$1 FOR UPDATE OF a`,
+        [revisionId],
+      );
       const key = await this.key(c, revisionId);
       if (!key) {
         return;
       }
-      await new CredentialDeliveries(c).adopt(
-        key,
-        workerInstance,
-        disposition === "close-preview" ? "worker_replaced" : undefined,
+      const removal = await c.query(
+        `SELECT FROM ${table} r WHERE r.revision_id=$1 AND ${repositoryWithdrawalStateSql("r")}='removal'`,
+        [revisionId],
       );
+      if (removal.rowCount) {
+        // Preserve the installed recipient for subtraction; no replacement owns Git.
+        await new CredentialDeliveries(c).block(key, key.fence, "repository_expired");
+      } else {
+        await new CredentialDeliveries(c).adopt(key, workerInstance, "worker_replaced");
+      }
       const { rows } = await c.query(
         `SELECT ${columns} FROM ${table} r WHERE revision_id=$1 AND binding_id=$2`,
         [key.revisionId, key.bindingId],
@@ -352,7 +363,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
       // previously witnessed installation and the exact live approval and execution. This read
       // takes no route ownership and cannot turn a pending write or finite admission into renewal.
       const { rows } = await c.query(
-        `SELECT ${columns}, r.retained_policy_hash AS retained_launch_hash, e.fingerprint AS execution_fingerprint FROM ${table} r
+        `SELECT ${columns}, r.worker_instance, r.retained_policy_hash AS retained_launch_hash, e.fingerprint AS execution_fingerprint FROM ${table} r
          JOIN occ.repository_standing_executions e USING (namespace_id, agent_id, revision_id)
          JOIN occ.agent_revisions v ON v.id = r.live_revision_id AND v.agent_id = r.agent_id AND v.namespace_id = r.namespace_id
          WHERE (r.revision_id, r.namespace_id, r.agent_id) = ($1, $2, $3)
@@ -379,12 +390,18 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
         ],
       );
       const row = rows[0] as
-        (Row & { retained_launch_hash: string; execution_fingerprint: string }) | undefined;
+        | (Row & {
+            retained_launch_hash: string;
+            execution_fingerprint: string;
+            worker_instance: string;
+          })
+        | undefined;
       return (
         row && {
           route: record(row),
           retainedLaunchHash: row.retained_launch_hash,
           executionFingerprint: row.execution_fingerprint,
+          workerInstance: row.worker_instance,
         }
       );
     });
@@ -537,6 +554,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     revision: Readonly<AgentRevision>,
     workspace: string,
     sandbox: string,
+    finiteScopeIsCurrent: boolean,
   ): Promise<OpenShellGitExpiry | undefined> {
     const deadline = revision.repositoryCredentials?.deadlineWallMs;
     if (!Number.isSafeInteger(deadline)) {
@@ -556,11 +574,14 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
           AND r.binding_id = $8
           AND (r.target->>'workspace') = $4 AND (r.target->>'sandbox') = $5 AND r.revision_id = v.id
           AND a.id = r.agent_id AND a.namespace_id = r.namespace_id
-          AND a.status = 'active' AND a.desired_runtime_state = 'running' AND a.active_revision_id = r.revision_id
+          AND a.status = 'active' AND a.active_revision_id = r.revision_id
+          AND (a.desired_runtime_state = 'running' OR
+            (NOT ($6::jsonb ? 'standingApprovalId') AND ${repositoryWithdrawalStateSql("r")} = 'removal'))
           AND v.admitted_spec->'repository_credentials' = $6::jsonb
           AND CASE WHEN $6::jsonb ? 'standingApprovalId'
                 THEN ${repositoryWithdrawalStateSql("r")} = 'expiry'
-                ELSE clock_timestamp() >= to_timestamp($7::double precision / 1000) END
+                ELSE (${repositoryWithdrawalStateSql("r")}='removal'
+                  OR ($9 AND clock_timestamp() >= to_timestamp($7::double precision / 1000))) END
           AND (r.desired->>'credentialState') = 'active' AND r.write_pending IS NULL AND r.material_version IS NOT NULL
           AND r.retained_policy_hash IS NOT NULL AND r.observed->>'executionId' = v.id
           AND r.observed->>'credentialState' = 'active' AND r.observed->>'workspace' = (r.target->>'workspace')
@@ -577,6 +598,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
           JSON.stringify(revision.repositoryCredentials),
           deadline,
           key.bindingId,
+          finiteScopeIsCurrent,
         ],
       );
       const row = rows[0] as

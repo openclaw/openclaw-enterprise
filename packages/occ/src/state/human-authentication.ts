@@ -8,7 +8,6 @@ import {
   type GithubRosterSignInClaim,
   type GithubRosterStatus,
 } from "./github-roster-state.ts";
-import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import { createHash, randomUUID } from "node:crypto";
 import {
   CallerStateDeniedError,
@@ -29,7 +28,14 @@ export interface HumanAuthenticationActor {
   readonly userId: string;
   readonly sessionId: string;
   readonly principalId: string;
+  /** Recheck the selected IAM Driver on the caller's transaction; throw on denial, without auditing. */
+  readonly authorize: (scope: {
+    readonly targetPrincipalId?: string;
+    readonly successorPrincipalId?: string;
+  }) => Promise<void>;
 }
+
+type SessionActor = Pick<HumanAuthenticationActor, "userId" | "sessionId" | "principalId">;
 
 export interface HumanAuthenticationAccount {
   readonly userId: string;
@@ -306,7 +312,11 @@ export class PostgresHumanAuthentication {
    * enrolment rule for activation, online repair (enrolAccount) and stopped maintenance; it
    * runs inside the caller's State transaction and is idempotent.
    */
-  async enrolUser(unit: PlatformUnitOfWork, userId: string): Promise<HumanAuthenticationEnrolment> {
+  async enrolUser(
+    unit: PlatformUnitOfWork,
+    userId: string,
+    actor?: HumanAuthenticationActor,
+  ): Promise<HumanAuthenticationEnrolment> {
     await this.lockUser(unit, userId);
     const principal = await this.findPrincipal(unit, userId);
     if (principal === undefined) {
@@ -320,6 +330,9 @@ export class PostgresHumanAuthentication {
     );
     if (methods.length !== 1) {
       return { enrolled: false, reason: "PASSWORD_METHOD" };
+    }
+    if (actor !== undefined) {
+      await this.guardAuthority(unit, actor, principal);
     }
     const [inserted] = await this.query(
       unit,
@@ -527,74 +540,180 @@ export class PostgresHumanAuthentication {
     auditEvent?: AuditEvent,
     external?: { readonly providerId: string; readonly subject: string },
   ): Promise<void> {
+    await this.state.transact((unit) =>
+      this.insertPasswordAccount(unit, prepared, seed, auditEvent, external),
+    );
+  }
+
+  private async insertPasswordAccount(
+    unit: PlatformUnitOfWork,
+    prepared: PreparedPasswordAccount,
+    seed: PersistedNativeIAMPrincipalSeed,
+    auditEvent?: AuditEvent,
+    external?: { readonly providerId: string; readonly subject: string },
+    actorId = auditEvent?.actorId ?? prepared.id,
+  ): Promise<void> {
     if (seed.principal.issuer !== this.issuer || seed.principal.subject !== prepared.id) {
       throw new ScopeViolationError("The account Principal must identify the new account.");
     }
     if (external?.providerId === "credential") {
       throw new ScopeViolationError("An external method cannot replace a password.");
     }
-    await this.state.transact(async (unit) => {
+    try {
+      await this.query(
+        unit,
+        `INSERT INTO occ."user" (id, name, email, email_verified, image, created_at, updated_at)
+         SELECT $1, $2, $3, true, NULL, t.now, t.now FROM (SELECT clock_timestamp() AS now) t`,
+        [prepared.id, prepared.name, prepared.email],
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "23505" &&
+        "constraint" in error &&
+        error.constraint === "user_email_key"
+      ) {
+        throw new UserAlreadyExistsError();
+      }
+      throw error;
+    }
+    await this.query(
+      unit,
+      `INSERT INTO occ.account (id, account_id, provider_id, user_id, password, created_at, updated_at)
+       SELECT $1, $2, 'credential', $2, $3, t.now, t.now FROM (SELECT clock_timestamp() AS now) t`,
+      [prepared.credentialId, prepared.id, prepared.passwordHash],
+    );
+    const installationId = await this.state.insertNativeIAMPrincipal(unit, seed);
+    if (installationId !== this.installationId) {
+      throw new ScopeViolationError("The account belongs to a different Installation.");
+    }
+    await this.query(
+      unit,
+      `INSERT INTO occ.human_authentication_accounts (user_id, installation_id, principal_id)
+       VALUES ($1, $2, $3)`,
+      [prepared.id, this.installationId, seed.principal.id],
+    );
+    await this.enrolled(unit, prepared.id);
+    if (external !== undefined) {
+      // The optional external identity attaches in the same transaction as the account.
+      const methodId = randomUUID();
       try {
         await this.query(
           unit,
-          `INSERT INTO occ."user" (id, name, email, email_verified, image, created_at, updated_at)
-           SELECT $1, $2, $3, true, NULL, t.now, t.now FROM (SELECT clock_timestamp() AS now) t`,
-          [prepared.id, prepared.name, prepared.email],
+          `INSERT INTO occ.account (id, account_id, provider_id, user_id, created_at, updated_at, identity_only)
+           VALUES ($1, $2, $3, $4, clock_timestamp(), clock_timestamp(), true)`,
+          [methodId, external.subject, external.providerId, prepared.id],
         );
       } catch (error) {
-        if (
-          error instanceof Error &&
-          "code" in error &&
-          error.code === "23505" &&
-          "constraint" in error &&
-          error.constraint === "user_email_key"
-        ) {
-          throw new UserAlreadyExistsError();
+        if (isExternalIdentityConflict(error)) {
+          throw new ResourceConflictError(EXTERNAL_IDENTITY_ASSIGNED);
         }
         throw error;
       }
-      await this.query(
+      await this.audit(unit, "authentication.method.attach", actorId, {
+        userId: prepared.id,
+        methodId,
+        principalId: seed.principal.id,
+      });
+    }
+    if (auditEvent !== undefined) {
+      await unit.audit.append(auditEvent);
+    }
+  }
+
+  /** Enrolls a provider-verified identity into an operator-selected native IAM Group. */
+  async enrollExternal(input: {
+    readonly providerId: string;
+    readonly subject: string;
+    readonly groupId: string;
+    readonly attemptCreatedAt: Date;
+    readonly account?: {
+      readonly prepared: PreparedPasswordAccount;
+      readonly seed: PersistedNativeIAMPrincipalSeed;
+    };
+  }): Promise<HumanAuthenticationSnapshot | DisabledExternalAccount | undefined> {
+    if (!this.externalProviderIds.includes(input.providerId)) {
+      throw new ScopeViolationError("The external provider is not configured.");
+    }
+    return this.state.transact(async (unit) => {
+      // Serialize first enrollment of this exact identity, including concurrent callbacks.
+      await this.query(unit, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+        JSON.stringify([
+          "external-enrollment",
+          this.installationId,
+          input.providerId,
+          input.subject,
+        ]),
+      ]);
+      const [group] = await this.query(
         unit,
-        `INSERT INTO occ.account (id, account_id, provider_id, user_id, password, created_at, updated_at)
-         SELECT $1, $2, 'credential', $2, $3, t.now, t.now FROM (SELECT clock_timestamp() AS now) t`,
-        [prepared.credentialId, prepared.id, prepared.passwordHash],
+        "SELECT id FROM occ.iam_groups WHERE id = $1 AND namespace_id IS NULL",
+        [input.groupId],
       );
-      const installationId = await this.state.insertNativeIAMPrincipal(unit, seed);
-      if (installationId !== this.installationId) {
-        throw new ScopeViolationError("The account belongs to a different Installation.");
+      if (group === undefined) {
+        throw new ScopeViolationError(
+          "Automatic enrollment requires an existing Installation Group.",
+        );
       }
-      await this.query(
+      const [method] = await this.query(
         unit,
-        `INSERT INTO occ.human_authentication_accounts (user_id, installation_id, principal_id)
-         VALUES ($1, $2, $3)`,
-        [prepared.id, this.installationId, seed.principal.id],
+        "SELECT user_id, identity_only FROM occ.account WHERE provider_id = $1 AND account_id = $2",
+        [input.providerId, input.subject],
       );
-      await this.enrolled(unit, prepared.id);
-      if (external !== undefined) {
-        // The optional external identity attaches in the same transaction as the account.
-        const methodId = randomUUID();
-        try {
-          await this.query(
-            unit,
-            `INSERT INTO occ.account (id, account_id, provider_id, user_id, created_at, updated_at, identity_only)
-             VALUES ($1, $2, $3, $4, clock_timestamp(), clock_timestamp(), true)`,
-            [methodId, external.subject, external.providerId, prepared.id],
-          );
-        } catch (error) {
-          if (isExternalIdentityConflict(error)) {
-            throw new ResourceConflictError(EXTERNAL_IDENTITY_ASSIGNED);
-          }
-          throw error;
+      let snapshot: HumanAuthenticationSnapshot | DisabledExternalAccount | undefined;
+      if (method !== undefined) {
+        if (method.identity_only !== true) {
+          return undefined;
         }
-        await this.audit(unit, "authentication.method.attach", auditEvent?.actorId ?? prepared.id, {
+        snapshot = await this.snapshotOrDisabled(
+          unit,
+          await this.lockUser(unit, method.user_id as string),
+          input.providerId,
+          input.subject,
+          input.attemptCreatedAt,
+        );
+      } else {
+        if (input.account === undefined) {
+          return undefined;
+        }
+        const { prepared, seed } = input.account;
+        // The configured Group owns grants; enrollment must not introduce another grant.
+        if (seed.roles.length !== 0 || seed.bindings.length !== 0) {
+          throw new ScopeViolationError("Automatic enrollment cannot create IAM grants.");
+        }
+        await this.insertPasswordAccount(unit, prepared, seed, undefined, input, seed.principal.id);
+        // Only this transaction's newly created identity can precede the currentness fence.
+        snapshot = await this.snapshot(
+          unit,
+          await this.lockUser(unit, prepared.id),
+          input.providerId,
+          input.subject,
+        );
+        await this.audit(unit, "authentication.account.enrol", seed.principal.id, {
           userId: prepared.id,
-          methodId,
-          principalId: seed.principal.id,
+          providerId: input.providerId,
+          subject: input.subject,
         });
       }
-      if (auditEvent !== undefined) {
-        await unit.audit.append(auditEvent);
+      if (snapshot === undefined || "disabled" in snapshot) {
+        return snapshot;
       }
+      const [membership] = await this.query(
+        unit,
+        `INSERT INTO occ.iam_group_memberships (namespace_id, group_id, principal_id)
+         VALUES (NULL, $1, $2) ON CONFLICT (group_id, principal_id, roster_source_id) DO NOTHING RETURNING group_id`,
+        [input.groupId, snapshot.proof.principalId],
+      );
+      if (membership !== undefined) {
+        await this.audit(unit, "authentication.group.enrol", snapshot.proof.principalId, {
+          userId: snapshot.user.id,
+          groupId: input.groupId,
+          providerId: input.providerId,
+          subject: input.subject,
+        });
+      }
+      return snapshot;
     });
   }
 
@@ -611,6 +730,18 @@ export class PostgresHumanAuthentication {
       // A password proves no identity before it is checked, so a disabled account is refused
       // like a wrong password.
       return this.snapshot(unit, user, "credential");
+    });
+  }
+
+  /** Distinguishes an absent identity from an attached identity whose login proof is stale. */
+  async hasExternalMethod(providerId: string, subject: string): Promise<boolean> {
+    return this.state.transact(async (unit) => {
+      const [method] = await this.query(
+        unit,
+        "SELECT 1 FROM occ.account WHERE provider_id = $1 AND account_id = $2",
+        [providerId, subject],
+      );
+      return method !== undefined;
     });
   }
 
@@ -722,7 +853,7 @@ export class PostgresHumanAuthentication {
     ) {
       return undefined;
     }
-    return this.state.transact(async (unit) => {
+    return this.state.transactReadCommitted(async (unit) => {
       const user = await this.lockUser(unit, proof.userId);
       const current = await this.snapshot(unit, user, proof.providerId, proof.subject);
       if (
@@ -813,7 +944,7 @@ export class PostgresHumanAuthentication {
   async claimRosterRefresh(
     mapping: GithubRosterMapping,
   ): Promise<GithubRosterRefreshClaim | undefined> {
-    return this.state.transact(async (unit) => {
+    return this.state.transactReadCommitted(async (unit) => {
       await unit.installations.holdIAMConfiguration("exclusive");
       const [run] = await this.query(
         unit,
@@ -849,7 +980,7 @@ export class PostgresHumanAuthentication {
     claim: GithubRosterRefreshClaim,
     result: GithubRosterObservation,
   ): Promise<boolean> {
-    return this.state.transact(async (unit) => {
+    return this.state.transactReadCommitted(async (unit) => {
       await unit.installations.holdIAMConfiguration("exclusive");
       const [run] = await this.query(
         unit,
@@ -954,7 +1085,7 @@ export class PostgresHumanAuthentication {
     mappings: readonly GithubRosterMapping[],
     actor: HumanAuthenticationActor,
   ): Promise<readonly (GithubRosterStatus & { mappingId: string })[]> {
-    return this.state.transact(async (unit) => {
+    return this.state.transactReadCommitted(async (unit) => {
       await this.guardActor(unit, actor, []);
       await unit.installations.holdIAMConfiguration("shared");
       const rows = await this.query(
@@ -969,6 +1100,7 @@ export class PostgresHumanAuthentication {
       if (rows.length !== mappings.length) {
         throw unavailableMapping();
       }
+      await this.guardAuthority(unit, actor);
       return rows.map((row) => ({
         mappingId: row.mapping_id as string,
         status: row.status as GithubRosterStatus["status"],
@@ -1034,7 +1166,7 @@ export class PostgresHumanAuthentication {
     mapping: GithubRosterMapping,
     actor: HumanAuthenticationActor,
   ): Promise<{ denied: boolean; version: string; accountVersion: number }> {
-    return this.state.transact(async (unit) => {
+    return this.state.transactReadCommitted(async (unit) => {
       const account = await this.guardAccounts(unit, userId, actor);
       const { denied, version } = await this.rosterOverride(
         unit,
@@ -1043,6 +1175,7 @@ export class PostgresHumanAuthentication {
         mapping,
         "shared",
       );
+      await this.guardAuthority(unit, actor, account.principal_id as string);
       return { denied, version, accountVersion: account.version as number };
     });
   }
@@ -1059,7 +1192,7 @@ export class PostgresHumanAuthentication {
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
       throw new ResourceStateConflictError("A current account version is required.");
     }
-    await this.state.transact(async (unit) => {
+    await this.state.transactReadCommitted(async (unit) => {
       const account = await this.guardAccounts(
         unit,
         userId,
@@ -1074,33 +1207,7 @@ export class PostgresHumanAuthentication {
       if (current.version !== expectedOverrideVersion) {
         throw new ResourceStateConflictError("The GitHub roster override has changed.");
       }
-      const [held] = await this.query(
-        unit,
-        "SELECT occ.hold_github_roster_override_policy() AS held",
-      );
-      if (held?.held !== true) {
-        throw new ResourceStateConflictError(
-          "IAM policy is changing. Read the current roster override before retrying.",
-        );
-      }
-      const snapshot = await this.state.loadNativeIAMStateInTransaction(unit, this.installationId);
-      const iam = new NativeIAMDriver({ loadNativeIAMState: async () => snapshot });
-      const decision = await iam.authorize({
-        principalId: actor.principalId,
-        action: "administer",
-        resource: { kind: "installation", id: this.installationId },
-      });
-      if (
-        !decision.allowed ||
-        !(await iam.coversIdentityAccess({
-          principalId: actor.principalId,
-          targetIdentityId: account.principal_id as string,
-        }))
-      ) {
-        throw new CallerStateDeniedError(
-          "The current actor cannot administer this account's roster membership.",
-        );
-      }
+      await this.guardAuthority(unit, actor, account.principal_id as string);
       const [source] = await this.query(
         unit,
         `INSERT INTO occ.github_roster_sources(mapping_key,method_id,denied,override_version,method_version)
@@ -1123,7 +1230,7 @@ export class PostgresHumanAuthentication {
         groupId: mapping.groupId,
         denied,
       });
-    }, "read committed");
+    });
   }
 
   async issueSession(
@@ -1153,14 +1260,11 @@ export class PostgresHumanAuthentication {
       throw new ScopeViolationError("The authentication audit identity is invalid.");
     }
     const hasRosterObservations = roster.length > 0;
-    const isolation = hasRosterObservations ? "read committed" : undefined;
     // Mapped settlement reads the roster after holding IAM configuration, including
     // changes that committed while the lock was pending.
-    return this.state.transact(async (unit) => {
-      if (hasRosterObservations) {
-        if (roster.some(({ result }) => result !== "present" && result !== "absent")) {
-          throw new ScopeViolationError("GitHub roster verification is incomplete.");
-        }
+    const issue = async (unit: PlatformUnitOfWork) => {
+      if (roster.some(({ result }) => result !== "present" && result !== "absent")) {
+        throw new ScopeViolationError("GitHub roster verification is incomplete.");
       }
       const user = await this.lockUser(unit, proof.userId);
       const current = await this.snapshot(unit, user, proof.providerId, proof.subject);
@@ -1211,7 +1315,10 @@ export class PostgresHumanAuthentication {
         ...audit,
       });
       return sessionFromRow(inserted);
-    }, isolation);
+    };
+    return hasRosterObservations
+      ? this.state.transactReadCommitted(issue)
+      : this.state.transact(issue);
   }
 
   /**
@@ -1327,7 +1434,7 @@ export class PostgresHumanAuthentication {
   /** Locks the actor and the named users in one order, then requires the actor's session to be current. */
   private async guardActor(
     unit: PlatformUnitOfWork,
-    actor: HumanAuthenticationActor,
+    actor: SessionActor,
     userIds: readonly string[],
     intent: "account-operation" | "session-hold" | "roster-override" = "account-operation",
   ): Promise<void> {
@@ -1366,6 +1473,28 @@ export class PostgresHumanAuthentication {
     }
   }
 
+  private async guardAuthority(
+    unit: PlatformUnitOfWork,
+    actor: HumanAuthenticationActor,
+    targetPrincipalId?: string,
+    successorPrincipalId?: string,
+  ): Promise<void> {
+    // Acquire after row locks without waiting into another writer's lock order.
+    // The next statement sees committed policy; these table locks last through COMMIT.
+    await this.query(unit, "SELECT occ.hold_account_administration_policy($1)", [
+      this.installationId,
+    ]);
+    if (typeof actor.authorize !== "function") {
+      throw new CallerStateDeniedError("The account operation has no authorization guard.");
+    }
+    await actor.authorize({
+      ...(targetPrincipalId === undefined ? {} : { targetPrincipalId }),
+      ...(successorPrincipalId === undefined ? {} : { successorPrincipalId }),
+    });
+    // Method locks and the asynchronous IAM decision can outlast the session.
+    await this.guardActor(unit, actor, []);
+  }
+
   /** Retains the guarded actor on the caller's original State transaction. */
   async holdSession(unit: PlatformUnitOfWork, userId: string, sessionId: string): Promise<void> {
     await this.guardActor(
@@ -1385,13 +1514,14 @@ export class PostgresHumanAuthentication {
     userId: string,
     actor: HumanAuthenticationActor,
   ): Promise<HumanAuthenticationAccount> {
-    return this.state.transact(async (unit) => {
+    return this.state.transactReadCommitted(async (unit) => {
       const account = await this.guardAccounts(unit, userId, actor);
       const methods = await this.query(
         unit,
         `SELECT id, provider_id, account_id FROM occ.account WHERE user_id = $1 ORDER BY id`,
         [userId],
       );
+      await this.guardAuthority(unit, actor, account.principal_id as string);
       return {
         userId,
         principalId: account.principal_id as string,
@@ -1419,7 +1549,7 @@ export class PostgresHumanAuthentication {
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
       throw new ResourceStateConflictError("A current account version is required.");
     }
-    return this.state.transact(async (unit) => {
+    return this.state.transactReadCommitted(async (unit) => {
       const account = await this.guardAccounts(unit, userId, actor, expectedVersion);
       if (account.disabled !== false) {
         throw new ResourceStateConflictError("The authentication account is disabled.");
@@ -1429,6 +1559,7 @@ export class PostgresHumanAuthentication {
         `SELECT id, user_id, identity_only FROM occ.account WHERE provider_id = $1 AND account_id = $2 FOR SHARE`,
         [providerId, subject],
       );
+      await this.guardAuthority(unit, actor, account.principal_id as string);
       if (existing !== undefined) {
         // The route admits only an Installation administrator covering the target Principal
         // (controller humanAccountActor), who can already list every account's sign-in
@@ -1477,7 +1608,7 @@ export class PostgresHumanAuthentication {
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
       throw new ResourceStateConflictError("A current account version is required.");
     }
-    return this.state.transact(async (unit) => {
+    return this.state.transactReadCommitted(async (unit) => {
       const account = await this.guardAccounts(unit, userId, actor, expectedVersion);
       const [method] = await this.query(
         unit,
@@ -1493,6 +1624,7 @@ export class PostgresHumanAuthentication {
         throw new ResourceStateConflictError("Only an attached external identity can be detached.");
       }
       await unit.installations.holdIAMConfiguration("exclusive");
+      await this.guardAuthority(unit, actor, account.principal_id as string);
       // Bindings cascade with the method; the recovery credential is never identity-only.
       await this.query(unit, `DELETE FROM occ.account WHERE id = $1`, [methodId]);
       await this.query(
@@ -1521,7 +1653,7 @@ export class PostgresHumanAuthentication {
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
       throw new ResourceStateConflictError("A current account version is required.");
     }
-    await this.state.transact(async (unit) => {
+    await this.state.transactReadCommitted(async (unit) => {
       const account = await this.guardAccounts(unit, userId, actor, expectedVersion);
       if (operation === "disable") {
         const [recovery] = await this.query(
@@ -1532,9 +1664,13 @@ export class PostgresHumanAuthentication {
         if (recovery !== undefined) {
           throw new ResourceStateConflictError("The recovery account cannot be disabled.");
         }
-      }
-      if (operation === "disable") {
         await unit.installations.holdIAMConfiguration("exclusive");
+      }
+      if (operation === "enable" && account.disabled !== true) {
+        throw new ResourceStateConflictError("The authentication account is not disabled.");
+      }
+      await this.guardAuthority(unit, actor, account.principal_id as string);
+      if (operation === "disable") {
         await this.query(
           unit,
           `DELETE FROM occ.iam_group_memberships g USING occ.github_roster_sources s,occ.account a
@@ -1547,9 +1683,6 @@ export class PostgresHumanAuthentication {
           FROM occ.account a WHERE s.method_id=a.id AND a.user_id=$1`,
           [userId],
         );
-      }
-      if (operation === "enable" && account.disabled !== true) {
-        throw new ResourceStateConflictError("The authentication account is not disabled.");
       }
       await this.query(
         unit,
@@ -1565,7 +1698,7 @@ export class PostgresHumanAuthentication {
 
   /** Present designation under the administrator guards; this is not an operation-result receipt. */
   async readRecovery(actor: HumanAuthenticationActor): Promise<HumanAuthenticationRecovery> {
-    return this.state.transact(async (unit) => {
+    return this.state.transactReadCommitted(async (unit) => {
       await this.guardActor(unit, actor, []);
       const [row] = await this.query(
         unit,
@@ -1575,6 +1708,7 @@ export class PostgresHumanAuthentication {
       if (row === undefined) {
         throw new ScopeViolationError("The recovery designation is unavailable.");
       }
+      await this.guardAuthority(unit, actor);
       return {
         userId: row.user_id as string,
         principalId: row.principal_id as string,
@@ -1598,7 +1732,7 @@ export class PostgresHumanAuthentication {
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
       throw new ResourceStateConflictError("A current account version is required.");
     }
-    return this.state.transact(async (unit) => {
+    return this.state.transactReadCommitted(async (unit) => {
       // The same lock serializes activation, so a designation cannot appear or move concurrently.
       await this.query(unit, `SELECT pg_advisory_xact_lock(1868785005, hashtext($1))`, [
         this.installationId,
@@ -1639,6 +1773,7 @@ export class PostgresHumanAuthentication {
       // The holder's email keys the reserved password lane; guardActor locked this row, so the
       // email is read in the same transaction that commits the designation.
       const email = (await this.lockUser(unit, userId)).email as string;
+      await this.guardAuthority(unit, actor, designation.principal_id as string, principalId);
       if (designation.user_id === userId) {
         if (designation.principal_id !== principalId || designation.method_id !== method.id) {
           throw new ScopeViolationError("The recovery designation is inconsistent.");
@@ -1674,9 +1809,9 @@ export class PostgresHumanAuthentication {
     userId: string,
     actor: HumanAuthenticationActor,
   ): Promise<{ principalId: string; version: number; created: boolean }> {
-    return this.state.transact(async (unit) => {
+    return this.state.transactReadCommitted(async (unit) => {
       await this.guardActor(unit, actor, [userId]);
-      const enrolment = await this.enrolUser(unit, userId);
+      const enrolment = await this.enrolUser(unit, userId, actor);
       if (!enrolment.enrolled) {
         throw enrolment.reason === "PRINCIPAL_MISSING"
           ? new ScopeViolationError("The authentication Principal is unavailable.")

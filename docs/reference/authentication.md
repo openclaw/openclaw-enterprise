@@ -1,8 +1,9 @@
 # Authentication
 
 OpenClaw Control Plane (OCC) authenticates human controller API clients with
-user sessions established through email/password sign-in or an administrator-enrolled
-GitHub, Google or OIDC identity. Programmatic non-Agent automation authenticates with service
+user sessions established through email/password sign-in or an enrolled
+GitHub, Google or OIDC identity. GitHub can use opt-in
+[team enrollment](authentication/team-enrollment.md). Programmatic non-Agent automation authenticates with service
 API keys. Better Auth owns
 password verification, revocable session cookies, and hashed API-key storage.
 The selected IAM Driver resolves the authenticated account or service identity
@@ -12,7 +13,7 @@ to an explicitly provisioned Principal or ServicePrincipal and owns
 For a sign-in procedure, see
 [human administrator sign-in](authentication/service-api-keys.md#sign-in-as-a-human-administrator).
 For non-Agent automation, see the [service-key procedure](authentication/service-api-keys.md).
-The [platform console](console.md) at `/console/` uses these session endpoints. Public signup, OIDC
+The [platform console](console.md) at `/console/` uses these session endpoints. Unrestricted public signup, OIDC
 provisioning or claim mapping, and bearer credentials are unsupported; generic OIDC
 sign-in for enrolled accounts is in [OIDC sign-in](../guides/deploy/oidc-sign-in.md).
 

@@ -229,8 +229,8 @@ selected account, session, and policy writers join the same protocol.
   session through COMMIT and takes the IAM configuration lock shared. Each
   create in a Namespace and the deploy authorize again after `lockNamespace`,
   which AccessBinding deletes also take.
-  `fenceAgentProvisioning` takes the IAM configuration lock before
-  `authorizeProvisioningRecord`.
+  `fenceAgentProvisioning` also takes the IAM configuration lock before
+  `lockNamespace`.
 - **Owner bindings.** Each create path calls `bindCreator` after it inserts the
   resource row, in the same unit: `createNamespace`, `createAgent`,
   `createConfiguration`, `createSecret`, `createCredentialSource`,

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: 2026-10-23
-last_updated_session: authoring-run/ee7a6b77-c247-4a57-8aa7-cfc15eb650a5
+updated: 2026-11-06
+last_updated_session: authoring-run/22fe6796-3f06-49bf-bb59-d9ac13bb66f7
 ---
 
 # Existing Kubernetes Namespace Placement Flow
@@ -90,6 +90,15 @@ worker pause, restart, or Installation setting is needed.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.networkPolicies`
 renders `allow-dns` with UDP and TCP ports `53` and `5353`, scoped to the
 [configured DNS peer](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
+
+For the separate [preprovisioned Namespace profile](../reference/drivers/kubernetes-compute/preprovisioned-namespace.md),
+`KubernetesComputeDriver.verifyExistingNetworkPolicies` compares admitted specs
+with the declared operator policies before initialization. The operator-owned
+`OpenShellSandboxDriver.ensureNamespaceWorkspace` check uses the same
+`drivers/kubernetes/network-policy.ts:networkPolicySpecToJson` projection on both
+observed and configured specs. It restores the SDK ingress alias and accepts
+omitted empty rule lists only for explicitly selected policy directions. Other
+spec differences still stop preparation; neither check repairs the policy.
 
 ### 3. Colocate Configuration and workload resources
 
@@ -193,6 +202,8 @@ complete-deletion lifecycle.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 17:40: Trace admitted empty NetworkPolicy rule lists in both operator-owned checks. (authoring-run/22fe6796-3f06-49bf-bb59-d9ac13bb66f7 - eb1ea7a5a6bf1bc706a41e00246cb795ed8dd703)
 
 - 2026-10-23 17:00: Deletion sweeps orphaned OCE-owned ConfigMaps, ServiceAccounts and, with repository credentials, Secrets. (fix-1400)
 - 2026-10-09 20:19: Refuse an explicitly empty CLI adoption flag before creating a client. (authoring-run/ee7a6b77-c247-4a57-8aa7-cfc15eb650a5 - c4cc1d9f23f9bebac8fd82881561cce48fb4fc6a)

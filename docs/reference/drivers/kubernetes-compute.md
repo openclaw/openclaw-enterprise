@@ -54,7 +54,8 @@ Harness configuration selects the Agent's execution topology:
 
 - **Embedded:** OpenClaw runs the gateway and Harness in one Pod. It accepts
   an Agent-scoped model API key, uses `openai/` models, and does not require
-  shared storage.
+  shared storage. For custom OpenAI-compatible HTTPS endpoints, see
+  [model provider configuration](kubernetes-compute/model-provider.md).
 - **Dedicated:** The gateway and Codex Harness run in separate Pods in the same
   tenant namespace, with separate ServiceAccounts and storage. They communicate through
   authenticated app-server transport. The Gateway uses fully qualified Harness
@@ -273,7 +274,11 @@ before replacing the controller images.
   [network profile](kubernetes-compute/networking-and-isolation.md#explicit-network-profiles)
   label. Private HTTP readiness returns `503` until native, plugin,
   authentication, or identity gates pass. Dedicated Codex clears its plugin
-  marker at process start to reject stale readiness. Access-token login retries timeouts,
+  marker at process start to reject stale readiness. For Compute-owned Harnesses, resident HTTP `GET /readyz`
+  requires a successful loopback app-server `initialize` response. It creates no
+  thread or model turn. The resident RPC check has a two-second internal deadline;
+  Kubernetes retains its one-second default HTTP-probe timeout. This does not
+  verify the Gateway's network path to the Harness. Access-token login retries timeouts,
   `network` and `http_5xx` failures: five attempts, 90 seconds. Exhausted startup remains unready
   until an explicit restart; see the
   [authentication probe contract](../harness-execution.md#harness-authentication)

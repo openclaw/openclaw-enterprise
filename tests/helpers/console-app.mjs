@@ -8,7 +8,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
-import { after } from "node:test";
+import { createConsoleFixtureRevisions } from "./console-fixture-revisions.ts";
+import { fileConsoleApp as createFileConsoleApp } from "./console-file-app.ts";
 
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { createControllerAuth } from "./password-hasher.mjs";
@@ -16,15 +17,23 @@ import { backendSummariesFromDefinitions } from "../../apps/controller/src/compo
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import {
+  AgentResponse,
+  ConfigurationResponse,
+  NamespaceResponse,
+  SecretResponse,
+} from "../../packages/contracts/src/api/resources.ts";
 import { NAME_MAX_CHARACTERS } from "../../packages/contracts/src/api/plain-text.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
-import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { reservePort } from "./available-port.mjs";
 import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
+import { createConsoleFixtureTransport } from "./console-fixture-transport.ts";
+import { createFixtureResponse } from "./console-fixture-response.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
 export const backendFixtures = Object.freeze([
@@ -49,6 +58,10 @@ function computeDriver({
   agentProvisioning = false,
   sandboxDriver,
   credentialGatewayDriver,
+  resolveSandboxNamespace = async (namespace) => ({
+    ...namespace,
+    name: `console-${namespace.id}`,
+  }),
   // OCC applies the bundled Kubernetes Compute's own save rules (channel credentials only from
   // Secret bindings, finding 2319) only under its implementation, such as `kubernetes-local`.
   implementation = "test-memory-lifecycle",
@@ -83,9 +96,7 @@ function computeDriver({
       return { namespaceId: namespace.id, namespaceDeleted: true };
     },
     // The same fixture placement is shared by source management and the Sandbox.
-    async resolveSandboxNamespace(namespace) {
-      return { ...namespace, name: `console-${namespace.id}` };
-    },
+    resolveSandboxNamespace,
     async prepareRevision(revision) {
       return {
         namespaceId: revision.namespaceId,
@@ -120,7 +131,7 @@ export function chromiumTrustArg(certs) {
  * A TLS ingress on 127.0.0.1:`port` that forwards every request to the HTTP listener on
  * 127.0.0.1:`upstreamPort`, as a production ingress would. `tls` ({ key, cert }, PEM) is the
  * leaf to serve; without it a one-day self-signed leaf for `originHost` is made with openssl.
- * Returns the leaf, the Chromium flag that trusts it, and close().
+ * Returns the leaf and close().
  */
 export async function startHttpsIngress({
   port,
@@ -183,7 +194,6 @@ export async function startHttpsIngress({
   await once(ingress, "listening");
   return {
     cert,
-    browserArg: chromiumTrustArg([cert]),
     async close() {
       ingress.closeAllConnections();
       await new Promise((resolve, reject) =>
@@ -210,60 +220,20 @@ export async function startHttpsIngress({
 // pages for the file app close when their test ends (newPage), and login() signs them in with one
 // session shared by the file.
 export function fileConsoleApp(options = {}) {
-  const cleanups = [];
-  let startPolicy;
-  let created;
-  after(async () => {
-    await created?.catch(() => {});
-    let cleanupError;
-    for (const cleanup of cleanups) {
-      try {
-        await cleanup();
-      } catch (error) {
-        cleanupError ??= error;
-      }
-    }
-    if (cleanupError) {
-      throw cleanupError;
-    }
-  });
-  return async function fileApp(t) {
-    if (created === undefined) {
-      const creating = (async () => {
-        const fixture = await createConsoleAppFixture(
-          { after: (cleanup) => cleanups.push(cleanup) },
-          options,
-        );
-        await fixture.bootstrap();
-        fixture.sharedByFile = true;
-        startPolicy = structuredClone(fixture.policy);
-        return fixture;
-      })();
-      // A failed start fails only the test that asked for it; the next test starts a new app,
-      // as each test did with an app of its own. The partial app's cleanups still run after.
-      creating.catch(() => {
-        if (created === creating) {
-          created = undefined;
-        }
-      });
-      created = creating;
-    }
-    const fixture = await created;
-    // The policy as the app started, restored before and after each test: a test body still
-    // running after its end (a timeout, an unawaited promise) cannot carry its changes into the
-    // next test.
-    const restorePolicy = () => {
-      for (const [key, value] of Object.entries(structuredClone(startPolicy))) {
-        fixture.policy[key].splice(0, Infinity, ...value);
-      }
-    };
-    restorePolicy();
-    t.after(restorePolicy);
-    return fixture;
-  };
+  return createFileConsoleApp((registrar) => createConsoleAppFixture(registrar, options));
 }
 
+/**
+ * Keep object-typed wrappers and keyed options extracted with Parameters compatible.
+ * @param {import("./console-file-app.ts").CleanupRegistrar} t
+ * @template {object | Record<string, unknown>} [Options=object]
+ * @param {Options & {auditSink?: InMemoryAuditSink, https?: boolean, ingressTLS?: {key: Buffer, cert: Buffer}}} [options]
+ */
 export async function createConsoleAppFixture(t, options = {}) {
+  const auditSink = options.auditSink ?? new InMemoryAuditSink();
+  if (!(auditSink instanceof InMemoryAuditSink)) {
+    throw new TypeError("Console fixture auditSink must be an InMemoryAuditSink instance.");
+  }
   const defaultAgentGatewayManagedMode = options.agentGatewayManagedMode;
   const installationId = `ins_${randomUUID()}`;
   // The ports are part of the origins the app is configured with, so hold them until the
@@ -280,10 +250,23 @@ export async function createConsoleAppFixture(t, options = {}) {
   const origin = `${options.https === true ? "https" : "http"}://${originHost}:${browserPort}`;
   const browserArgs = [];
   const transportOrigin = `http://127.0.0.1:${port}`;
+  const { rawRequest, fetchThroughLoopback } = createConsoleFixtureTransport(
+    origin,
+    transportOrigin,
+  );
   // CUA fault-injection keeps Better Auth on the trusted browser origin.
   const authBaseURL = options.authBaseURL ?? origin;
   const authMode = options.authMode ?? "development";
-  const memoryDatabase = { user: [], account: [], session: [], verification: [], apikey: [] };
+  // Better Auth owns the rows; test consumers only read or change their expiry.
+  /** @type {{ expiresAt: Date }[]} */
+  const sessionRows = [];
+  const memoryDatabase = {
+    user: [],
+    account: [],
+    session: sessionRows,
+    verification: [],
+    apikey: [],
+  };
   const auth = createControllerAuth({
     installationId,
     mode: authMode,
@@ -329,7 +312,6 @@ export async function createConsoleAppFixture(t, options = {}) {
     policy.identities.push(personSeed.principal);
     provisionedAccounts.push({ credentials: personCredentials, principal: personSeed.principal });
   }
-  const auditSink = options.auditSink ?? new InMemoryAuditSink();
   const policyUnit = new AsyncLocalStorage();
   class ConsolePlatformState extends InMemoryPlatformState {
     transact(work) {
@@ -346,6 +328,7 @@ export async function createConsoleAppFixture(t, options = {}) {
       resolveIAMIdentity: (identityId) =>
         policy.identities.find((identity) => identity.id === identityId),
     });
+  /** @type {import("../../packages/occ/src/index.ts").PlatformStateStore} */
   const platformState = options.wrapState?.(basePlatformState) ?? basePlatformState;
   const iamDriver = new NativeIAMDriver(
     {
@@ -431,6 +414,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         modelProvider: options.modelProvider,
         sandboxDriver: options.sandboxDriver,
         credentialGatewayDriver: options.credentialGatewayDriver,
+        resolveSandboxNamespace: options.resolveSandboxNamespace,
         implementation: options.computeImplementation,
       }),
     configurationDriver:
@@ -456,6 +440,9 @@ export async function createConsoleAppFixture(t, options = {}) {
         githubRosterMappings: options.githubRosterMappings,
         ...(authorizeWith === undefined ? {} : { authorize: authorizeWith(iamDriver) }),
         preparedTokens: options.preparedTokens,
+        ...(options.pluginSourceReader === undefined
+          ? {}
+          : { pluginSourceReader: options.pluginSourceReader }),
         sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
         driverConfigurations: options.driverConfigurations,
         ...(options.now === undefined ? {} : { now: options.now }),
@@ -534,10 +521,12 @@ export async function createConsoleAppFixture(t, options = {}) {
   }
 
   t.after(close);
+  const fixtureResponse = createFixtureResponse(app.getSchemas());
 
   if (options.https === true) {
     // Exercise browser Secure/Domain cookies through a real TLS ingress to the HTTP API.
     const ingress = await startHttpsIngress({
+      tls: options.ingressTLS,
       port: browserPort,
       upstreamPort: port,
       originHost,
@@ -545,22 +534,9 @@ export async function createConsoleAppFixture(t, options = {}) {
     });
     await browserReservation.release();
     cleanupBeforeAppClose.push(ingress.close);
-    browserArgs.push(ingress.browserArg);
-  }
-
-  async function rawRequest(method, path, { headers = {}, body, timeout = 5000 } = {}) {
-    const response = await fetch(`${transportOrigin}${path}`, {
-      method,
-      headers: {
-        host: new URL(origin).host,
-        ...headers,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(timeout),
-    });
-    const text = await response.text();
-    return { response, text };
+    if (options.ingressTLS === undefined) {
+      browserArgs.push(chromiumTrustArg([ingress.cert]));
+    }
   }
 
   function parseJson(result) {
@@ -571,19 +547,6 @@ export async function createConsoleAppFixture(t, options = {}) {
     assert.equal(result.response.headers.get("cache-control"), "no-store");
     assert.equal(result.response.headers.get("x-content-type-options"), "nosniff");
     return payload;
-  }
-
-  async function fetchThroughLoopback(request) {
-    const url = new URL(request.url);
-    return fetch(`${transportOrigin}${url.pathname}${url.search}`, {
-      method: request.method,
-      headers: {
-        ...Object.fromEntries(request.headers),
-        host: url.host,
-      },
-      ...(request.body === null ? {} : { body: Buffer.from(await request.arrayBuffer()) }),
-      signal: request.signal,
-    });
   }
 
   async function signIn(overrides = {}) {
@@ -627,11 +590,13 @@ export async function createConsoleAppFixture(t, options = {}) {
 
   async function createNamespace(name, { ready = false } = {}) {
     const result = await request("POST", "/namespaces", { body: { name } });
-    assert.equal(result.status, 201);
+    const namespace = fixtureResponse(result, 201, NamespaceResponse, "create Namespace").data;
     if (ready) {
-      await makeNamespaceReady(result.data.id);
+      await makeNamespaceReady(namespace.id);
+      const current = await request("GET", `/namespaces/${namespace.id}`);
+      return fixtureResponse(current, 200, NamespaceResponse, "read ready Namespace").data;
     }
-    return ready ? (await request("GET", `/namespaces/${result.data.id}`)).data : result.data;
+    return namespace;
   }
 
   async function makeNamespaceReady(namespaceId) {
@@ -653,8 +618,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         ...(options.secretBindings === undefined ? {} : { secretBindings: options.secretBindings }),
       },
     });
-    assert.equal(configuration.status, 201);
-    return configuration.data;
+    return fixtureResponse(configuration, 201, ConfigurationResponse, "create Configuration").data;
   }
 
   async function updateConfiguration(namespaceId, configurationId, values = {}, options = {}) {
@@ -762,9 +726,15 @@ export async function createConsoleAppFixture(t, options = {}) {
     const configuration = await createConfiguration(namespaceId, values, {
       secretBindings: options.secretBindings,
     });
-    const namespace = await request("GET", `/namespaces/${namespaceId}`);
+    const namespaceResponse = await request("GET", `/namespaces/${namespaceId}`);
+    const namespace = fixtureResponse(
+      namespaceResponse,
+      200,
+      NamespaceResponse,
+      "read Agent Namespace",
+    ).data;
     const harnessAuth =
-      options.harnessAuth === undefined && secretDriver && namespace.data.status === "ready"
+      options.harnessAuth === undefined && secretDriver && namespace.status === "ready"
         ? {
             method: "api_key",
             source: (
@@ -787,58 +757,42 @@ export async function createConsoleAppFixture(t, options = {}) {
           : { gatewayManagedMode: defaultAgentGatewayManagedMode }),
       },
     });
-    assert.equal(agent.status, 201);
+    const created = fixtureResponse(agent, 201, AgentResponse, "create Agent").data;
     // An Installation administrator's console reads the model credential's grant as it reads bound
     // channel Secrets' grants, so it is listed too (finding 2260).
     if (harnessAuth?.method === "api_key") {
-      await grantAgentSecretOperate(agent.data, harnessAuth.source, { modelGrant: true });
+      await grantAgentSecretOperate(created, harnessAuth.source, { modelGrant: true });
     }
     // The console grants the Agent each Secret its Configuration binds when it binds it.
     for (const { source } of Object.values(options.secretBindings ?? {})) {
       if (source?.kind === "secret") {
-        await grantAgentSecretOperate(agent.data, source);
+        await grantAgentSecretOperate(created, source);
       }
     }
-    return agent.data;
+    return created;
   }
 
   async function updateAgent(namespaceId, agentId, body) {
     const agent = await request("PATCH", `/namespaces/${namespaceId}/agents/${agentId}`, {
       body,
     });
-    assert.equal(agent.status, 200);
-    return agent.data;
+    return fixtureResponse(agent, 200, AgentResponse, "update Agent").data;
   }
 
-  async function deployAgent(namespaceId, agentId) {
-    const revision = await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/deploy`);
-    assert.equal(revision.status, 202, JSON.stringify(revision.body));
-    return revision.data;
-  }
-
-  async function activateRevision(namespaceId, agentId, revisionId, expectedRevisionId) {
-    assert.ok(controller, "bootstrap must create the controller before revision activation");
-    // This renders a valid admitted active revision for console tests; runtime dispatch,
-    // worker lease handling, and Compute Driver effects are proved by worker tests.
-    const active = await platformState.transact((unit) =>
-      unit.agents.compareAndSetActiveRevision(namespaceId, agentId, expectedRevisionId, revisionId),
-    );
-    assert.ok(active, "the admitted Agent revision must activate from the expected state");
-    return active;
-  }
-
-  async function seedActiveAgentRevision(namespaceId, agentId, expectedRevisionId) {
-    const revision = await deployAgent(namespaceId, agentId);
-    const agent = await activateRevision(namespaceId, agentId, revision.id, expectedRevisionId);
-    return { agent, revision };
-  }
+  const { deployAgent, activateRevision, seedActiveAgentRevision } = createConsoleFixtureRevisions(
+    request,
+    fixtureResponse,
+    () => {
+      assert.ok(controller, "bootstrap must create the controller before revision activation");
+      return platformState;
+    },
+  );
 
   async function createSecret(namespaceId, name, value) {
     const secret = await request("POST", `/namespaces/${namespaceId}/secrets`, {
       body: { name, value },
     });
-    assert.equal(secret.status, 201);
-    return secret.data;
+    return fixtureResponse(secret, 201, SecretResponse, "create Secret").data;
   }
 
   /**
@@ -922,6 +876,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     withIamOutage,
     rawRequest,
     request,
+    fixtureResponse,
     signIn,
     bootstrap,
     createNamespace,
@@ -947,6 +902,10 @@ export async function createConsoleAppFixture(t, options = {}) {
 
 // The Role that fixture.createNamespaceMember made for `label`. Tests change it in place to
 // grant or revoke after sign-in: State reads the policy on each request.
+/**
+ * @param {{policy: Pick<Awaited<ReturnType<typeof createConsoleAppFixture>>["policy"], "roles">}} fixture
+ * @param {string} label
+ */
 export function memberRole(fixture, label) {
   const role = fixture.policy.roles.find(({ id }) => id === `role-${label}`);
   assert.ok(role, `member ${label} has a Role`);
@@ -960,31 +919,4 @@ export function grantMember(fixture, label, grants) {
   );
 }
 
-// The authorization denials an InMemoryAuditSink recorded: all of them, or those for `action`,
-// an exact action name or a RegExp for a family of actions.
-export function authorizationDenials(auditSink, action) {
-  const matches =
-    action === undefined
-      ? () => true
-      : typeof action === "string"
-        ? (name) => name === action
-        : (name) => action.test(name);
-  return auditSink
-    .list()
-    .filter((event) => event.kind === "authorization_denial" && matches(event.action));
-}
-
-// Runs `send` and returns its response with the checks its authorization denials name, as
-// { action, kind, id }, so a refusal can be shown to be audited once, for its own target.
-export async function denialsDuring(auditSink, send) {
-  const before = authorizationDenials(auditSink).length;
-  const response = await send();
-  const denials = authorizationDenials(auditSink)
-    .slice(before)
-    .map(({ authorization: { action, resource } }) => ({
-      action,
-      kind: resource.kind,
-      id: resource.id,
-    }));
-  return { response, denials };
-}
+export { authorizationDenials, denialsDuring } from "./console-audit-denials.ts";

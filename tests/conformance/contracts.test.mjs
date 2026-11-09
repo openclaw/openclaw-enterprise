@@ -304,7 +304,7 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
     configurationKind: "agent",
     configurationGeneration: 1,
     configuration: { model: "gpt-test", temperature: "0", tool: "lookup" },
-    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {}, configuration: {} },
     compute: { id: "compute-test", implementation: "deterministic-fake" },
     harnessAuth: {
       method: "codex_pat",
@@ -414,7 +414,13 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
     temperature: "0",
     tool: "lookup",
   });
-  assert.deepEqual(admitted.harness, { id: "codex", version: "1.0.0", mode: "dedicated" });
+  assert.deepEqual(admitted.harness, {
+    id: "codex",
+    version: "1.0.0",
+    mode: "dedicated",
+    overrides: {},
+    configuration: {},
+  });
   assert.deepEqual(admitted.compute, {
     id: "compute-test",
     implementation: "deterministic-fake",
@@ -889,18 +895,22 @@ test("every model-probe cause a runtime program publishes is recorded as publish
     ([, list, other]) =>
       [...JSON.parse(`[${list}]`), other].map((detail) => ({ kind: "PROBE_STATUS", detail })),
   );
-  // The Codex check's helper names rate_limit itself, else its caller's token.
+  // The Codex helper can report a rate limit, replace a detail with a provider code,
+  // or keep its caller's token.
   extract(
     /probeFailure\(\s*"PROBE_STATUS",\s*codexRateLimited\(message\) \? "([^"]+)" : detail\)/gu,
     ([, detail]) => [{ kind: "PROBE_STATUS", detail }],
   );
-  extract(/codexProbeStatusFailure\([^"\n]*,\s*"([^"]+)"\)/gu, ([, detail]) => [
+  extract(/if \(summary\.providerCode === "[^"]+"\) detail = "([^"]+)";/gu, ([, detail]) => [
+    { kind: "PROBE_STATUS", detail },
+  ]);
+  extract(/codexProbeStatusFailure\([^"\n]*,\s*"([^"]+)",\s*modelId\)/gu, ([, detail]) => [
     { kind: "PROBE_STATUS", detail },
   ]);
   // A backstop for shapes none of these read. PROCESS_EXIT details are built at run time and
   // pinned by the PROCESS_EXIT tests above.
   for (const call of text.matchAll(
-    /probeFailure\(\s*"(?!PROCESS_EXIT")|codexProbeStatusFailure\((?!message, detail\))/gu,
+    /probeFailure\(\s*"(?!PROCESS_EXIT")|(?<!function )codexProbeStatusFailure\(/gu,
   )) {
     assert.ok(
       read.has(call.index),
@@ -921,6 +931,7 @@ test("every model-probe cause a runtime program publishes is recorded as publish
     "PROBE_STATUS/unexpected-event",
     "PROBE_STATUS/rate_limit",
     "PROBE_STATUS/no_model",
+    "PROBE_STATUS/model_not_found",
     "PROBE_STATUS/other",
     "WRAPPER_ERROR",
   ]) {

@@ -176,6 +176,22 @@ test(
     );
     assert.deepEqual(accountAudit.rows, [{ group_ids: [DEFAULT_USER_GROUP] }]);
 
+    // A Default user cannot read the Installation, so the console's Create Agent reads the
+    // capabilities it needs from the Namespace where the member may create Agents. Guided
+    // provisioning and its native admin option need Installation administration, so the answer
+    // omits both.
+    assert.equal((await alice.request("GET", "/installation")).status, 403);
+    const memberCapabilities = await alice.request("GET", `${base}/agent-capabilities`);
+    assert.equal(memberCapabilities.status, 200);
+    const administratorView = await inject("GET", "/installation");
+    assert.equal(administratorView.statusCode, 200, administratorView.body);
+    const {
+      nativeAdmin: _provisioningOnly,
+      agentProvisioning: _administratorOnly,
+      ...expectedCapabilities
+    } = administratorView.json().data.capabilities ?? {};
+    assert.deepEqual(memberCapabilities.data, { capabilities: expectedCapabilities });
+
     // Alice completes the Agent workflow in default with no administrator action. Each create
     // binds her to the configured Owner Role on exactly that resource, and her deploy gives the
     // Agent's ServicePrincipal operate on the Secret she can operate.
@@ -393,6 +409,15 @@ test(
     const created = await alice.request("POST", "/namespaces", { name: `alice ${randomUUID()}` });
     assert.equal(created.status, 201);
     const namespace = created.data;
+    // Agent capabilities follow Agent create: Alice owns her Namespace, Bob holds nothing there.
+    assert.equal(
+      (await alice.request("GET", `/namespaces/${namespace.id}/agent-capabilities`)).status,
+      200,
+    );
+    assert.equal(
+      (await bob.request("GET", `/namespaces/${namespace.id}/agent-capabilities`)).status,
+      403,
+    );
     const owners = await pool.query(
       `SELECT identity_subject_id, resource_kind FROM occ.iam_access_bindings
        WHERE namespace_id = $1 AND role_id = $2`,

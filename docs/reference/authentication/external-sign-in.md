@@ -1,9 +1,9 @@
 # External sign-in and account controls
 
-This page covers GitHub, Google and generic OIDC browser sign-in for existing OpenClaw Control
-Plane (OCC) accounts, and the session, recovery, and account controls that apply
-once an external provider is enabled. The [authentication reference](../authentication.md)
-covers bootstrap, password sessions, request origin, provisioning, and failures.
+GitHub, Google and generic OIDC sign-in for existing OpenClaw Control Plane (OCC)
+accounts share these session, recovery and account controls. The
+[authentication reference](../authentication.md) covers bootstrap, password sessions,
+request origin, provisioning and failures.
 
 ## Console sign-in destinations
 
@@ -21,8 +21,7 @@ administration (startup fails with `EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED`),
 other session readers, rolling or mixed-version serving, and mutable Installation
 policy are unsupported. Keep bootstrap, seeding, external
 policy writers, and recovery-affecting changes stopped.
-Native IAM's policy read remains separate from State's actor guard. Loopback
-development does not qualify deployed HTTPS.
+Loopback development does not qualify deployed HTTPS.
 [Google sign-in](../../guides/deploy/google-sign-in.md) and
 [OIDC sign-in](../../guides/deploy/oidc-sign-in.md) use this profile and its
 controls.
@@ -54,9 +53,10 @@ the private key stays with the existing repository credential consumer.
 
 OCE requests no OAuth scopes. [App permissions and user access](https://docs.github.com/en/apps/creating-github-apps/writing-code-for-a-github-app/building-a-login-with-github-button-with-a-github-app#specify-additional-parameters)
 govern the bearer token, which may carry repository authority; `read:user` would
-not restrict it. Login uses only [`GET /user`](https://docs.github.com/en/rest/users/users#get-the-authenticated-user)
-(and, with an [allowlist](#organization-and-team-allowlist), the membership lookups),
-then discards tokens, expiry, and scope data. It performs no refresh, creates no
+not restrict it. Login reads the [GitHub user profile](https://docs.github.com/en/rest/users/users#get-the-authenticated-user).
+An allowlist or team mapping adds membership checks, and first-time automatic
+enrollment also reads the user's email addresses. Login then discards the tokens,
+expiry, and scope data. It performs no refresh, creates no
 repository grants, and gives no provider credentials to repository consumers or Agents.
 
 A new client ID requires reattachment under a new provider instance; then detach
@@ -75,14 +75,14 @@ user ID (1–20 digits, no leading zero) through
 Attachment keeps the user, Principal, and grants, advances the version,
 and invalidates sessions and pending proofs. A subject another account already
 holds returns `409 RESOURCE_CONFLICT` ("The external identity is already
-assigned."), as account creation does. Email association, signup, identity
+assigned."), as account creation does. Email association, unrestricted signup, identity
 transfer, and self-service linking are rejected. For unknown identities, follow the
 [enrollment procedure](../../guides/deploy/production-installation.md#enable-github-browser-sign-in).
 
-An [allowlist](#organization-and-team-allowlist) limits which attached GitHub identities
-may sign in. Separately, [mapped Groups](../authorization/default-users.md#map-a-github-team-to-a-group)
-verify membership at sign-in and withdraw access between sign-ins. Without either feature,
-GitHub team membership has no effect on OCE access. To offboard someone fully, use
+An [allowlist](#organization-and-team-allowlist) limits who may sign in.
+[Automatic enrollment](team-enrollment.md) can add eligible team members to a Group at sign-in.
+[Team mappings](../authorization/default-users.md#map-a-github-team-to-a-group) can grant Group
+membership at sign-in and withdraw their own contributions between sign-ins. To offboard someone fully, use
 [account controls](#session-and-recovery-controls). Disabling the account ends its
 sessions. Detaching GitHub ends that sign-in method and its sessions. Revoking sessions
 allows a fresh sign-in. Revoke [service keys](service-api-keys.md#revoke-or-rotate-a-service-key)
@@ -98,7 +98,7 @@ owns button and error display.
 
 The callback consumes a short-lived, browser-bound attempt once before code
 exchange and resolves the immutable numeric GitHub user ID's exact enrollment.
-Unknown identities fail without signup. Success returns to exactly `/console/`
+OCE refuses unknown identities unless automatic enrollment admits them. Success returns to exactly `/console/`
 and sets a two-minute HttpOnly, `SameSite=Strict` login receipt; failure returns
 to `/console/?authError=github` without automatic retry. An identity attached to a
 disabled account returns with `authReason=account-disabled`, audited as `ACCOUNT_DISABLED`
@@ -124,7 +124,7 @@ or `temporarily_unavailable`), or its token endpoint refuses the configured clie
 and registered callback), the denial is audited as `PROVIDER_UNAVAILABLE` and the API
 logs one `authentication.provider-unavailable-warning` at WARN. It carries `provider`
 (`github`, `google`, or `oidc`), the provider instance `providerId`, `step`
-(`authorization`, `token`, `jwks`, `profile`, or `membership`), a `cause` from a fixed list (`connect_refused`,
+(`authorization`, `token`, `jwks`, `profile`, `membership`, or `email`), a `cause` from a fixed list (`connect_refused`,
 `dns`, `timeout`, `tls`, `connection_reset`, `network`, `redirect`, `http_status`,
 `oversized_response`, `malformed_response`, `provider_error`, or `client_rejected`), and,
 when present, the HTTP `status` or transport `code` such as `ECONNREFUSED`. It never carries URLs,
@@ -134,6 +134,14 @@ After that denial the callback returns to
 unavailable right now instead of suggesting an attach; the failure precedes any identity lookup,
 so the reason reveals nothing about accounts. A callback that fails inside OCE (its database or
 audit store) returns with `authReason=unavailable`.
+
+### Automatic team enrollment
+
+[Automatic GitHub team enrollment](team-enrollment.md) can create an account and
+add new or existing verified team members to a configured native IAM Group.
+It is opt-in and requires a team-only allowlist; existing enrollment remains the
+default. Group bindings determine access, and account disable remains the
+supported immediate offboarding operation.
 
 ### Organization and team allowlist
 
@@ -223,8 +231,7 @@ accounts after the switch to `recovery-only`, and the former holder's after
 sessions, or run `purge-sessions` with
 [stopped maintenance](../../guides/deploy/auth-maintenance.md).
 
-New accounts need an identity too: create them with `github.subject`, or attach
-one straight after creation.
+Create new accounts with `github.subject`, or immediately attach an identity.
 
 ## Session and recovery controls
 
@@ -254,10 +261,12 @@ Installation `administer`; service keys are refused. Account mutations also
 require every IAM grant of the target account's Principal (else `403`, audited as
 `ACCOUNT_PRINCIPAL_GRANTS_NOT_COVERED` with the target `userId` and `principalId`, the current
 holder's for a recovery move); Agent `administer`
-counts for a delegated Agent `read_logs` grant, as for [service keys](service-api-keys.md#issuance). State locks actor and target
-accounts (retryable `503` after five-second lock waits) and rechecks the actor
-session. A stale
-`expectedVersion` or disabled target returns `409 RESOURCE_CONFLICT`.
+counts for a delegated Agent `read_logs` grant, as for [service keys](service-api-keys.md#issuance).
+After locking, State rechecks caller authority, target coverage and the
+recovery successor, then the session. Policy stays stable through commit.
+Lock contention returns retryable `503`; lost caller authority or target coverage
+returns `403` without mutation. Stale `expectedVersion`, disabled targets or
+successors lacking Installation `administer` return `409 RESOURCE_CONFLICT`.
 
 Send the version just read, such as `{"expectedVersion":1}`:
 

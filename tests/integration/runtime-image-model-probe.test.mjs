@@ -5,7 +5,7 @@ import {
   modelProbeDiagnostic,
   recordModelProbeMeasurement,
   trackProbeCpuHog,
-} from "../helpers/runtime-model-probe-observation.mjs";
+} from "../helpers/runtime-model-probe-observation.ts";
 import {
   constrainedGatewayCpuLimit,
   docker,

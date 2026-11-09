@@ -29,6 +29,7 @@ If you are still learning the product, start with [Concepts](guides/concepts.md)
 | [Integrations](guides/integrations/README.md) | Choose and configure Drivers, experimental Backends, and channels.       |
 | [Deploy & Operate](guides/operate/README.md)  | Install and run the platform, manage credentials, and diagnose failures. |
 | [Reference](reference/README.md)              | Look up OCC CLI commands and HTTP API operations.                        |
+| [Testing & CI](testing/README.md)             | Run tests, inspect CI coverage, and interpret check results.             |
 | [Contribute](contributing/README.md)          | Set up a development environment and change the platform or its docs.    |
 
 <a id="platform-developer-guide"></a>

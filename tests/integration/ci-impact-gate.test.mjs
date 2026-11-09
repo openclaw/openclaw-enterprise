@@ -31,7 +31,7 @@ function runGate(t, mode, needs, extra = []) {
   return { ...result, expanded };
 }
 
-test("gate accepts only the selected jobs and expands full-mode dependencies", (t) => {
+test("gate accepts only the selected jobs and preserves full-mode matrix ownership", (t) => {
   const docs = runGate(t, "docs", passingGateNeeds("docs"));
   assert.equal(docs.status, 0, docs.stderr);
   // No successful test-lane receipt may be manufactured for omitted docs lanes.
@@ -42,7 +42,24 @@ test("gate accepts only the selected jobs and expands full-mode dependencies", (
   assert.equal(full.status, 0, full.stderr);
   assert.deepEqual(
     Object.keys(full.expanded).sort(),
-    ["impact", "static-checks", ...expectedFullLanes].sort(),
+    [
+      "impact",
+      "static-checks",
+      "runtime-artifact",
+      "pr-safe",
+      "image-lanes",
+      "runtime-image-fixture",
+    ].sort(),
+  );
+  assert.deepEqual(
+    full.expanded["pr-safe"].lanes,
+    expectedFullLanes.filter(
+      (lane) => lane !== "runtime-image-fixture" && !lane.startsWith("images-"),
+    ),
+  );
+  assert.deepEqual(
+    full.expanded["image-lanes"].lanes,
+    expectedFullLanes.filter((lane) => lane.startsWith("images-")),
   );
   for (const state of Object.values(full.expanded)) {
     assert.equal(state.result, "success");
@@ -69,12 +86,25 @@ test("gate rejects failed, cancelled, missing, and unexpectedly run or skipped j
         assert.match(result.stderr, new RegExp(job));
         if (mode === "full") {
           for (const lane of expectedFullLanes) {
-            const source = lane === "runtime-image-fixture" ? lane : "pr-safe";
+            const source =
+              lane === "runtime-image-fixture"
+                ? lane
+                : lane.startsWith("images-")
+                  ? "image-lanes"
+                  : "pr-safe";
             assert.equal(
-              result.expanded?.[lane]?.result,
+              result.expanded?.[source]?.result,
               job === source ? bad : "success",
               `${mode}: ${job} ${bad} -> ${lane}`,
             );
+            if (lane !== source) {
+              assert.equal(
+                result.expanded?.[lane],
+                undefined,
+                "matrix result is not a lane result",
+              );
+              assert.ok(result.expanded?.[source]?.lanes.includes(lane));
+            }
           }
         }
       }
@@ -103,7 +133,20 @@ function testNeeds(lanes) {
   return {
     impact: { result: "success", outputs: { mode: "tests", lanes: json } },
     "static-checks": { result: "success", outputs: {} },
-    "pr-safe": { result: "success", outputs: {} },
+    "pr-safe": {
+      result: lanes.some((lane) => lane !== "runtime-image-fixture" && !lane.startsWith("images-"))
+        ? "success"
+        : "skipped",
+      outputs: {},
+    },
+    "image-lanes": {
+      result: lanes.some((lane) => lane.startsWith("images-")) ? "success" : "skipped",
+      outputs: {},
+    },
+    "runtime-artifact": {
+      result: lanes.some((lane) => lane.startsWith("images-")) ? "success" : "skipped",
+      outputs: {},
+    },
     "runtime-image-fixture": {
       result: lanes.includes("runtime-image-fixture") ? "success" : "skipped",
       outputs: {},
@@ -118,14 +161,13 @@ function runTestsGate(t, lanes, needs = testNeeds(lanes)) {
   ]);
 }
 
-test("tests mode expands only the selected lanes", (t) => {
+test("tests mode records only the selected lanes under their actual parents", (t) => {
   const plain = runTestsGate(t, ["checks-baseline-1", "postgres"]);
   assert.equal(plain.status, 0, plain.stderr);
   assert.deepEqual(plain.expanded, {
     impact: { result: "success" },
     "static-checks": { result: "success" },
-    "checks-baseline-1": { result: "success" },
-    postgres: { result: "success" },
+    "pr-safe": { result: "success", lanes: ["checks-baseline-1", "postgres"] },
   });
   // The Keycloak OIDC lane is a matrix row, so pr-safe carries its result.
   const keycloak = runTestsGate(t, ["keycloak-oidc"]);
@@ -133,22 +175,23 @@ test("tests mode expands only the selected lanes", (t) => {
   assert.deepEqual(keycloak.expanded, {
     impact: { result: "success" },
     "static-checks": { result: "success" },
-    "keycloak-oidc": { result: "success" },
+    "pr-safe": { result: "success", lanes: ["keycloak-oidc"] },
   });
   const keycloakFailed = testNeeds(["keycloak-oidc"]);
   keycloakFailed["pr-safe"].result = "failure";
   const keycloakResult = runTestsGate(t, ["keycloak-oidc"], keycloakFailed);
   assert.notEqual(keycloakResult.status, 0);
-  assert.equal(keycloakResult.expanded["keycloak-oidc"].result, "failure");
+  assert.equal(keycloakResult.expanded["pr-safe"].result, "failure");
+  assert.equal(keycloakResult.expanded["keycloak-oidc"], undefined);
   const fixture = runTestsGate(t, ["checks-baseline-1", "runtime-image-fixture"]);
   assert.equal(fixture.status, 0, fixture.stderr);
   assert.deepEqual(Object.keys(fixture.expanded).sort(), [
-    "checks-baseline-1",
     "impact",
+    "pr-safe",
     "runtime-image-fixture",
     "static-checks",
   ]);
-  // A failed matrix or fixture job reaches the aggregator as a failed lane.
+  // The standalone fixture is still a direct job result, not a matrix parent.
   const failed = testNeeds(["checks-baseline-1", "runtime-image-fixture"]);
   failed["runtime-image-fixture"].result = "failure";
   const result = runTestsGate(t, ["checks-baseline-1", "runtime-image-fixture"], failed);
@@ -159,6 +202,8 @@ test("tests mode expands only the selected lanes", (t) => {
 test("tests mode rejects wrong job states and unverifiable lane sets", (t) => {
   for (const lanes of [
     ["checks-baseline-1", "postgres"],
+    ["images-runtime-startup-2"],
+    ["checks-baseline-1", "images-packaging"],
     ["checks-baseline-1", "runtime-image-fixture"],
   ]) {
     for (const [job, state] of Object.entries(testNeeds(lanes))) {
@@ -178,12 +223,21 @@ test("tests mode rejects wrong job states and unverifiable lane sets", (t) => {
         assert.notEqual(result.status, 0, `${job} ${bad}`);
         assert.match(result.stderr, new RegExp(job));
         for (const lane of lanes) {
-          const source = lane === "runtime-image-fixture" ? lane : "pr-safe";
+          const source =
+            lane === "runtime-image-fixture"
+              ? lane
+              : lane.startsWith("images-")
+                ? "image-lanes"
+                : "pr-safe";
           assert.equal(
-            result.expanded?.[lane]?.result,
+            result.expanded?.[source]?.result,
             job === source ? bad : "success",
             `${job} ${bad} -> ${lane}`,
           );
+          if (lane !== source) {
+            assert.equal(result.expanded?.[lane], undefined, "matrix result is not a lane result");
+            assert.ok(result.expanded?.[source]?.lanes.includes(lane));
+          }
         }
       }
     }
@@ -220,4 +274,24 @@ test("tests mode rejects wrong job states and unverifiable lane sets", (t) => {
     runGate(t, "docs", passingGateNeeds("docs"), ["--lanes", '["postgres"]']).status,
     0,
   );
+});
+
+test("image-only selection requires its producer and does not require unrelated lanes", (t) => {
+  const lanes = ["images-runtime-startup-2"];
+  const passed = runTestsGate(t, lanes);
+  assert.equal(passed.status, 0, passed.stderr);
+  assert.deepEqual(passed.expanded, {
+    impact: { result: "success" },
+    "static-checks": { result: "success" },
+    "runtime-artifact": { result: "success" },
+    "image-lanes": { result: "success", lanes: ["images-runtime-startup-2"] },
+  });
+  const needs = testNeeds(lanes);
+  needs["runtime-artifact"].result = "failure";
+  needs["image-lanes"].result = "skipped";
+  const failed = runTestsGate(t, lanes, needs);
+  assert.notEqual(failed.status, 0);
+  assert.equal(failed.expanded["runtime-artifact"].result, "failure");
+  assert.equal(failed.expanded["image-lanes"].result, "skipped");
+  assert.equal(failed.expanded["images-runtime-startup-2"], undefined);
 });

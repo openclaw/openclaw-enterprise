@@ -28,10 +28,16 @@
     "tests/integration/postgres-sign-in-unmatched-callbacks.test.mjs",
     "tests/integration/postgres-github-session-cookie.test.mjs",
     "tests/integration/postgres-service-api-keys.test.mjs",
-    "tests/integration/postgres-auth-binding.test.mjs"
+    "tests/integration/postgres-auth-binding.test.mjs",
+    "tests/integration/postgres-github-team-enrollment.test.ts"
   ],
   "files": [
-    { "path": "tests/integration/postgres-github-roster.test.ts" },
+    {
+      "path": "tests/integration/postgres-github-roster.test.ts",
+      "expectedTests": [
+        "mapped GitHub sign-in and the roster worker change access on a live session"
+      ]
+    },
     {
       "path": "tests/integration/native-admin-session-postgres.test.mjs",
       "expectedTests": [
@@ -114,7 +120,9 @@
     {
       "path": "tests/integration/postgres-human-authentication.test.mjs",
       "expectedTests": [
-        "PostgreSQL human authentication preserves exact identity and transactional currentness"
+        "PostgreSQL human authentication preserves exact identity and transactional currentness",
+        "automatic enrollment and roster admission preserve each other’s Group contribution",
+        "mapped sign-in waiting on IAM configuration observes a committed roster retirement"
       ]
     },
     {
@@ -173,6 +181,12 @@
       "path": "tests/integration/postgres-auth-binding.test.mjs",
       "expectedTests": [
         "PostgreSQL auth binding pins transactions, rolls back failures, and preserves caller pool ownership"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-github-team-enrollment.test.ts",
+      "expectedTests": [
+        "GitHub team enrollment creates one account with configured Group access and refuses unsafe enrollment"
       ]
     }
   ]

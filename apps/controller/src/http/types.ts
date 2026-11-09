@@ -23,6 +23,7 @@ export interface RequestOperation {
 
 export interface RequestContext {
   readonly actorId: string;
+  readonly sessionId?: string;
   readonly issuer: string;
   readonly subject: string;
   readonly admissionDecisionId: string;

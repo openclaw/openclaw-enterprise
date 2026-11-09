@@ -188,7 +188,7 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 			} `yaml:"credential_gateway"`
 			Sandbox struct {
 				Configuration struct {
-					StartupDelayMs int `yaml:"startupDelayMs"`
+					StartupDelayMs *int `yaml:"startupDelayMs"`
 					Gateway        struct {
 						NetworkPolicyResources []struct {
 							Spec struct {
@@ -215,8 +215,9 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 		t.Fatal(err)
 	}
 	sandbox := installation.Drivers.Sandbox.Configuration
-	if sandbox.StartupDelayMs != 30_000 {
-		t.Fatalf("unexpected OpenShell startup delay: %d", sandbox.StartupDelayMs)
+	// Authenticated Harness readiness gates startup; an extra fixed wait delays every Sandbox.
+	if sandbox.StartupDelayMs != nil {
+		t.Fatalf("development must use observed readiness without a fixed delay: %d", *sandbox.StartupDelayMs)
 	}
 	if !reflect.DeepEqual(installation.Drivers.CredentialGateway.Configuration.Binaries, []string{
 		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",

@@ -142,18 +142,28 @@ configured Role as `roleId`.
 
 Each account that `POST /api/auth/accounts` creates joins every
 `defaultUserGroups` Group in the transaction that creates it. Its
-`openclaw.auth.accounts.create` audit event lists them in `groupIds`. GitHub team rules can independently contribute
-membership in the same Group.
+`openclaw.auth.accounts.create` audit event lists them in `groupIds`. Adding a
+Group to this list affects future accounts. There is no API to add or remove
+arbitrary Group members.
 
-Administrators can withdraw a GitHub rule’s contribution as described below. An account created before a Group was
-listed does not join it. To end a person's access, remove the binding from the
-configuration or disable the account.
+Removing a Group binding and disabling an account have different results:
 
-A configuration change or a disabled account stops new creates at once.
-Everything the person created stays: their Owner bindings, Namespaces, Agents,
-and deploy-time grants remain until an administrator deletes them or moves the
-Owner binding. Without Namespace read on `default`, the person cannot reach
-their Agents there through the API, but those Agents keep running.
+- **Remove the Group binding from the configuration.** Editing the file does not
+  change IAM policy. The change takes effect when OCC applies the updated
+  configuration at API and worker startup. After that, OCC refuses only the
+  operations that no remaining grant permits. The person keeps their Owner
+  bindings. With a known resource ID, they can still read, update, and deploy
+  each resource they own, without Namespace read. A Namespace-wide Owner binding
+  still lets them create resources in that Namespace. Without Namespace read on
+  `default`, they cannot list resources there.
+- **Disable the account.** OCC refuses the account's sessions at the next
+  request, so all of the person's API access stops. Their Owner bindings stay in
+  IAM policy and apply again if the account is enabled.
+
+In both cases, everything the person created stays: their Owner bindings,
+Namespaces, Agents, and deploy-time grants remain, and their Agents keep running.
+To remove that access, an administrator deletes the resources or the Owner
+bindings.
 
 ### Map a GitHub team to a Group
 
@@ -183,19 +193,21 @@ set `teamRosterTokenKey` (default `token`), and set `auth.github.egressCidrs`
 to the permitted GitHub HTTPS destinations. The worker mounts the Secret
 read-only and reads the token on each attempt. Outside Helm, supply
 `OCC_AUTH_GITHUB_CLIENT_ID` and an absolute `OCC_GITHUB_TEAM_TOKEN_FILE` on
-the worker. The operator owns the token’s installation, permissions and rotation. Before relying
-on withdrawal to stop writes, run the same supported release and mapping configuration
-on every API and worker replica.
+the worker. The operator owns the token’s installation, permissions and rotation.
+Use the [supported GitHub sign-in configuration](../authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
+and run the same release and mapping configuration on the API and worker.
 
-A new or replaced rule must complete its first background read before a GitHub
-sign-in can use it. If the worker cannot verify the roster, GitHub sign-in is
-refused and the rule grants nothing. After this first success, every six hours
-the worker reads all team roster pages, independently verifies
-candidate departures and withdraws only the matching rule’s contribution. A
+The API refuses GitHub sign-in until the worker verifies the roster for each
+new or replaced rule. After that first success, the worker reads all team roster
+pages every six hours and independently verifies candidate departures before
+withdrawing the matching rule’s contribution. A
 partial read, lost visibility or outage retains the last decisions across
 restarts. A roster can contain up to 10,000 members. To confirm a departure,
 the reader must also verify the person’s organization-team list within 100 teams. A member on the roster gains access only after a verified sign-in.
-A person can keep access through another team or an independent Group grant.
+Withdrawal and local overrides remove only that mapping’s contribution. A person
+keeps access through other mappings, [automatic team enrollment](../authentication/team-enrollment.md),
+default Groups, or other IAM grants. For permissions that must end when a person
+leaves the team, bind them to a mapped Group and grant them only through that mapping.
 Webhook-driven refresh is proposed future work.
 
 An Installation administrator can inspect `githubTeamRefresh` in
@@ -255,7 +267,7 @@ the administrator binding, but they stay if that binding is removed.
 
 Each create or deploy that writes an Owner binding or a deploy-time grant holds
 the caller's session and the IAM configuration lock until COMMIT, and authorizes
-only after that. A sign-out, account disable, configuration change, or delete of
+only after that. A sign-out, account disable, configuration apply, or delete of
 an AccessBinding that allowed the request commits either before it, so the
 request is refused and writes nothing, or after its COMMIT.
 
@@ -292,16 +304,32 @@ OCC does not remove these grants when the Agent stops using a source. Deleting
 the Agent or the source removes them, as
 [Manage Namespace policy](../authorization.md#manage-namespace-policy) describes.
 
+## Create Agents in the console
+
+A Default user cannot read the Installation, so the console's Create Agent
+reads `GET /namespaces/:namespaceId/agent-capabilities` instead. The caller
+needs `agent:create` in that Namespace. The answer holds the Installation
+capabilities that Agent creation uses, such as a Credential Gateway's
+credential source types. With those types, the console registers the member's
+model Secret as a credential source before it saves the Agent, as it does for
+an administrator. Without that source, a deploy on a Credential Gateway
+Installation is refused.
+
+The answer omits guided provisioning and native admin UI setup, which need
+Installation `administer`. A member's console saves a draft, opens it, and
+offers no **Enable Native admin UI**. The member deploys the draft, and the
+deploy writes the grants above.
+
 ## Current limits
 
 These parts of the Default users design are not implemented:
 
-- First-sign-in account creation, Google and OIDC group mappings, and an API
-  to add arbitrary Group members.
+- Google and OIDC group mappings, and an API to add arbitrary Group members.
 - Namespace-wide and Group bindings through the Namespace policy API.
 - Shared team Namespaces.
 - Removal of deploy-time grants when an Agent stops using a source.
-- CLI and console support for Default users.
+- CLI support for Default users, and native admin UI setup or guided
+  provisioning from a member's console.
 
 ## Related
 
