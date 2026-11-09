@@ -355,6 +355,7 @@ test(
         authBaseURL: baseURL,
         installationName: `Production TUI ${suffix}`,
         apiClients: [{ namespace: system, podLabels: { app: "production-tui-proxy" } }],
+        channelDirectoryProxyUrl: rehearsal ? "http://198.51.100.25:3128" : undefined,
         metrics: rehearsal
           ? undefined
           : {

@@ -108,8 +108,17 @@ proof selection, diff cleanup, and requested independent review.
 Maintainers retain their review, merge, and approved bypass permissions. When
 updating an assigned existing PR, keep its head repository and branch.
 
-Before publishing, verify the authenticated GitHub account with
-`gh api user --jq .login` and confirm it matches the requesting contributor.
+Before publishing with a personal credential, verify the authenticated GitHub
+account with `gh api user --jq .login` and confirm it matches the requesting
+contributor. For an explicitly delegated GitHub App installation task, verify the
+operator's approved App, installation and repository scope instead. Use the
+[verified App bot identity](docs/guides/repository-credentials/openshell-git-push.md#3-push-the-first-empty-commit-through-openclaw)
+for repository-local Git author settings. The
+[`/user` endpoint](https://docs.github.com/en/rest/users/users#get-the-authenticated-user)
+does not support installation tokens; its refusal does not establish that the
+repository credential is invalid. App delegation permits only the explicitly
+assigned repositories, branches and PRs.
+
 Inspect the actual fetch and push URLs with `git remote -v`; preserve existing
 remotes. Remote names do not establish ownership or the intended destination.
 Fetch the intended base before comparing or refreshing a branch.
@@ -166,8 +175,10 @@ either in one PR or as linked PRs merged in dependency order. Core team members
 do not wait for an RFC response unless a specific decision or hold requires it.
 
 Use `node scripts/pr-status.ts PR_NUMBER` to inspect a PR before the final
-checks. The command is read-only; it does not establish merge readiness. After
-the applicable checks and review, set `PR_NUMBER` and `HEAD_SHA` to the observed
+checks. The command is read-only; it does not establish merge readiness. If the
+authenticated-user lookup is unavailable, it still reports the PR and checks,
+but marks the actor and account match unknown. Verify publishing authority
+separately. After the applicable checks and review, set `PR_NUMBER` and `HEAD_SHA` to the observed
 PR number and final head, then merge from this checkout:
 
 ```sh

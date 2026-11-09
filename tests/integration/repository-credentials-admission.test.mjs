@@ -1199,7 +1199,19 @@ test("Kubernetes admission supports dedicated Codex repositories for every profi
       const path = `${f.collection}/${agent.id}`;
       const deployed = await f.request("POST", `${path}/deploy`);
       assert.equal(deployed.status, 202, JSON.stringify(deployed));
-      assert.deepEqual(deployed.data.harness, { id: "codex", version: "1.0.0", mode: "dedicated" });
+      assert.deepEqual(deployed.data.harness, {
+        id: "codex",
+        version: "1.0.0",
+        mode: "dedicated",
+        overrides: {},
+        configuration: {
+          modelProvider: {
+            protocol: "openai-responses",
+            baseUrl: "https://api.openai.com/v1",
+            supportsStandaloneWebSearch: false,
+          },
+        },
+      });
       assert.deepEqual(deployed.data.repositoryCredentials.bindings, bindings);
       const historical = await f.request("GET", `${path}/revisions/${deployed.data.id}`);
       assert.deepEqual(historical.data.repositoryCredentials, deployed.data.repositoryCredentials);

@@ -197,6 +197,7 @@ export function bindPlatformUnitOfWork(
       "recordStandingExecution",
       "approveStanding",
       "revokeStanding",
+      "withdrawFinite",
 
       "findAttempt",
       "findBrokerReceipt",
@@ -234,6 +235,7 @@ export function bindPlatformUnitOfWork(
       "list",
       "findWork",
       "findWorkAttempt",
+      "hasRepositoryExecutionRedeployRequired",
       "hasOutstandingCredentialWithdrawalWork",
       "retryFailedAgentDeletion",
       "retryFailedNamespaceDeletion",

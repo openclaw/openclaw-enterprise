@@ -11,6 +11,7 @@ import test, { type TestContext } from "node:test";
 import { inspect } from "node:util";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
+  assertProtectedEqual,
   bindLocalRehearsalCluster,
   createRehearsalCustody,
   localRehearsalEnvironment,
@@ -22,6 +23,7 @@ import {
   assertDistinctControllers,
   assertReturnedAgents,
   assertRunningController,
+  measureUpgradeAvailability,
   returnedDatabaseConnections,
   returnedAgentSnapshot,
   selectRehearsalControllers,
@@ -223,6 +225,23 @@ test("release checkout admission rejects hidden edits and ignored execution inpu
   assert.equal((await git(["status", "--porcelain"])).trim(), "");
   await assert.rejects(selectRehearsalControllers(run, env), /only unmodified committed files/u);
   assert.equal(dockerCalls, 0);
+});
+
+test("protected rehearsal comparisons retain equality without exposing mismatched operands", () => {
+  const sentinel = `private-${randomUUID()}`;
+  for (const actual of [sentinel, { data: { nested: [sentinel] } }]) {
+    assert.doesNotThrow(() =>
+      assertProtectedEqual(actual, structuredClone(actual), "receipt changed"),
+    );
+    assert.throws(
+      () => assertProtectedEqual(actual, null, "receipt changed"),
+      (error: Error) => {
+        assert.ok(!inspect(error).includes(sentinel), "assertion exposed a protected operand");
+        assert.equal(error.message, "receipt changed");
+        return true;
+      },
+    );
+  }
 });
 
 test("migration check reports protected log failures without printing fixture credentials", async (t) => {
@@ -845,6 +864,373 @@ test(
     }
   },
 );
+
+test(
+  "upgrade availability observations retain failures and gaps without overlapping TLS requests",
+  { timeout: 20_000 },
+  async (t) => {
+    const tls = await harnessTlsFixture(t);
+    const key = `fixture-service-key-${randomUUID()}`;
+    const privateBytes = `private-response-${randomUUID()}`;
+    const observedRequests: {
+      method: string | undefined;
+      path: string | undefined;
+      key: unknown;
+    }[] = [];
+    let active = 0;
+    let peakActive = 0;
+    const timedOut = Promise.withResolvers<void>();
+    const server = createServer(tls, (incoming, response) => {
+      observedRequests.push({
+        method: incoming.method,
+        path: incoming.url,
+        key: incoming.headers["x-api-key"],
+      });
+      active++;
+      peakActive = Math.max(peakActive, active);
+      response.once("close", () => {
+        active--;
+      });
+      switch (observedRequests.length) {
+        case 2:
+          response.end(JSON.stringify({ data: { id: "other-installation" } }));
+          return;
+        case 3:
+          response.end(JSON.stringify({ data: { name: privateBytes } }));
+          return;
+        case 4:
+          response.writeHead(503);
+          response.end(JSON.stringify({ error: privateBytes }));
+          return;
+        case 5:
+          // Match the rehearsal proxy's response when its upstream connection fails.
+          response.writeHead(502);
+          response.end("Bad Gateway\n");
+          return;
+        case 6:
+          incoming.socket.destroy();
+          return;
+        case 7: {
+          // A response that keeps arriving must still hit the total request deadline.
+          response.writeHead(200);
+          response.write(" ");
+          const timer = setInterval(() => response.write(" "), 50);
+          response.once("close", () => {
+            clearInterval(timer);
+            timedOut.resolve();
+          });
+          return;
+        }
+        default:
+          response.end(JSON.stringify({ data: { id: "original-installation" } }));
+      }
+    });
+    const port = await listen(t, server);
+    const rawRequest = createProductionTuiRequest({
+      baseURL: `https://localhost:${port}`,
+      ca: tls.caBundle,
+      serviceKey: () => key,
+      secrets: [key],
+    });
+    let actionStarted = false;
+    const actionStartedAtRequest: boolean[] = [];
+    const request = (...args: Parameters<typeof rawRequest>) => {
+      actionStartedAtRequest.push(actionStarted);
+      return rawRequest(...args);
+    };
+    let evidence:
+      | {
+          samples: {
+            phase: string;
+            startedAt: string;
+            finishedAt: string;
+            elapsedMs: number;
+            gapMs: number | null;
+            outcome: string;
+            status: number | undefined;
+          }[];
+          upgradeSucceeded: boolean;
+        }
+      | undefined;
+    // Exercise the real HTTPS helper while the action succeeds despite failed
+    // observations. Measurement must not introduce a new availability gate.
+    const directory = await mkdtemp(join(tmpdir(), "oce-availability-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const result = await measureUpgradeAvailability(
+      request,
+      "original-installation",
+      directory,
+      async () => {
+        actionStarted = true;
+        await timedOut.promise;
+        return "upgrade completed";
+      },
+      async (details) => {
+        evidence = details as typeof evidence;
+      },
+    );
+    assert.equal(result, "upgrade completed");
+    assert.ok(evidence);
+    assert.equal(evidence.upgradeSucceeded, true);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(directory, "forward-api-availability.json"), "utf8")),
+      JSON.parse(JSON.stringify(evidence)),
+    );
+    assert.deepEqual(
+      {
+        observations: evidence.samples.map(({ phase, outcome, status }) => [
+          phase,
+          outcome,
+          status,
+        ]),
+        actionStartedAtRequest,
+      },
+      {
+        observations: [
+          ["before", "ok", 200],
+          ["during", "wrong-installation", 200],
+          ["during", "invalid-response", 200],
+          ["during", "http-error", 503],
+          ["during", "http-error", 502],
+          ["during", "request-error", undefined],
+          ["during", "timeout", 200],
+          ["after", "ok", 200],
+        ],
+        actionStartedAtRequest: [false, true, true, true, true, true, true, true],
+      },
+    );
+    assert.equal(evidence.samples[0]?.gapMs, null);
+    for (const sample of evidence.samples) {
+      assert.ok(Number.isFinite(Date.parse(sample.startedAt)));
+      assert.ok(Date.parse(sample.finishedAt) >= Date.parse(sample.startedAt));
+      assert.ok(sample.elapsedMs >= 0);
+    }
+    assert.ok((evidence.samples[6]?.elapsedMs ?? 0) >= 4_900);
+    assert.ok(evidence.samples.slice(2, 7).every(({ gapMs }) => gapMs !== null && gapMs >= 900));
+    assert.equal(peakActive, 1);
+    assert.equal(active, 0);
+    assert.ok(
+      observedRequests.every(
+        (item) => item.method === "GET" && item.path === "/installation" && item.key === key,
+      ),
+    );
+    assert.ok(!JSON.stringify(evidence).includes(key));
+    assert.ok(!JSON.stringify(evidence).includes(privateBytes));
+  },
+);
+
+test(
+  "upgrade availability retains incomplete observations when its process is killed",
+  { timeout: 20_000 },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-availability-interrupted-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const tls = await harnessTlsFixture(t);
+    const key = `fixture-service-key-${randomUUID()}`;
+    const privateBytes = `private-response-${randomUUID()}`;
+    let requests = 0;
+    const server = createServer(tls, (incoming, response) => {
+      assert.equal(incoming.method, "GET");
+      assert.equal(incoming.url, "/installation");
+      assert.equal(incoming.headers["x-api-key"], key);
+      requests++;
+      response.writeHead(requests === 1 ? 200 : 503);
+      response.end(
+        JSON.stringify(
+          requests === 1 ? { data: { id: "original-installation" } } : { error: privateBytes },
+        ),
+      );
+    });
+    const port = await listen(t, server);
+    const fixture = join(directory, "runner.mjs");
+    const snapshot = join(directory, "forward-api-availability.json");
+    const completed = join(directory, "completed");
+    await writeFile(
+      fixture,
+      `
+    import { writeFile } from "node:fs/promises";
+    import { createProductionTuiRequest } from ${JSON.stringify(new URL("../helpers/production-tui-request.ts", import.meta.url).href)};
+    import { measureUpgradeAvailability } from ${JSON.stringify(new URL("../helpers/staging-upgrade-return.ts", import.meta.url).href)};
+    const request = createProductionTuiRequest({
+      baseURL: ${JSON.stringify(`https://localhost:${port}`)},
+      ca: ${JSON.stringify(tls.caBundle)},
+      serviceKey: () => ${JSON.stringify(key)},
+      secrets: [${JSON.stringify(key)}],
+    });
+    await measureUpgradeAvailability(request, "original-installation", ${JSON.stringify(directory)},
+      () => new Promise(() => {}),
+      () => writeFile(${JSON.stringify(completed)}, "finished"));
+  `,
+    );
+    const { spawn } = await import("node:child_process");
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    const runner = spawn(process.execPath, [fixture], { env, stdio: "ignore" });
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve, reject) => {
+        runner.once("error", reject);
+        runner.once("close", (code, signal) => resolve({ code, signal }));
+      },
+    );
+    t.after(async () => {
+      runner.kill("SIGKILL");
+      await closed;
+    });
+    let persisted:
+      | { upgradeSucceeded: boolean | null; samples: { phase: string; outcome: string }[] }
+      | undefined;
+    const deadline = Date.now() + 10_000;
+    // Kill only after a completed failed HTTPS observation has reached disk.
+    // The pending action never returns; no finally block can rescue the evidence.
+    while (persisted?.samples.at(-1)?.phase !== "during") {
+      assert.ok(Date.now() < deadline, "no during-upgrade observation was persisted");
+      try {
+        persisted = JSON.parse(await readFile(snapshot, "utf8"));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw error;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    runner.kill("SIGKILL");
+    assert.deepEqual(await closed, { code: null, signal: "SIGKILL" });
+    const completedPrefix = persisted.samples;
+    const retained = await readFile(snapshot, "utf8");
+    persisted = JSON.parse(retained);
+    assert.ok(persisted);
+    assert.equal(persisted.upgradeSucceeded, null);
+    assert.deepEqual(persisted.samples.slice(0, completedPrefix.length), completedPrefix);
+    assert.equal(persisted.samples[0]?.phase, "before");
+    assert.equal(persisted.samples[0]?.outcome, "ok");
+    assert.ok(persisted.samples.length >= 2);
+    // Scheduling may allow more observations before SIGKILL takes effect.
+    assert.ok(
+      persisted.samples
+        .slice(1)
+        .every(({ phase, outcome }) => phase === "during" && outcome === "http-error"),
+    );
+    assert.equal((await stat(snapshot)).mode & 0o777, 0o600);
+    await assert.rejects(stat(completed), { code: "ENOENT" });
+    assert.ok(!retained.includes(key));
+    assert.ok(!retained.includes(privateBytes));
+  },
+);
+
+test("upgrade availability preserves action and evidence-write failures", async (t) => {
+  const tls = await harnessTlsFixture(t);
+  const key = `fixture-service-key-${randomUUID()}`;
+  const server = createServer(tls, (_incoming, response) => {
+    response.end(JSON.stringify({ data: { id: "original-installation" } }));
+  });
+  const port = await listen(t, server);
+  const request = createProductionTuiRequest({
+    baseURL: `https://localhost:${port}`,
+    ca: tls.caBundle,
+    serviceKey: () => key,
+    secrets: [key],
+  });
+  const directory = await mkdtemp(join(tmpdir(), "oce-availability-errors-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const upgradeFailure = new Error("upgrade fixture failed");
+  const recordFailure = new Error("evidence write failed");
+  let recorded = false;
+  // A synchronous action failure must still get a final observation. If the
+  // recorder also fails, preserve the original failure as the primary cause.
+  await assert.rejects(
+    measureUpgradeAvailability(
+      request,
+      "original-installation",
+      directory,
+      () => {
+        throw upgradeFailure;
+      },
+      async (details) => {
+        recorded = true;
+        const evidence = details as {
+          upgradeSucceeded: boolean;
+          samples: { phase: string; outcome: string }[];
+        };
+        assert.equal(evidence.upgradeSucceeded, false);
+        assert.equal(evidence.samples.at(-1)?.phase, "after");
+        assert.equal(evidence.samples.at(-1)?.outcome, "ok");
+        throw recordFailure;
+      },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.cause, upgradeFailure);
+      assert.deepEqual(error.errors, [upgradeFailure, recordFailure]);
+      return true;
+    },
+  );
+  assert.equal(recorded, true);
+  const failedSnapshot = JSON.parse(
+    await readFile(join(directory, "forward-api-availability.json"), "utf8"),
+  );
+  assert.equal(failedSnapshot.upgradeSucceeded, false);
+  assert.equal(failedSnapshot.samples.at(-1)?.outcome, "ok");
+
+  // An unusable destination fails each checkpoint while the real asynchronous
+  // action is still pending. Preserve its failure and avoid an unhandled observer rejection.
+  const unavailableDirectory = join(directory, "not-a-directory");
+  await writeFile(unavailableDirectory, "occupied");
+  for (const succeeded of [false, true]) {
+    await assert.rejects(
+      measureUpgradeAvailability(
+        request,
+        "original-installation",
+        unavailableDirectory,
+        async () => {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          if (!succeeded) {
+            throw upgradeFailure;
+          }
+        },
+        async () => {
+          throw recordFailure;
+        },
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof AggregateError);
+        const evidenceErrors = succeeded ? error.errors : error.errors.slice(1);
+        if (!succeeded) {
+          assert.equal(error.cause, upgradeFailure);
+          assert.equal(error.errors[0], upgradeFailure);
+        }
+        // Retain one checkpoint failure and the distinct final proof failure.
+        assert.equal(evidenceErrors.length, 2);
+        assert.equal(evidenceErrors[0].code, "ENOTDIR");
+        assert.equal(evidenceErrors[1], recordFailure);
+        return true;
+      },
+    );
+  }
+  await assert.rejects(
+    measureUpgradeAvailability(
+      request,
+      "original-installation",
+      directory,
+      async () => {
+        throw upgradeFailure;
+      },
+      async () => {},
+    ),
+    (error: unknown) => error === upgradeFailure,
+  );
+  await assert.rejects(
+    measureUpgradeAvailability(
+      request,
+      "original-installation",
+      directory,
+      async () => "complete",
+      async () => {
+        throw recordFailure;
+      },
+    ),
+    (error: unknown) => error === recordFailure,
+  );
+});
 
 test(
   "timed-out fixture commands reject success and terminate their subprocesses without exposing output",

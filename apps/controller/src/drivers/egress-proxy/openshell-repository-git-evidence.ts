@@ -74,7 +74,14 @@ export const openShellPreviewEnded = `EXISTS (
 /** Read the bundled observer's existing fenced route; no duplicate registration or adoption. */
 export const openShellGitRecipientEvidence: RepositoryGitRecipientEvidence = Object.freeze({
   join: `${openShellRoute} r USING(namespace_id, agent_id, revision_id)`,
-  released: `${protectedRepositoryGitInstallationSql} AND r.live_revision_id IS NOT NULL AND r.settlement='snapshot' AND r.blocked IS NULL`,
+  // Background preparation discovers sessions before the live transport starts.
+  // Historical evidence remains valid for verification and detach, but issuance requires
+  // online authorization or the explicit observed-hook installation preview.
+  released: `${protectedRepositoryGitInstallationSql}
+    AND ${admittedAuthorization} IN ('online-request','request-hook-observed')
+    AND (${recipient}->>'deliveryProfile' IS DISTINCT FROM 'github_installation'
+      OR ${admittedAuthorization}='request-hook-observed')
+    AND r.live_revision_id IS NOT NULL AND r.settlement='snapshot' AND r.blocked IS NULL`,
   observed: openShellObserved,
   installed: `${openShellObserved} AND observed->>'credentialState'='active' AND write_pending IS NULL
     AND desired->>'credentialState'='active'

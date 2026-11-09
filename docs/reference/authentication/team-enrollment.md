@@ -81,8 +81,10 @@ sign-in. Separately issued [ServicePrincipal API keys](service-api-keys.md) reta
 their own authority and require separate revocation. Recovery-only password
 sign-in can restrict ordinary accounts to their external providers.
 
-Group membership is immutable in the current platform. Disabling automatic
-enrollment stops future additions; it does not delete accounts or grants.
+Disabling automatic enrollment stops future additions and leaves existing
+accounts and grants intact. OCE has no API to remove an individual Group member.
+Removing a [configured Group](../authorization/default-users.md) also removes
+its memberships.
 
 Missing email permission, provider errors and timeouts refuse new enrollment;
 provider warnings identify the `email` step without logging addresses or tokens.

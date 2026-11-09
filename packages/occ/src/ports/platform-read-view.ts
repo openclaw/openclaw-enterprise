@@ -13,6 +13,7 @@ export function createPlatformReadView(
       "list",
       "findWork",
       "findWorkAttempt",
+      "hasRepositoryExecutionRedeployRequired",
       "hasOutstandingCredentialWithdrawalWork",
     ]),
     installations: bindRepository(repositories.installations, lifetime, [
