@@ -75,7 +75,7 @@ agentNativeAdmin:
 `auth.recoveryUserId` is required whenever OIDC or Google is enabled, including a
 Google-only install. It names an existing local password administrator; read it as that
 administrator from `data.user.id` of `GET /api/auth/session`. The chart passes it as
-`OCC_AUTH_GITHUB_RECOVERY_USER_ID`, which designates the recovery account for either
+`OCC_AUTH_RECOVERY_USER_ID`, which designates the recovery account for either
 provider. Rendering fails on incomplete Google values, a shared Secret, an HTTP base URL,
 native administration, an invalid CIDR, or an allowed domain that is not a DNS name. It
 also fails when `allowedDomains` is set without `auth.google.enabled`.
@@ -89,12 +89,12 @@ proxy rather than static CIDRs.
 The API reads these variables; see
 [production settings](../../reference/settings/production.md#google-sign-in):
 
-| Variable                           | Source                                                    |
-| ---------------------------------- | --------------------------------------------------------- |
-| `OCC_AUTH_GOOGLE_CLIENT_ID`        | `auth.google` Secret key `clientIdKey`                    |
-| `OCC_AUTH_GOOGLE_CLIENT_SECRET`    | `auth.google` Secret key `clientSecretKey`                |
-| `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS`  | `auth.google.allowedDomains`, comma-joined when non-empty |
-| `OCC_AUTH_GITHUB_RECOVERY_USER_ID` | `auth.recoveryUserId`                                     |
+| Variable                          | Source                                                    |
+| --------------------------------- | --------------------------------------------------------- |
+| `OCC_AUTH_GOOGLE_CLIENT_ID`       | `auth.google` Secret key `clientIdKey`                    |
+| `OCC_AUTH_GOOGLE_CLIENT_SECRET`   | `auth.google` Secret key `clientSecretKey`                |
+| `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS` | `auth.google.allowedDomains`, comma-joined when non-empty |
+| `OCC_AUTH_RECOVERY_USER_ID`       | `auth.recoveryUserId`                                     |
 
 ## Restrict hosted domains
 

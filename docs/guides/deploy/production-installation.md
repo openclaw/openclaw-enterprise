@@ -307,7 +307,7 @@ only after every check succeeds:
       (.api.clients | length > 0) and .gatewayRouting.enabled == true and
       .gatewayRouting.gatewayClassName != "" and
       .gatewayRouting.apiKeySecretName != "" and (.agentNativeAdmin.enabled == true or
-      .auth.github.enabled == true or .auth.google.enabled == true or
+      .auth.google.enabled == true or
       .auth.oidc.enabled == true)' \
       "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null &&
     OCC_VALIDATION_STEP='runtime settings' &&
