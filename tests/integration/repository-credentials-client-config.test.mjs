@@ -516,11 +516,11 @@ test("same-origin trust and canonical host conflicts prevent native configuratio
   const material = await createNativeClientMaterial(t, [{ opened, repositoryRef: "project" }]);
   // Shell quoting and Git config quoting are independent; run the emitted helper from a quoted path.
   const quotedRoot = join(material.root, "client 'quoted'");
-  const quotedDirectory = join(quotedRoot, "github/credentials/client");
-  await mkdir(join(quotedRoot, "credentials"), { recursive: true });
+  const quotedDirectory = join(quotedRoot, "github/access/client");
+  await mkdir(join(quotedRoot, "access"), { recursive: true });
   await cp(
     resolve("apps/controller/src/drivers/repo/access/client-contracts.ts"),
-    join(quotedRoot, "credentials/client-contracts.ts"),
+    join(quotedRoot, "access/client-contracts.ts"),
   );
   await cp(resolve("apps/controller/src/drivers/repo/github/access/client"), quotedDirectory, {
     recursive: true,

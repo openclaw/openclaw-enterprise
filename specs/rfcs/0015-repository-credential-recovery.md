@@ -41,7 +41,7 @@ their existing owners.
 
 The [GitHub Backend lifetime](../../apps/controller/src/drivers/repo/github/access/driver/lifetime.ts)
 sets a one-hour cleanup bound from response receipt. The
-[response observer evaluated for this proposal](https://github.com/openclaw/openclaw-enterprise/blob/8359f9fa580536321af64aa2c41445de9ae8ec55/apps/controller/src/drivers/repo/github/access/driver/acquisition-response.ts)
+[response observer evaluated for this proposal](https://github.com/openclaw/openclaw-enterprise/blob/8359f9fa580536321af64aa2c41445de9ae8ec55/apps/controller/src/drivers/repo/github/credentials/driver/acquisition-response.ts)
 captured a token before the response body was discarded. The
 [common lifecycle](../../apps/controller/src/drivers/repo/access/lifecycle.ts)
 measures the captured token's cleanup lifetime using monotonic time, separates
