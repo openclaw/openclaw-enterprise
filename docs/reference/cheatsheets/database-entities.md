@@ -602,6 +602,17 @@ Binds an ordinary browser session to its admitted account and method versions.
 - `version`
 - `method_version`
 
+### `human_authentication_results`
+
+Holds outstanding external sign-in results by Installation and attempt. Deleting the
+bound session removes its result. The application role can insert, read, and delete rows.
+
+- `installation_id`
+- `attempt_id`
+- `session_id`
+- `provider_id`
+- `expires_at`
+
 ### `human_authentication_recovery`
 
 Retains the fixed existing password recovery administrator for an Installation.

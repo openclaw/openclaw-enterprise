@@ -175,6 +175,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 73 && completedCount > 73) {
     return "preFiniteRepositorySessionWithdrawal";
   }
+  if (count === 74 && completedCount > 74) {
+    return "preHumanAuthenticationResults";
+  }
   if (count === completedCount) {
     return "completed";
   }
