@@ -16740,6 +16740,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             });
           }
         }
+        if (dedicated) {
+          // The worker bytecode cache can outgrow the Gateway's 64 MiB temporary volume.
+          variables.push({ name: "NODE_DISABLE_COMPILE_CACHE", value: "1" });
+        }
         if (configuration?.usesGatewayPasswordEnv === true) {
           variables.push(
             secret(OPENCLAW_GATEWAY_PASSWORD, runtime.transportSecretPrefix, GATEWAY_PASSWORD_KEY),
