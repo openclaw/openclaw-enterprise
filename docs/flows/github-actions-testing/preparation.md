@@ -89,7 +89,7 @@ For each Kubernetes fixture lane, `scripts/ci/prepare.mjs` creates one server an
 
 `scripts/ci/prepare.mjs:buildFixtureImage` reports separate engine-version and
 fixture-build stages. The engine probe uses the existing image-command
-limit (30 seconds by default); the fixture build has a ten-minute cap. These are execution limits, not
+limit (30 seconds by default); the fixture build has a 30-minute cap to allow slow builds. These are execution limits, not
 expected durations. Both commands also respect the remaining lane deadline less
 the test reserve, recalculated before each command. Without a valid lane deadline,
 the finite command limits still apply. Unsupported timer values are rejected.

@@ -113,7 +113,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         OPENCLAW_CI_COMMAND_KILL_GRACE_MS: version ? "3000" : "100",
         OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS: "2000",
         // Invalid deadlines still need a finite engine-probe limit. The build uses
-        // the real remaining lane budget rather than waiting for its ten-minute cap.
+        // the real remaining lane budget rather than waiting for its full command limit.
         CI_RUNNER_DEADLINE_MS: version ? "invalid" : String(Date.now() + 8_000),
       });
       const pidFile = join(dirname(commands.statePath), "fixture-command-pids");

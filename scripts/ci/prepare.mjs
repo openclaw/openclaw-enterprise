@@ -2256,11 +2256,11 @@ async function buildFixtureImage(statePath, state) {
   const image = `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}/fixture:local`;
   const resource = addResource(state, "image-tag", { name: image, owner: state.prefix });
   await writeState(statePath, state);
-  // The small fixture build remains bounded even outside a hosted lane.
+  // Allow slow fixture builds while keeping a finite cap outside hosted lanes.
   await run(
     "fixture-image-build",
     ["build", "--pull=false", "-t", image, fixtureDockerContext],
-    10 * 60_000,
+    30 * 60_000,
   );
   await markResourceReady(statePath, state, resource);
   return { image, resourceId: resource.id };
