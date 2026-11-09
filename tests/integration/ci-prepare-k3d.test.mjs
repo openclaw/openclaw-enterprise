@@ -18,6 +18,7 @@ import {
   writeFixtureCommand,
 } from "../helpers/ci-prepare-fixture.mjs";
 import { eachSettled } from "../helpers/child-processes.mjs";
+import { waitFor, waitUntil, within } from "../helpers/wait-for.mjs";
 import { bashString, startCommandServer } from "../helpers/fixture-command-server.mjs";
 
 test("native container preparation summaries", async (t) => {
@@ -201,6 +202,89 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       await assert.rejects(stat(commands.statePath), { code: "ENOENT" });
     });
   }
+
+  test(
+    "fixture preparation cancellation stops SIGINT-ignoring build descendants",
+    {
+      skip: process.platform === "win32" && "POSIX process-group cancellation",
+    },
+    async (t) => {
+      let cli;
+      let preparation;
+      let pidFile;
+      // Register before fixture cleanup so even the broken supervisor's leaked
+      // processes are stopped while their ownership record is still available.
+      t.after(async () => {
+        const pids = pidFile ? JSON.parse(await readFile(pidFile, "utf8").catch(() => "[]")) : [];
+        for (const pid of pids) {
+          if (processRunning(pid)) {
+            process.kill(pid, "SIGKILL");
+          }
+        }
+        if (cli?.exitCode === null && cli.signalCode === null) {
+          cli.kill("SIGKILL");
+        }
+        if (preparation) {
+          await within(preparation, "cancelled preparation teardown", 5000);
+        }
+        await waitUntil(
+          "cancelled test processes to stop",
+          () => pids.every((pid) => !processRunning(pid)),
+          1000,
+        );
+      });
+      const commands = await fixtureImageCommands(t, "success", "k3d-fixture-network");
+      pidFile = join(dirname(commands.statePath), "cancelled-build-pids");
+      await interceptFixtureDocker(t, commands, (args) => {
+        if (args[0] === "build" && args.at(-1).endsWith("/tests/fixtures/kubernetes")) {
+          const descendant = `
+          process.on("SIGINT", () => {});
+          require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify([process.ppid, process.pid]));
+          setTimeout(() => {}, 15000);
+        `;
+          const program = `
+          require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], { stdio: "inherit" });
+        `;
+          return `exec ${bashString(process.execPath)} -e ${bashString(program)}`;
+        }
+        if (args.slice(0, 3).join(" ") === "image rm -f" && args[3].endsWith("/fixture:local")) {
+          return "exit 0";
+        }
+        return undefined;
+      });
+      preparation = commands.prepare([], {
+        onSpawn: (child) => {
+          cli = child;
+        },
+      });
+      const pids = await waitFor(
+        "build descendant signal handler",
+        async () => {
+          const text = await readFile(pidFile, "utf8").catch(() => undefined);
+          return text === undefined ? undefined : JSON.parse(text);
+        },
+        5000,
+      );
+      assert.equal(pids.length, 2);
+      assert.ok(pids.every(processRunning));
+      cli.kill("SIGINT");
+      const result = await within(preparation, "SIGINT preparation cancellation", 5000);
+      assert.equal(result.error, undefined);
+      assert.equal(result.signal, "SIGINT");
+      // The public cancellation, not fixture cleanup or self-expiry, must stop
+      // even a descendant that ignores INT and retains the command's pipes.
+      await waitUntil(
+        "cancelled build processes to stop",
+        () => pids.every((pid) => !processRunning(pid)),
+        1000,
+      );
+      const state = await commands.readState();
+      assert.equal(state.env, undefined);
+      assert.equal(state.resources.find(({ kind }) => kind === "image-tag").status, "planned");
+      await assert.rejects(stat(commands.githubEnv), { code: "ENOENT" });
+      await commands.cleanupSuccessfully();
+    },
+  );
 
   test("fixture preparation refuses an exhausted image budget before probing Docker", async (t) => {
     const commands = await fixtureImageCommands(t, "success", "k3d-fixture-network", {
