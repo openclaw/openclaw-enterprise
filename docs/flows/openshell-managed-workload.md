@@ -1,7 +1,7 @@
 ---
 created: "2026-10-22"
-updated: "2026-11-06"
-last_updated_session: authoring-run/2bf18ba3-d9f8-4c8d-81ec-6c428bc3103b
+updated: "2026-11-09"
+last_updated_session: authoring-run/7bc6f6a8-db0f-4304-9729-3dabe2800ffd
 ---
 
 # Managed OpenShell workload flow
@@ -54,8 +54,7 @@ graph TD
   class C,E,F gate
 ```
 
-The same revision can be adopted after a lost response. The diagram omits that
-retry edge. A failed update readback does not reach `StartSandbox`.
+Retries can adopt the same revision after a lost response. Failed readback prevents start.
 
 ## Execution Trace
 
@@ -154,15 +153,27 @@ A failed policy read remains retryable; a confirmed mismatch closes the Git rout
 `OpenShellSandboxDriver.gitContinuity` supplies the exact model and runtime
 Provider names, current source policy, and an execution fingerprint from
 OpenShell's API. It rereads the Sandbox and checks its Namespace, Agent and
-revision ownership, Ready state, disabled automatic restart, main-process
-instance and start time. A replacement during the read cannot qualify. It does
-not discover namespaces or inspect Pods. The Git owner separately checks current
-Provider receipts, supervisor session, process and network identities. Reconnects
-can retain the same execution; replacements invalidate its proof. These checks
-trust [OpenShell's execution reports](../reference/repository-credentials/protected-openshell-git.md#execution-identity).
+revision ownership, Ready state, and stable main-process identity across its two
+reads. Its execution fingerprint excludes process identity. The Git owner separately
+verifies current Provider receipts, supervisor session, process and network identities.
+`openshell-expired-git.ts:launch` hashes caller annotations and workload configuration,
+excluding OpenShell's internal annotations, which change during runtime recovery.
+Recovery preserves revision authority but requires fresh readiness. These checks trust [OpenShell's execution reports](../reference/repository-credentials/protected-openshell-git.md#execution-identity).
 `previewPolicyAndRecipient` compares exact Provider membership without requiring
 attachment order and checks the effective policy against current source policy.
-Startup, subsequent Git checks and expiry cleanup use this API-based verification.
+
+`openshell-git-installation.ts:observeOpenShellGitInstallation` adopts fresh runtime
+evidence only during reconciliation. For mandatory online Git, it clears the old
+launcher's acknowledgment after recovery. `openshell-git-runtime.ts:observeHeldPreview`
+also handles a restarted Harness child in the same supervisor. It requires a fresh
+authenticated denial before `releasePreview` signs and acknowledges that startup.
+`persistSnapshot` keeps equivalent observations synchronized with the launcher's
+acknowledgment. The durable route records release intent before sending; uncertain
+release is not replayed. Automatic Harness recovery requires the original OCE
+worker. A replacement worker closes the Git route and requires a new revision;
+it does not restore the saved launcher acknowledgment. The immutable egress receipt
+identifies the Sandbox execution, Provider attachment and admitted configuration. Explicit stop withdraws
+the binding, so recovery cannot reopen an ended execution.
 
 The Driver then sends `SandboxUpdates.UpdateSandbox` with the latest observed
 resource version and verifies the workload and latest policy separately. OpenShell
@@ -251,9 +262,7 @@ change the successor. The successor restores its complete policy before start.
 `KubernetesComputeDriver.deleteAgentRuntimeCredentials` resolves the tenant's
 Kubernetes namespace name and calls `ManagedOpenShellHarnessRuntime.deleteAgent`.
 It deletes the owned Sandbox and runtime Provider through OpenShell before shared
-Gateway cleanup. Failure leaves final Agent deletion incomplete. Runtime stop
-calls Sandbox cleanup and retains storage; final deletion alone releases it. Namespace cleanup removes
-unused runtime profiles and the Workspace. No Harness PVC call is made by OCE.
+Gateway cleanup. Failure leaves final Agent deletion incomplete. Namespace cleanup removes unused runtime profiles and the Workspace. OCE makes no Harness PVC calls.
 
 #### Stop and replacement ordering
 
@@ -291,6 +300,14 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-09 20:15: Retain Harness recovery and require a new revision after worker replacement in the accompanying rebase. (authoring-run/7bc6f6a8-db0f-4304-9729-3dabe2800ffd - f8a7f049153b93196473fd86b53f0f3593dde82f)
+
+- 2026-11-09 14:46: Synchronize launcher acknowledgment across equivalent readiness observations. (authoring-run/bf495f0e-2473-4a6c-a712-b7fd8e42c0ac - 8e64932163a4fb6a78cf24bcf0bf538c9e9f9039)
+
+- 2026-11-09 13:51: Exclude internal runtime metadata from the retained launch hash in the accompanying recovery fix. (authoring-run/32967952-c0bb-49f9-9a39-d1ee631ec86c - 8e64932163a4fb6a78cf24bcf0bf538c9e9f9039)
+
+- 2026-11-06 23:38: Separate automatic Harness recovery from execution authorization in the accompanying change. (authoring-run/dc561fff-7187-4fb0-86c0-83cb8dbcf6ab - 8e64932163a4fb6a78cf24bcf0bf538c9e9f9039)
 
 - 2026-11-06 21:31: Permit changed Git scope after predecessor retirement in the accompanying implementation. (authoring-run/2bf18ba3-d9f8-4c8d-81ec-6c428bc3103b - 1c0ef14084e7bbf5f316e6612e65c87202acfc13)
 

@@ -7859,18 +7859,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
         repositoryConsumer?.role === "agent" ? repositoryMaterial : undefined,
         nativeRuntime,
         undefined,
-        { ...codexLaunch, withNode: node !== undefined, workspaceSetup: workspaceSetup !== undefined },
+        {
+          ...codexLaunch,
+          withNode: node !== undefined,
+          workspaceSetup: workspaceSetup !== undefined,
+        },
         this.scratchAdmission(revision).binding,
       );
       if (node !== undefined) {
         if (nativeRuntime === undefined) {
-          this.addWorkspaceNode(
-            agentDeployment,
-            node.name,
-            node.ca,
-            revision,
-            nodeSetupFile,
-          );
+          this.addWorkspaceNode(agentDeployment, node.name, node.ca, revision, nodeSetupFile);
         } else {
           this.addNativeWorker(agentDeployment, node.name, node.ca, workspaceSetup);
         }
@@ -12006,7 +12004,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
                         : "/home/node/workspace",
                     )) +
                   (nativeRuntime === undefined
-                    ? codexLaunchEntrypoint(input.codexLaunch ?? { providerOwned: input.provider, protected: false })
+                    ? codexLaunchEntrypoint(
+                        input.codexLaunch ?? { providerOwned: input.provider, protected: false },
+                      )
                     : NATIVE_WORKER_ENTRYPOINT),
               ),
             ],
@@ -12081,7 +12081,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
       credentialAttachments: attachments,
       workspaceMounts: [
         ...this.selectedHarness.workspace.mounts(launch, agentId),
-        ...(scratch === undefined ? [] : [{ claimName: scratch.claimName, mountPath: "/sandbox/scratch", subPath: "scratch", readOnly: false }]),
+        ...(scratch === undefined
+          ? []
+          : [
+              {
+                claimName: scratch.claimName,
+                mountPath: "/sandbox/scratch",
+                subPath: "scratch",
+                readOnly: false,
+              },
+            ]),
       ],
     };
   }
@@ -12760,7 +12769,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       readonly setupFile: boolean;
       readonly provider: boolean;
       readonly codexLaunch?: CodexLaunch | undefined;
-      },
+    },
   ): T {
     const defaults = asRecord(asRecord(input.revision?.configuration.agents)?.defaults);
     const environment: SandboxEnvironmentVariable[] = [

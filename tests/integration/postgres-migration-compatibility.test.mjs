@@ -2621,6 +2621,7 @@ test(
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
         const rollbackTag = [
+          [83, "GRANT"],
           [82, "CREATE TRIGGER"],
           [81, "GRANT"],
           [79, "ALTER TABLE"],

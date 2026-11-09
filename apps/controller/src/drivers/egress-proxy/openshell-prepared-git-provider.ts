@@ -70,6 +70,15 @@ export type OpenShellPreparedGitGeneration = Pick<
 
 /** Exact current installation identity; timestamps and sequence are not identity fields. */
 export interface OpenShellPreparedGitInstalled extends RepositoryGitRecipient {
+  readonly processInstanceId: string;
+  readonly networkInstanceId: string;
+  /** Current launcher evidence for mandatory online authorization, persisted with its runtime. */
+  readonly enrollment?: {
+    readonly configurationId: string;
+    readonly bootstrapRevision: string;
+    readonly hook?: NonNullable<RepositoryGitRecipient["observedHook"]>;
+    readonly release: "held" | "sending" | "acknowledged";
+  };
   readonly workspace: string;
   readonly sandbox: string;
   readonly sandboxId: string;
@@ -437,6 +446,11 @@ export class OpenShellPreparedGitProvider {
       refuse();
     }
     const expired = !standing && generation.credentialState === "active" && expires <= Date.now();
+    if (this.scope.observedHookPreview && !expired && generation.credentialState === "active") {
+      // The route store confirmed the earlier write. Reconcile creates an OBSERVE receipt
+      // for current readiness; adoption never sends the credential UPDATE again.
+      this.refreshReceipt = { version: generation.resourceVersion };
+    }
     return this.bindingForGeneration({
       providerId: generation.providerId,
       profileVersion: generation.profileVersion,

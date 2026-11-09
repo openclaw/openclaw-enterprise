@@ -46,10 +46,15 @@ export const protectedRepositoryGitInstallationSql = `
     .map((key) => `nullif(p.installation#>>'{enforcement,${key}}', '') IS NOT NULL`)
     .join(" AND ")}
   AND ${repositoryGitRecipientFields
-    .map(
-      (key) =>
-        `nullif(r.observed->>'${key}', '') = p.installation#>>'{enforcement,repositoryGitRecipient,${key}}'`,
-    )
+    .map((key) => {
+      const exact = `nullif(r.observed->>'${key}', '') = p.installation#>>'{enforcement,repositoryGitRecipient,${key}}'`;
+      return key === "processInstanceId" || key === "networkInstanceId"
+        ? `(CASE WHEN ${admittedAuthorization}='online-request' AND NOT (${recipient} ? '${key}')
+              THEN nullif(r.observed#>>'{enrollment,configurationId}', '') = p.installation#>>'{enforcement,configurationId}'
+                AND p.installation#>>'{enforcement,instanceId}' = r.observed->>'sandboxId'
+              ELSE ${exact} END)`
+        : exact;
+    })
     .join(" AND ")}`;
 
 const openShellRoute = "occ.credential_deliveries";

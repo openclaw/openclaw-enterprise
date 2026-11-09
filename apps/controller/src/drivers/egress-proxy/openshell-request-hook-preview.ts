@@ -199,22 +199,24 @@ export async function previewPolicyAndRecipient({
   if (!executionIdentity) {
     return;
   }
-  // Omit only the three fields necessarily changed by installing the token. Everything else,
-  // including process, network, supervisor session, loaded effective policy, configuration
-  // instance, OpenShell execution ownership, and admitted extension registration, must stay.
+  // Credential rotation preserves the recipient. Mandatory online authorization also
+  // preserves it across process recovery: current runtime readiness was checked above.
+  // The observed-only preview still pins its original process and configuration instance.
   const {
     providerEnvRevision: _env,
     providerResourceVersion: _version,
     credentialState: _state,
     observedHook: _hook,
+    enrollment: _enrollment,
     ...identity
   } = o;
+  const { processInstanceId, networkInstanceId, supervisorSessionId, ...executionRecipient } =
+    identity;
   return createHash("sha256")
     .update(
       JSON.stringify([
-        identity,
-        started,
-        admission.instance_id,
+        mandatory ? executionRecipient : identity,
+        ...(mandatory ? [] : [started, admission.instance_id]),
         wirePolicy(policy),
         wirePolicy(service),
         executionIdentity,
@@ -242,6 +244,25 @@ export class ObservedHookPreview {
   /** A local deadline to stop and retire, never a lease or an authorization deadline. */
   verifyInstallBy?: number | undefined;
   release?: "sending" | "acknowledged";
+
+  /** A new current runtime needs its own denial and release. Authority and configuration stay. */
+  recover(): void {
+    delete this.armed;
+    delete this.hook;
+    delete this.release;
+    delete this.modelOperation;
+  }
+
+  enrollment(): OpenShellPreparedGitInstalled["enrollment"] {
+    return this.mandatory && this.recipient && this.bootstrapRevision
+      ? {
+          configurationId: this.recipient,
+          bootstrapRevision: this.bootstrapRevision,
+          ...(this.hook && { hook: this.hook }),
+          release: this.release ?? "held",
+        }
+      : undefined;
+  }
 
   private modelOperation?: { revision: string; id?: string; complete?: true };
 

@@ -27,7 +27,6 @@ import {
 } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import {
-  createKubernetesComputeDriver,
   KubernetesComputeDriver,
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
@@ -38,16 +37,11 @@ import {
   NATIVE_WORKER_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import {
-  nodeProgramArguments,
-  withoutLineComments,
-} from "../../apps/controller/src/drivers/compute/node-program.ts";
-import { OpenShellSandboxDriver, workspaceLabels } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import {
-  assertNoManagedMcpRouteOverlap,
-  managedMcpNetwork,
-  managedMcpProviderEndpoint,
-} from "../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts";
+  OpenShellSandboxDriver,
+  workspaceLabels,
+} from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { openShellEgressConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
@@ -420,7 +414,6 @@ async function assertGitExecutionContinuity(driver, context, box, managed) {
     ["name", ["another-sandbox"]],
     ["workspace", ["another-workspace"]],
     ["phase", ["SANDBOX_PHASE_STOPPED", "SANDBOX_PHASE_PROVISIONING"]],
-    ["restartCount", [1]],
     ["mainProcessInstanceId", [undefined]],
     ["mainProcessStartedAt", [undefined, "invalid"]],
   ]) {
@@ -438,13 +431,11 @@ async function assertGitExecutionContinuity(driver, context, box, managed) {
     const previous = structuredClone(box);
     box[key] = value;
     assert.equal(await read(previous), undefined, "replacement during observation cannot qualify");
-    assert.notEqual(await read(), original, "a replacement execution changes the startup proof");
+    assert.equal(await read(), original, "automatic recovery retains the same execution authority");
     box[key] = previous[key];
   }
-  const restartPolicy = box.spec.restart_policy;
-  box.spec.restart_policy = "SANDBOX_RESTART_POLICY_ON_FAILURE";
-  assert.equal(await read(), undefined, "automatic restart must remain disabled");
-  box.spec.restart_policy = restartPolicy;
+  assert.equal(box.spec.restart_policy, "SANDBOX_RESTART_POLICY_ALWAYS");
+  box.restartCount = 1;
   assert.equal(await read(), original);
 }
 
@@ -859,9 +850,7 @@ test("managed Harness rendering submits no PVC and keeps the bootstrap outside p
     request === undefined ? undefined : storedSandbox(request, { phase, resourceVersion: "7" });
   client.getService = async () =>
     harnessService(request.name, "", "http://codex.example.test:8080/");
-  const { context, revision, requirements } = runtimeSandboxFixture(driver, {
-    nodeSetupUrl: () => "ws://gateway.example.test/node",
-  });
+  const { context, revision, requirements } = runtimeSandboxFixture(driver);
   requirements.environment = requirements.environment.filter(
     ({ name }) => name !== "OPENCLAW_NODE_CA_PEM",
   );
@@ -2669,15 +2658,6 @@ for (const [harnessId, workspaceMode] of [
     const { context, revision, requirements, prepared } = runtimeSandboxFixture(driver, {
       harnessId,
     });
-    if (harnessId === "codex") {
-      requirements.command = harnessRuntimeCommand(PROTECTED_CODEX_WITH_NODE_ENTRYPOINT);
-      requirements.loginMode = "chatgptAuthTokens";
-      requirements.credentialAttachments[0].externalChatgptAuth = {
-        accessTokenPlaceholder: `openshell:resolve:env:s${"1".repeat(64)}_CODEX_ACCESS_TOKEN`,
-        accountId: "account",
-        planType: "business",
-      };
-    }
     if (managed) {
       // Managed storage has no approved PVC mounts, including on setup retries.
       requirements.workspaceMounts = [];
@@ -4413,10 +4393,13 @@ test(
           });
           assert.equal(trust.status, 0, trust.stderr);
           assert.equal(trust.stdout.trim(), sandbox.options.kubernetes.sandboxDataMount.mountPath);
-          await subtest.test("Git negotiates shared history before pushing", async (gitTest) => {
-            await verifyOpenShellPushNegotiation(gitTest, gitEnvironment);
-          });
-          await subtest.test(
+          await protectedTest.test(
+            "Git negotiates shared history before pushing",
+            async (gitTest) => {
+              await verifyOpenShellPushNegotiation(gitTest, gitEnvironment);
+            },
+          );
+          await protectedTest.test(
             "Git trusts only the selected root-owned workspace",
             imageTestOptions,
             async () => {

@@ -2,7 +2,9 @@
 
 Run this scenario after deploying matching OCE API, worker and runtime images
 with managed OpenShell replacement support. It exercises unchanged settings and
-repository additions and removals through the real Agent API and worker. It does not change installation
+repository additions and removals through the real Agent API and worker. It also
+terminates the run-owned Harness supervisor through OpenShell exec and verifies
+automatic recovery under the same revision. It does not change installation
 configuration or write to GitHub.
 
 ## Prepare the installation
@@ -91,7 +93,8 @@ node --test tests/integration/qa-matrix-real.test.mjs
 ```
 
 The scenario creates two Agents with repository A selected. It fetches A, denies B,
-writes a workspace marker, and deploys an unchanged revision. It then adds B,
+writes a workspace marker, and verifies recovery with the same Sandbox and revision,
+allowed and denied Git reads, and successful model turns. It then deploys an unchanged revision and adds B,
 deploys, removes A, and deploys again. Each replacement requires the same Sandbox
 ID, retained files, a new middleware binding, removal of the old Provider/profile,
 and successful Git fetches and model turns. Removed or unselected repositories
@@ -99,7 +102,7 @@ must be denied. The peer keeps access to A and cannot access B. Cleanup deletes
 test-created Agents and IAM resources and preserves the prepared model source
 and its Secret. The scenario does not change registry permissions or test Git writes.
 
-On 2026-11-06, the expanded scenario passed on the operator-approved cluster
+On 2026-11-06, the repository-change checks passed on the operator-approved cluster
 with these deployed images:
 
 - Controller: `quay.io/gordons/oce-controller@sha256:4c702414978b6e01331937207b6f321bfc1a97928beec753350793793541bc91`
@@ -117,7 +120,24 @@ The worker needed no Pod access in OpenShell-managed namespaces.
 Both repository grants used the same read-only permission map. Live replacement
 of registry permissions and Git writes remain unverified.
 
+On 2026-11-09, the complete scenario passed, including automatic recovery with
+the same Sandbox and revision, allowed and denied Git access, and model turns
+for the recovered Agent and its peer. Unchanged redeployment, repository addition
+and removal, retained files, retired Providers and peer isolation also passed.
+The run used the same OpenShell Gateway image as above, with:
+
+- Controller: `quay.io/gordons/oce-controller@sha256:1d9ba7b4daa4f71e30fa22009d0430c6247f33e42ffa258ae3fd6d823001bb53`
+- Runtime: `quay.io/gordons/oce-runtime@sha256:ce010a3c334db23875ca47746baa4532de6ae77e494fc6a1aea0002d81667662`
+
+This run verified both recovery fixes: changing internal OpenShell annotations
+do not invalidate the retained launch, and repeated equivalent readiness reads
+preserve the installed launcher's acknowledgment. The test waits for an
+authenticated Harness WebSocket before submitting each model turn because Git
+can become available before Codex finishes startup. The scenario and parent test
+passed with no skips. Cleanup restored the original API inventory and removed
+test-owned Pods and PVCs.
+
 Local tests cover operator and managed execution without Kubernetes access,
 ownership refusals, execution changes, repository additions/removals, changed
 permission maps, interrupted cleanup and denial of the retired middleware binding with controlled OpenShell responses. The live scenario
-does not inject failures or restart the worker.
+does not restart the worker.

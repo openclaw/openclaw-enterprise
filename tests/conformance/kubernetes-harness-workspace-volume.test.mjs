@@ -170,17 +170,41 @@ test("scratch requirements keep the durable workspace and exact admitted writabl
     mountPath: "/sandbox/scratch",
     readOnly: false,
   };
-  assert.deepEqual(requirements.workspaceMounts.find(({ mountPath }) => mountPath === "/sandbox/scratch"), expected);
-  assert.equal(requirements.workspaceMounts.filter(({ claimName }) => claimName === scratch.claimName).length, 1);
-  assert(requirements.workspaceMounts.some(({ mountPath, claimName }) => mountPath === "/home/node/workspace" && claimName !== scratch.claimName));
-  assert.deepEqual(pod.volumes.find(({ name }) => name === "openclaw-scratch"), {
-    name: "openclaw-scratch",
-    persistentVolumeClaim: { claimName: scratch.claimName },
-  });
-  assert.deepEqual(pod.containers[0].volumeMounts.find(({ name }) => name === "openclaw-scratch"), {
-    name: "openclaw-scratch", mountPath: expected.mountPath, subPath: expected.subPath, readOnly: false,
-  });
-  assert(!driver.sandboxRequirements(launch, owner.agentId).workspaceMounts.some(({ mountPath }) => mountPath === "/sandbox/scratch"));
+  assert.deepEqual(
+    requirements.workspaceMounts.find(({ mountPath }) => mountPath === "/sandbox/scratch"),
+    expected,
+  );
+  assert.equal(
+    requirements.workspaceMounts.filter(({ claimName }) => claimName === scratch.claimName).length,
+    1,
+  );
+  assert(
+    requirements.workspaceMounts.some(
+      ({ mountPath, claimName }) =>
+        mountPath === "/home/node/workspace" && claimName !== scratch.claimName,
+    ),
+  );
+  assert.deepEqual(
+    pod.volumes.find(({ name }) => name === "openclaw-scratch"),
+    {
+      name: "openclaw-scratch",
+      persistentVolumeClaim: { claimName: scratch.claimName },
+    },
+  );
+  assert.deepEqual(
+    pod.containers[0].volumeMounts.find(({ name }) => name === "openclaw-scratch"),
+    {
+      name: "openclaw-scratch",
+      mountPath: expected.mountPath,
+      subPath: expected.subPath,
+      readOnly: false,
+    },
+  );
+  assert(
+    !driver
+      .sandboxRequirements(launch, owner.agentId)
+      .workspaceMounts.some(({ mountPath }) => mountPath === "/sandbox/scratch"),
+  );
 });
 
 function scratchCompute(bindings) {

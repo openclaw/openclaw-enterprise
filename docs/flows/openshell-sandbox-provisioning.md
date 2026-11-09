@@ -8,9 +8,8 @@ last_updated_session: "authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e"
 
 ## Overview
 
-Kubernetes Compute provisions dedicated Codex/OpenClaw Harnesses through
-operator-mode OpenShell, using [credential sources](credential-source-lifecycle.md).
-See the [managed lifecycle](openshell-managed-workload.md) for managed Workspaces.
+This flow covers operator-mode provisioning. See [managed provisioning](openshell-managed-workload.md)
+for managed Workspaces.
 
 ## Entry Points
 
@@ -162,12 +161,10 @@ matching name, OCC Namespace ID, managed-by labels and active phase. Conflicts f
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
 `harnessLaunch` prepares inputs; `sandboxRequirements` adds operator-mode PVC
-mounts. Initially, the Agent Service stays inactive and Gateway transport stays
-fail-closed. Attachments and provider/Sandbox creation await Gateway readiness
-and its Agent-owned setup Secret reference. At deployment, `validateHarnessAuth`
-rejects dedicated OpenShell projected identity, naming
-`servicePrincipalCredentials.mode`: OpenShell cannot preserve the Agent
-ServiceAccount/token.
+mounts. The Agent Service remains inactive; Gateway transport fails closed.
+Attachments and provider/Sandbox creation await Gateway readiness and the Agent-owned
+setup Secret. `validateHarnessAuth` rejects projected identity at
+`servicePrincipalCredentials.mode`: OpenShell cannot preserve the Agent ServiceAccount/token.
 
 For `credential_source`, Compute uses the catalog login mode without a model
 Secret; `requirements.credentialAttachments` carries version and
@@ -176,17 +173,15 @@ Secret; `requirements.credentialAttachments` carries version and
 from its Agent transport Secret. Compute renders the admitted plugin snapshot as
 `runtime.json` and `config.toml`, removing their ConfigMap environment paths.
 
-`OpenShellSandboxDriver.configureAgent` sets full access/user review for all
-login modes and removes `appServer.networkProxy`.
+`configureAgent` sets full access/user review across login modes and removes `appServer.networkProxy`.
 `deploy/runtime/openclaw-codex-full-access-profile.patch` sends the endpoint's
 `:danger-full-access` profile for threads/turns; constrained threads fail
-before a turn. First Agent warns: prior PAT `workspace-write` versions break
-shell tools; `--replace-key` deploys current policy.
+before a turn. First Agent warns that PAT `workspace-write` breaks shell tools; `--replace-key` deploys current policy.
 OpenShell blocks nested bubblewrap; model readiness does not prove shell execution.
 
 `KubernetesComputeDriver.admitRevision` persists the launch selection.
 `codexLaunchEntrypoint` selects by revision, authentication, protection and workspace node.
-Existing revisions retain encoding. New PAT/workspace setup children are packed once on first use.
+Existing revisions retain encoding; new PAT/workspace setup children are packed on first use.
 
 For a [PAT source](../reference/drivers/openshell-credential-gateway.md#source-type-catalog),
 `prepareHarnessAuth` selects native login. Startup verifies login using a placeholder in private `auth.json`.
@@ -408,7 +403,7 @@ ClusterIP, advertised `ws://*.openshell.localhost:8080/` route, and inactive
 direct Service. Native model proof requires Landlock.
 
 `tests/integration/runtime-image-node-state-permissions.test.ts` checks packaged
-setup, retry and restart under setgid parents.
+setup, retry and restart under setgid parents. It excludes Kubernetes and model execution.
 
 ## Related docs
 
