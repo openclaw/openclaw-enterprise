@@ -1,3 +1,4 @@
+import { isGatewayCompletionId } from "../../scripts/first-agent-model.mjs";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -470,6 +471,28 @@ function sanitizedPluginProofWorkerEvents(events, revisionId) {
     }));
 }
 
+// Only these locally defined outcomes may leave the Gateway reader.
+const replyFailures = new Set([
+  "command",
+  "timeout",
+  "session_missing",
+  "binding",
+  "transcript",
+  "prompt_missing",
+  "answer_missing",
+  "source",
+  "run",
+  "integrity",
+  "continuity",
+  "sequence",
+]);
+export class ConversationReplyError extends Error {
+  constructor(reason) {
+    super(reason === "continuity" ? "Conversation mismatch." : "Conversation reply unavailable.");
+    this.reason = replyFailures.has(reason) ? reason : "transcript";
+  }
+}
+
 const sessionEvidenceScript = String.raw`
   const { DatabaseSync } = require("node:sqlite");
   const { isDeepStrictEqual } = require("node:util");
@@ -545,7 +568,10 @@ const sessionEvidenceScript = String.raw`
       process.exit(0);
     }
     if (conversationReply) {
-      const fail = () => { throw new Error("Conversation reply unavailable."); };
+      const fail = (reason = "integrity") => {
+        process.stdout.write(JSON.stringify({ failure: reason }));
+        process.exit(0);
+      };
       const id = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
       if (!id(session.current_session_id)) fail();
       let storedRemaining = 1048576, decodedRemaining = 1048576;
@@ -578,22 +604,30 @@ const sessionEvidenceScript = String.raw`
         return { seq: row.seq, message: event.type === "message" ? event.message : null };
       });
       const prompt = messages[0];
-      if (prompt?.message?.role !== "user" || !textOf(prompt.message.content).includes(marker)) fail();
+      if (prompt?.message?.role !== "user" || !textOf(prompt.message.content).includes(marker)) fail("prompt_missing");
       const source = prompt.message.__openclaw;
       if (source?.mirrorOrigin !== "codex-app-server" || typeof source.mirrorIdentity !== "string" ||
-          !source.mirrorIdentity.endsWith(":prompt")) fail();
-      const nativeTurn = source.mirrorIdentity.slice(0, -":prompt".length);
+          !/^[A-Za-z0-9_-]+:prompt$/.test(source.mirrorIdentity) ||
+          typeof source.mirrorSourceFingerprint !== "string" || !source.mirrorSourceFingerprint) fail("source");
+      const runId = process.argv[10];
+      if (source.runId !== runId) fail("run");
       const replies = messages.filter(({message}) => message?.role === "assistant" && textOf(message.content).includes(marker));
       const answer = replies[replies.length - 1];
       const meta = answer?.message.__openclaw;
-      const direct = meta?.mirrorIdentity === nativeTurn + ":assistant";
       // The pinned Codex mirror writer assigns this key to the assistant message
       // at write time. The session's current thread binding alone cannot attribute a reply.
       const expectedKey = "codex-app-server:" + process.argv[9] + ":" + meta?.mirrorIdentity;
-      if (!nativeTurn || !answer || (!direct || meta?.mirrorOrigin !== "codex-app-server" || !meta.mirrorSourceFingerprint || answer.message.idempotencyKey !== expectedKey) || answer.seq <= prompt.seq ||
-          answer.message.stopReason !== "stop" || meta?.runTerminal === false ||
-          (meta?.mirrorOrigin !== undefined && meta.mirrorOrigin !== "codex-app-server") ||
-          (source.runId !== undefined && meta?.runId !== undefined && meta.runId !== source.runId) ||
+      if (!answer) fail("answer_missing");
+      // A recovered logical run keeps its admitted prompt and can finish on a new native turn.
+      if (meta?.mirrorOrigin !== "codex-app-server" || typeof meta.mirrorIdentity !== "string" ||
+          !/^[A-Za-z0-9_-]+:assistant$/.test(meta.mirrorIdentity) ||
+          typeof meta.mirrorSourceFingerprint !== "string" || !meta.mirrorSourceFingerprint ||
+          answer.message.idempotencyKey !== expectedKey) fail("source");
+      if (meta.runId !== runId || meta.runTerminal !== true) fail("run");
+      if (answer.seq <= prompt.seq ||
+          answer.message.stopReason !== "stop" ||
+          messages.some(({message, seq}) => seq < answer.seq && message?.role === "assistant" &&
+            message.__openclaw?.runId === runId && message.__openclaw.runTerminal === true) ||
           messages.some(({message}, i) => i > 0 && message?.role === "user") ||
           messages.some(({message, seq}) => message?.isError === true || message?.stopReason === "error" ||
             (seq > answer.seq && message?.role === "assistant")) ||
@@ -1867,6 +1901,10 @@ export function createNativePluginAssertions({
       const state = new DatabaseSync("/home/node/.openclaw/state/openclaw.sqlite", { readOnly: true });
       try {
         const session = sessions.prepare("SELECT current_session_id FROM session_nodes WHERE session_key = ?").get(sessionKey);
+        if (qa && !session) {
+          process.stdout.write('{"failure":"session_missing"}');
+          process.exit(0);
+        }
         assert.ok(session, "the original OC session must exist");
         const key = "session-key:main:" + createHash("sha256").update(sessionKey.trim()).digest("base64url");
         const bindingColumn = qa ? "CASE WHEN length(CAST(value_json AS BLOB)) <= 65536 THEN value_json END AS value_json" : "value_json";
@@ -1892,8 +1930,8 @@ export function createNativePluginAssertions({
     return JSON.parse(execution.stdout);
   }
 
-  async function readConversationReply(agent, { sessionKey, turnMarker, previous } = {}) {
-    const unavailable = () => new Error("Conversation reply unavailable.");
+  async function readConversationReply(agent, { sessionKey, turnMarker, runId, previous } = {}) {
+    let reading = "binding";
     let before;
     let after;
     let reply;
@@ -1919,9 +1957,10 @@ export function createNativePluginAssertions({
         !/^FIRST_AGENT_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
           turnMarker,
         ) ||
+        !isGatewayCompletionId(runId) ||
         (previous !== undefined && !valid(previous))
       ) {
-        throw unavailable();
+        throw new ConversationReplyError("integrity");
       }
       prior = previous === undefined ? undefined : { ...previous };
       const selected = Object.freeze({
@@ -1931,8 +1970,11 @@ export function createNativePluginAssertions({
       });
       before = await readCodexSessionBinding(selected, { sessionKey, conversationReply: true });
       if (!id(before?.sessionId) || !id(before?.threadId)) {
-        throw unavailable();
+        throw new ConversationReplyError(
+          before?.failure === "session_missing" ? "session_missing" : "binding",
+        );
       }
+      reading = "transcript";
       const execution = await execGateway(selected, [
         "node",
         "-e",
@@ -1948,9 +1990,24 @@ export function createNativePluginAssertions({
         "null",
         "conversation-reply",
         before.threadId,
+        runId,
       ]);
       const evidence = JSON.parse(execution.stdout);
+      reading = "binding";
       after = await readCodexSessionBinding(selected, { sessionKey, conversationReply: true });
+      if (after?.sessionId !== before.sessionId || after?.threadId !== before.threadId) {
+        throw new ConversationReplyError("binding");
+      }
+      if (evidence?.failure !== undefined) {
+        throw new ConversationReplyError(
+          ["integrity", "prompt_missing", "answer_missing", "source", "run"].includes(
+            evidence.failure,
+          )
+            ? evidence.failure
+            : "transcript",
+        );
+      }
+      reading = "transcript";
       reply = {
         sessionId: evidence.sessionId,
         threadId: before.threadId,
@@ -1960,22 +2017,23 @@ export function createNativePluginAssertions({
       if (
         !valid(reply) ||
         evidence.sessionId !== before.sessionId ||
-        after?.sessionId !== before.sessionId ||
-        after?.threadId !== before.threadId ||
         agent.id !== selected.id ||
         agent.namespaceId !== selected.namespaceId ||
         agent.revision?.id !== selected.revision.id
       ) {
-        throw unavailable();
+        throw new ConversationReplyError("transcript");
       }
-    } catch {
-      throw unavailable();
+    } catch (error) {
+      if (error instanceof ConversationReplyError) {
+        throw error;
+      }
+      throw new ConversationReplyError(reading);
     }
     if (prior && (reply.sessionId !== prior.sessionId || reply.threadId !== prior.threadId)) {
-      throw new Error("Conversation mismatch.");
+      throw new ConversationReplyError("continuity");
     }
     if (prior && reply.userSeq <= prior.assistantSeq) {
-      throw unavailable();
+      throw new ConversationReplyError("sequence");
     }
     return reply;
   }

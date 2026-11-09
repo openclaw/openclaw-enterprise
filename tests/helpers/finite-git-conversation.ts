@@ -2,7 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import { FirstAgentModelError, verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
-import { createNativePluginAssertions } from "./plugin-driver-real.mjs";
+import { FixtureCommandTimeoutError } from "../fixtures/repository-credentials/process.mjs";
+import { ConversationReplyError, createNativePluginAssertions } from "./plugin-driver-real.mjs";
 
 const conversationStages = [
   "execution identity",
@@ -80,6 +81,9 @@ class FiniteGitConversationError extends Error {
         detail += `; HTTP=${error.status}`;
       }
     }
+    if (stage === "persisted reply" && error instanceof ConversationReplyError) {
+      detail += `; read=${error.reason}`;
+    }
     if (observation !== undefined) {
       detail += `; gateway=${observation}`;
     }
@@ -146,6 +150,9 @@ export function createFiniteGitConversation({
   function remaining() {
     signal.throwIfAborted();
     if (Date.now() >= deadline) {
+      if (stage === "persisted reply") {
+        throw new ConversationReplyError("timeout");
+      }
       fail();
     }
     return Math.max(1, deadline - Date.now());
@@ -158,7 +165,15 @@ export function createFiniteGitConversation({
       });
       remaining();
       return output;
-    } catch {
+    } catch (error) {
+      if (stage === "persisted reply") {
+        if (error instanceof ConversationReplyError) {
+          throw error;
+        }
+        throw new ConversationReplyError(
+          error instanceof FixtureCommandTimeoutError ? "timeout" : "command",
+        );
+      }
       // Never expose command arguments, output, or a raw transport error as a cause.
       return fail();
     }
@@ -411,10 +426,11 @@ export function createFiniteGitConversation({
       const reply = await reader.readConversationReply(selected, {
         sessionKey: key,
         turnMarker: proof.nonce,
+        runId: proof.runId,
         previous,
       });
       await checkExecution();
-      return { reply, nonce: proof.nonce };
+      return { reply, nonce: proof.nonce, runId: proof.runId };
     } catch (error) {
       if (
         stage === "model turn" &&
@@ -441,13 +457,14 @@ export function createFiniteGitConversation({
         await reader.readConversationReply(selected, {
           sessionKey: alternate,
           turnMarker: fresh.nonce,
+          runId: fresh.runId,
           previous,
         });
       } catch (error) {
-        if (error instanceof Error && error.message === "Conversation mismatch.") {
+        if (error instanceof ConversationReplyError && error.reason === "continuity") {
           return;
         }
-        return fail();
+        return fail(error);
       }
       fail();
     },

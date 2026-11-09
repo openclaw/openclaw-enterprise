@@ -132,6 +132,14 @@ job calls `run-ci-lane` with `lane: openshell` and its selected `test-file`. The
 | [Finite repository retention](../../../tests/integration/openshell-git-retention-real.test.ts)      | Natural expiry and a separate two-Agent withdrawal: B reads before worker replacement; A remains denied afterward.                                                               |
 | [Single-Agent finite removal](../../../tests/integration/openshell-git-finite-removal-real.test.ts) | Before-deadline removal, ordered supervisor denial after worker replacement, same-runtime conversation, and actual retirement after model-authority withdrawal.                  |
 
+For finite Git conversation checks, `persisted reply; read=…` means the model
+returned the expected nonce. The readback category identifies the failed check.
+For example, `answer_missing` means the reader found the prompt but no matching
+assistant answer in its bounded transcript window. The prompt and terminal answer
+must belong to the logical run returned by the Gateway. Codex can finish that run
+on a new native turn after an internal retry.
+The check sends each authenticated nonce prompt once.
+
 The runner requires the selected files' credentials, expected tests, and cleanup.
 Local installation also uses one runner per manifest file: input and network-policy
 refusals, Kubernetes and Compose profiles, and Keycloak sign-in and recovery.

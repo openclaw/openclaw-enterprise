@@ -3642,13 +3642,18 @@ test("finite conversation failures retain safe stages through the reporter", asy
   const root = await fixture(t);
   const resultsPath = join(root, "results/conversation.json");
   const statePath = join(root, "state/conversation.json");
+  const fixtureProcess = new URL("../fixtures/repository-credentials/process.mjs", import.meta.url)
+    .href;
   const helper = new URL("../helpers/finite-git-conversation.ts", import.meta.url).href;
   // Scripted command responses exercise the real diagnostic producer, not a model or cluster.
-  // The last case reaches the real reply reader only after accepting a synthetic probe result.
+  // Readback cases exercise the Gateway reader after one accepted synthetic model turn.
   await writeFile(
     join(root, "tests/integration/conversation.test.mjs"),
     `import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
+import { run } from ${JSON.stringify(fixtureProcess)};
 import { createHash } from "node:crypto";
 import { createFiniteGitConversation, finiteGitConversationFailureStage } from ${JSON.stringify(helper)};
 const agent = { id: "agent", namespaceId: "namespace", revision: { id: "revision" } };
@@ -3705,9 +3710,20 @@ const observations = [
   { name: "invalid request interval", observation: "observation_unavailable", interval: { start: "private-command-data", end: interval.end }, logs: failureLine },
 ];
 const cases = [
-  ...["execution identity", "target discovery", "gateway identity", "model turn", "persisted reply"].map(stage => ({
+  ...["execution identity", "target discovery", "gateway identity", "model turn"].map(stage => ({
     name: stage, stage, detail: stage === "model turn" ? "model turn; probe=execution" : stage,
   })),
+  ...["command", "timeout", "integrity", "answer_missing", "source", "session_missing", "transcript"].map(read => ({
+    name: "read " + read, stage: "persisted reply", detail: "persisted reply; read=" + read, read,
+  })),
+  ...[
+    ["direct", "success"], ["recovered", "success"], ["foreign answer", "run"],
+    ["foreign prompt", "run"], ["missing run", "run"], ["nonterminal", "run"],
+    ["foreign thread", "source"], ["item suffix", "source"], ["empty turn", "source"],
+    ["duplicate before", "integrity"], ["duplicate after", "integrity"],
+    ["unmarked before", "integrity"], ["unmarked after", "integrity"],
+    ["prior error", "integrity"], ["later answer", "integrity"], ["stale sequence", "sequence"],
+  ].map(([read, outcome]) => ({name: read, read, stage: "persisted reply", detail: "persisted reply; read=" + outcome, outcome})),
   ...observations.map(item => ({
     ...item, stage: "model turn", detail: "model turn; probe=upstream; HTTP=500; gateway=" + item.observation,
     output: JSON.stringify({ error: "upstream", status: 500, requestInterval: item.interval ?? interval }),
@@ -3717,10 +3733,12 @@ const cases = [
   { name: "unknown probe", stage: "model turn", detail: "model turn; probe=unexpected", output: JSON.stringify({ error: "private-command-data", status: 503 }) },
   { name: "invalid status", stage: "model turn", detail: "model turn; probe=unexpected", output: JSON.stringify({ error: "upstream", status: "private-command-data" }) },
 ];
-for (const { name, stage, detail, output, logs, drift, observation } of cases) {
+for (const { name, stage, detail, output, logs, drift, observation, read, outcome } of cases) {
   test(name, async () => {
     let logReads = 0;
     let probeCompleted = false;
+    let posts = 0;
+    const runId = "chatcmpl_20000000-0000-4000-8000-000000000001";
     let guards = 0;
     const conversation = createFiniteGitConversation({
       agent, signal: new AbortController().signal, originalIdentity: "original",
@@ -3746,13 +3764,65 @@ for (const { name, stage, detail, output, logs, drift, observation } of cases) {
         }
         if (args[1] === "-i" && output !== undefined) { probeCompleted = true; return output; }
         if (args[1] === "-i" && stage === "persisted reply") {
-          return JSON.stringify({ nonce: options.input.match(/FIRST_AGENT_[0-9a-f-]+/)[0] });
+          posts++;
+          return JSON.stringify({ nonce: options.input.match(/FIRST_AGENT_[0-9a-f-]+/)[0], runId });
+        }
+        if (read && args[0] === "exec") {
+          if (read === "command") return privateFailure();
+          if (read === "timeout") return run(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {timeout: 1});
+          const [script, key, marker] = args.slice(args.indexOf("-e") + 1);
+          if (args.at(-1) === "conversation-reply" && read !== "session_missing") {
+            return JSON.stringify({ sessionId: "session", threadId: "thread" });
+          }
+          if (read === "transcript") return JSON.stringify({failure:"private-command-forged"});
+          const file = name.replaceAll(" ", "-") + ".sqlite";
+          const db = new DatabaseSync(file);
+          db.exec("CREATE TABLE session_nodes(session_key, current_session_id); CREATE TABLE transcript_events(session_id, seq INTEGER, event_json TEXT, event_zstd, event_utf8_bytes)");
+          if (read !== "session_missing") {
+            db.prepare("INSERT INTO session_nodes VALUES (?, 'session')").run(key);
+            const prompt = {role:"user", content:marker, __openclaw:{mirrorOrigin:"codex-app-server",
+              mirrorIdentity:"turn:prompt",mirrorSourceFingerprint:"promptFingerprint",runId:read === "foreign prompt" ? "other" : runId}};
+            const insert = db.prepare("INSERT INTO transcript_events VALUES ('session', ?, ?, null, null)");
+            insert.run(1, read === "integrity" ? "malformed" : JSON.stringify({type:"message",message:prompt}));
+            if (outcome) {
+              const identity = read === "item suffix" ? "turn:assistant:assistant" : read === "empty turn" ? ":assistant" :
+                read === "direct" ? "turn:assistant" : "next:assistant";
+              const answer = {role:"assistant",content:marker,stopReason:"stop",
+                idempotencyKey:"codex-app-server:" + (read === "foreign thread" ? "other" : "thread") + ":" + identity,
+                __openclaw:{mirrorOrigin:"codex-app-server",mirrorSourceFingerprint:"answerFingerprint",mirrorIdentity:identity,
+                  runId:read === "foreign answer" ? "other" : read === "missing run" ? undefined : runId,
+                  runTerminal:read !== "nonterminal"}};
+              if (read.startsWith("duplicate ") || read.startsWith("unmarked ")) {
+                const duplicate = {...answer, content:read.startsWith("duplicate ") ? marker : "earlier or later",
+                  idempotencyKey:"codex-app-server:thread:turn:assistant",
+                  __openclaw:{...answer.__openclaw, mirrorIdentity:"turn:assistant"}};
+                insert.run(read.endsWith("before") ? 2 : 4, JSON.stringify({type:"message",message:duplicate}));
+              }
+              if (read === "prior error") insert.run(2,JSON.stringify({type:"message",message:{role:"assistant",stopReason:"error"}}));
+              insert.run(3, JSON.stringify({type:"message",message:answer}));
+              if (read === "later answer") insert.run(4, JSON.stringify({type:"message",message:{role:"assistant",content:"later"}}));
+            }
+            if (read === "source") insert.run(2, JSON.stringify({type:"message",message:{role:"assistant",content:marker,stopReason:"stop"}}));
+          }
+          db.close();
+          const local = script.replaceAll("/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite", file)
+            .replaceAll("/home/node/.openclaw/state/openclaw.sqlite", file);
+          return execFileSync(process.execPath, ["-e", local, ...args.slice(args.indexOf("-e") + 2)], {encoding:"utf8"});
         }
         return privateFailure();
       },
     });
-    try { await conversation.turn(undefined, 1000); }
+    try {
+      const prior = read === "stale sequence" ? {sessionId:"session",threadId:"thread",userSeq:0,assistantSeq:1} : undefined;
+      const tuple = await conversation.turn(prior, 1000);
+      if (outcome === "success") {
+        assert.equal(posts, 1);
+        assert.deepEqual(tuple, {sessionId:"session",threadId:"thread",userSeq:1,assistantSeq:3});
+        return;
+      }
+    }
     catch (error) {
+      if (read) assert.equal(posts, 1);
       assert.equal(finiteGitConversationFailureStage(error), detail);
       const needsRead = observation && name !== "invalid request interval" && drift !== 2;
       assert.equal(logReads, needsRead ? 1 : 0, "one bounded read only after an eligible model failure");
@@ -3790,9 +3860,32 @@ for (const { name, stage, detail, output, logs, drift, observation } of cases) {
   const detail = JSON.parse(detailText).failures[0];
   const details = detail.tests;
   assert.equal(details.length, 20);
-  assert.equal(detail.omittedTests, 7);
-  assert.equal(summary.files[0].tests.length, 27);
+  assert.equal(detail.omittedTests, 27);
+  assert.equal(summary.files[0].tests.length, 49);
   const expected = {
+    ...Object.fromEntries(
+      ["foreign answer", "foreign prompt", "missing run", "nonterminal"].map((name) => [
+        name,
+        "persisted reply; read=run",
+      ]),
+    ),
+    ...Object.fromEntries(
+      ["foreign thread", "item suffix", "empty turn"].map((name) => [
+        name,
+        "persisted reply; read=source",
+      ]),
+    ),
+    ...Object.fromEntries(
+      [
+        "duplicate before",
+        "duplicate after",
+        "unmarked before",
+        "unmarked after",
+        "prior error",
+      ].map((name) => [name, "persisted reply; read=integrity"]),
+    ),
+    "later answer": "persisted reply; read=integrity",
+    "stale sequence": "persisted reply; read=sequence",
     "model turn": "model turn; probe=execution",
     "upstream status": "model turn; probe=upstream; HTTP=503",
     "unauthenticated HTTP 500": "model turn; probe=unauthenticated; HTTP=500",
@@ -3819,15 +3912,22 @@ for (const { name, stage, detail, output, logs, drift, observation } of cases) {
     "Gateway restarted during read": "observation_unavailable",
     "invalid request interval": "observation_unavailable",
   };
+  let failures = 0;
   for (const failure of summary.files[0].tests) {
+    if (["direct", "recovered"].includes(failure.name)) {
+      assert.equal(failure.status, "passed");
+      continue;
+    }
     const detail = observations[failure.name]
       ? `model turn; probe=upstream; HTTP=500; gateway=${observations[failure.name]}`
-      : (expected[failure.name] ?? failure.name);
+      : failure.name.startsWith("read ")
+        ? "persisted reply; read=" + failure.name.slice(5)
+        : (expected[failure.name] ?? failure.name);
     const message = `Finite Git conversation verification failed (${detail}).`;
     assert.equal(failure.status, "failed");
     assert.equal(failure.error.message, message);
     const retained = details.find((entry) => entry.name === failure.name);
-    if (summary.files[0].tests.indexOf(failure) < 20) {
+    if (++failures <= 20) {
       assert.equal(retained.message, message);
     } else {
       assert.equal(retained, undefined);

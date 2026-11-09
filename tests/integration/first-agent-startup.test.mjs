@@ -629,10 +629,18 @@ test("model verification retains safe failure metadata without forwarding probe 
   let responseStatus = 503;
   let responseBody = "private-upstream-body";
   let requests = 0;
-  const server = createServer((request, response) => {
+  const server = createServer(async (request, response) => {
     requests++;
     response.writeHead(request.headers.authorization ? responseStatus : 401);
-    response.end(responseBody);
+    if (typeof responseBody === "function") {
+      let body = "";
+      for await (const chunk of request) {
+        body += chunk;
+      }
+      response.end(responseBody(JSON.parse(body)));
+    } else {
+      response.end(responseBody);
+    }
   });
   const port = await listen(t, server);
   const hash = (value) => createHash("sha256").update(value).digest("hex").slice(0, 12);
@@ -751,6 +759,29 @@ test("model verification retains safe failure metadata without forwarding probe 
       await verify("unexpected", undefined);
     });
   }
+  suppliedOutput = undefined;
+  const id = "chatcmpl_20000000-0000-4000-8000-000000000001";
+  let completionId = id;
+  responseBody = (body) =>
+    JSON.stringify({
+      id: completionId,
+      choices: [
+        { message: { content: body.messages[0].content.match(/FIRST_AGENT_[0-9a-f-]+/)[0] } },
+      ],
+    });
+  const before = requests;
+  const proof = await verifyFirstAgentModel(kubectl, {
+    namespaceId: "namespace",
+    agentId: "agent",
+    revisionId: "revision",
+    expectProviderKey: false,
+    sessionKey,
+  });
+  assert.equal(proof.runId, id);
+  assert.equal(requests - before, 2, "one denial and one accepted nonce request");
+  completionId = "private-invalid-id";
+  await verify("response_format", undefined);
+
   suppliedOutput = "private-invalid-json";
   await verify("invalid_result", undefined);
 });

@@ -325,7 +325,15 @@ async function findGateway(kubectl, namespaceId, agentId, revisionId, signal) {
   throw new Error(`Timed out waiting for the Agent's gateway. ${discoveryMessages[state]}`);
 }
 
-// This function is serialized to stdin and executed inside the gateway container.
+export function isGatewayCompletionId(value) {
+  return (
+    typeof value === "string" &&
+    value.length === 45 &&
+    /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value)
+  );
+}
+
+// Serialized with its completion-ID validator and executed inside the Gateway container.
 async function probeInGateway({ nonce, prompt, expectProviderKey, sessionKey }) {
   const emit = (value) => process.stdout.write(JSON.stringify(value));
   const failure = (code, status) => ({ error: code, ...(status === undefined ? {} : { status }) });
@@ -422,7 +430,7 @@ async function probeInGateway({ nonce, prompt, expectProviderKey, sessionKey }) 
       if (text.length > 20_000) {
         return failure("response_size");
       }
-      return { text };
+      return { text, runId: body.id };
     }
 
     const denied = await request(noncePrompt, false);
@@ -446,16 +454,24 @@ async function probeInGateway({ nonce, prompt, expectProviderKey, sessionKey }) 
       return;
     }
 
+    const receipt = { nonce };
+    if (sessionKey !== undefined) {
+      if (!isGatewayCompletionId(proof.runId)) {
+        emit(failure("response_format"));
+        return;
+      }
+      receipt.runId = proof.runId;
+    }
     if (prompt !== undefined) {
       const result = await getAssistant(prompt);
       if (result.error) {
         emit(result);
         return;
       }
-      emit({ nonce, response: result.text });
+      emit({ ...receipt, response: result.text });
       return;
     }
-    emit({ nonce });
+    emit(receipt);
   } catch {
     emit(failure("unexpected"));
   }
@@ -509,7 +525,7 @@ export async function verifyFirstAgentModel(kubectl, options) {
 
   const { namespace, pod } = await findGateway(kubectl, namespaceId, agentId, revisionId, signal);
   const nonce = `FIRST_AGENT_${randomUUID()}`;
-  const script = `await (${probeInGateway.toString()})(${JSON.stringify({ nonce, prompt, expectProviderKey, sessionKey })});`;
+  const script = `${isGatewayCompletionId.toString()}\nawait (${probeInGateway.toString()})(${JSON.stringify({ nonce, prompt, expectProviderKey, sessionKey })});`;
   let output;
   try {
     output = await kubectl(
@@ -553,6 +569,7 @@ export async function verifyFirstAgentModel(kubectl, options) {
   }
   if (
     result?.nonce !== nonce ||
+    (sessionKey !== undefined && !isGatewayCompletionId(result.runId)) ||
     (prompt !== undefined && (typeof result.response !== "string" || !result.response.trim()))
   ) {
     throw new FirstAgentModelError("invalid_result");
@@ -560,5 +577,9 @@ export async function verifyFirstAgentModel(kubectl, options) {
   if (typeof apiKey === "string" && apiKey && result.response?.includes(apiKey)) {
     throw new FirstAgentModelError("credential");
   }
-  return prompt === undefined ? { nonce } : { nonce, response: result.response };
+  return {
+    nonce,
+    ...(sessionKey !== undefined && { runId: result.runId }),
+    ...(prompt !== undefined && { response: result.response }),
+  };
 }
