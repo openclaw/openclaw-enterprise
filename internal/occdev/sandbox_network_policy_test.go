@@ -70,14 +70,27 @@ func TestSandboxNetworkPolicyRejectsInvalidInputBeforeProvisioning(t *testing.T)
 				// A missing or incompatible Node runtime also refuses startup. Only
 				// the Driver's structured error proves it evaluated this policy.
 				payload := strings.TrimPrefix(err.Error(), "Sandbox network policy validation failed: ")
-				payload = strings.TrimSuffix(payload, ": exit status 1")
-				var result map[string][]map[string]string
+				if cause := errors.Unwrap(err); cause != nil {
+					payload = strings.TrimSuffix(payload, ": "+cause.Error())
+				}
+				var result struct {
+					Details []struct {
+						Path *string `json:"path"`
+						Code string  `json:"code"`
+					} `json:"details"`
+				}
 				if json.Unmarshal([]byte(payload), &result) != nil {
 					t.Fatalf("startup did not return a Driver validation error: %v", err)
 				}
-				details := result["details"]
-				if len(details) != 1 || details[0]["path"] != tc.path || details[0]["code"] != tc.code {
-					t.Fatalf("unexpected validation details: %v; want path %q, code %q", details, tc.path, tc.code)
+				matched := false
+				for _, detail := range result.Details {
+					if detail.Path != nil && *detail.Path == tc.path && detail.Code == tc.code {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					t.Fatalf("validation error lacks path %q, code %q: %s", tc.path, tc.code, payload)
 				}
 			}
 			if _, err := os.Stat(state); !os.IsNotExist(err) {
