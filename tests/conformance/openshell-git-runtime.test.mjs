@@ -637,6 +637,8 @@ test("held-launch Git expiry requires a fresh original predecessor and a revoked
     "generic withholding",
     "failed predecessor",
     "stale predecessor",
+    "old observation close to evaluation",
+    "stale expired observation with clock skew",
     "predecessor expires during report read",
     "predecessor expires during Sandbox read",
     "predecessor evaluation is delayed",
@@ -801,6 +803,15 @@ test("held-launch Git expiry requires a fresh original predecessor and a revoked
               if (fault === "stale predecessor") {
                 result.observedTime = new Date(Date.now() - 15_000).toISOString();
               }
+              if (fault === "old observation close to evaluation") {
+                result.evaluatedTime = new Date(Date.now() - 20_000).toISOString();
+                result.observedTime = new Date(Date.now() - 30_000).toISOString();
+              }
+              if (fault === "stale expired observation with clock skew") {
+                const evaluated = Date.now() + 20_000;
+                result.evaluatedTime = new Date(evaluated).toISOString();
+                result.observedTime = new Date(evaluated - 40_000).toISOString();
+              }
               if (delayedWitness && !delayedReport) {
                 delayedReport = true;
                 // The report expires before the caller can use its otherwise valid witness.
@@ -849,6 +860,84 @@ test("held-launch Git expiry requires a fresh original predecessor and a revoked
                 { kind: "predecessor" },
               );
             assert.equal(await cold({ ...box }), row.retainedLaunchHash);
+            const owner = entry.continuity;
+            const statusReader = client.getSandboxProviderStatus;
+            const sandboxReader = client.getSandbox;
+            const workloadReader = owner.workload;
+            for (const changed of ["missing", "elapsed", "replacement"]) {
+              const original = structuredClone(box);
+              const originalBefore = structuredClone(original);
+              let current = structuredClone(box);
+              const readOrder = [];
+              if (changed === "replacement") {
+                owner.workload = async (...args) => {
+                  const workload = await workloadReader(...args);
+                  readOrder.push("workload");
+                  return workload;
+                };
+                client.getSandbox = async () => {
+                  readOrder.push("current-sandbox");
+                  return structuredClone(current);
+                };
+              }
+              // The model report is read after the Git predecessor. Its own lease and the
+              // final live instance still need proof before the launch hash can be returned.
+              client.getSandboxProviderStatus = async (...args) => {
+                const status = await statusReader(...args);
+                if (changed === "missing") {
+                  return { ...status, state: "PROVIDER_READINESS_STATE_PENDING" };
+                }
+                if (changed === "replacement") {
+                  readOrder.push("model-report");
+                  // The supplier's fresh state changes; the original snapshot stays detached.
+                  current = { ...current, mainProcessInstanceId: "replacement-during-model-read" };
+                  return status;
+                }
+                status.observedTime = new Date(
+                  Date.parse(status.evaluatedTime) - 14_900,
+                ).toISOString();
+                await delay(150);
+                return status;
+              };
+              try {
+                const witness = witnessOpenShellGitLaunch(
+                  client,
+                  owner,
+                  original,
+                  git,
+                  AbortSignal.timeout(5_000),
+                  { kind: "predecessor" },
+                );
+                if (changed === "replacement") {
+                  await assert.rejects(witness, /cannot retain this execution after Git expiry/);
+                  assert.deepEqual(readOrder, ["model-report", "workload", "current-sandbox"]);
+                  assert.deepEqual(
+                    original,
+                    originalBefore,
+                    "the supplied launch snapshot stays unchanged",
+                  );
+                  assert.equal(original.mainProcessInstanceId, git.networkInstanceId);
+                  assert.notEqual(current.mainProcessInstanceId, original.mainProcessInstanceId);
+                } else {
+                  assert.equal(await witness, undefined, changed);
+                }
+              } finally {
+                client.getSandboxProviderStatus = statusReader;
+                client.getSandbox = sandboxReader;
+                owner.workload = workloadReader;
+              }
+              assert.equal(f.calls.material, before.material);
+              assert.equal(f.calls.rotate, before.rotate);
+              assert.equal(detach, undefined);
+              assert.equal(requests.length, 0);
+            }
+            // The same expired environment cannot establish a new ready installation.
+            await assert.rejects(
+              witnessOpenShellGitLaunch(client, owner, box, git, AbortSignal.timeout(5_000), {
+                kind: "installation",
+              }),
+              /cannot retain this execution after Git expiry/,
+            );
             for (const changed of [
               { mainProcessInstanceId: "replacement-instance" },
               { phase: "SANDBOX_PHASE_STOPPING" },
