@@ -6348,7 +6348,7 @@ test('scenario', { signal: controller.signal }, async (t) => {
   }
 });
 
-test("first-Agent command timing pairs runtime outcomes before CI projection", async (t) => {
+test("first-Agent command timing pairs runtime and manifest outcomes before CI projection", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/runtime-outcomes.json");
   await mkdir(join(root, "bin"));
@@ -6359,6 +6359,18 @@ test("first-Agent command timing pairs runtime outcomes before CI projection", a
   );
   const runtime = "[occ-dev-timing] stage=runtime-build elapsed_ms=11 failed=true";
   const outcome = "[occ-dev-outcome] stage=runtime-build outcome=";
+  const manifest = "openshell-agent-sandbox-manifest";
+  const manifestTiming = `[occ-dev-timing] stage=${manifest} elapsed_ms=13 failed=true`;
+  const manifestOutcome = `[occ-dev-outcome] stage=${manifest} outcome=`;
+  const reasons = [
+    "selected-input",
+    "http-status",
+    "transport",
+    "deadline",
+    "canceled",
+    "integrity",
+    "local-io",
+  ];
   const lines = [
     runtime,
     outcome + "nonzero-exit",
@@ -6381,6 +6393,12 @@ test("first-Agent command timing pairs runtime outcomes before CI projection", a
     outcome + "signaled",
     "[occ-dev-timing] stage=openshell-workspace-render elapsed_ms=7 failed=true",
     "[occ-dev-timing] stage=private-outcome-canary elapsed_ms=9 failed=true",
+    ...reasons.flatMap((reason) => [manifestTiming, manifestOutcome + reason]),
+    manifestOutcome + "deadline",
+    manifestTiming,
+    manifestOutcome + "private-outcome-canary",
+    `[occ-dev-timing] stage=${manifest} elapsed_ms=3 failed=false`,
+    manifestOutcome + "deadline",
     "[occ-dev-startup] primary_stage=routing cleanup_failed=true parent_context_done=false routing_operation=manifest-download routing_controller=cert-manager",
   ];
   await writeFile(
@@ -6495,7 +6513,19 @@ test("a failed local setup reports only paired outcomes", async (t) => {
         failed: 1,
         elapsedMs: 7,
       },
+      {
+        kind: "local-first-agent-command",
+        phase: "setup",
+        stage: manifest,
+        count: reasons.length + 2,
+        failed: reasons.length + 1,
+        elapsedMs: 13 * (reasons.length + 1) + 3,
+      },
     ],
+  );
+  assert.deepEqual(
+    measurements.filter(({ kind }) => kind === "local-first-agent-manifest-failure"),
+    reasons.map((reason) => ({ kind: "local-first-agent-manifest-failure", reason })),
   );
   assert.deepEqual(
     measurements.filter(({ kind }) => kind === "local-first-agent-startup-failure"),
