@@ -1,32 +1,14 @@
----
-config:
-  theme: base
-  htmlLabels: true
-  flowchart:
-    curve: linear
-    nodeSpacing: 18
-    rankSpacing: 22
-    wrappingWidth: 200
----
-flowchart TB
-  accTitle: One workspace address, two process generations
-  accDescr: Today, a Service can route the same address to replacement workspace B. A serving response alone does not show which process answered. Under the proposal, Compute pins the original workspace A before release, checks A's acknowledgement of the signed release and all four pins, then independently verifies A is serving. On each connection the Gateway verifies TLS with only the pinned CA before sending its bearer. The relay checks the bearer and released original before returning 101. The Gateway checks the generation proof before sending or accepting native frames. Missing or different proof closes the connection.
-  subgraph next["Proposed for protected workspaces"]
-    direction TB
-    pin["Before release: identify A<br/>and pin its workspace binding"] --> ready["Check A acknowledged release;<br/>verify A is serving"]
-    ready --> tls["On connect: verify TLS<br/>before sending the bearer"]
-    tls --> generation{"Did the upgrade identify<br/>workspace A?"}
-    generation -->|Yes| good["Start workspace traffic"]
-    generation -->|No| stop["Close before workspace traffic"]
+flowchart TD
+  subgraph Prepare
+    direction LR
+    W1["Sandbox workspace<br/>Sandbox holds and identifies the workspace."] ~~~ G1["Agent Gateway<br/>Compute configures the new Gateway for that workspace."]
   end
-  subgraph now["Today"]
-    direction TB
-    addr["Same Service address<br/>A is replaced by B"] --> status["Driver returns the address<br/>and reports serving"]
-    status --> unknown["Which process answered?<br/>Generation unknown"]
+  subgraph Release
+    direction LR
+    W2["Sandbox workspace<br/>The original workspace acknowledges release."] ~~~ G2["Agent Gateway<br/>The previous revision can keep serving."]
   end
-  classDef check fill:#e8f0f7,stroke:#536c85,color:#172c3e
-  classDef permit fill:#e5f2e8,stroke:#4c7655,color:#193c23
-  classDef refuse fill:#feeee9,stroke:#a45a49,color:#552a21
-  class addr,status,unknown,pin,ready,tls,generation check
-  class good permit
-  class stop refuse
+  subgraph Activate
+    direction LR
+    W3["Sandbox workspace<br/>Compute separately verifies the original is serving."] ~~~ G3["Agent Gateway<br/>Traffic switches. The Gateway checks the workspace on each connection."]
+  end
+  Prepare --> Release --> Activate
