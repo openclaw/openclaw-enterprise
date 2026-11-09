@@ -4717,7 +4717,7 @@ test(
 );
 
 test(
-  "candidate cannot redirect the Installation Secret or change an image outside the selected flags",
+  "candidate cannot redirect a mutable Installation Secret or change an image outside the selected flags",
   { concurrency: true },
   async (t) => {
     const cases = [];
@@ -4736,7 +4736,12 @@ test(
             candidate.drivers.compute.configuration.images.agent = runtime;
           }
           await writeFile(path, JSON.stringify(candidate));
-          await assert.rejects(f.run(), /candidate (values|Installation) change/);
+          await assert.rejects(
+            f.run(),
+            field === "secret"
+              ? /switching the Installation reference requires an immutable predecessor/
+              : /candidate Installation change/,
+          );
           assert.deepEqual(await f.events(), []);
         }),
       );
