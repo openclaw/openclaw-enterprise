@@ -131,6 +131,8 @@ const openShellPolicyChecks = new Set([
   "provider-allow-observed",
   "revision-unchanged",
   "second-agent-isolation",
+  "second-agent-control-request",
+  "second-agent-denied-request",
   "second-agent-cleanup",
   "editing-state-enforcement",
   "grant-revocation",
@@ -246,6 +248,56 @@ function safeMeasurement(value) {
     return openShellPolicyChecks.has(value.check)
       ? { kind: value.kind, check: value.check }
       : undefined;
+  }
+  if (isRecord(value) && value.kind === "openshell-policy-probe") {
+    const count = (number) => Number.isSafeInteger(number) && number >= 0;
+    const hash = (text) => typeof text === "string" && /^[a-f0-9]{64}$/.test(text);
+    if (
+      !(
+        (value.role === "control" && value.port === 8082) ||
+        (value.role === "policy" && value.port === 8083)
+      ) ||
+      !hash(value.targetHash) ||
+      !count(value.commandCount) ||
+      !count(value.candidateCount) ||
+      value.candidateCount > value.commandCount ||
+      !(value.selectedIndex === null
+        ? value.candidateCount === 0
+        : count(value.selectedIndex) &&
+          value.selectedIndex < value.commandCount &&
+          value.candidateCount > 0) ||
+      !count(value.laterUriMatches) ||
+      value.laterUriMatches >
+        (value.selectedIndex === null ? 0 : value.commandCount - value.selectedIndex - 1) ||
+      !Array.isArray(value.commands) ||
+      value.commands.length !== Math.min(8, value.commandCount - (value.selectedIndex ?? 0)) ||
+      !value.commands.every(
+        (command) =>
+          isRecord(command) &&
+          hash(command.hash) &&
+          [command.hasUrllib, command.hasInterpreter, command.hasExpectedUri].every(
+            (flag) => typeof flag === "boolean",
+          ),
+      )
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      role: value.role,
+      port: value.port,
+      targetHash: value.targetHash,
+      commandCount: value.commandCount,
+      candidateCount: value.candidateCount,
+      selectedIndex: value.selectedIndex,
+      laterUriMatches: value.laterUriMatches,
+      commands: value.commands.map(({ hash, hasUrllib, hasInterpreter, hasExpectedUri }) => ({
+        hash,
+        hasUrllib,
+        hasInterpreter,
+        hasExpectedUri,
+      })),
+    };
   }
   if (isRecord(value) && value.kind === openShellNativePolicyCheckKind) {
     const { kind, stage, primaryCheck, cleanupCheck } = value;

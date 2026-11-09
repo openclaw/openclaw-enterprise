@@ -248,15 +248,15 @@ export class PostgresHumanAuthentication {
         }
         await this.lockUser(unit, found.user_id as string);
         await this.query(unit, "SELECT id FROM occ.session WHERE id = $1 FOR UPDATE", [id]);
-        const session = await this.currentSessionInUnit(unit, "id", id);
-        if (!session) {
+        const row = await this.currentSessionRow(unit, "id", id);
+        if (!row) {
           return undefined;
         }
         return {
-          id: session.id,
-          userId: session.userId,
-          expiresAt: session.expiresAt,
-          principalId: session.principalId,
+          id: row.id as string,
+          userId: row.user_id as string,
+          expiresAt: row.expires_at as Date,
+          principalId: row.session_principal_id as string,
         };
       },
     );
@@ -869,7 +869,14 @@ export class PostgresHumanAuthentication {
       readonly login?: string | undefined;
       readonly attemptId: string;
     },
-  ): Promise<HumanAuthenticationSession> {
+    resultAttemptId?: string,
+  ): Promise<HumanAuthenticationSession & { resultExpiresAt?: number }> {
+    if (
+      resultAttemptId !== undefined &&
+      (proof.providerId === "credential" || !/^[A-Za-z0-9_-]{43}$/.test(resultAttemptId))
+    ) {
+      throw new ScopeViolationError("Invalid external sign-in attempt.");
+    }
     if (
       audit !== undefined &&
       (!/^[a-z][a-z0-9-]{0,39}$/.test(audit.provider) ||
@@ -925,7 +932,31 @@ export class PostgresHumanAuthentication {
         methodId: proof.methodId,
         ...audit,
       });
-      return sessionFromRow(inserted);
+      const issued = sessionFromRow(inserted);
+      if (resultAttemptId === undefined) {
+        return issued;
+      }
+      await this.query(unit, "SET LOCAL lock_timeout = '5s'");
+      await this.query(
+        unit,
+        `DELETE FROM occ.human_authentication_results WHERE installation_id = $1 AND attempt_id IN (
+        SELECT attempt_id FROM occ.human_authentication_results WHERE installation_id = $1
+        AND expires_at <= statement_timestamp() ORDER BY expires_at, attempt_id LIMIT 8
+      )`,
+        [this.installationId],
+      );
+      const [result] = await this.query(
+        unit,
+        `INSERT INTO occ.human_authentication_results
+        (installation_id, attempt_id, session_id, provider_id, expires_at)
+        VALUES ($1, $2, $3, $4, date_trunc('milliseconds', clock_timestamp()) + interval '120 seconds')
+        RETURNING expires_at`,
+        [this.installationId, resultAttemptId, issued.id, proof.providerId],
+      );
+      if (!(result?.expires_at instanceof Date)) {
+        throw new ScopeViolationError("The sign-in result deadline is unavailable.");
+      }
+      return { ...issued, resultExpiresAt: result.expires_at.getTime() };
     });
   }
 
@@ -939,11 +970,24 @@ export class PostgresHumanAuthentication {
   async currentSession(
     token: string,
   ): Promise<(HumanAuthenticationSession & { user: HumanAuthenticationUser }) | undefined> {
-    return this.state.transact((unit) => this.currentSessionInUnit(unit, "token", token));
+    return this.state.transact(async (unit) => {
+      const row = await this.currentSessionRow(unit, "token", token);
+      if (!row) {
+        return undefined;
+      }
+      return {
+        ...sessionFromRow(row),
+        user: userFromRow(row),
+        principalId: row.session_principal_id as string,
+      };
+    });
   }
 
-  /** Canonical currentness checks shared by cookie and dependent Agent access. */
-  private async currentSessionInUnit(unit: PlatformUnitOfWork, key: "token" | "id", value: string) {
+  private async currentSessionRow(
+    unit: PlatformUnitOfWork,
+    key: "token" | "id",
+    value: string,
+  ): Promise<Row | undefined> {
     const [row] = await this.query(
       unit,
       `SELECT s.*, ${userColumns}, h.principal_id AS session_principal_id,
@@ -966,11 +1010,56 @@ export class PostgresHumanAuthentication {
       await this.endUnconfiguredSession(unit, row);
       return undefined;
     }
-    return {
-      ...sessionFromRow(row),
-      user: userFromRow(row),
-      principalId: row.session_principal_id as string,
-    };
+    return row;
+  }
+
+  async consumeLoginResult(
+    token: string,
+    receipt: {
+      attemptId: string;
+      providerId: string;
+      sessionId: string;
+      expiresAt: number;
+    },
+  ): Promise<boolean> {
+    return this.state.transactReadCommitted(async (unit) => {
+      // All revocation and issuance paths lock the user first. After acquiring that
+      // lock, READ COMMITTED observes the authority left by the preceding owner.
+      const [owner] = await this.query(
+        unit,
+        `SELECT u.id FROM occ."user" u
+        JOIN occ.session s ON s.user_id = u.id WHERE s.token = $1 AND s.id = $2 FOR UPDATE OF u`,
+        [token, receipt.sessionId],
+      );
+      if (!owner) {
+        return false;
+      }
+      const current = await this.currentSessionRow(unit, "token", token);
+      if (
+        !current ||
+        current.id !== receipt.sessionId ||
+        current.session_provider_id !== receipt.providerId
+      ) {
+        return false;
+      }
+      const [deleted] = await this.query(
+        unit,
+        `DELETE FROM occ.human_authentication_results
+        WHERE installation_id = $1 AND attempt_id = $2 AND session_id = $3 AND provider_id = $4
+        AND expires_at = $5 AND expires_at > clock_timestamp()
+        RETURNING clock_timestamp() < LEAST(expires_at, $6::timestamptz) AS live`,
+        [
+          this.installationId,
+          receipt.attemptId,
+          receipt.sessionId,
+          receipt.providerId,
+          new Date(receipt.expiresAt),
+          current.expires_at,
+        ],
+      );
+      // RETURNING evaluates after DELETE has obtained the row, including any lock wait.
+      return deleted?.live === true;
+    });
   }
 
   /** Ends one session whose sign-in provider instance is gone; only the deleting call audits. */

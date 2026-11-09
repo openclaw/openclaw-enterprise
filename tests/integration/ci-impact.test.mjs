@@ -3047,7 +3047,7 @@ test("shared runtime consumers omit idle builders and preserve source builders",
   }
 });
 
-test("full aggregate attributes image coverage to its consumer and producer jobs", (t) => {
+test("full aggregate attributes lane coverage to its matrix and producer jobs", (t) => {
   const workflow = loadYaml(".github/workflows/full-integration.yml");
   // This workflow uses !cancelled(), which disables GitHub's implicit success()
   // guard. A failed producer must therefore be rejected explicitly.
@@ -3107,6 +3107,14 @@ test("full aggregate attributes image coverage to its consumer and producer jobs
     assert.ok(output["image-lanes-same-sha"].lanes.includes("images-runtime-startup-2"));
     assert.equal(output["pr-safe-same-sha"].result, "success");
     assert.ok(output["pr-safe-same-sha"].lanes.includes("postgres"));
+  }
+  for (const selection of ["all", "openshell"]) {
+    const output = execute(selection, { openshell: { result: "failure" } });
+    const lanes = ["openshell-policy", "openshell-installers"];
+    assert.deepEqual(output.openshell, { result: "failure", lanes });
+    for (const lane of lanes) {
+      assert.equal(output[lane], undefined);
+    }
   }
   const imageFailure = execute("all", { "image-lanes-same-sha": { result: "failure" } });
   assert.equal(imageFailure["image-lanes-same-sha"].result, "failure");

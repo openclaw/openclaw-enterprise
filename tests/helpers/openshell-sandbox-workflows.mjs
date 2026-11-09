@@ -34,6 +34,7 @@ import { promisify } from "node:util";
 import { inflateRawSync } from "node:zlib";
 import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
+import { selectPolicyProbeCommand } from "./openshell-policy-probe.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   assertNativeCronRunSucceeded,
@@ -5590,7 +5591,7 @@ async function assertAuthenticatedNativePolicyScopes(topology, receipt) {
   }
 }
 
-async function assertAgentNetworkPolicyLifecycle(topology, enterCheck) {
+async function assertAgentNetworkPolicyLifecycle(topology, enterCheck, diagnostic) {
   enterCheck("installation-discovery");
   const base = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
   const policyPath = `${base}/sandbox-policy/networking`;
@@ -5641,16 +5642,11 @@ PYTHON`;
       providerModel,
       prompt: `Run exactly this command once through the exec tool, without changing it or attempting other network tools. Report its exit status and output: ${command}`,
     });
-    const executed = result.items
-      .filter(({ method }) => method === "item/completed")
-      .map(({ params }) => params?.item)
-      .find(
-        (item) => item?.type === "commandExecution" && item.command?.includes("urllib.request"),
-      );
-    assert.ok(executed, "the real Agent must execute the Python command");
-    assert.ok(executed.command.includes("/usr/bin/python3.11"));
-    assert.ok(executed.command.includes(`http://${grant.host}:${port}/policy-probe`));
-    return executed;
+    return selectPolicyProbeCommand(
+      result.items,
+      { uri: `http://${grant.host}:${port}/policy-probe`, port },
+      diagnostic,
+    );
   };
   // Prove both listeners and cluster DNS independently before interpreting a policy denial.
   enterCheck("cluster-target-reachability");
@@ -5965,11 +5961,13 @@ PYTHON`;
     topology.agent.harnessAuth.sourceId,
     [],
   );
+  enterCheck("second-agent-control-request");
   assert.equal(
     (await python(second.agent.id, 8082)).exitCode,
     0,
     "the second Agent retains Installation-default access",
   );
+  enterCheck("second-agent-denied-request");
   const isolated = await python(second.agent.id);
   assert.notEqual(isolated.exitCode, 0, "another Agent must remain denied");
   assert.match(isolated.aggregatedOutput ?? "", /Permission denied|Errno 13/);
@@ -9084,9 +9082,14 @@ export function registerProviderLifecycleTest(workflow) {
           let policyCheck;
           try {
             await measureOpenShellStage(testContext, "network-policy", () =>
-              assertAgentNetworkPolicyLifecycle(topology, (check) => {
-                policyCheck = check;
-              }),
+              assertAgentNetworkPolicyLifecycle(
+                topology,
+                (check) => {
+                  policyCheck = check;
+                },
+                (measurement) =>
+                  testContext.diagnostic("openclaw-ci-measurement " + JSON.stringify(measurement)),
+              ),
             );
           } catch (error) {
             testContext.diagnostic(
