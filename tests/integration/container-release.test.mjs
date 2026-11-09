@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -972,4 +972,90 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
     laneFiles.filter((path) => !Object.hasOwn(notInSmoke, path)).sort(),
     "Keep the release smoke list equal to the Image Runtime Startup lane files.",
   );
+});
+
+test("native smoke rejects a transported image with another configuration before startup", async (t) => {
+  const directory = await temporaryDirectory(t, "oce-smoke-config-");
+  const binary = join(directory, "bin");
+  const blobs = join(directory, "blobs/sha256");
+  await mkdir(binary);
+  await mkdir(blobs, { recursive: true });
+  async function blob(value) {
+    const bytes = JSON.stringify(value);
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    await writeFile(join(blobs, hash), bytes);
+    return { digest: `sha256:${hash}`, size: Buffer.byteLength(bytes) };
+  }
+  const architecture = process.arch === "x64" ? "amd64" : process.arch;
+  const config = {
+    architecture,
+    os: "linux",
+    config: {},
+    rootfs: { type: "layers", diff_ids: [] },
+  };
+  const original = await blob(config);
+  const replacement = await blob({ ...config, config: { Cmd: ["unexpected"] } });
+  const manifest = (selected) => ({
+    schemaVersion: 2,
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    config: { mediaType: "application/vnd.oci.image.config.v1+json", ...selected },
+    layers: [],
+  });
+  const sealed = await blob(manifest(original));
+  const transported = await blob(manifest(replacement));
+  const descriptor = {
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    ...transported,
+  };
+  await writeFile(join(directory, "index.json"), JSON.stringify({ manifests: [sealed] }));
+  await writeFile(
+    join(directory, "inspect.json"),
+    JSON.stringify([
+      { Id: transported.digest, Descriptor: descriptor, Os: "linux", Architecture: architecture },
+    ]),
+  );
+  execFileSync("tar", ["-cf", join(directory, "export.tar"), "-C", directory, "blobs"]);
+  // Command stand-ins supply a real hash-addressed OCI metadata archive. The
+  // supported smoke command and Python verifier must reject its substituted
+  // config; this checks identity admission, not a Docker load or runtime.
+  await writeCommand(
+    binary,
+    "skopeo",
+    `
+case "$1" in
+  inspect) cat "$SMOKE_FIXTURE/blobs/sha256/${sealed.digest.slice(7)}" ;;
+  copy) ;;
+  *) exit 91 ;;
+esac`,
+  );
+  await writeCommand(
+    binary,
+    "docker",
+    `
+case "$2" in
+  inspect) cat "$SMOKE_FIXTURE/inspect.json" ;;
+  save) cat "$SMOKE_FIXTURE/export.tar" ;;
+  rm) ;;
+  *) exit 92 ;;
+esac`,
+  );
+  const result = spawnSync(
+    process.execPath,
+    ["scripts/ci/container-release.mjs", "smoke", directory],
+    {
+      env: {
+        ...process.env,
+        PATH: `${binary}:${process.env.PATH}`,
+        SMOKE_FIXTURE: directory,
+        IMAGE: "controller",
+        PLATFORM: `linux/${architecture}`,
+        IMAGE_DIGEST: sealed.digest,
+      },
+      encoding: "utf8",
+      timeout: 30000,
+    },
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Loaded image configuration differs from the sealed OCI export/);
+  assert.equal(result.stdout.includes("Smoke controller"), false);
 });

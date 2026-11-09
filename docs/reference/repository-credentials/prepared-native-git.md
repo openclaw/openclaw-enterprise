@@ -117,8 +117,11 @@ independently known commit, and push a new commit to the allowed review ref. Rea
 the exact commit back independently. In a disposable test repository, also show
 that the broker refuses another writable ref, rather than relying on a client hook.
 
-To withdraw access, remove the repository binding on the running Agent. Confirm a
-new authenticated fetch is denied and chat still works. Withdrawal cannot erase
+To withdraw access, remove the repository binding on the Agent. Finite removal
+remains effective while Stop is pending; re-adding the binding cannot restore the
+original revision’s grant, even if a later deployment supersedes Stop. A denied Stop
+does not prevent Git detachment or authorize shutting down the Agent, including through a due maintenance pass. An earlier unacknowledged policy reduction is observed before Git detachment; it is never reapplied. For an Agent
+that remains running, confirm a new authenticated fetch is denied and chat still works. Withdrawal cannot erase
 an existing clone or recall a push already sent. If the outcome of a push is
 unknown, inspect the remote ref before deciding what to do; do not replay it.
 

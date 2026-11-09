@@ -174,13 +174,15 @@ of a stale result; other lanes retain theirs. Each attempt also uploads the same
 file as `attempt-<run attempt>-<artifact-prefix>-<lane>`, which no aggregate
 pattern matches, so a failed attempt's cases survive a `--failed` rerun.
 
-The `k3d-fixture-configuration` lane runs `scripts/ci/memory-sampler.sh`
-beside tests to diagnose runner loss. Every 15 seconds it samples available and container memory, memory pressure,
-root disk and top process RSS by name, excluding arguments and environment. Minute
-summaries reach the job log; failed or cancelled lanes print the last samples.
-Each attempt uploads at most about 1 MiB as
-`memory-<artifact-prefix>-<lane>-attempt-<run attempt>`. Sampler and upload errors
-do not fail the lane; only logged summaries survive runner loss.
+`scripts/ci/memory-sampler.sh` samples memory pressure, RSS, process IDs,
+containers and disk every 15 seconds, excluding arguments and environment.
+`k3d-fixture-configuration` samples during tests and logs live summaries for
+runner-loss diagnosis. Runtime startup and browser lanes sample from before
+preparation through cleanup, then print summaries.
+
+Each attempt uploads `memory-<artifact-prefix>-<lane>-attempt-<run attempt>`
+(about 1 MiB maximum). Sampler and upload errors do not fail the lane.
+Only live summaries survive runner loss.
 
 For `images-packaging`, `scripts/ci/export-image-reconciliation.mjs` attempts to
 retain attempt-specific cleanup records for prepared controller and runtime tags.

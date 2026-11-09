@@ -642,6 +642,25 @@ const authoredScenarios = {
       "At 390 px, scroll until the note Not deleted: see above sits at the bottom of the window, with Delete Research assistant focused. Switch to another window, then return. The row reads Deleting, and Delete and its note are both in view.",
     ],
   } satisfies LocalScenario,
+  agentsNamespaceFocusDuringRefresh: {
+    group: "Pages/Agents",
+    name: "Namespace focus during list refresh",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        skip: 1,
+        once: true,
+        delayMs: 6500,
+      },
+    ],
+    description:
+      "The simulated Agents list refresh waits briefly so you can move keyboard focus to the Namespace selector. When the list returns, focus stays on the selector.",
+    steps: [
+      "Tab to Research assistant. Switch to another window, then return to start the list refresh.",
+      "While the list refreshes, Tab to the Namespace selector. Wait for the list to return and check that the selector still has focus.",
+      "Press Tab to continue from the selector, then Shift+Tab to return to it.",
+    ],
+  } satisfies LocalScenario,
   agentsRowRefocusStopped: {
     group: "Pages/Agents",
     name: "Refocus after another person's stop",

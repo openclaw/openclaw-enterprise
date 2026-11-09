@@ -464,11 +464,11 @@ func printTable(out io.Writer, items []any, columns []column) error {
 	}
 
 	writer := tabwriter.NewWriter(out, 0, 8, 2, ' ', 0)
-	headings := make([]string, len(columns))
+	cells := make([]string, len(columns))
 	for index, column := range columns {
-		headings[index] = column.title
+		cells[index] = column.title
 	}
-	if _, err := fmt.Fprintln(writer, strings.Join(headings, "\t")); err != nil {
+	if _, err := fmt.Fprintln(writer, strings.Join(cells, "\t")); err != nil {
 		return err
 	}
 	for _, item := range items {
@@ -476,15 +476,14 @@ func printTable(out io.Writer, items []any, columns []column) error {
 		if !ok {
 			return fmt.Errorf("OCC returned an invalid resource")
 		}
-		row := make([]string, len(columns))
 		for index, column := range columns {
 			value := resource[column.key]
 			if column.format != nil {
 				value = column.format(value)
 			}
-			row[index] = tableCell(value)
+			cells[index] = tableCell(value)
 		}
-		if _, err := fmt.Fprintln(writer, strings.Join(row, "\t")); err != nil {
+		if _, err := fmt.Fprintln(writer, strings.Join(cells, "\t")); err != nil {
 			return err
 		}
 	}

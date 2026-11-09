@@ -1378,10 +1378,11 @@ test("full-integration lanes read NODE_BASE_IMAGE from a variable their environm
   }
 });
 
-test("full-integration uses ordinary CI runners for kernel, sandbox, and image lanes", () => {
+test("full-integration preserves qualified runners for kernel, sandbox, and image lanes", () => {
   // Hosted ubuntu-24.04 refuses Chromium's sandbox, which PostgreSQL Authentication's
   // sign-in cases turn on (finding 1383), and the k3d lanes need a kernel that enforces
-  // NetworkPolicy. These lanes must run where ci.yml runs them.
+  // NetworkPolicy. Keep the runner family; State retains its qualified eight-CPU
+  // Full Integration allocation while ordinary CI uses four CPUs.
   const jobs = loadYaml(".github/workflows/full-integration.yml").jobs;
   const job = jobs["pr-safe-same-sha"];
   const runnerFor = (target, lane) => {
@@ -1406,7 +1407,11 @@ test("full-integration uses ordinary CI runners for kernel, sandbox, and image l
     assert.ok(pinned.includes(lane), lane);
   }
   for (const lane of pinned) {
-    assert.equal(runnerFor(job, lane), ciRunners.get(lane), lane);
+    assert.equal(
+      runnerFor(job, lane),
+      lane === "k3d-fixture-state" ? "blacksmith-8vcpu-ubuntu-2404" : ciRunners.get(lane),
+      lane,
+    );
   }
   const images = jobs["image-lanes-same-sha"];
   for (const { lane } of images.strategy.matrix.include) {
@@ -2126,7 +2131,7 @@ test("real shallow bootstrap reports exact safe reasons for each guard", async (
   mkdirSync(objects);
   await all(
     [
-      ["bootstrap_non_pr_event", { GITHUB_EVENT_NAME: "push" }],
+      ["bootstrap_non_pr_event", { GITHUB_EVENT_NAME: "workflow_dispatch" }],
       ["bootstrap_event_unavailable", { GITHUB_EVENT_PATH: join(f.dir, "missing") }],
       ["bootstrap_invalid_identity", { GITHUB_SHA: "invalid;$(touch injected)" }],
       ["bootstrap_checkout_mismatch", { GITHUB_SHA: f.head }],
@@ -2155,7 +2160,7 @@ test("selector distinguishes conservative inspection outcomes", async (t) => {
   await all(
     [
       [f, {}, "docs", "docs_only"],
-      [f, { GITHUB_EVENT_NAME: "push" }, "full", "non_pr_event"],
+      [f, { GITHUB_EVENT_NAME: "workflow_dispatch" }, "full", "non_pr_event"],
       [f, { GITHUB_SHA: "invalid" }, "full", "invalid_identity"],
       [f, { GITHUB_SHA: f.head }, "full", "checkout_mismatch"],
       [
@@ -2707,6 +2712,10 @@ async function buildMatrix(t, mode, lanes) {
 
 test("the lane matrix runs every lane in full mode and only selected lanes in tests mode", async (t) => {
   const table = laneTable();
+  assert.equal(
+    table.find((row) => row.lane === "checks-baseline-1").runner,
+    "blacksmith-4vcpu-ubuntu-2404",
+  );
   // A runner label nobody provides leaves the job queued until it times out.
   // Every lane must use a self-hosted label that actionlint knows (the only
   // list in .github/actionlint.yaml).
@@ -2723,16 +2732,7 @@ test("the lane matrix runs every lane in full mode and only selected lanes in te
     // NetworkPolicy proofs need a runner kernel shown to enforce them.
     const netfilter = row.lane.startsWith("k3d-fixture-") || row.lane === "k3d-observability";
     if (netfilter) {
-      assert.equal(
-        row.runner,
-        row.lane === "k3d-observability" ||
-          row.lane === "k3d-fixture-network" ||
-          row.lane === "k3d-fixture-plugins" ||
-          row.lane === "k3d-fixture-configuration"
-          ? "blacksmith-4vcpu-ubuntu-2404"
-          : "blacksmith-8vcpu-ubuntu-2404",
-        row.lane,
-      );
+      assert.equal(row.runner, "blacksmith-4vcpu-ubuntu-2404", row.lane);
     }
   }
   const valid = [
@@ -3007,6 +3007,43 @@ test("shared runtime DAG selects only image consumers while other checks stay in
       expected,
       `${mode}: ${lanes}`,
     );
+  }
+});
+
+test("shared runtime consumers omit idle builders and preserve source builders", () => {
+  const action = read(".github/actions/run-ci-lane/action.yml");
+  const expression = action
+    .match(/- id: builder[\s\S]*?\n {6}if: >-\n([\s\S]*?)\n {6}with:/)?.[1]
+    ?.trim()
+    .replaceAll("inputs.runtime-artifact-id", 'inputs["runtime-artifact-id"]');
+  assert.ok(expression, "the builder step has an explicit condition");
+  for (const [lane, profile, source, artifact] of [
+    ["images-runtime-startup", "full", true, false],
+    ["images-runtime-startup-2", "images", true, false],
+    ["images-runtime-startup-3", "images", true, false],
+    ["images-packaging", "full", true, true],
+    ["runtime-image-fixture", "full", true, true],
+    ["checks-browser", "baseline", false, false],
+    ["k3d-fixture-state", "k3d", false, false],
+    ["k3d-observability", "k3d", false, false],
+    ["docker-model", "full", false, false],
+    ["logging-collector", "images", false, false],
+  ]) {
+    for (const [id, expected] of [
+      ["", source],
+      ["123", artifact],
+    ]) {
+      assert.equal(
+        runInNewContext(expression, {
+          inputs: { lane, profile, "runtime-artifact-id": id },
+          startsWith: (value, prefix) => value.startsWith(prefix),
+          contains: (values, value) => values.includes(value),
+          fromJSON: JSON.parse,
+        }),
+        expected,
+        `${lane}: ${id ? "shared artifact" : "source build"}`,
+      );
+    }
   }
 });
 
