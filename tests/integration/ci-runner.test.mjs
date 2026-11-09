@@ -3434,11 +3434,12 @@ test("policy probe diagnostics preserve first-match failure and omit model conte
       'import test from "node:test";',
       `import { selectPolicyProbeCommand } from ${JSON.stringify(new URL("../helpers/openshell-policy-probe.mjs", import.meta.url).href)};`,
       `const first = ${JSON.stringify(first)};`,
+      `const later = ${JSON.stringify(event(first.params.item.command + " # later-command"))};`,
       `const prefix = ${JSON.stringify(event("echo private-model-content"))};`,
       `const correct = ${JSON.stringify(correct)};`,
       'test("retains original guard", (t) => {',
       '  for (const check of ["second-agent-control-request", "second-agent-denied-request"]) t.diagnostic("openclaw-ci-measurement " + JSON.stringify({ kind: "openshell-network-policy-check", check }));',
-      `  selectPolicyProbeCommand([...Array(9).fill(prefix), ...Array(9).fill(first), correct], { uri: ${JSON.stringify(uri)}, port: 8083 }, (receipt) => {`,
+      `  selectPolicyProbeCommand([...Array(9).fill(prefix), first, ...Array(8).fill(later), correct], { uri: ${JSON.stringify(uri)}, port: 8083 }, (receipt) => {`,
       '    t.diagnostic("openclaw-ci-measurement " + JSON.stringify({ ...receipt, raw: "private-extra-content", commands: receipt.commands.map(c => ({ ...c, raw: "private-extra-content" })) }));',
       '    for (const invalid of [{ ...receipt, candidateCount: -1 }, { ...receipt, commands: Array(9).fill(receipt.commands[0]) }, { ...receipt, port: 80 }, { ...receipt, targetHash: "private-extra-content" }, { ...receipt, commands: receipt.commands.map(c => ({ ...c, hash: "private-extra-content" })) }]) t.diagnostic("openclaw-ci-measurement " + JSON.stringify(invalid));',
       "  });",
@@ -3478,6 +3479,10 @@ test("policy probe diagnostics preserve first-match failure and omit model conte
   assert.equal(receipt.selectedIndex, 9);
   assert.equal(receipt.laterUriMatches, 1, "a later match beyond the detail cap remains visible");
   assert.equal(receipt.commands.length, 8);
+  assert.equal(
+    receipt.commands[0].hash,
+    createHash("sha256").update(first.params.item.command).digest("hex"),
+  );
   assert.equal(receipt.commands[0].hasExpectedUri, false);
   assert.equal(receipt.commands[0].hasInterpreter, true);
   assert.equal(receipt.commands[0].hasUrllib, true);
