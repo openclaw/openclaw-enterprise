@@ -41,11 +41,11 @@ After the Sandbox provisions the workspace, Compute asks that same registration
 for a read-only binding scoped to the admitted revision and execution. The
 proposal adds an optional `protectedWorkspaceEndpoint` read to the Sandbox
 Driver, separate from release and status. It does not reconstruct the launch
-request or take a transport token. The Sandbox uses its retained provisioning record and authenticated observation to
-verify the Installation, Agent, revision, execution, and exact workspace.
-It checks that the original was admitted for this purpose and that the endpoint
-still leads to it. A Pod name, a selected
-profile, or a header from the workload cannot establish ownership.
+request or take a transport token. The Sandbox uses the retained signed
+reservation and an authenticated observation to verify the Installation, Agent,
+revision, execution, and exact workspace. It checks that the original was
+admitted for this purpose and that the endpoint still leads to it. A Pod name,
+a selected profile, or a header from the workload cannot establish ownership.
 
 The binding contains a canonical secure WebSocket origin, the provider's public
 certificate authority (CA) bundle, the exact remote workspace root, and a
@@ -59,18 +59,27 @@ per-turn Sandbox checks still apply.
 
 ### Serve only after release
 
-Compute rechecks the binding and requires the Sandbox to observe the same
-original's acknowledgement of its signed release. The acknowledgement must
-match both the pinned generation and the admitted startup. The binding does not
-change between reservation and acknowledgement. Compute still requires the
-independent authenticated serving check before making the new revision available.
+Compute re-reads the binding after the Sandbox observes the same original's
+acknowledgement of its signed release. The acknowledgement must match the
+pinned generation and admitted startup. Compute then compares all four
+existing pinned values with the acknowledged binding: canonical origin,
+provider CA, remote workspace root, and original generation. A missing or
+different value blocks activation. Compute does not recreate the pin during
+activation.
 
-On each connection the serving endpoint checks the existing transport
-authorization and that the released original is still current. The Gateway
-validates TLS against the pinned provider CA and checks the generation proof
-from the authenticated serving endpoint during the WebSocket upgrade. It
-accepts no workspace messages until both checks pass. A missing, duplicate, or
-different generation proof closes the connection.
+After those checks pass, Compute calls the same selected Sandbox Driver's
+existing bearer-authenticated `harnessStatus` check. The Driver uses the
+retained admitted requirements for that revision and execution. Compute
+activates only on an authenticated `serving` result. A failed, unavailable,
+or non-serving result leaves the new revision unavailable.
+
+Before returning a successful WebSocket upgrade, the relay checks the existing
+transport bearer and confirms that the released original is still current.
+Its upgrade response includes exactly one generation proof header. The
+Gateway authenticates the canonical origin using only the pinned provider CA
+and matches the single header to the pinned generation before it sends or
+accepts any native frame. A missing, duplicate, or different proof closes the
+connection without exchanging native frames.
 
 A reserved original, or an observation that is temporarily unavailable, leaves
 the new revision pending during bounded reconciliation. An invalid, changed, or
@@ -87,11 +96,13 @@ one through normal admission.
 Submit this Driver contract for human review before implementation. Then connect
 the selected Sandbox producer, Compute preparation and activation, and Gateway
 verification. Exercise the real call sites with one protected revision:
-preparation without serving, acknowledgement without changing the binding, and
-an authenticated connection to the same original. Try a held release, an
-unavailable or replaced owner, changed or missing pinned values, and a forged
-generation proof. Check that no workspace traffic flows for a refused
-connection and that ordinary and OpenShell revisions retain their current path.
+preparation without serving, acknowledgement with all four pins unchanged,
+a separate authenticated `serving` result, and a connection to the same
+original. Try a held release, an unavailable or replaced owner, a changed or
+missing pin, a failed or unavailable status after valid acknowledgement, and a
+missing, duplicate, or wrong generation proof. Check that a refused connection
+exchanges no native frames and ordinary and OpenShell revisions keep their
+current path.
 The proposal does not establish installed behavior.
 
 ## Rationale
