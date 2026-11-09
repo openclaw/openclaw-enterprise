@@ -280,6 +280,8 @@ jobs:
         run: actionlint .github/workflows/*.yml
       - name: Audit suite manifest and workflows
         run: node scripts/ci/run-tests.mjs audit
+      - name: Audit the Full Integration OpenShell view
+        run: OCC_CI_SUITE_VIEW=full-integration node scripts/ci/run-tests.mjs audit
       - uses: ./.github/actions/setup-pnpm-store-cache
         with:
           node-version: ${{ env.NODE_VERSION }}
