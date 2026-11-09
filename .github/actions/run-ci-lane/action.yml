@@ -255,6 +255,7 @@ runs:
       shell: bash
       run: pnpm openapi:check
     - name: Restore documentation dependencies
+      id: docs-store
       if: inputs.lane == 'checks-baseline-1' || inputs.lane == 'checks-browser'
       uses: ./.github/actions/setup-pnpm-store-cache
       with:
@@ -626,6 +627,7 @@ runs:
           setup-formatter=${{ steps.setup-formatter.conclusion }}
           format-check=${{ steps.format-check.conclusion }}
           openapi-check=${{ steps.openapi-check.conclusion }}
+          docs-store=${{ steps.docs-store.conclusion }}
           docs-check=${{ steps.docs-check.conclusion }}
           install-docs-browser=${{ steps.install-docs-browser.conclusion }}
           check-go-cli=${{ steps.check-go-cli.conclusion }}
