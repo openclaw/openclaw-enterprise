@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { failureSecrets } from "../../scripts/ci/failure-redaction.mjs";
+import { projectContainerLog } from "../../scripts/ci/k3d-diagnostics.mjs";
 
 // The CI runner sets this for k3d lanes (scripts/ci/k3d-diagnostics.mjs) and
 // publishes a redacted projection of each record in the lane's diagnostics
@@ -53,10 +55,11 @@ function podSummary({ metadata = {}, spec = {}, status }) {
  * events, lets the log run to the container's exit (bounded), and writes one
  * record. Diagnostics never fail the test or replace its error.
  */
-export function followContainerLog({ args, env, target, snapshot }) {
+export function followContainerLog({ args, env, target, snapshot, recoverLogs }) {
   const lines = [];
   const markers = [];
   let partial = "";
+  let structuredPartial = false;
   let bufferedChars = 0;
   let omittedLines = 0;
   const stream = { startedAt: new Date().toISOString() };
@@ -78,13 +81,18 @@ export function followContainerLog({ args, env, target, snapshot }) {
   });
   child.stdout.setEncoding("utf8");
   child.stdout.on("error", () => {});
-  child.stdout.on("data", (chunk) => {
+  function appendLogs(chunk) {
     const parts = (partial + chunk).split("\n");
-    partial = parts.pop().slice(-maxBufferedChars);
+    const tail = parts.pop();
     for (const line of parts) {
-      lines.push(line);
-      bufferedChars += line.length;
+      if (!structuredPartial && !line.includes("OCSF-JSON")) {
+        lines.push(line);
+        bufferedChars += line.length;
+      }
+      structuredPartial = false;
     }
+    structuredPartial ||= tail.includes("OCSF-JSON");
+    partial = structuredPartial ? "" : tail.slice(-maxBufferedChars);
     while (
       (bufferedChars > maxBufferedChars || lines.length > maxBufferedLines) &&
       lines.length > 0
@@ -92,7 +100,8 @@ export function followContainerLog({ args, env, target, snapshot }) {
       bufferedChars -= lines.shift().length;
       omittedLines += 1;
     }
-  });
+  }
+  child.stdout.on("data", appendLogs);
 
   async function stop() {
     if (stream.endedAt !== undefined || child.pid === undefined) {
@@ -107,8 +116,14 @@ export function followContainerLog({ args, env, target, snapshot }) {
 
   async function takeSnapshot(label) {
     try {
-      const { pods = [], events = [] } = await snapshot();
-      return { label, at: new Date().toISOString(), pods: pods.map(podSummary), events };
+      const { pods = [], events = [], unavailable } = await snapshot();
+      return {
+        label,
+        at: new Date().toISOString(),
+        pods: pods.map(podSummary),
+        events,
+        ...(unavailable ? { unavailable: true } : {}),
+      };
     } catch {
       return { label, at: new Date().toISOString(), unavailable: true };
     }
@@ -119,6 +134,13 @@ export function followContainerLog({ args, env, target, snapshot }) {
     // The stream ends when the container exits: keep its shutdown lines.
     stream.ended = await settlesWithin(ended, waitForExitMs);
     await stop();
+    // An early ContainerCreating failure can end the follower before there are logs.
+    // The caller may supply one bounded read after the failed readiness wait.
+    if (stream.ended && stream.exitCode !== 0 && recoverLogs) {
+      await recoverLogs()
+        .then(appendLogs)
+        .catch(() => {});
+    }
     snapshots.push(await takeSnapshot("after-log"));
     const record = {
       test: t.fullName ?? t.name,
@@ -142,13 +164,7 @@ export function followContainerLog({ args, env, target, snapshot }) {
         },
       );
     } else {
-      t.diagnostic(
-        [
-          `${target.container} log of ${target.namespace}/${target.pod} (${reason}):`,
-          ...markers.map(({ label, at }) => `marker ${at} ${label}`),
-          ...record.lines,
-        ].join("\n"),
-      );
+      t.diagnostic(JSON.stringify(projectContainerLog(record, failureSecrets([process.env]))));
     }
   }
 

@@ -25,7 +25,7 @@ import {
   settlePageRequests,
   settledView,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
 import {
@@ -36,7 +36,7 @@ import {
   taggedView,
   waitForFocusedLabel,
 } from "./console-refocus-helpers.ts";
-import { withholdPermissionSummary } from "./console-agents-test-support.mjs";
+import { withholdPermissionSummary } from "./console-agents-test-support.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import {
   AGENT_STOP_AND_DELETE_DENIED,

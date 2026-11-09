@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-04
-last_updated_session: authoring-run/2811a56d-1652-4ba4-bb5f-a5be2e647c16
+updated: 2026-11-09
+last_updated_session: authoring-run/0cf74a54-fba6-49b1-950c-18d296f43bd9
 ---
 
 # Container publication flow
@@ -34,7 +34,7 @@ graph TD
   A["Operator selects main SHA and successful CI"] --> B["Validate source, CI and approved base"]
   B --> C["Pin timestamps to the source commit"]
   C --> D["Build controller and runtime on native AMD64 and ARM64"]
-  D --> E["Load and smoke each native config ID"]
+  D --> E["Verify each native image and run smoke"]
   E --> H["Canonicalize descriptors and assemble OCI indexes"]
   H -->|either fails| X["Stop before publication"]
   H -->|both pass| F["Seal and upload each archive"]
@@ -66,6 +66,24 @@ permission or protected-environment credentials.
 `.github/workflows/container-publish.yml:jobs.prepare` calls the reusable
 `.github/workflows/container-check.yml:jobs.prepare` image/architecture matrix. Controller and runtime each build on native AMD64 and ARM64 Linux runners.
 See [shared CI settings](../release/configuration.md#build-settings) for native runner defaults and overrides.
+
+### Runtime source verification
+
+To verify runtime changes locally, first
+[resolve the build arguments](../../deploy/runtime/README.md#resolve-openclaw-build-arguments), then run:
+
+```bash
+docker build -f deploy/runtime/Dockerfile \
+  "${openclaw_build_args[@]}" --target openclaw-bridge-tests .
+```
+
+Runtime jobs first build the explicit `openclaw-bridge-tests` target, which runs
+the broad bridge suites, CUA tests, and source typechecks. The subsequent image
+assembly uses the same checkout, source build arguments, base, and platform.
+Verification failure prevents assembly, smoke checks, and artifact upload through
+the normal required-step failure path. Local image assembly has no dependency on
+this target; see [local source verification](../../deploy/runtime/README.md#verify-runtime-source).
+
 Each job checks its architecture and logs CPU, memory, and available disk.
 The reported runner label alone is not evidence of allocated capacity.
 `scripts/ci/setup-tools.sh` installs checksum-pinned kubectl, k3d, Helm, and yq
@@ -102,7 +120,17 @@ plugin's installation. Build stages use full Bookworm; final images use separate
 pinned slim bases. `Dockerfile` checks its dependency and runtime stages, and
 `deploy/runtime/Dockerfile` checks both bases and its runtime, for Node 24.22.1+
 within the 24 series. Older explicit overrides fail. Both bases apply available
-Debian updates; image digests do not freeze Debian repositories.
+Debian updates; image digests do not freeze Debian repositories. Every package-index
+refresh uses `apt-get update --error-on=any`, so any failed index download stops
+the build before installation or upgrade can use stale indexes.
+
+`deploy/runtime/Dockerfile` and
+`deploy/runtime/repository-credentials/Dockerfile.client` download the pinned
+GitHub CLI archive and checksum manifest with at most six retries, including
+partial-transfer errors. Curl resets regular output files before retrying.
+Permanent errors also consume this retry budget, then fail the build. The pinned
+manifest digest and its archive checksum must both pass before extraction or
+execution; checksum mismatches are not retried.
 
 Publication builds use the default package registries. Operators building from
 source can [configure a package registry mirror](../guides/deploy/production-installation.md#build-through-a-package-registry-mirror)
@@ -128,6 +156,14 @@ under the Sandbox workspace. Existing parent permissions and filesystem admissio
 checks remain unchanged. The final image records the patch checksums in its
 provenance.
 
+The [Codex profile patch](../../deploy/runtime/openclaw-codex-full-access-profile.patch)
+requires the requested named profile before returning a thread. Refusals for profiles
+other than `:danger-full-access` report fixed request-source, selector-agreement and
+response-comparison categories, without profile names or configuration. Missing metadata
+and a different returned ID remain refusals. The message directs the caller to ask
+the workspace administrator to verify profile availability and runtime compatibility
+before retrying.
+
 The runtime disables npm background update checks. See the
 [runtime defaults](../../deploy/runtime/README.md).
 
@@ -149,8 +185,12 @@ Final image checks require `@openclaw/proc-safe/reaper` to return true from
 
 `scripts/ci/container-release.mjs:smoke` requires a native runner matching the
 selected platform. It binds the OCI export to the build output digest, loads it
-with Skopeo, checks Docker's config ID and architecture, and runs the existing
-startup suite with native deadlines. A success receipt binds the platform digest
+with Skopeo, checks the loaded config and architecture, and runs the existing
+startup suite by immutable image ID with native deadlines. For the containerd
+store, `scripts/upgrade-image-identity.py` exports and hash-verifies the selected
+manifest/config; its config digest must match the original OCI config, which
+binds configuration and ordered layer diff IDs. Docker's manifest/index ID is
+not a config digest. The legacy store retains its direct config-ID check. A success receipt binds the platform digest
 to the source, workflow, run/attempt, CI evidence, image, and build base. Failed
 smokes cannot upload platform artifacts. The temporary loaded image is removed.
 
@@ -166,7 +206,7 @@ Linux manifest with matching config and content digests. Publication still consu
 this sealed archive; registry access is not needed during assembly.
 
 Before runtime smoke, `scripts/ci/prepare.mjs:prepareRuntimeImageSmoke` imports
-the loaded config ID into a disposable k3d cluster. It reuses the Images and
+the verified loaded image ID into a disposable k3d cluster. It reuses the Images and
 Packaging lane's reviewed Codex seccomp derivation and sandbox probes, then passes
 the resulting profile and ownership state to the Docker tests. This preparation
 does not rebuild the runtime. Cleanup removes the owned cluster and temporary
@@ -264,6 +304,16 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-09 05:23: Bind native smoke to the original OCI config with either Docker image store. (authoring-run/0cf74a54-fba6-49b1-950c-18d296f43bd9 - 3b898fdc4a27c5cfcc6cbeb7196d96b02368da8b)
+
+- 2026-11-08 11:56: Retry partial GitHub CLI downloads without weakening checksum verification. (authoring-run/47fd7930-a5df-419c-91d9-0d56b7476cc0 - 4566d20b8ef66a3268e27bceac946765ecd5d336)
+
+- 2026-11-07 00:55: Stop image builds when Debian package indexes cannot refresh. (authoring-run/8cbd0aef-172d-4a4f-baa0-cd6d0d75025c - c8a9a5f66d138afa4ded680080fad0dc821a5af6)
+
+- 2026-11-06 10:40: Separate local runtime assembly from required native CI source verification. (authoring-run/67960fd7-f16d-459d-83ae-8dc02997f0d5 - a239e6df5946cc62367ab7872791e4c0edf358bc)
+
+- 2026-11-05 19:00: Categorize named-profile refusals without exposing profile values. (authoring-run/d159cc84-e825-40d4-a8db-8adc7ca9ce42 - 0ecbe50bfe)
 
 - 2026-11-04 22:30: Document the Debian curl CONNECT-authentication backport and package verification. (authoring-run/2811a56d-1652-4ba4-bb5f-a5be2e647c16 - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 

@@ -19,6 +19,7 @@ import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from 
 import {
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
+  AGENT_WITH_NODE_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   managedInstalls,
@@ -508,7 +509,7 @@ console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "u
   );
 
   test(
-    "runtime image enrolls the restricted workspace node and reconnects with saved credentials",
+    "runtime image recovers a lost workspace node hello and reconnects with saved credentials",
     imageTestOptions,
     async (t) => {
       // The Kubernetes entrypoint admits the workspace command grant before pairing.
@@ -522,9 +523,33 @@ console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "u
         new URL("../fixtures/runtime-workspace-node.mjs", import.meta.url),
         "utf8",
       );
+      // Only the unrelated Codex sibling is inert. Native setup, the node, Gateway,
+      // and the production supervisor execute their real logic; the fixture's
+      // transport proxy drops one credential-bearing hello before node delivery.
+      const supervisor = `
+const cp = require("node:child_process");
+const originalSpawn = cp.spawn;
+cp.spawn = (command, args, options) => originalSpawn(command,
+  args[0] === "-e" ? ["-e", "setInterval(() => {}, 1000)"] : args, options);
+${AGENT_WITH_NODE_ENTRYPOINT}`;
+      await runDocker(
+        [
+          "exec",
+          "-i",
+          containerName,
+          "node",
+          "-e",
+          'const fs = require("node:fs"); const files = JSON.parse(fs.readFileSync(0, "utf8")); for (const [name, content] of Object.entries(files)) fs.writeFileSync(name, content);',
+        ],
+        {},
+        JSON.stringify({
+          "/tmp/workspace-node-supervisor.cjs": supervisor,
+          "/tmp/runtime-workspace-node.mjs": source,
+        }),
+      );
       // The fixture bounds every CLI call and wait by one deadline 10 s inside this
       // exec timeout, so a hung call fails with its own name.
-      const execTimeoutMs = 240_000 * imageSmokeTimeoutMultiplier;
+      const execTimeoutMs = 360_000 * imageSmokeTimeoutMultiplier;
       const { stdout } = await runDocker(
         [
           "exec",
@@ -532,15 +557,20 @@ console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "u
           `WORKSPACE_PROOF_BUDGET_MS=${execTimeoutMs - 10_000}`,
           containerName,
           "node",
-          "--input-type=module",
-          "-e",
-          source,
+          "/tmp/runtime-workspace-node.mjs",
         ],
         { timeout: execTimeoutMs },
       );
       const result = JSON.parse(stdout);
       assert.equal(result.sameIdentityAfterRestart, true);
-      assert.equal(result.singleBootstrapCompletion, true);
+      assert.equal(result.sameIdentityAfterReplacementSetup, true);
+      assert.equal(result.stableCompletionPerSetup, true);
+      assert.equal(result.lostHelloConfirmedWithoutSavedToken, true);
+      assert.equal(result.consumedSetupRetryRejected, true);
+      assert.equal(result.sameIdentityAfterPairingRecovery, true);
+      assert.equal(result.possessionEstablishedAfterRecovery, true);
+      assert.equal(result.sameTokenAfterRedeploy, true);
+      assert.equal(result.possessionClearedOnRetirementAndReplacement, true);
       assert.equal(result.commands.length, 7);
       t.diagnostic(`slowest gateway call: ${result.slowestCallMs} ms`);
     },
@@ -621,7 +651,9 @@ process.exit(child.status ?? 1);
           "-e",
           launch,
         ],
-        {},
+        // The sequential suite's per-case deadlines total 313 seconds. Keep them
+        // intact and allow container startup/reporting beyond that combined budget.
+        { timeout: 360_000 * imageSmokeTimeoutMultiplier },
         JSON.stringify(files),
       ).catch((error) => {
         // CI truncates the error message and drops the command output, so name the

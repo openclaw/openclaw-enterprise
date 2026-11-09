@@ -39,7 +39,7 @@ import {
   createAuthenticatedControllerRequest,
   createTestAuthPrincipal,
 } from "../helpers/auth-session.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.mjs";
@@ -1199,7 +1199,19 @@ test("Kubernetes admission supports dedicated Codex repositories for every profi
       const path = `${f.collection}/${agent.id}`;
       const deployed = await f.request("POST", `${path}/deploy`);
       assert.equal(deployed.status, 202, JSON.stringify(deployed));
-      assert.deepEqual(deployed.data.harness, { id: "codex", version: "1.0.0", mode: "dedicated" });
+      assert.deepEqual(deployed.data.harness, {
+        id: "codex",
+        version: "1.0.0",
+        mode: "dedicated",
+        overrides: {},
+        configuration: {
+          modelProvider: {
+            protocol: "openai-responses",
+            baseUrl: "https://api.openai.com/v1",
+            supportsStandaloneWebSearch: false,
+          },
+        },
+      });
       assert.deepEqual(deployed.data.repositoryCredentials.bindings, bindings);
       const historical = await f.request("GET", `${path}/revisions/${deployed.data.id}`);
       assert.deepEqual(historical.data.repositoryCredentials, deployed.data.repositoryCredentials);
@@ -1308,7 +1320,7 @@ test("Agent save and deployment refuse a Codex network proxy that blocks the rep
   assert.equal(unbound.status, 202, JSON.stringify(unbound));
 });
 
-test("Embedded OpenClaw refuses a broker-blocking Codex proxy only with the Codex Plugin Driver", async (t) => {
+test("Embedded OpenClaw skips the Codex broker proxy and refuses Codex plugin selections", async (t) => {
   const f = await fixture(t);
   const configuration = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
     kind: "agent",
@@ -1325,15 +1337,13 @@ test("Embedded OpenClaw refuses a broker-blocking Codex proxy only with the Code
   // Without plugins no Plugin Driver runs Codex in the Gateway, so nothing reads the proxy.
   const plain = await create();
   assert.equal(plain.status, 201, JSON.stringify(plain));
-  // With the Codex Plugin Driver, the Gateway's Codex carries the broker traffic.
+  // Enabling the Codex catalog does not install a Codex bridge on an OpenClaw Harness.
   const driver = new CodexPluginDriver();
   f.controller.registerDriver(driver);
   f.controller.selectDriver("plugin", driver.id);
-  assertBrokerProxyRefused(
-    await create({ "codex-plugin:linear@openai-curated-remote": { enabled: true } }),
-    BROKER_PROXY_DISABLED,
-    "embedded Codex plugins",
-  );
+  const refused = await create({ "codex-plugin:linear@openai-curated-remote": { enabled: true } });
+  assert.equal(refused.status, 400, JSON.stringify(refused));
+  assert.match(refused.error.message, /Plugin Driver.*openclaw Harness/i);
 });
 
 test("Provisioning refuses a Codex network proxy that blocks the repository broker before queueing", async (t) => {
@@ -1804,7 +1814,7 @@ async function protectedOpenShellComposition(
   const git =
     installationAccess &&
     new OpenShellGitRuntime(
-      { protectedExecution: true },
+      {},
       createGitHubRepositoryDeliveryResolver(
         validateGitHubRepositoryRegistry(f.registry, backendId),
       ),

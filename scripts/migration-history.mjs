@@ -151,6 +151,33 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 65 && completedCount > 65) {
     return "preAgentDeployIntent";
   }
+  if (count === 66 && completedCount > 66) {
+    return "preAgentCredentialSourceLimit";
+  }
+  if (count === 67 && completedCount > 67) {
+    return "preAgentPluginDriver";
+  }
+  if (count === 68 && completedCount > 68) {
+    return "preConnectionTemplates";
+  }
+  if (count === 69 && completedCount > 69) {
+    return "preSavedConnections";
+  }
+  if (count === 70 && completedCount > 70) {
+    return "preDefaultUsers";
+  }
+  if (count === 71 && completedCount > 71) {
+    return "preHarnessOverrides";
+  }
+  if (count === 72 && completedCount > 72) {
+    return "preAccountAdministrationPolicy";
+  }
+  if (count === 73 && completedCount > 73) {
+    return "preFiniteRepositorySessionWithdrawal";
+  }
+  if (count === 74 && completedCount > 74) {
+    return "preHumanAuthenticationResults";
+  }
   if (count === completedCount) {
     return "completed";
   }

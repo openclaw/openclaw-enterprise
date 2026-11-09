@@ -35,6 +35,27 @@ before changing shared dependencies or hook configuration.
   fail-closed OpenShell development profile and does not make OpenShell a
   supported production Agent runtime.
 
+## Build a controller image
+
+Controller images built by the Kubernetes-only launcher automatically record the
+source checkout's Git `HEAD`. Turn on **Debug mode** in Console Settings to read it.
+The SHA identifies the base commit; an image also includes local source edits.
+Building a controller requires a Git checkout. Selecting an existing controller
+image keeps that image's metadata.
+
+For a standalone controller build, use the same helper. Replace the base image
+with the approved immutable Node image for your environment:
+
+```bash
+node scripts/build-controller.mjs docker --target runtime \
+  --build-arg NODE_BASE_IMAGE='<approved-node-image@sha256:digest>' \
+  --tag openclaw-enterprise-controller:development
+```
+
+The helper detects the SHA without a custom build argument. Use `podman` in
+place of `docker` for a Podman build. Building an image does not update a running
+installation.
+
 ## Choose checks for your change
 
 Use [local checks](../testing/local.md) for linting, formatting, types, and

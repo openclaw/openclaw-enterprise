@@ -1,353 +1,329 @@
 import assert from "node:assert/strict";
-import { randomBytes, randomUUID, createHash } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import test from "node:test";
+import { waitFor } from "../helpers/wait-for.mjs";
+import {
+  beforeNarrowGitPreparation,
+  narrowOnlineGitJourney,
+} from "../helpers/postgres-repository-set-journey.ts";
 import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
-import type { ProtectedRepositoryGitMaterial } from "../../packages/contracts/src/index.ts";
 import type { EgressAuthorityConfiguration } from "../../apps/controller/src/composition/egress-authority.ts";
-import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
 import type { PostgresPool } from "../../packages/occ/src/index.ts";
 
-// Real standing approval, persisted route, runtime, provider and stock gRPC client. The
-// supervisor, Pod identities and material are controlled; no credential or origin is needed.
-for (const outcome of ["unsent", "lost-reply"] as const) {
-  test(
-    `OpenShell standing rotation preserves custody when ${outcome}`,
-    { ...requiresPostgres, timeout: 45_000 },
-    async (t) => {
-      const { f, registry, revision, credentials, binding, key, approval } =
-        await standingExecutionFixture(t, import.meta.url);
-      const routes = new PostgresOpenShellGitRouteStore(f.observerPool);
-      const model = "original-model";
-      const workspace = "team-workspace";
-      const sandbox = "git-execution";
-      const firstDeadline = credentials.deadlineWallMs;
-      const { client, world } = await gitExpiryGateway(t, {
-        model,
-        workspace,
-        sandbox,
-        revisionId: revision.id,
-        deadline: firstDeadline,
-        platformProfile: false,
-        trackGitExpiry: true,
-      });
-      let workload = "original-pods-and-containers";
-      const continuity = { model, workload: async () => workload };
-      const context = async () => ({ client, workspace, sandbox, continuity });
-      const signal = AbortSignal.timeout(40_000);
-      const identity = {
-        sandboxId: "original-sandbox-id",
-        workspace,
-        requestId: "fixture-request",
-        bindingId: "",
-      };
-      let candidate = 1;
+type RuntimeOwner = Parameters<OpenShellGitRuntime["start"]>[0];
+
+// These cases use selected-repository held launch and the original route owner.
+test(
+  "held OpenShell route stays closed to a cold reader and closes on worker replacement",
+  { ...requiresPostgres, timeout: 120_000 },
+  async (t) => {
+    await narrowOnlineGitJourney(t, import.meta.url, async (journey) => {
+      const { runtime, revision, client, workspace, sandbox, pool, peer } = journey;
+      const routes = new PostgresOpenShellGitRouteStore(pool);
+      const owner = runtime["owner"];
+      assert.ok(owner);
       let reads = 0;
-      let afterSelection: (() => void) | undefined;
-      let replaceAtWriter = false;
-      const material = (n: number, end: number) =>
-        ({
-          ...binding.grant,
-          value: randomBytes(32).toString("hex"),
-          expiresAt: new Date(end).toISOString(),
-          sessionId: "session-" + n,
-          materialVersion: randomUUID(),
-          preparationAttemptId: randomUUID(),
-          repository: "example/source",
-          pushRef: "refs/heads/review",
-          apiOrigin: "https://api.github.com",
-        }) satisfies ProtectedRepositoryGitMaterial;
-      const materials = [
-        undefined,
-        material(1, firstDeadline),
-        material(2, firstDeadline + 120_000),
-        material(3, firstDeadline + 240_000),
-        material(4, firstDeadline + 360_000),
-      ];
-      const assertReceived = () => {
-        const { value, expiresAt } = materials[candidate]!;
-        assert.equal(world.gitExpiresAt, Date.parse(expiresAt));
-        assert.ok(
-          world.installedDigest === createHash("sha256").update(value).digest("hex"),
-          "the stock credential update carried the selected synthetic value",
-        );
+      const cold = new OpenShellGitRuntime(
+        runtime.configuration,
+        createGitHubRepositoryDeliveryResolver(peer.registry),
+      );
+      cold["routes"] = routes;
+      // Delegate to the selected production owner; count only the cold worker's reads.
+      cold["owner"] = {
+        readOpenShellMaterial: (...args: Parameters<RuntimeOwner["readOpenShellMaterial"]>) => {
+          reads++;
+          return owner.readOpenShellMaterial(...args);
+        },
+        authorizeOnlineRequest: (...args: Parameters<RuntimeOwner["authorizeOnlineRequest"]>) =>
+          owner.authorizeOnlineRequest(...args),
       };
-      const worker = () => {
-        const runtime = new OpenShellGitRuntime(
-          {
-            registrationName: "oce-prepared-git",
-            authority: {} as EgressAuthorityConfiguration,
-          },
-          createGitHubRepositoryDeliveryResolver(registry),
-        );
-        runtime["routes"] = routes;
-        runtime["owner"] = {
-          readOpenShellMaterial: async () => {
-            reads++;
-            // The prepared owner's separate contract checks session and custody. This fixture
-            // supplies a selected attempt only while this exact durable approval is current.
-            const current = await f.state.read((v) =>
-              v.repositorySessions.findStandingApproval(
-                revision.namespaceId,
-                revision.agentId,
-                binding.repositoryRef,
-              ),
-            );
-            if (
-              current?.id !== approval.id ||
-              current.generation !== approval.generation ||
-              current.scopeFingerprint !== approval.scopeFingerprint
-            ) {
-              return { absent: "withdrawn" } as const;
-            }
-            afterSelection?.();
-            const result = materials[candidate]!;
-            return replaceAtWriter ? { ...result, sessionId: "different-session" } : result;
-          },
-          authorizeOnlineRequest: async () => assert.fail("installation is not a recorded use"),
-        };
-        const prepare = () =>
-          runtime.prepare(revision, client, workspace, sandbox, signal, "/sandbox/enterprise", [
-            model,
-          ]);
-        const bind = () =>
-          runtime.bind(
-            revision.id,
-            (box) => {
-              assert.equal(box.id, identity.sandboxId);
-              assert.equal(box.annotations["openclaw.dev/revision-id"], revision.id);
-            },
-            continuity,
-          );
-        const verify = () => runtime.verifyExecution(revision, signal, context);
-        const lookup = () => runtime.lookup(identity, signal);
-        const reconcile = async () => {
-          const entry = (await runtime["entries"].get(revision.id))!;
-          entry.nextRefreshAt = 0;
-          await runtime["reconcile"](entry);
-        };
-        return { runtime, prepare, bind, verify, reconcile, lookup };
+      t.after(() => cold.close());
+      const identity = {
+        sandboxId: journey.sandboxId,
+        workspace,
+        requestId: "cold-held-route",
+        bindingId: revision.egressPlan!.execution.executionId,
       };
-
-      const warm = worker();
-      const installed = await warm.prepare();
-      identity.bindingId =
-        installed.middlewares["oce-prepared-git"].config.fields.binding_id.stringValue;
-      world.id = identity.sandboxId;
-      await warm.bind();
-      await warm.reconcile();
-      assert.equal((await warm.lookup())?.sessionId, "session-1");
-      assert.equal(world.writes, 1);
-      assertReceived();
-      const execution = await warm.verify();
-      assert.ok(execution);
-      await f.state.transact((u) => u.repositorySessions.recordStandingExecution(key, execution));
-      const original = await routes.standing(revision);
-      assert.equal(original?.route.fence, 2);
-      const clock = Date.now;
-      let advance = 125_000;
-      t.mock.method(Date, "now", () => clock() + advance); // Cross both boundaries; no sleep or SQL clock change.
-
-      const cold = worker();
-      const before = reads;
-      const probe = () => cold.verify();
-      const invalid = { ...revision, id: "unknown-revision" };
-      assert.equal(await cold.runtime.verifyExecution(invalid, signal, context), undefined);
-      await assert.rejects(
-        cold.runtime.prepare(invalid, client, workspace, sandbox, signal, "/sandbox/enterprise"),
-        /repository_expired/,
-      );
-      assert.equal(
-        await routes.standing({
-          ...revision,
-          repositoryCredentials: {
-            ...credentials,
-            standingApprovalGeneration: credentials.standingApprovalGeneration + 1,
-          },
-        }),
-        undefined,
-        "another approval generation is not this route",
-      );
-      workload = "replacement-pods";
-      assert.equal(await probe(), undefined, "matching names do not make a replacement our launch");
-      workload = "original-pods-and-containers";
-      assert.deepEqual(
-        await probe(),
-        execution,
-        "a cold worker verifies identity before normal prepare",
-      );
-      assert.deepEqual(
-        await routes.standing(revision),
-        original,
-        "read-only, including the route fence",
-      );
-      assert.equal(reads, before, "no material read to verify a cold execution");
-      assert.equal(await cold.lookup(), undefined, "cold observation does not open the route");
-      assert.deepEqual(
-        await warm.verify(),
-        execution,
-        "expired status can still identify the predecessor",
-      );
-      assert.equal(await warm.lookup(), undefined, "the expired predecessor cannot be used");
-
-      candidate = 2;
-      await warm.reconcile();
-      assert.equal((await warm.lookup())?.sessionId, "session-2");
-      assert.equal(
-        world.writes,
-        2,
-        "one successor CAS after the predecessor actually reported expired",
-      );
-      assertReceived();
-      advance += 120_000;
-      candidate = 3;
-      assert.deepEqual(await cold.verify(), execution);
-      assert.equal(await cold.lookup(), undefined, "no adoption or route opened by identity read");
-      const resumed = await cold.prepare();
-      assert.equal(resumed.existingSandboxId, identity.sandboxId);
-      await cold.bind();
-      await cold.reconcile();
-      assert.equal((await cold.lookup())?.sessionId, "session-3");
-      assert.equal(
-        world.writes,
-        3,
-        "cold adoption installs the successor after the predecessor expired",
-      );
-      assertReceived();
-      const fence = (await routes.standing(revision))!.route.fence;
-      assert.equal(fence, 5);
-
-      // Pause at the writer's provider read, after selection and write intent, before release/CAS.
-      // Use the actual approval removal. No origin request, token disclosure or use receipt.
-      // Standing readiness excludes pending writes; verifyExecution only proves the still-live
-      // execution identity and may correctly succeed while its next credential is pending.
-      candidate = 4;
-      const get = client.getProvider.bind(client);
-      let atProvider: (() => Promise<void>) | undefined;
-      t.mock.method(client, "getProvider", async (...args: Parameters<typeof get>) => {
-        const value = await get(...args);
-        if (args[1] === installed.provider && atProvider) {
-          const run = atProvider;
-          atProvider = undefined;
-          await run();
-        }
-        return value;
-      });
-      const gate = (act: () => Promise<void>) => {
-        afterSelection = () => {
-          afterSelection = undefined;
-          atProvider = act;
-        };
-      };
-      if (outcome === "lost-reply") {
-        const update = client.updateProviderCredentialsConditionally!.bind(client);
-        t.mock.method(
-          client,
-          "updateProviderCredentialsConditionally",
-          async (...args: Parameters<typeof update>) => {
-            await update(...args);
-            throw new Error("controlled lost credential write reply");
-          },
-        );
-        gate(async () => {
-          assert.equal(
-            await routes.standing(revision),
-            undefined,
-            "pending write cannot establish standing readiness",
-          );
-        });
-        await cold.reconcile();
-        assert.equal(world.writes, 4, "B reached the recipient before the reply was lost");
-        assertReceived();
-        assert.deepEqual(cold.runtime.route(revision.id), {
-          state: "blocked",
-          reason: "write_unknown",
-        });
-        assert.equal(await cold.lookup(), undefined);
-        await cold.reconcile();
-        const replacement = worker();
-        await assert.rejects(replacement.prepare(), {
-          name: "OpenShellGitRouteBlockedError",
-          reason: "repository_expired",
-        });
-        assert.equal(world.writes, 4, "neither holder nor replacement replays an uncertain write");
-        const { rows } = await f.observerPool.query(
-          `SELECT write_pending,material_version,target_material_version FROM occ.credential_deliveries WHERE revision_id=$1`,
+      const row = async () => {
+        const { rows } = await pool.query(
+          `SELECT fence, write_pending, blocked, material_version, preparation_attempt_id,
+                  target_material_version FROM occ.credential_deliveries WHERE revision_id=$1`,
           [revision.id],
         );
+        assert.equal(rows.length, 1);
+        return rows[0];
+      };
+      const original = await row();
+      assert.equal(original.blocked, null);
+      assert.equal(original.write_pending, null);
+      assert.equal(original.material_version, journey.installed.materialVersion);
+      assert.equal(original.preparation_attempt_id, journey.installed.preparationAttemptId);
+      const writes = journey.writes();
+      const issues = peer.gh.issuesOfTokens.length;
+      const traffic = peer.originCalls();
+      // This fixture has finite admission, not a historical standing witness. A cold
+      // read must not manufacture that witness from a currently held installation.
+      assert.equal(revision.repositoryCredentials!.standingApprovalId, undefined);
+      for (let read = 0; read < 2; read++) {
+        assert.equal(await cold.verifyExecution(revision, t.signal), undefined);
+        assert.equal(await cold.lookup(identity, t.signal), undefined);
         assert.deepEqual(
-          rows,
-          [
-            {
-              write_pending: "rotate",
-              material_version: materials[3]!.materialVersion,
-              target_material_version: materials[4]!.materialVersion,
-            },
-          ],
-          "unknown B never relabels A or clears the target",
+          await row(),
+          original,
+          "cold reads preserve the exact SQL fence and custody",
         );
-        return;
       }
-      gate(async () => {
-        assert.equal(
-          await routes.standing(revision),
-          undefined,
-          "pending write cannot establish standing readiness",
-        );
-        replaceAtWriter = true;
+      assert.equal(reads, 0);
+      await assert.rejects(
+        cold.prepare(revision, client, workspace, sandbox, t.signal, "/sandbox/enterprise", [
+          "openai",
+        ]),
+        { name: "OpenShellGitRouteBlockedError", reason: "worker_replaced" },
+      );
+      const closed = await row();
+      assert.deepEqual(closed, {
+        ...original,
+        fence: String(BigInt(original.fence) + 1n),
+        blocked: "worker_replaced",
       });
-      await cold.reconcile();
-      assert.equal(world.writes, 3, "a different session at the final read cannot install");
-      assert.ok(
-        await cold.runtime["entries"].get(revision.id),
-        "definite pre-send refusal retains the holder",
-      );
-      const canceled = await f.observerPool.query(
-        "SELECT write_pending,material_version FROM occ.credential_deliveries WHERE revision_id=$1",
-        [revision.id],
-      );
-      assert.deepEqual(canceled.rows, [
-        { write_pending: null, material_version: materials[3]!.materialVersion },
-      ]);
+      assert.equal(await cold.lookup(identity, t.signal), undefined);
       assert.equal(
-        await cold.lookup(),
+        await runtime.lookup(identity, t.signal),
         undefined,
-        "canceling B is not evidence that B was installed",
+        "the former holder loses service",
       );
-      replaceAtWriter = false;
-      gate(async () => {
-        await f.state.transact((u) =>
-          u.repositorySessions.revokeStanding(approval, new Date().toISOString()),
+      await assert.rejects(
+        cold.prepare(revision, client, workspace, sandbox, t.signal, "/sandbox/enterprise", [
+          "openai",
+        ]),
+        { name: "OpenShellGitRouteBlockedError", reason: "worker_replaced" },
+      );
+      assert.deepEqual(await row(), closed, "retry cannot take another fence or reopen the route");
+      assert.equal(reads, 0, "replacement closes before asking the owner for material");
+      assert.equal(journey.writes(), writes, "replacement sends no successor credential");
+      assert.equal(peer.gh.issuesOfTokens.length, issues);
+      assert.equal(peer.originCalls(), traffic);
+    });
+  },
+);
+
+// Shared sender controls start from the supported selected v5 held installation.
+// Only the successor selection is controlled: this is not standing owner renewal.
+for (const outcome of ["unsent", "lost-reply", "withdrawn"] as const) {
+  test(
+    `selected held OpenShell rotation preserves custody when ${outcome}`,
+    { ...requiresPostgres, timeout: 120_000 },
+    async (t) => {
+      await narrowOnlineGitJourney(t, import.meta.url, async (journey) => {
+        const { runtime, revision, client, pool, peer } = journey;
+        const owner = runtime["owner"];
+        const entry = runtime["states"].get(revision.id)?.entry;
+        assert.ok(owner);
+        assert.ok(entry?.installed);
+        assert.equal(revision.executionAdmission.version, 5);
+        assert.equal(revision.repositoryCredentials!.standingApprovalId, undefined);
+        const readRow = async () => {
+          const { rows } = await pool.query(
+            `SELECT fence, write_pending, blocked, material_version, preparation_attempt_id,
+                    target_material_version, desired, observed
+             FROM occ.credential_deliveries WHERE revision_id=$1`,
+            [revision.id],
+          );
+          assert.equal(rows.length, 1);
+          return rows[0];
+        };
+        const original = await readRow();
+        assert.equal(original.write_pending, null);
+        assert.equal(original.blocked, null);
+        assert.equal(original.material_version, journey.installed.materialVersion);
+        const writes = journey.writes();
+        const issues = peer.gh.issuesOfTokens.length;
+        const traffic = peer.originCalls();
+        const successor = {
+          value: randomBytes(32).toString("hex"),
+          materialVersion: randomUUID(),
+          preparationAttemptId: randomUUID(),
+          sessionId: randomUUID(),
+        };
+        let selected = false;
+        let atWriter = false;
+        let boundaryError: unknown;
+        let finalReads = 0;
+        // Delegate every authority read. Never turn an absent/withdrawn answer into material.
+        // The controlled successor isolates the shared CAS path from issuer renewal policy.
+        runtime["owner"] = {
+          authorizeOnlineRequest: (...args: Parameters<RuntimeOwner["authorizeOnlineRequest"]>) =>
+            owner.authorizeOnlineRequest(...args),
+          readOpenShellMaterial: async (
+            ...args: Parameters<RuntimeOwner["readOpenShellMaterial"]>
+          ) => {
+            const current = await owner.readOpenShellMaterial(...args);
+            if (atWriter) {
+              finalReads++;
+            }
+            if (!current || "absent" in current) {
+              return current;
+            }
+            selected = true;
+            return {
+              ...current,
+              ...successor,
+              ...(atWriter && outcome === "unsent" ? { sessionId: "changed-at-final-read" } : {}),
+            };
+          },
+        };
+        t.after(() => {
+          runtime["owner"] = owner;
+        });
+        const get = client.getProvider.bind(client);
+        t.mock.method(client, "getProvider", async (...args: Parameters<typeof get>) => {
+          const value = await get(...args);
+          if (selected && !atWriter && args[1] === entry.binding.provider) {
+            atWriter = true;
+            try {
+              const pending = await readRow();
+              assert.equal(pending.fence, String(BigInt(original.fence) + 1n));
+              assert.equal(pending.write_pending, "rotate");
+              assert.equal(pending.material_version, original.material_version);
+              assert.equal(pending.preparation_attempt_id, original.preparation_attempt_id);
+              assert.equal(pending.target_material_version, successor.materialVersion);
+              assert.deepEqual(pending.desired, original.desired);
+              assert.deepEqual(pending.observed, original.observed);
+              if (outcome === "withdrawn") {
+                await journey.removeBinding();
+              }
+            } catch (error) {
+              boundaryError = error;
+              throw error;
+            }
+          }
+          return value;
+        });
+        let accepted = 0;
+        const update = client.updateProviderCredentialsConditionally!.bind(client);
+        if (outcome === "lost-reply") {
+          const originalUpdate = client.updateProviderCredentialsConditionally;
+          assert.ok(originalUpdate);
+          client.updateProviderCredentialsConditionally = async (
+            ...args: Parameters<typeof update>
+          ) => {
+            assert.equal(args[0].credentials.GITHUB_TOKEN, successor.value);
+            const result = await update(...args);
+            accepted++;
+            assert.notEqual(result.resourceVersion, entry.binding.resourceVersion);
+            throw new Error("controlled lost selected rotation acknowledgement");
+          };
+          t.after(() => {
+            client.updateProviderCredentialsConditionally = originalUpdate;
+          });
+        }
+        // Let the existing maintenance loop own the pass; never race it with reconcile().
+        const pass = async () => {
+          const previous = runtime["running"];
+          entry.nextRefreshAt = 0;
+          await waitFor(
+            "selected rotation maintenance",
+            async () => {
+              const running = runtime["running"];
+              if (running === previous) {
+                return undefined;
+              }
+              await running;
+              return true;
+            },
+            { timeoutMs: 10_000, intervalMs: 20 },
+          );
+          if (boundaryError) {
+            throw boundaryError;
+          }
+        };
+        await pass();
+        runtime["owner"] = owner;
+        assert.equal(atWriter, true, "reach the provider read after reserving rotation");
+        assert.ok(finalReads > 0, "recheck authority after the provider read");
+        const after = await readRow();
+        assert.equal(after.fence, String(BigInt(original.fence) + 1n));
+        assert.equal(after.material_version, original.material_version);
+        assert.equal(after.preparation_attempt_id, original.preparation_attempt_id);
+        assert.deepEqual(after.desired, original.desired);
+        assert.deepEqual(after.observed, original.observed);
+        if (outcome === "lost-reply") {
+          assert.equal(accepted, 1, "the stock CAS completed before its reply was lost");
+          assert.equal(journey.writes(), writes + 1);
+          assert.equal(after.write_pending, "rotate");
+          assert.equal(after.target_material_version, successor.materialVersion);
+          assert.deepEqual(runtime.route(revision.id), {
+            state: "blocked",
+            reason: "write_unknown",
+          });
+        } else {
+          assert.equal(journey.writes(), writes, "the final authority check prevents sending CAS");
+          assert.equal(after.write_pending, null);
+          assert.equal(after.target_material_version, null);
+          assert.ok(runtime["states"].get(revision.id)?.entry, "retain the provably unsent holder");
+        }
+        const identity = {
+          sandboxId: journey.sandboxId,
+          workspace: journey.workspace,
+          requestId: "selected-rotation-custody",
+          bindingId: revision.egressPlan!.execution.executionId,
+        };
+        assert.equal(await runtime.lookup(identity, t.signal), undefined);
+        await pass();
+        if (outcome === "lost-reply") {
+          // Reconcile may not have committed the durable tombstone at the first lookup.
+          // Require it to land, and reject any other custody or target change on every read.
+          await waitFor(
+            "original rotation is durably blocked",
+            async () => {
+              const row = await readRow();
+              assert.deepEqual({ ...row, blocked: after.blocked }, after);
+              assert.ok(row.blocked === null || row.blocked === "write_unknown");
+              return row.blocked === "write_unknown" ? true : undefined;
+            },
+            { timeoutMs: 2_000, intervalMs: 20 },
+          );
+        }
+        assert.equal(
+          journey.writes(),
+          writes + accepted,
+          "maintenance never replays the refused or uncertain write",
         );
+        assert.equal(peer.gh.issuesOfTokens.length, issues);
+        assert.equal(peer.originCalls(), traffic);
+        if (outcome === "lost-reply") {
+          assert.deepEqual(
+            await readRow(),
+            { ...after, blocked: "write_unknown" },
+            "only the durable terminal refusal changes, not the custody or rotation target",
+          );
+          const cold = new OpenShellGitRuntime(
+            runtime.configuration,
+            createGitHubRepositoryDeliveryResolver(peer.registry),
+          );
+          cold["routes"] = new PostgresOpenShellGitRouteStore(pool);
+          cold["owner"] = owner;
+          t.after(() => cold.close());
+          await assert.rejects(
+            cold.prepare(
+              revision,
+              client,
+              journey.workspace,
+              journey.sandbox,
+              t.signal,
+              "/sandbox/enterprise",
+              ["openai"],
+            ),
+            { name: "OpenShellGitRouteBlockedError" },
+          );
+          assert.equal(await cold.lookup(identity, t.signal), undefined);
+          assert.equal(journey.writes(), writes + 1, "replacement cannot replay an uncertain CAS");
+        }
       });
-      await cold.reconcile();
-      assert.equal(
-        world.writes,
-        3,
-        "withdrawal during the writer's final gateway read prevented the CAS",
-      );
-      assert.equal(await routes.standing(revision), undefined);
-      const {
-        rows: [last],
-      } = await f.observerPool.query(
-        "SELECT fence, write_pending, blocked, material_version FROM occ.credential_deliveries WHERE revision_id=$1",
-        [revision.id],
-      );
-      assert.deepEqual(
-        last,
-        {
-          fence: String(fence + 2),
-          write_pending: null,
-          blocked: null,
-          material_version: materials[3]!.materialVersion,
-        },
-        "the unsent rotation was cleared; the previous write was neither relabeled nor replayed",
-      );
-      assert.equal(await cold.lookup(), undefined);
     },
   );
 }
@@ -356,128 +332,105 @@ test(
   "lost initial OpenShell route commit acknowledgement prevents bootstrap and replay across restart",
   { ...requiresPostgres, timeout: 45_000 },
   async (t) => {
-    let peer!: Awaited<ReturnType<typeof preparedStandingGitPeer>>;
-    const { f, registry, revision, credentials } = await standingExecutionFixture(
+    await beforeNarrowGitPreparation(
       t,
-      import.meta.url,
-      async (pool, namespace) => (peer = await preparedStandingGitPeer(t, pool, namespace)),
-    );
-    const model = "original-model";
-    const workspace = "route-reservation";
-    const sandbox = "reservation-sandbox";
-    const { client, world } = await gitExpiryGateway(t, {
-      model,
-      workspace,
-      sandbox,
-      revisionId: revision.id,
-      deadline: credentials.deadlineWallMs,
-      platformProfile: false,
-    });
-    let lostAcknowledgements = 0;
-    const releases: boolean[] = [];
-    // Keep the real transaction and committed row. Only its reply is lost; a pending
-    // row inserted directly by the fixture would not test the runtime's failed-open path.
-    const connection: PostgresPool = {
-      end: () => f.observerPool.end(),
-      async connect() {
-        const database = await f.observerPool.connect();
-        let initialReservation = false;
-        return {
-          async query(sql: string, values?: readonly unknown[]) {
-            const result = await database.query(
-              sql,
-              values === undefined ? undefined : [...values],
-            );
-            if (sql.includes("INSERT INTO occ.credential_deliveries")) {
-              initialReservation = true;
-            }
-            if (sql === "COMMIT" && initialReservation && lostAcknowledgements === 0) {
-              lostAcknowledgements++;
-              throw new Error("controlled lost initial reservation acknowledgement");
-            }
-            return result;
-          },
-          release(discard?: boolean) {
-            releases.push(discard === true);
-            database.release(discard);
+      async ({ runtime: first, revision, client, workspace, sandbox, pool, peer, writes }) => {
+        let lostAcknowledgements = 0;
+        const releases: boolean[] = [];
+        // Run the real reservation transaction for this admitted route, then lose only
+        // the acknowledgement of the commit.
+        const connection: PostgresPool = {
+          end: () => pool.end(),
+          async connect() {
+            const database = await pool.connect();
+            let reservation = false;
+            return {
+              async query(sql: string, values?: readonly unknown[]) {
+                const result = await database.query(
+                  sql,
+                  values === undefined ? undefined : [...values],
+                );
+                reservation ||= sql.includes("INSERT INTO occ.credential_deliveries");
+                if (sql === "COMMIT" && reservation && lostAcknowledgements === 0) {
+                  lostAcknowledgements++;
+                  throw new Error("controlled lost initial reservation acknowledgement");
+                }
+                return result;
+              },
+              release(discard?: boolean) {
+                releases.push(discard === true);
+                database.release(discard);
+              },
+            };
           },
         };
+        const routes = new PostgresOpenShellGitRouteStore(connection);
+        first["routes"] = routes;
+        const cold = new OpenShellGitRuntime(
+          first.configuration,
+          createGitHubRepositoryDeliveryResolver(peer.registry),
+        );
+        cold["routes"] = routes;
+        cold["owner"] = first["owner"];
+        t.after(() => cold.close());
+        const read = () =>
+          pool
+            .query(
+              `SELECT binding_id, fence, write_pending, blocked, material_version
+         FROM occ.credential_deliveries WHERE revision_id=$1`,
+              [revision.id],
+            )
+            .then(({ rows }) => {
+              assert.equal(rows.length, 1);
+              return rows[0];
+            });
+        const prepare = (owner: OpenShellGitRuntime) =>
+          owner.prepare(revision, client, workspace, sandbox, t.signal, "/sandbox/enterprise", [
+            "openai",
+          ]);
+        const baseline = {
+          writes: writes(),
+          issues: peer.gh.issuesOfTokens.length,
+          traffic: peer.originCalls(),
+        };
+        await assert.rejects(prepare(first), { name: "OpenShellGitObservationError" });
+        assert.equal(lostAcknowledgements, 1);
+        assert.ok(releases.includes(true), "discard the connection with uncertain commit reply");
+        const reserved = await read();
+        assert.deepEqual(reserved, {
+          binding_id: revision.egressPlan!.execution.executionId,
+          fence: "1",
+          write_pending: "bootstrap",
+          blocked: null,
+          material_version: null,
+        });
+        const closed = { name: "OpenShellGitRouteBlockedError", reason: "worker_replaced" };
+        await assert.rejects(prepare(cold), closed);
+        await assert.rejects(prepare(first), closed);
+        await assert.rejects(prepare(cold), closed);
+        assert.deepEqual(await read(), { ...reserved, fence: "2", blocked: "worker_replaced" });
+        for (const owner of [first, cold]) {
+          assert.equal(
+            await owner.lookup(
+              {
+                workspace,
+                sandboxId: "uncreated-sandbox",
+                bindingId: reserved.binding_id,
+                requestId: "uncertain-reservation",
+              },
+              t.signal,
+            ),
+            undefined,
+          );
+        }
+        await peer.prepared.maintain();
+        assert.deepEqual(
+          { writes: writes(), issues: peer.gh.issuesOfTokens.length, traffic: peer.originCalls() },
+          baseline,
+        );
+        assert.equal(lostAcknowledgements, 1);
       },
-    };
-    const routes = new PostgresOpenShellGitRouteStore(connection);
-    const runtime = () => {
-      const value = new OpenShellGitRuntime(
-        { registrationName: peer.registrationName, authority: {} as EgressAuthorityConfiguration },
-        createGitHubRepositoryDeliveryResolver(registry),
-      );
-      value["routes"] = routes;
-      value["owner"] = {
-        readOpenShellMaterial: async () =>
-          assert.fail("an unresolved reservation must not read prepared material"),
-        authorizeOnlineRequest: async () =>
-          assert.fail("reservation recovery is not a recorded use"),
-      };
-      t.after(() => value.close());
-      return value;
-    };
-    const first = runtime();
-    const prepare = (value: OpenShellGitRuntime) =>
-      value.prepare(revision, client, workspace, sandbox, t.signal, "/sandbox/enterprise", [model]);
-    await assert.rejects(prepare(first), { name: "OpenShellGitObservationError" });
-    assert.equal(lostAcknowledgements, 1);
-    assert.ok(releases.includes(true), "the uncertain connection is discarded");
-    const {
-      rows: [reserved],
-    } = await f.observerPool.query(
-      "SELECT binding_id, write_pending, blocked, material_version FROM occ.credential_deliveries WHERE revision_id=$1",
-      [revision.id],
     );
-    assert.ok(reserved);
-    assert.equal(reserved.write_pending, "bootstrap");
-    assert.equal(reserved.blocked, null);
-    assert.equal(reserved.material_version, null);
-
-    // Neither the same process nor a cold process may turn uncertainty into a supplier
-    // write. The cold attempt comes first so the failed opener's in-memory state cannot help it.
-    const cold = runtime();
-    await assert.rejects(prepare(cold), {
-      name: "OpenShellGitRouteBlockedError",
-      reason: "write_unknown",
-    });
-    await assert.rejects(prepare(first), {
-      name: "OpenShellGitRouteBlockedError",
-      reason: "write_unknown",
-    });
-    await assert.rejects(prepare(runtime()), {
-      name: "OpenShellGitRouteBlockedError",
-      reason: "write_unknown",
-    });
-    await peer.prepared.maintain();
-    for (const value of [first, cold]) {
-      assert.equal(
-        await value.lookup(
-          {
-            workspace,
-            sandboxId: "uncreated-sandbox",
-            bindingId: reserved.binding_id,
-            requestId: "uncertain-reservation",
-          },
-          t.signal,
-        ),
-        undefined,
-      );
-    }
-    assert.deepEqual(world.profileImports, []);
-    assert.deepEqual(world.providerCreates, []);
-    assert.equal(world.writes, 0);
-    assert.equal(peer.gh.issuesOfTokens.length, 0);
-    assert.equal(peer.originCalls(), 0);
-    assert.equal(lostAcknowledgements, 1);
-    const { rows } = await f.observerPool.query(
-      "SELECT blocked, material_version FROM occ.credential_deliveries WHERE revision_id=$1",
-      [revision.id],
-    );
-    assert.deepEqual(rows, [{ blocked: "write_unknown", material_version: null }]);
   },
 );
 
@@ -587,7 +540,7 @@ for (const fault of ["before write", "after commit", "during worker replacement"
       const replaced = fault === "during worker replacement";
       if (replaced) {
         // A restarted preview closes instead of inheriting the old launcher's observation.
-        const next = await routes.adopt(id, randomUUID(), "close-preview");
+        const next = await routes.adopt(id, randomUUID());
         assert.equal(next?.blocked, "worker_replaced");
         assert.equal(next?.fence, 2);
       }

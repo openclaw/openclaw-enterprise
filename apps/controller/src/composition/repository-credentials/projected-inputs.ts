@@ -9,6 +9,7 @@ import { record } from "../../drivers/repo/credentials/configuration.ts";
 import { createSystemClock } from "../../drivers/repo/credentials/clock.ts";
 import { loadConfiguration, RetiredGitHubAuthorityError } from "./config.ts";
 import { runService } from "./service.ts";
+import { readStableDescriptor } from "./stable-file-descriptor.ts";
 
 const inputLimits = {
   "config.json": 262144,
@@ -70,47 +71,13 @@ async function projectionGeneration(directory: string): Promise<string> {
 }
 
 async function readProjected(path: string, maximum: number): Promise<Buffer> {
+  const uid = process.getuid?.() ?? 0;
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  let data: Buffer | undefined;
-  try {
-    const before = await handle.stat();
-    if (
-      !before.isFile() ||
-      before.nlink !== 1 ||
-      before.size < 1 ||
-      before.size > maximum ||
-      (before.mode & 0o022) !== 0 ||
-      (before.uid !== 0 && before.uid !== process.getuid?.())
-    ) {
-      throw new Error("invalid-projected-inputs");
-    }
-    data = Buffer.alloc(before.size + 1);
-    let position = 0;
-    while (position < data.length) {
-      const result = await handle.read(data, position, data.length - position, position);
-      if (!result.bytesRead) {
-        break;
-      }
-      position += result.bytesRead;
-    }
-    const after = await handle.stat();
-    const named = await lstat(path);
-    if (
-      position !== before.size ||
-      after.size !== before.size ||
-      after.mtimeMs !== before.mtimeMs ||
-      after.ctimeMs !== before.ctimeMs ||
-      named.isSymbolicLink() ||
-      named.dev !== before.dev ||
-      named.ino !== before.ino
-    ) {
-      throw new Error("invalid-projected-inputs");
-    }
-    return Buffer.from(data.subarray(0, position));
-  } finally {
-    data?.fill(0);
-    await handle.close();
-  }
+  return readStableDescriptor(handle, maximum, {
+    uid,
+    privateFile: false,
+    statName: () => lstat(path),
+  });
 }
 
 async function clearPreviousInputs(directory: string): Promise<void> {

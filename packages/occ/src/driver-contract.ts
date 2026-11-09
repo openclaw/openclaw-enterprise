@@ -37,6 +37,8 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
         "getNamespaceAccessBinding",
         "createNamespaceAccessBinding",
         "deleteNamespaceAccessBinding",
+        "createOwnerBinding",
+        "applyConfiguredPolicy",
       ].every(
         (operation) =>
           candidate[operation] === undefined || typeof candidate[operation] === "function",
@@ -161,7 +163,10 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     );
   }
   if (driver.capability === "plugin") {
-    return typeof candidate.listCatalog === "function";
+    return (
+      (candidate.harnessId === "openclaw" || candidate.harnessId === "codex") &&
+      typeof candidate.listCatalog === "function"
+    );
   }
   if (driver.capability === "channel") {
     return (
@@ -174,6 +179,15 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     return ["listOptions", "resolve"].every((method) => typeof candidate[method] === "function");
   }
   return (
+    [
+      "normalizeHarnessOverrides",
+      "resolveHarnessConfiguration",
+      "validateHarnessCredentialSources",
+    ].every(
+      (method) => candidate[method] === undefined || typeof candidate[method] === "function",
+    ) &&
+    (candidate.normalizeHarnessOverrides === undefined ||
+      typeof candidate.resolveHarnessConfiguration === "function") &&
     typeof candidate.ensureNamespace === "function" &&
     typeof candidate.deleteNamespace === "function" &&
     typeof candidate.prepareRevision === "function" &&

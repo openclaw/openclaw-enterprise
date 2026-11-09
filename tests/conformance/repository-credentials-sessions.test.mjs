@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
+import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.mjs";
 import { requestHead } from "../fixtures/repository-credentials/builders.mjs";

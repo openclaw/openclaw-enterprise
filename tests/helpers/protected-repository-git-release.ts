@@ -1,5 +1,8 @@
 import { DEDICATED_OPENCLAW_SUPPORT } from "./sandbox-driver.ts";
-import type { SelectedDriverConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
+import type {
+  InstallationRuntimeDrivers,
+  SelectedDriverConfiguration,
+} from "../../apps/controller/src/composition/installation-config.ts";
 import { driverHasCapabilityContract } from "../../packages/occ/src/driver-contract.ts";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomUUID, verify } from "node:crypto";
@@ -175,6 +178,22 @@ export function protectedRepositoryGitRelease(
   return {
     owner,
     sandboxConfiguration,
+    selectDrivers(
+      drivers: InstallationRuntimeDrivers,
+      gateway: NonNullable<InstallationRuntimeDrivers["credentialGatewayDriver"]>,
+    ) {
+      return {
+        ...drivers,
+        protectedDriver: owner,
+        sandboxDriver: owner.require("sandbox"),
+        proxyDriver: owner.require("credential_proxy"),
+        credentialGatewayDriver: gateway,
+        installation: {
+          ...drivers.installation,
+          drivers: { ...drivers.installation.drivers, credential_gateway: { id: gateway.id } },
+        },
+      };
+    },
     publicKey: computeReleasePublicKey(privateKey),
     async releaseStartup(startupId: string, custody: ComputeRevisionContext) {
       return signComputeExecutionRelease(

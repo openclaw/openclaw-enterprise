@@ -22,11 +22,11 @@ import {
   selectSecret,
   statusTone,
   grantStaleConfigurationUpdate,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import {
   createRepositoryLaunchFixture,
   withholdPermissionSummary,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   AGENT_SAVE_DENIED,
   CONFIGURATION_SAVE_DENIED,
@@ -242,7 +242,7 @@ test("Share Agent refusals", async (t) => {
   // person.
   async function sharingPage(
     t: TestContext,
-    viewport: BrowserContextOptions["viewport"],
+    viewport: NonNullable<BrowserContextOptions["viewport"]>,
     target = namespace,
   ) {
     agents += 1;

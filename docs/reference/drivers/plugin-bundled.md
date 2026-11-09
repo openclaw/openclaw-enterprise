@@ -9,13 +9,16 @@ owns the API and policy vocabulary. The
 
 ## Selection and catalogs
 
-Select at most one bundled implementation in trusted Installation YAML:
+List the Plugin Drivers in trusted Installation YAML. Include one entry for each Harness whose catalog you want to offer.
 
 ```yaml
 drivers:
   plugin:
-    id: occ-plugin
-    configuration: {}
+    - id: occ-plugin
+      configuration: {}
+    - id: codex-plugin
+      configuration:
+        catalogSource: openai-curated
 ```
 
 Dedicated Codex defaults to `catalogSource: hosted`, which discovers plugins
@@ -25,16 +28,8 @@ using a PAT or a Secret containing one. Hosted discovery needs API HTTPS to
 renders matching Helm egress; manual YAML needs equivalent policy. The driver
 does not configure Kubernetes networking.
 
-Select the hardcoded OpenAI catalog to
-browse without a discovery credential or provider catalog requests:
-
-```yaml
-drivers:
-  plugin:
-    id: codex-plugin
-    configuration:
-      catalogSource: openai-curated
-```
+The `openai-curated` setting above enables browsing without a credential or
+provider request.
 
 The curated catalog includes Linear, Slack, GitHub, Notion, Figma, Canva,
 Datadog, Sentry, Adobe, Coursera Learning, and Google Contacts. Their recorded
@@ -50,11 +45,11 @@ separate Codex profile:
 ```yaml
 drivers:
   plugin:
-    id: codex-plugin
-    configuration:
-      codexExecutable: /opt/codex/bin/codex
-      codexHome: /var/lib/occ/codex-catalog
-      requestTimeoutMs: 10000
+    - id: codex-plugin
+      configuration:
+        codexExecutable: /opt/codex/bin/codex
+        codexHome: /var/lib/occ/codex-catalog
+        requestTimeoutMs: 10000
 ```
 
 Supply `codexExecutable` and `codexHome` together. Provision that home with Codex
@@ -103,16 +98,15 @@ Unavailable entries show the reported cause and a recovery link:
 | No recognized reason                               | Review workspace plugin access without assuming a specific cause.                                   |
 | Unsupported native components or no apps or skills | Check [native limits](#native-mappings-and-limits); changing ChatGPT access cannot add OCE support. |
 
-Catalog membership grants no access; catalog visibility and credentials do not
-establish native execution or policy enforcement. Startup independently resolves
-selections and still requires the Agent's projected credentials and provider
-access. Unknown configuration options, arbitrary sources or versions, and
+Catalog access grants no runtime authority. Startup resolves the selections and
+requires the Agent’s projected credentials and provider access. Unknown configuration options, arbitrary sources or versions, and
 external PluginDriver packages are rejected.
 
-| Driver ID      | Implementation        | Agent Harness     | Catalog source                                                                                               |
-| -------------- | --------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------ |
-| `occ-plugin`   | `occ/openclaw-plugin` | Embedded OpenClaw | Bundled catalog: `occ-plugin:diffs` (`@openclaw/diffs`), pinned to `2026.8.2` and npm integrity.             |
-| `codex-plugin` | `occ/codex-plugin`    | Dedicated Codex   | Native `openai-curated-remote` marketplace; selection IDs are `codex-plugin:<plugin>@openai-curated-remote`. |
+| Driver ID      | Implementation        | Agent Harness      | Catalog source                                                                                               |
+| -------------- | --------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `occ-plugin`   | `occ/openclaw-plugin` | Dedicated OpenClaw | Bundled [Google Workspace and Slack](../managed-openclaw-plugins.md) on Kubernetes.                          |
+| `occ-plugin`   | `occ/openclaw-plugin` | Embedded OpenClaw  | Bundled `occ-plugin:diffs` (`@openclaw/diffs`), pinned to `2026.8.2` and npm integrity.                      |
+| `codex-plugin` | `occ/codex-plugin`    | Dedicated Codex    | Native `openai-curated-remote` marketplace; selection IDs are `codex-plugin:<plugin>@openai-curated-remote`. |
 
 Codex startup resolves current identity, release metadata, and concrete apps from
 `plugin/read`'s `detail.apps` and `detail.skills`. Hosted discovery supports skills

@@ -32,7 +32,7 @@ command; use this page as its migration inventory.
       [split-layout tenant](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations));
       the image helper's preflight stops before quiescence.
 - [ ] Before the window, render the candidate chart with your live values
-      (`helm template`) and
+      (`helm template --is-upgrade`) and
       [correct any value it refuses](production-upgrade-recovery.md#correct-values-the-candidate-refuses).
       The image helper renders again and runs its startup preflight before
       stopping anything.
@@ -160,7 +160,13 @@ Create a private evidence directory and record these values before mutation.
       controller or sidecar versions.
 - [ ] PVC names and UIDs, PV names, representative workspace file hashes,
       session counts, and gateway state. Back up volumes when recovery could
-      require restoring Agent data.
+      require restoring Agent data. For a streamed backup, compare source and
+      destination byte counts and SHA-256 digests for the same archive, and
+      confirm that the producer completed successfully. A zero exit status alone
+      does not prove that the full archive arrived. After an interruption, accept
+      the backup only if both byte counts match, both SHA-256 digests match, and
+      the producer completed successfully. Otherwise, retain the partial output
+      and diagnostics.
 - [ ] When recovery needs data from multiple stores, capture the required stores
       at one consistent point. Include the selected Configuration Driver's
       backing store when recovery needs current Configuration values. For the

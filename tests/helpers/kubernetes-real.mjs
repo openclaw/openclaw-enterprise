@@ -9,10 +9,10 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
-import { captureChild } from "./child-processes.mjs";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
 import { kubectlGetJson } from "./kubernetes-api-read.mjs";
 import { waitFor as pollFor } from "./wait-for.mjs";
+import { followContainerLog } from "./container-log-capture.mjs";
 
 const execute = promisify(execFile);
 
@@ -124,6 +124,96 @@ export async function withinDiagnosticDeadline(
   } finally {
     // Stops the timer once the diagnostic settles, so it does not hold the event loop.
     timer.abort();
+  }
+}
+
+// Controller startup can fail before any Compute-managed Agent Pod exists. Capture
+// that exact fixture namespace before teardown; the Agent watch cannot observe it.
+export async function waitForDeploymentAvailable(
+  context,
+  selection,
+  { namespace, deployment, container, labels },
+) {
+  const scope = ["--namespace", namespace];
+  const log = followContainerLog({
+    args: kubectlArguments(selection, [
+      "logs",
+      ...scope,
+      `deployment/${deployment}`,
+      "--container",
+      container,
+      "--follow=true",
+      "--timestamps=true",
+      "--tail=1500",
+      "--pod-running-timeout=180s",
+    ]),
+    env: process.env,
+    target: { namespace, container },
+    recoverLogs: () =>
+      withinDiagnosticDeadline(
+        () =>
+          kubectlFor(selection, [
+            "logs",
+            ...scope,
+            `deployment/${deployment}`,
+            "--container",
+            container,
+            "--timestamps=true",
+            "--tail=1500",
+            "--pod-running-timeout=5s",
+            diagnosticRequestTimeout,
+          ]),
+        { timeoutMs: 20_000, timedOut: "" },
+      ),
+    snapshot: async () => {
+      const read = (resource, extra = []) =>
+        withinDiagnosticDeadline(
+          async () =>
+            JSON.parse(
+              await kubectlFor(selection, [
+                "get",
+                resource,
+                ...scope,
+                ...extra,
+                "-o",
+                "json",
+                diagnosticRequestTimeout,
+              ]),
+            ).items,
+          { timeoutMs: 20_000, timedOut: null },
+        ).catch(() => null);
+      const [pods, events] = await Promise.all([
+        read("pods", [
+          "-l",
+          Object.entries(labels)
+            .map(([key, value]) => `${key}=${value}`)
+            .join(","),
+        ]),
+        read("events"),
+      ]);
+      return {
+        pods: pods ?? [],
+        events: events ?? [],
+        unavailable: pods === null || events === null,
+      };
+    },
+  });
+  try {
+    return await log.attachOnFailure(
+      context,
+      `deployment/${deployment} readiness`,
+      () =>
+        kubectlFor(selection, [
+          "wait",
+          ...scope,
+          "--for=condition=Available",
+          `deployment/${deployment}`,
+          "--timeout=180s",
+        ]),
+      { waitForExitMs: 0 },
+    );
+  } finally {
+    await log.stop();
   }
 }
 
@@ -387,6 +477,7 @@ export function boundedTeardown(
       process.exitCode ||= 1;
     },
     settled = testsSettled,
+    onOutcome,
   } = {},
 ) {
   // A second call for one context, in either order with withBoundedTeardown, shares the first
@@ -501,7 +592,8 @@ export function boundedTeardown(
     // A timed-out or cancelled test's signal aborts before its hooks run; its setup may still run.
     // An exit waits for it to reach its next cleanup registration, where it stops, within the limit.
     // The exit then also bounds that setup, should it hold the process (finding 1722).
-    if (testContext.signal?.aborted === true) {
+    const aborted = testContext.signal?.aborted === true;
+    if (aborted) {
       const deadline = performance.now() + stepLimitMs;
       unsettledSetups.set(after, { label, limitMs: stepLimitMs, deadline, log });
       endProcess("its test timed out or was cancelled with setup that may still run");
@@ -509,6 +601,8 @@ export function boundedTeardown(
     if (abandoned.length > 0) {
       endProcess(`abandoned cleanups ${abandoned.join(", ")}`);
     }
+    // An aborted test may still register late cleanup after this hook.
+    onOutcome?.(failures.length > 0 ? "failed" : aborted ? "incomplete" : "passed");
     if (failures.length === 1) {
       throw failures[0];
     }
@@ -670,13 +764,19 @@ export function createKubernetesClient({
 }
 
 async function applyManifest(kubectlArgumentsForSelection, manifest, { redactions = [] } = {}) {
-  const { status, stderr } = await captureChild(
-    "kubectl",
-    kubectlArgumentsForSelection(["apply", "-f", "-"]),
-    { input: manifest },
-  );
+  const child = spawn("kubectl", kubectlArgumentsForSelection(["apply", "-f", "-"]), {
+    stdio: ["pipe", "ignore", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.setEncoding("utf8").on("data", (chunk) => {
+    stderr = (stderr + chunk).slice(-4096);
+  });
+  // kubectl can reject its arguments before reading the manifest. Its exit status reports why.
+  child.stdin.on("error", () => {});
+  child.stdin.end(manifest);
+  const [status] = await once(child, "close");
   if (status !== 0) {
-    throw new Error(`kubectl apply failed (${status}): ${redact(stderr.slice(-4096), redactions)}`);
+    throw new Error(`kubectl apply failed (${status}): ${redact(stderr, redactions)}`);
   }
 }
 

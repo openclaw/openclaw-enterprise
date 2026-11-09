@@ -14,18 +14,29 @@ Job writers until the installer exits. Choose a new receipt directory under a
 private, durable parent for this target. Use a filesystem that enforces owner-only
 permissions and supports hard links and directory sync. Keep the receipt after install.
 
-The CLI syncs `intent.json` (target, attempt ID, time and input hashes) and
-`dispatch.json` before starting Helm once. While Helm waits, it can save the
-first recognized, attempt-marked Job UID in `job.json`. `helm-result.json` records
-Helm's separate outcome. A missing result means unknown. A failed or disconnected
-Helm client can leave the Job running and the database changed. Do not rerun install
-or switch to upgrade.
+Record the chart source commit and the matching CLI release or build commit and
+binary checksum in a separate private handoff record. The receipt's `version` is
+its file-format version, not the OCE release; an unversioned local CLI build can
+print `dev`. Keep this source identity with the receipt without editing its files.
+
+The CLI syncs `intent.json` (target, attempt ID, time and input hashes), writes
+the receipt notice to stdout, then syncs `dispatch.json` before starting Helm
+once. If the notice write returns an error, the command exits unsuccessfully
+and names the preserved receipt directory in its error. That error confirms
+that this attempt created no `dispatch.json` and started no Helm install.
+Keep the receipt, repair the stdout destination, and confirm the target is still
+unused before selecting a new attempt with a new receipt directory.
+
+While Helm waits, it can save the first recognized, attempt-marked Job UID in
+`job.json`. `helm-result.json` records Helm's separate outcome. After dispatch, a
+missing result means unknown. A failed or disconnected Helm client can leave the
+Job running and the database changed. Do not rerun install or switch to upgrade.
 
 The installer removes private temporary copies of the kubeconfig, chart and
 values on normal exit. After a forced kill, confirm its Helm process has exited
 before removing that installation's `occ-install-*` temporary directory. A forced kill during handoff can also leave an `occ-handoff-*`
 directory with the reader's private kubeconfig.
-Share only the receipt with the authorized reader.
+Share only the receipt and this source identity record with the authorized reader.
 
 ## Resume an installation in progress
 
@@ -35,14 +46,17 @@ discovery and check whether the Namespace exists after a missing Job. Neither
 Namespace access nor permission to list Jobs or Pods is required. If the CLI
 release is unavailable, run `go run ./cmd/occ` from the matching checkout.
 
+Run `plan` for the Job result and recovery steps, or use `doctor` to inspect the Job.
+The example uses the release name and Kubernetes namespace from the custom Helm
+guide. Substitute the values recorded for your installation.
+
 ```bash
 target=(--kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT"
-        --kube-namespace "$NAMESPACE" --release "$RELEASE")
+        --kube-namespace openclaw-system --release oce)
 # For an installation started by occ, use its original receipt directory.
 target+=(--receipt "$INSTALL_RECEIPT_DIRECTORY")
 # For an older installation without a receipt, instead use
 # --expect-job-uid "$RECORDED_JOB_UID" only if captured during that attempt.
-occ installation doctor "${target[@]}"
 occ installation plan "${target[@]}"
 ```
 

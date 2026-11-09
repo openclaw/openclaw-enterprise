@@ -109,11 +109,11 @@ For Linear, connect the account and set `OCC_TEST_CODEX_LINEAR_PROMPT`, `OCC_TES
 
 ## Per-call approval acceptance
 
-Use the [QA matrix](ci/qa-advisory.md) Calendar scenario to exercise human and automatic approval in normal Agent turns. The scenario uses harmless reads. An unselected or skipped case does not prove approval enforcement.
+The [dedicated Codex failure case](../../tests/integration/plugin-driver-real.test.mjs) verifies a successful harmless Calendar read after a plugin failure. To verify human and automatic approval separately, use normal Agent turns and record the approval decision and tool execution for each turn.
 
 ## Tool override acceptance
 
-The Calendar scenario also checks that an enabled tool exception can run and a disabled tool cannot. It does not call sibling write tools. Check the transcript, not discovery metadata alone, for execution evidence.
+To verify a tool override, enable a harmless read and confirm execution in the session transcript. Disable the same tool and confirm that the Agent cannot execute it.
 
 ## Current proof notes
 

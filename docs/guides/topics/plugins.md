@@ -7,6 +7,9 @@ compatible Plugin Driver before an Agent can save nonempty plugin selections.
 
 ## Choose a supported plugin
 
+- **Dedicated OpenClaw** supports Google Workspace and Slack on Kubernetes. See
+  [managed OpenClaw plugin support](../../reference/managed-openclaw-plugins.md)
+  for the required credentials and tool controls.
 - **Embedded OpenClaw** supports the bundled Diffs plugin on Kubernetes. Diffs
   lets an Agent show the difference between two pieces of text. Start with
   [Configure Agent plugins](plugins-configure.md).

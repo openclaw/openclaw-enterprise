@@ -8,6 +8,9 @@ last_verified: "2026-11-02"
 
 Install OpenClaw Enterprise (OCE) on an existing Kubernetes cluster.
 
+This OpenShell workflow supports development and evaluation.
+[OpenShell production qualification remains incomplete](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
+
 After installation, [deploy your first Agent](deploy-first-agent.md).
 
 ## Before you start

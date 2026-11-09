@@ -626,7 +626,7 @@ for (const outcome of ["refused", "response lost"]) {
       // The operator restores the key and deploys a new version; the old session ends.
       const second = await admitProtectedVersion(f, first.revision);
       await disposeProtectedSession(f, first);
-      const read = () => owner.protectedGit.readMaterial(second.route, t.signal);
+      const read = () => owner.protectedGit.online.readMaterial(second.route, t.signal);
       if (outcome === "response lost") {
         // The lost token may be live for GitHub's maximum lifetime: the successor waits.
         await owner.maintain();
