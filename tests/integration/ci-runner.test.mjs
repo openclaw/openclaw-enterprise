@@ -3395,6 +3395,101 @@ test("the redactor removes structured, multi-word and short secret values", asyn
   }
 });
 
+test("policy probe diagnostics preserve first-match failure and omit model content", async (t) => {
+  const { selectPolicyProbeCommand } = await import("../helpers/openshell-policy-probe.mjs");
+  const uri = "http://private-fixture.invalid:8083/policy-probe";
+  const event = (command) => ({
+    method: "item/completed",
+    params: { item: { type: "commandExecution", command } },
+  });
+  const first = event("/usr/bin/python3.11 -c 'import urllib.request' # private-model-content");
+  const correct = event(
+    `/usr/bin/python3.11 -c 'import urllib.request; urllib.request.urlopen("${uri}")'`,
+  );
+  let calls = 0;
+  // A later correct command must not turn the first command's failure into success.
+  assert.throws(
+    () =>
+      selectPolicyProbeCommand([first, correct], { uri, port: 8083 }, () => {
+        calls += 1;
+        throw new Error("diagnostic write failed");
+      }),
+    { code: "ERR_ASSERTION" },
+  );
+  assert.equal(calls, 1);
+  assert.equal(
+    selectPolicyProbeCommand([correct], { uri, port: 8083 }, () => {
+      calls += 1;
+    }),
+    correct.params.item,
+  );
+  assert.equal(calls, 1, "successful probes emit no failure receipt");
+
+  const root = await fixture(t);
+  const resultsPath = join(root, "results/policy.json");
+  const statePath = join(root, "state/policy.json");
+  await writeFile(
+    join(root, "tests/integration/policy.test.mjs"),
+    [
+      'import test from "node:test";',
+      `import { selectPolicyProbeCommand } from ${JSON.stringify(new URL("../helpers/openshell-policy-probe.mjs", import.meta.url).href)};`,
+      `const first = ${JSON.stringify(first)};`,
+      `const prefix = ${JSON.stringify(event("echo private-model-content"))};`,
+      `const correct = ${JSON.stringify(correct)};`,
+      'test("retains original guard", (t) => {',
+      '  for (const check of ["second-agent-control-request", "second-agent-denied-request"]) t.diagnostic("openclaw-ci-measurement " + JSON.stringify({ kind: "openshell-network-policy-check", check }));',
+      `  selectPolicyProbeCommand([...Array(9).fill(prefix), ...Array(9).fill(first), correct], { uri: ${JSON.stringify(uri)}, port: 8083 }, (receipt) => {`,
+      '    t.diagnostic("openclaw-ci-measurement " + JSON.stringify({ ...receipt, raw: "private-extra-content", commands: receipt.commands.map(c => ({ ...c, raw: "private-extra-content" })) }));',
+      '    for (const invalid of [{ ...receipt, candidateCount: -1 }, { ...receipt, commands: Array(9).fill(receipt.commands[0]) }, { ...receipt, port: 80 }, { ...receipt, targetHash: "private-extra-content" }, { ...receipt, commands: receipt.commands.map(c => ({ ...c, hash: "private-extra-content" })) }]) t.diagnostic("openclaw-ci-measurement " + JSON.stringify(invalid));',
+      "  });",
+      "});",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { policy: { files: [{ path: "tests/integration/policy.test.mjs" }] } },
+    groups: { ci: ["policy"] },
+  });
+  const result = run(root, [
+    "run",
+    "policy",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    statePath,
+    "--results",
+    resultsPath,
+  ]);
+  assert.equal(result.status, 1);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.equal(summary.files[0].tests[0].error.cause.code, "ERR_ASSERTION");
+  const [control, denial, receipt] = summary.files[0].measurements;
+  assert.equal(control.check, "second-agent-control-request");
+  assert.equal(denial.check, "second-agent-denied-request");
+  assert.equal(
+    summary.files[0].measurements.length,
+    3,
+    "invalid or oversized receipts are rejected",
+  );
+  assert.equal(receipt.commandCount, 19);
+  assert.equal(receipt.candidateCount, 10);
+  assert.equal(receipt.selectedIndex, 9);
+  assert.equal(receipt.laterUriMatches, 1, "a later match beyond the detail cap remains visible");
+  assert.equal(receipt.commands.length, 8);
+  assert.equal(receipt.commands[0].hasExpectedUri, false);
+  assert.equal(receipt.commands[0].hasInterpreter, true);
+  assert.equal(receipt.commands[0].hasUrllib, true);
+  assert.equal(receipt.targetHash, createHash("sha256").update(uri).digest("hex"));
+  const retained =
+    JSON.stringify(summary) +
+    (await readFile(`${statePath}.diagnostics.json`, "utf8")) +
+    result.stdout +
+    result.stderr;
+  assert.doesNotMatch(retained, /private-fixture|private-model-content|private-extra-content/);
+});
+
 test("run keeps a failed file's whole messages, stacks and output in the diagnostics report", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/details.json");
