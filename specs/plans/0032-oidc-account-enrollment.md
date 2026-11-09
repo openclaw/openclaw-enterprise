@@ -66,9 +66,11 @@ latency. Existing OCE sessions are outside that fresh-login check.
 
 CI follow-up corrected the retired-provider fixtures: 83 Console browser checks,
 12 authentication-maintenance checks, 13 production startup checks, and the
-changed CI browser-preparation check pass. The API and profile/chart parity checks
+changed CI browser-preparation check pass. Four logging-packaging checks retain
+the shared sign-in Secret isolation case through Google. The API and profile/chart parity checks
 also pass. Broader local CI-preparation tests require Linux `setsid`; their
-unrelated cases cannot run on this macOS host. Final hosted CI remains pending.
+unrelated cases cannot run on this macOS host. Final hosted CI remains pending. A separate review of the test follow-up found
+no P0–P2 issues. The disposable cluster and databases were removed after verification.
 
 Current behavior is documented in
 [external sign-in](../../docs/reference/authentication/external-sign-in.md) and
