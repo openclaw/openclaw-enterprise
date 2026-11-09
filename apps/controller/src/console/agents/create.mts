@@ -531,6 +531,30 @@ async function firstDeploymentReadable(
   }
 }
 
+// The wait a job names for its first deployment (findings 1617, 1690, 1881): a full Pod quota or
+// an image the nodes cannot pull stands alone, since someone must act on it, and so does a stop,
+// which provisioning no longer continues. Other waits follow the provisioning line. The job's own
+// PROVISIONING_DEPLOYMENT_PENDING says no more than that line, so the line stays.
+const STANDALONE_JOB_WAITS = new Set([
+  "NAMESPACE_POD_QUOTA_EXCEEDED",
+  "REVISION_IMAGE_PULL_FAILED",
+  "AGENT_STOP_YIELDED",
+]);
+
+function jobDeploymentWait(job: ProvisioningJob) {
+  const attempt = job.progress?.lastAttempt;
+  if (
+    typeof attempt?.message !== "string" ||
+    !attempt.message ||
+    attempt.code === "PROVISIONING_DEPLOYMENT_PENDING"
+  ) {
+    return null;
+  }
+  return STANDALONE_JOB_WAITS.has(attempt.code)
+    ? attempt.message
+    : `${provisioningStatusText("running")} ${attempt.message}`;
+}
+
 async function waitForProvisioning({
   request,
   status,
@@ -574,7 +598,14 @@ async function waitForProvisioning({
       }
     }
     started ||= current.status === "running";
-    setText(status, provisioningStatusText(started ? "running" : current.status));
+    // While the form still waits, it shows the wait the job names, so the operator can act on a
+    // full quota even when the deployment read is briefly unavailable. A refused read clears it:
+    // the details belong to a deployment this caller may not read.
+    setText(
+      status,
+      (deploymentReadable === false ? null : jobDeploymentWait(current)) ??
+        provisioningStatusText(started ? "running" : current.status),
+    );
     await nextPoll;
     if (!isCurrent()) {
       throw new DOMException("View closed", "AbortError");

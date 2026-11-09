@@ -36,7 +36,7 @@ graph TD
   Deploy --> Observe["<b>Same provisioning handle</b><br/>Observe saved version"]
   Observe -->|Version readable| UI["<b>Agent deployment view</b><br/>Open the deploying version"]
   Observe -->|Version refused; pending| Observe
-  Observe -->|Version refused; activated| UI
+  Observe -->|Version refused; activated| Settings["<b>Agent configuration view</b><br/>Open the activated version"]
   Observe -->|Superseded| Superseded["<b>Create stays open</b><br/>Newer deployment took over"]
   Observe -->|Malformed present ID| Unknown["<b>Outcome unknown</b><br/>Keep job; offer Retry"]
   Observe -->|Confirmed failure| Terminal["<b>Creation failed</b><br/>Keep Agent and version"]
@@ -47,7 +47,7 @@ graph TD
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
   classDef condition fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   class Console,Secrets,API,Queue state
-  class Claim,Config,Agent,Transport,Deploy,Observe,UI operation
+  class Claim,Config,Agent,Transport,Deploy,Observe,UI,Settings operation
   class Failed,Recovery,Terminal,Superseded,RepoRefused,Unknown condition
 ```
 
