@@ -762,16 +762,15 @@ test("Agent sharing grants existing people exact discovery and native access, th
     [],
   );
   // Removing the sharing grant does not remove the independent operate grant.
-  // It retains chat access, but never restores administration or starts the Agent.
+  // It still authorizes the browser status read. A completed stop has no active
+  // revision, so the response has no launch target or access mode.
   const retainedChat = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
     { session },
   );
   assert.equal(retainedChat.status, 200);
-  assertRecord(retainedChat.data, "Retained chat access");
-  assert.equal(retainedChat.data.mode, "chat");
-  assert.equal(retainedChat.data.status, "stopped");
+  assert.deepEqual(retainedChat.data, { status: "stopped" });
 });
 
 registerSharingCredentialsAndChannelsCases(detailApp);
