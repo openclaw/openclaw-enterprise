@@ -196,7 +196,9 @@ test(
     const continuity = { model, workload: async () => workload };
     const box = await client.getSandbox({ workspace, name: sandbox }, t.signal);
     assert.ok(box);
-    const hash = await witnessOpenShellGitLaunch(client, continuity, box, observed, t.signal);
+    const hash = await witnessOpenShellGitLaunch(client, continuity, box, observed, t.signal, {
+      kind: "installation",
+    });
     assert.match(hash!, /^[0-9a-f]{64}$/);
     const identity = openShellGitExecutionIdentity(observed);
     const routes = new PostgresOpenShellGitRouteStore(f.observerPool);

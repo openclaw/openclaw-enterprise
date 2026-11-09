@@ -1,3 +1,4 @@
+import { RepositoryExecutionRequiresRedeployError } from "../../packages/occ/src/errors.ts";
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import { createHash, randomUUID } from "node:crypto";
@@ -832,8 +833,7 @@ test("held-launch Git expiry requires a fresh original predecessor and a revoked
           };
           t.mock.timers.setTime(revision.repositoryCredentials.deadlineWallMs + 1);
           if (fault === "valid expired predecessor") {
-            // A cold observer may recognize global expiry but cannot reconstruct the warm
-            // launch witness. This exercises only that read-only contract, not cold adoption.
+            // An expiry observation can identify the recorded predecessor without opening Git.
             const before = {
               material: f.calls.material,
               rotate: f.calls.rotate,
@@ -846,9 +846,9 @@ test("held-launch Git expiry requires a fresh original predecessor and a revoked
                 sandbox,
                 git,
                 AbortSignal.timeout(5_000),
-                { coldObservation: true },
+                { kind: "predecessor" },
               );
-            assert.equal(await cold({ ...box }), undefined, "expired cold observation defers");
+            assert.equal(await cold({ ...box }), row.retainedLaunchHash);
             for (const changed of [
               { mainProcessInstanceId: "replacement-instance" },
               { phase: "SANDBOX_PHASE_STOPPING" },
@@ -946,4 +946,123 @@ test("held-launch Git expiry requires a fresh original predecessor and a revoked
       });
     });
   }
+});
+
+test("cold held-launch verification requires typed redeployment before supplier or material effects", async (t) => {
+  await observedGitRoute(2, {
+    narrowRepository: "healthy",
+    afterRelease: async (f, held) => {
+      const standingRegistry = validateGitHubRepositoryRegistry(
+        {
+          ...registry,
+          allowStandingApprovals: true,
+          repositories: registry.repositories.map((repository) => ({
+            ...repository,
+            namespaces: repository.namespaces.map((namespace) => ({
+              ...namespace,
+              allowStandingApproval: true,
+            })),
+          })),
+        },
+        registry.backendId,
+      );
+      const binding = resolveGitHubRepositoryBinding(standingRegistry, {
+        namespaceId: "namespace-a",
+        repositoryRef: "application",
+        profile: "git-write",
+      });
+      const credentials = {
+        ...held.repositoryCredentials,
+        bindings: [binding],
+        standingApprovalId: "approval",
+      };
+      const revision = {
+        ...held,
+        repositoryCredentials: credentials,
+        egressPlan: { ...held.egressPlan, repositoryGit: credentials },
+      };
+      for (const fault of [
+        "none",
+        "missing observation",
+        "missing generation",
+        "missing owner",
+        "same owner",
+        "moved fence",
+        "invalid binding",
+        "wrong Agent",
+        "aborted",
+        "preview",
+      ]) {
+        await t.test(fault, async () => {
+          const runtime = new OpenShellGitRuntime(
+            f.runtime.configuration,
+            createGitHubRepositoryDeliveryResolver(standingRegistry),
+          );
+          const record = structuredClone(f.store.rows.get(revision.id));
+          const saved = {
+            route: record,
+            workerInstance: record.workerInstance,
+            retainedLaunchHash: "saved-launch",
+            executionFingerprint: "saved-execution",
+          };
+          if (fault === "missing observation") {
+            record.observed = undefined;
+          }
+          if (fault === "missing generation") {
+            record.generation = undefined;
+          }
+          if (fault === "missing owner") {
+            saved.workerInstance = "";
+          }
+          if (fault === "same owner") {
+            saved.workerInstance = runtime.instance;
+          }
+          if (fault === "invalid binding") {
+            record.bindingId = "invalid";
+          }
+          if (fault === "wrong Agent") {
+            record.agentId = "other-agent";
+          }
+          let reads = 0;
+          // Controlled durable reads feed the real verifier. No replacement of its decision,
+          // supplier access, authorization or material path is involved.
+          runtime.routes = {
+            ...f.store,
+            standing: async () => {
+              const result = structuredClone(saved);
+              reads += 1;
+              if (fault === "moved fence" && reads === 2) {
+                result.route.fence += 1;
+              }
+              return result;
+            },
+          };
+          runtime.owner = f.owner;
+          const before = { calls: structuredClone(f.calls), store: structuredClone(f.store.calls) };
+          const signal = fault === "aborted" ? AbortSignal.abort() : AbortSignal.timeout(2_000);
+          const target =
+            fault === "preview"
+              ? { ...revision, executionAdmission: { ...revision.executionAdmission, version: 6 } }
+              : revision;
+          const verification = runtime.verifyExecution(target, signal);
+          if (fault === "none") {
+            await assert.rejects(
+              verification,
+              (error) => error instanceof RepositoryExecutionRequiresRedeployError,
+            );
+          } else {
+            assert.equal(
+              await verification,
+              undefined,
+              "incomplete or moving ownership cannot establish redeployment",
+            );
+          }
+          assert.deepEqual(f.calls, before.calls);
+          assert.deepEqual(f.store.calls, before.store);
+          assert.equal(runtime.entries.size, 0);
+          await runtime.close();
+        });
+      }
+    },
+  });
 });

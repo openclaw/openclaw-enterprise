@@ -489,6 +489,12 @@ test("cleanup continues after a failed database drop and retains only the failed
   );
   const statePath = join(root, "state.json");
   const state = failedDropState(postgres.port);
+  const directory = join(root, `${state.resources[0].name}-bootstrap`);
+  await mkdir(directory);
+  await writeFile(join(directory, "init-local.sql"), "-- public bootstrap\n");
+  state.resources[0].directory = directory;
+  state.resources[0].directoryCreated = true;
+  state.resources[0].initSqlCreated = true;
   await writeState(statePath, state);
 
   const result = await runAsync(statePath, { OCC_DOCKER_BIN: docker });
@@ -511,7 +517,85 @@ test("cleanup continues after a failed database drop and retains only the failed
     resources: state.resources.filter(({ id }) => id === "database-1"),
   });
   assert.equal((await stat(statePath)).mode & 0o777, 0o600);
+  await assert.rejects(stat(directory), { code: "ENOENT" });
 });
+
+for (const location of ["unrelated-name", "matching-name-under-other-parent"]) {
+  test(`cleanup rejects a PostgreSQL bootstrap directory at ${location}`, async (t) => {
+    const root = await fixture(t);
+    const statePath = join(root, "state.json");
+    const state = failedDropState();
+    const directory =
+      location === "unrelated-name"
+        ? join(root, "unrelated-inputs")
+        : join(root, "other-parent", `${state.resources[0].name}-bootstrap`);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "sentinel"), "unrelated content");
+    state.resources = [
+      { ...state.resources[0], directory, directoryCreated: true, initSqlCreated: true },
+    ];
+    await writeState(statePath, state);
+    const docker = await writeCommand(join(root, "bin"), "docker", "exit 0\n");
+
+    // A matching basename does not grant ownership of another directory.
+    const result = await runAsync(statePath, { OCC_DOCKER_BIN: docker });
+    assert.equal(await readFile(join(directory, "sentinel"), "utf8"), "unrelated content");
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /outside the owned PostgreSQL directory/);
+    assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+  });
+}
+
+test("cleanup preserves unexpected PostgreSQL bootstrap contents and state", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state.json");
+  const state = failedDropState();
+  const directory = join(root, `${state.resources[0].name}-bootstrap`);
+  await mkdir(directory);
+  await writeFile(join(directory, "init-local.sql"), "-- public bootstrap\n");
+  await writeFile(join(directory, "sentinel"), "unrelated content");
+  state.resources = [
+    { ...state.resources[0], directory, directoryCreated: true, initSqlCreated: true },
+  ];
+  await writeState(statePath, state);
+  const docker = await writeCommand(join(root, "bin"), "docker", "exit 0\n");
+
+  // Even an owned directory cannot authorize deleting files preparation did not create.
+  const result = await runAsync(statePath, { OCC_DOCKER_BIN: docker });
+  assert.equal(await readFile(join(directory, "sentinel"), "utf8"), "unrelated content");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /unexpected PostgreSQL bootstrap contents/);
+  assert.equal(await readFile(join(directory, "init-local.sql"), "utf8"), "-- public bootstrap\n");
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+});
+
+for (const directoryCreated of [false, true]) {
+  test(`cleanup handles empty PostgreSQL staging with directory confirmation ${directoryCreated}`, async (t) => {
+    const root = await fixture(t);
+    const statePath = join(root, "state.json");
+    const state = failedDropState();
+    const directory = join(root, `${state.resources[0].name}-bootstrap`);
+    // A crash can leave mkdir either unconfirmed or confirmed, before SQL creation.
+    await mkdir(directory);
+    state.resources = [
+      { ...state.resources[0], directory, directoryCreated, initSqlCreated: false },
+    ];
+    await writeState(statePath, state);
+
+    const result = await runAsync(statePath, { OCC_DOCKER_BIN: join(root, "must-not-run") });
+
+    if (directoryCreated) {
+      assert.equal(result.status, 0, result.stderr);
+      await assert.rejects(stat(directory), { code: "ENOENT" });
+      await assert.rejects(stat(statePath), { code: "ENOENT" });
+    } else {
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /unconfirmed PostgreSQL bootstrap ownership/);
+      assert.equal((await stat(directory)).isDirectory(), true);
+      assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+    }
+  });
+}
 
 test("cleanup drops a selected database before waiting for the CI state lock", async (t) => {
   const root = await fixture(t);

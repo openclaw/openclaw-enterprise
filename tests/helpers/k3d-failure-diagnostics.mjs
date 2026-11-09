@@ -17,6 +17,71 @@ const maxPods = 5;
 const maxLogContainers = 6;
 const credentialLineMarker = "[redacted credential-bearing line]";
 
+function openShellEvent(line) {
+  const json = /\bOCSF-JSON (\{.*\})$/.exec(line);
+  let event;
+  try {
+    event = json && JSON.parse(json[1]);
+  } catch {
+    return null;
+  }
+  return Number.isSafeInteger(event?.time) && event.time > 0 ? event : null;
+}
+
+export function openShellSettingsChange(line) {
+  const event = openShellEvent(line);
+  if (
+    event?.class_uid !== 5019 ||
+    event.activity_id !== 1 ||
+    event.status_id !== 1 ||
+    typeof event.message !== "string"
+  ) {
+    return null;
+  }
+  // The message preserves u64 revision decimals; JSON numeric fields can round them.
+  const match =
+    /^Settings poll: config change detected \[old_revision:(\d+) new_revision:(\d+) policy_changed:(true|false) provider_env_changed:(true|false)\]$/.exec(
+      event.message,
+    );
+  return match
+    ? {
+        atMs: event.time,
+        oldRevision: match[1],
+        newRevision: match[2],
+        policyChanged: match[3] === "true",
+        providerEnvChanged: match[4] === "true",
+      }
+    : null;
+}
+
+// Only established relay failures carry both this event type and message.
+// Open/DENIED events can instead describe a new connection refused at admission.
+export function openShellStaleRelay(line, domain) {
+  const event = openShellEvent(line);
+  if (
+    event?.class_uid !== 4001 ||
+    event.activity_id !== 4 ||
+    event.status_id !== 2 ||
+    event.dst_endpoint?.domain !== domain ||
+    event.dst_endpoint.port !== 443 ||
+    typeof event.message !== "string" ||
+    !/^(TLS|L7|HTTP) relay error: /.test(event.message)
+  ) {
+    return null;
+  }
+  const match =
+    /policy generation is stale \[captured_generation:(\d+) current_generation:(\d+)\]/.exec(
+      event.message,
+    );
+  return match
+    ? {
+        atMs: event.time,
+        capturedGeneration: Number(match[1]),
+        currentGeneration: Number(match[2]),
+      }
+    : null;
+}
+
 export async function assertGatewayPolicyRunSucceeded(client, outcome, protectedUpdate) {
   if (outcome.status === "ok") {
     return;

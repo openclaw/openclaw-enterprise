@@ -1,4 +1,10 @@
 import { createHash } from "node:crypto";
+import {
+  RUNTIME_DIAGNOSTIC_CODES,
+  UNRECOGNIZED_RUNTIME_VALUE,
+  WORKSPACE_SETUP_FAILED,
+  WORKSPACE_SETUP_REFUSED,
+} from "../../packages/contracts/src/runtime-failure.mjs";
 
 export const openShellGitRetentionKind = "openshell-git-retention";
 
@@ -112,6 +118,23 @@ const cleanupCause = choice(
   "REPOSITORY_CLEANUP_PENDING",
   "COMPUTE_DRIVER_MISMATCH",
 );
+// worker.ts and Kubernetes activation report these ordinary readiness waits.
+// Keep unknown Driver codes private, just as for cleanup diagnostics.
+const readinessCode = choice(
+  "REPOSITORY_GIT_ROUTE_PENDING",
+  "REPOSITORY_GIT_MATERIAL_PENDING",
+  "WORKSPACE_NODE_PENDING",
+  "WORKSPACE_NODE_BINDING_PENDING",
+  "WORKSPACE_NODE_RECONNECT_PENDING",
+  "WORKSPACE_SETUP_RETRYING",
+  "REVISION_INCOMPLETE",
+  "REVISION_FINALIZATION_INCOMPLETE",
+);
+const runtimeFailureCode = choice(
+  ...RUNTIME_DIAGNOSTIC_CODES,
+  WORKSPACE_SETUP_FAILED,
+  WORKSPACE_SETUP_REFUSED,
+);
 
 /** Select before buffering: worker records may contain unrelated private fields. */
 export function projectOpenShellGitExpiryObservation(value) {
@@ -154,6 +177,50 @@ export function projectOpenShellGitExpiryObservation(value) {
       return undefined;
   }
   return project(value, fields);
+}
+
+/** Select matching maintenance completions before buffering their diagnostics. */
+export function projectOpenShellGitMaintenanceCompletion(value) {
+  const completion = project(value, {
+    outcome: [
+      "outcome",
+      (outcome) => choice("success", "pending", "retry", "permanent")(outcome) ?? "unrecognized",
+    ],
+    code: ["code", (code) => cleanupCode(code) ?? readinessCode(code) ?? "unrecognized"],
+  });
+  if (completion && value.failure !== undefined) {
+    completion.failure = runtimeFailureCode(value.failure) ?? UNRECOGNIZED_RUNTIME_VALUE;
+  }
+  return completion;
+}
+
+const maintenanceDiagnostics = {
+  reason: [
+    "reason",
+    choice("permanent", "read-failure", "cancelled", "own-budget-exhausted", "unrecognized"),
+  ],
+  completionsTruncated: ["completionsTruncated", boolean],
+  completions: [
+    "completions",
+    (value) => {
+      if (!Array.isArray(value) || value.length > 16) {
+        return undefined;
+      }
+      const selected = value.map(projectOpenShellGitMaintenanceCompletion);
+      return selected.every((item) => item !== undefined) ? selected : undefined;
+    },
+  ],
+};
+for (const name of [
+  "logReads",
+  "logReadSuccesses",
+  "logReadFailures",
+  "linesRead",
+  "parsedEvents",
+  "parseFailures",
+  "tailLimitReads",
+]) {
+  maintenanceDiagnostics[name] = [name, count];
 }
 
 const expiryDiagnostics = {
@@ -276,6 +343,22 @@ const events = {
           outcome: ["outcome", choice("withdrawn")],
           check: ["check", choice("record-reduced-generation")],
         }),
+    ],
+  },
+  "worker-maintenance-unconfirmed": maintenanceDiagnostics,
+  "worker-restart-unconfirmed": {
+    stage: [
+      "stage",
+      choice(
+        "ready-worker",
+        "durable-before",
+        "rollout-restart",
+        "rollout-ready",
+        "replacement-worker",
+        "revision-maintenance",
+        "durable-after",
+        "durable-retention-assertion",
+      ),
     ],
   },
   "worker-restarted": {

@@ -83,7 +83,7 @@ export PATH="/usr/local/bin:$PATH"
 sudo env PATH="/usr/local/bin:/usr/bin:/bin" corepack enable --install-directory /usr/local/bin pnpm
 ```
 
-Use the repository's k3d tool installer. It checks the Docker daemon and downloads checksum-verified kubectl, k3d, Helm and yq when the pinned versions are not already on `PATH`. Copy the selected binaries into `/usr/local/bin`. Corepack reads the pnpm version and integrity hash from the checkout's `package.json`; run pnpm as your operator account so its cache remains user-owned.
+Use the repository's k3d tool installer. It checks the Docker daemon and downloads checksum-verified kubectl, k3d, Helm and yq when they cannot be reused from `PATH`. On Linux, k3d and yq reuse requires bytes matching the repository's platform checksum; kubectl and Helm reuse matches the pinned version. Copy the selected binaries into `/usr/local/bin`. Corepack reads the pnpm version and integrity hash from the checkout's `package.json`; run pnpm as your operator account so its cache remains user-owned.
 
 ```bash
 # Stage the pinned tools, then install them globally.

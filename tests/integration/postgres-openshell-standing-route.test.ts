@@ -21,7 +21,7 @@ test(
   "held OpenShell route stays closed to a cold reader and closes on worker replacement",
   { ...requiresPostgres, timeout: 120_000 },
   async (t) => {
-    await narrowOnlineGitJourney(t, async (journey) => {
+    await narrowOnlineGitJourney(t, import.meta.url, async (journey) => {
       const { runtime, revision, client, workspace, sandbox, pool, peer } = journey;
       const routes = new PostgresOpenShellGitRouteStore(pool);
       const owner = runtime["owner"];
@@ -48,12 +48,6 @@ test(
         requestId: "cold-held-route",
         bindingId: revision.egressPlan!.execution.executionId,
       };
-      const context = async () => ({
-        client,
-        workspace,
-        sandbox,
-        continuity: { model: "openai", workload: async () => "controlled-pod-uid/container-id" },
-      });
       const row = async () => {
         const { rows } = await pool.query(
           `SELECT fence, write_pending, blocked, material_version, preparation_attempt_id,
@@ -75,7 +69,7 @@ test(
       // read must not manufacture that witness from a currently held installation.
       assert.equal(revision.repositoryCredentials!.standingApprovalId, undefined);
       for (let read = 0; read < 2; read++) {
-        assert.equal(await cold.verifyExecution(revision, t.signal, context), undefined);
+        assert.equal(await cold.verifyExecution(revision, t.signal), undefined);
         assert.equal(await cold.lookup(identity, t.signal), undefined);
         assert.deepEqual(
           await row(),
@@ -124,7 +118,7 @@ for (const outcome of ["unsent", "lost-reply", "withdrawn"] as const) {
     `selected held OpenShell rotation preserves custody when ${outcome}`,
     { ...requiresPostgres, timeout: 120_000 },
     async (t) => {
-      await narrowOnlineGitJourney(t, async (journey) => {
+      await narrowOnlineGitJourney(t, import.meta.url, async (journey) => {
         const { runtime, revision, client, pool, peer } = journey;
         const owner = runtime["owner"];
         const entry = runtime["states"].get(revision.id)?.entry;

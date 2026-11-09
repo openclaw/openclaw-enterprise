@@ -131,6 +131,17 @@ Gateway access, real model and tool turns, credential delivery, restricted
 filesystem and network access, replacement, and cleanup. Local fixture tests
 alone do not prove these outcomes. See [OpenShell coverage](openshell-coverage.md) for the individual checks.
 
+When the credential-route check's allowed endpoint fails, the suite captures one
+bounded tail from the Harness's exact supervisor before cleanup. The diagnostic
+contains the source type, curl HTTP/CONNECT statuses and exit code, plus counts
+of recognized provider-environment changes and stale-generation denials for the
+selected destination. It includes no raw log lines or request data. `no_match`
+means neither class appeared in the sampled tail; `unavailable` means capture
+failed or exceeded its deadline. This tail is **uncorrelated** with the request:
+it can include earlier or queued events and does not identify the curl failure's
+cause. The original assertion still fails; the suite retries neither the curl
+nor these diagnostic reads. Passing routes collect no diagnostic tail.
+
 Preparation requires the Codex credential and model; running the complete lane
 also requires the separate native OpenAI key. For direct Codex file runs, also provide the
 [policy fixture's migrator connection](openshell-coverage.md#agent-network-policy).

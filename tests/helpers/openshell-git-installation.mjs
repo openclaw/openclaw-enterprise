@@ -11,6 +11,7 @@ import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sa
 import {
   openShellGitRetentionKind,
   projectOpenShellGitExpiryObservation,
+  projectOpenShellGitMaintenanceCompletion,
   projectOpenShellGitRetention,
 } from "../../scripts/ci/openshell-git-retention.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
@@ -951,27 +952,19 @@ async function installOpenShellGit(t) {
     };
   };
   const workerEvents = async (pod, diagnostics) => {
-    if (diagnostics) {
-      diagnostics.logReads++;
-    }
+    diagnostics.logReads++;
     let logs;
     try {
       logs = await kube(["logs", pod.metadata.name, "-n", platform, "-c", "worker", "--tail=2000"]);
     } catch (error) {
-      if (diagnostics) {
-        diagnostics.logReadFailures++;
-      }
+      diagnostics.logReadFailures++;
       throw error;
     }
-    if (diagnostics) {
-      diagnostics.logReadSuccesses++;
-    }
+    diagnostics.logReadSuccesses++;
     const lines = logs.split("\n").filter((line) => line.length > 0);
-    if (diagnostics) {
-      diagnostics.linesRead += lines.length;
-      if (lines.length >= 2000) {
-        diagnostics.tailLimitReads++;
-      }
+    diagnostics.linesRead += lines.length;
+    if (lines.length >= 2000) {
+      diagnostics.tailLimitReads++;
     }
     const events = [];
     for (const line of lines) {
@@ -979,21 +972,16 @@ async function installOpenShellGit(t) {
         const event = JSON.parse(line);
         if (event !== null && typeof event === "object") {
           events.push(event);
-          if (diagnostics) {
-            diagnostics.parsedEvents++;
-          }
+          diagnostics.parsedEvents++;
         }
       } catch {
         // Container startup can write non-JSON lines; only structured events qualify.
-        if (diagnostics) {
-          diagnostics.parseFailures++;
-        }
+        diagnostics.parseFailures++;
       }
     }
     return events;
   };
-  const completedWork = async (pod, { agentId, revisionId }, accepts, observed) => {
-    const events = observed ?? (await workerEvents(pod));
+  const completedWork = (pod, { agentId, revisionId }, accepts, events) => {
     for (const event of events) {
       if (
         event.event === "worker.completed" &&
@@ -1137,7 +1125,7 @@ async function installOpenShellGit(t) {
         if (!expiry) {
           return undefined;
         }
-        const completion = await completedWork(
+        const completion = completedWork(
           pod,
           identity,
           (event) => event.code === "REPOSITORY_ACCESS_WITHDRAWN",
@@ -1168,35 +1156,101 @@ async function installOpenShellGit(t) {
     }
   };
   const restartWorker = async (identity) => {
-    const before = await eventually("ready worker", worker);
-    const durable = await durableIdentity();
-    await kube(["rollout", "restart", "deployment/openclaw-enterprise-worker", "-n", platform]);
-    await kube(
-      [
-        "rollout",
-        "status",
-        "deployment/openclaw-enterprise-worker",
-        "-n",
-        platform,
-        "--timeout=180s",
-      ],
-      { timeout: 190_000 },
-    );
-    const after = await eventually("replacement worker", async () => {
-      const pod = await worker();
-      return pod?.metadata.uid !== before.metadata.uid ? pod : undefined;
-    });
-    await eventually("replacement worker revision maintenance", () =>
-      completedWork(after, identity, (event) =>
-        event.workId?.startsWith(`agent_revision:${identity.revisionId}:maintenance:`),
-      ),
-    );
-    assert.deepEqual(
-      await durableIdentity(),
-      durable,
-      "worker restart must retain PostgreSQL and custody",
-    );
-    return { beforeUid: before.metadata.uid, afterUid: after.metadata.uid, ...durable };
+    let stage = "ready-worker";
+    let maintenance;
+    const maintenanceWait = "replacement worker revision maintenance";
+    try {
+      const before = await eventually("ready worker", worker);
+      stage = "durable-before";
+      const durable = await durableIdentity();
+      stage = "rollout-restart";
+      await kube(["rollout", "restart", "deployment/openclaw-enterprise-worker", "-n", platform]);
+      stage = "rollout-ready";
+      await kube(
+        [
+          "rollout",
+          "status",
+          "deployment/openclaw-enterprise-worker",
+          "-n",
+          platform,
+          "--timeout=180s",
+        ],
+        { timeout: 190_000 },
+      );
+      stage = "replacement-worker";
+      const after = await eventually("replacement worker", async () => {
+        const pod = await worker();
+        return pod?.metadata.uid !== before.metadata.uid ? pod : undefined;
+      });
+      stage = "revision-maintenance";
+      maintenance = {
+        logReads: 0,
+        logReadSuccesses: 0,
+        logReadFailures: 0,
+        linesRead: 0,
+        parsedEvents: 0,
+        parseFailures: 0,
+        tailLimitReads: 0,
+        completions: [],
+        completionsTruncated: false,
+      };
+      await eventually(maintenanceWait, async () => {
+        const events = await workerEvents(after, maintenance);
+        // Each read repeats the current log tail. Retain this snapshot's matching
+        // completions once, rather than counting previous polls as new work.
+        maintenance.completions = [];
+        maintenance.completionsTruncated = false;
+        return completedWork(
+          after,
+          identity,
+          (event) => {
+            const matches = event.workId?.startsWith(
+              `agent_revision:${identity.revisionId}:maintenance:`,
+            );
+            if (matches) {
+              maintenance.completions.push(projectOpenShellGitMaintenanceCompletion(event));
+              if (maintenance.completions.length > 16) {
+                maintenance.completions.shift();
+                maintenance.completionsTruncated = true;
+              }
+            }
+            return matches;
+          },
+          events,
+        );
+      });
+      stage = "durable-after";
+      const retained = await durableIdentity();
+      stage = "durable-retention-assertion";
+      assert.deepEqual(retained, durable, "worker restart must retain PostgreSQL and custody");
+      return { beforeUid: before.metadata.uid, afterUid: after.metadata.uid, ...durable };
+    } catch (error) {
+      try {
+        measurement("worker-restart-unconfirmed", { stage });
+        if (stage === "revision-maintenance") {
+          let reason = "unrecognized";
+          if (
+            error?.code === "ERR_ASSERTION" &&
+            maintenance.completions.at(-1)?.outcome === "permanent"
+          ) {
+            reason = "permanent";
+          } else if (t.signal.aborted) {
+            reason = "cancelled";
+          } else if (maintenance.logReadFailures > 0) {
+            reason = "read-failure";
+          } else if (
+            error instanceof Error &&
+            error.message === `Timed out waiting for ${maintenanceWait}`
+          ) {
+            reason = "own-budget-exhausted";
+          }
+          measurement("worker-maintenance-unconfirmed", { ...maintenance, reason });
+        }
+      } catch {
+        // Diagnostic failures must not hide the original restart failure.
+      }
+      throw error;
+    }
   };
   return {
     request,

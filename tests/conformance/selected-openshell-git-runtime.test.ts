@@ -646,14 +646,12 @@ test("a failed withdrawal still refuses its original route after local collectio
   assert.equal(store.calls.adopt, adopts);
   const standing = t.mock.fn(async () => undefined);
   Object.assign(store, { standing });
-  const cold = t.mock.fn(async () => undefined);
   const prior = {
     ...revision,
     repositoryCredentials: { ...revision.repositoryCredentials!, standingApprovalId: "approval" },
   };
-  assert.equal(await f.runtime.verifyExecution(prior, t.signal, cold), undefined);
+  assert.equal(await f.runtime.verifyExecution(prior, t.signal), undefined);
   assert.equal(standing.mock.callCount(), 0);
-  assert.equal(cold.mock.callCount(), 0);
   assert.deepEqual(store.rows.get(revision.id), row);
   assert.deepEqual(
     [activity.updates, activity.releases, f.calls.material, f.calls.providerWrites],

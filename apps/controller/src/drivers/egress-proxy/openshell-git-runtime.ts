@@ -15,7 +15,10 @@ import type {
   RepositoryGitInstallationFence,
   SandboxRepositoryAccess,
 } from "@openclaw-enterprise/contracts";
-import type { PostgresPool } from "@openclaw-enterprise/occ";
+import {
+  RepositoryExecutionRequiresRedeployError,
+  type PostgresPool,
+} from "@openclaw-enterprise/occ";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import type { RepositoryTransportEmit } from "../../composition/repository-credentials/contracts.ts";
 import { REPOSITORY_CLIENT_BIN } from "../compute/kubernetes/repository-native-configuration.ts";
@@ -24,7 +27,6 @@ import type {
   RepositoryGitDeliveryBinding,
 } from "../repo/credentials/delivery.ts";
 import {
-  witnessOpenShellGitLaunch,
   subtractExpiredOpenShellGit,
   type OpenShellGitContinuity,
   type OpenShellGitExpiryResult,
@@ -90,6 +92,14 @@ export interface OpenShellGitRuntimeConfiguration {
   readonly observedHookPreviewWorkspace?: string;
   readonly authority: EgressAuthorityConfiguration;
 }
+/** Only the worker that witnessed a held launch can authorize its next Git session. */
+function requiresOriginalLauncher(revision: Readonly<AgentRevision>, profile: string): boolean {
+  return (
+    revision.egressPlan?.repositoryGitAuthorization === "online-request" &&
+    profile !== githubInstallationProfile
+  );
+}
+
 type ReadMaterial = ProtectedRepositoryGitAuthority["online"]["readMaterial"];
 type MaterialReader = {
   readOpenShellMaterial(
@@ -463,12 +473,8 @@ export class OpenShellGitRuntime {
     return scope;
   }
 
-  /** A read of the same running installation. Only normal reconciliation may adopt one. */
-  async verifyExecution(
-    revision: Readonly<AgentRevision>,
-    signal: AbortSignal,
-    cold?: () => Promise<StandingGitExecution | undefined>,
-  ) {
+  /** A warm owner can verify its launch. A cold owner can only prove replacement. */
+  async verifyExecution(revision: Readonly<AgentRevision>, signal: AbortSignal) {
     // The worker uses this identity to authorize successor credential sessions.
     // Historical installation-wide routes can only finish their original detach.
     if (
@@ -483,55 +489,37 @@ export class OpenShellGitRuntime {
       return;
     }
     const entry = await this.entries.get(revision.id);
-    if (!entry && revision.executionAdmission?.version === 6) {
+    if (!entry && revision.executionAdmission?.version !== 5) {
       return;
     }
-    if (!entry && cold && revision.repositoryCredentials?.standingApprovalId) {
-      // The worker verifies execution before it prepares a successor session or route. A new
-      // process has neither a local entry nor authority to bootstrap here. Read
-      // the known installation, including its original launch and both Pods, without taking
-      // the route fence, asking for material, or changing any state in this worker.
+    if (!entry && revision.repositoryCredentials?.standingApprovalId) {
       const saved = await this.routes?.standing(revision);
-      const git = saved?.route.observed;
-      const generation = saved?.route.generation;
-      if (!saved || !git || !generation) {
+      if (!saved?.route.observed || !saved.route.generation) {
         return;
       }
       const scope = this.scope(revision);
-      const context = await cold();
-      if (!context || git.workspace !== context.workspace || git.sandbox !== context.sandbox) {
+      if (requiresOriginalLauncher(revision, scope.binding.profile)) {
+        // No local entry alone proves nothing. The durable owner, exact binding and
+        // unchanged fence establish that this process cannot inherit the held launch.
+        const current = await this.routes?.standing(revision);
+        if (
+          saved.workerInstance &&
+          saved.workerInstance !== this.instance &&
+          saved.route.revisionId === revision.id &&
+          saved.route.namespaceId === revision.namespaceId &&
+          saved.route.agentId === revision.agentId &&
+          /^[A-Za-z0-9_-]{32}$/.test(saved.route.bindingId) &&
+          Number.isSafeInteger(saved.route.fence) &&
+          saved.route.fence > 0 &&
+          !signal.aborted &&
+          !this.stopped.signal.aborted &&
+          isDeepStrictEqual(saved, current)
+        ) {
+          throw new RepositoryExecutionRequiresRedeployError();
+        }
         return;
       }
-      const { client, workspace, sandbox, continuity } = context;
-      const provider = gitProvider(
-        client,
-        workspace,
-        await this.gateway(client, workspace, signal),
-        sandbox,
-        revision.id,
-        scope.delivery,
-      );
-      const binding = provider.restore(generation, true);
-      if (!(await provider.observePredecessor(binding, git, signal))) {
-        return;
-      }
-      const box = await client.getSandbox({ workspace, name: sandbox }, signal);
-      const hash =
-        box &&
-        (await witnessOpenShellGitLaunch(client, continuity, box, git, signal, {
-          coldObservation: true,
-        }));
-      const identity = openShellGitExecutionIdentity(git);
-      if (
-        hash !== saved.retainedLaunchHash ||
-        identity.fingerprint !== saved.executionFingerprint
-      ) {
-        return;
-      }
-      const current = await this.routes?.standing(revision);
-      return !signal.aborted && !this.stopped.signal.aborted && isDeepStrictEqual(saved, current)
-        ? identity
-        : undefined;
+      return;
     }
     if (!entry?.opened || entry.blocked || !isDeepStrictEqual(entry.revision, revision)) {
       return;
@@ -593,11 +581,7 @@ export class OpenShellGitRuntime {
     const scope = this.scope(revision);
     const admittedExecutionId = revision.egressPlan!.execution.executionId;
     const legacyPreview = revision.executionAdmission?.version === 6;
-    const mandatory =
-      revision.egressPlan?.repositoryGitAuthorization === "online-request" &&
-      scope.binding.profile !== githubInstallationProfile;
-    // The bundled Proxy admits installation-wide Git only as explicit v6 preview.
-    // Keep historical scope validation available to readonly and retirement paths.
+    const mandatory = requiresOriginalLauncher(revision, scope.binding.profile);
     if (!legacyPreview && !mandatory) {
       throw new Error(missingAdmittedGitScope);
     }
@@ -2171,8 +2155,7 @@ export function openShellRepositoryAccess(
   ) => StandingGitExecution | undefined,
 ): SandboxRepositoryAccess {
   return {
-    verifyExecution: (context) =>
-      git.verifyExecution(context.revision, context.signal, async () => standing(context)),
+    verifyExecution: (context) => git.verifyExecution(context.revision, context.signal),
     retireExpired: async (context) => {
       const owner = await standing(context);
       return owner

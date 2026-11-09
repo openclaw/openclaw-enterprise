@@ -2956,6 +2956,7 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
     const bodies = await gitCommandBodies(t, "refs/heads/review");
     await narrowOnlineGitJourney(
       t,
+      import.meta.url,
       async ({ revision, evaluate, peer, maintenance: controls }) => {
         const { fixture: f, agent, world, events, stopped, restart } = controls;
         assert.equal(revision.executionAdmission.version, 5);

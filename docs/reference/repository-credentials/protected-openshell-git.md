@@ -1,21 +1,18 @@
 # Protected repository access with OpenShell
 
-Before issuing repository credentials, OCE verifies registration and matches a held
-launcher request to an authenticated middleware denial. The Agent starts after
-credential installation and signed release.
-
 Follow [OpenShell enrollment](../../guides/repository-credentials/openshell-enrollment.md).
-Select repositories sharing an explicit permission map. OCE requests canonical IDs
-and verifies GitHub’s returned scope. GitHub governs refs and REST/GraphQL.
-Changed or removed grants block subsequent use.
+OCE matches the held launcher request to an authenticated middleware denial before
+issuing credentials. Installation and signed release precede Agent startup.
+Select repositories sharing explicit permissions. OCE verifies GitHub's returned scope
+against canonical IDs; GitHub governs refs and REST/GraphQL. Grant changes block use.
 
-Existing `git-write` grants retain their exact ref policy. OCE qualifies the live
-sender by its configured capabilities and runtime evidence. `git-read` and
+`git-write` retains exact ref policy. Qualification requires configured capabilities
+and runtime evidence. `git-read` and
 `git-full` keep their existing semantics. Installation preview requires separate
 opt-in. Exact-dispatch and v7 reduction guarantees remain unqualified.
 
 Keep Credential Gateway with the bundled OpenShell Backend. The Proxy serves
-repositories; model access uses a Gateway Harness source. Existing installations require the
+repository access, while model access uses a Gateway Harness source. For upgrades, see
 [compatibility upgrade](../../guides/deploy/credential-proxy-upgrade.md#check-compatibility-before-interrupting-access).
 
 ## Prerequisites
@@ -63,7 +60,7 @@ never put either key in Agent configuration or Helm values.
 Prepare a separate serving certificate whose DNS SAN covers
 `openclaw-enterprise-openshell-git.openclaw-system.svc`, its private key, and the
 **public** PEM key from the selected OpenShell Gateway JWT signing bundle.
-In OCE's namespace, use your approved context:
+Create these resources in the OCE namespace with your approved Kubernetes context:
 
 ```bash
 kubectl --context "$CONTEXT" -n openclaw-system create secret tls openshell-git-tls \
@@ -103,15 +100,15 @@ The chart exposes a ClusterIP Service on port 8445 and allows that port only fro
 these peers under the chart's default-deny policy. It mounts the serving key,
 certificate and public issuer key at the fragment's `/etc/openclaw/openshell-git`
 paths in the worker. The API, initialization Job and repository sidecar do not
-receive this projection. Match worker ports in Helm and Installation.
+receive this projection. Keep the worker port equal in Helm and the Installation.
 If the OpenShell namespace enforces egress, also permit its Gateway and supervisors
 to reach this Service's selected worker Pods on TCP 8445 and resolve cluster DNS.
 
 Set `authority.issuer` to `openshell-gateway:<gateway_id>` from the actual Gateway
 JWT configuration, `keyId` to the contents of its `kid_path`, and `audience` to the
 registration audience below. The fragment's values are examples, not discovery.
-The Gateway's signing private key stays with the Gateway. Render and inspect
-combined values, then follow your Helm upgrade procedure.
+The Gateway's signing private key stays with the Gateway. Render and inspect the
+combined production values, then use your normal Helm upgrade procedure.
 
 ## Register the request-phase service
 
@@ -235,15 +232,14 @@ See [Credential Proxy uncertainty](../drivers/credential-proxy.md#cancellation-r
 
 ## Diagnose a refused request
 
-Git hides JSON error bodies. If an admitted OpenShell endpoint refuses the first clone, fetch,
-`ls-remote` or push request, Git reports `The requested URL returned error: 403`
-(exit 128). If only the push upload is refused, usually for another branch or tag
-(`request_not_allowed`), Git reports `error: RPC failed; HTTP 403`, then
-`fatal: the remote end hung up unexpectedly`. Even if it prints
-`Everything up-to-date` (exit 1), the push never reached GitHub.
+Git hides JSON error bodies. A refused clone, fetch, `ls-remote` or initial push
+reports HTTP 403 (exit 128). Refused push uploads, usually for another branch or
+tag (`request_not_allowed`), report `error: RPC failed; HTTP 403` and
+`fatal: the remote end hung up unexpectedly`. Even with `Everything up-to-date`
+(exit 1), GitHub received nothing.
 
-After a known pre-send refusal, trace a fresh read. Git redacts the authorization
-header. Join the response lines to extract the reason. Never replay an uncertain write.
+After a known pre-send refusal, trace a fresh read for the reason. Git redacts
+the authorization header.
 
 ```bash
 GIT_TRACE_CURL=1 git ls-remote origin 2>&1 | sed -n 's/.*<= Recv data: //p' \
@@ -271,7 +267,8 @@ A deploying version has no credential; requests answer `route_not_ready` until a
 
 ### Worker log
 
-For failed held enrollment, `worker.openshell-git-probe-failed` records the HTTP 400 `reason`:
+After held enrollment failure and cleanup, check worker logs.
+`worker.openshell-git-probe-failed` records the HTTP 400 `reason`:
 
 - `probe_process_failed`: curl failed; optional integer `code` is its exit status (1–99).
 - `probe_response_invalid`: the launcher could not read response JSON.
@@ -282,60 +279,64 @@ attributes: `occ.git_probe.reason` and optional `occ.git_probe.exit_code`
 A parsed unexpected denial returns HTTP 409 `preview_not_observed`.
 
 For refused Git requests, `worker.openshell-git-denied` records `reasonCode`
-from the table, `reason` (such as `ref_not_allowed`, `draft_rejected`,
+from the table, the detailed `reason` (such as `ref_not_allowed`, `draft_rejected`,
 `session_closed`, `material_unavailable`, `installation_changed` or `route_blocked`),
 Sandbox ID and supervisor request ID. For lost credentials,
-`worker.openshell-git-route-warning` distinguishes removed bindings (`access_withdrawn`)
-from rejected App keys (`credential_unavailable`) with `reasonCode`.
+`worker.openshell-git-route-warning` carries the same `reasonCode` to distinguish
+a removed binding (`access_withdrawn`) from a rejected App key (`credential_unavailable`).
 
 ## Route state, restarts and recovery
 
-`REPOSITORY_GIT_ROUTE_PENDING` means unverified Sandbox/supervisor/provider generation
-or unavailable material. `REPOSITORY_GIT_ROUTE_BLOCKED` closes Git until a new revision.
-Continued chat requires independent model access and verified Git-only removal. Unsafe
-identity changes, retained GitHub access or failed observation can require retirement.
-Detach persists one request ID and Sandbox version, reusing both while Git remains
-attached at that version. After a lost reply, absent Git requires verified revocation
-and model readiness; a changed attached version or unverifiable outcome retires the runtime.
-An original `WITHHELD / CREDENTIAL_EXPIRED` installation must match identity/generation,
-a ready live Sandbox and an observation younger than 15 seconds.
-Expired credentials remain unusable. Cold workers defer under global expiry withholding;
-without warm-owner renewal, neither saved routes nor waiting restore model readiness
-or authorize adoption. After detach, Git must be revoked and the model ready.
-An empty profile workspace selects the platform profile. Files-only profiles may
-remain: omitted protobuf endpoint/credential lists are empty. Exact profile identity
-and Git-overlap checks apply.
+`REPOSITORY_GIT_ROUTE_PENDING` means unverified Sandbox, supervisor or provider
+generation, or unavailable material. `REPOSITORY_GIT_ROUTE_BLOCKED` closes Git
+until redeployment. Continued chat requires independent model access and verified
+Git-only removal. Identity changes, overlapping GitHub access or failed observation
+can require retirement. While Git remains attached, the worker reuses one conditional
+detach request. A moved Sandbox version or unknown Gateway outcome retires the runtime.
+An empty profile workspace selects the platform profile. Files-only profiles may omit
+endpoint and credential lists. Exact identity and Git overlap checks still apply.
 
-Transient observation failure closes access until the same installation verifies
-(1–10 s backoff). Replacement workers cannot adopt held-launch paths (`github-repository`,
-protected `git-write`, installation preview): deploy a new revision after
-`worker_replaced` or terminal `bootstrap_failed`.
-Live preparation and background issuance refuse historical v4 and online installation-wide
-routes, including open, unexpired sessions. Installation-wide issuance requires
-explicit observed-hook preview.
-Replacement workers may finish the original detach using historical metadata,
-but cannot renew its session or take over delivery. No path replays uncertain
-provider writes; writes retain their deadlines. See
-[Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
-Prepared-material expiry, quarantine and retirement belong to
+Standing succession confirms the original predecessor and generation with a fresh
+`WITHHELD / CREDENTIAL_EXPIRED` report, then rechecks Sandbox readiness and main
+process identity. Observation age plus monotonic read time must total under 15 seconds
+at nanosecond precision. Evaluation and observation must each fall within 30 seconds
+of local time. An elapsed budget leaves the route pending. A contradictory witness
+cannot authorize issuance, preparation or a new route fence. New installations and
+post-detach model completion require ready credentials and independent model authorization.
+
+In OpenShell 0.1.6, Sandbox-wide policy reload during Git detach can interrupt
+model and workspace connections despite runtime, conversation and authorization
+retention. Inspect uncertain turn outcomes before retrying.
+
+Transient observation failures close access until the same installation verifies
+(1–10 s retry backoff). Replacement workers cannot adopt held launches
+(`github-repository`, protected `git-write` and installation preview).
+Redeploy after `worker_replaced` or terminal `bootstrap_failed`.
+After verified replacement of v5 held launches, deployment detail preserves history
+and reports `repositoryAccess.state: redeploy-required` and
+`REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`. OCE closes Git and checks withdrawal
+and model authority. Historical v4 and installation-wide v5 cannot prepare, issue or renew
+Git credentials. Only the explicit observed-hook preview supports installation-wide issuance.
+Replacement workers may finish the original detach using recorded custody. Never replay
+an uncertain write. See [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
+For prepared-material expiry, quarantine and retirement, see
 [Token Service lifecycle](../repository-credentials.md#token-service-lifecycle) and
 its [source flow](../../flows/credential-source-refresh.md#6-oce-prepared-github-core).
 
-Inspect `OPENSHELL_GIT_RECONCILIATION_REQUIRED` and its `reason`:
+`OPENSHELL_GIT_RECONCILIATION_REQUIRED` reasons:
 `execution_replaced`, `supervisor_replaced`, `write_unknown`, `worker_restarted`
 or `gateway_unauthorized`. `worker.openshell-git-route-warning` distinguishes
 `unobserved` reads, `pending` material, `closed` routes (`worker_replaced`, or
 `withdrawn` and `repository_expired` when another worker closed the route) and
 `retained` ones.
-`OPENSHELL_GIT_WITHDRAWAL_UNRECORDED` means the store did not record a withdrawal:
-the worker still refuses the route. Verify recorded withdrawal and Git detach or
-runtime retirement; replacement preparation fails closed. Closed routes are dropped
-after absent Sandbox reads (two if never observed); failed reads retain them.
-A denied read logs one `retained` warning with `gateway_unauthorized` and retries
-with backoff until absence. Preparing, adopting and verifying remain refused;
-later denials log `no_binding`.
-`worker.openshell-git-route` reports restoration within the same worker, with `durationMs`.
-Correlate the revision and request ID with `worker.openshell-git-denied`.
+`OPENSHELL_GIT_WITHDRAWAL_UNRECORDED` means unpersisted withdrawal.
+Confirm durable withdrawal and Git detach or runtime retirement.
+OCE drops closed routes after confirmed absence (two reads if never observed).
+Failed reads retain them. Gateway authorization refusal logs `retained` with
+`gateway_unauthorized` and retries with backoff until absence; preparation, adoption
+and verification remain refused, and denials log `no_binding`.
+`worker.openshell-git-route` reports same-worker restoration, with `durationMs`.
+Correlate revision and request IDs with `worker.openshell-git-denied`.
 
 ### Qualification history
 

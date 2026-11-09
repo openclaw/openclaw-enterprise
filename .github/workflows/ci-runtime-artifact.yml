@@ -20,7 +20,7 @@ permissions:
 jobs:
   build:
     name: Build ordinary CI runtime
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     # Provisional cold-build measurement envelope; the helper bounds the build
     # subprocess to 180 minutes. Consumers keep their own shorter test budgets.
     timeout-minutes: 240

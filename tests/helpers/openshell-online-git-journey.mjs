@@ -154,28 +154,28 @@ export async function gitExpiryGateway(
   };
   if (platformProfile) {
     profiles.service = serviceProfile;
-    if (supervisor) {
-      // Mandatory launch has exactly model, runtime files and Git. Its model may select
-      // the platform profile even when the Workspace has a benign namesake.
-      providers[model].type = "service";
-      delete providers[model].profile_workspace;
-    } else {
-      providers["operator-service"] = {
-        // On the stock wire an omitted profile_workspace is the empty string (platform).
-        type: "service",
-        metadata: { workspace, name: "operator-service", id: "service-id", resource_version: "4" },
-      };
-    }
+    providers["operator-service"] = {
+      // On the stock wire an omitted profile_workspace is the empty string (platform).
+      type: "service",
+      metadata: { workspace, name: "operator-service", id: "service-id", resource_version: "4" },
+    };
   }
   if (supervisor) {
-    profiles.runtime = { id: "runtime", endpoints: [], credentials: [] };
+    // Stock attaches an endpointless runtime-files profile as well as the model.
+    // Keep it observable after Git detach; an absent provider must fail retention.
+    profiles["oce-codex-runtime"] = {
+      id: "oce-codex-runtime",
+      endpoints: [],
+      credentials: [],
+      files: [{ path: "runtime.json", content: "{{config.runtime_json}}" }],
+    };
     providers[supervisor.runtimeProvider] = {
-      type: "runtime",
+      type: "oce-codex-runtime",
       profile_workspace: workspace,
       metadata: {
         workspace,
         name: supervisor.runtimeProvider,
-        id: "runtime-id",
+        id: "runtime-files-id",
         resource_version: "1",
       },
     };
@@ -276,8 +276,8 @@ export async function gitExpiryGateway(
           session_id: "same-supervisor",
           process_instance_id: repositoryGitRecipient.processInstanceId,
           credentials_installed: !expired,
-          launch_environment_installed: !expired,
           ...(expired && { reason: "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED" }),
+          launch_environment_installed: !expired,
           policy_active: true,
         },
         network_instance_id: repositoryGitRecipient.networkInstanceId,
@@ -319,7 +319,9 @@ export async function gitExpiryGateway(
             restart_policy: "SANDBOX_RESTART_POLICY_NEVER",
             providers: world.detaches.length
               ? world.retainedProviders
-              : [...world.retainedProviders, gitName],
+              : supervisor
+                ? [model, supervisor.runtimeProvider, gitName]
+                : [...world.retainedProviders, gitName],
             provider_attachment_epoch: world.detaches.length
               ? "reduced"
               : repositoryGitRecipient.attachmentEpoch,
@@ -411,11 +413,7 @@ export async function gitExpiryGateway(
       assert.equal(req.provider, gitName);
       assert.equal(req.workspace_scope.workspace, workspace);
       assert.deepEqual(world.detaches, []);
-      assert.equal(
-        req.expected_resource_version,
-        String(world.version),
-        "only send against a fresh observation",
-      );
+      assert.equal(req.expected_resource_version, "14", "only send against a fresh observation");
       world.detaches.push(req.request_id);
       world.version = 15;
       // Stock committed the conditional removal; its reply was lost. No DETACH receipt
@@ -435,8 +433,8 @@ export async function gitExpiryGateway(
           network_policies: {
             ...supervisor.policy.network_policies,
             [supervisor.gitRule.name]: supervisor.gitRule,
-            ["_provider_" + model]: {
-              name: "_provider_" + model,
+            ["_provider_" + model.replaceAll("-", "_")]: {
+              name: "_provider_" + model.replaceAll("-", "_"),
               endpoints: [{ host: "api.openai.com", port: 443 }],
             },
             ["_provider_" + supervisor.runtimeProvider.replaceAll("-", "_")]: {

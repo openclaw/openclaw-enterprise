@@ -199,6 +199,7 @@ function evidence(
     reason === "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED";
   const at = timestampNanos(status.observedTime);
   const evaluated = timestampNanos(status.evaluatedTime);
+  const now = BigInt(Date.now()) * 1_000_000n;
   requireIdentity(
     r?.workspace === git.workspace &&
       r.provider === name &&
@@ -249,7 +250,10 @@ function evidence(
       evaluated !== undefined &&
       at <= evaluated &&
       // Stock reports expiry before checking its 15-second supervisor observation lease.
-      (!expired || evaluated - at < 15_000_000_000n) &&
+      (!expired ||
+        (evaluated - at < 15_000_000_000n &&
+          now - at < 30_000_000_000n &&
+          at - now < 30_000_000_000n)) &&
       Math.abs(Date.now() - Date.parse(status.evaluatedTime ?? "")) < 30_000,
   );
   // Request time includes transport before evaluation. If that conservative budget
@@ -304,16 +308,20 @@ async function modelProvider(client: Client, git: Git, model: string, signal: Ab
   return p.id;
 }
 
-/** Called while Git is installed and after the Sandbox Driver verified its complete admitted spec. */
+/** Called while Git is installed and after the Sandbox Driver verified its complete admitted spec.
+ * Predecessor evidence preserves launch identity, never credential readiness or authority. */
 export async function witnessOpenShellGitLaunch(
   client: Client,
   owner: OpenShellGitContinuity,
   box: OpenShellSandboxResponse,
   git: Git,
   signal: AbortSignal,
-  options?: { completedPreviewReceipt?: string; coldObservation?: boolean },
+  observation:
+    | { kind: "predecessor" }
+    | { kind: "installation"; completedPreviewReceipt?: string | undefined },
 ): Promise<string | undefined> {
-  const completedPreviewReceipt = options?.completedPreviewReceipt;
+  const completedPreviewReceipt =
+    observation.kind === "installation" ? observation.completedPreviewReceipt : undefined;
   const id = await modelProvider(client, git, owner.model, signal);
   const readStartedAt = process.hrtime.bigint();
   const status = await client.getSandboxProviderStatus(
@@ -329,38 +337,37 @@ export async function witnessOpenShellGitLaunch(
   ) {
     return;
   }
+  const workload = await owner.workload(git.sandboxId, signal);
   if (
-    options?.coldObservation &&
+    observation.kind === "predecessor" &&
     status.state === "PROVIDER_READINESS_STATE_WITHHELD" &&
     status.reason === "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED"
   ) {
-    // Expiry withholds the whole environment. Matching old evidence cannot reconstruct
-    // launch authority in a cold process; let the worker supervise and defer instead.
-    evidence(status, git, git.attachmentEpoch, owner.model, id, { old: true, readStartedAt });
-    requireIdentity(
-      box.id === git.sandboxId &&
-        box.name === git.sandbox &&
-        box.workspace === git.workspace &&
-        box.annotations["openclaw.dev/revision-id"] === git.executionId &&
-        [2, "SANDBOX_PHASE_READY"].includes(box.phase as string | number) &&
-        box.mainProcessInstanceId === git.networkInstanceId,
+    // Check after the report and workload read: the old report cannot identify a replacement.
+    const current = await client.getSandbox(
+      { workspace: git.workspace, name: git.sandbox },
+      signal,
     );
-    return;
+    requireIdentity(
+      current?.id === git.sandboxId &&
+        current.name === git.sandbox &&
+        current.workspace === git.workspace &&
+        box.mainProcessInstanceId === git.networkInstanceId &&
+        [2, "SANDBOX_PHASE_READY"].includes(current.phase as string | number) &&
+        current.mainProcessInstanceId === git.networkInstanceId,
+    );
   }
-  const model = evidence(
-    status,
-    git,
-    git.attachmentEpoch,
-    owner.model,
-    id,
-    completedPreviewReceipt === undefined
-      ? undefined
-      : { receiptId: completedPreviewReceipt, observe: true },
-  );
+  const model = evidence(status, git, git.attachmentEpoch, owner.model, id, {
+    // OpenShell reports expiry for the aggregate environment even when this query
+    // names the model provider. Only the recorded predecessor may use that evidence.
+    old: observation.kind === "predecessor",
+    readStartedAt,
+    ...(completedPreviewReceipt && { receiptId: completedPreviewReceipt, observe: true }),
+  });
   if (!model || !isDeepStrictEqual(generation(model), generation(git))) {
     return;
   }
-  const value = launch(box, git, owner, await owner.workload(git.sandboxId, signal), id);
+  const value = launch(box, git, owner, workload, id);
   requireIdentity(value.present);
   return value.hash;
 }

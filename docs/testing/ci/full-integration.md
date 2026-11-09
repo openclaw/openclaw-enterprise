@@ -17,15 +17,18 @@ clusters, and provider services. The workflow collects the selected results in
 
 ## Trigger
 
-Pushes to `main` select `all`. Manual dispatch selects one supported `lane` or
+Verified documentation-only main pushes select no runtime lanes. Other pushes
+to `main` select `all`. Missing history or uncertain impact retains full execution. Manual dispatch selects one supported `lane` or
 `all` on `main` and requires the dispatcher's [team approval](configuration.md#environments).
 A scheduled advisory run does not run the Full Integration workflow.
 
 ## Scenarios
 
-`pr-safe-same-sha` and Runtime Image Fixture repeat the [CI suites](required-checks.md#scenarios) at the
-dispatch commit when `all` is selected; its test selection also adds [Demo Observability Smoke](observability-demo.md). Dispatch Preflight checks policy; Full Integration Aggregate requires
-selected results. QA waits for Slack to finish, including after Slack failure.
+For main pushes, `pr-safe-same-sha` can reuse successful [CI suite](required-checks.md#scenarios)
+results at the same commit. Manual dispatch runs fresh. Runtime Image Fixture,
+image lanes, Repository Credentials, and [Demo Observability Smoke](observability-demo.md)
+always run fresh. Dispatch Preflight checks policy; Full Integration Aggregate
+requires selected results. QA waits for Slack to finish, including after Slack failure.
 Some lanes are also selected by [CI](required-checks.md) or
 [QA Advisory](qa-advisory.md); those pages own automatic selection rules.
 
@@ -65,11 +68,18 @@ with an account that supports custom profiles can select all three scenarios.
 ### Run a protected integration lane
 
 Configure [integration environments](configuration.md#environments), inspect the
-commit, then dispatch the selected lane or `all` on `main`:
+intended `main` commit, then dispatch one lane, for example Gateway Routing:
 
 ```sh
-gh workflow run full-integration.yml --ref main -f lane=all
+gh workflow run full-integration.yml --ref main -f lane=gateway-routing
 ```
+
+Confirm the run's `headSha` matches the inspected commit, then complete the
+[dispatcher's team approval](configuration.md#environments). Use `lane=all` only
+when you need every supported Full Integration lane.
+
+Manual dispatch uses a separate workflow queue, so this focused run can proceed
+while an automatic full run is active.
 
 ### Run the hosted local installation lane
 
@@ -92,10 +102,22 @@ The OpenShell lane runs its manifest serially. QA Advisory instead uses
 [parallel per-file runners](qa-advisory.md#openshell-file-coverage).
 Use the [shared cleanup procedure](run-lanes.md#results-and-cleanup) for local runs.
 
+The reuse job polls ordinary CI every 30 seconds for at most 12 minutes. Other
+Full Integration lanes continue without waiting for it. Reuse requires a successful
+canonical `main` push run, its current attempt's successful lane and static-check
+jobs, and immutable result artifacts with matching source commit and full coverage.
+Preparation profiles and Node versions must match. The existing result validator
+checks required cases and cleanup before results are published as `full-results-reused`.
+Missing, expired, incomplete, or unavailable evidence runs fresh instead. A failed
+artifact download or publication also runs fresh. The job log identifies the CI
+producer run and attempt; Full Integration Aggregate validates reused and fresh
+results together.
+
 ## Files
 
 - [Full Integration workflow](../../../.github/workflows/full-integration.yml): selectable lanes, dependencies, and aggregate.
 - [Dispatch preflight](../../../scripts/ci/full-integration-preflight.mjs): lane and environment policy.
+- [CI result reuse](../../../scripts/ci/full-integration-reuse.mjs): producer admission, result validation, and fresh-lane fallback.
 - [Suite index](../../../scripts/ci/test-suites.json): group membership; exact manifests are linked in Scenarios.
 - [Test runner](../../../scripts/ci/run-tests.mjs): expected-case and result checks.
 - [Lane action](../../../.github/actions/run-ci-lane/action.yml): preparation and cleanup.
