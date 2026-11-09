@@ -25,13 +25,46 @@ interface ImagePullOptions<Result extends ImageCommandResult> {
 // Normalize only the fields used for retry decisions, never the error message.
 function pullFailureEvidence(error: unknown) {
   if (error === null || (typeof error !== "object" && typeof error !== "function")) {
-    return { timedOut: false, code: undefined, stderr: "" };
+    return { timedOut: false, code: undefined, stderr: "", stdout: "" };
   }
   return {
     timedOut: "timedOut" in error && error.timedOut === true,
     code: "code" in error && typeof error.code === "string" ? error.code : undefined,
     stderr: String("stderr" in error ? (error.stderr ?? "") : ""),
+    stdout: "stdout" in error ? error.stdout : "",
   };
+}
+
+// Piped Docker output omits numeric progress. Retain only layer IDs and known
+// phases, never image references, error text, terminal escapes or URLs.
+function pullProgress(evidence: ReturnType<typeof pullFailureEvidence>): string {
+  const layers = new Map<string, string>();
+  for (const output of [evidence.stdout, evidence.stderr]) {
+    let tail = "";
+    if (Buffer.isBuffer(output)) {
+      tail = output.subarray(-32_768).toString();
+    } else if (typeof output === "string") {
+      tail = output.slice(-32_768);
+    }
+    for (const line of tail.split(/[\r\n]/)) {
+      const match =
+        /^([a-f0-9]{12,64}): (Pulling fs layer|Waiting|Downloading|Verifying Checksum|Download complete|Extracting|Pull complete|Already exists)\s*$/.exec(
+          line,
+        );
+      const layer = match?.[1];
+      const phase = match?.[2];
+      if (!layer || !phase) {
+        continue;
+      }
+      layers.delete(layer);
+      layers.set(layer, `${layer}: ${phase}`);
+      const oldest = layers.keys().next();
+      if (layers.size > 8 && !oldest.done) {
+        layers.delete(oldest.value);
+      }
+    }
+  }
+  return [...layers.values()].join("; ") || "no layer progress captured";
 }
 
 // Bounded retry for `docker pull`, the image counterpart of
@@ -88,10 +121,14 @@ export async function pullImage<Result extends ImageCommandResult = ImageCommand
   const started = Date.now();
   let delayMs = firstDelayMs;
   for (let attempt = 1; ; attempt += 1) {
+    const attemptStarted = Date.now();
     try {
       return await execFile(docker, ["pull", image], { timeoutMs: attemptTimeoutMs });
     } catch (error) {
       const evidence = pullFailureEvidence(error);
+      log(
+        `Image pull attempt ${attempt}/${attempts} failed after ${Date.now() - attemptStarted} ms${evidence.timedOut ? " (timeout)" : ""}: ${image}; ${pullProgress(evidence)}`,
+      );
       if (
         !transientPullEvidence(evidence) ||
         attempt >= attempts ||
