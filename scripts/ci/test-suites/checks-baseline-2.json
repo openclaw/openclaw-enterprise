@@ -669,7 +669,8 @@
       "path": "tests/integration/staged-signin-proof.test.ts",
       "expectedTests": [
         "sign-in proof reader accepts complete observations for both protocols and return branches",
-        "sign-in proof reader refuses incomplete or misbound observations without reflecting proof"
+        "sign-in proof reader refuses incomplete or misbound observations without reflecting proof",
+        "sign-in proof reader binds a regular file and enforces its own size limit"
       ]
     }
   ]

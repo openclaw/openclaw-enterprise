@@ -4,7 +4,9 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
+import stat
 import sys
 
 
@@ -58,7 +60,17 @@ def read_proof(path, previous_version, candidate_version, expected_cluster):
         raise ValueError('unsupported sign-in protocol')
     stages = (['P-to-P', 'P-to-A', 'A-to-A', 'A-to-P', 'P-back-to-A']
               if previous_version == 2 else ['P-to-A', 'A-to-P'])
-    raw = Path(path).read_bytes()
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(descriptor)
+        limit = 4 * 1024 * 1024
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= limit:
+            raise ValueError('proof must be a bounded regular file')
+        raw = os.read(descriptor, limit + 1)
+        if len(raw) != info.st_size:
+            raise ValueError('proof size changed during read')
+    finally:
+        os.close(descriptor)
     proof = json.loads(raw)
     if (not isinstance(proof, dict) or proof.get('source') != 'production Helm'
             or not isinstance(expected_cluster, str) or not expected_cluster

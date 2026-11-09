@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -37,12 +37,28 @@ function observations(scenario: string): Observation[] {
     .map((line) => JSON.parse(line) as Observation);
 }
 
-function readProof(scenario: string, rows: Observation[]) {
+function readProof(
+  scenario: string,
+  rows: Observation[],
+  file: "regular" | "limit" | "oversize" | "symlink" | "fifo" = "regular",
+) {
   const directory = mkdtempSync(join(tmpdir(), "signin-proof-"));
-  const raw = JSON.stringify({ source: "production Helm", cluster: "fixture-cluster", rows });
+  let raw = JSON.stringify({ source: "production Helm", cluster: "fixture-cluster", rows });
+  if (file === "limit" || file === "oversize") {
+    raw += " ".repeat(4 * 1024 * 1024 + (file === "oversize" ? 1 : 0) - Buffer.byteLength(raw));
+  }
   try {
     const path = join(directory, "proof.json");
     writeFileSync(path, raw);
+    if (file === "symlink") {
+      const target = join(directory, "target.json");
+      renameSync(path, target);
+      symlinkSync(target, path);
+    } else if (file === "fifo") {
+      rmSync(path);
+      const created = spawnSync("mkfifo", [path], { encoding: "utf8" });
+      assert.equal(created.status, 0, created.stderr);
+    }
     const result = spawnSync(
       "python3",
       [
@@ -56,7 +72,7 @@ function readProof(scenario: string, rows: Observation[]) {
         "--expected-cluster",
         "fixture-cluster",
       ],
-      { encoding: "utf8" },
+      { encoding: "utf8", timeout: 5000 },
     );
     assert.ifError(result.error);
     return { ...result, hash: createHash("sha256").update(raw).digest("hex") };
@@ -186,5 +202,19 @@ test("sign-in proof reader refuses incomplete or misbound observations without r
     const reordered = structuredClone(original);
     [reordered[0], reordered[1]] = [reordered[1]!, reordered[0]!];
     refused(scenario, reordered, "result before issuance");
+  }
+});
+
+test("sign-in proof reader binds a regular file and enforces its own size limit", () => {
+  const rows = observations("v3-v3");
+  const limit = readProof("v3-v3", rows, "limit");
+  assert.equal(limit.status, 0, limit.stderr);
+  assert.equal(JSON.parse(limit.stdout).sha256, limit.hash);
+  // These are actual filesystem substitutions, not a deterministic concurrent swap.
+  for (const file of ["oversize", "symlink", "fifo"] as const) {
+    const result = readProof("v3-v3", rows, file);
+    assert.equal(result.status, 1, file);
+    assert.equal(result.stdout, "", file);
+    assert.equal(result.stderr, "Sign-in proof refused\n", file);
   }
 });

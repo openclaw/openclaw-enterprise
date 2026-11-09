@@ -1,7 +1,8 @@
 // Destructive cleanup is separate from test success: a failed but settled case
 // can be cleaned. Missing settlement or replaced resources require reconciliation.
 import assert from "node:assert/strict";
-import { lstat, mkdir, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdir, open, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -21,9 +22,18 @@ import { restrictStagingProcess } from "./prepare-staged-signin.mjs";
 // the first proof failure while still releasing resources with confirmed custody.
 async function caseEvidence(dir, staged, owned, preparedHash, run) {
   const path = join(dir, "case-result.json");
-  const info = await lstat(path);
-  assert.ok(info.isFile() && info.size > 0 && info.size <= 4096);
-  const result = JSON.parse(await readFile(path, "utf8"));
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  let result;
+  try {
+    const info = await handle.stat();
+    assert.ok(info.isFile() && info.size > 0 && info.size <= 4096);
+    const bytes = Buffer.alloc(4097);
+    const { bytesRead } = await handle.read(bytes);
+    assert.equal(bytesRead, info.size);
+    result = JSON.parse(bytes.subarray(0, bytesRead).toString("utf8"));
+  } finally {
+    await handle.close();
+  }
   assert.equal(result.kind, "staging-signin-case");
   assert.equal(result.caseName, caseName);
   assert.equal(result.passed, true);
@@ -40,8 +50,6 @@ async function caseEvidence(dir, staged, owned, preparedHash, run) {
   assert.ok(entries.length === 1 && entries[0].isDirectory());
   const proof = join(folder, entries[0].name, "proof.json");
   assert.equal(await realpath(proof), proof);
-  const file = await lstat(proof);
-  assert.ok(file.isFile() && file.size > 0 && file.size <= 4 * 1024 * 1024);
   const reader = fileURLToPath(new URL("./staged-signin-proof.py", import.meta.url));
   const checked = JSON.parse(
     await run(
