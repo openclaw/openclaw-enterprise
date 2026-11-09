@@ -198,6 +198,7 @@ export function bindPlatformUnitOfWork(
       "recordStandingExecution",
       "approveStanding",
       "revokeStanding",
+      "withdrawFinite",
 
       "findAttempt",
       "findBrokerReceipt",

@@ -26,7 +26,10 @@ import {
 import { migrateWithHistory } from "../../scripts/migration-history.mjs";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { assertReleasedControllerCompatibility } from "../helpers/released-controller-compatibility.mjs";
+import {
+  assertReleasedControllerCompatibility,
+  assertReleasedControllerIAMCompatibility,
+} from "../helpers/released-controller-compatibility.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const migrationsDirectory = join(repositoryRoot, "migrations");
@@ -2041,7 +2044,8 @@ test(
       [70, "preDefaultUsers"],
       [71, "preHarnessOverrides"],
       [72, "preAccountAdministrationPolicy"],
-      [73, "preRuntimeRoles"],
+      [73, "preFiniteRepositorySessionWithdrawal"],
+      [74, "preRuntimeRoles"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2534,7 +2538,7 @@ test(
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
       [65, "preAgentDeployIntent"],
-      [73, "preRuntimeRoles"],
+      [74, "preRuntimeRoles"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2795,7 +2799,7 @@ test(
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
       [65, "preAgentDeployIntent"],
-      [73, "preRuntimeRoles"],
+      [74, "preRuntimeRoles"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3573,7 +3577,7 @@ test(
     let pool;
     context.after(async () => pool?.end());
     const db = await historyDatabase(context, await migrationHistoryFixture(), "runtime_admin", {
-      prefix: 73,
+      prefix: 74,
     });
     const namespaceId = await seedCanonicalData(db, {
       preset: true,
@@ -3714,7 +3718,7 @@ test(
       context,
       await migrationHistoryFixture(),
       "runtime_denied",
-      { prefix: 73 },
+      { prefix: 74 },
     );
     const deniedNamespace = await seedCanonicalData(denied, {
       preset: true,
@@ -3975,6 +3979,22 @@ if (
       await assertReleasedControllerCompatibility(t, controllerImages, async () => {
         const fixture = await migrationHistoryFixture();
         return historyDatabase(t, fixture, "released_controller");
+      });
+    },
+  );
+  test(
+    "Released controller remains usable after configured IAM activation",
+    { timeout: 360_000 },
+    async (t) => {
+      assert.ok(
+        Object.values(controllerImages).every(
+          (image) => typeof image.reference === "string" && typeof image.revision === "string",
+        ),
+        "Both released and candidate controller image references and revisions are required.",
+      );
+      await assertReleasedControllerIAMCompatibility(t, controllerImages, async () => {
+        const fixture = await migrationHistoryFixture();
+        return historyDatabase(t, fixture, "released_iam");
       });
     },
   );

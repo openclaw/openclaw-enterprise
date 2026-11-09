@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { appendFile, link, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadTestSuites } from "./test-suites.mjs";
 import { prepareRuntimeImageSmoke } from "./prepare.mjs";
@@ -370,8 +370,126 @@ export function readArchivePlatforms(archive, indexDigest) {
   return selected;
 }
 
-// Assemble the exact exports that passed startup tests on their native runners.
-// Hard links let assembly share those bytes until the final archive is written.
+// Both commands walk the same immutable extracted layout. Only assemble links its blobs.
+async function verifyPlatform(layout, env, platform, expectedDigest) {
+  const expected = identity(env, env.IMAGE);
+  assert.match(expected.sourceSha, shaPattern, "Expected a full source SHA.");
+  assert.match(expected.workflowSha, shaPattern, "Expected a full workflow SHA.");
+  assert.match(expected.runId, integerPattern, "Expected a producer run ID.");
+  assert.match(expected.attempt, integerPattern, "Expected a producer attempt.");
+  if (expected.ciRunId !== "" || expected.ciAttempt !== "") {
+    assert.match(expected.ciRunId, integerPattern, "Expected a CI run ID.");
+    assert.match(expected.ciAttempt, integerPattern, "Expected a CI attempt.");
+  }
+  assert.match(
+    expected.nodeBaseImage,
+    /^\S+@sha256:[a-f0-9]{64}$/,
+    "Expected a pinned Node base image.",
+  );
+  assert.ok(platforms.includes(platform), "Expected linux/amd64 or linux/arm64.");
+  const [, arch] = platform.split("/");
+  for (const dir of [layout, join(layout, "blobs"), join(layout, "blobs/sha256")]) {
+    assert.ok((await lstat(dir)).isDirectory(), "Expected an OCI layout directory.");
+  }
+  async function regularFile(path) {
+    const info = await lstat(path);
+    assert.ok(info.isFile() && info.nlink === 1, "Expected a regular OCI file without links.");
+    return info;
+  }
+  async function metadata(name) {
+    const path = join(layout, name);
+    await regularFile(path);
+    return JSON.parse(await readFile(path, "utf8"));
+  }
+  assert.equal((await metadata("oci-layout")).imageLayoutVersion, "1.0.0");
+  const receipt = await metadata("platform.json");
+  for (const [key, value] of Object.entries(expected)) {
+    assert.deepEqual(receipt[key], value, `Platform receipt ${key} mismatch.`);
+  }
+  assert.equal(receipt.platform, platform, "Platform receipt architecture mismatch.");
+  assert.equal(receipt.native, true, "Platform must pass smoke on its native runner.");
+  if (expectedDigest !== undefined) {
+    assert.equal(receipt.digest, expectedDigest, "Selected build digest mismatch.");
+  }
+  const blobs = new Map();
+  async function verifyBlob(descriptor) {
+    assert.match(descriptor.digest ?? "", digestPattern);
+    const path = join(layout, "blobs/sha256", descriptor.digest.slice(7));
+    const info = await regularFile(path);
+    assert.equal(info.size, descriptor.size, "OCI blob size mismatch.");
+    assert.equal(
+      `sha256:${await fileDigest(path)}`,
+      descriptor.digest,
+      "OCI blob digest mismatch.",
+    );
+    blobs.set(descriptor.digest, path);
+    return path;
+  }
+  function checkPlatform(descriptorPlatform) {
+    if (descriptorPlatform !== undefined) {
+      assert.equal(descriptorPlatform.os, "linux");
+      assert.equal(
+        descriptorPlatform.architecture,
+        arch,
+        "Exported platform configuration mismatch.",
+      );
+      assert.ok(
+        descriptorPlatform.variant === undefined ||
+          (arch === "arm64" && descriptorPlatform.variant === "v8"),
+      );
+    }
+  }
+  const root = await metadata("index.json");
+  if (root.mediaType !== undefined) {
+    assert.equal(root.mediaType, "application/vnd.oci.image.index.v1+json");
+  }
+  assert.equal(root.subject, undefined, "Unexpected OCI subject.");
+  assert.equal(root.schemaVersion, 2);
+  assert.ok(
+    Array.isArray(root.manifests) && root.manifests.length === 1,
+    "Expected exactly one exported platform.",
+  );
+  let descriptor = root.manifests[0];
+  assert.equal(descriptor.digest, receipt.digest, "Build output digest mismatch.");
+  checkPlatform(descriptor.platform);
+  if (descriptor.mediaType === "application/vnd.oci.image.index.v1+json") {
+    const index = JSON.parse(await readFile(await verifyBlob(descriptor), "utf8"));
+    assert.equal(index.schemaVersion, 2);
+    assert.equal(index.mediaType, descriptor.mediaType);
+    assert.equal(index.subject, undefined, "Unexpected OCI subject.");
+    assert.ok(
+      Array.isArray(index.manifests) && index.manifests.length === 1,
+      "Expected exactly one platform manifest.",
+    );
+    descriptor = index.manifests[0];
+    checkPlatform(descriptor.platform);
+  }
+  assert.equal(descriptor.mediaType, "application/vnd.oci.image.manifest.v1+json");
+  const manifest = JSON.parse(await readFile(await verifyBlob(descriptor), "utf8"));
+  assert.equal(manifest.schemaVersion, 2);
+  assert.equal(manifest.mediaType, descriptor.mediaType);
+  assert.equal(manifest.subject, undefined, "Unexpected OCI subject.");
+  assert.equal(manifest.config.mediaType, "application/vnd.oci.image.config.v1+json");
+  const config = JSON.parse(await readFile(await verifyBlob(manifest.config), "utf8"));
+  checkPlatform(config);
+  assert.ok(Array.isArray(manifest.layers), "Expected OCI image layers.");
+  for (const layer of manifest.layers) {
+    await verifyBlob(layer);
+  }
+  // Exporter annotations (including build time) must not affect the combined index.
+  return {
+    manifest: {
+      mediaType: descriptor.mediaType,
+      digest: descriptor.digest,
+      size: descriptor.size,
+      platform: { os: "linux", architecture: arch },
+    },
+    configDigest: manifest.config.digest,
+    rootDigest: receipt.digest,
+    blobs,
+  };
+}
+
 async function assemble(directory, env) {
   const combined = join(directory, "combined");
   await mkdir(combined);
@@ -379,68 +497,14 @@ async function assemble(directory, env) {
   const retained = new Set();
   const manifests = [];
   for (const arch of ["amd64", "arm64"]) {
-    const layout = join(directory, arch);
-    const receipt = JSON.parse(await readFile(join(layout, "platform.json"), "utf8"));
-    for (const [key, value] of Object.entries(identity(env, env.IMAGE))) {
-      assert.deepEqual(receipt[key], value, `Platform receipt ${key} mismatch.`);
-    }
-    assert.equal(receipt.platform, `linux/${arch}`, "Platform receipt architecture mismatch.");
-    assert.equal(receipt.native, true, "Platform must pass smoke on its native runner.");
-    async function retain(descriptor) {
-      assert.match(descriptor.digest ?? "", digestPattern);
-      const path = join(layout, "blobs/sha256", descriptor.digest.slice(7));
-      const info = await lstat(path);
-      assert.ok(info.isFile(), "OCI blob must be a regular file.");
-      assert.equal(info.size, descriptor.size, "OCI blob size mismatch.");
-      assert.equal(
-        `sha256:${await fileDigest(path)}`,
-        descriptor.digest,
-        "OCI blob digest mismatch.",
-      );
-      if (!retained.has(descriptor.digest)) {
-        await link(path, join(combined, "blobs/sha256", descriptor.digest.slice(7)));
-        retained.add(descriptor.digest);
+    const { manifest, blobs } = await verifyPlatform(join(directory, arch), env, `linux/${arch}`);
+    for (const [digest, path] of blobs) {
+      if (!retained.has(digest)) {
+        await link(path, join(combined, "blobs/sha256", digest.slice(7)));
+        retained.add(digest);
       }
-      return path;
     }
-    const root = JSON.parse(await readFile(join(layout, "index.json"), "utf8"));
-    assert.equal(root.schemaVersion, 2);
-    assert.equal(root.manifests.length, 1, "Expected exactly one exported platform.");
-    let descriptor = root.manifests[0];
-    assert.equal(descriptor.digest, receipt.digest, "Build output digest mismatch.");
-    if (descriptor.mediaType === "application/vnd.oci.image.index.v1+json") {
-      const index = JSON.parse(await readFile(await retain(descriptor), "utf8"));
-      assert.equal(index.schemaVersion, 2);
-      assert.equal(index.manifests.length, 1, "Expected exactly one platform manifest.");
-      descriptor = index.manifests[0];
-    }
-    assert.equal(descriptor.mediaType, "application/vnd.oci.image.manifest.v1+json");
-    const manifest = JSON.parse(await readFile(await retain(descriptor), "utf8"));
-    assert.equal(manifest.schemaVersion, 2);
-    assert.equal(manifest.mediaType, descriptor.mediaType);
-    const config = JSON.parse(await readFile(await retain(manifest.config), "utf8"));
-    assert.equal(config.os, "linux");
-    assert.equal(config.architecture, arch, "Exported platform configuration mismatch.");
-    if (descriptor.platform) {
-      assert.equal(descriptor.platform.os, config.os);
-      assert.equal(descriptor.platform.architecture, config.architecture);
-      assert.ok(
-        descriptor.platform.variant === undefined ||
-          (arch === "arm64" && descriptor.platform.variant === "v8"),
-      );
-    }
-    for (const layer of manifest.layers) {
-      await retain(layer);
-    }
-    // BuildKit's one-platform index may add exporter annotations such as the
-    // current build time. They do not describe the tested manifest bytes and
-    // must not make the assembled image identity depend on the workflow run.
-    manifests.push({
-      mediaType: descriptor.mediaType,
-      digest: descriptor.digest,
-      size: descriptor.size,
-      platform: { os: "linux", architecture: arch },
-    });
+    manifests.push(manifest);
   }
   const index = {
     schemaVersion: 2,
@@ -495,7 +559,26 @@ async function smoke(directory, env) {
   let prepared;
   try {
     const [loaded] = JSON.parse(execFileSync("docker", ["image", "inspect", tag]));
-    assert.equal(loaded.Id, manifest.config.digest);
+    if (loaded.Descriptor) {
+      // The containerd store's Id identifies a manifest/index, not its config.
+      // Export and hash-check that immutable target before trusting its config.
+      assert.match(loaded.Descriptor.digest ?? "", digestPattern);
+      assert.equal(loaded.Id, loaded.Descriptor.digest);
+      const verified = JSON.parse(
+        execFileSync("python3", [
+          "scripts/upgrade-image-identity.py",
+          `${tag}@${loaded.Id}`,
+          `linux/${arch}`,
+        ]),
+      );
+      assert.equal(
+        verified.configDigest,
+        manifest.config.digest,
+        "Loaded image configuration differs from the sealed OCI export.",
+      );
+    } else {
+      assert.equal(loaded.Id, manifest.config.digest);
+    }
     assert.equal(loaded.Os, "linux");
     assert.equal(loaded.Architecture, arch);
     if (env.IMAGE === "runtime") {
@@ -681,6 +764,23 @@ async function main() {
   if (command === "validate") {
     const attempt = await validate(process.env);
     await appendFile(process.env.GITHUB_OUTPUT, `ci_attempt=${attempt}\n`);
+  } else if (command === "verify-platform") {
+    const { PLATFORM, IMAGE_DIGEST } = process.env;
+    assert.match(IMAGE_DIGEST, digestPattern, "Expected the native build output digest.");
+    const { manifest, configDigest, rootDigest } = await verifyPlatform(
+      resolve(directory),
+      process.env,
+      PLATFORM,
+      IMAGE_DIGEST,
+    );
+    console.log(
+      JSON.stringify({
+        platform: PLATFORM,
+        rootDigest,
+        manifestDigest: manifest.digest,
+        configDigest,
+      }),
+    );
   } else if (command === "assemble") {
     await assemble(directory, process.env);
   } else if (command === "smoke") {
@@ -698,7 +798,7 @@ async function main() {
     );
     await writeFile(join(directory, "publication.json"), `${JSON.stringify(receipt, null, 2)}\n`);
   } else {
-    throw new Error("Expected validate, assemble, smoke, seal, or publish.");
+    throw new Error("Expected validate, verify-platform, assemble, smoke, seal, or publish.");
   }
 }
 

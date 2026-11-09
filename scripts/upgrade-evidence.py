@@ -16,8 +16,9 @@ REQUIRED = (
     "installation-secret-key", "before-values.yaml", "before-installation.yaml",
     "before-live-values.yaml", "before-live-installation.yaml",
     "before-live-installation-secret.json", "before-helm-status.json",
+    "prepared-helm-attempt.json",
 )
-OPTIONAL = ("installation-changed", "installation-checksum", "agent-continuity.json", "controller-compatibility-results.json")
+OPTIONAL = ("before-candidate-installation-secret.json", "installation-changed", "installation-checksum", "agent-continuity.json", "controller-compatibility-results.json")
 
 
 def digest(directory, name, optional=False):

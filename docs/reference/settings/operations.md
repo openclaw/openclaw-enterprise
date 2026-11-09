@@ -79,17 +79,17 @@ has 46 through `0046_model_probe_failure_cause`;
 `0047_provisioning_configuration_release`; `preCodexPatSources` has 48 through
 `0048_administrator_credential_source_grants`; `preAgentCredentialSources` has 49
 through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
-through `0050_agent_credential_sources`; later shapes add one each, through
+through `0050_agent_credential_sources`; later shapes add one, through
 `preCredentialProxy` (59) and `prePreparedAttemptSettlement` (62, through
 `0062_credential_delivery_custody`). After `0063_prepared_attempt_settlement`,
 63 receipts mean `preGatewayManagedMode`; 64 mean `preSelectedRepositorySet`,
 65 mean `preAgentDeployIntent`; 66 mean `preAgentCredentialSourceLimit`;
 67 mean `preAgentPluginDriver`; 68 mean `preConnectionTemplates`;
-69 mean `preSavedConnections`; 70 mean `preDefaultUsers`; 71 mean `preHarnessOverrides`; 72 mean `preAccountAdministrationPolicy`; and 73 mean `preRuntimeRoles`.
+69 mean `preSavedConnections`; 70 mean `preDefaultUsers`; 71 mean `preHarnessOverrides`; 72 mean `preAccountAdministrationPolicy`; 73 mean `preFiniteRepositorySessionWithdrawal`; and 74 mean `preRuntimeRoles`.
 `--check` must report `completed` afterward.
 Hashes: [canonical manifest](../../../migrations/meta/_canonical-history.json).
-Never delete or relabel unsupported receipts. Empty schemas may be absent or owner-only, with no objects or
-unexpected default privileges. A rolled-back first migration may leave an empty Drizzle ledger.
+Never delete or relabel unsupported receipts. Empty schemas may be absent or owner-only, without objects or
+unexpected default privileges. Rollback may leave an empty Drizzle ledger.
 
 For a [logical restore](../../guides/deploy/upgrade-baseline.md#record-the-database),
 the manifest pairs the PostgreSQL 18.6 restored catalog with its exact native

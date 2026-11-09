@@ -159,7 +159,7 @@ See [migration recovery](../reference/settings/operations.md#migration-history).
 ### Released controller compatibility
 
 Select two already-loaded, digest-pinned controller images to test their real
-API and worker against one disposable database. Use the PostgreSQL fixture
+API and worker in two independent disposable databases. Use the PostgreSQL fixture
 selectors above, then set these four image inputs:
 
 ```sh
@@ -175,16 +175,17 @@ For native runner receipts, use the prepare/run/cleanup pattern above with lane
 `postgres`. Prepare the lane without `--file`, then supply the same four inputs
 to `node scripts/ci/run-tests.mjs run postgres` with
 `--file tests/integration/postgres-migration-compatibility.test.mjs`.
-This runs the whole migration file, including the selected compatibility case.
-Require that case to pass and inspect `releasedController` and `candidateController`
+This runs the whole migration file, including both selected compatibility cases.
+Require both selected cases to pass and inspect `releasedController` and `candidateController`
 in the file result's `imageDigests`; passing ordinary migration cases alone does
 not qualify the pair. The selectors are optional and inherited only by this file.
 
 Each image must carry its matching `org.opencontainers.image.revision` label.
-The case never pulls images. It is registered only when at least one image or
+The cases never pull images. They are registered only when at least one image or
 revision input is supplied; partial selection fails. With no inputs, ordinary
 PostgreSQL CI runs its existing cases without an extra skipped test and does not
-qualify released-image compatibility.
+qualify released-image compatibility. A failed case means the image pair is not
+qualified, even when the other case passes.
 
 The released image bootstraps and migrates a fresh database with its canonical
 commands. Its real Fastify app, password authentication, Native IAM and worker
@@ -196,11 +197,26 @@ then checks the final history without changing it. A failed read is failed
 compatibility; there is no option to accept incompatibility. Use the same
 candidate image for both roles as a positive harness control.
 
+A second case tests configured IAM policy activation independently of saved
+connections. It keeps the same administrator session reading the same Namespace
+before migration and after SQL completes, then starts the candidate with the
+[Default users policy](../reference/authorization.md). The candidate writes its
+configured Installation Group binding through the startup controller method,
+before serving requests.
+Both versions must still authorize the administrator, and a newly provisioned
+member must read the configured Namespace and be denied in another Namespace.
+The released controller must also restart and authorize the same read. The case
+records each phase and reports `qualified: true` only after every assertion and
+controller cleanup succeeds. A refused old read or startup is a compatibility
+failure, not an acceptable outcome. Run only this case with
+`--test-name-pattern='Released controller remains usable after configured IAM activation'`.
+
 This is database/API compatibility proof with passive Compute and Secret test
 Drivers. It does not run the production server entry point, Helm rollout,
 Agent workloads, external OAuth exchange or model turns. Candidate images must
-support the saved-connection APIs exercised by this case. Containers and the
-case's database are removed on completion, including assertion failure.
+support both the saved-connection APIs and configured IAM startup policy exercised
+by these cases. Each case removes its containers and database on completion,
+including assertion failure.
 
 ## Azure workload-identity connections
 

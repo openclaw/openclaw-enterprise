@@ -40,3 +40,23 @@ elapsed milliseconds, and whether the command failed. It excludes arguments,
 environment values, and subprocess output. Concurrent commands overlap, so their
 durations must not be added as total startup time. These records do not change
 command cancellation, readiness checks, or failure handling.
+
+When Kubernetes-only startup returns an error, `[occ-dev-startup]` reports the
+selected error's `primary_stage`, or `unknown` when no stage is identified.
+`cleanup_failed` records failure in tracked network-probe cleanup, registry
+detachment or startup rollback, including canceled sibling steps; it does not
+inventory every resource cleanup.
+`parent_context_done` says whether the parent context had ended when the CLI
+reported the result. It does not establish that cancellation initiated failure.
+Original errors and exit behavior are preserved. The record contains no raw
+errors, paths or subprocess output.
+
+For `primary_stage=routing`, optional `routing_operation` identifies the selected
+failed step: `manifest-download`, `gateway-api-readiness`, `manifest-filter`,
+`manifest-write`, `manifest-apply`, `controller-crd-readiness`,
+`controller-rollout`, `gateway-class-apply`, `gateway-class-readiness`, or
+`node-pod-cidr`. When known, `routing_controller` is `cert-manager` or
+`envoy-gateway`; it is absent for the node Pod CIDR lookup. These fields use fixed
+labels, not error text. A canceled sibling or failed cleanup does not replace
+the selected failure's routing details. Records from older CLI versions can
+omit both fields.

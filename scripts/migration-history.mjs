@@ -172,6 +172,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 72 && completedCount > 72) {
     return "preAccountAdministrationPolicy";
   }
+  if (count === 73 && completedCount > 73) {
+    return "preFiniteRepositorySessionWithdrawal";
+  }
   if (count === completedCount) {
     return "completed";
   }
@@ -274,7 +277,7 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 59) {
     return "preCredentialProxy";
   }
-  if (count === 73) {
+  if (count === 74) {
     return "preRuntimeRoles";
   }
   if (count === 62) {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, readlink, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, readlink, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -92,9 +92,11 @@ packages:
   };
   for (const [name, bytes] of Object.entries(files)) {
     await mkdir(join(root, name, ".."), { recursive: true });
-    await writeFile(join(root, name), bytes, {
-      mode: name.endsWith("bin.js") || name.endsWith("/codex") ? 0o755 : 0o644,
-    });
+    const path = join(root, name);
+    await writeFile(path, bytes, { mode: 0o644 });
+    if (name.endsWith("bin.js") || name.endsWith("/codex")) {
+      await chmod(path, 0o755);
+    }
   }
   await mkdir(join(root, "node_modules/.bin"));
   await symlink("../codex/bin.js", join(root, "node_modules/.bin/codex"));

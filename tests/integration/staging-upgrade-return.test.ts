@@ -11,6 +11,7 @@ import test, { type TestContext } from "node:test";
 import { inspect } from "node:util";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
+  assertProtectedEqual,
   bindLocalRehearsalCluster,
   createRehearsalCustody,
   localRehearsalEnvironment,
@@ -224,6 +225,23 @@ test("release checkout admission rejects hidden edits and ignored execution inpu
   assert.equal((await git(["status", "--porcelain"])).trim(), "");
   await assert.rejects(selectRehearsalControllers(run, env), /only unmodified committed files/u);
   assert.equal(dockerCalls, 0);
+});
+
+test("protected rehearsal comparisons retain equality without exposing mismatched operands", () => {
+  const sentinel = `private-${randomUUID()}`;
+  for (const actual of [sentinel, { data: { nested: [sentinel] } }]) {
+    assert.doesNotThrow(() =>
+      assertProtectedEqual(actual, structuredClone(actual), "receipt changed"),
+    );
+    assert.throws(
+      () => assertProtectedEqual(actual, null, "receipt changed"),
+      (error: Error) => {
+        assert.ok(!inspect(error).includes(sentinel), "assertion exposed a protected operand");
+        assert.equal(error.message, "receipt changed");
+        return true;
+      },
+    );
+  }
 });
 
 test("migration check reports protected log failures without printing fixture credentials", async (t) => {
