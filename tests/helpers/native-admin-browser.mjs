@@ -1425,7 +1425,6 @@ export async function runOidcAgentChatScenario(context) {
   context.after(() => keycloakRealmAdmin(issuer, secrets.admin, "DELETE", `/clients/${client.id}`));
   const topology = await arrangeProductionTopology(context, "embedded", undefined, {
     publicOrigin: ingress.origin,
-    gatewayPassword: false,
     defaultUser: true,
     nativeAdmin: { enabled: true, domain: nativeDomain },
     nativeOptions: { controlUi: { enabled: true } },
@@ -1555,11 +1554,14 @@ export async function runOidcAgentChatScenario(context) {
   assert.equal(capabilities.status, 200);
   assert.equal(capabilities.data.capabilities.nativeAdmin, true);
 
-  // Ordinary create prepares the exact new Agent's profile. The model Secret is
-  // bound by reference; neither OIDC user's browser receives its value.
+  // The saved embedded draft has no Agent-specific origins or app-server transport.
+  // Drop the fixture's Gateway password reference: ordinary create derives the new
+  // Agent's browser profile, and the model Secret is separately bound by reference.
+  const values = structuredClone(topology.secretApi.configuration.values);
+  delete values.gateway.auth.password;
   const configuration = await ownerRequest("POST", `${namespacePath}/configurations`, {
     kind: "agent",
-    values: topology.secretApi.configuration.values,
+    values,
   });
   assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
   const created = await ownerRequest("POST", `${namespacePath}/agents`, {
