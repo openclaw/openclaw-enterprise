@@ -10,8 +10,7 @@
   },
   "agentNativeAdmin": {
     "enabled": true,
-    "domain": ("agents." + $cluster + ".oce.localhost"),
-    "sharedCookieDomain": ($cluster + ".oce.localhost")
+    "domain": ("agents." + $cluster + ".oce.localhost")
   },
   "bootstrap": {
     "adminEmail": $email,

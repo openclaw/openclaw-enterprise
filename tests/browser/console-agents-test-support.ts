@@ -248,6 +248,11 @@ export function nativeAdminComputeDriver(endpoint: string) {
     getGatewayEndpoint() {
       return endpoint;
     },
+    getGatewayChatEndpoint() {
+      const url = new URL(endpoint);
+      url.pathname = `/native-chat${url.pathname}`;
+      return url.href;
+    },
   });
 }
 

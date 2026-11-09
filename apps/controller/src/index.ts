@@ -2437,10 +2437,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (operation.operationId === "getNamespaceAgentCapabilities") {
       reply.send({
         data: {
-          capabilities: await controller.getNamespaceAgentCapabilities(
-            context.actorId,
-            namespaceId,
-          ),
+          capabilities: {
+            ...(await controller.getNamespaceAgentCapabilities(context.actorId, namespaceId)),
+            ...(options.nativeAdmin?.enabled ? { nativeAdmin: true } : {}),
+          },
         },
         meta: { requestId: request.id },
       });

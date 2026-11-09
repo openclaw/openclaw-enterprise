@@ -347,11 +347,14 @@ test(
               });
               t.after(() => resume.resolve());
               const incoming = once(fixture.app.server, "request");
-              const client = httpRequest(fixture.origin + path, {
-                method: "POST",
-                headers,
-                agent: false,
-              });
+              const client = httpRequest(
+                `http://127.0.0.1:${fixture.app.server.address().port}${path}`,
+                {
+                  method: "POST",
+                  headers: { ...headers, host: new URL(fixture.origin).host },
+                  agent: false,
+                },
+              );
               const result = once(client, disconnect ? "error" : "response");
               client.end(JSON.stringify(body));
               const [raw, response] = await incoming;
@@ -802,9 +805,12 @@ test("Saved Agent source discovery denies missing grants and rechecks revocation
       });
       try {
         const incoming = once(fixture.app.server, "request", { signal: t.signal });
-        client = httpRequest(fixture.origin + path, {
+        client = httpRequest(`http://127.0.0.1:${fixture.app.server.address().port}${path}`, {
           method: "POST",
-          headers: authenticatedHeaders(session, { "content-type": "application/json" }),
+          headers: authenticatedHeaders(session, {
+            "content-type": "application/json",
+            host: new URL(fixture.origin).host,
+          }),
           agent: false,
         });
         const result = once(client, "error", { signal: t.signal });

@@ -28,6 +28,11 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return err
 	}
 	r := newRunner(opts)
+	for _, key := range []string{"OCC_AUTH_COOKIE_DOMAIN", "OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN"} {
+		if _, present := r.env[key]; present {
+			return fmt.Errorf("%s is no longer supported; browser session cookies derive their domain from the Console and Agent hosts", key)
+		}
+	}
 	sandboxDriver := r.setting("OCC_DEVELOPMENT_SANDBOX_DRIVER", "none")
 	if sandboxDriver != "none" && sandboxDriver != "openshell" {
 		return fmt.Errorf("OCC_DEVELOPMENT_SANDBOX_DRIVER must be none or openshell")
@@ -90,7 +95,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	state := &developmentState{Repository: opts.Repository, Version: 3, ComputeDriver: "kubernetes", SandboxDriver: sandboxDriver, ComposeProject: r.setting("OCC_DEVELOPMENT_COMPOSE_PROJECT", "openclaw-enterprise-development-kubernetes"), Cluster: r.setting("OCC_DEVELOPMENT_KUBERNETES_CLUSTER", "occ-dev-"+strings.ToLower(rand.Text()[:10])), directory: directory, KeyPath: opts.KeyOutput, KeyOwned: opts.KeyOutput == ""}
 	state.SandboxNetworkPolicies = networkPolicies
 	state.SandboxNetworkPolicyCeiling = ceiling
-	if sandboxDriver == "openshell" {
+	{
 		browserPort, err := positiveSetting(r, "OCC_DEVELOPMENT_BROWSER_PORT", 8443, 65535)
 		if err != nil {
 			return err
@@ -98,14 +103,14 @@ func Up(ctx context.Context, opts Options) (result error) {
 		if browserPort == port {
 			return fmt.Errorf("browser and Kubernetes API ports must differ")
 		}
-		consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
+		consoleHost, agentDomain, _ := developmentBrowserHosts(state.Cluster)
 		state.BrowserPort = browserPort
 		state.BrowserOrigin = developmentBrowserOrigin(consoleHost, browserPort)
 		state.NativeAdminDomain = agentDomain
 		r.env["OCC_DEVELOPMENT_BROWSER_PORT"] = strconv.Itoa(browserPort)
 		r.env["OCC_DEVELOPMENT_BROWSER_ORIGIN"] = state.BrowserOrigin
 		r.env["OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN"] = agentDomain
-		r.env["OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN"] = cookieDomain
+		r.env["OCC_AGENT_NATIVE_ADMIN_ENABLED"] = strconv.FormatBool(sandboxDriver == "openshell")
 		r.env["OCC_DEVELOPMENT_BROWSER_TLS_CERT"] = filepath.Join(directory, "browser-tls.crt")
 		r.env["OCC_DEVELOPMENT_BROWSER_TLS_KEY"] = filepath.Join(directory, "browser-tls.key")
 	}
@@ -428,6 +433,8 @@ func Up(ctx context.Context, opts Options) (result error) {
 		if err := configureDevelopmentRouting(state, routing.trustedProxyCIDRs, routing.endpoint); err != nil {
 			return err
 		}
+	}
+	{
 		consoleHost, agentDomain, _ := developmentBrowserHosts(state.Cluster)
 		if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
 			return err

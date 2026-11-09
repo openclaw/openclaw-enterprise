@@ -10,7 +10,11 @@ import { once } from "node:events";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { skipperInstalledProof, skipperImageScope } from "./skipper-release.ts";
+import {
+  skipperFailureSummary,
+  skipperInstalledProof,
+  skipperImageScope,
+} from "./skipper-release.ts";
 import { imageConfigDigest } from "./image-config-digest.ts";
 import { createInterface } from "node:readline";
 import {
@@ -296,10 +300,11 @@ try {
   if (runner.status !== 0) {
     // Report only a known phase, source location, or failure category. Both raw streams
     // and the runner's private diagnostics can contain the synthetic credentials.
+    const resultText = await readFile(privateResult, "utf8").catch(() => "");
     const text =
       String(runner.stderr) +
       String(runner.stdout) +
-      (await readFile(privateResult, "utf8").catch(() => "")) +
+      resultText +
       (await readFile(join(directory, "runner-state.json.diagnostics.json"), "utf8").catch(
         () => "",
       ));
@@ -368,17 +373,10 @@ try {
       "native-command-and-model-observed",
     ];
     const last = records.filter((p) => known.includes(p)).at(-1) ?? "before first test checkpoint";
-    const site = text.match(
-      /(?:skipper-prepared-compute|skipper-prepared-git-installed\.test)\.mjs:\d+:\d+/,
-    )?.[0];
-    const category = text.match(
-      /RTM_NEWADDR|bwrap|native command failed|missing-env|test-timeout|expected-test-not-passed|selected-zero|timed out:|ERR_ASSERTION/,
-    )?.[0];
     console.error(
-      "Installed test failed after %s (%s, %s, exit=%s)",
+      "Installed test failed after %s (%s, exit=%s)",
       last,
-      site ?? "location unavailable",
-      category ?? "unclassified",
+      skipperFailureSummary(resultText, process.cwd(), text),
       runner.code ?? "unknown",
     );
     assert.fail("selected test runner failed");

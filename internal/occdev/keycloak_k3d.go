@@ -687,7 +687,6 @@ func developmentKeycloakSignInValues(first []byte, cluster, recoveryUserID strin
 		"clientSecretKey":  "client-secret",
 		"displayName":      developmentKeycloakSignInName,
 	}
-	values["agentNativeAdmin"] = map[string]any{"enabled": false}
 	return json.Marshal(values)
 }
 

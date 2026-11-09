@@ -139,7 +139,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if err := validateClusterName(state.Cluster); err != nil {
 		return err
 	}
-	if sandboxDriver == "openshell" {
+	{
 		consoleHost, agentDomain, _ := developmentBrowserHosts(state.Cluster)
 		state.BrowserOrigin = developmentBrowserOrigin(consoleHost, browserPort)
 		state.NativeAdminDomain = agentDomain
@@ -813,7 +813,6 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	values := map[string]any{
 		"images":         map[string]string{"controller": controllerImage},
 		"installation":   map[string]string{"name": "Kubernetes development"},
-		"auth":           map[string]string{"baseUrl": fmt.Sprintf("http://127.0.0.1:%d", state.APIPort)},
 		"bootstrap":      map[string]any{"adminEmail": developmentAdministratorEmail, "password": map[string]string{"claimName": "bootstrap-password"}},
 		"database":       map[string]any{"cidrs": []string{string(postgresIP) + "/32"}},
 		"cluster":        map[string]any{"cidrs": []string{string(clusterIP) + "/32"}, "port": clusterPort},
@@ -824,6 +823,26 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	if state.authenticatedOpenShell() {
 		values["backend"] = map[string]any{"openshell": map[string]string{"clientSecretName": "openshell-client-tls"}}
 	}
+	if state.BrowserPort != 0 {
+		consoleHost, agentDomain, _ := developmentBrowserHosts(state.Cluster)
+		if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
+			return err
+		}
+		cert, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.crt"))
+		if err != nil {
+			return err
+		}
+		key, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.key"))
+		if err != nil {
+			return err
+		}
+		browserSecret := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": kubernetesMetadata("occ-development-browser-tls", namespace, labels), "stringData": map[string]string{"tls.crt": string(cert), "tls.key": string(key)}}
+		if err := r.writeAndApply(ctx, state, "browser-tls", browserSecret); err != nil {
+			return err
+		}
+		values["auth"] = map[string]string{"baseUrl": developmentBrowserOrigin(consoleHost, state.BrowserPort)}
+		values["agentNativeAdmin"] = map[string]any{"enabled": routing, "domain": agentDomain}
+	}
 	if routing {
 		gatewayKey, err := randomDevelopmentSecret()
 		if err != nil {
@@ -833,26 +852,7 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		if err := r.writeAndApply(ctx, state, "gateway-api-key", gatewaySecret); err != nil {
 			return err
 		}
-		if state.BrowserPort != 0 {
-			consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
-			if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
-				return err
-			}
-			cert, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.crt"))
-			if err != nil {
-				return err
-			}
-			key, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.key"))
-			if err != nil {
-				return err
-			}
-			browserSecret := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": kubernetesMetadata("occ-development-browser-tls", namespace, labels), "stringData": map[string]string{"tls.crt": string(cert), "tls.key": string(key)}}
-			if err := r.writeAndApply(ctx, state, "browser-tls", browserSecret); err != nil {
-				return err
-			}
-			values["auth"] = map[string]string{"baseUrl": developmentBrowserOrigin(consoleHost, state.BrowserPort)}
-			values["agentNativeAdmin"] = map[string]any{"enabled": true, "domain": agentDomain, "sharedCookieDomain": cookieDomain}
-		}
+
 		values["gatewayRouting"] = map[string]any{"enabled": true, "gatewayClassName": "eg", "apiKeySecretName": "occ-private-gateway-key"}
 		if hostname := developmentRoutingHostname(state); hostname != "" {
 			values["gatewayRouting"].(map[string]any)["hostname"] = hostname

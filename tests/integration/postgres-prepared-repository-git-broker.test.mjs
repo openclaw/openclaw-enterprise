@@ -223,7 +223,11 @@ async function withdrawRepositoryBinding(t, { state, agent, revision }) {
     iamDriver: iam,
     auditSink: new InMemoryAuditSink(),
     auth: auth.auth,
-    development: { enabled: true, installationId: installation.id },
+    development: {
+      enabled: true,
+      installationId: installation.id,
+      browserOrigin: "https://console.oce.localhost",
+    },
   });
   t.after(() => app.close());
   const api = await createAuthenticatedControllerRequest(app, auth);

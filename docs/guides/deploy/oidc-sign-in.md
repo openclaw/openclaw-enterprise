@@ -18,7 +18,9 @@ together with GitHub and Google. One issuer is supported per Installation.
 
 - Everything the [GitHub profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
   requires: one serving controller, PostgreSQL State, native IAM, one canonical HTTPS
-  Console origin, and `agentNativeAdmin.enabled: false`.
+  Console origin, and an Agent DNS suffix under the same non-public domain.
+  Enable [native browser access](native-admin.md) separately for Agent chat and administration.
+  The existing `operate` and `administer` permissions control access.
 - A controller image that includes OIDC sign-in.
   [Build a compatible image](production-installation.md#build-and-publish-production-images).
 - An IdP that serves its issuer, authorization, token and JWKS URLs over HTTPS on port
@@ -80,11 +82,10 @@ auth:
     clientSecretKey: client-secret
     tokenAuth: client_secret_post # or client_secret_basic
     displayName: Acme SSO # optional button label, up to 40 characters
-agentNativeAdmin:
-  enabled: false
 ```
 
-Rendering rejects invalid URLs, a shared Secret, an HTTP base URL, native administration, an unknown `tokenAuth`, or a label over 40 characters.
+Rendering rejects invalid URLs, a shared Secret, an HTTP base URL, an unknown
+`tokenAuth`, or a label over 40 characters.
 
 The API Server connects to the token and JWKS URLs. If you enforce your own egress policy, permit those endpoints. For an in-cluster IdP, check the destination Pod port and its ingress policy.
 

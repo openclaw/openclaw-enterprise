@@ -254,6 +254,16 @@ runs:
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
       run: pnpm openapi:check
+    - name: Restore documentation dependencies
+      id: docs-store
+      if: inputs.lane == 'checks-baseline-1' || inputs.lane == 'checks-browser'
+      uses: ./.github/actions/setup-pnpm-store-cache
+      with:
+        node-version: ${{ inputs.node-version }}
+        package-manager-file: scripts/docs-site/package.json
+        lockfile-path: scripts/docs-site/pnpm-lock.yaml
+        # Static Checks saves this key after its documentation build succeeds.
+        cache-mode: restore
     - name: Run docs check
       id: docs-check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
@@ -617,6 +627,7 @@ runs:
           setup-formatter=${{ steps.setup-formatter.conclusion }}
           format-check=${{ steps.format-check.conclusion }}
           openapi-check=${{ steps.openapi-check.conclusion }}
+          docs-store=${{ steps.docs-store.conclusion }}
           docs-check=${{ steps.docs-check.conclusion }}
           install-docs-browser=${{ steps.install-docs-browser.conclusion }}
           check-go-cli=${{ steps.check-go-cli.conclusion }}

@@ -74,7 +74,8 @@ After OCE readiness, the launcher signs in through the verified Console HTTPS
 endpoint with the bootstrap password and reads the administrator's ID. It
 replaces `helm-values.json` with complete second-pass values, applies the OIDC
 client Secret, and runs Helm again. That pass enables OIDC and recovery-only
-passwords and disables native Agent browser administration for host-only cookies.
+passwords and preserves the configured Agent browser access. Sessions use the
+shared cookie domain derived from the Console and Agent DNS hosts.
 Once the API advertises OIDC, the launcher obtains a fresh recovery session and
 reads the account version. It attaches Alice's fixed subject through the real
 account API with `expectedVersion`; attachment invalidates existing account

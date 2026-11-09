@@ -12,7 +12,6 @@ import {
   LOGIN_RECEIPT_LIFETIME_SECONDS,
   isBindingValue,
   loginAttemptId,
-  receiptLedger,
   sessionBindingKey,
   signLoginReceipt,
   verifyLoginReceipt,
@@ -624,6 +623,7 @@ export function createHumanLogin(
   }
   const proofScope = new AsyncLocalStorage<{
     proof?: HumanAuthenticationProof;
+    result?: { attemptId: string; expiresAt?: number };
     audit?: { provider: "github"; subject: string; login?: string | undefined; attemptId: string };
   }>();
   const githubLogin =
@@ -640,7 +640,6 @@ export function createHumanLogin(
   const bindingCookie = secure ? "__Host-occ_login_attempt" : "occ_login_attempt";
   const receiptCookie = secure ? "__Host-occ_login_receipt" : "occ_login_receipt";
   const receiptAttributes = { httpOnly: true, secure, sameSite: "strict" as const, path: "/" };
-  const receipts = receiptLedger();
   const cookieAttributes = { httpOnly: true, secure, sameSite: "lax" as const, path: "/" };
   const knownDeviceCookie = knownDeviceCookieName(secure);
 
@@ -787,7 +786,16 @@ export function createHumanLogin(
             userAgent: typeof data.userAgent === "string" ? data.userAgent : null,
           };
           // The original State unit owns this commit, including the login audit.
-          return (await state.issueSession(proof, session, scope.audit)) as R;
+          const { resultExpiresAt, ...issued } = await state.issueSession(
+            proof,
+            session,
+            scope.audit,
+            scope.result?.attemptId,
+          );
+          if (scope.result && resultExpiresAt !== undefined) {
+            scope.result.expiresAt = resultExpiresAt;
+          }
+          return issued as R;
         },
         async findOne<T>(input: Parameters<DBAdapter["findOne"]>[0]): Promise<T | null> {
           if (input.model !== "session") {
@@ -1082,9 +1090,11 @@ export function createHumanLogin(
                 );
               }
               const startedAt = performance.now();
+              const result: { attemptId: string; expiresAt?: number } = { attemptId };
               const session = await proofScope.run(
                 {
                   proof: snapshot.proof,
+                  result,
                   ...(name === "github"
                     ? {
                         audit: {
@@ -1098,7 +1108,7 @@ export function createHumanLogin(
                 },
                 () => ctx.context.internalAdapter.createSession(snapshot.user.id, false),
               );
-              if (!session) {
+              if (!session || result.expiresAt === undefined) {
                 throw rejected();
               }
               const maxAge = cookieLifetime(session.createdAt, session.expiresAt, startedAt);
@@ -1128,7 +1138,7 @@ export function createHumanLogin(
                   providerId: provider.providerId,
                   sessionId: session.id,
                   attemptId,
-                  expiresAt: Date.now() + LOGIN_RECEIPT_LIFETIME_SECONDS * 1000,
+                  expiresAt: result.expiresAt,
                 }),
                 { ...receiptAttributes, maxAge: LOGIN_RECEIPT_LIFETIME_SECONDS },
               );
@@ -1141,12 +1151,10 @@ export function createHumanLogin(
           externalKeys(ctx.headers, () => ctx.getCookie(receiptCookie)),
           async () => {
             const body = ctx.body as { attemptId?: unknown } | undefined;
-            const now = Date.now();
             const receipt = verifyLoginReceipt(
               ctx.context.secret,
               ctx.getCookie(receiptCookie),
               provider.providerId,
-              now,
             );
             if (
               !receipt ||
@@ -1159,15 +1167,25 @@ export function createHumanLogin(
               ctx.context.authCookies.sessionToken.name,
               ctx.context.secret,
             );
-            const current = token ? await state.currentSession(token) : undefined;
-            // The receipt names the session its callback created. A cookie replaced by
-            // another sign-in, or a revoked session, cannot adopt this attempt's key.
-            if (!current || current.id !== receipt.sessionId || !receipts.consume(receipt, now)) {
+            if (!token) {
+              throw rejected();
+            }
+            let consumed: boolean;
+            try {
+              consumed = await state.consumeLoginResult(token, receipt);
+            } catch {
+              throw APIError.fromStatus("SERVICE_UNAVAILABLE", {
+                message: "Authentication dependency unavailable.",
+              });
+            }
+            if (!consumed) {
               throw rejected();
             }
             ctx.setCookie(receiptCookie, "", { ...receiptAttributes, maxAge: 0 });
             // This exchange neither issues nor extends a session.
-            return ctx.json({ sessionKey: sessionBindingKey(ctx.context.secret, current.id) });
+            return ctx.json({
+              sessionKey: sessionBindingKey(ctx.context.secret, receipt.sessionId),
+            });
           },
         ),
       ),

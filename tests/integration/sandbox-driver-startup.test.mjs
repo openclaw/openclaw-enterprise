@@ -4949,6 +4949,8 @@ test("shipped startup names a rejected OpenShell policy without logging its name
           NODE_ENV: "development",
           OCC_HOST: "127.0.0.1",
           OCC_PORT: "18081",
+          OCC_AUTH_BASE_URL: "https://console.oce.localhost",
+          OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
           OCC_CONFIG_PATH: path,
         },
         encoding: "utf8",

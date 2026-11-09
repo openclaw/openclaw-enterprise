@@ -1,3 +1,4 @@
+import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
 import { importedPluginPackage } from "../helpers/imported-plugin-package.mjs";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
@@ -96,7 +97,8 @@ function childEnvironment(port, overrides = {}) {
     NODE_ENV: "development",
     OCC_HOST: "127.0.0.1",
     OCC_PORT: String(port),
-    OCC_AUTH_BASE_URL: `http://127.0.0.1:${port}`,
+    OCC_AUTH_BASE_URL: "https://console.oce.localhost",
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
     OCC_AUTH_SECRET: "openclaw-development-auth-secret-minimum-32-bytes",
     ...overrides,
   };
@@ -186,6 +188,7 @@ async function assertUnsafeStartupRejected() {
 
 async function request(url, method, path, options = {}) {
   const headers = {
+    host: "console.oce.localhost",
     ...(options.identity === false ? {} : authenticatedHeaders(options.session)),
     ...options.headers,
   };
@@ -198,7 +201,7 @@ async function request(url, method, path, options = {}) {
     body = options.rawBody;
   }
 
-  const response = await fetch(`${url}${path}`, {
+  const response = await fetchLoopback(`${url}${path}`, {
     method,
     headers,
     ...(body === undefined ? {} : { body }),
@@ -556,6 +559,7 @@ async function createInjectedFixture(options = {}) {
         : {}),
       development: {
         enabled: true,
+        browserOrigin: "https://console.oce.localhost",
         installationId,
       },
       auth: authFixture.auth,
@@ -685,7 +689,7 @@ async function injectedRequest(app, method, pathname, options = {}) {
     payload = JSON.stringify(options.body);
   }
   const response = await app.fetch(
-    new Request(`http://127.0.0.1${pathname}`, {
+    new Request(`https://console.oce.localhost${pathname}`, {
       method,
       headers,
       ...(payload === undefined ? {} : { body: payload }),
@@ -1742,9 +1746,10 @@ test("first-deployment CLI recovers a lost committed response with the original 
               chunks.push(chunk);
             }
             forwarded.push({ method: incoming.method, path: incoming.url });
-            const response = await fetch(`${origin}${incoming.url}`, {
+            const response = await fetchLoopback(`${origin}${incoming.url}`, {
               method: incoming.method,
               headers: {
+                host: "console.oce.localhost",
                 "x-api-key": incoming.headers["x-api-key"],
                 ...(incoming.headers["content-type"] === undefined
                   ? {}
@@ -7193,7 +7198,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
 
   // Failed admissions create no pending revision that could keep a detached account referenced.
   const deletedDetached = await controller.fixture.app.fetch(
-    new Request(`http://127.0.0.1${accountPath}`, {
+    new Request(`https://console.oce.localhost${accountPath}`, {
       method: "DELETE",
       headers: authenticatedHeaders(controller.fixture.session),
     }),
@@ -7204,7 +7209,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   const unusedAccountPath = `/namespaces/${namespace.id}/service-accounts/${unusedAccount.id}`;
   // Successful DELETE is intentionally bodyless, unlike canonical JSON resource responses.
   const deleted = await controller.fixture.app.fetch(
-    new Request(`http://127.0.0.1${unusedAccountPath}`, {
+    new Request(`https://console.oce.localhost${unusedAccountPath}`, {
       method: "DELETE",
       headers: authenticatedHeaders(controller.fixture.session),
     }),
@@ -9106,7 +9111,7 @@ test("bodyless OCC routes reject request payloads before IAM or domain side effe
         headers: {
           ...authenticatedHeaders(app.defaultSession),
           "content-type": "application/json",
-          host: "127.0.0.1",
+          host: "console.oce.localhost",
         },
         payload: JSON.stringify({ unexpected: "request body" }),
         remoteAddress: "127.0.0.1",
