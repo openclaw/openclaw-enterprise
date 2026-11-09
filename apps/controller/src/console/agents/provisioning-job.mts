@@ -5,7 +5,6 @@ type ProvisioningJob = Pick<AgentProvisioningStatusWire, "url" | "status"> & {
   agentId?: string;
   revisionId?: string;
   error?: { code?: string; message?: string };
-  progress?: { lastAttempt: { code: string; message: string } };
 };
 
 // Match the contracts' prefixed lowercase v4 UUIDs without loading server schemas in the browser.
@@ -62,15 +61,6 @@ export function provisioningJob(
   if (typeof error.message === "string" && error.message.trim()) {
     result.error ??= {};
     result.error.message = error.message;
-  }
-  const attempt = responseFields(responseFields(job.progress).lastAttempt);
-  if (
-    typeof attempt.code === "string" &&
-    attempt.code.trim() &&
-    typeof attempt.message === "string" &&
-    attempt.message.trim()
-  ) {
-    result.progress = { lastAttempt: { code: attempt.code, message: attempt.message } };
   }
   return result;
 }

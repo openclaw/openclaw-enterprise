@@ -828,15 +828,15 @@ export const createAgentProvisioningScenarios = {
   },
   createDeploymentPending: {
     group: "Pages/Create Agent",
-    name: "Initial deployment pending",
+    name: "Initial deployment opens its Agent",
     path: create,
     actions: readyForm,
     provisionedDeploymentStatus: "running",
     description:
-      "Creation stays on the original provisioning request while its first deployment is running.",
+      "Once provisioning creates the Agent and hands off its first deployment, Create Agent opens that version's Deployment tab instead of waiting for the deployment to finish.",
     steps: [
-      "Click Create Agent and confirm provisioning remains in progress.",
-      "Confirm Create Agent stays disabled and the same provisioning handle is polled.",
+      "Click Create Agent. The form shows “Provisioning Agent…”, then opens the new Agent on its Deployment tab.",
+      "Confirm Deployment activity shows the first deployment still in progress, and the provisioning job is no longer polled.",
     ],
   },
   createPending: {
@@ -862,9 +862,9 @@ export const createAgentProvisioningScenarios = {
     },
     provisioningNamesDeploymentWait: true,
     description:
-      "After handoff the provisioning job names its first deployment's wait. Create Agent adds that sentence, the one Deployment activity shows, to the provisioning line.",
+      "The first deployment waits for its runtime. Create Agent opens the Agent at handoff, where Deployment activity names that wait.",
     steps: [
-      "Click Create Agent. The line moves from “Provisioning Agent…” to “Provisioning Agent… Waiting for the runtime to become ready.” and Create Agent stays disabled.",
+      "Click Create Agent. It opens the Agent's Deployment tab, whose last recorded result reads “Waiting for the runtime to become ready.”",
     ],
   },
   createDeploymentPodQuotaFull: {
@@ -872,19 +872,6 @@ export const createAgentProvisioningScenarios = {
     name: "Initial deployment waits on a full Pod quota",
     path: create,
     actions: readyForm,
-    // Each rule skips the first read so the quota message appears before the interruption.
-    rules: [
-      { pathIncludes: "/deployments/", skip: 1, hold: true, once: true },
-      {
-        pathIncludes: "/deployments/",
-        skip: 1,
-        status: 503,
-        code: "DEPENDENCY_UNAVAILABLE",
-        message: "A required platform dependency is unavailable.",
-        once: true,
-      },
-      { pathIncludes: "/deployments/", skip: 1, status: 404, code: "NOT_FOUND" },
-    ],
     provisionedDeploymentStatus: "running",
     provisionedDeploymentAttempt: {
       code: "NAMESPACE_POD_QUOTA_EXCEEDED",
@@ -892,10 +879,9 @@ export const createAgentProvisioningScenarios = {
         "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an Installation administrator to raise the quota.",
     },
     description:
-      "The first deployment read explains the full Pod quota. A stalled read and a temporary outage preserve that detail; a later not-found response clears it while provisioning continues.",
+      "The first deployment waits on a full Namespace Pod quota. Create Agent opens the Agent at handoff, where Deployment activity explains the quota and what to do.",
     steps: [
-      "Click Create Agent. Watch the Pod quota message stay in place while the next read stalls and another gets a 503.",
-      "After the deployment read returns 404, the line changes to “Provisioning Agent…”. This does not say the quota cleared or the job stopped.",
+      "Click Create Agent. It opens the Agent's Deployment tab, whose last recorded result explains the full Pod quota.",
     ],
   },
   createDeploymentImagePullFailed: {
@@ -911,9 +897,9 @@ export const createAgentProvisioningScenarios = {
     },
     provisioningNamesDeploymentWait: true,
     description:
-      "The first deployment waits on a container image the cluster's nodes cannot pull. Create Agent shows that sentence alone in place of the provisioning line, as it does for a full Pod quota.",
+      "The first deployment waits on a container image the cluster's nodes cannot pull. Create Agent opens the Agent at handoff, where Deployment activity shows that sentence.",
     steps: [
-      "Click Create Agent. The line changes from “Provisioning Agent…” to the image pull sentence, which asks an administrator to check the runtime image reference and registry access.",
+      "Click Create Agent. It opens the Agent's Deployment tab, whose last recorded result asks an administrator to check the runtime image reference and registry access.",
     ],
   },
   createDeploymentSuperseded: {

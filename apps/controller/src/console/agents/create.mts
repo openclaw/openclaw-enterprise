@@ -1,7 +1,6 @@
 import type {
   Agent,
   AgentCredentialSourceBinding,
-  AgentDeploymentStatusWire,
   Configuration,
   CredentialSourceMetadata,
   CredentialSourceReference,
@@ -485,15 +484,6 @@ async function cancelledAgentState(request: CreateRequest, namespaceId: string, 
   }
 }
 
-// First-deployment waits that someone must act on: a full Pod quota (finding 1617) and an image
-// the nodes cannot pull (finding 1881). The deployment's own fixed sentence replaces the bare
-// provisioning line. The deployment read needs read access to the Agent. Clear the reason if the
-// deployment is no longer readable or names a different wait; keep it through a cancelled read
-// or temporary outage (finding 1637).
-const NAMED_DEPLOYMENT_WAITS = new Set([
-  "NAMESPACE_POD_QUOTA_EXCEEDED",
-  "REVISION_IMAGE_PULL_FAILED",
-]);
 // An outage, unlike the Installation's shape, needs no administrator change (finding 1624). Agent
 // save and deploy answer 503 for every harness until the selected Sandbox Driver returns.
 const SANDBOX_DRIVER_OUTAGE =
@@ -504,62 +494,17 @@ const NATIVE_WORKERS_UNAVAILABLE =
   "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an Installation administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.";
 const NO_SANDBOX_DRIVER_DEDICATED =
   "Dedicated OpenClaw is unavailable: this installation selects no Sandbox Driver. Choose the Codex harness or Embedded execution, or ask an Installation administrator to select a Sandbox Driver that can provision dedicated OpenClaw.";
-// The deployment read was refused (401, 403 or 404): the reader can't see its waits now.
-const DEPLOYMENT_UNREADABLE = Symbol("deployment unreadable");
-
-// The deployment's actionable wait (a sentence), none (null), DEPLOYMENT_UNREADABLE, or undefined
-// when the read was cut off or temporarily unavailable.
-async function namedDeploymentWait(
-  request: CreateRequest,
-  namespaceId: string,
+// A job past handoff has created its Agent and admitted the first revision; what remains is that
+// revision's ordinary deployment.
+function handedOff(
   job: ProvisioningJob,
-  signal: AbortSignal,
-) {
-  if (
-    typeof job.agentId !== "string" ||
-    !job.agentId ||
-    typeof job.revisionId !== "string" ||
-    !job.revisionId
-  ) {
-    return null;
-  }
-  try {
-    const deployment = await request(
-      `${namespacePath(namespaceId)}/agents/${encodeURIComponent(job.agentId)}/deployments/${encodeURIComponent(job.revisionId)}`,
-      { signal },
-    );
-    const attempt = (deployment as AgentDeploymentStatusWire)?.progress?.lastAttempt;
-    return NAMED_DEPLOYMENT_WAITS.has(attempt?.code ?? "") &&
-      typeof attempt?.message === "string" &&
-      attempt.message
-      ? attempt.message
-      : null;
-  } catch (error) {
-    return [401, 403, 404].includes(requestFailure(error).status ?? 0)
-      ? DEPLOYMENT_UNREADABLE
-      : undefined;
-  }
-}
-
-// The wait a job past handoff names for its first deployment (finding 1690), as the deployment's
-// status does: its fixed sentence after the provisioning line. A reader who can't read the
-// deployment gets the job's own PROVISIONING_DEPLOYMENT_PENDING, which says no more than the
-// provisioning line, so that line stays. A wait someone must act on stands alone, as above, and
-// so does a stop, which provisioning no longer continues.
-const STANDALONE_JOB_WAITS = new Set([...NAMED_DEPLOYMENT_WAITS, "AGENT_STOP_YIELDED"]);
-
-function jobDeploymentWait(job: ProvisioningJob) {
-  const attempt = job.progress?.lastAttempt;
-  if (
-    typeof attempt?.message !== "string" ||
-    !attempt.message ||
-    attempt.code === "PROVISIONING_DEPLOYMENT_PENDING"
-  ) {
-    return null;
-  }
-  return STANDALONE_JOB_WAITS.has(attempt.code)
-    ? attempt.message
-    : `${provisioningStatusText("running")} ${attempt.message}`;
+): job is ProvisioningJob & { agentId: string; revisionId: string } {
+  return (
+    typeof job.agentId === "string" &&
+    job.agentId !== "" &&
+    typeof job.revisionId === "string" &&
+    job.revisionId !== ""
+  );
 }
 
 async function waitForProvisioning({
@@ -577,37 +522,22 @@ async function waitForProvisioning({
   // A started job goes back to queued between retries. Keep one label once it has started,
   // and write it only when it changes, since this rereads every second (finding 1424).
   let started = false;
-  // The actionable wait the last fresh deployment read named. It fills in when a later read is
-  // cut off or unavailable and the job names no wait, so the line doesn't flip back to the bare
-  // text (finding 1637); a fresh answer or a refusal replaces it.
-  let named: string | null = null;
-  while (current?.status === "queued" || current?.status === "running") {
+  while ((current?.status === "queued" || current?.status === "running") && !handedOff(current)) {
     started ||= current.status === "running";
-    // Spend the interval between polls on optional detail. At the next poll, stop that read
-    // even if only its headers arrived; the provisioning job remains the source of truth.
-    const detail = new AbortController();
-    const nextPoll = wait(1_000).then(() => detail.abort());
-    const read = await namedDeploymentWait(request, namespaceId, current, detail.signal);
-    let detailText;
-    if (read === DEPLOYMENT_UNREADABLE) {
-      // A refusal clears every detail, the job's too: the job was read before the refusal.
-      named = null;
-      detailText = null;
-    } else if (read !== undefined) {
-      // A fresh answer's actionable wait comes first; otherwise the job names the wait.
-      named = read;
-      detailText = read ?? jobDeploymentWait(current);
-    } else {
-      // Without a fresh answer, the job's wait is newer than the one kept from an earlier read.
-      detailText = jobDeploymentWait(current) ?? named;
-    }
-    setText(status, detailText ?? provisioningStatusText(started ? "running" : current.status));
-    await nextPoll;
+    setText(status, provisioningStatusText(started ? "running" : current.status));
+    await wait(1_000);
     if (!isCurrent()) {
       throw new DOMException("View closed", "AbortError");
     }
     const next = await request(first.url);
     current = observeJob(next);
+  }
+  // Past handoff the job only waits for the first deployment, which the Agent page shows with
+  // its waits, Stop and recovery actions, as plan 35 specifies: open it there now instead of
+  // holding the form until the deployment ends. Retry no longer applies to a job with a revision.
+  if ((current?.status === "queued" || current?.status === "running") && handedOff(current)) {
+    status.textContent = "Agent created. Opening its first deployment…";
+    return { agentId: current.agentId, revisionId: current.revisionId, deploying: true };
   }
   // A Stop during the first deployment (REVISION_STOPPED) or before it (PROVISIONING_CANCELLED)
   // is the owner's choice, not a failure to repair.
@@ -639,7 +569,7 @@ async function waitForProvisioning({
   if (typeof current.revisionId !== "string" || !current.revisionId) {
     throw new Error("Provisioning status did not include an AgentRevision.");
   }
-  return { agentId: current.agentId, revisionId: current.revisionId };
+  return { agentId: current.agentId, revisionId: current.revisionId, deploying: false };
 }
 
 class ProvisioningFailure extends Error {
@@ -3585,13 +3515,16 @@ function renderAgentForm(
         isCurrent: context.isCurrent,
       });
       focusFeedbackLine(savedStatus);
-      const { agentId, revisionId } = await finishing;
+      const { agentId, revisionId, deploying } = await finishing;
       if (!context.isCurrent()) {
         return;
       }
       provisioningAttempt = null;
       repositories.recordSuccessfulSave();
-      context.navigate(`agents/${agentId}?revision=${revisionId}&tab=configuration`);
+      // A deployment still in progress opens where its activity shows; a finished one, its settings.
+      context.navigate(
+        `agents/${agentId}?revision=${revisionId}&tab=${deploying ? "deployment" : "configuration"}`,
+      );
     } catch (cause) {
       const error = {
         ...requestFailure(cause),
