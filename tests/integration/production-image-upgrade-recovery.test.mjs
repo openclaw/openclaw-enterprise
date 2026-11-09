@@ -35,13 +35,19 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { withoutShellStartup } from "../helpers/environment.ts";
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
 import { loadYaml, yamlDocuments } from "../helpers/qa-utils.mjs";
 import { registerDispatchRestoreTests } from "../helpers/production-upgrade-dispatch-restore.ts";
 
-const execute = promisify(execFile);
+const executeFile = promisify(execFile);
+const execute = (command, args, options = {}) =>
+  executeFile(command, args, {
+    ...options,
+    env: withoutShellStartup(options.env ?? process.env),
+  });
 const helmTargetOverrides = [
   "HELM_KUBEAPISERVER",
   "HELM_KUBECAFILE",
@@ -77,11 +83,15 @@ const injectedFault = { code: 9 };
 
 // The fixture's helm stands in for the real binary; chart cases still render with it.
 const realHelm = (
-  await execute("bash", ["-c", "command -v helm"]).catch(() => ({ stdout: "" }))
+  await execute("bash", ["--noprofile", "--norc", "-c", "command -v helm"]).catch(() => ({
+    stdout: "",
+  }))
 ).stdout.trim();
 const commandPath = async (name, fallback) =>
   (
-    await execute("bash", ["-c", `command -v ${name}`]).catch(() => ({ stdout: "" }))
+    await execute("bash", ["--noprofile", "--norc", "-c", `command -v ${name}`]).catch(() => ({
+      stdout: "",
+    }))
   ).stdout.trim() || fallback;
 const shimTools = {
   bash: "/bin/bash",
@@ -93,7 +103,11 @@ const shimTools = {
 // fixtures' commands while it runs.
 function spawnResult(command, args, options, stderrFd = "pipe") {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", stderrFd] });
+    const child = spawn(command, args, {
+      ...options,
+      env: withoutShellStartup(options.env ?? process.env),
+      stdio: ["ignore", "pipe", stderrFd],
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
