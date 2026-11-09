@@ -508,16 +508,18 @@ function handedOff(
 }
 
 // Whether the caller may read the job's first deployment: true when the read answers, false when
-// it is refused (403 or 404), and undefined when it is unavailable, so the next poll asks again.
-// An expired session still ends the wait.
+// it is refused (403 or 404), and undefined when it is unavailable or cancelled at the next poll,
+// so that poll asks again. An expired session still ends the wait.
 async function firstDeploymentReadable(
   request: CreateRequest,
   namespaceId: string,
   job: { agentId: string; revisionId: string },
+  signal: AbortSignal,
 ) {
   try {
     await request(
       `${namespacePath(namespaceId)}/agents/${encodeURIComponent(job.agentId)}/deployments/${encodeURIComponent(job.revisionId)}`,
+      { signal },
     );
     return true;
   } catch (error) {
@@ -552,8 +554,17 @@ async function waitForProvisioning({
     // holding the form until the deployment ends. Retry no longer applies to a job with a
     // revision. A caller the job answers but a revision read Restriction refuses would find
     // nothing there, so the form keeps following the job for them.
+    // The check gets only the time until the next poll, even if its headers arrived and its body
+    // stalls: the job stays the source of truth and is read again on its one-second cadence.
+    const probe = new AbortController();
+    const nextPoll = wait(1_000).then(() => probe.abort());
     if (handedOff(current) && deploymentReadable !== false) {
-      deploymentReadable = await firstDeploymentReadable(request, namespaceId, current);
+      deploymentReadable = await firstDeploymentReadable(
+        request,
+        namespaceId,
+        current,
+        probe.signal,
+      );
       if (!isCurrent()) {
         throw new DOMException("View closed", "AbortError");
       }
@@ -564,7 +575,7 @@ async function waitForProvisioning({
     }
     started ||= current.status === "running";
     setText(status, provisioningStatusText(started ? "running" : current.status));
-    await wait(1_000);
+    await nextPoll;
     if (!isCurrent()) {
       throw new DOMException("View closed", "AbortError");
     }

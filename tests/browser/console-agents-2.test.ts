@@ -1167,6 +1167,79 @@ test("Dedicated Agent creation keeps following the job when the first deployment
   assert.equal(formDeploymentReads, 1);
 });
 
+// The readability check is optional. Even a response whose headers arrived and whose body
+// stalls gets only the time until the next job read (as 56ee73f8 kept for the form's earlier
+// deployment read), so a job that ends meanwhile is seen at its one-second poll, not after the
+// API client's 15-second timeout.
+test("Create reads the job at the next poll while the first deployment read stalls", async (t) => {
+  const deploymentReads = { started: Promise.withResolvers<void>(), path: "" };
+  const fixture = await createConsoleAppFixture(t, {
+    async onSend(request: { url: string }, reply: StalledReply, payload: unknown) {
+      if (!deploymentReads.path || !request.url.endsWith(deploymentReads.path)) {
+        return payload;
+      }
+      reply.hijack();
+      reply.raw.writeHead(200, { "content-type": "application/json" });
+      reply.raw.write('{"data":', () => deploymentReads.started.resolve());
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Stalled handoff", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Stalled Agent", nativeValues("v1"));
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  deploymentReads.path = `/agents/${agent.id}/deployments/${revision.id}`;
+  const work = provisioningJob(namespace.id, "work_stalled_probe");
+  const { page } = await newPage(t, fixture);
+  await routeDedicatedProvisioning(page, fixture, namespace);
+  const handoff = {
+    agentId: agent.id,
+    configurationId: agent.configurationId,
+    revisionId: revision.id,
+    phase: "handoff",
+  };
+  const observations = [work.job("running", handoff), work.job("succeeded", handoff)];
+  const served = await routeProvisioningJob(page, fixture, work, (index) => {
+    const observation = observations[index];
+    assert.ok(observation, "Create polled the job after it ended");
+    return observation;
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Stalled Agent");
+  await enterManualModel(page, "test-model-key");
+  await page.clock.install();
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 100);
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  // Admission answers queued; the first job read a second later reports the handoff.
+  let started = false;
+  void deploymentReads.started.promise.then(() => (started = true));
+  for (let tick = 0; !started; tick += 1) {
+    assert.ok(tick < 10, "Create never read the first deployment");
+    await page.clock.runFor(1_000);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  const cancelled = page.waitForEvent("requestfailed", {
+    predicate: (request) => request.url().endsWith(deploymentReads.path),
+    timeout: 5_000,
+  });
+  await Promise.all([
+    cancelled,
+    page.waitForRequest((request) => request.url().endsWith(work.url), { timeout: 5_000 }),
+    page.clock.runFor(1_000),
+  ]);
+  await page.waitForURL((location) => location.pathname === `/console/agents/${agent.id}`);
+  assert.equal(new URL(page.url()).searchParams.get("tab"), "configuration");
+  assert.equal(served.reads, observations.length);
+});
+
+type StalledReply = {
+  hijack(): void;
+  raw: {
+    writeHead(status: number, headers: Record<string, string>): void;
+    write(chunk: string, callback: () => void): void;
+  };
+};
+
 test("Create preserves the admitted version when the operator resends the same provisioning request", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
