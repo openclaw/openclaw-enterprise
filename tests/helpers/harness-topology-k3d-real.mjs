@@ -439,6 +439,7 @@ async function configureInClusterOidc({
     OCC_AUTH_OIDC_JWKS_URL: `${oidc.issuer}/protocol/openid-connect/certs`,
     OCC_AUTH_OIDC_CLIENT_ID: oidc.clientId,
     OCC_AUTH_OIDC_DISPLAY_NAME: "Keycloak",
+    OCC_AUTH_GITHUB_RECOVERY_USER_ID: oidc.recoveryUserId,
   };
   apiContainer.env.push(...Object.entries(values).map(([name, value]) => ({ name, value })), {
     name: "OCC_AUTH_OIDC_CLIENT_SECRET",
@@ -1967,6 +1968,15 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     createdFreshInstallation = true;
   }
 
+  if (oidc !== undefined) {
+    // External sign-in activates the guarded profile with a real, existing recovery
+    // account. Its account ID is distinct from the IAM principal used for grants.
+    const recovery = await observerPool.query('SELECT id FROM occ."user" WHERE email = $1', [
+      credentials.email.trim().toLowerCase(),
+    ]);
+    assert.equal(recovery.rows.length, 1, "OIDC requires the exact bootstrap recovery account");
+    oidc = { ...oidc, recoveryUserId: recovery.rows[0].id };
+  }
   const events = [];
   let controllerUrl;
   let requestFactory;
