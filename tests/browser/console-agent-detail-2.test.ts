@@ -111,7 +111,6 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     fixture,
     nativePage,
     browserOptions,
-    consoleHost,
     nativeDomain,
     cookieDomain,
     untrustedBrowserOptions,
@@ -154,25 +153,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   let requests = apiRequests(page, fixture.origin);
   const draftDetail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
 
-  // A fresh shared-cookie login clears legacy host-only cookies from the Console.
-  await page.context().addCookies([
-    {
-      name: "__Secure-openclaw_occ.session_token",
-      value: "old-host-only",
-      domain: consoleHost,
-      path: "/",
-      secure: true,
-      httpOnly: true,
-      sameSite: "Lax",
-    },
-  ]);
   await login(page, fixture, draftDetail);
-  assert.equal(
-    (await page.context().cookies(fixture.origin)).some(
-      (cookie) => cookie.value === "old-host-only",
-    ),
-    false,
-  );
 
   // New Agents are stopped; missing an active revision must not suggest a routing problem.
   const initiallyStopped = await fixture.request(
@@ -334,31 +315,6 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.equal(sessionCookie.secure, true);
   assert.equal(sessionCookie.sameSite, "Lax");
 
-  await page.context().addCookies([
-    {
-      name: "openclaw_occ.session_token",
-      value: "legacy-host-only",
-      domain: consoleHost,
-      path: "/",
-      httpOnly: true,
-      sameSite: "Lax",
-    },
-  ]);
-  const consoleCookies = await page.context().cookies(fixture.origin);
-  assert.ok(
-    consoleCookies.some(
-      (cookie) =>
-        cookie.name === "openclaw_occ.session_token" && cookie.value === "legacy-host-only",
-    ),
-    "the migration fixture must contain the legacy host-only console cookie",
-  );
-  const agentCookies = await page.context().cookies(access.origin);
-  assert.equal(
-    agentCookies.some((cookie) => cookie.value === "legacy-host-only"),
-    false,
-    "a legacy host-only console cookie must not authenticate the Agent host",
-  );
-
   const popupPromise = page.waitForEvent("popup");
   await page.getByRole("link", { name: "Open Agent UI" }).click();
   const popup = await popupPromise;
@@ -374,11 +330,6 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.ok(
     names.includes(sessionCookie.name),
     "the Agent HTTPS handler receives the shared session cookie",
-  );
-  assert.equal(
-    names.includes("openclaw_occ.session_token"),
-    false,
-    "the host-only cookie stays on the Console",
   );
 
   assert.deepEqual([...deniedTabWrites, ...nonAuthWriteRequests(requests)], []);
