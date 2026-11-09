@@ -17,6 +17,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
 import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
+import { skipperFailureSummary } from "../../scripts/ci/skipper-release.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
@@ -73,6 +74,162 @@ function run(root, args, env = {}, { timeout } = {}) {
     timeout,
   });
 }
+
+test("installed Skipper failure summary reads the actual runner result without exposing errors", async (t) => {
+  for (const scenario of ["assertion", "rejection", "file failure"]) {
+    await t.test(scenario, async (t) => {
+      const root = join(await fixture(t), "private-source-canary");
+      await mkdir(join(root, "tests/integration"), { recursive: true });
+      await mkdir(join(root, "tests/helpers"), { recursive: true });
+      const path = "tests/integration/skipper-prepared-git-installed.test.mjs";
+      const name = "installed journey";
+      const lines = [
+        'import assert from "node:assert/strict";',
+        'import test from "node:test";',
+        'import { fail } from "../helpers/private-helper.mjs";',
+        `test("${name}", async () => {`,
+      ];
+      await writeFile(
+        join(root, "tests/helpers/private-helper.mjs"),
+        [
+          "export async function fail() {",
+          "  await Promise.resolve();",
+          "  throw new Error(process.env.CI_RUNNER_FIXTURE_CREDENTIAL);",
+          "}",
+        ].join("\n"),
+      );
+      if (scenario === "assertion") {
+        lines.push('  assert.equal(process.env.CI_RUNNER_FIXTURE_CREDENTIAL, "expected");');
+      } else if (scenario === "rejection") {
+        lines.push("  await fail();");
+      }
+      lines.push("});");
+      if (scenario === "file failure") {
+        // A failing file after a passing case has no failed test to select.
+        lines.push(
+          "setImmediate(() => { throw new Error(process.env.CI_RUNNER_FIXTURE_CREDENTIAL); });",
+        );
+      }
+      await writeFile(join(root, path), lines.join("\n"));
+      await writeJson(join(root, "manifest.json"), {
+        version: 1,
+        lanes: { installed: { files: [{ path, expectedTests: [name] }] } },
+        groups: { ci: ["installed"] },
+      });
+      const result = run(root, [
+        "run",
+        "installed",
+        "--root",
+        root,
+        "--manifest",
+        "manifest.json",
+        "--state",
+        "state/installed.json",
+        "--results",
+        "results/installed.json",
+      ]);
+      assert.equal(result.status, 1);
+      const raw = await readFile(join(root, "results/installed.json"), "utf8");
+      const summary = JSON.parse(raw);
+      const fallback = result.stderr + result.stdout + raw;
+      const diagnostic = skipperFailureSummary(raw, root, fallback);
+      const category = {
+        assertion: "ERR_ASSERTION",
+        rejection: "ERR_TEST_FAILURE",
+        "file failure": "post-test-async-activity",
+      }[scenario];
+      assert.ok(diagnostic.endsWith(`, ${category}`));
+      if (scenario !== "file failure") {
+        assert.match(diagnostic, /^skipper-prepared-git-installed\.test\.mjs:5:\d+, /);
+        assert.ok(summary.issues.some((entry) => entry.code === "expected-test-not-passed"));
+      } else {
+        assert.equal(summary.files[0].tests[0].status, "passed");
+        assert.ok(summary.files[0].fileFailure);
+      }
+      assert.doesNotMatch(
+        diagnostic,
+        /secretauthvalue|private-source-canary|expected|installed journey/,
+      );
+
+      const error =
+        summary.files[0].tests.find((entry) => entry.status === "failed")?.error ??
+        summary.files[0].fileFailure.error;
+      if (scenario === "rejection") {
+        const malformed = structuredClone(summary);
+        const selected = malformed.files[0].tests.find((entry) => entry.status === "failed").error;
+        delete selected.message;
+        delete selected.frame;
+        for (const field of ["cause", "location"]) {
+          const invalid = structuredClone(malformed);
+          invalid.files[0].tests.find((entry) => entry.status === "failed").error[field] =
+            "invalid";
+          assert.equal(
+            skipperFailureSummary(JSON.stringify(invalid), root, "bwrap"),
+            "location unavailable, bwrap",
+          );
+        }
+      }
+      // Keep specific signals with this error, never from unrelated lane output.
+      error.message = "native command failed secretauthvalue";
+      assert.match(
+        skipperFailureSummary(JSON.stringify(summary), root, "bwrap"),
+        /, native command failed$/,
+      );
+      error.message = "secretauthvalue";
+      error.frame = undefined;
+      // Missing/invalid coordinates must not leak arbitrary source paths.
+      for (const location of [
+        undefined,
+        { file: join(root, "private-input.mjs"), line: 5, column: 2 },
+        { file: join(root, path), line: -1, column: 2 },
+        { file: join(root, path), line: 5, column: 1_000_001 },
+      ]) {
+        error.location = location;
+        assert.match(
+          skipperFailureSummary(JSON.stringify(summary), root, "bwrap"),
+          new RegExp(`^location unavailable, ${category}$`),
+        );
+      }
+      // The text fallback must not undo the structured coordinate boundary.
+      for (const coordinates of [
+        "0:2",
+        "5:0",
+        "1000001:2",
+        "5:1000001",
+        "5:999999999999999999999",
+      ]) {
+        error.frame = `at skipper-prepared-git-installed.test.mjs:${coordinates}`;
+        assert.equal(
+          skipperFailureSummary(JSON.stringify(summary), root, "bwrap"),
+          `location unavailable, ${category}`,
+        );
+        assert.equal(
+          skipperFailureSummary("not JSON", root, `${error.frame} bwrap`),
+          "location unavailable, bwrap",
+        );
+      }
+      error.frame = "at skipper-prepared-git-installed.test.mjs:1000000:1";
+      assert.equal(
+        skipperFailureSummary(JSON.stringify(summary), root, "bwrap"),
+        `skipper-prepared-git-installed.test.mjs:1000000:1, ${category}`,
+      );
+      error.frame = undefined;
+      if (summary.files[0].fileFailure) {
+        summary.files[0].fileFailure.diagnosticKind = "secretauthvalue-category";
+      }
+      error.code = "secretauthvalue-code";
+      error.cause = { code: "secretauthvalue-cause" };
+      assert.equal(
+        skipperFailureSummary(JSON.stringify(summary), root, "bwrap"),
+        "location unavailable, unclassified",
+      );
+    });
+  }
+  assert.equal(
+    skipperFailureSummary("not JSON", "/unused", "bwrap"),
+    "location unavailable, bwrap",
+  );
+});
 
 function mixedPrecisionEventBoundary({ namespace, pod, second, laterCount = 199 }) {
   const event = (uid, reason, timestamp) => ({
