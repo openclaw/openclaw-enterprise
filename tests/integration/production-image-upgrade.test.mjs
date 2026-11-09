@@ -1298,7 +1298,7 @@ test("upgrade fixture subprocesses ignore ambient shell startup hooks", async (t
     directory,
     "fixture-command",
     `
-[[ ! -v ENV ]] || { echo 'ENV reached the fixture' >&2; exit 48; }
+[[ -z "\${ENV+x}" ]] || { echo 'ENV reached the fixture' >&2; exit 48; }
 if shopt -q extglob; then
   echo 'extglob reached the fixture' >&2
   exit 49
