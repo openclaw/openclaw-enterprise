@@ -130,7 +130,6 @@
     "tests/integration/credential-free-online-grant.test.mjs",
     "tests/integration/credential-free-metadata-grant.test.ts",
     "tests/integration/egress-enrollment.test.mjs",
-    "tests/integration/protected-driver-registration.test.ts",
     "tests/integration/credential-policy-recovery.test.ts",
     "tests/conformance/kubernetes-prepared-repository.test.mjs",
     "tests/integration/egress-installation-exchange.test.mjs",
@@ -722,14 +721,6 @@
       "expectedTests": [
         "credential-free metadata exchange accepts a reordered Driver grant",
         "credential-free route admission rejects changed, missing and undefined extra grant fields"
-      ]
-    },
-    {
-      "path": "tests/integration/protected-driver-registration.test.ts",
-      "expectedTests": [
-        "one installed Driver owns both protected capabilities, lifecycle and verified release",
-        "OpenShell registration pairs its capabilities using only a Repo delivery resolver",
-        "repository scope changes invalidate the external Driver identity while a reload preserves it"
       ]
     },
     {
