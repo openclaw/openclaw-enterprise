@@ -121,12 +121,11 @@ These lanes use `--no-rollback`; workflows own teardown after capture, while
 local callers use the failed state file. Observation failures preserve the original error. `nodeLogExcerpt` orders Docker streams
 and retry summaries by full UTC timestamp precision using locale-independent ASCII comparison ([CI guide](../testing/ci.md)).
 
-Tests delete namespaces and events before exit. `scripts/ci/run-tests.mjs:runFile`
+`scripts/ci/run-tests.mjs:runFile`
 calls `scripts/ci/k3d-diagnostics.mjs:startAgentNamespaceCapture` before each file.
 It requests initial Pod/Event streams and waits up to 10 seconds per watch for
 the initial-state bookmark. Watch failure stops observers, removes streams and
-logs `Agent namespace activity unavailable`. The independent log directory and
-`finish` still retain failed-wait logs and snapshots.
+logs `Agent namespace activity unavailable`. The log directory and `finish` retain failed-wait logs and snapshots.
 `projectAgentNamespaceActivity` retains transitions and namespace events under
 `agentNamespaces` on pass or failure: 200 Pod and 200 event records per file,
 40 files per report. Messages are redacted/truncated; Pod specs dropped. Raw
