@@ -518,6 +518,7 @@ export function validateSelectedBackendDrivers(
   backends: readonly BackendDefinition[],
   selected: Readonly<Partial<Record<DriverCapability, Driver>>>,
   proxyOwner?: InstalledDriver,
+  gatewayOwner?: InstalledDriver,
 ): void {
   const requires = (capability: DriverCapability, id: string, label: string): void => {
     const driver = selected[capability];
@@ -577,12 +578,24 @@ export function validateSelectedBackendDrivers(
     );
   }
   const gateway = selected.credential_gateway;
-  if (
-    gateway !== undefined &&
-    !backends.some((backend) =>
-      backendMembers(backend).includes(`credential_gateway:${gateway.id}`),
-    )
-  ) {
+  if (gateway === undefined) {
+    return;
+  }
+  const bundled = backends.some((backend) =>
+    backendMembers(backend).includes(`credential_gateway:${gateway.id}`),
+  );
+  if (gatewayOwner !== undefined) {
+    if (
+      bundled ||
+      gatewayOwner.require("credential_gateway") !== gateway ||
+      gatewayOwner.require("sandbox") !== selected.sandbox ||
+      gateway.id !== selected.sandbox?.id
+    ) {
+      throw new DriverSelectionError(
+        "The selected packaged Credential Gateway and Sandbox must come from the same registered Driver without a bundled Backend.",
+      );
+    }
+  } else if (!bundled) {
     throw new DriverSelectionError(
       "The selected Credential Gateway Driver must belong to a configured Backend.",
     );

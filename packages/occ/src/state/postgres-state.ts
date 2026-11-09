@@ -572,7 +572,7 @@ function secretFromRow(row: PostgresRow): Readonly<Secret> {
 }
 
 const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.config,
-  cs.driver_id, cs.owner_capability, cs.state, cs.created_at, cs.egress,
+  cs.driver_id, cs.owner_capability, cs.credential_gateway_owner_id, cs.state, cs.created_at, cs.egress,
   COALESCE((
     SELECT jsonb_object_agg(css.field, css.secret_id)
     FROM occ.credential_source_secrets AS css
@@ -613,6 +613,14 @@ function credentialWithdrawalFromRow(row: PostgresRow): Readonly<StoredCredentia
   });
 }
 
+// The new stored kind makes older binaries refuse a packaged source before reading its Secrets.
+const PACKAGED_CREDENTIAL_GATEWAY = "packaged_credential_gateway";
+
+function storedCredentialSourceOwner(row: PostgresRow): string {
+  const owner = text(row, "owner_capability");
+  return owner === PACKAGED_CREDENTIAL_GATEWAY ? "credential_gateway" : owner;
+}
+
 function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
   const namespaceId = text(row, "namespace_id");
   const state = text(row, "state");
@@ -621,11 +629,15 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
   }
   const config = jsonObject(row.config);
   const secretIds = jsonObject(row.secret_ids);
-  const ownerCapability = text(row, "owner_capability");
+  const ownerCapability = storedCredentialSourceOwner(row);
+  const gatewayOwnerId =
+    row.credential_gateway_owner_id == null ? undefined : text(row, "credential_gateway_owner_id");
   if (
     (ownerCapability !== "credential_gateway" &&
       ownerCapability !== "token_service" &&
       (ownerCapability !== "credential_proxy" || row.egress == null)) ||
+    (row.owner_capability === PACKAGED_CREDENTIAL_GATEWAY) !== (gatewayOwnerId !== undefined) ||
+    (gatewayOwnerId !== undefined && !/^[a-f0-9]{64}$/.test(gatewayOwnerId)) ||
     Object.values(config).some((value) => typeof value !== "string") ||
     Object.values(secretIds).some((value) => typeof value !== "string")
   ) {
@@ -648,7 +660,13 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
     ),
     ...(ownerCapability === "token_service"
       ? { ownerCapability }
-      : { ownerCapability, driverId: text(row, "driver_id") }),
+      : ownerCapability === "credential_gateway"
+        ? {
+            ownerCapability,
+            driverId: text(row, "driver_id"),
+            ...(gatewayOwnerId === undefined ? {} : { credentialGatewayOwnerId: gatewayOwnerId }),
+          }
+        : { ownerCapability, driverId: text(row, "driver_id") }),
     state,
     createdAt: timestamp(row, "created_at"),
   });
@@ -3000,6 +3018,13 @@ export class PostgresPlatformState implements PlatformStateStore {
         findCredentialSource(namespaceId, credentialSourceId, true),
       createCredentialSource: async (source) => {
         await this.requireInitialized(context);
+        if (
+          source.credentialGatewayOwnerId !== undefined &&
+          (source.ownerCapability !== "credential_gateway" ||
+            !/^[a-f0-9]{64}$/.test(source.credentialGatewayOwnerId))
+        ) {
+          throw new ScopeViolationError("The packaged Credential Gateway owner is invalid.");
+        }
         const namespace = await namespaces.lockNamespace(source.namespaceId);
         if (
           namespace === undefined ||
@@ -3023,8 +3048,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         await client.query(
           `INSERT INTO occ.credential_sources
-           (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability)
-           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10)`,
+           (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability,
+            credential_gateway_owner_id)
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11)`,
           [
             source.id,
             source.namespaceId,
@@ -3035,7 +3061,10 @@ export class PostgresPlatformState implements PlatformStateStore {
             source.state,
             source.createdAt,
             source.egress === undefined ? null : JSON.stringify(source.egress),
-            source.ownerCapability,
+            source.credentialGatewayOwnerId === undefined
+              ? source.ownerCapability
+              : PACKAGED_CREDENTIAL_GATEWAY,
+            source.credentialGatewayOwnerId ?? null,
           ],
         );
         if (secretInputs.length > 0) {
@@ -3990,7 +4019,9 @@ export class PostgresPlatformState implements PlatformStateStore {
               namespaceId: text(row, "namespace_id"),
               type: text(row, "type"),
               state: text(row, "state") as CredentialSource["state"],
-              ownerCapability: text(row, "owner_capability") as CredentialSource["ownerCapability"],
+              ownerCapability: storedCredentialSourceOwner(
+                row,
+              ) as CredentialSource["ownerCapability"],
               driverId: text(row, "driver_id"),
             })),
         );

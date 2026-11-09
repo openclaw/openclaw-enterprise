@@ -56,7 +56,7 @@ Sandbox packages in trusted YAML in either mode.
 | `secret`             | [SecretDriver](secret.md)                                                   | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                                                                           |
 | `sandbox`            | [SandboxDriver](sandbox.md)                                                 | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.                                                     |
 | `credential_proxy`   | [CredentialProxyDriver](credential-proxy.md)                                | Optional; the selected Sandbox and Credential Proxy must come from one Driver registration, supplied by bundled OpenShell or a selected Sandbox package. |
-| `credential_gateway` | [CredentialGatewayDriver](credential-gateway.md)                            | Required with the bundled OpenShell Sandbox, otherwise omitted; bundled OpenShell Backend member only.                                                   |
+| `credential_gateway` | [CredentialGatewayDriver](credential-gateway.md)                            | Required with bundled OpenShell; in production, optionally supplied by the selected Sandbox package.                                                     |
 | `credential_refresh` | [CredentialRefreshDriver](credential-refresh.md)                            | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                                                                          |
 | `service_account`    | [ServiceAccountDriver](service-account.md)                                  | Optional bundled ChatGPT Backend member; no installed-package selector.                                                                                  |
 | `plugin`             | [PluginDriver](plugin.md)                                                   | Optional: `occ-plugin`, `codex-plugin`, or both, by Harness.                                                                                             |
@@ -139,20 +139,12 @@ The worker's `Recreate` rollout cannot establish that custody is settled.
 
 ## Backend membership
 
-An Installation-scoped [Backend](../backends.md) groups an authenticated
-client with exact related Driver selections. `backend[].drivers` owns
-membership, and composition injects the Backend into the concrete member.
-The generic Driver contract has no Backend identity field. All declared members
-are required and must match the selected registry `(capability, id)`. The bundled ChatGPT Backend requires its selected
-ServiceAccount Driver; the bundled GitHub Backend requires its selected Repo
-Driver; the bundled OpenShell Backend requires both its Sandbox and Credential
-Gateway Drivers, and its Credential Refresh Driver when it declares one. A
-selected Credential Gateway or Credential Refresh Driver must belong to a
-configured Backend. There is no per-Agent Driver selection.
-
-Runtime Backend injection is limited to those bundled Drivers; installed
-packages keep the factory arguments below, and Backend loading or injection into
-them is deferred.
+An Installation [Backend](../backends.md) requires each member named by
+`backend[].drivers` to match the selected capability and ID. ChatGPT requires a
+ServiceAccount; GitHub requires a Repo; OpenShell requires a Sandbox and Gateway,
+plus Credential Refresh when declared. Only bundled Drivers receive a Backend.
+A packaged Gateway instead shares its Sandbox registration. Drivers are selected
+for the Installation.
 
 ## Configuration definitions and discovery
 
@@ -301,15 +293,11 @@ Driver package. OCC does not merge package-provided defaults.
 
 ## Select the installed Driver
 
-IAM, Compute, Configuration, and Sandbox selections accept only `id`, optional
-`package`, and `configuration`. Omit `package` for a bundled Driver. The
-Secret selection accepts only the bundled Kubernetes implementation. The optional
-Repo selection accepts only the bundled GitHub implementation with its declared
-Backend member, and the optional Credential Gateway selection accepts only the
-bundled OpenShell implementation; none of these selections accepts an installed package. Installed implementation identity is
-`<package-name>@<installed-version>`; bundled identity is intrinsic. Operators
-cannot supply `implementation` or `version`; factory identity and capability
-must match the selection:
+IAM, Compute, Configuration, and Sandbox accept `id`, `configuration`, and an
+optional `package`. Secret uses bundled Kubernetes; Repo uses bundled GitHub.
+The Gateway selection cannot name a package. Installed implementation identity
+is `<package-name>@<installed-version>`; bundled identity is intrinsic. The
+factory must return the selected identity and capability:
 
 ```yaml
 drivers:
@@ -334,18 +322,25 @@ drivers:
         mode: inCluster
 ```
 
-Include the existing required `occ` settings and use the
-[complete production Installation example](../../guides/deploy/production-installation.md#configure-the-installation)
-as the baseline for the selected Drivers. Each Driver owns its closed
-configuration schema; bundled Kubernetes settings apply only when that bundled
-Driver is selected. Startup YAML can select Secret storage but must not contain
-Agent Secret values. Registry credentials, persisted IAM policy, and unsupported
-settings do not belong in Installation YAML.
+Start from the [production Installation example](../../guides/deploy/production-installation.md#configure-the-installation),
+including its required `occ` settings. Each Driver owns its closed schema.
+Keep Agent Secrets, registry credentials, and persisted IAM policy out of
+Installation YAML.
 
-Set `NODE_ENV=production` or `NODE_ENV=development` explicitly and set
-`OCC_CONFIG_PATH` to the absolute path of the complete operator-owned YAML. The
-selected package interface is the same in both modes; production adds Compute
-staged-activation requirements.
+To select a packaged Credential Gateway in production with bundled Kubernetes
+Compute, configure the package under `drivers.sandbox`, set
+`drivers.credential_gateway.id` to `drivers.sandbox.id`, and set
+`drivers.credential_gateway.configuration` to `{}`. Omit the OpenShell Backend
+and Credential Refresh. An optional Credential Proxy must use the same registration.
+
+Bundled sources keep their Gateway after upgrade, even at the same ID. Retire
+sources through their matching Gateway before switching owners, changing the
+installed package version, or changing Sandbox configuration. Register new
+sources with the new owner. Adding only the optional Proxy preserves ownership.
+
+Before rollback, retire packaged sources through their matching Gateway on the
+current controller. Confirm none remain. An earlier controller cannot serve
+packaged records, and any list containing one fails.
 
 ## Private package credentials
 
@@ -371,7 +366,8 @@ inside running Pods.
 
 Update or remove a package by reviewing the direct dependency and lockfile,
 rebuilding the image, and updating Driver selection together. To recover,
-restore the previous image and its matching Installation configuration.
+[retire any packaged Credential Sources](#select-the-installed-driver)
+before restoring the previous image and matching Installation configuration.
 
 Startup fails on unavailable or indirect packages, mismatched metadata, invalid
 exports or configuration, incorrect capability/identity, and missing production

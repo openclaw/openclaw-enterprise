@@ -496,7 +496,10 @@ export const credentialSources = occSchema.table(
     config: jsonb("config").$type<Readonly<Record<string, string>>>().notNull(),
     egress: jsonb("egress").$type<ProtectedEgressSource>(),
     driverId: text("driver_id"),
-    ownerCapability: text("owner_capability").$type<CredentialSourceOwnerCapability>().notNull(),
+    ownerCapability: text("owner_capability")
+      .$type<CredentialSourceOwnerCapability | "packaged_credential_gateway">()
+      .notNull(),
+    credentialGatewayOwnerId: text("credential_gateway_owner_id"),
     state: text("state").$type<CredentialSourceState>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
@@ -528,7 +531,11 @@ export const credentialSources = occSchema.table(
     ),
     check(
       "credential_sources_owner_capability_valid",
-      sql`(${table.driverId} IS NOT NULL AND (${table.ownerCapability} = 'credential_gateway' OR (${table.ownerCapability} = 'credential_proxy' AND ${table.egress} IS NOT NULL))) OR (${table.ownerCapability} = 'token_service' AND ${table.driverId} IS NULL AND ${table.type} = 'oauth2-refresh-token' AND ${table.egress} IS NULL)`,
+      sql`(${table.driverId} IS NOT NULL AND (${table.ownerCapability} IN ('credential_gateway', 'packaged_credential_gateway') OR (${table.ownerCapability} = 'credential_proxy' AND ${table.egress} IS NOT NULL))) OR (${table.ownerCapability} = 'token_service' AND ${table.driverId} IS NULL AND ${table.type} = 'oauth2-refresh-token' AND ${table.egress} IS NULL)`,
+    ),
+    check(
+      "credential_sources_gateway_owner_valid",
+      sql`CASE WHEN ${table.ownerCapability} = 'packaged_credential_gateway' THEN ${table.credentialGatewayOwnerId} IS NOT NULL AND ${table.credentialGatewayOwnerId} ~ '^[a-f0-9]{64}$' ELSE ${table.credentialGatewayOwnerId} IS NULL END`,
     ),
     check(
       "credential_sources_driver_id_valid",

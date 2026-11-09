@@ -451,29 +451,45 @@ export function createExternalDriver(
   return created as unknown as ConfigurationDriver | IAMDriver | ComputeDriver | SandboxDriver;
 }
 
-/** Load one package instance for the selected capabilities; the sandbox selection owns its configuration. */
-export function createExternalProtectedDriver(
+/** The Sandbox selection configures the one registration shared by the selected views. */
+export async function createExternalSandboxRegistration(
   implementation: ExternalDriverModule,
   selection: SelectedDriverConfiguration,
+  selected: readonly ("credential_proxy" | "credential_gateway")[],
   // Composition that changes the installed authority must also change its durable identity.
   repositoryAuthorityIdentity?: string,
-): InstalledDriver {
+): Promise<InstalledDriver> {
   const { id, configuration } = selection;
+  const gatewayConfiguration = selected.includes("credential_gateway")
+    ? structuredClone(configuration)
+    : undefined;
   const registration = asRecord(
     implementation.createDriver({ id, configuration, implementation: selection.implementation }),
   );
-  if (!registration || !asRecord(registration.capabilities)) {
-    throw new Error(
-      "The selected package must return one Driver registration for Sandbox and Credential Proxy.",
+  try {
+    if (!registration || !asRecord(registration.capabilities)) {
+      throw new Error("The selected Sandbox package must return one Driver registration.");
+    }
+    const owner = new InstalledDriver(
+      repositoryAuthorityIdentity === undefined
+        ? selection
+        : { ...selection, configuration: { sandbox: configuration, repositoryAuthorityIdentity } },
+      registration as unknown as DriverRegistration,
+      {},
+      gatewayConfiguration,
     );
+    owner.require("sandbox");
+    for (const capability of selected) {
+      owner.require(capability);
+    }
+    return owner;
+  } catch (error) {
+    const close = registration?.close;
+    if (typeof close === "function") {
+      await Promise.resolve()
+        .then(() => close.call(registration))
+        .catch(() => undefined);
+    }
+    throw error;
   }
-  const owner = new InstalledDriver(
-    repositoryAuthorityIdentity === undefined
-      ? selection
-      : { ...selection, configuration: { sandbox: configuration, repositoryAuthorityIdentity } },
-    registration as unknown as DriverRegistration,
-  );
-  owner.require("sandbox");
-  owner.require("credential_proxy");
-  return owner;
 }
