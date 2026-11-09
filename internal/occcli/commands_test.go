@@ -1316,7 +1316,7 @@ func TestAgentRevisionsReportsContinuationWriteFailure(t *testing.T) {
 				if cursor != "" {
 					cursorJSON = strconv.Quote(cursor)
 				}
-				responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2}],"meta":{"requestId":"req_test","nextCursor":` + cursorJSON + `}}`
+				responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2,"namespaceId":"` + testNamespaceID + `","agentId":"` + testAgentID + `","backendId":null,"configurationId":"cfg_55555555-5555-4555-8555-555555555555","harness":{"id":"codex","version":"fixture","mode":"dedicated","overrides":{},"configuration":{}},"configurationGeneration":2,"createdAt":"2026-09-30T01:00:00.000Z","deploymentStatus":"failed","deploymentErrorCode":"CONVERGENCE_DEADLINE_EXCEEDED"}],"meta":{"requestId":"req_test","nextCursor":` + cursorJSON + `}}`
 				fake := &fakeOCC{responses: responses}
 				server := httptest.NewServer(fake)
 				defer server.Close()
@@ -1329,7 +1329,7 @@ func TestAgentRevisionsReportsContinuationWriteFailure(t *testing.T) {
 					notice.Write(data)
 					return 0, writeErr
 				}))
-				args := []string{"--namespace", testNamespaceID, "agent", "revisions", testAgentID}
+				args := []string{"--namespace", testNamespaceID, "agent", "revisions", testAgentID, "--limit", "1"}
 				// Preserve both the complete-command branch and the explicit-override branch.
 				if format == "json" {
 					args = append(args, "-o", format)
@@ -1349,7 +1349,7 @@ func TestAgentRevisionsReportsContinuationWriteFailure(t *testing.T) {
 				if !strings.Contains(out.String(), testRevision2ID) {
 					t.Fatalf("page was not delivered: %q", out.String())
 				}
-				if want := []string{"GET " + agentPath + "/revisions", "GET " + agentPath}; !slices.Equal(fake.requested, want) {
+				if want := []string{"GET " + agentPath + "/revisions?limit=1", "GET " + agentPath}; !slices.Equal(fake.requested, want) {
 					t.Fatalf("requests=%v, want one page and Agent read %v", fake.requested, want)
 				}
 			})
