@@ -108,8 +108,9 @@ const hex64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 // The lifecycle is real; all external commands are inert fixtures. HTTP is
 // refused separately because routing downloads do not use the command runner.
 type k3dOrderingTransport struct {
-	requests atomic.Int32
-	waitFor  string
+	requests        atomic.Int32
+	waitFor         string
+	certManagerOnly bool
 }
 
 func (transport *k3dOrderingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -126,6 +127,12 @@ func (transport *k3dOrderingTransport) RoundTrip(request *http.Request) (*http.R
 		}
 	}
 	transport.requests.Add(1)
+	// Keep the Envoy download in flight until the cert-manager refusal cancels
+	// it, so the selected controller is deterministic rather than a race.
+	if transport.certManagerOnly && strings.Contains(request.URL.Path, "/envoyproxy/") {
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	}
 	return nil, errors.New("fixture routing download refused")
 }
 
@@ -187,7 +194,7 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				// rolling it back, and must tell the operator how to clean up.
 				t.Setenv("OCC_DEVELOPMENT_KEEP_ON_FAILURE", "1")
 			}
-			transport := &k3dOrderingTransport{}
+			transport := &k3dOrderingTransport{certManagerOnly: true}
 			chartResult := "exit 45"
 			if scenario == "routing and rollback failure" {
 				transport.waitFor = filepath.Join(root, "preparing-assets")
@@ -302,7 +309,10 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				cleanupFailed = true
 			}
 			wantMeasurement := fmt.Sprintf("[occ-dev-startup] primary_stage=%s cleanup_failed=%t parent_context_done=%t", primary, cleanupFailed, scenario == "cancelled")
-			if strings.Count(output.String(), "[occ-dev-startup]") != 1 || !strings.Contains(output.String(), wantMeasurement) {
+			if primary == "routing" {
+				wantMeasurement += " routing_operation=manifest-download routing_controller=cert-manager"
+			}
+			if strings.Count(output.String(), "[occ-dev-startup]") != 1 || !strings.HasSuffix(output.String(), wantMeasurement+"\n") {
 				t.Fatalf("missing safe startup result %q in %s", wantMeasurement, &output)
 			}
 			if (scenario == "routing and rollback failure" || scenario == "routing and probe cleanup failure") && ctx.Err() != nil {
@@ -473,6 +483,35 @@ func TestStartupCleanupAttribution(t *testing.T) {
 			}
 			if got.Error() != errors.Join(tc.primary, cleanup).Error() || !errors.Is(got, cleanup) || (tc.primary != nil && !errors.Is(got, tc.primary)) {
 				t.Fatal("lost original errors")
+			}
+		})
+	}
+}
+
+func TestRoutingFailureKeepsOnlySelectedDetails(t *testing.T) {
+	original := errors.New("primary failure")
+	cleanup := routingError("manifest-apply", "envoy-gateway", errors.New("cleanup failure"))
+	for _, tc := range []struct {
+		name    string
+		primary error
+		want    string
+	}{
+		{"unclassified primary", original, ""},
+		{"base routing receipt", startupError("routing", original), ""},
+		{"joined error has no implicit primary", startupError("routing", errors.Join(original, cleanup)), ""},
+		{"cancellation", routingError("manifest-download", "cert-manager", context.Canceled), ""},
+		{"deadline", routingError("manifest-download", "cert-manager", context.DeadlineExceeded), ""},
+		{"selected routing error", startupError("routing", fmt.Errorf("install controllers: %w", routingError("manifest-download", "cert-manager", original))), " routing_operation=manifest-download routing_controller=cert-manager"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Tagged cleanup must not supply missing primary details, even when
+			// an outer rollback joins another failure after the initial cleanup.
+			got := joinStartupCleanup(joinStartupCleanup(tc.primary, cleanup), cleanup)
+			if suffix := routingFailureSuffix(got); suffix != tc.want {
+				t.Fatalf("got routing suffix %q, want %q", suffix, tc.want)
+			}
+			if !errors.Is(got, tc.primary) || !errors.Is(got, cleanup) {
+				t.Fatal("lost primary or cleanup error chain")
 			}
 		})
 	}
