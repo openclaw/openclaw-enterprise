@@ -6124,7 +6124,7 @@ test("first-Agent command timing pairs runtime outcomes before CI projection", a
     outcome + "signaled",
     "[occ-dev-timing] stage=openshell-workspace-render elapsed_ms=7 failed=true",
     "[occ-dev-timing] stage=private-outcome-canary elapsed_ms=9 failed=true",
-    "[occ-dev-startup] primary_stage=routing cleanup_failed=true parent_context_done=false",
+    "[occ-dev-startup] primary_stage=routing cleanup_failed=true parent_context_done=false routing_operation=manifest-download routing_controller=cert-manager",
   ];
   await writeFile(
     join(root, "bin/occ"),
@@ -6162,7 +6162,26 @@ test("a failed local setup reports only paired outcomes", async (t) => {
   delete process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
   delete process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
   await assert.rejects(localFirstAgentStack(t), /Start Local Setup exited with status 23/);
-  t.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ kind: "local-first-agent-startup-failure", primaryStage: "private-outcome-canary", cleanupFailed: true, parentContextDone: false }));
+  const legacy = { kind: "local-first-agent-startup-failure", primaryStage: "routing", cleanupFailed: true, parentContextDone: false };
+  // Old CLI receipts remain valid; projection strips unrelated fields and rejects
+  // invalid detail values instead of retaining arbitrary command output.
+  t.diagnostic('openclaw-ci-measurement ' + JSON.stringify(legacy));
+  t.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ ...legacy, routingOperation: "controller-rollout", routingController: "envoy-gateway", error: "private-outcome-canary" }));
+  t.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ ...legacy, routingOperation: "node-pod-cidr" }));
+  for (const fields of [
+    { primaryStage: "private-outcome-canary" },
+    { routingOperation: "private-outcome-canary" },
+    { routingOperation: null },
+    { routingController: "private-outcome-canary" },
+    { routingController: null },
+    { routingController: "cert-manager" },
+    { routingOperation: "node-pod-cidr", routingController: "cert-manager" },
+    { routingOperation: "node-pod-cidr", routingController: "envoy-gateway" },
+    { primaryStage: "rollback", routingOperation: "manifest-apply" },
+    { primaryStage: "rollback", routingController: "cert-manager" },
+  ]) {
+    t.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ ...legacy, ...fields }));
+  }
   t.diagnostic('openclaw-ci-measurement {"kind":"local-first-agent-startup-failure","private-outcome-canary":');
   t.diagnostic('openclaw-ci-measurement private-outcome-canary');
   t.diagnostic("ordinary setup diagnostic survives");
@@ -6229,6 +6248,29 @@ test("a failed local setup reports only paired outcomes", async (t) => {
         primaryStage: "routing",
         cleanupFailed: true,
         parentContextDone: false,
+        routingOperation: "manifest-download",
+        routingController: "cert-manager",
+      },
+      {
+        kind: "local-first-agent-startup-failure",
+        primaryStage: "routing",
+        cleanupFailed: true,
+        parentContextDone: false,
+      },
+      {
+        kind: "local-first-agent-startup-failure",
+        primaryStage: "routing",
+        cleanupFailed: true,
+        parentContextDone: false,
+        routingOperation: "controller-rollout",
+        routingController: "envoy-gateway",
+      },
+      {
+        kind: "local-first-agent-startup-failure",
+        primaryStage: "routing",
+        cleanupFailed: true,
+        parentContextDone: false,
+        routingOperation: "node-pod-cidr",
       },
     ],
   );
@@ -6251,18 +6293,29 @@ test("startup observations require one terminal record from a failed dev-up", as
     join(root, "tests/helpers/local-first-agent-stack.mjs"),
     await readFile(join(repositoryRoot, "tests/helpers/local-first-agent-stack.mjs")),
   );
-  const record =
+  const legacyRecord =
     "[occ-dev-startup] primary_stage=routing cleanup_failed=true parent_context_done=false\n";
+  const record =
+    legacyRecord.trimEnd() +
+    " routing_operation=controller-rollout routing_controller=envoy-gateway\n";
   await writeFile(
     join(root, "bin/occ"),
     `#!${process.execPath}
 const record = ${JSON.stringify(record)};
+const legacyRecord = ${JSON.stringify(legacyRecord)};
 const scenario = process.env.OCC_FIXTURE_STARTUP_CASE;
 if (process.argv[3] === "down") {
   process.stdout.write(record);
   process.exit(1);
 }
-if (scenario === "stderr") process.stderr.write(record);
+if (scenario === "legacy") process.stdout.write(legacyRecord);
+else if (scenario === "operation-only") process.stdout.write(legacyRecord.trimEnd() + " routing_operation=node-pod-cidr\\n");
+else if (scenario === "invalid-operation") process.stdout.write(record.replace("controller-rollout", "private-outcome-canary"));
+else if (scenario === "invalid-controller") process.stdout.write(record.replace("envoy-gateway", "private-outcome-canary"));
+else if (scenario === "controller-only") process.stdout.write(record.replace(" routing_operation=controller-rollout", ""));
+else if (scenario === "node-cidr-controller") process.stdout.write(record.replace("controller-rollout", "node-pod-cidr"));
+else if (scenario === "nonrouting") process.stdout.write(record.replace("primary_stage=routing", "primary_stage=rollback"));
+else if (scenario === "stderr") process.stderr.write(record);
 else if (scenario === "duplicate") process.stdout.write(record + record);
 else if (scenario === "malformed") process.stdout.write(record + "[occ-dev-startup] invalid\\n");
 else if (scenario === "early") process.stdout.write(record + "later operation\\n");
@@ -6297,21 +6350,32 @@ test("reject ambiguous or non-failure startup records", async (t) => {
   process.env.OPENAI_API_KEY = "invented-fixture-input";
   delete process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
   delete process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
-  for (const scenario of ["stderr", "duplicate", "malformed", "early", "truncated", "incomplete", "overflow", "signal", "success"]) {
+  for (const scenario of ["invalid-operation", "invalid-controller", "controller-only", "node-cidr-controller", "nonrouting", "stderr", "duplicate", "malformed", "early", "truncated", "incomplete", "overflow", "signal", "success"]) {
     process.env.OCC_FIXTURE_STARTUP_CASE = scenario;
     if (scenario === "success") await localFirstAgentStack(t);
     else await assert.rejects(localFirstAgentStack(t), /Start Local Setup/);
   }
-  process.env.OCC_FIXTURE_STARTUP_CASE = "valid";
-  await assert.rejects(promisify(execFile)(${JSON.stringify(join(root, "bin/occ"))}, ["dev", "up"]), (error) => {
-    const observation = startupFailureObservation();
-    // Deliberately split the genuine stdout across every boundary.
-    for (const character of error.stdout) observation.write(character);
-    assert.deepEqual(observation.finish(error.code, error.signal, error.killed), {
-      kind: "local-first-agent-startup-failure", primaryStage: "routing", cleanupFailed: true, parentContextDone: false,
+  for (const [scenario, details] of [
+    ["valid", { routingOperation: "controller-rollout", routingController: "envoy-gateway" }],
+    ["operation-only", { routingOperation: "node-pod-cidr" }],
+    ["legacy", {}],
+    // Check intake directly so reporter rejection cannot hide an invalid pair.
+    ["node-cidr-controller", null],
+  ]) {
+    process.env.OCC_FIXTURE_STARTUP_CASE = scenario;
+    await assert.rejects(promisify(execFile)(${JSON.stringify(join(root, "bin/occ"))}, ["dev", "up"]), (error) => {
+      const observation = startupFailureObservation();
+      // Deliberately split the genuine stdout across every boundary.
+      for (const character of error.stdout) observation.write(character);
+      assert.deepEqual(observation.finish(error.code, error.signal, error.killed), details === null ? undefined : {
+        kind: "local-first-agent-startup-failure", primaryStage: "routing", cleanupFailed: true, parentContextDone: false,
+        ...details,
+      });
+      // Cancellation takes precedence even when a complete valid line was buffered.
+      assert.equal(observation.finish(error.code, error.signal, true), undefined);
+      return true;
     });
-    return true;
-  });
+  }
 });
 `,
   );
