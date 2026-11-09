@@ -98,16 +98,15 @@ Unavailable entries show the reported cause and a recovery link:
 | No recognized reason                               | Review workspace plugin access without assuming a specific cause.                                   |
 | Unsupported native components or no apps or skills | Check [native limits](#native-mappings-and-limits); changing ChatGPT access cannot add OCE support. |
 
-Catalog membership grants no access; catalog visibility and credentials do not
-establish native execution or policy enforcement. Startup independently resolves
-selections and still requires the Agent's projected credentials and provider
-access. Unknown configuration options, arbitrary sources or versions, and
+Catalog access grants no runtime authority. Startup resolves the selections and
+requires the Agent’s projected credentials and provider access. Unknown configuration options, arbitrary sources or versions, and
 external PluginDriver packages are rejected.
 
-| Driver ID      | Implementation        | Agent Harness     | Catalog source                                                                                               |
-| -------------- | --------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------ |
-| `occ-plugin`   | `occ/openclaw-plugin` | Embedded OpenClaw | Bundled catalog: `occ-plugin:diffs` (`@openclaw/diffs`), pinned to `2026.8.2` and npm integrity.             |
-| `codex-plugin` | `occ/codex-plugin`    | Dedicated Codex   | Native `openai-curated-remote` marketplace; selection IDs are `codex-plugin:<plugin>@openai-curated-remote`. |
+| Driver ID      | Implementation        | Agent Harness      | Catalog source                                                                                               |
+| -------------- | --------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `occ-plugin`   | `occ/openclaw-plugin` | Dedicated OpenClaw | Bundled [Google Workspace and Slack](../managed-openclaw-plugins.md) on Kubernetes.                          |
+| `occ-plugin`   | `occ/openclaw-plugin` | Embedded OpenClaw  | Bundled `occ-plugin:diffs` (`@openclaw/diffs`), pinned to `2026.8.2` and npm integrity.                      |
+| `codex-plugin` | `occ/codex-plugin`    | Dedicated Codex    | Native `openai-curated-remote` marketplace; selection IDs are `codex-plugin:<plugin>@openai-curated-remote`. |
 
 Codex startup resolves current identity, release metadata, and concrete apps from
 `plugin/read`'s `detail.apps` and `detail.skills`. Hosted discovery supports skills

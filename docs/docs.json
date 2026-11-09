@@ -310,6 +310,10 @@
                         "label": "Overview"
                       },
                       {
+                        "page": "reference/managed-openclaw-plugins",
+                        "label": "OpenClaw Support"
+                      },
+                      {
                         "page": "guides/topics/plugins-configure",
                         "label": "Configure"
                       }
