@@ -235,3 +235,48 @@ The selected workflow must pass without skips. Its sanitized runtime log is
 written to the matrix artifacts directory. Cleanup remains with the owner of the
 prepared OpenShell lane; run the documented cleanup even on failure. The existing
 OpenShell advisory job exercises this workflow with the rest of its runtime suite.
+
+## Finite repository removal
+
+To qualify one Agent after repository-binding removal, set `file` to
+`tests/integration/openshell-git-finite-removal-real.test.ts`. Follow the lane
+prerequisites below; pass `--selected-file "$file"` to
+`scripts/ci/prepare.mjs --lane openshell`, then `--file "$file"` to
+`scripts/ci/run-tests.mjs run openshell`, using the same private `--state "$state"`.
+Always run `node scripts/ci/cleanup.mjs --state "$state"`, even after preparation
+or execution fails. The fixture owns a disposable Kubernetes control plane and
+PostgreSQL, a real OpenShell deployment, and a controlled HTTPS Git issuer. It requires
+authorized model credentials and immutable controller/runtime images matching
+the candidate checkout; relabeling an earlier image is not sufficient.
+
+The case first reads Git with the admitted credential and starts a real model
+conversation. It removes the binding before the original ten-minute deadline.
+The issuer refuses retirement of that exact credential with HTTP 503; direct
+HTTP 200 witnesses bracket each subsequent Git attempt. This keeps issuer
+validity separate from OpenShell's revocation of the Git provider.
+
+If the first denied request reaches the worker, it must receive a fresh signed
+`access_withdrawn` decision for the original revision. If provider detachment wins
+that race, the case requires the supervisor's ordered pre-HTTP policy refusal and
+records the signer as unexercised. It does not delay cleanup to force a signature.
+The signed-request PostgreSQL integration remains separate evidence for that boundary.
+After detachment and worker replacement, the case requires successful
+`REPOSITORY_ACCESS_WITHDRAWN` maintenance, Git revocation and model readiness on
+the same reduced supervisor generation, another ordered Git refusal without
+origin traffic or new issuance, and a reply in the original conversation and
+runtime. Finally, withdrawing required model authority must clear the active
+revision and remove the original Sandbox and Agent Pods before the same deadline.
+Queued retirement and fixture teardown do not satisfy this final assertion.
+
+`openshell-git-retention-real.test.ts` tests natural expiry separately. In its
+two-Agent case, B reads with its original grant after A's live denial, before
+worker replacement. After replacement, A must remain denied before origin and
+continue its conversation on the same runtime. This case does not qualify B's
+grant after replacement. Exact-scope `retire-runtime` fails expiry immediately;
+retain the selected image digests, case results and cleanup evidence.
+
+Conversation failures in the finite-removal and two-Agent cases identify the
+failed check: `execution identity`, `target discovery`, `gateway identity`,
+`model turn`, or `persisted reply`. These fixed labels identify where verification
+stopped, not its root cause. Raw command arguments, output, and error causes
+remain withheld.

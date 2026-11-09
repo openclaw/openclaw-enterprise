@@ -1761,6 +1761,52 @@ async function assertUpgradedAuthentication(db) {
   );
 }
 
+async function assertSignInResultStorage(app) {
+  // An upgraded Better Auth session can own a result only after State binds it.
+  const insert = `INSERT INTO occ.human_authentication_results
+    (installation_id,attempt_id,session_id,provider_id,expires_at)
+    SELECT i.id,$1,s.id,'oidc',clock_timestamp() + $2::interval
+    FROM occ.installation i CROSS JOIN occ.session s`;
+  const expired = "e".repeat(43);
+  const live = "v".repeat(43);
+  await assert.rejects(app.query(insert, [live, "1 minute"]), { code: "23503" });
+  await app.query(
+    `INSERT INTO occ.iam_identities(id,kind,issuer,subject)
+     SELECT 'migration-human','principal','migration-fixture',id FROM occ."user"`,
+  );
+  await app.query(
+    `INSERT INTO occ.human_authentication_accounts(user_id,installation_id,principal_id)
+     SELECT u.id,i.id,'migration-human' FROM occ."user" u CROSS JOIN occ.installation i`,
+  );
+  await app.query(
+    `INSERT INTO occ.human_authentication_sessions(session_id,user_id,method_id,version,method_version)
+     SELECT s.id,s.user_id,a.id,1,a.authentication_version FROM occ.session s
+     JOIN occ.account a ON a.user_id=s.user_id AND a.provider_id='oidc'`,
+  );
+
+  await app.query(insert, [expired, "-1 minute"]);
+  await app.query(insert, [live, "1 minute"]);
+  await assert.rejects(app.query(insert, [live, "1 minute"]), { code: "23505" });
+  await assert.rejects(app.query("UPDATE occ.human_authentication_results SET expires_at=now()"), {
+    code: "42501",
+  });
+  assert.deepEqual(
+    (
+      await app.query(
+        `DELETE FROM occ.human_authentication_results
+         WHERE installation_id=(SELECT id FROM occ.installation) AND expires_at <= clock_timestamp()
+         RETURNING attempt_id`,
+      )
+    ).rows,
+    [{ attempt_id: expired }],
+  );
+  await app.query("DELETE FROM occ.session");
+  assert.equal(
+    (await app.query("SELECT attempt_id FROM occ.human_authentication_results")).rowCount,
+    0,
+  );
+}
+
 const legacyExecutionAdmission = { version: 2, mode: "unprotected" };
 
 // A revision admitted before 0060 carries no execution admission. The upgrade records
@@ -2042,7 +2088,9 @@ test(
       [70, "preDefaultUsers"],
       [71, "preHarnessOverrides"],
       [72, "preAccountAdministrationPolicy"],
-      [73, "preNamespaceLifecycle"],
+      [73, "preFiniteRepositorySessionWithdrawal"],
+      [74, "preHumanAuthenticationResults"],
+      [75, "preNamespaceLifecycle"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2086,6 +2134,8 @@ test(
             "preDefaultUsers",
             "preHarnessOverrides",
             "preAccountAdministrationPolicy",
+            "preFiniteRepositorySessionWithdrawal",
+            "preHumanAuthenticationResults",
             "preNamespaceLifecycle",
           ].includes(history)
         ) {
@@ -2100,6 +2150,9 @@ test(
             ).rowCount,
             0,
           );
+        }
+        if (history === "preHumanAuthenticationResults") {
+          await assertSignInResultStorage(db.app);
         }
         if (history === "preConnectionTemplates") {
           // An Installation-wide template cannot present a Namespace client's credentials,
@@ -2577,6 +2630,15 @@ test(
   },
 );
 
+async function dumpHistoryArchive(fixture, database) {
+  const { stdout } = await execFileAsync(
+    "docker",
+    ["exec", fixture.container, "pg_dump", "-U", "postgres", "-Fc", database.name],
+    { encoding: "buffer", timeout: 180_000, maxBuffer: 32 * 1024 * 1024 },
+  );
+  return stdout;
+}
+
 async function restoreHistoryArchive(context, fixture, archive) {
   const restored = await historyDatabase(context, fixture, "restore", { schemas: false });
   const command = ["exec", "-i", fixture.container, "pg_restore", "-U", "postgres"];
@@ -2637,11 +2699,7 @@ test(
       const nativeData = prefix ? await canonicalData(source) : undefined;
 
       // Restore a real archive into a distinct database, preserving ownership and grants atomically.
-      const { stdout: archive } = await execFileAsync(
-        "docker",
-        ["exec", fixture.container, "pg_dump", "-U", "postgres", "-Fc", source.name],
-        { encoding: "buffer", timeout: 180_000, maxBuffer: 32 * 1024 * 1024 },
-      );
+      const archive = await dumpHistoryArchive(fixture, source);
       const restored = await restoreHistoryArchive(context, fixture, archive);
       const accepted = await logicalRestoreSnapshot(restored);
       const restoredDigest = catalogDigest(accepted.occ);
@@ -2746,6 +2804,45 @@ test(
         }
       }
     }
+
+    // Tables created after restoring 0074 retain their native catalog spelling.
+    const previous = await historyDatabase(context, fixture, "withdrawal", { prefix: 74 });
+    const before = await logicalRestoreSnapshot(previous);
+    const restored = await restoreHistoryArchive(
+      context,
+      fixture,
+      await dumpHistoryArchive(fixture, previous),
+    );
+    // Restore must preserve its original authority before the new tables are created.
+    const accepted = await logicalRestoreSnapshot(restored);
+    assert.deepEqual(accepted.receipts, before.receipts);
+    assert.deepEqual(accepted.drizzle, before.drizzle);
+    assert.deepEqual(accepted.identities, before.identities);
+    assert.deepEqual(accepted.sequence, before.sequence);
+    assert.deepEqual(await runHistoryMigration(restored, "production"), {
+      ok: true,
+      history: "preHumanAuthenticationResults",
+    });
+    const upgraded = await logicalRestoreSnapshot(restored);
+    assert.deepEqual(upgraded.receipts.slice(0, 74), before.receipts);
+    const manifest = JSON.parse(
+      await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
+    );
+    assert.deepEqual(
+      upgraded.receipts.slice(74).map(({ hash, created_at }) => [hash, Number(created_at)]),
+      manifest.entries.slice(74).map(({ sha256, when }) => [sha256, when]),
+    );
+    assert.deepEqual(upgraded.drizzle, before.drizzle);
+    assert.deepEqual(upgraded.identities, before.identities);
+    assert.equal(Number(upgraded.sequence[0].last_value), before.receipts.length + 2);
+    assert.equal(upgraded.sequence[0].is_called, true);
+    context.diagnostic(
+      `Upgraded prefix74 restore: ${catalogDigest(await migrationCatalog(restored.migrator))}`,
+    );
+    assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
+      ok: true,
+      history: "completed",
+    });
   },
 );
 

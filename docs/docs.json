@@ -745,6 +745,10 @@
                     "label": "Image Upgrades"
                   },
                   {
+                    "page": "guides/deploy/immutable-installation-upgrade",
+                    "label": "Immutable Installation"
+                  },
+                  {
                     "page": "guides/deploy/production-installation-changes",
                     "label": "Installation Changes"
                   },
@@ -952,6 +956,7 @@
               "testing/slack",
               "testing/plugins",
               "testing/openshell",
+              "testing/openshell-namespace-cleanup",
               "testing/openshell-oauth",
               "testing/openshell-coverage",
               "testing/ci/openshell-execution",

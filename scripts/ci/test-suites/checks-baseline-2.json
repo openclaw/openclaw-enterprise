@@ -639,6 +639,9 @@
     },
     {
       "path": "tests/integration/gateway-workspace-readiness.test.mjs"
+    },
+    {
+      "path": "tests/integration/openshell-full-integration.test.ts"
     }
   ]
 }

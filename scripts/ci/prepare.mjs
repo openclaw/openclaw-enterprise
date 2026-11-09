@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
+import { isOpenShellLane } from "./openshell-full-integration.ts";
 import {
   assertRuntimeArtifactTagAvailable,
   loadRuntimeArtifact,
@@ -63,7 +64,8 @@ const defaultStatePath = join(
   process.env.RUNNER_TEMP ?? tmpdir(),
   "openclaw-enterprise-ci-state.json",
 );
-const laneDefinitions = loadTestSuites(testSuitesManifestPath).lanes ?? {};
+const suiteView = process.env.OCC_CI_SUITE_VIEW;
+const laneDefinitions = loadTestSuites(testSuitesManifestPath, suiteView).lanes ?? {};
 const allowedLanes = new Set(Object.keys(laneDefinitions));
 const fixtureLanes = new Set([
   "k3d-fixture-configuration",
@@ -238,11 +240,15 @@ function toRepositoryRelative(path) {
   return relativePath.split(sep).join("/");
 }
 
-function runPrefix() {
+function runPrefix(lane) {
   const runId = process.env.GITHUB_RUN_ID ?? `local-${process.pid}`;
   const attempt = process.env.GITHUB_RUN_ATTEMPT ?? "1";
   const job = process.env.GITHUB_JOB ?? "local";
-  return ownedName("openclaw-ci", `${runId}-${attempt}-${job}`, { maxLength: 48 });
+  const label =
+    suiteView === "full-integration" && isOpenShellLane(lane)
+      ? `${runId}-${attempt}-${lane.replace(/^openshell-/, "")}`
+      : `${runId}-${attempt}-${job}`;
+  return ownedName("openclaw-ci", label, { maxLength: 48 });
 }
 
 function baseState(lane, statePath) {
@@ -250,7 +256,7 @@ function baseState(lane, statePath) {
     version: 1,
     repositoryRoot,
     lane,
-    prefix: runPrefix(),
+    prefix: runPrefix(lane),
     statePath,
     createdAt: new Date().toISOString(),
     resources: [],
@@ -838,7 +844,7 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   const name = laneName(lane);
   const prepare = lanePrepare(name);
   const effectiveEnv = effectiveLaneEnv(name);
-  if (prepare.k3d && name !== "openshell" && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
+  if (prepare.k3d && !isOpenShellLane(name) && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
     assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
   }
   const openShellGatewayFile = [
@@ -850,7 +856,7 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
     "tests/integration/openshell-withdrawal-real.test.ts",
   ].includes(file);
   const openShellApiKey =
-    name === "openshell" &&
+    isOpenShellLane(name) &&
     ((effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
       (openShellGatewayFile ||
         (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"))) ||
@@ -968,7 +974,8 @@ function imageBuildArgs(state, role, localStore) {
   if (process.env.OCC_CI_IMAGE_CACHE === "1") {
     if (
       process.env.GITHUB_ACTIONS !== "true" ||
-      imageCacheLanes.get(state.lane)?.localStore !== localStore ||
+      imageCacheLanes.get(isOpenShellLane(state.lane) ? "openshell" : state.lane)?.localStore !==
+        localStore ||
       !process.env.ACTIONS_RUNTIME_TOKEN ||
       !process.env.ACTIONS_RESULTS_URL
     ) {
@@ -978,7 +985,7 @@ function imageBuildArgs(state, role, localStore) {
       "buildx",
       "build",
       "--load",
-      ...(state.lane === "openshell" && process.env.OCC_CI_FIRST_AGENT_BUILDER
+      ...(isOpenShellLane(state.lane) && process.env.OCC_CI_FIRST_AGENT_BUILDER
         ? ["--builder", process.env.OCC_CI_FIRST_AGENT_BUILDER]
         : []),
       // An image ID covers each history entry's creation time. A fixed epoch lets
@@ -1062,7 +1069,7 @@ async function laneImageCommand(role, args, budgetMs = imageBuildBudgetMs()) {
 
 // Keep cache evidence without build arguments, URLs, command text or credentials.
 function firstAgentCacheObservation(state, role, phase, output) {
-  if (state.lane !== "openshell") {
+  if (!isOpenShellLane(state.lane)) {
     return;
   }
   const text = output ?? "";
@@ -1206,7 +1213,7 @@ async function buildRuntimeImages(
   // Plain BuildKit progress shows each step's cache hit or duration. The warm job
   // prints it per image and command once that ends (parallel builds stay
   // readable), also when it fails or overruns its own deadline inside the job's.
-  const plainProgress = cacheWarm || state.lane === "openshell" ? ["--progress=plain"] : [];
+  const plainProgress = cacheWarm || isOpenShellLane(state.lane) ? ["--progress=plain"] : [];
   if (revision !== undefined && !/^[a-f0-9]{40}$/.test(revision)) {
     throw new Error("Image builds require a complete checkout revision.");
   }
@@ -1615,7 +1622,7 @@ async function ensureK3dCluster(statePath, state) {
     return existing;
   }
   await commandAvailable(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", ["version"]);
-  const openShell = state.lane === "openshell";
+  const openShell = isOpenShellLane(state.lane);
   const crossNodePluginStatus = fixtureLanes.has(state.lane);
   if (!openShell) {
     await commandAvailable(process.env.OCC_KUBECTL_BIN ?? "kubectl", ["version", "--client=true"]);
@@ -3300,6 +3307,8 @@ async function prepareLane({ lane, statePath, file }) {
       await prepareLaneLogging(resolvedStatePath, state, env, cluster);
       break;
     }
+    case "openshell-installers":
+    case "openshell-policy":
     case "openshell": {
       // These files exercise the installer in their own Local Setup. Preparing a
       // second stack here builds the same images and installs unused services.
@@ -3474,6 +3483,14 @@ async function prepareFile({ lane, file, statePath, template }) {
 async function prepareFileWithState({ name, relativeFile, resolvedStatePath, template }) {
   const state = await readState(resolvedStatePath);
   const prepare = lanePrepare(name);
+  if (suiteView === "full-integration" && isOpenShellLane(name)) {
+    if (
+      state?.lane !== name ||
+      !laneDefinition(name).files.some(({ path }) => path === relativeFile)
+    ) {
+      throw new Error("OpenShell file must match its prepared Full Integration lane.");
+    }
+  }
   if (state?.selectedFile !== undefined && state.selectedFile !== relativeFile) {
     throw new Error("Selected file must match the prepared lane state.");
   }

@@ -8,10 +8,9 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-Use these tests to check OpenShell setup and real Agent execution. Run commands
-from the repository root. The current setup selects official OpenShell
-`v0.1.6`; see [images and trust](openshell-oauth.md#prepare-images-and-trust)
-for the exact versions and qualification boundary.
+Run these OpenShell setup and real Agent execution tests from the repository
+root. Setup selects official OpenShell `v0.1.6`; [images and trust](openshell-oauth.md#prepare-images-and-trust)
+lists exact versions and qualification limits.
 
 ## Start a reusable development environment
 
@@ -28,11 +27,10 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
 
-Keep the state directory and environment variables for later commands. Use a
-separate state directory per checkout. The launcher prints its API URL,
-kubeconfig, context, and service-key file. It does not change the default
-kubeconfig or context. Set `OCC_DEVELOPMENT_CONTAINER_ENGINE=docker` or
-`podman` if engine selection is ambiguous.
+Keep the state directory and environment variables for later commands, with a
+separate directory per checkout. The launcher prints its API URL, kubeconfig,
+context, and service-key file without changing the default kubeconfig or context.
+Set `OCC_DEVELOPMENT_CONTAINER_ENGINE=docker` or `podman` if selection is ambiguous.
 
 To stop the environment, including after a partial startup, run:
 
@@ -48,37 +46,16 @@ clusters. For the Compose control-plane variant, set
 
 ## Check Namespace cleanup
 
-Build `bin/occ` from this checkout, then select the owned development-profile
-cases directly. They create private kubeconfigs and clusters and remove only
-their own resources. The central-gateway case also requires the authorized Codex
-account, model and browser prerequisites in [test setup](#test-setup-and-cleanup).
-Select the available engine explicitly:
+Follow [OpenShell Namespace cleanup tests](openshell-namespace-cleanup.md) for
+owned cluster, image and credential prerequisites, provider removal and endpoint-loss
+checks. The central case requires a real Agent/model/browser prelude; the separate
+bare-service case requires authenticated TLS but no model credential.
 
-```sh
-CODEX_ACCESS_TOKEN_FILE=/secure/oce/codex-token OCC_TEST_OPENAI_MODEL="$MODEL" \
-OCC_TEST_DEV_UP_OPENSHELL_REAL=1 OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman \
-  node --test --test-concurrency=1 \
-  --test-name-pattern='dev-up installs the pinned OpenShell profile in its owned k3d cluster' \
-  tests/integration/dev-up-openshell-k3d-real.test.mjs
-OCC_TEST_DEV_UP_OPENSHELL_LOCAL_ENDPOINT_REAL=1 OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman \
-  node --test tests/integration/dev-up-openshell-local-endpoint-cleanup-real.test.ts
-```
+## Finite repository removal
 
-Leave controller and runtime image overrides unset to build this source. Explicit
-overrides must be immutable paired references whose revision labels match the
-tested checkout. A new CLI against an older controller image does not prove the
-changed worker or Drivers.
-
-The central-gateway case checks real Agent/browser/model behavior before its
-seven cleanup scenarios remove authority. Those scenarios check worker/provider
-cleanup after placement loss, external claim release, and reassignment refusal
-across retry. The separate bare-service case creates no Agent and needs no model
-credential: with no bound Namespaces, it uses the official chart's full-PKI reset
-to add its alias DNS name, reloads mutual-TLS identities, and verifies the alias
-before binding a target. It then removes that alias after provider confirmation
-and checks retry without the endpoint. Cleanup evidence does not qualify production
-TLS or model execution; the central case verifies its model behavior separately.
-Selected cases fail when their prerequisites are unavailable.
+See [finite repository removal coverage](openshell-coverage.md#finite-repository-removal)
+for preparation, exact provider/issuer witnesses, runtime continuity and consequential
+failure limits.
 
 ## Codex plugin installation
 
@@ -113,13 +90,12 @@ proof does not establish remote account access or OpenShell enforcement.
 ## Linear tool-use qualification
 
 The opt-in `openshell-linear-read` QA scenario boots the shipped Kubernetes and
-OpenShell stack. It creates the credential source and provisions a dedicated
-Agent with Linear through the OCE APIs. A normal Agent turn must produce a native
-Linear tool call and a successful result matching known Linear data. It submits
-the shipped Codex configuration through the provisioning API and sends the turn
-through the configured OCE Gateway route. Kubernetes access runs that API client
-in the existing controller and reads evidence; the test does not replace Drivers,
-read Gateway passwords from Kubernetes Secrets, or patch running workloads.
+OpenShell stack, creates the credential source, and provisions a dedicated
+Linear Agent with the shipped Codex configuration through OCE APIs. A normal
+turn through the configured OCE Gateway route must produce a native Linear tool
+call and a successful result matching known data. Kubernetes access runs the API
+client in the existing controller and reads evidence; it does not replace Drivers,
+read Gateway passwords from Secrets, or patch workloads.
 
 Provide an existing connected account through `OCC_TEST_QA_CODEX_TOKEN_FILE`, an
 authorized model ID through `OCC_TEST_QA_CODEX_MODEL`, and the harmless read fixture:
@@ -165,21 +141,20 @@ synthetic material without Agent/model execution. Both default to Docker; set
 
 ## OpenShell Sandbox
 
-The real Sandbox suite tests a dedicated Codex Agent, including authenticated
-Gateway access, real model and tool turns, credential delivery, restricted
-filesystem and network access, replacement, and cleanup. Local fixture tests
-alone do not prove these outcomes. See [OpenShell coverage](openshell-coverage.md) for the individual checks.
+The real Sandbox suite checks a dedicated Codex Agent's authenticated Gateway
+access, model and tool turns, credential delivery, filesystem and network
+restrictions, replacement, and cleanup. Local fixtures alone do not prove these
+outcomes; see [OpenShell coverage](openshell-coverage.md).
 
-When the credential-route check's allowed endpoint fails, the suite captures one
-bounded tail from the Harness's exact supervisor before cleanup. The diagnostic
-contains the source type, curl HTTP/CONNECT statuses and exit code, plus counts
-of recognized provider-environment changes and stale-generation denials for the
-selected destination. It includes no raw log lines or request data. `no_match`
-means neither class appeared in the sampled tail; `unavailable` means capture
-failed or exceeded its deadline. This tail is **uncorrelated** with the request:
-it can include earlier or queued events and does not identify the curl failure's
-cause. The original assertion still fails; the suite retries neither the curl
-nor these diagnostic reads. Passing routes collect no diagnostic tail.
+If the credential-route check's allowed endpoint fails, the suite captures one
+bounded tail from the Harness's exact supervisor before cleanup: source type,
+curl HTTP/CONNECT statuses and exit code, and counts of recognized
+provider-environment changes and stale-generation denials for the selected
+destination. Raw log lines and request data are excluded. `no_match` means
+neither class appeared; `unavailable` means capture failed or timed out. The tail
+is **uncorrelated** with the request, can contain earlier or queued events, and
+does not identify the curl failure's cause. The assertion still fails; neither
+curl nor diagnostic reads are retried. Passing routes collect no tail.
 
 Preparation requires the Codex credential and model; running the complete lane
 also requires the separate native OpenAI key. For direct Codex file runs, also provide the
@@ -199,15 +174,14 @@ official operator-mTLS access-token retrieval. Synthetic issuer results do not
 prove real ChatGPT login or model execution; repeat credentialed qualification
 against the exact selected images.
 
-The CI lane needs an existing authorized `CODEX_ACCESS_TOKEN` for Codex and
-`OPENAI_API_KEY` for the native OpenClaw first-Agent case. Both must permit
-`OCC_TEST_OPENAI_MODEL`. Keep these credentials separate; a Codex PAT cannot
-authenticate native OpenClaw. Do not put either value in a command, logs, or shell
-history. It also needs Docker, k3d, kubectl, Helm, `openssl`, and
-network access to the pinned assets. The CI preparation creates a disposable
-cluster, installs the OpenShell and Agent Sandbox prerequisites, imports
-immutable images, and prepares PostgreSQL. A standard k3d cluster alone is not
-sufficient. See the [CI lane guide](ci/full-integration.md#scenarios) for the hosted run.
+The CI lane requires authorized `CODEX_ACCESS_TOKEN` for Codex and
+`OPENAI_API_KEY` for native OpenClaw, both permitting `OCC_TEST_OPENAI_MODEL`.
+Keep them separate: a Codex PAT cannot authenticate native OpenClaw. Never put
+either value in commands, logs, or shell history. Docker, k3d, kubectl, Helm,
+`openssl`, and network access to pinned assets are required. Preparation creates
+a disposable cluster, installs OpenShell and Agent Sandbox prerequisites, imports
+immutable images, and prepares PostgreSQL; a standard k3d cluster is insufficient.
+See the [CI lane guide](ci/full-integration.md#scenarios) for hosted runs.
 
 To run the same lane locally, export both credentials and the model through your
 approved credential workflow. Preparation builds the controller unless
@@ -242,6 +216,9 @@ Run cleanup even if preparation or a test fails:
 ```sh
 node scripts/ci/cleanup.mjs --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
 ```
+
+The [Git retention case](repository-credentials.md#verify-openshell-git-expiry-and-restart)
+checks finite-grant expiry and worker restart after installation.
 
 The Codex Sandbox case and guided native OpenClaw first-Agent case use production
 Drivers, but neither qualifies a production installation. The separate native
@@ -300,10 +277,12 @@ only one. Then run:
 node scripts/first-agent.mjs my-agent --harness codex --control-ui
 ```
 
-A successful model turn prints `Model response verified:`. A selected version or
-ready Sandbox alone is not a model proof. For an invalid key, rerun with
-`--replace-key`. The starter disables tools. With OpenShell and either local control plane, `--control-ui` prints both the OCE console and OpenClaw Control UI URLs. Trust the browser CA printed by startup before opening them. Run `./scripts/dev-down` with the same state
-directory when finished.
+A successful turn prints `Model response verified:`; a selected version or ready
+Sandbox is insufficient. Rerun with `--replace-key` for an invalid key. The
+starter disables tools. With OpenShell and either local control plane,
+`--control-ui` prints OCE console and OpenClaw Control UI URLs. Trust startup's
+browser CA before opening them. Finish with `./scripts/dev-down` using the same
+state directory.
 
 ### Guided native OpenClaw redeployment
 
@@ -312,10 +291,10 @@ and Kubernetes-only first-Agent stacks. Each stack is created by the public Loca
 Setup installer, including OpenShell installation. Hosted focused jobs prepare
 current-source images through the [CI image path](ci.md); local runs retain source
 builds in the installer.
-The initial invocation checks a fresh nonce and a custom prompt. Reuse checks a
-new nonce without repeating the custom prompt, with credentials removed from the
-helper environment. It must retain the exact Agent, revision, Namespace, and
-model. Stage timings are retained in the [CI results](ci/openshell-execution.md#interpret-timing-and-proof).
+The initial invocation checks a fresh nonce and custom prompt. Reuse checks a
+new nonce without that prompt or helper-environment credentials, retaining the
+exact Agent, revision, Namespace, and model. [CI results](ci/openshell-execution.md#interpret-timing-and-proof)
+retain stage timings.
 
 After verifying the ready default Namespace created by Local Setup, the test
 runs distinct Codex and native Agents concurrently. Codex uses its `codex-pat`
@@ -335,19 +314,19 @@ The native source authorizes the same destination. The same provisioning,
 model-and-exec, and retained-session redeployment assertions run with this input;
 changing only the embedded QA preset does not exercise this path.
 
-The case edits `USER.md` through the workspace API and verifies its marker through
-real model execution and `exec`. That turn writes a unique file in its session
-worktree. It waits for the enrolled node's actual setup expiry before a normal
-redeployment, adding up to ten minutes to the case. The successor must retain
-the owned setup Secret, credential, expiry and device identity while recording
-its own enrolled revision. Completion receipts must match while retained by the
-Gateway; after its 20-minute retention window, empty status is allowed. Durable
-Secret and execution assertions still apply; emitted events are not counted. The case also checks replacement Sandbox and
-Pod UIDs, the retained workspace PVC/subpath, and every owner file's bytes. It
-then resumes the same session ID and key, requiring another model turn and `exec`
-to read the original file with its original hash. Run placement must identify the
-replacement Harness and the required worker profile. A fresh session alone would
-miss lost worktrees even when session metadata survives.
+The case edits `USER.md` through the workspace API, verifies its marker through
+real model execution and `exec`. That turn writes a unique session-worktree file. It
+waits for the enrolled node's actual setup expiry before normal redeployment,
+adding up to ten minutes. The successor must retain the owned setup Secret,
+credential, expiry and device identity while recording its own enrolled revision.
+Completion receipts must match while present. Empty status is allowed only after
+the Gateway's 20-minute retention window. Durable Secret and execution assertions still
+apply; emitted events are not counted. Checks also cover replacement Sandbox and
+Pod UIDs, retained workspace PVC/subpath, and every owner file's bytes. Resuming
+the same session ID and key must produce another model turn and `exec` reading
+the original file and hash. Run placement must identify the replacement Harness
+and required worker profile. A fresh session would miss lost worktrees despite
+surviving session metadata.
 
 Previously captured guided live proof covers native OpenClaw only and predates
 the current Sandbox-owned initialization. It does not establish fresh proof

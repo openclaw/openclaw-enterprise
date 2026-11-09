@@ -172,6 +172,12 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 72 && completedCount > 72) {
     return "preAccountAdministrationPolicy";
   }
+  if (count === 73 && completedCount > 73) {
+    return "preFiniteRepositorySessionWithdrawal";
+  }
+  if (count === 74 && completedCount > 74) {
+    return "preHumanAuthenticationResults";
+  }
   if (count === completedCount) {
     return "completed";
   }
@@ -283,7 +289,7 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 63) {
     return "preGatewayManagedMode";
   }
-  if (count === 73) {
+  if (count === 75) {
     return "preNamespaceLifecycle";
   }
   refuse("an incomplete or unsupported development history is installed");

@@ -11,6 +11,7 @@ import { commandPath, composeConfigurationProvider } from "./compose.mjs";
 import { bashString, commandShim, startCommandServer } from "./fixture-command-server.mjs";
 import { readJsonLines as readJsonLinesFile } from "./json-lines.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
+import { withoutShellStartup } from "./environment.ts";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const serviceKey = "sk-test-secret-value";
@@ -891,7 +892,7 @@ exit 86
   const inherited = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.startsWith("OCC_DEVELOPMENT_")),
   );
-  const env = {
+  const env = withoutShellStartup({
     ...inherited,
     PATH: engine === "podman" ? bin : `${bin}${delimiter}${process.env.PATH ?? ""}`,
     OPENAI_API_KEY: "",
@@ -912,12 +913,7 @@ exit 86
     DEV_UP_REAL_PATH: process.env.PATH ?? "",
     DEV_UP_REPOSITORY: repository,
     DEV_UP_FIXTURE_REPOSITORY: fixtureRepository,
-  };
-
-  // Shell startup configuration is outside this disposable command environment.
-  delete env.BASH_ENV;
-  delete env.ENV;
-  delete env.SHELLOPTS;
+  });
 
   const fixture = {
     directory,

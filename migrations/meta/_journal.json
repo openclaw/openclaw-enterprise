@@ -516,8 +516,22 @@
     {
       "idx": 74,
       "version": "7",
+      "when": 1787000000074,
+      "tag": "0074_finite_repository_session_withdrawal",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1787000000075,
+      "tag": "0075_human_authentication_results",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
       "when": 1793365038662,
-      "tag": "0074_namespace_lifecycle",
+      "tag": "0076_namespace_lifecycle",
       "breakpoints": true
     }
   ]
