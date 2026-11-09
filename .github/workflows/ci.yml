@@ -453,7 +453,9 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Set up CI tools
-        run: bash scripts/ci/setup-tools.sh k3d
+        uses: ./.github/actions/setup-ci-tools
+        with:
+          profile: k3d
       # Pull Docker Hub images through mirror.gcr.io without the runner's
       # Docker Hub sign-in (finding 973). This restarts the Engine, so it runs
       # before Buildx starts its builder container.

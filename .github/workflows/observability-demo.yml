@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/workflows/observability-demo.yml"
       - ".github/actions/run-ci-lane/**"
+      - ".github/actions/setup-ci-tools/**"
       - ".github/actions/setup-pnpm-store-cache/**"
       - "deploy/helm/openclaw-observability-demo/**"
       - "tests/integration/observability-demo-chart.test.mjs"
@@ -19,6 +20,7 @@ on:
     paths:
       - ".github/workflows/observability-demo.yml"
       - ".github/actions/run-ci-lane/**"
+      - ".github/actions/setup-ci-tools/**"
       - ".github/actions/setup-pnpm-store-cache/**"
       - "deploy/helm/openclaw-observability-demo/**"
       - "tests/integration/observability-demo-chart.test.mjs"
