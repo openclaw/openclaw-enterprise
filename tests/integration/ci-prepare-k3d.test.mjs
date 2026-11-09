@@ -208,7 +208,8 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         );
       }
       assert.ok(!result.stderr.includes(privateUrl));
-      assert.doesNotMatch(result.stderr, /fixture-password|private terminal text|\u001b/);
+      assert.doesNotMatch(result.stderr, /fixture-password|private terminal text/);
+      assert.ok(!result.stderr.includes("\u001b"));
       assert.doesNotMatch(result.stderr, /private build output/);
       const state = await commands.readState();
       const image = state.resources.find(({ kind }) => kind === "image-tag");
