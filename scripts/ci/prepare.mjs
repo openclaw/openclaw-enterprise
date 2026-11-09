@@ -429,7 +429,7 @@ function execFile(command, args, options = {}) {
     };
     // A separate group no longer receives the terminal's or runner's signals.
     // Pass them on while the command runs, then let the default action stop us.
-    // Each such command adds one listener per signal; only k3d create uses it.
+    // Each command with an owned process group adds one listener per signal.
     const forwardSignal = (signal) => {
       stopForwardingSignals();
       signalCommand(signal);
@@ -530,6 +530,11 @@ function execFile(command, args, options = {}) {
     );
     // Exit can precede pipe drain; callers need complete diagnostics to classify failures.
     child.on("close", (code, signal) => {
+      // A timed-out group leader can exit while a descendant ignores TERM and
+      // holds no pipes. Keep the KILL escalation and its settlement grace alive.
+      if (timedOut && options.processGroup === true) {
+        return;
+      }
       finish(() => {
         if (timedOut) {
           reject(timedOutError(code, signal));
@@ -2112,13 +2117,24 @@ async function validateLoopbackKubeconfig(
 async function buildFixtureImage(statePath, state) {
   const run = (stage, args, limitMs) =>
     k3dStage(state, stage, async () => {
+      if (!Number.isFinite(limitMs) || limitMs <= 0 || limitMs > 2_147_483_647) {
+        throw new Error(
+          `Fixture image preparation ${stage} requires a valid finite command timeout.`,
+        );
+      }
       const budgetMs = imageBuildBudgetMs();
       if (budgetMs !== undefined && budgetMs < 1_000) {
-        throw imageBuildOutOfTime("fixture", 0);
+        throw new Error(
+          `Fixture image preparation ${stage} was not started: the lane keeps ` +
+            `${imageBuildTestReserveMs} ms before its deadline for remaining preparation and tests.`,
+        );
       }
       const timeoutMs = Math.min(limitMs, budgetMs ?? limitMs);
       try {
-        return await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, { timeoutMs });
+        return await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
+          timeoutMs,
+          processGroup: process.platform !== "win32",
+        });
       } catch (error) {
         if (error.timedOut) {
           throw new Error(`Fixture image preparation ${stage} timed out after ${timeoutMs} ms.`, {

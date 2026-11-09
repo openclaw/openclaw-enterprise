@@ -92,9 +92,11 @@ fixture-build stages. The engine probe uses the existing image-command
 limit (30 seconds by default); the fixture build has a ten-minute cap. These are execution limits, not
 expected durations. Both commands also respect the remaining lane deadline less
 the test reserve, recalculated before each command. Without a valid lane deadline,
-the finite command limits still apply. An exhausted budget prevents dispatch;
-a timeout uses the existing child termination handling and reports the failed
-stage without printing captured output. The owned image tag is recorded before
+the finite command limits still apply. Unsupported timer values are rejected.
+An exhausted budget reports the stage that could not start. On POSIX, timeouts
+terminate the command's owned process group, including local descendants; an
+early leader exit does not cancel forced termination. Windows retains direct-child
+termination. The timeout reports the failed stage without printing captured output. The owned image tag is recorded before
 building and becomes ready only after success, so failed preparation remains
 available to cleanup.
 

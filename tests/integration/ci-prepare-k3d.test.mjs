@@ -125,10 +125,16 @@ describe("CI k3d preparation", { concurrency: true }, () => {
           const original = join(dirname(commands.statePath), "bin", "docker.mjs.original");
           const program = `
             const { appendFileSync } = require("node:fs");
-            const { spawnSync } = require("node:child_process");
+            const { spawn, spawnSync } = require("node:child_process");
             appendFileSync(${JSON.stringify(pidFile)}, process.pid + "\\n");
             process.stderr.write("private build output\\n");
+            const descendant = ${version} ? undefined : spawn(process.execPath, ["-e", ${JSON.stringify(`
+              require("node:fs").appendFileSync(${JSON.stringify(pidFile)}, process.pid + "\\n");
+              process.on("SIGTERM", () => {});
+              setTimeout(() => {}, 30_000);
+            `)}], { stdio: "ignore" });
             setTimeout(() => {
+              descendant?.kill("SIGKILL");
               process.exit(spawnSync(${JSON.stringify(original)}, ${JSON.stringify(args)}, { stdio: "inherit" }).status);
             }, ${version ? 3000 : 10000});
           `;
@@ -152,9 +158,18 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       );
       assert.equal(result.status, 1, result.stderr);
       const pids = (await readFile(pidFile, "utf8")).trim().split("\n").map(Number);
-      assert.equal(pids.length, version ? 2 : 1);
+      t.after(() => {
+        for (const pid of pids) {
+          if (processRunning(pid)) {
+            process.kill(pid, "SIGKILL");
+          }
+        }
+      });
+      assert.equal(pids.length, 2);
+      // The build child has redirected pipes and ignores TERM. Its leader exits
+      // first, so only a preserved group escalation can stop it before cleanup.
       for (const pid of pids) {
-        assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+        assert.equal(processRunning(pid), false, `fixture command process ${pid} must stop`);
       }
       assertStderrMatch(
         result.stderr,
@@ -186,8 +201,9 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     assert.equal(result.status, 1, result.stderr);
     assertStderrMatch(
       result.stderr,
-      /The fixture image did not finish building within this lane's time/,
+      /Fixture image preparation fixture-engine-version was not started: the lane keeps 180000 ms/,
     );
+    assert.doesNotMatch(result.stderr + result.stdout, /did not finish building|20 min|cache miss/);
     const state = await commands.readState();
     assert.ok(!state.resources.some(({ kind }) => kind === "image-tag"));
     assert.equal(state.env, undefined);
@@ -200,6 +216,32 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     );
     await commands.cleanupSuccessfully();
   });
+
+  for (const timeout of ["Infinity", "2147483648"]) {
+    test(`fixture preparation rejects unsupported command timeout ${timeout}`, async (t) => {
+      const commands = await fixtureImageCommands(t, "success", "k3d-fixture-network", {
+        OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: timeout,
+        CI_RUNNER_DEADLINE_MS: "invalid",
+      });
+      const result = await commands.prepare();
+      assert.equal(result.status, 1, result.stderr);
+      assertStderrMatch(
+        result.stderr,
+        /fixture-engine-version requires a valid finite command timeout/,
+      );
+      const state = await commands.readState();
+      assert.ok(!state.resources.some(({ kind }) => kind === "image-tag"));
+      assert.equal(state.env, undefined);
+      // Concurrent PostgreSQL still owns its existing version probe.
+      assert.equal(
+        (await commands.commands()).filter(
+          ({ command, args }) => command === "docker" && args[0] === "version",
+        ).length,
+        1,
+      );
+      await commands.cleanupSuccessfully();
+    });
+  }
 
   test("preselected runtime preparation publishes the verified host image for Docker relays", async (t) => {
     const preload = join(await fixture(t), "runtime-selection.mjs");
