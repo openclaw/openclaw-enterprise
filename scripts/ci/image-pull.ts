@@ -41,10 +41,19 @@ function pullProgress(evidence: ReturnType<typeof pullFailureEvidence>): string 
   const layers = new Map<string, string>();
   for (const output of [evidence.stdout, evidence.stderr]) {
     let tail = "";
-    if (Buffer.isBuffer(output)) {
-      tail = output.subarray(-32_768).toString();
-    } else if (typeof output === "string") {
-      tail = output.slice(-32_768);
+    if (Buffer.isBuffer(output) || typeof output === "string") {
+      const start = Math.max(0, output.length - 32_768);
+      const previous = output[start - 1];
+      tail = Buffer.isBuffer(output) ? output.subarray(start).toString() : output.slice(start);
+      if (
+        start > 0 &&
+        previous !== 10 &&
+        previous !== 13 &&
+        previous !== "\n" &&
+        previous !== "\r"
+      ) {
+        tail = tail.replace(/^[^\r\n]*/, "");
+      }
     }
     for (const line of tail.split(/[\r\n]/)) {
       const match =
@@ -126,9 +135,13 @@ export async function pullImage<Result extends ImageCommandResult = ImageCommand
       return await execFile(docker, ["pull", image], { timeoutMs: attemptTimeoutMs });
     } catch (error) {
       const evidence = pullFailureEvidence(error);
-      log(
-        `Image pull attempt ${attempt}/${attempts} failed after ${Date.now() - attemptStarted} ms${evidence.timedOut ? " (timeout)" : ""}: ${image}; ${pullProgress(evidence)}`,
-      );
+      try {
+        log(
+          `Image pull attempt ${attempt}/${attempts} failed after ${Date.now() - attemptStarted} ms${evidence.timedOut ? " (timeout)" : ""}: ${image}; ${pullProgress(evidence)}`,
+        );
+      } catch {
+        // Diagnostic output must not replace the pull failure or its retry decision.
+      }
       if (
         !transientPullEvidence(evidence) ||
         attempt >= attempts ||

@@ -180,6 +180,53 @@ setInterval(() => {}, 1000);
   }
 });
 
+test("pullImage never reports a truncated line as layer progress", async () => {
+  const complete = "\nbbbbbbbbbbbb: Pull complete\n";
+  for (const encode of [(value) => value, (value) => Buffer.from(value)]) {
+    for (const [prefix, first, retained] of [
+      ["a".repeat(20), `${"a".repeat(44)}: Downloading`, false],
+      ["unrelated-prefix ", "cccccccccccc: Downloading", false],
+      ["unrelated-prefix\n", "cccccccccccc: Downloading", true],
+      ["unrelated-prefix\r", "cccccccccccc: Downloading", true],
+    ]) {
+      // The retained 32 KiB starts either inside a line or exactly at its boundary.
+      const tail =
+        first + "\n" + "x".repeat(32_768 - first.length - 1 - complete.length) + complete;
+      for (const stream of ["stdout", "stderr"]) {
+        const logs = [];
+        const failure = pullFailure("", { [stream]: encode(prefix + tail) });
+        await assert.rejects(
+          pullImage(image, {
+            ...scriptedPull([failure]),
+            attempts: 1,
+            log: (message) => logs.push(message),
+          }),
+          (error) => error === failure,
+        );
+        assert.equal(logs.length, 1);
+        const progress = logs[0].split("; ").slice(1);
+        assert.deepEqual(progress, [...(retained ? [first] : []), "bbbbbbbbbbbb: Pull complete"]);
+      }
+    }
+  }
+});
+
+test("pullImage preserves its terminal failure when the diagnostic sink throws", async () => {
+  const failure = pullFailure("", { timedOut: true, stdout: "aaaaaaaaaaaa: Downloading\n" });
+  const execution = scriptedPull([failure]);
+  await assert.rejects(
+    pullImage(image, {
+      ...execution,
+      attempts: 1,
+      log: () => {
+        throw new Error("diagnostic sink unavailable");
+      },
+    }),
+    (error) => error === failure,
+  );
+  assert.equal(execution.calls.length, 1);
+});
+
 test("pullImage fails a permanent failure on the first attempt with the original error", async () => {
   const failure = pullFailure("manifest unknown: manifest unknown");
   const { calls, execFile } = scriptedPull([failure]);

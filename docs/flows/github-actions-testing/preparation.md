@@ -22,7 +22,10 @@ source. Direct callers can reuse verified installed bytes without a cache.
 whether to retry, including the final attempt. It reports elapsed time, whether
 the command timed out, and up to eight layer states from the captured output tails.
 Only known Docker phases and hexadecimal layer IDs enter this progress summary;
-unmatched output is omitted. Docker suppresses numeric progress on non-terminal
+unmatched output and a leading partial line at the tail cutoff are omitted.
+The First Agent smoke adapter forwards both captured streams to this parser.
+Diagnostic emission is best effort and cannot replace the terminal pull error.
+Docker suppresses numeric progress on non-terminal
 output, so these states provide partial evidence, not the current transfer phase. If no progress matches, the
 summary says so. These diagnostics retain reported download and extraction
 activity without changing timeouts, backoff, concurrency, or digest verification.
