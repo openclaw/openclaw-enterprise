@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1298,6 +1299,104 @@ setInterval(() => {}, 1_000);
     { timeoutMs: 5_000, intervalMs: 50 },
   );
 });
+
+// The npm Codex launcher forwards signals to a separate binary over inherited stdio.
+// A direct-child exit does not prove that binary stopped or released our pipes.
+test(
+  "native Codex catalog tears down its owned launcher group",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    for (const mode of ["abort-forward", "abort-exit", "timeout", "success"]) {
+      await t.test(mode, async (t) => {
+        const directory = await temporaryDirectory(t, "oce-codex-catalog-group-");
+        const pidFile = join(directory, "pids.json");
+        let pids;
+        t.after(() => {
+          for (const pid of Object.values(pids ?? {})) {
+            try {
+              process.kill(pid, "SIGKILL");
+            } catch {
+              /* already stopped */
+            }
+          }
+        });
+        const binary = join(directory, "binary.mjs");
+        await writeFile(
+          binary,
+          `
+import { writeFileSync, renameSync } from "node:fs";
+import { createInterface } from "node:readline";
+process.on("SIGTERM", () => {});
+writeFileSync(${JSON.stringify(`${pidFile}.tmp`)}, JSON.stringify({ launcher: process.ppid, binary: process.pid }));
+renameSync(${JSON.stringify(`${pidFile}.tmp`)}, ${JSON.stringify(pidFile)});
+createInterface({ input: process.stdin }).on("line", line => {
+  const request = JSON.parse(line);
+  if (${JSON.stringify(mode)} !== "success" || !request.id) return;
+  const result = request.method === "account/read" ? { account: { type: "chatgpt" } } : request.method === "plugin/list" ? { marketplaces: [] } : {};
+  console.log(JSON.stringify({ id: request.id, result }));
+});
+setInterval(() => {}, 1000);
+`,
+        );
+        const executable = join(directory, "codex.mjs");
+        await writeFile(
+          executable,
+          `#!/usr/bin/env node
+import { spawn } from "node:child_process";
+const child = spawn(process.execPath, [${JSON.stringify(binary)}], { stdio: "inherit" });
+process.on("SIGTERM", () => {
+  if (${JSON.stringify(mode)} === "abort-forward") child.kill("SIGTERM");
+  else process.exit(0);
+});
+child.on("exit", () => process.exit(0));
+`,
+        );
+        await chmod(executable, 0o755);
+        const controller = new AbortController();
+        const driver = new CodexPluginDriver({
+          codexExecutable: executable,
+          codexHome: directory,
+          requestTimeoutMs: 5_000,
+        });
+        const listed = driver.listCatalog({ ...context("dedicated"), signal: controller.signal });
+        listed.catch(() => {});
+        pids = await waitFor(
+          "the launched binary to install its termination handler",
+          () => readFile(pidFile, "utf8").then(JSON.parse, () => undefined),
+          30_000,
+        );
+        if (mode.startsWith("abort")) {
+          controller.abort();
+        }
+        if (mode === "success") {
+          assert.deepEqual(await listed, []);
+        } else {
+          await assert.rejects(listed, mode === "timeout" ? /timed out/ : /aborted/);
+        }
+        await waitUntil(
+          "both catalog processes to stop",
+          () =>
+            Object.values(pids).every((pid) => {
+              try {
+                process.kill(pid, 0);
+              } catch {
+                return true;
+              }
+              // An orphan may briefly remain a zombie before the host's init reaps it.
+              try {
+                return execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" })
+                  .trim()
+                  .startsWith("Z");
+              } catch {
+                return true;
+              }
+            }),
+          { timeoutMs: 5_000, intervalMs: 50 },
+        );
+      });
+    }
+  },
+);
 
 test("Codex native catalog rejects a non-object response without escaping discovery", async (t) => {
   const directory = await temporaryDirectory(t, "oce-codex-catalog-shape-");

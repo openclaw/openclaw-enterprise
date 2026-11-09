@@ -52,10 +52,11 @@ drivers:
         requestTimeoutMs: 10000
 ```
 
-Supply `codexExecutable` and `codexHome` together. Provision that home with Codex
-backend authentication, separately from the operator's ordinary profile.
-`requestTimeoutMs` defaults to 10,000 milliseconds and accepts 1–60,000.
-This reader starts native app-server, calls `plugin/list`, and may update its cache.
+`codexExecutable` and `codexHome` are paired; authenticate this separate home.
+`requestTimeoutMs`: 1–60,000 milliseconds, default 10,000. `plugin/list` may update
+its cache. Settlement closes pipes. POSIX sends the owned group SIGTERM, then
+SIGKILL after one second despite launcher exit. Windows terminates only the direct
+child. Descendants leaving the group are excluded.
 
 In hosted mode, Create Agent discovery hydrates entered PAT identity and reads GLOBAL
 plugin-service pages of up to 20 entries, fetching tools on demand. A

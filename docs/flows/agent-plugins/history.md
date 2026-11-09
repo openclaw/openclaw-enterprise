@@ -4,9 +4,14 @@ published: false
 
 # Agent plugin deployment documentation history
 
+- 2026-10-28 14:40: Trace worker installation and discovery of Slack MCP tools. (authoring-run/55da35a7-f123-436e-9c32-65036b85894d - 0ba3c0fd5a26a82dba6551f04b74a697c5324fdd)
+
 This record preserves the dated changes to the Agent plugin deployment flow. See the [parent flow](../agent-plugins.md) for its context and overall sequence.
 
 ## Changelog
+
+- 2026-10-31 05:52: Classify native install failures. (authoring-run/86b48c89-0c80-493f-b48a-6999988d4766 - 6d941c15081e95ef36b4ba1ffbbbc0b117972c0a)
+- 2026-10-31 03:36: Restore experimental plugin search with the upstream Codex version. (authoring-run/dc99918c-2f5c-4141-bffd-b216830017d0 - 25364fcfdc905e95b5a813a6cd7b2de47b66ca71)
 
 - 2026-10-31 03:03: Resolve plugins through the pinned catalog API with these changes. (authoring-run/19fe4474-0b66-462e-9fcd-5afe08fe9c8a - d10715a3d0dfef7592ca35efebed0b3c6867c7ab)
 
