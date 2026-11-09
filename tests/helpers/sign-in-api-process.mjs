@@ -1,11 +1,7 @@
 import { once } from "node:events";
 import { mock } from "node:test";
 import { scryptPasswordHasher } from "../../apps/controller/src/auth/index.ts";
-import {
-  composeProductionSignIn,
-  githubUpgradeSettings,
-  startFakeGitHub,
-} from "./production-sign-in.mjs";
+import { composeProductionSignIn, oidcUpgradeSettings, fakeOidc } from "./production-sign-in.mjs";
 
 // This child has its own production API and PostgreSQL pools. Only the external
 // provider transport and unused infrastructure Drivers come from the sign-in fixture.
@@ -35,10 +31,22 @@ process.once("SIGTERM", () => void close());
 process.once("disconnect", () => void close());
 try {
   const [input] = await once(process, "message");
-  await startFakeGitHub(context);
+  const idp = fakeOidc(context, {
+    clientId: input.secrets["occ-oidc-login/client-id"],
+    clientSecret: input.secrets["occ-oidc-login/client-secret"],
+  });
+  process.on("message", (message) => {
+    if (message.type === "authorize") {
+      process.send({
+        type: "code",
+        id: message.id,
+        code: idp.authorize(message.url, { subject: "9400011" }),
+      });
+    }
+  });
   const app = await composeProductionSignIn(context, {
     databaseUrl: input.databaseUrl,
-    settings: githubUpgradeSettings(input.recoveryUserId),
+    settings: oidcUpgradeSettings(input.recoveryUserId),
     secrets: input.secrets,
     passwordHasher: scryptPasswordHasher,
   });

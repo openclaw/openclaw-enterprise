@@ -21,7 +21,7 @@ browser onboarding and reopening the same conversation.
 
 ## Production requirements
 
-- Use password or OIDC sign-in. Native access remains unavailable with GitHub or Google; see [authentication limits](../../reference/agent-native-admin.md#who-can-open-it).
+- Use password or OIDC sign-in. Native access remains unavailable with Google; see [authentication limits](../../reference/agent-native-admin.md#who-can-open-it).
 - Private workspace routing already works for the target Agents. Private routing is enabled by default, but its controllers, GatewayClass, service-key Secret, and matching Installation settings must be ready. Helm rejects an explicit routing opt-out while native admin is enabled.
 - A public wildcard DNS name and HTTPS certificate route traffic to the OCC API Service, not to Envoy. Use a previously unused `agentNativeAdmin.domain` for the first pilot rollout; do not reuse a domain from prior native UI experiments because OCC does not evict already registered browser service workers.
 - The configured Agent domain is separate from the console host and does not include a wildcard, scheme, port, or path.
@@ -76,7 +76,7 @@ spec:
 
 The API refuses protected requests carrying `X-Forwarded-*` or `X-Real-IP`
 headers, which ingress-nginx adds, unless the sender is a trusted proxy: set
-[`api.trustedProxy`](../../reference/settings/production.md#github-sign-in-and-trusted-proxies)
+[`api.trustedProxy`](../../reference/settings/production.md#external-sign-in-and-trusted-proxies)
 to preset `ingress-nginx` with the ingress-nginx Pod CIDR (profile installs:
 [`controlPlane.trustedProxy`](installation-profiles.md#external-sign-in-and-trusted-proxies)),
 or strip those headers at the ingress.

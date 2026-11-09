@@ -1,6 +1,6 @@
 # Maintain external sign-in with the API stopped
 
-Use `pnpm auth:maintain` when external sign-in (GitHub, Google, or OIDC) needs a change the online API
+Use `pnpm auth:maintain` when external sign-in (Google or OIDC) needs a change the online API
 cannot make: the recovery administrator is locked out, an account was never
 enrolled, sessions must be ended at once, or the Installation must return to
 password-only sign-in. `purge-sessions` also works on a password-only
@@ -219,13 +219,11 @@ accounts' passwords instead, so they still cannot sign in. Deactivation also
 removes the database fence on unbound sessions, so the older image and plain
 password sign-in work again.
 
-Then, in the protected values, set `auth.github.enabled`, `auth.google.enabled`,
-and `auth.oidc.enabled` all to `false`, clear both `auth.oidc.caSecretName` and
+Then, in the protected values, set `auth.google.enabled` and `auth.oidc.enabled` to `false`, clear both `auth.oidc.caSecretName` and
 `auth.oidc.caSecretKey`, remove `auth.recoveryUserId`, and reset
 `auth.passwordSignIn` to `all`. Run `helm upgrade`, which also restores the
-replicas. Without Helm, remove every `OCC_AUTH_GITHUB_*`, `OCC_AUTH_GOOGLE_*`,
-and `OCC_AUTH_OIDC_*` variable (including `OCC_AUTH_GITHUB_RECOVERY_USER_ID`) and
-`OCC_AUTH_PASSWORD_SIGN_IN` from the API environment before scaling it up. If any
+replicas. Without Helm, remove every `OCC_AUTH_GOOGLE_*` and `OCC_AUTH_OIDC_*` variable,
+`OCC_AUTH_RECOVERY_USER_ID`, and `OCC_AUTH_PASSWORD_SIGN_IN` from the API environment before scaling it up. If any
 provider is still configured, startup activates the profile again.
 
 Activating again later, at startup or with `activate`, enrolls every account

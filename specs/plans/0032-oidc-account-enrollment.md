@@ -5,7 +5,7 @@ rfc: ../rfcs/0032-oidc-account-enrollment.md
 # Implementation plan: OIDC account enrollment
 
 - **ID:** RFC-0032
-- **Delivery status:** Planned
+- **Delivery status:** In progress
 - **Authority:** [OIDC account enrollment](../rfcs/0032-oidc-account-enrollment.md)
 - **Source baseline:** `origin/main`, refreshed before implementation on 2026-11-09.
 
@@ -37,16 +37,34 @@ Keep existing account attachment explicit and preserve repository credentials.
 
 | Required outcome | Proof | Status |
 | --- | --- | --- |
-| Enrollment and initial access | Real callback, PostgreSQL, native IAM and Agent API integration | Not run |
-| Configuration and retirement | Helm/profile checks, API generation and retired-input rejection | Not run |
-| Generic OIDC chat | Explicitly attached default user, browser sign-in and real model reply | Not run |
-| GitHub through OIDC chat | Real broker sign-in, qualified membership claim, same account and model reply | Not run |
-| Quality and documentation | Typecheck, lint, formatting, workspace, docs and independent review | Not run |
+| Enrollment and initial access | Real callback, PostgreSQL, native IAM and Agent API integration | 14 focused checks pass; full authentication lane passed 172 checks before this expansion |
+| Configuration and retirement | Helm/profile checks, API generation and retired-input rejection | Profile and transport checks pass; 20 chart checks pass; final packaging check pending |
+| Generic OIDC chat | Explicitly attached default user, browser sign-in and real model reply | Login and Agent creation pass; model reply timed out; diagnosis in progress |
+| GitHub through OIDC chat | Real broker sign-in, qualified membership claim, same account and model reply | Test app created; live validation in progress |
+| Quality and documentation | Typecheck, lint, formatting, workspace, docs and independent review | Static checks pass; independent review incomplete and must be repeated |
 
 ## Delivery record
 
-Implementation and acceptance verification are pending. Missing live prerequisites
+Implementation is in progress. Live acceptance and independent review remain pending. Missing live prerequisites
 must remain explicit gaps; fixture results do not establish live acceptance.
+
+## Test retention audit
+
+The direct GitHub browser consumer is removed. Repository credential consumers
+remain unchanged. Reviewed history includes the original team-enrollment change
+`bfc205fd1`, shared result handling `b6a07b787`, and OIDC chat `5cf15141c`.
+
+| Previous test | Disposition and remaining proof |
+| --- | --- |
+| `github-login-transport.test.mjs`: transport and allowlist cases | Delete retired GitHub HTTP/allowlist behavior. Google/OIDC transport cases retain deadlines, bounded bodies, token validation and shared admission. Move “guarded adapter never lists, counts or mutates raw session rows” unchanged to Google coverage. |
+| `postgres-github-org-allowlist.test.mjs`: org/team denial | Delete direct membership lookup coverage; signed-claim admission now belongs to `postgres-oidc-enrollment.test.ts`. Live broker qualification separately checks its GitHub membership source. |
+| `postgres-github-team-enrollment.test.ts`: account/Group creation | Replace with OIDC enrollment coverage for exact identity, verified profile, conflict, scoped initial grants, Groups, concurrency, rollback and stale attempts. |
+| `postgres-github-sign-in.test.mjs`: existing-account Console sign-in | Existing OIDC and Google suites retain callback, session, account, transport and recovery behavior. The real OIDC Agent journey covers browser adoption and chat. |
+| `postgres-github-tab-binding.test.mjs` | Remove the duplicate shared tab-binding invocation; retain `postgres-oidc-tab-binding.test.mjs`. |
+| GitHub-named account scope, attach, cookie commit, outage and recovery tests | Preserve the scenarios through OIDC; keep shared cookie behavior in `postgres-human-session-cookie.test.mjs`. |
+
+Run the `postgres-auth` lane and Google/OIDC transport files for these changes.
+Fixture provider responses prove controller behavior, not live membership or chat.
 
 ## Manual Notes
 

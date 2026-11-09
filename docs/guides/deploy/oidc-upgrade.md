@@ -1,14 +1,8 @@
----
-status: Proposed
----
+# Upgrade from direct GitHub sign-in to OIDC
 
-# Plan an upgrade from direct GitHub sign-in to OIDC
-
-This is a draft upgrade procedure for
-[RFC-0032](../../../specs/rfcs/0032-oidc-account-enrollment.md).
-The enrollment configuration and retirement described there are not implemented.
-Use this page to prepare and review the upgrade; execute the target-release steps
-only after the release documents support and the procedure is qualified.
+Follow this procedure before installing a release that replaces direct GitHub
+sign-in with [OIDC enrollment](../../reference/authentication/team-enrollment.md).
+Qualify the selected broker before reopening access.
 
 The outcome is one OCE account per existing person, with the same user ID,
 Principal, resource ownership, and grants. OIDC sign-in must work before removing
@@ -37,7 +31,7 @@ Group memberships through OIDC enrollment.
 ## Qualify membership mapping and freshness
 
 Configure the IdP to emit custom admission values in the ID token's `groups`
-array. For example, this proposed enrollment rule admits members of one team:
+array. For example, this enrollment rule admits members of one team:
 
 ```yaml
 admission:
@@ -97,7 +91,7 @@ that Group supplies all required grants. Otherwise select an existing Role and
 its explicit scope. Initial Roles apply only to newly created accounts; they do
 not replace existing users' grants. Review direct and Group grants together.
 
-Apply these proposed target-release changes in the stopped upgrade window:
+Apply these target-release changes in the stopped upgrade window:
 
 | Existing input or behavior                                                                                | Target release                                                                                                       |
 | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |

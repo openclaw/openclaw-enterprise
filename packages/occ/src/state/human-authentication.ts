@@ -8,6 +8,7 @@ import {
 import type { PlatformUnitOfWork } from "./platform-state.ts";
 import type { PersistedNativeIAMPrincipalSeed, PostgresPlatformState } from "./postgres-state.ts";
 import type { AuditEvent } from "@openclaw-enterprise/contracts";
+import type { AccountEnrollmentRole } from "@openclaw-enterprise/iam";
 
 export interface HumanAuthenticationActor {
   readonly userId: string;
@@ -91,8 +92,6 @@ export type HumanAuthenticationDenial =
   | "EXTERNAL_IDENTITY_REJECTED"
   | "SESSION_REJECTED"
   | "PROVIDER_UNAVAILABLE"
-  | "MEMBERSHIP_REQUIRED"
-  | "MEMBERSHIP_UNAVAILABLE"
   | "ACCOUNT_DISABLED";
 
 /**
@@ -211,7 +210,7 @@ const userColumns = `u.id AS user_id, u.email, u.name, u.email_verified, u.image
 export interface PostgresHumanAuthenticationOptions {
   /**
    * Provider instance IDs of the external sign-in providers configured now (for example
-   * `github:<client id digest>` or `oidc:<issuer and client id digest>`). A session signed in
+   * `google:<client id digest>` or `oidc:<issuer and client id digest>`). A session signed in
    * through an external method of any other instance does not authenticate. Absent means no
    * external provider is configured: only password sessions authenticate.
    */
@@ -607,11 +606,61 @@ export class PostgresHumanAuthentication {
     }
   }
 
-  /** Enrolls a provider-verified identity into an operator-selected native IAM Group. */
+  async validateEnrollment(input: {
+    readonly groupIds: readonly string[];
+    readonly role: AccountEnrollmentRole | null;
+  }): Promise<void> {
+    await this.state.transact((unit) => this.holdEnrollmentPolicy(unit, input));
+  }
+
+  private async holdEnrollmentPolicy(
+    unit: PlatformUnitOfWork,
+    input: {
+      readonly groupIds: readonly string[];
+      readonly role: AccountEnrollmentRole | null;
+    },
+  ): Promise<void> {
+    // Serialize reference checks with configured policy replacement.
+    await unit.installations.holdIAMConfiguration("shared");
+    for (const groupId of input.groupIds) {
+      const [group] = await this.query(
+        unit,
+        "SELECT id FROM occ.iam_groups WHERE id = $1 AND namespace_id IS NULL",
+        [groupId],
+      );
+      if (group === undefined) {
+        throw new ScopeViolationError("Enrollment requires existing Installation Groups.");
+      }
+    }
+    if (input.role !== null) {
+      const [role] = await this.query(
+        unit,
+        "SELECT id FROM occ.iam_roles WHERE id = $1 AND namespace_id IS NULL",
+        [input.role.id],
+      );
+      if (role === undefined) {
+        throw new ScopeViolationError("Enrollment requires an existing Installation Role.");
+      }
+      if (typeof input.role.scope === "object") {
+        const [namespace] = await this.query(
+          unit,
+          "SELECT id FROM occ.namespaces WHERE id = $1 AND deleted_at IS NULL FOR SHARE",
+          [input.role.scope.namespaceId],
+        );
+        if (namespace === undefined) {
+          throw new ScopeViolationError("Enrollment requires an existing Namespace.");
+        }
+      }
+    }
+  }
+
+  /** Enrolls a verified identity and its operator-selected native IAM grants atomically. */
   async enrollExternal(input: {
     readonly providerId: string;
     readonly subject: string;
-    readonly groupId: string;
+    readonly groupIds: readonly string[];
+    readonly role: AccountEnrollmentRole | null;
+    readonly policyId?: string | undefined;
     readonly attemptCreatedAt: Date;
     readonly account?: {
       readonly prepared: PreparedPasswordAccount;
@@ -631,16 +680,7 @@ export class PostgresHumanAuthentication {
           input.subject,
         ]),
       ]);
-      const [group] = await this.query(
-        unit,
-        "SELECT id FROM occ.iam_groups WHERE id = $1 AND namespace_id IS NULL",
-        [input.groupId],
-      );
-      if (group === undefined) {
-        throw new ScopeViolationError(
-          "Automatic enrollment requires an existing Installation Group.",
-        );
-      }
+      await this.holdEnrollmentPolicy(unit, input);
       const [method] = await this.query(
         unit,
         "SELECT user_id, identity_only FROM occ.account WHERE provider_id = $1 AND account_id = $2",
@@ -663,9 +703,19 @@ export class PostgresHumanAuthentication {
           return undefined;
         }
         const { prepared, seed } = input.account;
-        // The configured Group owns grants; enrollment must not introduce another grant.
-        if (seed.roles.length !== 0 || seed.bindings.length !== 0) {
-          throw new ScopeViolationError("Automatic enrollment cannot create IAM grants.");
+        if (seed.roles.length !== 0 || seed.bindings.length !== (input.role === null ? 0 : 1)) {
+          throw new ScopeViolationError("Enrollment may bind only its selected initial Role.");
+        }
+        for (const binding of seed.bindings) {
+          const scope = input.role!.scope;
+          if (
+            binding.roleId !== input.role!.id ||
+            binding.namespaceId !== (typeof scope === "object" ? scope.namespaceId : undefined) ||
+            binding.resourceKind !== (scope === "installation" ? "installation" : undefined) ||
+            binding.resourceId !== (scope === "installation" ? this.installationId : undefined)
+          ) {
+            throw new ScopeViolationError("The enrollment binding does not match its policy.");
+          }
         }
         await this.insertPasswordAccount(unit, prepared, seed, undefined, input, seed.principal.id);
         // Only this transaction's newly created identity can precede the currentness fence.
@@ -679,24 +729,39 @@ export class PostgresHumanAuthentication {
           userId: prepared.id,
           providerId: input.providerId,
           subject: input.subject,
+          policyId: input.policyId,
+          role: input.role,
         });
+        for (const binding of seed.bindings) {
+          await this.audit(unit, "openclaw.iam.access_bindings.create", seed.principal.id, {
+            bindingId: binding.id,
+            subjectId: seed.principal.id,
+            roleId: binding.roleId,
+            scope: input.role!.scope,
+            policyId: input.policyId,
+            reason: "oidc_enrollment",
+          });
+        }
       }
       if (snapshot === undefined || "disabled" in snapshot) {
         return snapshot;
       }
-      const [membership] = await this.query(
-        unit,
-        `INSERT INTO occ.iam_group_memberships (namespace_id, group_id, principal_id)
+      for (const groupId of input.groupIds) {
+        const [membership] = await this.query(
+          unit,
+          `INSERT INTO occ.iam_group_memberships (namespace_id, group_id, principal_id)
          VALUES (NULL, $1, $2) ON CONFLICT (group_id, principal_id) DO NOTHING RETURNING group_id`,
-        [input.groupId, snapshot.proof.principalId],
-      );
-      if (membership !== undefined) {
-        await this.audit(unit, "authentication.group.enrol", snapshot.proof.principalId, {
-          userId: snapshot.user.id,
-          groupId: input.groupId,
-          providerId: input.providerId,
-          subject: input.subject,
-        });
+          [groupId, snapshot.proof.principalId],
+        );
+        if (membership !== undefined) {
+          await this.audit(unit, "authentication.group.enrol", snapshot.proof.principalId, {
+            userId: snapshot.user.id,
+            groupId,
+            providerId: input.providerId,
+            subject: input.subject,
+            policyId: input.policyId,
+          });
+        }
       }
       return snapshot;
     });
@@ -837,7 +902,6 @@ export class PostgresHumanAuthentication {
     audit?: {
       readonly provider: string;
       readonly subject: string;
-      readonly login?: string | undefined;
       readonly attemptId: string;
     },
     resultAttemptId?: string,
@@ -855,7 +919,6 @@ export class PostgresHumanAuthentication {
         audit.subject !== proof.subject ||
         audit.subject.length === 0 ||
         audit.subject.length > 255 ||
-        (audit.login !== undefined && !/^[A-Za-z0-9-]{1,39}$/.test(audit.login)) ||
         !/^[A-Za-z0-9_-]{43}$/.test(audit.attemptId))
     ) {
       throw new ScopeViolationError("The authentication audit identity is invalid.");
@@ -1574,17 +1637,14 @@ export class PostgresHumanAuthentication {
   /** Records a matched sign-in refusal without treating provider profile data as authority. */
   async recordDenied(
     reason: HumanAuthenticationDenial,
-    provider?: "github" | "google" | "oidc",
+    provider?: "google" | "oidc",
     identity?: {
       readonly subject?: string;
       readonly userId?: string;
-      readonly login?: string | undefined;
     },
     audit?: { readonly attemptId: string },
   ): Promise<void> {
-    const membership = reason === "MEMBERSHIP_REQUIRED" || reason === "MEMBERSHIP_UNAVAILABLE";
     const subject = identity?.subject;
-    const login = identity?.login;
     const userId = identity?.userId;
     if (
       ![
@@ -1592,25 +1652,17 @@ export class PostgresHumanAuthentication {
         "EXTERNAL_IDENTITY_REJECTED",
         "SESSION_REJECTED",
         "PROVIDER_UNAVAILABLE",
-        "MEMBERSHIP_REQUIRED",
-        "MEMBERSHIP_UNAVAILABLE",
         "ACCOUNT_DISABLED",
       ].includes(reason) ||
-      (provider !== undefined && !["github", "google", "oidc"].includes(provider)) ||
+      (provider !== undefined && !["google", "oidc"].includes(provider)) ||
       (audit !== undefined &&
         (provider === undefined || !/^[A-Za-z0-9_-]{43}$/.test(audit.attemptId))) ||
-      (subject !== undefined && (provider !== "github" || !/^[1-9][0-9]{0,19}$/.test(subject))) ||
-      (login !== undefined && (subject === undefined || !/^[A-Za-z0-9-]{1,39}$/.test(login))) ||
-      (membership && subject === undefined) ||
+      (subject !== undefined &&
+        (provider === undefined || !/^[\x21-\x7E]{1,255}$/.test(subject))) ||
       (userId !== undefined && (reason !== "ACCOUNT_DISABLED" || !userId)) ||
       (reason === "ACCOUNT_DISABLED" && (provider === undefined || userId === undefined)) ||
       (identity !== undefined &&
-        ![
-          "MEMBERSHIP_REQUIRED",
-          "MEMBERSHIP_UNAVAILABLE",
-          "EXTERNAL_IDENTITY_REJECTED",
-          "ACCOUNT_DISABLED",
-        ].includes(reason))
+        !["EXTERNAL_IDENTITY_REJECTED", "ACCOUNT_DISABLED"].includes(reason))
     ) {
       throw new ScopeViolationError("The authentication denial classification is invalid.");
     }
@@ -1632,7 +1684,6 @@ export class PostgresHumanAuthentication {
               details: {
                 provider,
                 ...(subject === undefined ? {} : { subject }),
-                ...(login === undefined ? {} : { login }),
                 ...(userId === undefined ? {} : { userId }),
                 ...audit,
               },

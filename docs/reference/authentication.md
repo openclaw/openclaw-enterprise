@@ -2,7 +2,7 @@
 
 OpenClaw Control Plane (OCC) authenticates human controller API clients with
 user sessions established through email/password sign-in or an enrolled
-GitHub, Google or OIDC identity. GitHub can use opt-in
+Google or OIDC identity. OIDC supports opt-in
 [team enrollment](authentication/team-enrollment.md). Programmatic non-Agent automation authenticates with service
 API keys. Better Auth owns
 password verification, revocable session cookies, and hashed API-key storage.
@@ -97,11 +97,11 @@ not require Origin, and an invalid key never falls back to a session cookie.
 
 ## Session lifecycle
 
-| Operation                      | Supported behavior                                                                                                                                                                             |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /api/auth/sign-in/email` | Verifies an existing account's email and password and issues a session cookie. The JSON response confirms authentication, and with GitHub enabled returns `sessionKey`, never a session token. |
-| `GET /api/auth/session`        | Returns safe account identity and a noncredential `sessionKey`, or `data: null` without a valid session.                                                                                       |
-| `POST /api/auth/sign-out`      | Revokes the current session. Protected API requests using that session subsequently return `401`.                                                                                              |
+| Operation                      | Supported behavior                                                                                                                                                                                       |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/auth/sign-in/email` | Verifies an existing account's email and password and issues a session cookie. The JSON response confirms authentication, and with external sign-in enabled returns `sessionKey`, never a session token. |
+| `GET /api/auth/session`        | Returns safe account identity and a noncredential `sessionKey`, or `data: null` without a valid session.                                                                                                 |
+| `POST /api/auth/sign-out`      | Revokes the current session. Protected API requests using that session subsequently return `401`.                                                                                                        |
 
 Human-session Namespace IAM writes retain assigning authority through their transaction; see
 [Sharing commit guarantees](authorization.md#manage-namespace-policy).
@@ -118,7 +118,7 @@ storage failure returns `503 DEPENDENCY_UNAVAILABLE` without clearing the cookie
 retry sign-out after storage recovers.
 
 Password-only sessions expire seven days after sign-in; use does not extend
-them. With GitHub, Google or OIDC sign-in enabled, every session expires after
+them. With Google or OIDC sign-in enabled, every session expires after
 eight hours ([session controls](authentication/external-sign-in.md#session-and-recovery-controls)).
 Password-only has no online way to end another account's session: removing its
 IAM bindings and Group memberships refuses permissioned requests from the next
@@ -138,7 +138,7 @@ credential checks can create a session and cookie, but HTTP session inspection
 returns `500 INTERNAL_ERROR`, not usable-session proof.
 
 In both profiles, after 10 failed sign-ins per minute per email, or 20
-per client address with [`api.trustedProxy`](settings/production.md#github-sign-in-and-trusted-proxies),
+per client address with [`api.trustedProxy`](settings/production.md#external-sign-in-and-trusted-proxies),
 attempts wait 1–8 s and return `429` with `Retry-After`, repeated in the message, whether
 or not the email exists; an Installation administrator's correct password still signs in, and so does
 the recovery account's with an external provider. Successful sign-ins spend nothing. Without
@@ -214,9 +214,9 @@ Protected requests resolve the current stored session with cookie caching
 disabled. A missing, expired, revoked, or forged session is rejected, as is an
 `Authorization` header even alongside a session cookie.
 
-## GitHub sign-in for existing accounts
+## External sign-in for existing accounts
 
-An Installation can let enrolled existing accounts sign in with GitHub, Google or one
+An Installation can let enrolled existing accounts sign in with Google or one
 generic OIDC issuer.
 [External sign-in and account controls](authentication/external-sign-in.md)
 defines the single-controller profile, provider flow, session binding, the
@@ -238,7 +238,7 @@ missing or unrelated hosts, public suffixes, and malformed DNS names. For
 Every host that receives this domain cookie must be a trusted OCE ingress
 endpoint. Public preview hosts must remain outside it. The cookie uses
 `__Secure-openclaw_occ_shared.session_token`, `Secure`, `HttpOnly`, `Path=/`,
-and the existing SameSite and CSRF protections. Password, OIDC, GitHub and Google
+and the existing SameSite and CSRF protections. Password, OIDC and Google
 sign-in share this format. Duplicate session-cookie values are rejected.
 
 Sign-out revokes the current session and expires its shared cookie. OCE does not
@@ -257,9 +257,9 @@ activity does not renew the console session.
 ## Account provisioning
 
 `POST /api/auth/accounts` requires a human session and `administer` on the
-singleton Installation, and stays available with GitHub sign-in enabled. One
-transaction writes the account, Principal, grant, enrollment and an optional
-`"github":{"subject":"<numeric id>"}` identity (`409` if GitHub is off or taken).
+singleton Installation. One transaction writes the account, Principal, grant and
+enrollment. Attach an external identity explicitly after creation. Unknown
+identities can instead use [OIDC enrollment](authentication/team-enrollment.md).
 
 An optional `roleId` binds an existing Installation Role (`400` if unknown,
 Namespace-scoped, or a configured `role_config_` Role); without one the account

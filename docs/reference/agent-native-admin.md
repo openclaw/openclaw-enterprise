@@ -9,7 +9,7 @@ The console’s Agent browser surface requires a human session and exact Agent
 `administer` retains administration access and takes precedence when both are
 granted. Agent `read` alone and service API keys grant neither mode.
 
-Password and OIDC sign-in can use native browser access. GitHub and Google
+Password and OIDC sign-in can use native browser access. Google
 sign-in still reject native access enablement. All providers use the same
 [shared session cookie](authentication.md#native-admin-shared-sessions).
 

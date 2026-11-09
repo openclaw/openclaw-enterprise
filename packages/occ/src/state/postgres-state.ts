@@ -1519,12 +1519,14 @@ export class PostgresPlatformState implements PlatformStateStore {
       if (
         binding.subjectKind !== "identity" ||
         binding.subjectId !== seed.principal.id ||
-        binding.resourceKind !== "installation" ||
-        binding.resourceId !== installation.id ||
-        binding.namespaceId !== undefined
+        (binding.resourceKind !== undefined &&
+          (binding.resourceKind !== "installation" ||
+            binding.resourceId !== installation.id ||
+            binding.namespaceId !== undefined)) ||
+        (binding.resourceKind === undefined && binding.resourceId !== undefined)
       ) {
         throw new ScopeViolationError(
-          "Account provisioning requires an exact Installation binding.",
+          "Account provisioning requires a supported initial Role binding.",
         );
       }
     }
@@ -1548,7 +1550,7 @@ export class PostgresPlatformState implements PlatformStateStore {
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
           binding.id,
-          null,
+          binding.namespaceId ?? null,
           binding.subjectId,
           null,
           binding.roleId,
