@@ -124,7 +124,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       });
       // Only Docker's step identity is public; command arguments and arbitrary
       // container output can contain credentials and terminal control sequences.
-      const buildTail = `#9 [9/9] RUN partial line\n#1 [1/4] FROM ${privateUrl}\n#1 DONE 0.1s\n#2 [2/4] RUN fetch ${privateUrl}\n#2 0.1 private build output\n#3 [3/4] COPY \u001b[31mprivate terminal text\n`;
+      const buildTail = `#9 [9/9] RUN partial line\n#1 [1/4] FROM ${privateUrl}\r\n#1 DONE 0.1s\r\n#2 [2/4] RUN fetch ${privateUrl}\n#2 0.1 progress\r#2 DONE\n#2 0.1 private build output\n#3 [3/4] COPY \u001b[31mprivate terminal text\n`;
       // Clipping lands inside the first line, immediately before a valid-looking
       // step prefix. Neither that fragment nor the control-bearing step is evidence.
       const buildOutput = `prefix${buildTail}${"x".repeat(32_768 - buildTail.length)}`;

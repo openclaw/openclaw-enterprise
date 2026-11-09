@@ -2167,11 +2167,13 @@ function fixtureBuildProgress(error) {
       continue;
     }
     const start = Math.max(0, output.length - 32_768);
-    const lines = output.slice(start).split(/[\r\n]/);
-    if (start > 0 && !/[\r\n]/.test(output[start - 1])) {
+    const lines = output.slice(start).split("\n");
+    if (start > 0 && output[start - 1] !== "\n") {
       lines.shift();
     }
-    for (const line of lines) {
+    for (const [index, rawLine] of lines.entries()) {
+      const line =
+        index < lines.length - 1 && rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
       if (/\p{Cc}/u.test(line)) {
         continue;
       }

@@ -100,7 +100,7 @@ its last signal, including when preparation receives SIGINT cancellation; after
 it exits, preparation sends no further group signals. Windows retains direct-child
 termination. A failed build reports up to eight numbered FROM, RUN or COPY steps
 and their reported completion states from the last 32,768 characters of each captured stream.
-Arguments, container output and arbitrary error text are omitted. This partial
+The step summary omits arguments, container output and arbitrary error text. This partial
 summary identifies steps in the fixture Dockerfile; it does not establish the
 current build phase or cause of a stall. The timeout keeps its concise stage error
 and original cause. The owned image tag is recorded before
