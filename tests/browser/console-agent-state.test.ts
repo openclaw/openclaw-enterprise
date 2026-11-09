@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import type { Page, Locator, Route } from "playwright";
+import type { Page, Route } from "playwright";
 import {
   serializeStartupConfiguration,
   type AuditEvent,
