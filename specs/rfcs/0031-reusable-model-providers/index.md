@@ -22,9 +22,21 @@ The admin selects a compatible Connection Template or creates one inline. Today 
 
 ![Create Agent mockup showing provider and Harness first, authentication and credential next, and model last](agent-selection.png)
 
+## Data model
+
+The Installation can offer several providers. One Agent selects **Internal vLLM** and another selects **OpenAI**. Each Agent stores a provider reference. The Harness gets its routing configuration from the selected provider. The credential gets its allowed request from the approved template version, so **Create Agent** can drop the **Authorized base URL** field.
+
+| Record               | What it owns                                                                                                                                                                                                                                  |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Model Provider (new) | Stable ID, display name, inference base URL, API format, supported models, optional default model ID, and a Connection Template reference. Model IDs are local to the provider. Each entry owns its model metadata.                           |
+| Connection Template  | A new static-key variant specifies bearer authentication and the allowed destinations and operations. Saving the template creates a version the credential owner can approve.                                                                 |
+| Namespace credential | A Credential Source references the Secret that holds the key and the template version approved for that key. Multiple credentials can use the same template.                                                                                  |
+| Agent draft          | A new provider reference selects the route. Agent Configuration selects the model ID, and the existing `harnessAuth` binding selects the Credential Source the Agent may use.                                                                 |
+| Agent revision       | Records the selected provider ID and the admitted credential binding. Its Harness settings snapshot holds the resolved URL and protocol. Its Configuration snapshot holds the selected model and metadata. Recovery reads these saved values. |
+
 ## Deploy through the existing revision flow
 
-On first and later deployments, the Agent identifies its provider and model. To use a different endpoint, the creator selects another provider. OpenClaw Control Plane resolves the selected provider’s URL and protocol into the existing [Harness provider settings](../../../docs/reference/drivers/kubernetes-compute/model-provider.md) and saves them with the Agent revision. Recovery uses that snapshot. The current **Authorized base URL** field on Create Agent controls where the key may be sent. With a saved provider, the credential’s approved Connection Template supplies that restriction. Admission checks the [credential binding](../../../docs/reference/credential-sources.md) against the selected endpoint, so the creator has no URL to enter or override. The selected model and its metadata remain in Agent Configuration.
+OpenClaw Control Plane resolves the provider reference into the existing [Harness provider settings](../../../docs/reference/drivers/kubernetes-compute/model-provider.md). Compute translates those settings into the native Codex or OpenClaw configuration. Admission checks the selected model against the provider catalog and the resolved route against the [credential binding](../../../docs/reference/credential-sources.md). For example, if an Agent switches from an internal endpoint to OpenAI but keeps a key approved only for the internal endpoint, admission refuses the deployment before either endpoint receives the key.
 
 For a private endpoint, Compute also configures the network access the trusted sender needs, within Installation policy. The sender checks the actual destination and operation before adding the key. Editing the provider or template cannot authorize an existing key for a new destination or operation. A running revision keeps its original settings.
 
