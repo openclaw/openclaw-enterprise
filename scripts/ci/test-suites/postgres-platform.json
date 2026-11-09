@@ -3,6 +3,7 @@
     "postgres": true,
     "requiresPreparedStateForFile": true
   },
+  "optionalEnv": ["OCC_TEST_STANDING_GIT_CODEX", "OCC_TEST_REQUIRE_STANDING_GIT_CONVERSATION"],
   "fileConcurrency": 4,
   "parallelFiles": [
     "tests/integration/postgres-password-sign-in-limit.test.mjs",
@@ -376,6 +377,7 @@
       "expectedTests": [
         "only the installed Git recipient owner may use its material or retire its ended admission",
         "changing between repository and installation scope waits for the previous owner to settle its token",
+        "OpenShell preparation refuses historical custody and preserves v6 observed-hook custody",
         "selected repository set retires after B session across owner restart",
         "selected repository set retires after B replacement across owner restart",
         "selected repository set retires after B deadline across owner restart",
@@ -425,9 +427,14 @@
     {
       "path": "tests/integration/postgres-openshell-standing-route.test.ts",
       "expectedTests": [
-        "OpenShell standing rotation preserves custody when unsent",
-        "OpenShell standing rotation preserves custody when lost-reply",
-        "lost initial OpenShell route commit acknowledgement prevents bootstrap and replay across restart"
+        "held OpenShell route stays closed to a cold reader and closes on worker replacement",
+        "selected held OpenShell rotation preserves custody when unsent",
+        "selected held OpenShell rotation preserves custody when lost-reply",
+        "selected held OpenShell rotation preserves custody when withdrawn",
+        "lost initial OpenShell route commit acknowledgement prevents bootstrap and replay across restart",
+        "uncertain preview release preserves fenced retirement with a fault before write",
+        "uncertain preview release preserves fenced retirement with a fault after commit",
+        "uncertain preview release preserves fenced retirement with a fault during worker replacement"
       ]
     },
     {
@@ -446,7 +453,7 @@
     {
       "path": "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
       "expectedTests": [
-        "standing OpenShell installation grant crosses both expiries, serves two Git repositories and the API, then loses only GitHub"
+        "historical v5 installation cannot renew and settles the original lost detach without replay"
       ]
     },
     {

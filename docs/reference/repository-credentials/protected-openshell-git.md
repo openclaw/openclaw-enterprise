@@ -315,8 +315,9 @@ Redeploy after `worker_replaced` or terminal `bootstrap_failed`.
 After verified replacement of v5 held launches, deployment detail preserves history
 and reports `repositoryAccess.state: redeploy-required` and
 `REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`. OCE closes Git and checks withdrawal
-and model authority. Other qualified paths may retry pre-write reads or re-observe
-durable delivery after restart. Provider writes retain their deadlines. Never replay
+and model authority. Historical v4 and installation-wide v5 cannot prepare, issue or renew
+Git credentials. Only the explicit observed-hook preview supports installation-wide issuance.
+Replacement workers may finish the original detach using recorded custody. Never replay
 an uncertain write. See [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
 For prepared-material expiry, quarantine and retirement, see
 [Token Service lifecycle](../repository-credentials.md#token-service-lifecycle) and
@@ -329,12 +330,12 @@ or `gateway_unauthorized`. `worker.openshell-git-route-warning` distinguishes
 `withdrawn` and `repository_expired` when another worker closed the route) and
 `retained` ones.
 `OPENSHELL_GIT_WITHDRAWAL_UNRECORDED` means unpersisted withdrawal.
-Confirm Sandbox deletion: another worker could adopt the refused route.
+Confirm durable withdrawal and Git detach or runtime retirement.
 OCE drops closed routes after confirmed absence (two reads if never observed).
 Failed reads retain them. Gateway authorization refusal logs `retained` with
 `gateway_unauthorized` and retries with backoff until absence; preparation, adoption
 and verification remain refused, and denials log `no_binding`.
-`worker.openshell-git-route` reports adoption and restoration, with `durationMs`.
+`worker.openshell-git-route` reports same-worker restoration, with `durationMs`.
 Correlate revision and request IDs with `worker.openshell-git-denied`.
 
 ### Qualification history

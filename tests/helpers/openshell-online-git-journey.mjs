@@ -120,14 +120,9 @@ export async function gitExpiryGateway(
       credentials: [{ name: "model_key", env_vars: ["MODEL_KEY"] }],
     },
   };
-  // An operator provider may select a platform profile even when its Workspace has a namesake.
-  const serviceProfile = {
-    id: "service",
-    endpoints: [{ host: "service.example.test", port: 443 }],
-    credentials: [{ name: "service_key", env_vars: ["SERVICE_KEY"] }],
-  };
-  const platformService = structuredClone(serviceProfile);
-  const retainedProfile = platformProfile ? platformService : profiles.inference;
+  // The operator's model provider can select a platform profile with a Workspace namesake.
+  const platformInference = structuredClone(profiles.inference);
+  const retainedProfile = platformProfile ? platformInference : profiles.inference;
   world.profileReads = [];
   world.addRetainedEndpoint = (host) => {
     assert.equal(world.detaches.length, 1, "change only the retained profile, after Git detached");
@@ -137,7 +132,7 @@ export async function gitExpiryGateway(
   const providers = {
     [model]: {
       type: modelSourceId ? model : "inference",
-      profile_workspace: workspace,
+      ...(platformProfile ? {} : { profile_workspace: workspace }),
       metadata: {
         workspace,
         name: model,
@@ -152,14 +147,6 @@ export async function gitExpiryGateway(
       },
     },
   };
-  if (platformProfile) {
-    profiles.service = serviceProfile;
-    providers["operator-service"] = {
-      // On the stock wire an omitted profile_workspace is the empty string (platform).
-      type: "service",
-      metadata: { workspace, name: "operator-service", id: "service-id", resource_version: "4" },
-    };
-  }
   if (supervisor) {
     // Stock attaches an endpointless runtime-files profile as well as the model.
     // Keep it observable after Git detach; an absent provider must fail retention.
@@ -319,9 +306,7 @@ export async function gitExpiryGateway(
             restart_policy: "SANDBOX_RESTART_POLICY_NEVER",
             providers: world.detaches.length
               ? world.retainedProviders
-              : supervisor
-                ? [model, supervisor.runtimeProvider, gitName]
-                : [...world.retainedProviders, gitName],
+              : [...world.retainedProviders, gitName],
             provider_attachment_epoch: world.detaches.length
               ? "reduced"
               : repositoryGitRecipient.attachmentEpoch,
@@ -346,7 +331,7 @@ export async function gitExpiryGateway(
       },
     GetProvider: ({ name }) => providers[name] && { provider: providers[name] },
     GetProviderProfile: ({ id, workspace_scope }) => {
-      if (id === "service" && world.detaches.length) {
+      if (platformProfile && id === platformInference.id && world.detaches.length) {
         world.profileReads.push(
           workspace_scope === undefined ? "platform" : workspace_scope.workspace,
         );
@@ -357,7 +342,7 @@ export async function gitExpiryGateway(
             code: grpc.status.PERMISSION_DENIED,
           });
         }
-        return id === "service" && { profile: platformService };
+        return platformProfile && id === platformInference.id && { profile: platformInference };
       }
       assert.equal(workspace_scope.workspace, workspace);
       return profiles[id] && { profile: profiles[id] };
