@@ -141,13 +141,28 @@ digest, together with the run, attempt, source SHA and successful job records.
 Compare the downloaded ZIP's checksum with the artifact metadata; this checksum
 identifies the ZIP bytes, not an OCI image digest.
 
-Each artifact contains an OCI layout and `platform.json`. Check the receipt's
-`sourceSha`, `workflowSha`, `runId`, `attempt`, `image`, `platform`, `digest` and
-`native: true` against the selected producer and export. Verify the OCI root and
-reachable blobs against their descriptors before loading or transferring them.
-Preserve their identities through transport. This is not the publication
-workflow's `image.tar` and publication receipt, and it does not prove registry
-availability or a working deployment. For local use, follow the
+Extract the verified ZIP into a private directory and leave it unchanged during
+verification. Select the expected values from the reviewed source and producer
+job records. Use the **Digest** output from **Build native OCI image without
+publication** (`steps.build.outputs.digest`) and the pinned Node base used by that job.
+For a direct **Check Native Container Images** dispatch, leave both CI fields empty.
+For example, check its runtime export from the repository root:
+
+```sh
+SOURCE_SHA="$expected_sha" GITHUB_WORKFLOW_SHA="$workflow_sha" \
+GITHUB_RUN_ID="$run_id" GITHUB_RUN_ATTEMPT="$attempt" \
+CI_RUN_ID='' CI_ATTEMPT='' NODE_BASE_IMAGE="$pinned_node_base" \
+IMAGE=runtime PLATFORM=linux/arm64 IMAGE_DIGEST="$build_digest" \
+node scripts/ci/container-release.mjs verify-platform "$extracted_layout"
+```
+
+For a manual **CI** run that requests native images, use that CI run’s own ID
+and attempt. For **Enterprise Containers**, use the validated source CI run ID
+and attempt. The command checks `platform.json` and the reachable OCI
+bytes offline and prints the platform, build root, manifest and config digests.
+Preserve these identities through transport. ZIP verification and the four-job
+success check above are separate requirements. Registry and deployment checks
+use their own evidence. For local use, follow the
 [populated controller return rehearsal](../testing/populated-controller-return.md#prepare-the-cluster-and-images).
 
 ## Prepare and publish
