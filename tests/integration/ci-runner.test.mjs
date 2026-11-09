@@ -5641,12 +5641,16 @@ test("aggregate requires fixed lane outputs, successful needs, and matching sour
   assert.equal(result.status, 1);
   const summary = JSON.parse(result.stdout);
   assert.deepEqual(summary.issues.map((entry) => entry.code).sort(), [
-    "lane-failed",
     "missing-lane-output",
     "missing-need",
     "need-not-success",
     "source-sha-mismatch",
   ]);
+  // A different revision's failure cannot describe this revision's runtime lane.
+  assert.deepEqual(
+    summary.lanes.map((lane) => lane.lane),
+    ["baseline"],
+  );
 });
 
 test("aggregate accepts a lane as a singleton target and rejects tampered result evidence", async (t) => {
@@ -5863,7 +5867,7 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
   }
 });
 
-test("aggregate fails when a supplied non-lane need failed even if lane artifacts pass", async (t) => {
+test("aggregate requires successful job gates and unambiguous lane ownership", async (t) => {
   const root = await fixture(t);
   const sha = currentSha();
   await writeJson(join(root, "manifest.json"), {
@@ -5898,7 +5902,7 @@ test("aggregate fails when a supplied non-lane need failed even if lane artifact
     baseline: { result: "success" },
   });
 
-  const result = run(root, [
+  const args = [
     "aggregate",
     "ci",
     "--manifest",
@@ -5909,7 +5913,8 @@ test("aggregate fails when a supplied non-lane need failed even if lane artifact
     "results",
     "--needs",
     "needs.json",
-  ]);
+  ];
+  const result = run(root, args);
 
   assert.equal(result.status, 1);
   const summary = JSON.parse(result.stdout);
@@ -5919,6 +5924,62 @@ test("aggregate fails when a supplied non-lane need failed even if lane artifact
     ["need-not-success"],
   );
   assert.equal(summary.issues[0].need, "audit");
+
+  // A matrix parent carries its job conclusion, never a conclusion for each
+  // child. Unselected siblings may remain in a shared workflow's parent list.
+  for (const state of ["success", "failure", "cancelled", "skipped", undefined]) {
+    await writeJson(join(root, "needs.json"), {
+      matrix: { result: state, lanes: ["baseline", "unselected-sibling"] },
+    });
+    const observed = run(root, args);
+    assert.equal(observed.status, state === "success" ? 0 : 1, observed.stderr);
+    const aggregated = JSON.parse(observed.stdout);
+    assert.deepEqual(
+      aggregated.issues.map((entry) => entry.code),
+      state === "success" ? [] : ["need-not-success"],
+    );
+    assert.equal(aggregated.lanes[0].status, "passed");
+    if (state !== "success") {
+      assert.equal(aggregated.issues[0].need, "matrix");
+    }
+  }
+
+  // Valid artifacts cannot replace missing ownership, and malformed ownership
+  // must fail even when a separate direct job could otherwise satisfy the lane.
+  await writeJson(join(root, "needs.json"), {});
+  const missing = run(root, args);
+  assert.equal(missing.status, 1);
+  assert.deepEqual(
+    JSON.parse(missing.stdout).issues.map((entry) => entry.code),
+    ["missing-need"],
+  );
+  for (const lanes of [null, "baseline", [], [""], ["baseline", "baseline"], [1]]) {
+    await writeJson(join(root, "needs.json"), {
+      baseline: { result: "success" },
+      matrix: { result: "success", lanes },
+    });
+    const malformed = run(root, args);
+    assert.equal(malformed.status, 1);
+    assert.ok(
+      JSON.parse(malformed.stdout).issues.some((entry) => entry.code === "invalid-need-lanes"),
+    );
+  }
+
+  for (const other of [
+    { baseline: { result: "success" } },
+    { another: { result: "success", lanes: ["baseline"] } },
+  ]) {
+    await writeJson(join(root, "needs.json"), {
+      matrix: { result: "success", lanes: ["baseline"] },
+      ...other,
+    });
+    const ambiguous = run(root, args);
+    assert.equal(ambiguous.status, 1);
+    assert.deepEqual(
+      JSON.parse(ambiguous.stdout).issues.map((entry) => entry.code),
+      ["ambiguous-need"],
+    );
+  }
 });
 
 test("first-Agent scenario ownership drains child work before teardown after failure or cancellation", async (t) => {
