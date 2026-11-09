@@ -1426,6 +1426,7 @@ export async function runOidcAgentChatScenario(context) {
   const topology = await arrangeProductionTopology(context, "embedded", undefined, {
     publicOrigin: ingress.origin,
     gatewayPassword: false,
+    defaultUser: true,
     nativeAdmin: { enabled: true, domain: nativeDomain },
     nativeOptions: { controlUi: { enabled: true } },
     workspaceGateway: true,
