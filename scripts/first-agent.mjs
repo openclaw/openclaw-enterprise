@@ -15,6 +15,7 @@ import { defaultAgentModel } from "../apps/controller/src/console/agents/starter
 import { deriveNativeAdminHost } from "../apps/controller/src/gateway/native-admin-host.mjs";
 import { isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
 import {
+  FirstAgentModelError,
   firstAgentPriorPatPolicy,
   firstAgentPriorPatPolicyWarning,
   firstAgentRevisionValuesMatch,
@@ -22,6 +23,11 @@ import {
   selectFirstAgentModel,
   verifyFirstAgentModel,
 } from "./first-agent-model.mjs";
+
+import { createFirstAgentApi } from "./first-agent-api.mjs";
+import { collectFirstAgentDiagnostics } from "./first-agent-diagnostics.mjs";
+
+let failureDiagnostics;
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -459,46 +465,6 @@ function run(binary, args, { env, input, timeout = 45_000 } = {}) {
   });
 }
 
-function createApi({ origin, key }) {
-  return async (method, path, body) => {
-    let response;
-    try {
-      response = await fetch(new URL(path, origin), {
-        method,
-        redirect: "error",
-        signal: AbortSignal.timeout(20_000),
-        headers: {
-          "x-api-key": key.data.key,
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      });
-    } catch {
-      throw new Error(
-        `The local controller did not answer ${method} ${path}. Confirm Local Setup is running and retry the same Agent name.`,
-      );
-    }
-    let envelope;
-    try {
-      envelope = await response.json();
-    } catch {
-      throw new Error(
-        `The local controller returned an invalid response (HTTP ${response.status}).`,
-      );
-    }
-    if (!response.ok) {
-      const code = /^[A-Z0-9_]+$/.test(envelope.error?.code ?? "") ? ` ${envelope.error.code}` : "";
-      const requestId = /^req_[a-f0-9-]+$/.test(envelope.meta?.requestId ?? "")
-        ? `; request ${envelope.meta.requestId}`
-        : "";
-      throw new Error(
-        `The local controller rejected ${method} ${path} (HTTP ${response.status}${code}${requestId}).`,
-      );
-    }
-    return envelope.data;
-  };
-}
-
 async function modelKey(authMethod) {
   const variable = authMethod === "codex_pat" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY";
   const fileVariable = `${variable}_FILE`;
@@ -872,7 +838,7 @@ async function main(options) {
     }
     throw error;
   }
-  const api = createApi(local);
+  const api = createFirstAgentApi(local);
   const installation = await api("GET", "/installation");
   if (installation.id !== local.key.meta.installationId) {
     throw new Error("The controller Installation does not match Local Setup's administrator key.");
@@ -1206,12 +1172,22 @@ async function main(options) {
       namespaceId: namespace.id,
       agentId: agent.id,
       revisionId: record.revisionId,
+      onGatewaySelected: (gateway) => {
+        failureDiagnostics = () =>
+          collectFirstAgentDiagnostics(api, {
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            revisionId: record.revisionId,
+            gateway,
+          });
+      },
       prompt: options.prompt,
       apiKey: suppliedKey,
       // Only embedded OpenClaw calls the model from the Gateway. Dedicated Codex keeps the
       // model credential in its Codex Pod or OpenShell Sandbox, never in the Gateway.
       expectProviderKey: record.harness === "openclaw",
     });
+    failureDiagnostics = undefined;
     const consoleUrl = new URL(
       `/console/agents/${agent.id}`,
       local.nativeAdmin?.browserOrigin ?? local.origin,
@@ -1243,4 +1219,7 @@ try {
 } catch (error) {
   process.stderr.write(`first-agent: ${error.message}\n`);
   process.exitCode = 1;
+  if (error instanceof FirstAgentModelError && failureDiagnostics) {
+    process.stderr.write(`${await failureDiagnostics()}\n`);
+  }
 }

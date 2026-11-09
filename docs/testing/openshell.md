@@ -304,12 +304,12 @@ only one. Then run:
 node scripts/first-agent.mjs my-agent --harness codex --control-ui
 ```
 
-A successful turn prints `Model response verified:`; a selected version or ready
-Sandbox is insufficient. Rerun with `--replace-key` for an invalid key. The
-starter disables tools. With OpenShell and either local control plane,
-`--control-ui` prints OCE console and OpenClaw Control UI URLs. Trust startup's
-browser CA before opening them. Finish with `./scripts/dev-down` using the same
-state directory.
+`Model response verified:` proves a model turn; a selected version or ready
+Sandbox does not. Failures include [bounded runtime evidence](../flows/secret-storage-and-delivery.md#4-grant-the-first-local-agent-access-to-its-model-credential).
+Replace an invalid key with `--replace-key`. The starter disables tools.
+With either OpenShell control plane, `--control-ui` prints OCE console and
+OpenClaw Control UI URLs. Trust startup's browser CA first. Finish with
+`./scripts/dev-down` using the same state directory.
 
 ### Guided native OpenClaw redeployment
 

@@ -115,6 +115,9 @@ test("first-Agent starts without installed workspace dependencies", async (t) =>
     "package.json",
     "scripts/first-agent.mjs",
     "scripts/first-agent-database.mjs",
+    "scripts/first-agent-api.mjs",
+    "scripts/first-agent-diagnostics.mjs",
+    "packages/contracts/src/runtime-failure.mjs",
     "scripts/first-agent-model.mjs",
     "scripts/lib/private-owned-path.mjs",
     "packages/contracts/src/api/plain-text.ts",
@@ -654,13 +657,17 @@ test("model verification retains safe failure metadata without forwarding probe 
       return JSON.stringify({
         items: [
           {
-            metadata: { name: "gateway" },
+            metadata: { name: "gateway", uid: "gateway-uid" },
             spec: {
               volumes: [
                 { configMap: { name: `gateway-${hash("agent")}-rev-${hash("revision")}` } },
               ],
             },
-            status: { phase: "Running", conditions: [{ type: "Ready", status: "True" }] },
+            status: {
+              phase: "Running",
+              conditions: [{ type: "Ready", status: "True" }],
+              containerStatuses: [{ name: "gateway", restartCount: 2 }],
+            },
           },
         ],
       });
@@ -695,6 +702,7 @@ test("model verification retains safe failure metadata without forwarding probe 
   };
   let sessionKey;
   let interval;
+  let selectedGateway;
   const verify = (code, status) =>
     assert.rejects(
       verifyFirstAgentModel(kubectl, {
@@ -702,6 +710,9 @@ test("model verification retains safe failure metadata without forwarding probe 
         agentId: "agent",
         revisionId: "revision",
         expectProviderKey: false,
+        onGatewaySelected: (target) => {
+          selectedGateway = target;
+        },
         sessionKey,
       }),
       (error) => {
@@ -714,6 +725,7 @@ test("model verification retains safe failure metadata without forwarding probe 
       },
     );
   await verify("upstream", 503);
+  assert.deepEqual(selectedGateway, { pod: "gateway", uid: "gateway-uid", restartCount: 2 });
   assert.equal(requests, 2, "one unauthenticated check and one authorized request; no replay");
   assert.equal(interval, undefined);
   sessionKey = "agent:main:git-withdrawal-00000000-0000-4000-8000-000000000001";
@@ -790,4 +802,155 @@ test("model verification retains safe failure metadata without forwarding probe 
 
   suppliedOutput = "private-invalid-json";
   await verify("invalid_result", undefined);
+});
+
+test("first-Agent diagnostics bind runtime streams and bound the authenticated HTTP read", async (t) => {
+  const { createFirstAgentApi } = await import("../../scripts/first-agent-api.mjs");
+  const { collectFirstAgentDiagnostics } =
+    await import("../../scripts/first-agent-diagnostics.mjs");
+  const replay = JSON.parse(
+    await readFile(
+      join(
+        repository,
+        "tests/fixtures/runtime-logs/replay/codex-model-connection-failures.golden.json",
+      ),
+      "utf8",
+    ),
+  );
+  const targets = ["gateway", "agent"].map((role) => ({
+    role,
+    name: `${role}-pod`,
+    uid: `${role}-uid`,
+    container: role === "agent" ? "sandbox" : "gateway",
+    restartCount: 0,
+  }));
+  const description = {
+    revisionId: "revision",
+    harness: { state: "running" },
+    pods: targets.map((target) => ({
+      ...target,
+      ready: true,
+      containers: [
+        {
+          name: target.container,
+          state: "running",
+          ready: true,
+          restartCount: 0,
+          lastTermination: null,
+        },
+      ],
+    })),
+    sources: targets.map((target) => ({
+      id: target.role,
+      kind: "container",
+      available: true,
+      pods: [target],
+    })),
+  };
+  let mode = "normal";
+  let reads = [];
+  // Exercise the real CLI HTTP reader and evidence reducer. The server supplies the
+  // documented runtime API envelope; this is not a Kubernetes/OpenShell runtime proof.
+  const server = createServer((request, response) => {
+    assert.equal(request.headers["x-api-key"], "synthetic-service-key");
+    assert.equal(request.method, "GET");
+    const url = new URL(request.url, "http://localhost");
+    reads.push(url);
+    response.setHeader("content-type", "application/json");
+    if (mode === "oversized") {
+      response.end(JSON.stringify({ data: "private-response".repeat(10_000) }));
+      return;
+    }
+    if (mode === "denied") {
+      response.writeHead(403);
+      response.end(JSON.stringify({ error: { code: "FORBIDDEN", message: "private-denial" } }));
+      return;
+    }
+    if (mode === "stalled") {
+      response.write("{");
+      return;
+    }
+    if (url.pathname.endsWith("/runtime")) {
+      const data = structuredClone(description);
+      if (mode === "pod-replaced") {
+        data.pods[0].uid = "replacement-uid";
+      }
+      response.end(JSON.stringify({ data }));
+      return;
+    }
+    const target = targets.find((item) => item.role === url.searchParams.get("source"));
+    assert.equal(url.searchParams.get("pod"), target.name);
+    assert.equal(url.searchParams.get("container"), target.container);
+    assert.equal(url.searchParams.has("sensitiveContent"), false);
+    const stream = {
+      source: target.role,
+      pod: target.name,
+      podUid: target.uid,
+      container: target.container,
+      restartCount: mode === "restarted" ? 1 : 0,
+    };
+    const records = replay.records.map((record) => ({ ...record, stream }));
+    records.push({
+      type: "line",
+      kind: "codex",
+      contentClass: "activity",
+      level: "error",
+      message: "private-agent-output",
+      stream,
+    });
+    response.end(
+      JSON.stringify({
+        data: {
+          revisionId: "revision",
+          source: target.role,
+          stream,
+          records,
+          withheld: mode === "incomplete" ? 1 : 0,
+          truncated: false,
+        },
+      }),
+    );
+  });
+  const port = await listen(t, server);
+  const api = createFirstAgentApi({
+    origin: `http://127.0.0.1:${port}`,
+    key: { data: { key: "synthetic-service-key" } },
+  });
+  const collect = () =>
+    collectFirstAgentDiagnostics(api, {
+      namespaceId: "namespace",
+      agentId: "agent",
+      revisionId: "revision",
+      gateway: { pod: "gateway-pod", uid: "gateway-uid", restartCount: 0 },
+    });
+  const output = await collect();
+  assert.match(output, /agent\/sandbox: running, ready=true, restarts=0/);
+  assert.match(output, /HTTP error: 401 Unauthorized/);
+  assert.match(output, /Connection refused/);
+  assert.doesNotMatch(output, /private-agent-output|synthetic-service-key/);
+  assert.equal(reads.length, 3);
+  assert.ok(
+    reads.every((url) =>
+      url.pathname.startsWith("/namespaces/namespace/agents/agent/deployments/revision/runtime"),
+    ),
+  );
+  mode = "pod-replaced";
+  reads = [];
+  assert.match(await collect(), /original Pod unavailable or replaced/);
+  assert.ok(reads.every((url) => url.searchParams.get("source") !== "gateway"));
+  mode = "restarted";
+  const replaced = await collect();
+  assert.match(replaced, /log stream unavailable or replaced/);
+  assert.doesNotMatch(replaced, /401 Unauthorized|Connection refused/);
+  mode = "incomplete";
+  assert.match(await collect(), /incomplete log evidence/);
+  for (mode of ["denied", "oversized"]) {
+    const unavailable = await collect();
+    assert.match(unavailable, /Runtime evidence unavailable/);
+    assert.doesNotMatch(unavailable, /private-|FORBIDDEN/);
+  }
+  mode = "stalled";
+  const start = Date.now();
+  assert.match(await collect(), /Runtime evidence unavailable/);
+  assert.ok(Date.now() - start < 15_000, "a stalled response body must not hold the CLI open");
 });

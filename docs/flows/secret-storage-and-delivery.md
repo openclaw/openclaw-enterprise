@@ -198,6 +198,15 @@ Agent revision ConfigMap mount, and a Running, Ready Gateway Pod before it sends
 prompt. It requires the OpenAI key in the Gateway container only for embedded
 OpenClaw; dedicated Codex keeps the key in its Codex Pod or Sandbox. Kubernetes Compute owns any experimental two-cluster placement; this
 local helper does not infer physical placement from the Agent execution mode.
+After a model failure, the CLI prints the original error before a bounded
+[diagnostic snapshot](../../scripts/first-agent-diagnostics.mjs) from the existing
+revision-scoped runtime status and log API. The API resolves both Kubernetes and
+OpenShell Harness ownership. The snapshot checks the selected Gateway Pod UID
+and restart count; changed identities suppress log attribution. It prints container state, admitted startup event fields, and bounded operational
+warnings/errors already classified and redacted by the API; it never reads raw
+container logs or provider bodies. Collection is limited to ten seconds, 64 KiB per response, and two container
+streams per role. Unavailable or incomplete evidence does not change the original
+failure; startup observations do not establish the failed request's cause.
 The tool retains installation resources on exit.
 
 <span id="4-render-only-the-exact-gateways-projection"></span>
