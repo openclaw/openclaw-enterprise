@@ -276,13 +276,13 @@ async function repositoryGitJourney(
       ...(typeof entry.check === "string" && { check: entry.check }),
     });
   };
-  const createRuntimeOwner = () => {
+  const createRuntimeOwner = (listenPort = port) => {
     const runtime = new OpenShellGitRuntime(
       {
         registrationName: "oce-prepared-git",
         authority: {
           host: "127.0.0.1",
-          port,
+          port: listenPort,
           issuer: "https://gateway.example.test",
           audience: "repository-set",
           keyId: "gateway-key",
@@ -412,13 +412,16 @@ async function repositoryGitJourney(
   const stopped: string[] = [];
   runtime.connectRouteStore(f.observerPool, recordTransport);
   let bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
-  const replaceRuntime = async () => {
-    await bound.close();
-    ({ runtime, sandbox, proxy, owner } = createRuntimeOwner());
+  const replaceRuntime = async (retained?: { replacementPort: number }) => {
+    if (!retained) {
+      await bound.close();
+    }
+    const listenPort = retained?.replacementPort ?? port;
+    ({ runtime, sandbox, proxy, owner } = createRuntimeOwner(listenPort));
     runtime.connectRouteStore(f.observerPool, recordTransport);
     bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
     await runtime["running"];
-    middleware = openShellMiddlewareClient(t, port, tls.caBundle);
+    middleware = openShellMiddlewareClient(t, listenPort, tls.caBundle);
   };
   t.after(() => bound.close());
   // The authority listens now. Release the hold before the first request: while both listen, the
@@ -567,9 +570,13 @@ async function repositoryGitJourney(
   let signed = false;
   let reducedAttachmentEpoch: string | undefined;
   let wrongIdentity = false;
-  const evaluate = (input: object, signedSandbox = wrongIdentity ? "unowned" : wire.world.id) =>
+  const evaluate = (
+    input: object,
+    signedSandbox = wrongIdentity ? "unowned" : wire.world.id,
+    listener = middleware,
+  ) =>
     invoke(
-      middleware,
+      listener,
       "EvaluateHttpRequest",
       {
         phase: 1,
@@ -2095,7 +2102,15 @@ async function repositoryGitJourney(
       null,
       "the replacement must recover an unconfirmed detach",
     );
-    await replaceRuntime();
+    // A worker can lose its claim while its signed listener is still reachable.
+    const originalListener = middleware;
+    const originalTransport = bound;
+    t.after(() => originalTransport.close());
+    const replacementPort = await reservePort();
+    t.after(() => replacementPort.release());
+    await bindReservedPortInProcess(replacementPort);
+    await replaceRuntime({ replacementPort: replacementPort.port });
+    await replacementPort.release();
     events.length = 0;
     await start();
     await waitForRevisionPass(
@@ -2141,17 +2156,20 @@ async function repositoryGitJourney(
     assert.ok(heldControlValid || heldControl.status === 401 || heldControl.status === 403);
     const originBeforeReductionProbe = peer.originCalls();
     const providerBeforeReductionProbe = peer.gh.trace.length;
-    // Use the real replacement listener after expiry recovery. Do not invoke prepare()
-    // again: that would introduce a second live-route transition into the retention proof.
-    await peer.exchange(
-      async () => {
-        const refused = await evaluate(removedMemberProbe);
-        assert.equal(refused.decision, 2, "the replacement listener refuses the retained binding");
-        return refused;
-      },
-      heldSyntheticValue,
-      false,
-    );
+    for (const [name, listener] of [
+      ["original", originalListener],
+      ["replacement", middleware],
+    ] as const) {
+      await peer.exchange(
+        async () => {
+          const refused = await evaluate(removedMemberProbe, wire.world.id, listener);
+          assert.equal(refused.decision, 2, `the ${name} listener refuses the retained binding`);
+          return refused;
+        },
+        heldSyntheticValue,
+        false,
+      );
+    }
     const reducedOriginDelta = peer.originCalls() - originBeforeReductionProbe;
     assert.equal(reducedOriginDelta, 0, "post-reduction refusal never reaches the Git origin");
     assert.equal(peer.gh.trace.length, providerBeforeReductionProbe);
