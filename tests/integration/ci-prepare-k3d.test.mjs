@@ -239,7 +239,9 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         if (args[0] === "build" && args.at(-1).endsWith("/tests/fixtures/kubernetes")) {
           const descendant = `
           process.on("SIGINT", () => {});
-          require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify([process.ppid, process.pid]));
+          const fs = require("node:fs");
+          fs.writeFileSync(${JSON.stringify(`${pidFile}.tmp`)}, JSON.stringify([process.ppid, process.pid]));
+          fs.renameSync(${JSON.stringify(`${pidFile}.tmp`)}, ${JSON.stringify(pidFile)});
           setTimeout(() => {}, 15000);
         `;
           const program = `
