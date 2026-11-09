@@ -57,7 +57,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	defer func() {
 		if result != nil {
 			stage, cleanupFailed := startupFailureDetails(result)
-			fmt.Fprintf(r.opts.Out, "\n[occ-dev-startup] primary_stage=%s cleanup_failed=%t parent_context_done=%t\n", stage, cleanupFailed, ctx.Err() != nil)
+			fmt.Fprintf(r.opts.Out, "\n[occ-dev-startup] primary_stage=%s cleanup_failed=%t parent_context_done=%t%s\n", stage, cleanupFailed, ctx.Err() != nil, routingFailureSuffix(result))
 		}
 	}()
 	if len(opts.ComposeArgs) != 0 {

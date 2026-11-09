@@ -1,12 +1,10 @@
 ---
 created: 2026-09-09
-updated: 2026-11-08
-last_updated_session: authoring-run/aa2519c0-24d1-44b0-9725-9bde7e4c2501
+updated: 2026-11-09
+last_updated_session: authoring-run/fc7f0ea3-8581-478c-a11e-63c531a3cd5e
 ---
 
 # Compose development startup
-
-[Compose development flow](../docker-compose-development.md).
 
 ## Overview
 
@@ -276,16 +274,15 @@ owns both OpenShell control-plane sequences.
 `internal/occdev/openshell.go:prepareOpenShell`.
 
 With Docker and a selected runtime, Compose overlaps bootstrap and cluster setup
-after creating its PostgreSQL container/network. For OpenShell,
+after creating PostgreSQL. For OpenShell,
 `internal/occdev/gateway_k3d.go:installDevelopmentRoutingControllers` starts after
-kubeconfig setup, alongside runtime import and OpenShell installation. Both finish before routing resolves PostgreSQL’s address and starts OCC.
-Failure cancels and drains siblings before rollback. Cold builds and Podman
-install routing after runtime preparation.
+kubeconfig setup, alongside runtime import and OpenShell installation. Both finish
+before routing resolves PostgreSQL’s address and starts OCC. Failure cancels and
+drains siblings before rollback. Cold builds and Podman install routing after runtime preparation.
 
-Both modes install cert-manager and Envoy concurrently, retaining
-manifest checksums, CRD establishment, and Deployment rollout checks. Both finish
-before GatewayClass acceptance or routing configuration. Envoy waits for k3s-owned
-Gateway API CRDs.
+Both modes concurrently install cert-manager and Envoy, checking checksums, CRD
+establishment, and rollout before GatewayClass acceptance or routing
+configuration. Envoy waits for k3s-owned Gateway API CRDs.
 Without OpenShell, `OCC_DEVELOPMENT_K3S_IMAGE` selects the node
 image; its default `+v1.35` resolves the latest K3s 1.35 patch. An explicit
 image skips lookup. OpenShell uses its pinned image in both control-plane modes.
@@ -390,10 +387,12 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 
 ## Debugging and Verification
 
-`upK3d` reports after cleanup; `concurrently` retains sibling cleanup failures
-preserving the selected error. First-Agent and refusal helpers validate one
-terminal stdout record from failed startup; ambiguity, success or cleanup yields none.
-Stdout does not authenticate writers. See [field meanings](../../reference/cli/local-development.md).
+`internal/occdev/startup_failure.go` preserves the selected error's routing details.
+`concurrently` retains sibling cleanup failures; `upK3d` reports after cleanup.
+Helpers validate one final failure record; CI retains
+allowlisted details. Older records remain valid. Ambiguity, success or cleanup
+yields none. Stdout does not authenticate writers.
+[Field meanings](../../reference/cli/local-development.md).
 
 - `node --test tests/integration/dev-up-compose.test.mjs tests/integration/dev-up.test.mjs`
   exercises profile selection, generated configuration, authenticated readiness,
@@ -422,6 +421,8 @@ Stdout does not authenticate writers. See [field meanings](../../reference/cli/l
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-09 08:16: Identify routing failures. (authoring-run/fc7f0ea3-8581-478c-a11e-63c531a3cd5e - 1b07c3792424a033befb8c97b74fb399daf61af0)
 
 - 2026-11-08 10:46: Retain sibling cleanup failures. (authoring-run/sibling-cleanup - 2dfb98210779ba2be413f4ddf7beaa71dbc2374f)
 

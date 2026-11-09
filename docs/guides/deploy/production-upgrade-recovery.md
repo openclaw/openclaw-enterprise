@@ -1,33 +1,34 @@
 # Recover a partial production upgrade
 
-Resume from the original checkout and private
-[upgrade evidence directory](production-upgrade.md). Directory aliases share its
-lock; a different directory identity stops resume before live access.
+Resume from the original checkout and private [evidence directory](production-upgrade.md).
+Aliases share its lock; changed directory identity refuses live access.
 
-For runtime upgrades, preserve the private `<evidence-directory>.dispatch-state`
-journal beside the resolved directory, separately from evidence backups. Missing
-or invalid journals stop resume before live access. If possibly restored,
-reconcile OCC history and audit records first.
+For runtime upgrades, preserve `<evidence-directory>.dispatch-state` separately
+from evidence backups. Missing or invalid journals stop resume before live access.
+After possible restoration, reconcile OCC history and audit records.
 
 `--preflight-only` leaves writers serving without a freeze. It cannot resume;
 reconcile its resources before deploying with fresh evidence and checks.
 
-Keep one operator and the applicable freeze for unfinished deployments. Before
+Keep one operator and the freeze for unfinished deployments. Before
 `prepared`, writers and Helm are unchanged: reconcile, then use fresh evidence.
-Afterward, reconcile processes, release, migration, rollout and dispatch, then
+Then reconcile processes, release, migration, rollout and dispatch;
 add `--resume` with unchanged arguments, protected paths, kubeconfig contents,
 OCC URL, scripts, flow and chart. Keep candidates semantically unchanged.
-The helper rechecks the pair, nodes and live state against baseline or candidate.
+The helper rechecks images, nodes and live state against baseline or candidate.
+
+For an [immutable reference switch](immutable-installation-upgrade.md), retain both
+Secrets with their recorded UIDs and data; resume refuses replacements.
 
 When selected, `controller-compatibility-results.json` is immutable prepared
 evidence. Resume uses this copy, not the external file; changing its bytes or
 presence refuses recovery.
 
-After verified completion, clean up only: no Helm, Agent rollout, Doctor,
-`--resume` or renewed freeze. Any `completed` entry refuses resume before live
-access. Preserve it; use fresh evidence for another upgrade. If output or marker
-writing failed, reconcile live state and evidence first: neither an absent marker
-nor surviving `prepared` proves unfinished work. Older runs may lack a marker.
+After verified completion, clean up only; do not resume or repeat rollout or Doctor.
+Any `completed` entry refuses resume before live access. Preserve it and use fresh
+evidence for another upgrade. If output or marker writing failed, reconcile live
+state: neither an absent marker nor surviving `prepared` proves unfinished work.
+Older runs may lack a marker.
 
 ## Correct unusable comparison inputs
 
@@ -64,7 +65,7 @@ Authorized manual deletion requires Kubernetes API enforcement of
 `DeleteOptions.preconditions.uid`: delete the original kind, namespace and name
 only if its UID matches the original record. Reading then deleting by name
 cannot prevent replacement. Foreground-delete owned Jobs first and confirm their
-children are gone before deleting the candidate Secret or NetworkPolicy. Missing
+children are gone before deleting the temporary preflight Secret or NetworkPolicy. Missing
 Job acknowledgements require reconciling possible children; labels alone do not
 establish ownership.
 

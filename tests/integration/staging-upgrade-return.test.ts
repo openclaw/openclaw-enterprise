@@ -872,6 +872,10 @@ test(
     const tls = await harnessTlsFixture(t);
     const key = `fixture-service-key-${randomUUID()}`;
     const privateBytes = `private-response-${randomUUID()}`;
+    const requestId = `req_${randomUUID()}`;
+    const protectedMarker = "facefeed";
+    const protectedId = "req_facefeed-0000-4000-8000-000000000000";
+    const otherRequestId = `req_${randomUUID()}`;
     const observedRequests: {
       method: string | undefined;
       path: string | undefined;
@@ -891,9 +895,16 @@ test(
       response.once("close", () => {
         active--;
       });
+      response.setHeader("x-request-id", requestId);
+      response.setHeader("x-private-fixture", privateBytes);
       switch (observedRequests.length) {
+        case 1:
+          response.end(
+            JSON.stringify({ data: { id: "original-installation" }, meta: { requestId } }),
+          );
+          return;
         case 2:
-          response.end(JSON.stringify({ data: { id: "other-installation" } }));
+          response.end(JSON.stringify({ data: { id: "other-installation" }, meta: { requestId } }));
           return;
         case 3:
           response.end(JSON.stringify({ data: { name: privateBytes } }));
@@ -910,7 +921,17 @@ test(
         case 6:
           incoming.socket.destroy();
           return;
-        case 7: {
+        case 7:
+          // JSON escaping hides a protected substring until the request ID is decoded.
+          response.setHeader("x-request-id", protectedId);
+          response.end(
+            JSON.stringify({
+              data: { id: "original-installation" },
+              meta: { requestId: protectedId },
+            }).replace(protectedMarker, "\\u0066acefeed"),
+          );
+          return;
+        case 8: {
           // A response that keeps arriving must still hit the total request deadline.
           response.writeHead(200);
           response.write(" ");
@@ -922,7 +943,12 @@ test(
           return;
         }
         default:
-          response.end(JSON.stringify({ data: { id: "original-installation" } }));
+          response.end(
+            JSON.stringify({
+              data: { id: "original-installation" },
+              meta: { requestId: otherRequestId },
+            }),
+          );
       }
     });
     const port = await listen(t, server);
@@ -930,7 +956,7 @@ test(
       baseURL: `https://localhost:${port}`,
       ca: tls.caBundle,
       serviceKey: () => key,
-      secrets: [key],
+      secrets: [key, protectedMarker],
     });
     let actionStarted = false;
     const actionStartedAtRequest: boolean[] = [];
@@ -944,6 +970,7 @@ test(
             phase: string;
             startedAt: string;
             finishedAt: string;
+            requestId?: string;
             elapsedMs: number;
             gapMs: number | null;
             outcome: string;
@@ -972,10 +999,10 @@ test(
     assert.equal(result, "upgrade completed");
     assert.ok(evidence);
     assert.equal(evidence.upgradeSucceeded, true);
-    assert.deepEqual(
-      JSON.parse(await readFile(join(directory, "forward-api-availability.json"), "utf8")),
-      JSON.parse(JSON.stringify(evidence)),
-    );
+    const snapshot = await readFile(join(directory, "forward-api-availability.json"), "utf8");
+    assert.ok(!snapshot.includes(protectedMarker));
+    assert.ok(!JSON.stringify(evidence).includes(protectedMarker));
+    assert.deepEqual(JSON.parse(snapshot), JSON.parse(JSON.stringify(evidence)));
     assert.deepEqual(
       {
         observations: evidence.samples.map(({ phase, outcome, status }) => [
@@ -993,20 +1020,23 @@ test(
           ["during", "http-error", 503],
           ["during", "http-error", 502],
           ["during", "request-error", undefined],
+          ["during", "ok", 200],
           ["during", "timeout", 200],
           ["after", "ok", 200],
         ],
-        actionStartedAtRequest: [false, true, true, true, true, true, true, true],
+        actionStartedAtRequest: [false, true, true, true, true, true, true, true, true],
       },
     );
+    assert.equal(evidence.samples[0]?.requestId, requestId);
+    assert.ok(evidence.samples.slice(1).every((sample) => !("requestId" in sample)));
     assert.equal(evidence.samples[0]?.gapMs, null);
     for (const sample of evidence.samples) {
       assert.ok(Number.isFinite(Date.parse(sample.startedAt)));
       assert.ok(Date.parse(sample.finishedAt) >= Date.parse(sample.startedAt));
       assert.ok(sample.elapsedMs >= 0);
     }
-    assert.ok((evidence.samples[6]?.elapsedMs ?? 0) >= 4_900);
-    assert.ok(evidence.samples.slice(2, 7).every(({ gapMs }) => gapMs !== null && gapMs >= 900));
+    assert.ok((evidence.samples[7]?.elapsedMs ?? 0) >= 4_900);
+    assert.ok(evidence.samples.slice(2, 8).every(({ gapMs }) => gapMs !== null && gapMs >= 900));
     assert.equal(peakActive, 1);
     assert.equal(active, 0);
     assert.ok(
@@ -1103,6 +1133,7 @@ test(
     assert.deepEqual(persisted.samples.slice(0, completedPrefix.length), completedPrefix);
     assert.equal(persisted.samples[0]?.phase, "before");
     assert.equal(persisted.samples[0]?.outcome, "ok");
+    assert.ok(!("requestId" in persisted.samples[0]));
     assert.ok(persisted.samples.length >= 2);
     // Scheduling may allow more observations before SIGKILL takes effect.
     assert.ok(
@@ -1120,8 +1151,13 @@ test(
 test("upgrade availability preserves action and evidence-write failures", async (t) => {
   const tls = await harnessTlsFixture(t);
   const key = `fixture-service-key-${randomUUID()}`;
+  // Even matching IDs must have the controller-generated UUIDv4 shape.
+  const malformedId = "req_00000000-0000-1000-8000-000000000000";
   const server = createServer(tls, (_incoming, response) => {
-    response.end(JSON.stringify({ data: { id: "original-installation" } }));
+    response.setHeader("x-request-id", malformedId);
+    response.end(
+      JSON.stringify({ data: { id: "original-installation" }, meta: { requestId: malformedId } }),
+    );
   });
   const port = await listen(t, server);
   const request = createProductionTuiRequest({
@@ -1168,6 +1204,7 @@ test("upgrade availability preserves action and evidence-write failures", async 
   const failedSnapshot = JSON.parse(
     await readFile(join(directory, "forward-api-availability.json"), "utf8"),
   );
+  assert.ok(!JSON.stringify(failedSnapshot).includes(malformedId));
   assert.equal(failedSnapshot.upgradeSucceeded, false);
   assert.equal(failedSnapshot.samples.at(-1)?.outcome, "ok");
 

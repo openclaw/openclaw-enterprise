@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
@@ -120,6 +120,7 @@ async function standInChart(
   recoveryHooks = false,
   initializationResources,
   ordinary = [],
+  installationCheck = false,
 ) {
   const values = await yamlFile(file);
   const secretName = yqRaw(yqOr(values?.installation?.secretName, "occ-installation-startup"));
@@ -167,10 +168,10 @@ async function standInChart(
       },
     },
   });
-  const repository = yqRaw(yqOr(values?.repositoryCredentials?.enabled, false)) === "true";
+  const repositoryEnabled = yqRaw(yqOr(values?.repositoryCredentials?.enabled, false)) === "true";
   return [
     deployment("api", "containers"),
-    deployment("worker", repository ? "initContainers" : "containers"),
+    deployment("worker", repositoryEnabled ? "initContainers" : "containers"),
     ...ordinary,
     ...(recoveryHooks
       ? [
@@ -194,6 +195,16 @@ async function standInChart(
                 },
                 spec: {
                   restartPolicy: "Never",
+                  ...(installationCheck
+                    ? {
+                        volumes: [
+                          {
+                            name: "installation-startup",
+                            secret: { secretName, items: [{ key, path: "installation.yaml" }] },
+                          },
+                        ],
+                      }
+                    : {}),
                   securityContext: {
                     runAsUser: 1000,
                     runAsGroup: 1000,
@@ -210,6 +221,40 @@ async function standInChart(
                     },
                   ],
                   initContainers: [
+                    ...(installationCheck
+                      ? [
+                          {
+                            name: "installation-check",
+                            image,
+                            env: [
+                              {
+                                name: "OCC_CONFIG_PATH",
+                                value: "/etc/openclaw/installation/installation.yaml",
+                              },
+                            ],
+                            volumeMounts: [
+                              {
+                                name: "installation-startup",
+                                mountPath: "/etc/openclaw/installation",
+                                readOnly: true,
+                              },
+                            ],
+                            command: ["node"],
+                            args: [
+                              "--input-type=module",
+                              "-e",
+                              readFileSync(
+                                join(
+                                  repository,
+                                  "deploy/helm/openclaw-enterprise/files/check-installation.mjs",
+                                ),
+                                "utf8",
+                              ),
+                            ],
+                            securityContext: { capabilities: { drop: ["ALL"] } },
+                          },
+                        ]
+                      : []),
                     {
                       name: "migration",
                       image,
@@ -468,6 +513,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
                         .join(""),
                   }
                 : {}),
+              ...state.installationRelease,
               ...state.recoveryRelease,
               version: state.version,
               info: { ...state.recoveryRelease?.info, status: state.helmStatus },
@@ -492,6 +538,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
           state.recoveryHooks,
           state.initializationResources,
           state.recoveryCandidateResources,
+          Boolean(state.installationSuccessor),
         ),
       );
     } else if (args[0] === "rollback") {
@@ -535,6 +582,70 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       const values = await yamlFile(fileArg("--values"));
       state.controller = yqRaw(values?.images?.controller);
       state.checksum = yqRaw(values?.controlPlane?.installationChecksum);
+      if (state.installationSuccessor) {
+        // The accepted Helm submission creates the selected initializer and its
+        // completed child; later reads can diverge independently of the manifest.
+        const rendered = await standInChart(
+          fileArg("--values"),
+          state.preflightPolicy,
+          true,
+          state.initializationResources,
+          state.recoveryCandidateResources,
+          true,
+        );
+        const documents = yamlDocuments(rendered).map(loadYaml);
+        const desiredJob = documents.find((object) => object.kind === "Job");
+        // Store the accepted release separately from live objects so a later
+        // same-values Helm record can be checked independently of running Pods.
+        state.installationRelease = {
+          manifest: documents
+            .filter((object) => object !== desiredJob)
+            .map((object) => JSON.stringify(object))
+            .join("\n---\n"),
+          hooks: [
+            {
+              name: desiredJob.metadata.name,
+              manifest: JSON.stringify(desiredJob),
+              events: ["pre-install", "pre-upgrade"],
+              last_run: { phase: "Succeeded" },
+            },
+          ],
+        };
+        const job = structuredClone(desiredJob);
+        Object.assign(job.metadata, { namespace: "system", uid: "initializer-job" });
+        job.status = { conditions: [{ type: "Complete", status: "True" }], succeeded: 1 };
+        state.installationInitializer = {
+          job,
+          pod: {
+            apiVersion: "v1",
+            kind: "Pod",
+            metadata: {
+              ...structuredClone(job.spec.template.metadata),
+              namespace: "system",
+              name: "initializer-pod",
+              uid: "initializer-pod-uid",
+              ownerReferences: [
+                {
+                  apiVersion: "batch/v1",
+                  kind: "Job",
+                  name: job.metadata.name,
+                  uid: job.metadata.uid,
+                  controller: true,
+                },
+              ],
+            },
+            spec: structuredClone(job.spec.template.spec),
+            status: {
+              phase: "Succeeded",
+              initContainerStatuses: job.spec.template.spec.initContainers.map(({ name }) => ({
+                name,
+                state: { terminated: { exitCode: 0 } },
+              })),
+              containerStatuses: [{ name: "bootstrap", state: { terminated: { exitCode: 0 } } }],
+            },
+          },
+        };
+      }
       state.api = 1;
       state.worker = 1;
       save();
@@ -543,6 +654,57 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       }
     }
   } else if (tool === "kubectl") {
+    if (args.includes("create") && args.includes("--raw")) {
+      assert.equal(fileArg("--raw"), "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews");
+      const review = JSON.parse(await io.readInput());
+      assert.deepEqual(review, {
+        apiVersion: "authorization.k8s.io/v1",
+        kind: "SelfSubjectAccessReview",
+        spec: {
+          resourceAttributes: {
+            namespace: "system",
+            verb: "update",
+            group: "",
+            resource: "secrets",
+            name: state.secret.metadata.name,
+          },
+        },
+      });
+      state.installationUpdateReviews = (state.installationUpdateReviews ?? 0) + 1;
+      save();
+      if (state.reviewUnavailable) {
+        return fail(1, "private self-review diagnostic");
+      }
+      delete review.spec.resourceAttributes.group; // Kubernetes omits the empty core API group.
+      out({
+        ...review,
+        status: { allowed: !state.denyInstallationUpdate, reason: "private self-review reason" },
+      });
+      return io.exit(0);
+    }
+    if (
+      !state.recoveryResources &&
+      state.installationInitializer &&
+      args.includes("get") &&
+      args.includes("--filename")
+    ) {
+      const requested = JSON.parse(await io.readInput());
+      assert.equal(requested.kind, "Job");
+      assert.equal(requested.metadata.name, state.installationInitializer.job.metadata.name);
+      out({ apiVersion: "v1", kind: "List", items: [state.installationInitializer.job] });
+      return io.exit(0);
+    }
+    if (
+      !state.recoveryPod &&
+      state.installationInitializer &&
+      args.includes("get") &&
+      args.includes("--selector") &&
+      fileArg("--selector") ===
+        `batch.kubernetes.io/controller-uid=${state.installationInitializer.job.metadata.uid}`
+    ) {
+      out({ items: [state.installationInitializer.pod] });
+      return io.exit(0);
+    }
     if (state.recoveryResources && args.includes("get") && args.includes("--filename")) {
       const requested = JSON.parse(await io.readInput());
       const key = `${requested.kind}/${requested.metadata.name}`;
@@ -559,7 +721,12 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
         out(state.recoveryResources[key] ? `${requested.kind}/${requested.metadata.name}\n` : "");
         return io.exit(0);
       }
-      const actual = requested.kind === "Secret" ? state.secret : state.recoveryResources[key];
+      const actual =
+        requested.kind === "Secret"
+          ? [state.secret, state.installationSuccessor].find(
+              (secret) => secret?.metadata.name === requested.metadata.name,
+            )
+          : state.recoveryResources[key];
       assert.ok(actual, `known recovery resource ${key}`);
       out({ apiVersion: "v1", kind: "List", items: [actual] });
       return io.exit(0);
@@ -593,6 +760,9 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       const source = fileArg("--filename");
       const manifest = source === "-" ? await io.readInput() : readFileSync(source, "utf8");
       const object = JSON.parse(manifest);
+      if (state.installationSuccessor) {
+        (state.preflight.requested ??= []).push(structuredClone(object));
+      }
       const kind = {
         Secret: "secret",
         NetworkPolicy: "networkpolicy.networking.k8s.io",
@@ -825,6 +995,12 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       if (args.includes("logs")) {
         const component = object.spec.containers[0].name;
         (state.preflight.logRequests ??= []).push(component);
+        if (state.replaceInstallationDuringPreflight) {
+          // A separately accepted Secret replacement happens while the temporary
+          // startup Job runs, after the upgrade captured both immutable identities.
+          state[state.replaceInstallationDuringPreflight].metadata.uid += "-replacement";
+          delete state.replaceInstallationDuringPreflight;
+        }
         if (
           state.preflightFault?.target === component &&
           state.preflightFault.mode === "replace-during-logs"
@@ -892,7 +1068,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
         .find((a) => a.startsWith("deployment/"))
         .split("-")
         .at(-1);
-      if (component === "worker" && take("fail-scale-worker")) {
+      if (take("fail-scale-" + component)) {
         if (take("block-failure-receipt")) {
           mkdirSync(join(root, "evidence", "native-command-failures.tsv"));
         }
@@ -941,6 +1117,9 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       log("scale-" + component);
     } else if (args.includes("replace")) {
       const secret = JSON.parse(await io.readInput());
+      if (state.denyInstallationUpdate) {
+        return fail(1, "fixture denied named Secret update");
+      }
       if (secret.metadata.resourceVersion !== state.secret.metadata.resourceVersion) {
         return fail(11);
       }
@@ -959,13 +1138,17 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       }
     } else if (args.includes("get") && args.includes("secret")) {
       const name = args[args.indexOf("secret") + 1];
-      if (name !== state.secret.metadata.name && name === state.collectorSecretName) {
+      if (name === state.installationSuccessor?.metadata.name) {
+        out(state.installationSuccessor);
+      } else if (name !== state.secret.metadata.name && name === state.collectorSecretName) {
         if (!state.collectorSecret) {
           return fail(1, 'secrets "' + name + '" not found');
         }
         out(state.collectorSecret);
-      } else {
+      } else if (name === state.secret.metadata.name) {
         out(state.secret);
+      } else {
+        return fail(1, 'secrets "' + name + '" not found');
       }
     } else if (args.includes("get") && args.includes("nodes")) {
       const architecture = process.arch === "x64" ? "amd64" : "arm64";
@@ -1015,6 +1198,28 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
         component === "worker" ? (state.workerObservedImage ?? state.controller) : state.controller;
       const container = { name: component, image };
       const podSpec = { containers: [container] };
+      if (state.installationSuccessor) {
+        const values = await yamlFile(join(root, "live-values"));
+        podSpec.volumes = [
+          {
+            name: "installation-startup",
+            secret: {
+              secretName: values.installation.secretName,
+              items: [{ key: values.installation.key, path: "installation.yaml" }],
+            },
+          },
+        ];
+        container.env = [
+          { name: "OCC_CONFIG_PATH", value: "/etc/openclaw/installation/installation.yaml" },
+        ];
+        container.volumeMounts = [
+          {
+            name: "installation-startup",
+            mountPath: state.installationDeploymentMountPath ?? "/etc/openclaw/installation",
+            readOnly: true,
+          },
+        ];
+      }
       if (component === "worker" && state.workerPlacement !== "container") {
         podSpec.containers =
           state.workerPlacement === "ambiguous"
@@ -1089,7 +1294,54 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
         : args.some((a) => a.includes("app.kubernetes.io/component=api"))
           ? "api"
           : null;
-      if (pairComponent && state.simulatePair) {
+      if (pairComponent && state.installationSuccessor && !state.simulatePair) {
+        const values = await yamlFile(join(root, "live-values"));
+        out({
+          items: state[pairComponent]
+            ? [
+                {
+                  metadata: { name: `${pairComponent}-pod`, uid: `${pairComponent}-pod-uid` },
+                  spec: {
+                    containers: [
+                      {
+                        name: pairComponent,
+                        image: state.controller,
+                        env: [
+                          {
+                            name: "OCC_CONFIG_PATH",
+                            value: "/etc/openclaw/installation/installation.yaml",
+                          },
+                        ],
+                        volumeMounts: [
+                          {
+                            name: "installation-startup",
+                            mountPath:
+                              state.installationPodMountPath ?? "/etc/openclaw/installation",
+                            readOnly: true,
+                          },
+                        ],
+                      },
+                    ],
+                    volumes: [
+                      {
+                        name: "installation-startup",
+                        secret: {
+                          secretName:
+                            state.installationPodSecretName ?? values.installation.secretName,
+                          items: [{ key: values.installation.key, path: "installation.yaml" }],
+                        },
+                      },
+                    ],
+                  },
+                  status: {
+                    phase: "Running",
+                    conditions: [{ type: "Ready", status: "True" }],
+                  },
+                },
+              ]
+            : [],
+        });
+      } else if (pairComponent && state.simulatePair) {
         const proof = JSON.parse(readFileSync(join(root, "evidence", "pair-proof.json"), "utf8"));
         const status = (name, image) => ({
           name,
@@ -2525,6 +2777,43 @@ test("controller compatibility requires a value and an explicit controller selec
   assert.deepEqual(await f.events(), []);
 });
 
+for (const preflightOnly of [true, false]) {
+  test(`mutable Installation update denial on fresh ${preflightOnly ? "preflight" : "apply"}`, async (t) => {
+    const f = await fixture(t);
+    const state = await f.state();
+    state.denyInstallationUpdate = true;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    const installation = join(f.directory, "installation.json");
+    const before = await readFile(installation);
+    await assert.rejects(f.run(...(preflightOnly ? ["--preflight-only"] : [])), (error) => {
+      assert.match(
+        error.stderr,
+        /Kubernetes denied update on Installation Secret system\/occ-installation-startup/,
+      );
+      assert.doesNotMatch(error.stderr, /private self-review reason/);
+      return true;
+    });
+    assert.deepEqual(await f.events(), []);
+    const after = await f.state();
+    assert.equal(after.installationUpdateReviews, 1);
+    assert.equal(after.api, 1);
+    assert.equal(after.worker, 1);
+    assert.deepEqual(after.secret, state.secret);
+    assert.deepEqual(await readFile(installation), before);
+  });
+}
+
+test("unavailable mutable Installation update review warns and permits the actual update", async (t) => {
+  const f = await fixture(t);
+  const state = await f.state();
+  state.reviewUnavailable = true;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  const result = await f.run();
+  assert.match(result.stderr, /Could not verify update access to the Installation Secret/);
+  assert.doesNotMatch(result.stderr, /private self-review diagnostic/);
+  assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "secret-replaced", "migration"]);
+});
+
 for (const preflightOnly of [false, true]) {
   test(`immutable Installation Secret refuses changed data before ${preflightOnly ? "preflight-only succeeds" : "stopping writers"}`, async (t) => {
     const f = await fixture(t);
@@ -2553,6 +2842,7 @@ test("immutable Installation Secret permits an upgrade with equivalent YAML", as
   await f.run();
   assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "migration"]);
   assert.deepEqual((await f.state()).secret, state.secret);
+  assert.equal((await f.state()).installationUpdateReviews ?? 0, 0);
 });
 
 test("resume refuses a pending Installation write if the Secret became immutable", async (t) => {
@@ -2567,6 +2857,387 @@ test("resume refuses a pending Installation write if the Secret became immutable
   await assert.rejects(f.run("--resume"), /Installation Secret .* is immutable/);
   assert.deepEqual(await f.events(), events);
   assert.equal((await f.state()).helmSubmissions ?? 0, 0);
+  assert.equal((await f.state()).installationUpdateReviews, 1);
+});
+
+async function immutableInstallationSwitch(t, options = {}) {
+  const f = await fixture(t, {
+    preflightPolicy: true,
+    recoveryHooks: true,
+    ...options,
+  });
+  const state = await f.state();
+  state.secret.immutable = true;
+  state.secret.type = "Opaque";
+  state.secret.metadata.namespace = "system";
+  const installation = JSON.parse(
+    Buffer.from(state.secret.data["installation.yaml"], "base64").toString(),
+  );
+  installation.drivers.compute.configuration.images = { agent: runtime, gateway: runtime };
+  // The operator stages equivalent configuration with independent formatting.
+  // The mounted bytes, rather than a reserialization, must determine the checksum.
+  const staged =
+    "# Operator-staged configuration\n" +
+    JSON.stringify(Object.fromEntries(Object.entries(installation).reverse()), null, 4) +
+    "\n\n";
+  state.installationSuccessor = structuredClone(state.secret);
+  state.installationSuccessor.metadata.name = "occ-installation-successor";
+  state.installationSuccessor.metadata.uid = "successor-secret-uid";
+  state.installationSuccessor.data["installation.yaml"] = Buffer.from(staged).toString("base64");
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  const values = await yamlFile(join(f.directory, "values.json"));
+  values.installation.secretName = state.installationSuccessor.metadata.name;
+  const candidate = join(f.directory, "immutable-values.json");
+  await writeFile(candidate, JSON.stringify(values), { mode: 0o600 });
+  return {
+    ...f,
+    original: state.secret,
+    successor: state.installationSuccessor,
+    staged,
+    run: (...args) => f.run("--candidate-values", candidate, ...args),
+  };
+}
+
+async function assertImmutableInstallationRetained(f) {
+  const state = await f.state();
+  assert.equal(state.installationUpdateReviews ?? 0, 0);
+  assert.deepEqual(state.secret, f.original);
+  assert.deepEqual(state.installationSuccessor, f.successor);
+  assert.ok(!(await f.events()).includes("secret-replaced"));
+  const values = await yamlFile(join(f.directory, "live-values"));
+  assert.equal(values.installation.secretName, f.successor.metadata.name);
+  assert.equal(
+    values.controlPlane.installationChecksum,
+    createHash("sha256").update(f.staged).digest("hex"),
+  );
+}
+
+test("immutable Installation reference uses staged bytes in preflight and Helm without replacing either Secret", async (t) => {
+  const f = await immutableInstallationSwitch(t);
+  await f.run("--preflight-only");
+  assert.deepEqual(await f.events(), []);
+  const prepared = await f.state();
+  const secret = prepared.preflight.requested.find((object) => object.kind === "Secret");
+  assert.equal(Buffer.from(secret.data["installation.yaml"], "base64").toString(), f.staged);
+  const jobs = prepared.preflight.requested.filter((object) => object.kind === "Job");
+  assert.equal(jobs.length, 2);
+  for (const job of jobs) {
+    assert.ok(
+      job.spec.template.spec.volumes.some(
+        (volume) => volume.secret?.secretName === secret.metadata.name,
+      ),
+      "both startup checks must mount the temporary Secret containing the successor bytes",
+    );
+    assert.ok(
+      !job.spec.template.spec.volumes.some(
+        (volume) => volume.secret?.secretName === f.original.metadata.name,
+      ),
+    );
+  }
+  assert.equal(await readFile(join(f.evidence, "candidate-installation.yaml"), "utf8"), f.staged);
+  // Preflight-only evidence is deliberately not resumable. A fresh normal
+  // attempt proves that Helm receives the same staged bytes and reference.
+  const deployment = await immutableInstallationSwitch(t);
+  await deployment.run();
+  await assertImmutableInstallationRetained(deployment);
+  assert.deepEqual(await deployment.events(), ["scale-api", "scale-worker", "migration"]);
+  assert.ok(existsSync(join(deployment.evidence, "completed")));
+});
+
+test("immutable Installation reference refuses an unavailable or mismatched successor before stopping writers", async (t) => {
+  for (const [name, change, refusal] of [
+    ["missing", (state) => delete state.installationSuccessor, /not found/],
+    [
+      "wrong Installation",
+      (state) =>
+        (state.installationSuccessor.metadata.annotations["openclaw.dev/installation-id"] =
+          "ins_other"),
+      /staged immutable Installation Secret/,
+    ],
+    [
+      "wrong configuration",
+      (state) =>
+        (state.installationSuccessor.data["installation.yaml"] =
+          state.secret.data["installation.yaml"]),
+      /candidate Installation configuration/,
+    ],
+    [
+      "mutable",
+      (state) => (state.installationSuccessor.immutable = false),
+      /staged immutable Installation Secret/,
+    ],
+    [
+      "lost unrelated data",
+      (state) => delete state.installationSuccessor.data.retained,
+      /staged immutable Installation Secret/,
+    ],
+  ]) {
+    await t.test(name, async (subtest) => {
+      const f = await immutableInstallationSwitch(subtest);
+      const state = await f.state();
+      change(state);
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      await assert.rejects(f.run(), refusal);
+      assert.deepEqual(await f.events(), []);
+      const after = await f.state();
+      assert.equal(after.api, 1);
+      assert.equal(after.worker, 1);
+      assert.equal(after.helmSubmissions ?? 0, 0);
+      assert.equal(after.preflight?.created?.length ?? 0, 0);
+      assert.deepEqual(after.secret, f.original);
+    });
+  }
+});
+
+test("immutable Installation preflight rechecks both pins after temporary Jobs finish", async (t) => {
+  for (const key of ["secret", "installationSuccessor"]) {
+    await t.test(key, async (subtest) => {
+      const f = await immutableInstallationSwitch(subtest);
+      const state = await f.state();
+      state.replaceInstallationDuringPreflight = key;
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      await assert.rejects(f.run("--preflight-only"), (error) => {
+        assert.match(error.stderr, /Installation Secret identity or data changed/);
+        assert.doesNotMatch(error.stdout, /Preflight passed/);
+        return true;
+      });
+      await assertStoppedBeforeWriters(f);
+      const after = await f.state();
+      assert.equal(after[key].metadata.uid, state[key].metadata.uid + "-replacement");
+      assert.equal(after.preflight.logRequests.length, 2);
+      for (const kind of ["jobs", "pods", "secrets", "networkpolicies"]) {
+        assert.deepEqual(
+          after.preflight[kind],
+          {},
+          "temporary preflight resources must be cleaned",
+        );
+      }
+    });
+  }
+});
+
+test("immutable Installation completion verifies mounted consumers and the owned initializer", async (t) => {
+  const f = await immutableInstallationSwitch(t, { agent: true });
+  const state = await f.state();
+  // The volume declaration remains correct, but the controller cannot read it
+  // at its configured path. Helm success alone must not authorize Agent dispatch.
+  state.installationDeploymentMountPath = "/not-the-config-directory";
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  await assert.rejects(f.run(), /Installation consumer mount differs/);
+  const accepted = await f.state();
+  delete accepted.installationDeploymentMountPath;
+  const mutations = [
+    [
+      "controller Pod mount",
+      (value) => {
+        value.installationPodMountPath = "/wrong-directory";
+      },
+    ],
+    [
+      "initializer Job mount",
+      (value) => {
+        value.installationInitializer.job.spec.template.spec.initContainers[0].volumeMounts[0].mountPath =
+          "/wrong-directory";
+      },
+    ],
+    [
+      "initializer Pod mount",
+      (value) => {
+        value.installationInitializer.pod.spec.initContainers[0].volumeMounts[0].mountPath =
+          "/wrong-directory";
+      },
+    ],
+    [
+      "foreign initializer Pod",
+      (value) => {
+        value.installationInitializer.pod.metadata.ownerReferences[0].uid = "another-job";
+      },
+    ],
+    [
+      "unfinished initializer",
+      (value) => {
+        value.installationInitializer.job.status = { active: 1 };
+      },
+    ],
+  ];
+  for (const [name, mutate] of mutations) {
+    await t.test(name, async () => {
+      const changed = structuredClone(accepted);
+      mutate(changed);
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(changed));
+      await assert.rejects(
+        f.run("--resume"),
+        /Installation consumer mount differs|initializer (Job|Pod)/,
+      );
+      const refused = await f.state();
+      assert.equal(refused.helmSubmissions, 1);
+      assert.equal(refused.dispatches, 0);
+      assert.equal(existsSync(join(f.evidence, "completed")), false);
+    });
+  }
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(accepted));
+  await f.run("--resume");
+  const completed = await f.state();
+  assert.equal(completed.helmSubmissions, 1);
+  assert.equal(completed.dispatches, 1);
+  const receipt = JSON.parse(
+    await readFile(join(f.evidence, "installation-initializer.json"), "utf8"),
+  );
+  assert.equal(receipt.jobUid, accepted.installationInitializer.job.metadata.uid);
+  assert.equal(receipt.podUid, accepted.installationInitializer.pod.metadata.uid);
+  await assertImmutableInstallationRetained(f);
+});
+
+test("immutable Installation refuses non-string YAML mapping keys on either side", async (t) => {
+  for (const plainSide of ["intended", "staged"]) {
+    await t.test(plainSide, async (subtest) => {
+      const f = await immutableInstallationSwitch(subtest);
+      const state = await f.state();
+      const original = loadYaml(
+        Buffer.from(state.secret.data["installation.yaml"], "base64").toString(),
+      );
+      const successor = loadYaml(f.staged);
+      for (const config of [original, successor]) {
+        config.drivers.compute.configuration.network ??= {};
+        config.drivers.compute.configuration.network.dns = {
+          namespace: "kube-system",
+          podLabels: { "0x10": "resolver" },
+        };
+      }
+      const originalBytes = JSON.stringify(original).replace(
+        '"0x10":',
+        plainSide === "intended" ? "0x10: " : '"0x10":',
+      );
+      const stagedBytes = JSON.stringify(successor).replace(
+        '"0x10":',
+        plainSide === "staged" ? "0x10: " : '"0x10":',
+      );
+      // Both are valid YAML, but the startup parser sees different DNS selectors.
+      assert.notDeepEqual(
+        loadYaml(originalBytes).drivers.compute.configuration.network.dns,
+        loadYaml(stagedBytes).drivers.compute.configuration.network.dns,
+      );
+      state.secret.data["installation.yaml"] = Buffer.from(originalBytes).toString("base64");
+      state.installationSuccessor.data["installation.yaml"] =
+        Buffer.from(stagedBytes).toString("base64");
+      await writeFile(join(f.directory, "installation.json"), originalBytes);
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      await assert.rejects(f.run(), /string mapping keys/);
+      const after = await f.state();
+      assert.equal(after.api, 1);
+      assert.equal(after.worker, 1);
+      assert.equal(after.version, 1);
+      assert.deepEqual(await f.events(), []);
+      assert.equal(after.helmSubmissions ?? 0, 0);
+      assert.equal(after.preflight?.created?.length ?? 0, 0);
+      assert.deepEqual(after.secret, state.secret);
+      assert.deepEqual(after.installationSuccessor, state.installationSuccessor);
+    });
+  }
+});
+
+test("immutable Installation resume rejects same-values Helm manifest or hook substitution", async (t) => {
+  for (const field of ["manifest", "hook"]) {
+    await t.test(field, async (subtest) => {
+      const f = await immutableInstallationSwitch(subtest, { agent: true });
+      await f.failNext("lost-helm-response");
+      await assert.rejects(f.run(), injectedFault);
+      const accepted = await f.state();
+      const changed = structuredClone(accepted);
+      if (field === "manifest") {
+        const documents = yamlDocuments(changed.installationRelease.manifest).map(loadYaml);
+        documents.find(
+          (object) => object.kind === "Deployment",
+        ).spec.template.spec.containers[0].image = oldRuntime;
+        changed.installationRelease.manifest = documents
+          .map((object) => JSON.stringify(object))
+          .join("\n---\n");
+      } else {
+        const hook = JSON.parse(changed.installationRelease.hooks[0].manifest);
+        hook.spec.template.spec.initContainers[0].volumeMounts[0].mountPath = "/another-config";
+        changed.installationRelease.hooks[0].manifest = JSON.stringify(hook);
+      }
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(changed));
+      await assert.rejects(f.run("--resume"), /Helm.*(manifest|hook set).*differ/);
+      const refused = await f.state();
+      assert.equal(refused.helmSubmissions, 1);
+      assert.equal(refused.dispatches, 0);
+      assert.equal(existsSync(join(f.evidence, "completed")), false);
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(accepted));
+      await f.run("--resume");
+      assert.equal((await f.state()).helmSubmissions, 1);
+      assert.equal((await f.state()).dispatches, 1);
+      await assertImmutableInstallationRetained(f);
+    });
+  }
+});
+
+test("immutable Installation reference rechecks both captured UIDs before resumed quiescence", async (t) => {
+  const f = await immutableInstallationSwitch(t);
+  // Interrupt a prepared attempt before the first write, then change each
+  // retained object's identity independently before resuming that attempt.
+  await f.failNext("fail-scale-api");
+  await assert.rejects(f.run(), injectedFault);
+  const prepared = await f.state();
+  for (const key of ["secret", "installationSuccessor"]) {
+    const changed = structuredClone(prepared);
+    changed[key].metadata.uid += "-replacement";
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(changed));
+    await assert.rejects(f.run("--resume"), /Installation Secret|immutable Installation/);
+    assert.deepEqual(await f.events(), []);
+    assert.equal((await f.state()).api, 1);
+    assert.equal((await f.state()).worker, 1);
+    assert.equal((await f.state()).helmSubmissions ?? 0, 0);
+  }
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(prepared));
+  await f.run("--resume");
+  await assertImmutableInstallationRetained(f);
+});
+
+test("immutable Installation reference resumes partial quiescence and accepted submission without duplicate dispatch", async (t) => {
+  const f = await immutableInstallationSwitch(t, { agent: true });
+  await f.failNext("fail-scale-worker");
+  await assert.rejects(f.run(), injectedFault);
+  assert.deepEqual(await f.events(), ["scale-api"]);
+  assert.equal((await f.state()).worker, 1);
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run("--resume"), injectedFault);
+  assert.equal((await f.state()).helmSubmissions, 1);
+  assert.equal((await f.state()).dispatches, 0);
+  // A Ready Pod still mounting the predecessor is not adoption of the staged
+  // reference, even if Helm accepted the values and its rollout command passed.
+  const stale = await f.state();
+  stale.installationPodSecretName = f.original.metadata.name;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(stale));
+  await assert.rejects(f.run("--resume"), /Installation.*volume differs/);
+  assert.equal((await f.state()).helmSubmissions, 1);
+  assert.equal((await f.state()).dispatches, 0);
+  delete stale.installationPodSecretName;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(stale));
+  await f.run("--resume");
+  await assertImmutableInstallationRetained(f);
+  assert.equal((await f.state()).helmSubmissions, 1);
+  assert.equal((await f.state()).dispatches, 1);
+  const completed = await f.events();
+  await assert.rejects(f.run("--resume"), /completion marker exists/);
+  assert.deepEqual(await f.events(), completed);
+});
+
+test("immutable Installation reference survives same-candidate Helm recovery and acknowledged resume", async (t) => {
+  const f = await immutableInstallationSwitch(t, { recoveryHooks: true });
+  await f.failNext("lost-helm-response");
+  await assert.rejects(f.run(), injectedFault);
+  await completedHookInPendingRelease(f);
+  await f.failNext("fail-rollout-api");
+  await assert.rejects(f.run(...recoverHelm), injectedFault);
+  assert.equal((await f.state()).version, 3);
+  assert.equal((await f.state()).rollbackSubmissions, 1);
+  await f.run("--resume");
+  await assertImmutableInstallationRetained(f);
+  assert.equal((await f.state()).helmSubmissions, 1);
+  assert.equal((await f.state()).rollbackSubmissions, 1);
+  assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+  assert.ok(existsSync(join(f.evidence, "completed")));
 });
 
 test("an image upgrade can select curated Codex while preserving both plugin registrations", async (t) => {
@@ -4117,7 +4788,7 @@ test(
 );
 
 test(
-  "candidate cannot redirect the Installation Secret or change an image outside the selected flags",
+  "candidate cannot redirect a mutable Installation Secret or change an image outside the selected flags",
   { concurrency: true },
   async (t) => {
     const cases = [];
@@ -4136,7 +4807,12 @@ test(
             candidate.drivers.compute.configuration.images.agent = runtime;
           }
           await writeFile(path, JSON.stringify(candidate));
-          await assert.rejects(f.run(), /candidate (values|Installation) change/);
+          await assert.rejects(
+            f.run(),
+            field === "secret"
+              ? /switching the Installation reference requires an immutable predecessor/
+              : /candidate Installation change/,
+          );
           assert.deepEqual(await f.events(), []);
         }),
       );
@@ -6184,7 +6860,10 @@ async function completedHookInPendingRelease(f) {
     spec: structuredClone(hook.spec.template.spec),
     status: {
       phase: "Succeeded",
-      initContainerStatuses: [{ name: "migration", state: { terminated: { exitCode: 0 } } }],
+      initContainerStatuses: hook.spec.template.spec.initContainers.map(({ name }) => ({
+        name,
+        state: { terminated: { exitCode: 0 } },
+      })),
       containerStatuses: [{ name: "bootstrap", state: { terminated: { exitCode: 0 } } }],
     },
   };

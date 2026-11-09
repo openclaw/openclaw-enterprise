@@ -8,7 +8,7 @@ Prepare the resources for the selected source commit and test lane. See the [par
 
 `scripts/ci/prepare.mjs:prepareFile`, `scripts/ci/prepare.mjs:ensureK3dCluster`
 
-The shared lane action restores only yq and k3d downloads outside `PATH`. On Linux,
+First Agent Smoke and `run-ci-lane` both use `setup-ci-tools` to restore only yq and k3d downloads outside `PATH`. On Linux,
 `scripts/ci/setup-tools.sh` selects the checked-in platform checksum before any
 execution. `scripts/ci/download-pinned.sh` copies an installed PATH candidate or
 cached bytes to private staging,
