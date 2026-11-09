@@ -5443,6 +5443,38 @@ test("a Namespace deletion refused with HTTP 403 reports the tenant access hint"
   assert.deepEqual(await deleteWith(new Error("workspace remains nonempty")), {
     observation: { namespaceId: tenant.id, namespaceDeleted: false, failure: "retryable" },
   });
+
+  // Tenant RoleBindings cannot authorize the control-plane Gateway namespace, so its denial stays unhinted.
+  const twoCluster = new KubernetesComputeDriver(twoClusterOptions());
+  const gatewayNamespace = twoCluster.gatewayNamespaceManifest({ namespaceId: tenant.id });
+  gatewayNamespace.metadata.uid = "gateway-denied-uid";
+  gatewayNamespace.status = { phase: "Active" };
+  twoCluster.executionApiClients = Promise.resolve({
+    core: {
+      async listNamespace() {
+        return { items: [] };
+      },
+      async readNamespace() {
+        throw Object.assign(new Error("Not found"), { code: 404 });
+      },
+    },
+    objects: {},
+  });
+  twoCluster.apiClients = Promise.resolve({
+    core: {
+      async readNamespace() {
+        return structuredClone(gatewayNamespace);
+      },
+      async deleteNamespace() {
+        throw new ApiException(403, "Forbidden", JSON.stringify({ code: 403 }), {});
+      },
+    },
+    objects: {},
+  });
+  assert.deepEqual(
+    await captureNamespaceHint(() => twoCluster.deleteNamespace({ ...tenant, status: "deleting" })),
+    { observation: { namespaceId: tenant.id, namespaceDeleted: false, failure: "permanent" } },
+  );
 });
 
 test("explicit existing namespace adoption claims tenant identity only after security checks", async () => {

@@ -8,6 +8,8 @@ This record preserves the dated changes to the controller worker flow. See the [
 
 ## Changelog
 
+- 2026-10-30 17:22: Shutdown stops the loop before readiness and parts close. (fix-2997)
+
 - 2026-10-29 20:37: Document the tenant access log hint. (authoring-run/85796888-a7be-4de9-bdcb-ca8f7ef74264 - 03372ea89128)
 
 - 2026-10-23 14:00: Unreadable rows end a refused-stop wait at the attempt limit. (fix-1801)

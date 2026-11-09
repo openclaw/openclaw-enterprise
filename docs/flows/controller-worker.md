@@ -421,12 +421,10 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
-- 2026-11-09 11:00: Report the tenant access hint on Namespace deletion. (fix-4929)
+- 2026-11-09 11:00: Hint tenant access on Namespace delete. (fix-4929)
 
 - 2026-11-09 05:35: Stop before claiming. (01a1becb-641e-7b63-9791-01de09b1cda6 - 3b898fdc4a27c5cfcc6cbeb7196d96b02368da8b)
 
 - 2026-11-03 21:08: Reject directory markers. (01a12074-7896-7f63-99fe-9f42e9041d02 - b627f0997c12d10aaa87f764eac1019c67199d2f)
-
-- 2026-10-30 17:22: Shutdown stops the loop before readiness and parts close. (fix-2997)
 
 [Controller worker documentation history](controller-worker/history.md) preserves the older dated entries.

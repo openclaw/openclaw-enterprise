@@ -1555,13 +1555,18 @@ function failure(error: unknown): "retryable" | "permanent" {
     : "retryable";
 }
 
-/** Log a hint when Kubernetes answers a Namespace pass with HTTP 403, a missing tenant grant. */
-async function recordTenantAccessDenied(error: unknown): Promise<void> {
-  if (
-    numericErrorStatus(error) === 403 &&
-    error instanceof (await import("@kubernetes/client-node")).ApiException
-  ) {
-    recordNamespaceHint("KUBERNETES_TENANT_ACCESS_DENIED");
+/** Run tenant-resource work and log a hint if Kubernetes answers HTTP 403, a missing tenant grant. */
+async function withTenantAccessHint<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (
+      numericErrorStatus(error) === 403 &&
+      error instanceof (await import("@kubernetes/client-node")).ApiException
+    ) {
+      recordNamespaceHint("KUBERNETES_TENANT_ACCESS_DENIED");
+    }
+    throw error;
   }
 }
 
@@ -5783,13 +5788,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       } else if (this.preprovisionedNamespace) {
         await this.verifyExistingNetworkPolicies(name, ownership);
       }
-      try {
-        await this.prepareNamespaceInfrastructure(ownership, name);
-      } catch (error) {
-        // Only this call reconciles the tenant resources. The Gateway uses the same helper.
-        await recordTenantAccessDenied(error);
-        throw error;
-      }
+      // Only this call reconciles the tenant resources. The Gateway uses the same helper.
+      await withTenantAccessHint(() => this.prepareNamespaceInfrastructure(ownership, name));
       if (!(await this.ensureGatewayNamespace(ownership))) {
         return result;
       }
@@ -6031,21 +6031,29 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
       }
       await this.lifecycle.beforeNamespaceDelete(namespace);
-      await this.reconcileRepositoryIngress({ namespace: name.name, namespaceId: namespace.id });
-      if (this.sandboxDriver !== undefined) {
-        await this.sandboxDriver.cleanup(await this.sandboxNamespaceContext(namespace, name));
-      }
+      // Only tenant-resource cleanup is hinted; control-plane Gateway denials are not tenant grants.
+      await withTenantAccessHint(async () => {
+        await this.reconcileRepositoryIngress({ namespace: name.name, namespaceId: namespace.id });
+        if (this.sandboxDriver !== undefined) {
+          await this.sandboxDriver.cleanup(await this.sandboxNamespaceContext(namespace, name));
+        }
+      });
       if (!(await this.deleteGatewayNamespace(ownership))) {
         return result;
       }
       if (external) {
         if (this.options.network.repositoryCredentials !== undefined) {
           const references = await this.repositoryMaterialReferences(ownership, name);
-          if (!(await (await this.repositoryMaterialStore(name)).cleanup(ownership, references))) {
+          const cleaned = await withTenantAccessHint(async () =>
+            (await this.repositoryMaterialStore(name)).cleanup(ownership, references),
+          );
+          if (!cleaned) {
             return result;
           }
         }
-        const deleted = await this.deleteOwnedNamespaceResources(name, ownership);
+        const deleted = await withTenantAccessHint(() =>
+          this.deleteOwnedNamespaceResources(name, ownership),
+        );
         if (!deleted) {
           return result;
         }
@@ -6072,8 +6080,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       this.verifyNamespaceOwnership(remaining, ownership, false);
       return result;
     } catch (error) {
-      // Cleanup of tenant resources is refused when the tenant RoleBindings were never granted.
-      await recordTenantAccessDenied(error);
       return { ...result, failure: failure(error) };
     }
   }
