@@ -1266,16 +1266,20 @@ fi
   ]) {
     await writeFile(protectedFile, left);
     await writeFile(observedFile, right);
-    const result = await execute(compareScript, [protectedFile, observedFile], {
-      cwd: repository,
-      env: {
-        PATH: `${bin}:${process.env.PATH}`,
-        protected: "",
-        observed: "",
-        SHELLOPTS: "allexport",
-        PARTIAL_FAILURE: partial ?? "",
+    // Exercise deliberate allexport without importing ambient shell startup options.
+    const result = await execute(
+      "bash",
+      ["--noprofile", "--norc", "-a", compareScript, protectedFile, observedFile],
+      {
+        cwd: repository,
+        env: {
+          PATH: `${bin}:${process.env.PATH}`,
+          protected: "",
+          observed: "",
+          PARTIAL_FAILURE: partial ?? "",
+        },
       },
-    }).then(
+    ).then(
       (result) => ({ ...result, code: 0 }),
       (error) => error,
     );
@@ -1290,9 +1294,21 @@ test("upgrade fixture subprocesses ignore ambient shell startup hooks", async (t
   const marker = join(directory, "startup-ran");
   const hook = join(directory, "startup.sh");
   await writeFile(hook, 'printf "hook\\n" >> "$STARTUP_MARKER"\nexport KUBECONFIG=overridden\n');
-  const command = await writeCommand(directory, "fixture-command", 'printf "%s\\n" "$KUBECONFIG"', {
-    interpreter: "bash",
-  });
+  const command = await writeCommand(
+    directory,
+    "fixture-command",
+    `
+[[ ! -v ENV ]] || { echo 'ENV reached the fixture' >&2; exit 48; }
+if shopt -q extglob; then
+  echo 'extglob reached the fixture' >&2
+  exit 49
+fi
+printf '%s\\n' "$KUBECONFIG"
+`,
+    {
+      interpreter: "bash",
+    },
+  );
   const launcher = await writeCommand(directory, "launcher", '"$FIXTURE_COMMAND"', {
     interpreter: "bash",
   });
