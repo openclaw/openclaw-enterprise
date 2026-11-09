@@ -121,6 +121,7 @@ async function standInChart(
   initializationResources,
   ordinary = [],
   installationCheck = false,
+  apiEnvironment = [],
 ) {
   const values = await yamlFile(file);
   const secretName = yqRaw(yqOr(values?.installation?.secretName, "occ-installation-startup"));
@@ -146,14 +147,7 @@ async function standInChart(
               image,
               env: [
                 { name: "OCC_CONFIG_PATH", value: "/etc/openclaw/installation/installation.yaml" },
-                ...(component === "api" && values.api?.channelDirectoryProxyUrl
-                  ? [
-                      {
-                        name: "OCC_CHANNEL_DIRECTORY_PROXY_URL",
-                        value: values.api.channelDirectoryProxyUrl,
-                      },
-                    ]
-                  : []),
+                ...(component === "api" ? apiEnvironment : []),
               ],
               volumeMounts: [
                 {
@@ -507,7 +501,15 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
               ...(state.recoveryHooks && !state.recoveryRelease
                 ? {
                     manifest:
-                      (await standInChart(join(root, "live-values"), false)) +
+                      (await standInChart(
+                        join(root, "live-values"),
+                        false,
+                        false,
+                        undefined,
+                        [],
+                        false,
+                        state.recoveryBaselineApiEnvironment,
+                      )) +
                       (state.recoveryBaselineResources ?? [])
                         .map((item) => "---\n" + JSON.stringify(item) + "\n")
                         .join(""),
@@ -6913,6 +6915,9 @@ async function interruptedProxyRemoval(t) {
   };
   const state = await f.state();
   state.recoveryBaselineResources = [policy];
+  state.recoveryBaselineApiEnvironment = [
+    { name: "OCC_CHANNEL_DIRECTORY_PROXY_URL", value: "http://198.51.100.25:3128" },
+  ];
   await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
   const run = (...args) => f.run(...args);
   await f.failNext("lost-helm-response");
