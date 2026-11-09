@@ -18,10 +18,8 @@ const runtimeChildFixture = new URL(
   import.meta.url,
 );
 
-test(
-  "staging workflow command consumes bound digests and refuses invalid release evidence",
-  checkWorkflowCommand,
-);
+test("staging workflow command consumes bound digests and refuses invalid release evidence", (t) =>
+  checkWorkflowCommand(t));
 test("staging runtime lane preserves the reviewed Codex version in its child", checkRuntimeChild);
 test("staging pair pull binds sealed images and cleans failed pulls", (t) =>
   checkWorkflowCommand(t, true));
@@ -327,11 +325,13 @@ syncBuiltinESMExports();
 `,
   );
   const workflow = await readFile(".github/workflows/staging-qualification.yml", "utf8");
-  const jobs = new Map(
-    [...workflow.matchAll(/^ {2}(qualify|stage-pair):\n((?: {4}[^\n]*\n|\n)+)/gm)].map(
-      ([, name, body]) => [name, body!],
-    ),
-  );
+  const jobs = new Map<string, string>();
+  for (const [, name, body] of workflow.matchAll(
+    /^ {2}(qualify|stage-pair):\n((?: {4}[^\n]*\n|\n)+)/gm,
+  )) {
+    assert.ok(name && body, "expected a named staging job with steps");
+    jobs.set(name, body);
+  }
   assert.equal(jobs.size, 2);
   for (const [name, body] of jobs) {
     const checkouts = [
