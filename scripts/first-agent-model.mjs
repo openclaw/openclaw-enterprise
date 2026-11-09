@@ -334,10 +334,15 @@ export function isGatewayCompletionId(value) {
 }
 
 // Serialized with its completion-ID validator and executed inside the Gateway container.
-async function probeInGateway({ nonce, prompt, expectProviderKey, sessionKey }) {
+async function probeInGateway() {
   const emit = (value) => process.stdout.write(JSON.stringify(value));
   const failure = (code, status) => ({ error: code, ...(status === undefined ? {} : { status }) });
   try {
+    let input = "";
+    for await (const chunk of process.stdin.setEncoding("utf8")) {
+      input += chunk;
+    }
+    const { nonce, prompt, expectProviderKey, sessionKey } = JSON.parse(input);
     const providerKey = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
     const password = process.env.OPENCLAW_GATEWAY_PASSWORD;
@@ -477,6 +482,14 @@ async function probeInGateway({ nonce, prompt, expectProviderKey, sessionKey }) 
   }
 }
 
+// Only source-owned code goes in the command. The prompt and per-request values travel on stdin.
+export const gatewayProbeCommand = Object.freeze([
+  "node",
+  "--input-type=module",
+  "--eval",
+  `${isGatewayCompletionId.toString()}\n(${probeInGateway.toString()})();`,
+]);
+
 /**
  * @param {{ namespaceId: string, agentId: string, revisionId: string,
  *   prompt?: string | undefined, apiKey?: string | undefined, expectProviderKey?: boolean | undefined,
@@ -525,7 +538,6 @@ export async function verifyFirstAgentModel(kubectl, options) {
 
   const { namespace, pod } = await findGateway(kubectl, namespaceId, agentId, revisionId, signal);
   const nonce = `FIRST_AGENT_${randomUUID()}`;
-  const script = `${isGatewayCompletionId.toString()}\nawait (${probeInGateway.toString()})(${JSON.stringify({ nonce, prompt, expectProviderKey, sessionKey })});`;
   let output;
   try {
     output = await kubectl(
@@ -537,10 +549,8 @@ export async function verifyFirstAgentModel(kubectl, options) {
       "-c",
       "gateway",
       "--",
-      "node",
-      "--input-type=module",
-      "-",
-      { input: script, timeout: 420_000 },
+      ...gatewayProbeCommand,
+      { input: JSON.stringify({ nonce, prompt, expectProviderKey, sessionKey }), timeout: 420_000 },
     );
   } catch {
     throw new FirstAgentModelError("execution");

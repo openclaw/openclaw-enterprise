@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
-import { FirstAgentModelError, verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
+import {
+  FirstAgentModelError,
+  gatewayProbeCommand,
+  verifyFirstAgentModel,
+} from "../../scripts/first-agent-model.mjs";
 import { FixtureCommandTimeoutError } from "../fixtures/repository-credentials/process.mjs";
 import { ConversationReplyError, createNativePluginAssertions } from "./plugin-driver-real.mjs";
 
@@ -396,9 +400,7 @@ export function createFiniteGitConversation({
                 "-c",
                 "gateway",
                 "--",
-                "node",
-                "--input-type=module",
-                "-",
+                ...gatewayProbeCommand,
               ])
             ) {
               return fail();

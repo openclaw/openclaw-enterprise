@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { cp, mkdtemp, mkdir, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 
@@ -670,10 +671,15 @@ test("model verification retains safe failure metadata without forwarding probe 
     // Execute the production serialized probe. Only its transport destination is
     // adapted to an owned loopback server; this does not claim a Gateway/model run.
     let output = "";
-    await runInNewContext(`(async () => { ${args.at(-1).input} })()`, {
+    const input = args.at(-1).input;
+    const program = args.at(-2);
+    const { nonce } = JSON.parse(input);
+    assert.ok(!program.includes(nonce));
+    await runInNewContext(program, {
       AbortSignal,
       process: {
         env: { OPENCLAW_GATEWAY_PASSWORD: "synthetic-password" },
+        stdin: Readable.from([input]),
         stdout: {
           write: (value) => {
             output += value;

@@ -503,9 +503,16 @@ test(
         }
         await checkpoint();
       };
-      const verify = async (mode: "live" | "replacement", expectedWorker?: string) => {
+      const verify = async (replacement?: {
+        expectedWorker: string;
+        checkOrigin: (completedWitnesses: number) => void;
+      }) => {
+        const mode = replacement ? "replacement" : "live";
+        const expectedWorker = replacement?.expectedWorker;
         const step = phases[mode];
+        replacement?.checkOrigin(0);
         await witness(step.witnessBefore);
+        replacement?.checkOrigin(1);
         phase = step.signed;
         const diagnostics = {
           mode,
@@ -626,13 +633,7 @@ test(
           }
           phase = step.origin;
           assert.equal(origin.gitAttemptIndices().length, attempts);
-          if (mode === "replacement") {
-            assert.deepEqual(
-              origin.snapshot(),
-              before,
-              "post-detach Git must cause no origin traffic",
-            );
-          }
+          replacement?.checkOrigin(1);
         } catch (error) {
           if (phase === step.signed) {
             try {
@@ -662,10 +663,11 @@ test(
         );
         assert.equal(after.issued, before.issued);
         await witness(step.witnessAfter);
+        replacement?.checkOrigin(2);
         assert.deepEqual((await a.readExecution()).identity, a.original.identity);
         inTime();
       };
-      await verify("live");
+      await verify();
       phase = "live B positive";
       assert.equal(await read(b), indexB, "B must reuse its original credential after A's denial");
       assert.equal(origin.snapshot().issued, issuedBeforeRemoval);
@@ -702,6 +704,8 @@ test(
       phase = "confirmed provider removal";
       const beforeRestartGeneration = await providers.waitForRemoval();
       const originBeforeRestart = origin.snapshot();
+      const checkReplacementOrigin = origin.observeReplacementOrigin(indexA, indexB);
+      const restartTraffic = origin.observeRestartTraffic(indexA, indexB);
       phase = "restart invocation";
       const restart = await fixture.restartWorker({
         agentId: a.agent.id,
@@ -741,18 +745,18 @@ test(
         "tokens",
         "targetedRetirementRefusals",
       ]);
-      assert.deepEqual(
-        afterRestartOrigin,
-        originBeforeRestart,
-        "worker replacement must not replay issuance or retirement",
-      );
+      const channels = restartTraffic();
+      if (channels.length) {
+        phase += `; ${channels.join(", ")}`;
+      }
+      checkReplacementOrigin(0);
       phase = "reduced supplier checkpoint";
       await fixture.checkpoint("finite-removal-reduced", {
         revisionId: a.revision.id,
         ...restart.completion,
         ...reducedGeneration,
       });
-      await verify("replacement", restart.afterUid);
+      await verify({ expectedWorker: restart.afterUid, checkOrigin: checkReplacementOrigin });
       phase = "replacement chat";
       previousReply = await conversation.turn(previousReply, remaining());
       phase = "post-chat supplier read";
@@ -767,6 +771,7 @@ test(
       phase = "alternate-key mismatch";
       await conversation.rejectSubstitution(previousReply, 180_000);
       phase = "targeted retirement refusal";
+      checkReplacementOrigin(2);
       const finalOrigin = origin.snapshot();
       assert.equal(
         finalOrigin.issued,
