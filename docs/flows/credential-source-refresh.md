@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-11-05
-last_updated_session: codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676
+updated: 2026-11-09
+last_updated_session: authoring-run/f85f38a2-a1c4-4ec9-a042-3ab412309b8e
 ---
 
 # Credential source refresh Flow
@@ -35,7 +35,9 @@ use committed tokens and cannot trigger issuance.
 
 ```mermaid
 graph TD
-  A["<b>POST refresh source</b><br/>catalog and grants"] --> B["<b>registerSource</b><br/>profile with refresh, empty provider"]
+  A{"<b>Validated refresh type</b><br/>Prepared issuer?"} -- "yes" --> U["<b>501 NOT_IMPLEMENTED</b><br/>No registration"]
+  A -- "Gateway-owned" --> R["<b>Select Refresh Driver</b>"]
+  R --> B["<b>registerSource</b><br/>profile with refresh, empty provider"]
   B -- "failed" --> X["<b>removeRefresh, removeSource</b><br/>delete record"]
   B -- "ready" --> C["<b>configureRefresh</b><br/>material, stable request ID"]
   C --> D["<b>rotate</b><br/>first mint"]
@@ -54,20 +56,20 @@ graph TD
 
 `packages/occ/src/index.ts:createCredentialSource`
 
-Requests must match the gateway catalog. Device-authorized types defer minting
-until completion. For `rotation: refresh`, the first
-transaction requires the selected Credential Refresh Driver before gateway calls.
-The API reads Secret values, commits `registering`, then sends gateway
-`registerSource` only config. Issuer values go only to the Refresh Driver.
+OCC authorizes creation and validates config and Secret reference fields against
+the selected type. If the type declares `rotation: refresh` and its provider has
+a prepared issuer, OCC returns [`501 NOT_IMPLEMENTED`](../reference/credential-sources.md#rotate-a-refresh-source)
+before selecting Refresh, reading Secret values, creating the record or configuring either owner. Prepared issuers cannot rotate on demand.
 
-The gateway posts the issuer material to `token_url` from its own network
-position, so `validateOAuth2Config` refuses a `token_url` host that is an IP
-address in any spelling, a `localhost` or `localdomain` name, or a single-label
-name (the shapes of the gateway Pod's `/etc/hosts` aliases), before any Secret
-read. Building the profile refuses a stored one, or a stored port `0`, too, so
-attaching such a source fails. A `hostAliases` entry on the gateway Pod (the
-OpenShell chart's `server.hostGatewayIP`) stays reachable by its name; that is
-the deployer's choice.
+Gateway-owned types must match the Gateway catalog. OCC selects Refresh, reads Secrets, commits
+`registering`, and sends only config to `registerSource`. Only Refresh receives
+issuer material. Device login defers minting until completion.
+
+The gateway posts issuer material to `token_url`. Before Secret reads,
+`validateOAuth2Config` rejects IPs in any spelling, `localhost` and `localdomain`
+names, and single-label names (Pod `/etc/hosts` aliases). Profile construction
+also rejects these stored hosts and port `0`, preventing attachment.
+Deployer-configured `hostAliases` (chart setting `server.hostGatewayIP`) remain reachable.
 
 The check also refuses names that reach the gateway Pod itself, which egress
 NetworkPolicy does not police (finding 1356):
@@ -92,15 +94,13 @@ NetworkPolicy does not police (finding 1356):
   `<service>.<namespace>` or other `endpoint` host names no namespace, and only
   Pod names are refused.
 
-Issuers in other namespaces keep their Service names. OCC stores `token_url` as
-the controller's URL parser serializes it (`new URL(token_url).href`), so the
-gateway parses the spelling that was checked.
+Other namespaces retain their issuer Service names. OCC stores `new URL(token_url).href`
+so the gateway receives the validated spelling.
 
 `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
-imports a per-source OpenShell profile whose `access_token` credential declares
-the OAuth2 strategy, `token_url`, and refresh-material names. It creates the
-provider without a credential value, because OpenShell resolves a
-gateway-mintable credential at runtime.
+imports a per-source profile and creates a provider without a token. The profile declares the OAuth2
+strategy, `token_url`, and refresh-material names for `access_token`;
+OpenShell resolves the credential at runtime.
 
 ### 2. First mint
 
@@ -325,6 +325,8 @@ detached reads. Clearing bytes cannot revoke a token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-09 14:26: Trace the refusal of prepared issuers that cannot rotate on demand. (authoring-run/f85f38a2-a1c4-4ec9-a042-3ab412309b8e - c713b94f8ce09d8bde669b02e7d9aca46e5fc7a6)
 
 - 2026-11-05 23:21: Trace GitHub request-time issuance. (codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676 - 614169814)
 
