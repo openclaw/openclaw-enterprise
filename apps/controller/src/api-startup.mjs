@@ -22,6 +22,7 @@ import {
   startupDependencyFailure,
   startupConfigurationFailure,
   startupListenerFailure,
+  installationSettingFailureCode,
 } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
@@ -71,19 +72,9 @@ function startupFailureCode(error) {
   if (/Slack directory proxy/i.test(message)) {
     return "CHANNEL_DIRECTORY_PROXY_INVALID";
   }
-  if (
-    /observability\.url (?:IPv4 host must be four decimal octets|must not contain user info|must not contain a tab|must be an absolute HTTP)/.test(
-      message,
-    )
-  ) {
-    return "OBSERVABILITY_URL_INVALID";
-  }
-  if (
-    /(?:Gateway|Agent) image (?:must use an immutable SHA-256 digest|repository path must be lowercase|must be a container image reference Kubernetes can pull)/.test(
-      message,
-    )
-  ) {
-    return "RUNTIME_IMAGE_INVALID";
+  const settingCode = installationSettingFailureCode(message);
+  if (settingCode !== undefined) {
+    return settingCode;
   }
   if (/ServiceAccounts require PostgreSQL persistence/.test(message)) {
     return "SERVICE_ACCOUNT_REQUIRES_POSTGRES";
