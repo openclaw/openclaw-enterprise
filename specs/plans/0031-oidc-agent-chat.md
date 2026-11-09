@@ -5,7 +5,7 @@ rfc: ../rfcs/0031-oidc-agent-chat.md
 # Implementation plan: OIDC sign-in through Agent chat
 
 - **ID:** RFC-0031
-- **Delivery status:** In progress
+- **Delivery status:** Implemented
 - **Authority:** [OIDC sessions and operator chat](../rfcs/0031-oidc-agent-chat.md)
 - **Source baseline:** OCE `8b9b105b6398`; OpenClaw `513c12703ad9` from
   [the runtime pin](../../deploy/runtime/openclaw-source.json).
@@ -154,8 +154,8 @@ architecture claim false. Preserve historical RFCs and plans.
 
 ## Verification
 
-All runtime rows below are **not run**. They are delivery requirements, not
-evidence supplied by this specification.
+The table defines the required proof. Observed results and remaining limits
+are recorded in the [delivery record](#delivery-record).
 
 | Outcome                  | Required proof                                                                                                                                                                                                                                                                                                                                                                           |
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -188,10 +188,33 @@ revalidation and ordinary-owner browser setup. Current behavior is documented
 in [Agent browser access](../../docs/reference/agent-native-admin.md) and
 [authentication](../../docs/reference/authentication.md).
 
-Real Keycloak browser sign-in and PostgreSQL session checks pass. Native runtime
-qualification, the combined IdP-to-Agent journey and independent review remain
-in progress. No authorized PingFederate test deployment is available; provider
-qualification remains unverified.
+Verification used the pinned OpenClaw source `513c12703ad9`, a controller image
+checked against the implementation source, and disposable local arm64 k3d,
+PostgreSQL and Keycloak fixtures. It does not establish a production deployment
+or qualify an arbitrary released runtime image.
+
+- Real Keycloak sign-in: 6 passed. PostgreSQL OIDC: 11 passed; Console tab binding:
+  5 passed; guarded shared-cookie browser proof: 1 passed.
+- Exact-Agent access: 15 passed. PostgreSQL session, revocation and dependency
+  behavior: 14 passed. Pinned native HTTP, WebSocket and device scope ceilings:
+  3 passed, with no skips.
+- The complete `oidc-agent-chat-k3d-real.test.ts` journey passed without skips:
+  owner and operator Keycloak sign-in, ordinary create/deploy, real model replies,
+  incremental streaming, Stop with abort acknowledgement, persisted-session
+  reconnect/resume, administrative denials and sibling-Agent denial.
+- Existing dedicated and shared embedded native-browser workflows: 2 passed,
+  with no failures or skips, including selective withdrawal and session expiry.
+- Rebuilt Console stories and a setup walkthrough were inspected. Native GitHub
+  screenshots and video provide simulated UI proof; the real journey above
+  supplies backend and runtime proof.
+
+Independent code, documentation, dead-code and simplification reviews completed;
+accepted findings were fixed and the affected changes reviewed again. See
+[PR #5136](https://github.com/openclaw/openclaw-enterprise/pull/5136)
+for final verification and PR checks.
+
+No authorized PingFederate test deployment was available; provider qualification
+remains unverified. Automatic account creation remains out of scope.
 
 ## Manual Notes
 

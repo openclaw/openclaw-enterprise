@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Partially implemented
+implementation_status: Implemented
 author: kevinlin-openai
 ---
 
@@ -24,19 +24,21 @@ an IAM action. It is a successor to the relevant restrictions in
 [RFC-0001](0001-oidc-sign-in.md),
 [RFC-0007](0007-human-federated-sign-in/index.md), and the
 [native admin pilot](../plans/31-agent-native-admin-ui.md). Those historical
-records remain unchanged. This draft is for human review; it is not acceptance
-or implementation authorization.
+records remain unchanged. This RFC remains under human review. Implementation
+was authorized separately and is recorded below.
 
-## Motivation and current behavior
+<a id="motivation-and-current-behavior"></a>
 
-The [OIDC profile](../../docs/guides/deploy/oidc-sign-in.md) authenticates existing
-accounts. Production and development composition reject OIDC when native
-administration is enabled; authentication also rejects a shared cookie domain.
-The native UI, however, uses that shared cookie to authenticate on Agent hosts.
-An installation therefore cannot combine the supported OIDC sign-in and Agent
-browser UI paths.
+## Motivation and baseline behavior
 
-The native proxy currently requires `administer` and its private route supplies
+At the source baseline, the [OIDC profile](../../docs/guides/deploy/oidc-sign-in.md)
+authenticated existing accounts. Production and development composition rejected
+OIDC when native administration was enabled; authentication also rejected a shared
+cookie domain. The native UI used that shared cookie to authenticate on Agent
+hosts. An installation therefore could not combine OIDC sign-in and Agent
+browser access.
+
+The baseline native proxy required `administer` and its private route supplied
 `occ-workspace-files` with `operator.admin`. Broadening only the OCC admission
 check would expose full native administration. Creator ownership from
 [PR #4231](https://github.com/openclaw/openclaw-enterprise/pull/4231) lets ordinary
@@ -194,12 +196,18 @@ per-command human attribution.
 
 ## Delivery and review
 
-The [plan](../plans/0031-oidc-agent-chat.md) covers implementation, current-doc
-updates and integration proof. Submit this RFC for human review before changing
-the Compute or IAM contract. Source inspection has run; runtime qualification
-has not. In particular, real browser proof must join OIDC sign-in to a real
-Agent model turn and demonstrate administrative denials through HTTP and
-WebSocket, including attempted device-based elevation.
+This RFC was submitted for human review in
+[PR #5136](https://github.com/openclaw/openclaw-enterprise/pull/5136) before the
+Compute and IAM contract changes. The implementation now follows the current
+[Agent browser access](../../docs/reference/agent-native-admin.md) and
+[authentication](../../docs/reference/authentication.md) references.
+
+The [plan](../plans/0031-oidc-agent-chat.md#delivery-record) records verification.
+Real Keycloak sign-in, ordinary-owner creation and deployment, operator model
+replies, streaming, Stop, reconnect and administrative denials passed. Pinned
+native-runtime checks also passed, including HTTP, WebSocket and device scope
+ceilings. No authorized PingFederate environment was available; that provider
+remains unqualified.
 
 Review the derived shared-domain trust boundary, extension of all existing
 Agent `operate` grants, and the shared conversation identity. A separate
