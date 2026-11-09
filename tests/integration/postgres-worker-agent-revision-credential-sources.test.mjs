@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import {
   CredentialWithdrawalRefusedError,
@@ -26,25 +27,10 @@ import {
   makeWorkDue,
   removeAccessBindings,
   repositoryAttempts,
-  repositoryBoundary,
   withUnavailableIAM,
 } from "../helpers/postgres-worker-revision-support.mjs";
-import { gitCommandBodies, gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
-import { onlineGitAllow, openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
-import { invoke, token } from "../helpers/openshell-online-wire.mjs";
-import {
-  OpenShellGitRuntime,
-  openShellRepositoryAccess,
-} from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
-import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
-import {
-  createGitHubRepositoryDeliveryResolver,
-  resolveGitHubRepositoryBinding,
-  validateGitHubRepositoryRegistry,
-} from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import { gitCommandBodies } from "../helpers/openshell-online-git-journey.mjs";
+import { createNarrowOnlineGitStartup } from "../helpers/postgres-repository-set-journey.ts";
 
 // Credential sources on revision work: withdrawals (retries, replays, denials and maintenance
 // re-queues), and listed sources that lose their grant or readiness after admission. Deployment,
@@ -3120,91 +3106,6 @@ function attachedGitExpires({
   leaseExhaustion = false,
 }) {
   return async (t) => {
-    const backendId = "github-primary";
-    const repository = repositoryBoundary({ backendId });
-    // This registered controlled sender qualifies finite v5 installation access. Stock
-    // OpenShell does not offer nonpreview installation-wide admission; this is not that claim.
-    const protectedGit = protectedRepositoryGitRelease(
-      () => openShellRepositoryAccess(runtime, () => ({ client, continuity, workspace, sandbox })),
-      async () => ({ close: async () => {} }),
-    );
-    const f = await setup(t, {
-      repoDriver: repository.driver,
-      ...(leaseExhaustion && { maxAttempts: 1 }),
-      driverSelections: { sandbox: protectedGit.sandboxConfiguration },
-      backends:
-        removalDuringPreparation || cleanupDuringStop
-          ? [
-              {
-                id: backendId,
-                type: "github",
-                configuration: { registryPath: "/unused/controlled-registry.json" },
-                drivers: { repo: repository.driver.id },
-              },
-            ]
-          : [],
-    });
-    const gateway = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/bin/codex"] },
-      {
-        id: CREDENTIAL_GATEWAY_FIXTURE_ID,
-        backend: {
-          id: "finite-expiry-gateway",
-          drivers: { credential_gateway: CREDENTIAL_GATEWAY_FIXTURE_ID },
-          client: { placement: () => undefined, clientForNamespace: () => client },
-        },
-      },
-    );
-    if (removalDuringPreparation || cleanupDuringStop) {
-      f.controller.registerDriver(repository.driver);
-      f.controller.selectDriver("repo", repository.driver.id);
-    }
-    f.controller.installDriver(protectedGit.owner, ["sandbox", "credential_proxy"]);
-    f.controller.registerDriver(gateway);
-    f.controller.selectDriver("credential_gateway", gateway.id);
-    const routes = new PostgresOpenShellGitRouteStore(f.observerPool);
-    const namespaceId = f.namespace.id;
-    const pushRef = "refs/heads/review/task";
-    const project = "example/application";
-    const registry = validateGitHubRepositoryRegistry(
-      {
-        version: 1,
-        backendId,
-        providerInstanceId: "github-com-primary",
-        appId: "12345",
-        githubInstallationId: "67890",
-        maximumDurationSeconds: 86400,
-        installationAccess: {
-          repositoryRef: "installation",
-          namespaces: [{ namespaceId, accessMode: "installation" }],
-        },
-        repositories: [],
-      },
-      backendId,
-    );
-    const binding = resolveGitHubRepositoryBinding(registry, {
-      namespaceId,
-      repositoryRef: "installation",
-      profile: "github-installation",
-    });
-    // Repository and Compute must resolve the same registry grant throughout this test.
-    repository.driver.resolve = (input) => ({
-      bindings: input.bindings.map((item) =>
-        resolveGitHubRepositoryBinding(registry, { namespaceId: input.namespaceId, ...item }),
-      ),
-      sessionDurationSeconds: 60,
-    });
-    const registrationName = "oce-prepared-git";
-    const sandboxId = "fixture-original";
-    const workspace = "git-expiry";
-    const sandbox = "git-agent";
-    const events = [];
-    const approved = [];
-    const stopped = [];
-    let sessionId;
-    let identity;
-    let runtime;
-    let senderRuntime;
     let withdrawalCommitted = false;
     let unacknowledgedStop;
     let finalizationStop;
@@ -3217,79 +3118,33 @@ function attachedGitExpires({
     const resumePreparation = Promise.withResolvers();
     t.after(() => resumePreparation.resolve());
     let retainedObservations = 0;
-    const bodies = await gitCommandBodies(t, pushRef);
-    const { client: middleware, keys } = await openShellOnlineGitWire(t, {
-      registrationName,
-      budgetMs: 3000,
-      async lookupBinding(id, signal) {
-        let refused;
-        const found = await senderRuntime.lookup(id, signal, (reason) => {
-          refused = reason;
-        });
-        return found ?? (refused && { refused });
-      },
-      async authorizeOnlineRequest(request, installed) {
-        assert.equal(request.sessionId, sessionId);
-        assert.equal(request.scope, "github-installation");
-        approved.push(request.operation);
-        assert.equal(installed.route.revisionId, revision.id);
-        return {
-          ...onlineGitAllow(request, installed),
-          scope: request.scope,
-          revisionId: installed.route.revisionId,
-          fence: installed.route.fence,
-        };
-      },
-    });
-    // Allocate the Agent and independent model grant before starting the short Git clock.
-    const agent = await f.agent("attached-git-expires", {
-      auth: "credential_source",
-      executionMode: "dedicated",
-    });
-    // An earlier admitted candidate exercises the real predecessor-retirement callback.
-    // It is held before execution: this proves ordering, not a serving predecessor process.
-    const pendingSetup = unacknowledgedActivation
-      ? await f.state.transact((unit) =>
-          unit.workspaceSetups.create({
-            id: randomUUID(),
-            namespaceId,
-            agentId: agent.id,
-            files: { "AGENTS.md": "# Pending workspace instructions" },
-            completed: false,
-          }),
-        )
-      : undefined;
-    const previous =
-      removalDuringFinalization || unacknowledgedActivation
-        ? await admitHeldRevision(f, agent, 1)
-        : undefined;
+    let pendingSetup;
+    let previous;
     const retired = [];
-    await f.observerPool.query("UPDATE occ.agents SET repository_bindings=$1 WHERE id=$2", [
-      JSON.stringify([{ repositoryRef: binding.repositoryRef, profile: binding.profile }]),
-      agent.id,
-    ]);
-    // The preinstalled model provider and its retained profile remain the original expiry
-    // fixture's. Enrollment must not replace that profile and erase its overlap controls.
-    const model = agent.harnessAuth.sourceId;
-    const continuity = { model, workload: async () => "original-workload-and-supervisor" };
-    const deadlineWallMs = Date.now() + (removal ? 120_000 : 6_000);
-    const revision = await f.revision(agent, previous ? 2 : 1, {
-      protectedRepositoryDriver: protectedGit.owner,
-      repositoryCredentials: { ...repository.snapshot, deadlineWallMs, bindings: [binding] },
-    });
-    assert.deepEqual(revision.executionAdmission, { version: 5, mode: "protected" });
-    assert.equal(revision.egressPlan.repositoryGitAuthorization, "online-request");
-    assert.deepEqual(revision.egressPlan.repositoryGit, revision.repositoryCredentials);
-    assert.equal(revision.repositoryCredentials.standingApprovalId, undefined);
-    assert.equal(revision.repositoryCredentials.deadlineWallMs, deadlineWallMs);
-    assert.deepEqual(revision.egressPlan.harnessCredentialSource, revision.harnessAuth);
-    const { client, world } = await gitExpiryGateway(t, {
-      model,
-      workspace,
-      sandbox,
-      revisionId: revision.id,
+    const startup = await createNarrowOnlineGitStartup(t, import.meta.url, {
+      draftPull: false,
+      sessionDurationSeconds: removal ? 120 : 15,
       platformProfile,
-      deadline: deadlineWallMs,
+      ...(leaseExhaustion && { maxAttempts: 1 }),
+      async beforeAdmission({ fixture, agent: admittedAgent, configuration }) {
+        const owner = { ...admittedAgent, configurationId: configuration.id };
+        pendingSetup = unacknowledgedActivation
+          ? await fixture.state.transact((unit) =>
+              unit.workspaceSetups.create({
+                id: randomUUID(),
+                namespaceId: fixture.namespace.id,
+                agentId: owner.id,
+                files: { "AGENTS.md": "# Pending workspace instructions" },
+                completed: false,
+              }),
+            )
+          : undefined;
+        // Admit a held predecessor through the same fixture before the selected revision.
+        previous =
+          removalDuringFinalization || unacknowledgedActivation
+            ? await admitHeldRevision(fixture, owner, 1)
+            : undefined;
+      },
       configure(methods, gatewayWorld) {
         if (!removal) {
           return;
@@ -3297,8 +3152,7 @@ function attachedGitExpires({
         const observe = methods.GetSandboxProviderStatus;
         methods.GetSandboxProviderStatus = (request) => {
           const result = observe(request);
-          // The expiry fixture moves this version when the deadline elapses. Explicit
-          // removal must exercise the same concurrent gateway update before that deadline.
+          // Removal exercises the concurrent Gateway update before natural expiry.
           if (withdrawalCommitted && gatewayWorld.version === 13) {
             gatewayWorld.version = 14;
           }
@@ -3306,54 +3160,25 @@ function attachedGitExpires({
         };
       },
     });
-    const material = {
-      ...binding.grant,
-      value: "synthetic-installation-token",
-      expiresAt: new Date(deadlineWallMs + 600_000).toISOString(),
-      scope: "github-installation",
-      installationId: registry.githubInstallationId,
-      preparationAttemptId: randomUUID(),
-      materialVersion: randomUUID(),
-      apiOrigin: "https://api.github.com",
-    };
-    function releaseRuntime() {
-      const git = new OpenShellGitRuntime(
-        { registrationName, authority: {} },
-        createGitHubRepositoryDeliveryResolver(registry),
-      );
-      // Keep the original controlled supplier and TLS authority. Enrollment and route custody
-      // are real; this material is released only after the worker has committed activation.
-      git.routes = routes;
-      git.owner = {
-        async readOpenShellMaterial(_revisionId, _signal, route, scope) {
-          assert.equal(_revisionId, revision.id);
-          assert.equal(route.revisionId, revision.id);
-          assert.equal(scope, "github-installation");
-          if ((await f.currentAgent(agent)).activeRevisionId !== revision.id) {
-            return { absent: "unprepared" };
-          }
-          return { ...material, sessionId };
-        },
-      };
-      git.emit = (e) => events.push(e);
-      return git;
-    }
-    senderRuntime = runtime = releaseRuntime();
-    const kube = createTestKubernetesComputeDriver(f.compute.id, {
-      repositoryCredentials: true,
-      protectedDriver: protectedGit.owner,
-      credentialGatewayDriver: gateway,
-    });
+    const { fixture: f, binding, peer, world, events, stopped, continuity } = startup;
+    const revision = { ...startup.revision, idempotencyKey: startup.work.idempotencyKey };
+    const agent = { ...startup.agent, configurationId: startup.configuration.id };
+    const namespaceId = f.namespace.id;
+    const { client, workspace, sandbox } = startup;
+    const model = agent.harnessAuth.sourceId;
+    const deadlineWallMs = revision.repositoryCredentials.deadlineWallMs;
+    let runtime = startup.getRuntime();
+    let sessionId;
+    const bodies = await gitCommandBodies(t, "refs/heads/review");
+    const originalCompute = startup.compute;
+    assert.deepEqual(revision.executionAdmission, { version: 5, mode: "protected" });
+    assert.equal(revision.egressPlan.repositoryGitAuthorization, "online-request");
+    assert.deepEqual(revision.egressPlan.repositoryGit, revision.repositoryCredentials);
+    assert.equal(revision.repositoryCredentials.standingApprovalId, undefined);
+    assert.deepEqual(revision.egressPlan.harnessCredentialSource, revision.harnessAuth);
     const compute = {
-      ...f.compute,
+      ...originalCompute,
       ...(unacknowledgedActivation && { supportsWorkspaceSetup: true }),
-      validateExecutionAdmission: kube.validateExecutionAdmission.bind(kube),
-      validateRepositoryCredentials(harness, selected) {
-        assert.equal(harness.id, "codex");
-        assert.equal(harness.mode, "dedicated");
-        assert.equal(selected, protectedGit.owner.ref.id);
-        kube.validateRepositoryCredentials(harness, selected);
-      },
       ...(removalDuringPreparation && {
         async bindAgent(context) {
           // This real Driver call occurs after the worker read the withdrawal marker,
@@ -3363,7 +3188,7 @@ function attachedGitExpires({
             preparing = true;
             await resumePreparation.promise;
           }
-          await f.compute.bindAgent?.(context);
+          await originalCompute.bindAgent?.(context);
         },
       }),
       async prepareRevision(r, context) {
@@ -3384,31 +3209,7 @@ function attachedGitExpires({
         const [open] = await repositoryAttempts(f, r);
         assert.equal(open.phase, "open");
         sessionId = open.sessionId;
-        const signal = AbortSignal.timeout(4000);
-        const git = await runtime.prepare(
-          r,
-          client,
-          workspace,
-          sandbox,
-          signal,
-          "/sandbox/enterprise",
-          world.retainedProviders,
-        );
-        world.id = sandboxId;
-        identity = git.middlewares[registrationName].config;
-        assert.equal(identity.fields.binding_id.stringValue, r.egressPlan.execution.executionId);
-        await runtime.bind(r.id, (box) => assert.equal(box.id, sandboxId), continuity);
-        const entry = await runtime.entries.get(r.id);
-        await runtime.reconcile(entry);
-        await protectedGit.enroll(
-          r,
-          context,
-          git.middlewares,
-          workspace,
-          sandboxId,
-          world.repositoryGitRecipient,
-        );
-        return f.compute.prepareRevision(r, context);
+        return originalCompute.prepareRevision(r, context);
       },
       ...((removalDuringFinalization || unacknowledgedActivation) && {
         async activateRevision(r) {
@@ -3508,45 +3309,31 @@ function attachedGitExpires({
         )
       ).rows;
     const start = () =>
-      f.start(compute, {
-        emit: (e) => {
-          events.push(e);
-          if (
-            unacknowledgedActivation &&
-            e.event === "worker.completed" &&
-            e.workId === revision.idempotencyKey &&
-            e.code === "REVISION_FINALIZATION_INCOMPLETE"
-          ) {
-            // Stop at the completed pass: a delayed observer can otherwise interrupt
-            // its next claim, leaving a live lease that due-time advancement cannot recover.
-            unacknowledgedStop = f.stop();
-          }
-        },
-        transformDrivers: (drivers) => protectedGit.selectDrivers(drivers, gateway),
+      startup.start(compute, (e) => {
+        if (
+          unacknowledgedActivation &&
+          e.event === "worker.completed" &&
+          e.workId === revision.idempotencyKey &&
+          e.code === "REVISION_FINALIZATION_INCOMPLETE"
+        ) {
+          // Stop after the completed pass, before a later claim can own the lease.
+          unacknowledgedStop = f.stop();
+        }
       });
     let originRequests = 0;
     let originBytes = 0;
     async function fetchFromPrivateOrigin() {
-      const result = await invoke(
-        middleware,
-        "EvaluateHttpRequest",
-        {
-          phase: 1,
-          middleware_name: registrationName,
-          config: identity,
-          context: { request_id: randomUUID(), sandbox_id: sandboxId, workspace },
-          target: {
-            scheme: "https",
-            host: "github.com",
-            port: 443,
-            method: "POST",
-            path: "/" + project + ".git/git-upload-pack",
-          },
-          headers: [{ name: "content-type", value: "application/x-git-upload-pack-request" }],
-          body: bodies.fetch,
+      const result = await startup.evaluate({
+        target: {
+          scheme: "https",
+          host: "github.com",
+          port: 443,
+          method: "POST",
+          path: "/fixture/repository.git/git-upload-pack",
         },
-        token(keys, "supervisor", sandboxId),
-      );
+        headers: [{ name: "content-type", value: "application/x-git-upload-pack-request" }],
+        body: bodies.fetch,
+      });
       if (result.decision !== 1) {
         return result;
       }
@@ -3559,11 +3346,27 @@ function attachedGitExpires({
       return result;
     }
     async function useInitialGit() {
-      const entry = await runtime.entries.get(revision.id);
-      entry.nextObserveAt = 0;
-      entry.nextRefreshAt = 0;
-      await runtime.reconcile(entry);
+      await startup.readyGit();
       assert.deepEqual(await fetchFromPrivateOrigin(), { decision: 1 });
+    }
+    async function admitReplacement(actorId) {
+      // Admission must select the serving Compute before the actor loses its grants.
+      const candidate = await f.controller.deployAgent(
+        actorId,
+        { namespaceId, agentId: agent.id },
+        resolveApprovedHarness,
+      );
+      assert.deepEqual(
+        [candidate.compute.id, candidate.compute.implementation],
+        [revision.compute.id, revision.compute.implementation],
+        "the replacement is admitted for the original selected Compute",
+      );
+      const { rows } = await f.observerPool.query(
+        "SELECT idempotency_key FROM occ.controller_work WHERE revision_id=$1",
+        [candidate.id],
+      );
+      assert.equal(rows.length, 1);
+      return { ...candidate, idempotencyKey: rows[0].idempotency_key };
     }
     async function activationAuditCount() {
       const { rows } = await f.observerPool.query(
@@ -3704,8 +3507,8 @@ function attachedGitExpires({
       // This controlled Compute does not remove a physical Sandbox. Prove the
       // durable Git fence through disposed admission, not its cached sender.
       assert.deepEqual(
-        [originRequests, originBytes, approved, world.writes],
-        [1, bodies.fetch.length, ["upload-pack"], 1],
+        [originRequests, originBytes, peer.gh.issuesOfTokens.length, world.writes],
+        [1, bodies.fetch.length, 1, 1],
       );
       assert.deepEqual(
         (await repositoryAttempts(f, revision)).map((attempt) => [
@@ -3742,11 +3545,11 @@ function attachedGitExpires({
     );
     assert.equal(installations.length, 1);
     assert.deepEqual(installations[0].installation.plan, revision.egressPlan);
-    assert.equal(installations[0].installation.sandboxId, sandboxId);
+    assert.equal(installations[0].installation.sandboxId, world.id);
     if (!removalDuringFinalization && !unacknowledgedActivation) {
       await useInitialGit();
     }
-    assert.deepEqual(approved, ["upload-pack"]);
+    assert.equal(peer.gh.issuesOfTokens.length, 1);
     const remaining = deadlineWallMs - Date.now();
     assert.ok(remaining > 0, "use Git before its legitimately admitted deadline");
     if (removalDuringPreparation) {
@@ -3781,7 +3584,7 @@ function attachedGitExpires({
         if (removalDuringStop) {
           const replacementActor = `replacement-actor-${randomUUID()}`;
           await f.copyActorGrants(replacementActor);
-          refusedDeployment = await f.revision(agent, 2, { actorId: replacementActor });
+          refusedDeployment = await admitReplacement(replacementActor);
           await removeAccessBindings(f, replacementActor);
           assert.equal((await f.currentAgent(agent)).desiredRuntimeState, "running");
         }
@@ -4019,7 +3822,7 @@ function attachedGitExpires({
         });
         const replacementActor = `replacement-actor-${randomUUID()}`;
         await f.copyActorGrants(replacementActor);
-        const replacement = await f.revision(agent, 2, { actorId: replacementActor });
+        const replacement = await admitReplacement(replacementActor);
         await removeAccessBindings(f, replacementActor);
         await makeWorkDue(f.observerPool, { key: outstandingStop.idempotencyKey, state: "queued" });
         events.length = 0;
@@ -4093,8 +3896,8 @@ function attachedGitExpires({
     const refused = await fetchFromPrivateOrigin();
     assert.deepEqual(refused, { decision: 2, reason_code: "access_withdrawn" });
     assert.deepEqual(
-      [originRequests, originBytes, approved, world.writes],
-      [1, bodies.fetch.length, ["upload-pack"], 1],
+      [originRequests, originBytes, peer.gh.issuesOfTokens.length, world.writes],
+      [1, bodies.fetch.length, 1, 1],
     );
     const attempts = await repositoryAttempts(f, revision);
     assert.deepEqual(
@@ -4113,7 +3916,7 @@ function attachedGitExpires({
         [[originalAdmission, sessionId, "disposed"]],
         "settlement never creates a second durable admission",
       );
-      assert.equal(repository.calls.filter((c) => c.operation === "open").length, 0);
+      assert.equal(peer.gh.issuesOfTokens.length, 1, "settlement issues no replacement credential");
     };
     if (unacknowledgedActivation) {
       await assertUnacknowledged();
@@ -4127,9 +3930,11 @@ function attachedGitExpires({
     );
     await f.stop();
     world.addRetainedEndpoint(newHost);
-    runtime = releaseRuntime(); // empty in-process route, same PostgreSQL and gateway
+    await startup.replaceRuntime(); // fresh sender and authority, same PostgreSQL and Gateway
+    runtime = startup.getRuntime();
     await advanceWithdrawal();
     await start();
+    const coldRefusal = { decision: 2, reason_code: "online_authorization_denied" };
     if (newHost === "uploads.github.com") {
       await nextExpiry("REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
       if (platformProfile) {
@@ -4143,10 +3948,10 @@ function attachedGitExpires({
         (await f.currentAgent(agent)).activeRevisionId === undefined ? true : undefined,
       );
       assert.deepEqual(stopped, [revision.id]);
-      assert.deepEqual(await fetchFromPrivateOrigin(), refused);
+      assert.deepEqual(await fetchFromPrivateOrigin(), coldRefusal);
       assert.deepEqual(
-        [originRequests, originBytes, approved],
-        [1, bodies.fetch.length, ["upload-pack"]],
+        [originRequests, originBytes, peer.gh.issuesOfTokens.length],
+        [1, bodies.fetch.length, 1],
       );
       assert.deepEqual([world.detaches.length, world.writes], [1, 1], "no replay or replacement");
       await assertOriginalSession();
@@ -4210,7 +4015,7 @@ function attachedGitExpires({
         stoppedMaintenance,
         "stopped cleanup neither runs nor schedules ordinary maintenance",
       );
-      assert.deepEqual(await fetchFromPrivateOrigin(), refused);
+      assert.deepEqual(await fetchFromPrivateOrigin(), coldRefusal);
       assert.equal(originRequests, 1);
       await assertOriginalSession();
       assert.deepEqual([world.detaches.length, world.writes], [1, 1]);
@@ -4227,7 +4032,7 @@ function attachedGitExpires({
       // and the same cleanup must resume the original actor's one maintenance chain.
       const replacementActor = `replacement-actor-${randomUUID()}`;
       await f.copyActorGrants(replacementActor);
-      const replacement = await f.revision(agent, 2, { actorId: replacementActor });
+      const replacement = await admitReplacement(replacementActor);
       await removeAccessBindings(f, replacementActor);
       await start();
       await f.work(replacement, "failed_permanent");
@@ -4284,12 +4089,10 @@ function attachedGitExpires({
     );
     assert.equal((await f.currentAgent(agent)).activeRevisionId, revision.id);
     assert.deepEqual(stopped, []);
-    // The original sender remains fenced, and the cold worker cannot supply a replacement.
-    assert.deepEqual(await fetchFromPrivateOrigin(), refused);
-    senderRuntime = runtime;
-    assert.equal((await fetchFromPrivateOrigin()).decision, 2);
+    // The fresh sender remains fenced, and the cold worker cannot supply a replacement.
+    assert.deepEqual(await fetchFromPrivateOrigin(), coldRefusal);
     assert.equal(originBytes, bodies.fetch.length, "neither late fetch reached the Git origin");
-    assert.deepEqual(approved, ["upload-pack"]);
+    assert.equal(peer.gh.issuesOfTokens.length, 1);
     await assertOriginalSession();
     assert.deepEqual(
       [world.detaches.length, world.writes],

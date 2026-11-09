@@ -301,9 +301,8 @@ endpoint and credential lists. Exact identity and Git overlap checks still apply
 
 Standing succession confirms the original predecessor and generation with a fresh
 `WITHHELD / CREDENTIAL_EXPIRED` report, then rechecks Sandbox readiness and main
-process identity. Observation age plus monotonic read time must total under 15 seconds
-at nanosecond precision. Evaluation and observation must each fall within 30 seconds
-of local time. An elapsed budget leaves the route pending. A contradictory witness
+process identity. Observation age plus monotonic read time must stay under 15 seconds at nanosecond
+precision. Both timestamps must fall within 30 seconds of local time. An elapsed budget leaves the route pending. A contradictory witness
 cannot authorize issuance, preparation or a new route fence. New installations and
 post-detach model completion require ready credentials and independent model authorization.
 
@@ -317,10 +316,9 @@ Transient observation failures close access until the same installation verifies
 Redeploy after `worker_replaced` or terminal `bootstrap_failed`.
 After verified replacement of v5 held launches, deployment detail preserves history
 and reports `repositoryAccess.state: redeploy-required` and
-`REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`. OCE closes Git and checks withdrawal
-and model authority. Other qualified paths may retry pre-write reads or re-observe
-durable delivery after restart. Provider writes retain their deadlines. Never replay
-an uncertain write. See [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
+`REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`. OCE verifies withdrawal and model authority. Historical v4 and installation-wide v5 cannot
+prepare, issue or renew credentials. Installation-wide issuance requires observed-hook preview.
+Replacement workers use recorded custody to finish detach. Never replay uncertain writes. See [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
 For prepared-material expiry, quarantine and retirement, see
 [Token Service lifecycle](../repository-credentials.md#token-service-lifecycle) and
 its [source flow](../../flows/credential-source-refresh.md#6-oce-prepared-github-core).
@@ -332,12 +330,12 @@ or `gateway_unauthorized`. `worker.openshell-git-route-warning` distinguishes
 `withdrawn` and `repository_expired` when another worker closed the route) and
 `retained` ones.
 `OPENSHELL_GIT_WITHDRAWAL_UNRECORDED` means unpersisted withdrawal.
-Confirm Sandbox deletion: another worker could adopt the refused route.
+Confirm durable withdrawal and Git detach or runtime retirement.
 OCE drops closed routes after confirmed absence (two reads if never observed).
 Failed reads retain them. Gateway authorization refusal logs `retained` with
 `gateway_unauthorized` and retries with backoff until absence; preparation, adoption
 and verification remain refused, and denials log `no_binding`.
-`worker.openshell-git-route` reports adoption and restoration, with `durationMs`.
+`worker.openshell-git-route` reports same-worker restoration, with `durationMs`.
 Correlate revision and request IDs with `worker.openshell-git-denied`.
 
 ### Qualification history
