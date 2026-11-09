@@ -569,6 +569,7 @@ runs:
         QA_SELECTION: ${{ inputs.test-file == '' && 'full' || 'focused' }}
       run: node scripts/ci/qa-phase-timing.ts summarize 2>/dev/null
     - name: Summarize OpenShell phase timing
+      id: openshell-phase-timing
       if: always() && inputs.lane == 'openshell'
       continue-on-error: true
       shell: bash
@@ -583,7 +584,16 @@ runs:
         OPENSHELL_RUN_OUTCOME: ${{ steps.run-lane.outcome }}
         OPENSHELL_CLEANUP_OUTCOME: ${{ steps.cleanup-lane.outcome }}
         OPENSHELL_SELECTION: ${{ inputs.test-file == '' && 'full' || 'focused' }}
-      run: node scripts/ci/openshell-phase-timing.ts summarize 2>/dev/null
+      run: node scripts/ci/openshell-phase-timing.ts summarize "$RUNNER_TEMP/openshell-phase-timing.json" 2>/dev/null
+    - name: Retain OpenShell phase timing
+      if: ${{ !cancelled() && inputs.lane == 'openshell' && steps.openshell-phase-timing.outcome == 'success' }}
+      continue-on-error: true
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: timing-${{ inputs.artifact-prefix }}-${{ inputs.lane }}-attempt-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/openshell-phase-timing.json
+        if-no-files-found: error
+        retention-days: 7
     - name: Summarize first lane failure
       if: failure() || cancelled()
       continue-on-error: true
