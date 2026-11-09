@@ -8,6 +8,16 @@ Prepare the resources for the selected source commit and test lane. See the [par
 
 `scripts/ci/prepare.mjs:prepareFile`, `scripts/ci/prepare.mjs:ensureK3dCluster`
 
+The static-checks job in `.github/workflows/ci.yml` also restores the pnpm store
+using `scripts/docs-site/pnpm-lock.yaml`. It alone saves that documentation key,
+after `docs:build` successfully runs Pagefind; installation can succeed even when
+Pagefind's optional native package is missing. `run-ci-lane` restores the same key
+before installing documentation dependencies for baseline part 1 and browser part 1.
+The shared setup action keys each store by OS, architecture, Node.js, pnpm version,
+and lockfile hash. Its existing prefix fallbacks can restore another lockfile's
+store; frozen installation still acquires any missing packages. Root workspace
+cache saves are unchanged.
+
 First Agent Smoke and `run-ci-lane` both use `setup-ci-tools` to restore only yq and k3d downloads outside `PATH`. On Linux,
 `scripts/ci/setup-tools.sh` selects the checked-in platform checksum before any
 execution. `scripts/ci/download-pinned.sh` copies an installed PATH candidate or
