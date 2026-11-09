@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
 updated: 2026-11-09
-last_updated_session: 01a1becb-641e-7b63-9791-01de09b1cda6
+last_updated_session: fix-4929
 ---
 
 # Controller Worker Flow
@@ -354,8 +354,8 @@ exhausting attempts close the item and schedule another while the version stays
 selected and running within its credential deadline; outages never retire it. Each
 claim reauthorizes its actor. Successor keys use strictly later time buckets despite clock skew.
 
-`worker.completed` reports the target, outcome, and code. On `namespace.ensure`,
-it can also report a [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions)
+`worker.completed` reports the target, outcome, and code. On `namespace.ensure`
+and `namespace.delete`, it can also report a [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions)
 from the current pass. The hint stays out of the Driver observation.
 A Namespace pass that observes the same pending state this worker last audited,
 such as a terminating namespace, writes no new lifecycle audit or `reconcile` row;
@@ -420,6 +420,8 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-09 11:00: Report the tenant access hint on Namespace deletion. (fix-4929)
 
 - 2026-11-09 05:35: Stop before claiming. (01a1becb-641e-7b63-9791-01de09b1cda6 - 3b898fdc4a27c5cfcc6cbeb7196d96b02368da8b)
 

@@ -240,7 +240,7 @@ import {
   computeWorkWaiting,
   currentComputeAbortSignal,
   isYieldingComputeStop,
-  recordNamespaceEnsureHint,
+  recordNamespaceHint,
   withComputeAbortSignal,
 } from "../operation-context.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
@@ -1553,6 +1553,16 @@ function failure(error: unknown): "retryable" | "permanent" {
     [400, 401, 403, 422].includes(numericErrorStatus(error) ?? 0)
     ? "permanent"
     : "retryable";
+}
+
+/** Log a hint when Kubernetes answers a Namespace pass with HTTP 403, a missing tenant grant. */
+async function recordTenantAccessDenied(error: unknown): Promise<void> {
+  if (
+    numericErrorStatus(error) === 403 &&
+    error instanceof (await import("@kubernetes/client-node")).ApiException
+  ) {
+    recordNamespaceHint("KUBERNETES_TENANT_ACCESS_DENIED");
+  }
 }
 
 const MAX_NAMESPACE_FAILURE_REASON_LENGTH = 256;
@@ -5777,12 +5787,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         await this.prepareNamespaceInfrastructure(ownership, name);
       } catch (error) {
         // Only this call reconciles the tenant resources. The Gateway uses the same helper.
-        if (
-          numericErrorStatus(error) === 403 &&
-          error instanceof (await import("@kubernetes/client-node")).ApiException
-        ) {
-          recordNamespaceEnsureHint("KUBERNETES_TENANT_ACCESS_DENIED");
-        }
+        await recordTenantAccessDenied(error);
         throw error;
       }
       if (!(await this.ensureGatewayNamespace(ownership))) {
@@ -6067,6 +6072,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       this.verifyNamespaceOwnership(remaining, ownership, false);
       return result;
     } catch (error) {
+      // Cleanup of tenant resources is refused when the tenant RoleBindings were never granted.
+      await recordTenantAccessDenied(error);
       return { ...result, failure: failure(error) };
     }
   }

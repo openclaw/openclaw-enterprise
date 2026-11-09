@@ -68,6 +68,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import {
   ComputeStopYieldedError,
+  captureNamespaceHint,
   currentComputeAbortSignal,
   withComputeAbortSignal,
   withComputeWorkWaiting,
@@ -5379,6 +5380,69 @@ test("Kubernetes namespace deletion waits for Sandbox namespace cleanup", async 
     namespaceDeleted: true,
   });
   assert.deepEqual(calls, ["sandbox-cleanup", "sandbox-cleanup", "kubernetes-delete"]);
+});
+
+test("a Namespace deletion refused with HTTP 403 reports the tenant access hint", async () => {
+  const { ApiException } = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  )("@kubernetes/client-node");
+  const namespaceResource = {
+    apiVersion: "v1",
+    kind: "Namespace",
+    metadata: {
+      name: previousTenantNamespaceName,
+      uid: "namespace-denied-uid",
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/namespace": tenant.id,
+      },
+      annotations: { "openclaw.dev/namespace-id": tenant.id },
+    },
+    status: { phase: "Active" },
+  };
+  const deleteWith = async (cleanupError) => {
+    const driver = new KubernetesComputeDriver(options(), {
+      sandboxDriver: {
+        id: "sandbox-namespace-denied",
+        implementation: "test/namespace-denied",
+        capability: "sandbox",
+        supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+        facets: ["networking"],
+        async cleanup() {
+          throw cleanupError;
+        },
+      },
+    });
+    driver.apiClients = Promise.resolve({
+      core: {
+        async listNamespace() {
+          return { items: [structuredClone(namespaceResource)] };
+        },
+        async readNamespace() {
+          return structuredClone(namespaceResource);
+        },
+        async deleteNamespace() {
+          assert.fail("a failed tenant cleanup must leave the Kubernetes Namespace intact");
+        },
+      },
+      objects: {},
+    });
+    return captureNamespaceHint(() => driver.deleteNamespace({ ...tenant, status: "deleting" }));
+  };
+
+  // RBAC is checked before existence, so a Namespace that never received its tenant
+  // RoleBindings cannot clean up and needs a hint naming the missing grant.
+  assert.deepEqual(
+    await deleteWith(new ApiException(403, "Forbidden", JSON.stringify({ code: 403 }), {})),
+    {
+      observation: { namespaceId: tenant.id, namespaceDeleted: false, failure: "permanent" },
+      hintCode: "KUBERNETES_TENANT_ACCESS_DENIED",
+    },
+  );
+  // Any other failure keeps the plain observation, so the hint never hides a different cause.
+  assert.deepEqual(await deleteWith(new Error("workspace remains nonempty")), {
+    observation: { namespaceId: tenant.id, namespaceDeleted: false, failure: "retryable" },
+  });
 });
 
 test("explicit existing namespace adoption claims tenant identity only after security checks", async () => {

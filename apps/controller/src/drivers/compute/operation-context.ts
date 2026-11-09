@@ -1,6 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
-import type { CredentialReadLifetime, NamespaceEnsureResult } from "@openclaw-enterprise/contracts";
+import type {
+  CredentialReadLifetime,
+  NamespaceDeleteResult,
+  NamespaceEnsureResult,
+} from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
 import { MAX_TIMER_DELAY_MS } from "@openclaw-enterprise/utils";
 
@@ -25,21 +29,23 @@ const workWaitingChecks = new AsyncLocalStorage<(wait: ComputeWorkWait) => Promi
 type YieldingStop = "refused-candidate" | "gateway-drain";
 const yieldingStops = new AsyncLocalStorage<YieldingStop>();
 
-export type NamespaceEnsureHintCode = "KUBERNETES_TENANT_ACCESS_DENIED";
+export type NamespaceHintCode = "KUBERNETES_TENANT_ACCESS_DENIED";
 
-const namespaceEnsureHints = new AsyncLocalStorage<{ hintCode?: NamespaceEnsureHintCode }>();
+const namespaceHints = new AsyncLocalStorage<{ hintCode?: NamespaceHintCode }>();
 
 /** Keep log fields alongside the observation so audit and queue evidence see only the Driver result. */
-export async function captureNamespaceEnsureHint(
-  operation: () => Promise<NamespaceEnsureResult>,
-): Promise<{ observation: NamespaceEnsureResult; hintCode?: NamespaceEnsureHintCode }> {
-  const evidence: { hintCode?: NamespaceEnsureHintCode } = {};
-  const observation = await namespaceEnsureHints.run(evidence, operation);
+export async function captureNamespaceHint<
+  Result extends NamespaceEnsureResult | NamespaceDeleteResult,
+>(
+  operation: () => Promise<Result>,
+): Promise<{ observation: Result; hintCode?: NamespaceHintCode }> {
+  const evidence: { hintCode?: NamespaceHintCode } = {};
+  const observation = await namespaceHints.run(evidence, operation);
   return { observation, ...evidence };
 }
 
-export function recordNamespaceEnsureHint(hintCode: NamespaceEnsureHintCode): void {
-  const evidence = namespaceEnsureHints.getStore();
+export function recordNamespaceHint(hintCode: NamespaceHintCode): void {
+  const evidence = namespaceHints.getStore();
   if (evidence !== undefined) {
     evidence.hintCode = hintCode;
   }
