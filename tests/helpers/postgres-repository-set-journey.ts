@@ -39,7 +39,7 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { preparedStandingGitPeer } from "./prepared-standing-git-peer.ts";
 import { standingGitConversation } from "./standing-git-conversation.ts";
-import { expireStoppedClaims } from "./postgres-worker-revision-support.mjs";
+import { expireStoppedClaims, expireWorkLease } from "./postgres-worker-revision-support.mjs";
 import {
   pluginRuntimeEnvironment,
   pluginRuntimeSpecForRevision,
@@ -2069,6 +2069,13 @@ async function repositoryGitJourney(
     const liveWithdrawalDelta = peer.originCalls() + peer.gh.trace.length - liveWithdrawalBefore;
     assert.equal(liveWithdrawalDelta, 0, "live withdrawal denies before provider traffic");
     const writesBeforeReplacement = wire.world.writes;
+    // The lock-order probe has finished with its claim. Let the worker recover that exact lease.
+    const expired = await expireWorkLease(f.observerPool, {
+      key: claim.idempotencyKey,
+      claimToken: claim.claimToken,
+      state: "claimed",
+    });
+    assert.equal(expired.rowCount, 1);
     await start();
     // Immediate denial is not retained-runtime proof. Let the worker detach Git, then
     // recover the lost reply through a new runtime before allowing the second turn.
