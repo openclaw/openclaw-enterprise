@@ -6639,7 +6639,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     if (protectedWorkspace !== undefined) {
       // The first node setup is issued against this Gateway's durable pairing store.
-      if (observed.metadata.deletionTimestamp !== undefined) return result;
+      if (observed.metadata.deletionTimestamp !== undefined) {
+        return result;
+      }
       if (
         this.nodeEnrollment === undefined ||
         this.options.runtime === undefined ||
