@@ -1571,6 +1571,9 @@ export class ControllerWorker {
             await this.provisioningController?.cleanupOAuthClients();
           }
         }
+        if (this.stopping) {
+          break;
+        }
         const claim = await this.queue.claim();
         this.claimedLastPass = claim !== undefined;
         if (claim !== undefined) {
