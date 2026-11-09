@@ -133,10 +133,12 @@ test("installed Skipper failure summary reads the actual runner result without e
       const summary = JSON.parse(raw);
       const fallback = result.stderr + result.stdout + raw;
       const diagnostic = skipperFailureSummary(raw, root, fallback);
-      assert.match(
-        diagnostic,
-        scenario === "assertion" ? /, ERR_ASSERTION$/ : /, ERR_TEST_FAILURE$/,
-      );
+      const category = {
+        assertion: "ERR_ASSERTION",
+        rejection: "ERR_TEST_FAILURE",
+        "file failure": "post-test-async-activity",
+      }[scenario];
+      assert.ok(diagnostic.endsWith(`, ${category}`));
       if (scenario !== "file failure") {
         assert.match(diagnostic, /^skipper-prepared-git-installed\.test\.mjs:5:\d+, /);
         assert.ok(summary.issues.some((entry) => entry.code === "expected-test-not-passed"));
@@ -152,6 +154,21 @@ test("installed Skipper failure summary reads the actual runner result without e
       const error =
         summary.files[0].tests.find((entry) => entry.status === "failed")?.error ??
         summary.files[0].fileFailure.error;
+      if (scenario === "rejection") {
+        const malformed = structuredClone(summary);
+        const selected = malformed.files[0].tests.find((entry) => entry.status === "failed").error;
+        delete selected.message;
+        delete selected.frame;
+        for (const field of ["cause", "location"]) {
+          const invalid = structuredClone(malformed);
+          invalid.files[0].tests.find((entry) => entry.status === "failed").error[field] =
+            "invalid";
+          assert.equal(
+            skipperFailureSummary(JSON.stringify(invalid), root, "bwrap"),
+            "location unavailable, bwrap",
+          );
+        }
+      }
       // Keep specific signals with this error, never from unrelated lane output.
       error.message = "native command failed secretauthvalue";
       assert.match(
@@ -170,8 +187,35 @@ test("installed Skipper failure summary reads the actual runner result without e
         error.location = location;
         assert.match(
           skipperFailureSummary(JSON.stringify(summary), root, "bwrap"),
-          /^location unavailable, ERR_/,
+          new RegExp(`^location unavailable, ${category}$`),
         );
+      }
+      // The text fallback must not undo the structured coordinate boundary.
+      for (const coordinates of [
+        "0:2",
+        "5:0",
+        "1000001:2",
+        "5:1000001",
+        "5:999999999999999999999",
+      ]) {
+        error.frame = `at skipper-prepared-git-installed.test.mjs:${coordinates}`;
+        assert.equal(
+          skipperFailureSummary(JSON.stringify(summary), root, "bwrap"),
+          `location unavailable, ${category}`,
+        );
+        assert.equal(
+          skipperFailureSummary("not JSON", root, `${error.frame} bwrap`),
+          "location unavailable, bwrap",
+        );
+      }
+      error.frame = "at skipper-prepared-git-installed.test.mjs:1000000:1";
+      assert.equal(
+        skipperFailureSummary(JSON.stringify(summary), root, "bwrap"),
+        `skipper-prepared-git-installed.test.mjs:1000000:1, ${category}`,
+      );
+      error.frame = undefined;
+      if (summary.files[0].fileFailure) {
+        summary.files[0].fileFailure.diagnosticKind = "secretauthvalue-category";
       }
       error.code = "secretauthvalue-code";
       error.cause = { code: "secretauthvalue-cause" };
