@@ -34,9 +34,9 @@ graph TD
   Agent --> Transport["<b>Compute Driver</b><br/>Trusted-proxy credentials"]
   Transport --> Deploy["<b>Ordinary deploy</b><br/>Record first version"]
   Deploy --> Observe["<b>Same provisioning handle</b><br/>Observe saved version"]
-  Observe -->|Version readable| UI["<b>Agent deployment view</b><br/>Open the deploying version"]
-  Observe -->|Version refused; pending| Observe
-  Observe -->|Version refused; activated| Settings["<b>Agent configuration view</b><br/>Open the activated version"]
+  Observe -->|Pending; version readable| UI["<b>Agent deployment view</b><br/>Open the deploying version"]
+  Observe -->|Pending; version refused or unavailable| Observe
+  Observe -->|Success seen in Create| Settings["<b>Agent configuration view</b><br/>Open the activated version"]
   Observe -->|Superseded| Superseded["<b>Create stays open</b><br/>Newer deployment took over"]
   Observe -->|Malformed present ID| Unknown["<b>Outcome unknown</b><br/>Keep job; offer Retry"]
   Observe -->|Confirmed failure| Terminal["<b>Creation failed</b><br/>Keep Agent and version"]
@@ -139,12 +139,13 @@ Create Agent (`apps/controller/src/console/agents/create.mts:waitForProvisioning
 once a second. Once the job names its Agent and first revision, Create reads that deployment: if
 it answers, Create opens the version's Deployment tab, which shows its waits, Stop and recovery,
 and stops polling. A revision read Restriction can refuse the deployment (403 or 404) to a caller
-the job still answers; Create then keeps following the job and opens the Agent when it succeeds.
-An unavailable read is asked again at the next poll. Admission, status and retry report the
+the job still answers; Create then keeps following the job. An unavailable read is asked again
+at the next poll. Whenever Create sees the job succeed before it has opened Deployment, including
+at its first read or after an unavailable read, it opens the Agent's Configuration tab. Admission, status and retry report the
 stored client `requestId`.
 If absent or different, Create keeps the original request and any confirmed job.
 `meta.requestId` identifies each HTTP request. Leaving stops polling, not provisioning.
-If a newer deployment takes over, Create explains what happened without a retry or a link:
+For the other terminal outcomes Create has seen first: if a newer deployment takes over, it explains what happened without a retry or a link:
 the job identifies only the deployment that ended. For a failure, follow the linked version's
 recovery guidance. After a Stop, deploy when ready.
 Reconciliation owns startup and activation; later versions use Deploy.

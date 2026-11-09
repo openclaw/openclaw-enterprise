@@ -1370,24 +1370,21 @@ for (const leave of [false, true]) {
     await enterManualModel(page, "test-model-key");
     await page.clock.install();
     await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 100);
-    // The browser must receive the 200 headers before the clock moves, so the check is cancelled
-    // with its body open, not before it was answered.
-    let started = false;
-    void page
-      .waitForResponse(
-        (response) => response.url().endsWith(deploymentReads.path) && response.status() === 200,
-      )
-      .then(() => deploymentReads.started.promise)
-      .then(() => (started = true));
     await page.getByRole("button", { name: "Create Agent" }).click();
-    // Admission answers queued; the first job read a second later reports the handoff.
-    for (let tick = 0; !started; tick += 1) {
-      assert.ok(tick < 10, "Create never read the first deployment");
-      await page.clock.runFor(1_000);
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
+    await page.getByText("Provisioning queued…").waitFor();
+    // Admission answered queued. The next poll reads the handoff and starts the deployment read;
+    // the browser must receive its 200 headers before the clock moves again, so the check is
+    // cancelled with its body open, not before it was answered.
+    const [response] = await Promise.all([
+      page.waitForResponse((candidate) => candidate.url().endsWith(deploymentReads.path), {
+        timeout: 5_000,
+      }),
+      page.clock.runFor(1_000),
+    ]);
+    assert.equal(response.status(), 200);
+    await deploymentReads.started.promise;
     const cancelled = page.waitForEvent("requestfailed", {
-      predicate: (request) => request.url().endsWith(deploymentReads.path),
+      predicate: (request) => request === response.request(),
       timeout: 5_000,
     });
     if (leave) {
@@ -1401,8 +1398,13 @@ for (const leave of [false, true]) {
       assert.equal(new URL(page.url()).pathname, "/console/agents");
       return;
     }
+    // Hold the terminal job read until the deployment read is cancelled, so navigation to the
+    // Agent cannot be what cancels it.
+    await page.route(`**${work.url}`, async (route) => {
+      await cancelled;
+      await route.fallback();
+    });
     await Promise.all([
-      cancelled,
       page.waitForRequest((request) => request.url().endsWith(work.url), { timeout: 5_000 }),
       page.clock.runFor(1_000),
     ]);
