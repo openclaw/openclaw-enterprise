@@ -534,6 +534,7 @@ export function createWorkerRevisionFixtures(
         // How far the controller clock that stamps the admission runs ahead of PostgreSQL's
         // (negative: behind). The store restamps admission on its own clock (finding 1195).
         controllerSkewMs = 0,
+        compute: admittedCompute = { id: compute.id, implementation: compute.implementation },
       } = {},
     ) {
       let harnessAuth;
@@ -593,7 +594,7 @@ export function createWorkerRevisionFixtures(
         configurationGeneration: 1,
         executionAdmission: { version: 2, mode: "unprotected" },
         harness: { ...approvedHarness, overrides: {}, configuration: {} },
-        compute: { id: compute.id, implementation: compute.implementation },
+        compute: { ...admittedCompute },
         ...(sandboxDriverId === undefined ? {} : { sandboxDriverId }),
         ...(plugins === undefined ? {} : { plugins }),
         harnessAuth,

@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import {
   CredentialWithdrawalRefusedError,
@@ -3350,23 +3349,12 @@ function attachedGitExpires({
       assert.deepEqual(await fetchFromPrivateOrigin(), { decision: 1 });
     }
     async function admitReplacement(actorId) {
-      // Admission must select the serving Compute before the actor loses its grants.
-      const candidate = await f.controller.deployAgent(
+      // Keep this intentionally unprotected queued candidate on the selected Compute;
+      // its revoked actor must fail real IAM without preparing another Git runtime.
+      return f.revision(agent, revision.revision + 1, {
         actorId,
-        { namespaceId, agentId: agent.id },
-        resolveApprovedHarness,
-      );
-      assert.deepEqual(
-        [candidate.compute.id, candidate.compute.implementation],
-        [revision.compute.id, revision.compute.implementation],
-        "the replacement is admitted for the original selected Compute",
-      );
-      const { rows } = await f.observerPool.query(
-        "SELECT idempotency_key FROM occ.controller_work WHERE revision_id=$1",
-        [candidate.id],
-      );
-      assert.equal(rows.length, 1);
-      return { ...candidate, idempotencyKey: rows[0].idempotency_key };
+        compute: revision.compute,
+      });
     }
     async function activationAuditCount() {
       const { rows } = await f.observerPool.query(
