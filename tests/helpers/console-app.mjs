@@ -8,6 +8,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
+import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { createConsoleFixtureRevisions } from "./console-fixture-revisions.ts";
 import { fileConsoleApp as createFileConsoleApp } from "./console-file-app.ts";
 
@@ -114,6 +115,31 @@ function computeDriver({
 // can land after a space, which a Name cannot end with.
 function authSecretName(agentName) {
   return Array.from(`Auth ${agentName}`).slice(0, NAME_MAX_CHARACTERS).join("").trimEnd();
+}
+
+// Playwright route.fetch uses Node's TLS client, separately from Chromium.
+// Keep each live fixture's exact certificate trusted until that fixture closes.
+let originalNodeCertificates;
+const nodeFixtureCertificates = new Map();
+function trustNodeFixtureCertificate(cert) {
+  const pem = cert.toString();
+  originalNodeCertificates ??= getCACertificates("default");
+  nodeFixtureCertificates.set(pem, (nodeFixtureCertificates.get(pem) ?? 0) + 1);
+  const update = () =>
+    setDefaultCACertificates([...originalNodeCertificates, ...nodeFixtureCertificates.keys()]);
+  update();
+  return () => {
+    const remaining = nodeFixtureCertificates.get(pem) - 1;
+    if (remaining === 0) {
+      nodeFixtureCertificates.delete(pem);
+    } else {
+      nodeFixtureCertificates.set(pem, remaining);
+    }
+    update();
+    if (nodeFixtureCertificates.size === 0) {
+      originalNodeCertificates = undefined;
+    }
+  };
 }
 
 function spkiHash(cert) {
@@ -538,7 +564,7 @@ export async function createConsoleAppFixture(t, options = {}) {
       reusePort: browserReservation.reusePort,
     });
     await browserReservation.release();
-    cleanupBeforeAppClose.push(ingress.close);
+    cleanupBeforeAppClose.push(ingress.close, trustNodeFixtureCertificate(ingress.cert));
     if (options.ingressTLS === undefined) {
       browserArgs.push(chromiumTrustArg([ingress.cert]));
     }
@@ -880,6 +906,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     iamDriver,
     withIamOutage,
     rawRequest,
+    fetch: fetchThroughLoopback,
     request,
     fixtureResponse,
     signIn,

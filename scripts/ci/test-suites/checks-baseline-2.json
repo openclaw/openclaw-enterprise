@@ -371,8 +371,8 @@
     {
       "path": "tests/integration/native-admin-access.test.mjs",
       "expectedTests": [
-        "native admin status requires exact Agent administer and reports lifecycle availability",
-        "native admin disabled status still requires exact Agent administer",
+        "native browser status selects exact Agent authority and reports lifecycle availability",
+        "native browser disabled status still requires exact Agent authority",
         "native admin shared session configuration validates cookie scope and rejects keys",
         "native admin proxy strips browser credentials and preserves the Agent gateway base path"
       ]

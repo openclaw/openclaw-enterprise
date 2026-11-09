@@ -2680,7 +2680,7 @@ test("Agent creation saves native models for dedicated and embedded harnesses", 
   }
 });
 
-test("Create Agent offers native admin only on an enabled installation and submits an explicit opt-in", async (t) => {
+test("Create Agent offers browser chat only on an enabled installation and submits an explicit opt-in", async (t) => {
   const fixture = await createConsoleAppFixture(t, {
     https: true,
     development: { enabled: false },
@@ -2702,7 +2702,7 @@ test("Create Agent offers native admin only on an enabled installation and submi
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
   await waitForCreateFormReads(page);
-  const toggle = page.getByRole("checkbox", { name: "Enable Native admin UI" });
+  const toggle = page.getByRole("checkbox", { name: "Enable browser chat" });
   assert.equal(await toggle.isChecked(), false);
   assert.equal(await toggle.isEnabled(), true);
   await page.getByLabel("Agent name", { exact: true }).fill("Native admin test");
