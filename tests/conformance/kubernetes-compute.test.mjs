@@ -17207,6 +17207,10 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
     );
     const pod = gateway.spec.template.spec;
     assert.equal(pod.terminationGracePeriodSeconds, 330);
+    assert.deepEqual(
+      pod.containers[0].env.filter(({ name }) => name === "NODE_DISABLE_COMPILE_CACHE"),
+      embedded ? [] : [{ name: "NODE_DISABLE_COMPILE_CACHE", value: "1" }],
+    );
     assert.deepEqual(pod.nodeSelector, embedded ? undefined : { "oce-role": "control-plane" });
     const privateVolume = pod.volumes.find(({ name }) => name === "openclaw-gateway-state");
     assert.deepEqual(privateVolume.persistentVolumeClaim, { claimName: claim.metadata.name });
@@ -17352,6 +17356,12 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
     undefined,
     undefined,
     preparedAuth(driver, namespace, false),
+  );
+  assert.equal(
+    harness.spec.template.spec.containers[0].env.some(
+      ({ name }) => name === "NODE_DISABLE_COMPILE_CACHE",
+    ),
+    false,
   );
   assert.equal(JSON.stringify(harness).includes(claim.metadata.name), false);
   assert.equal(JSON.stringify(harness).includes("openclaw-gateway-state"), false);

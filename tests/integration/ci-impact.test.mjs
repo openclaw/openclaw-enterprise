@@ -1901,10 +1901,18 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     // The inventory checks above still require every production CI lane.
     assert.deepEqual(
       Object.keys(selectedNeeds).sort(),
-      ["impact", "static-checks", "runtime-artifact", ...expectedFullLanes].sort(),
+      Object.keys(passingGateNeeds("full")).sort(),
     );
-    for (const lane of expectedFullLanes) {
-      assert.equal(selectedNeeds[lane].result, "success", lane);
+    assert.deepEqual(
+      [
+        ...selectedNeeds["pr-safe"].lanes,
+        ...selectedNeeds["image-lanes"].lanes,
+        "runtime-image-fixture",
+      ].sort(),
+      [...expectedFullLanes].sort(),
+    );
+    for (const [name, state] of Object.entries(selectedNeeds)) {
+      assert.equal(state.result, "success", name);
     }
     const fixtureLanes = ["checks-baseline-1", "checks-baseline-2", "postgres"];
     const { runLane, aggregate } = syntheticLanes(root, f.tested, fixtureLanes, "");
@@ -1940,9 +1948,61 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
         `import test from "node:test"; test("case ${lane}", () => { throw new Error("failure"); });\n`,
       );
       assert.notEqual((await runLane(lane)).status, 0);
+      // A failed matrix job does not make its passing sibling lanes fail.
+      needs["pr-safe"].result = "failure";
+      assert.notEqual((await runGate(root, needs, mode)).status, 0);
       const failed = await aggregate();
       assert.notEqual(failed.status, 0);
       assert.ok(hasIssue(failed, "lane-failed", lane));
+      const summary = JSON.parse(failed.stdout);
+      assert.deepEqual(
+        summary.issues
+          .filter((entry) => entry.code === "need-not-success")
+          .map((entry) => entry.need),
+        ["pr-safe"],
+      );
+      assert.deepEqual(
+        summary.issues.filter((entry) => entry.code === "lane-failed").map((entry) => entry.lane),
+        [lane],
+      );
+      assert.ok(
+        summary.lanes
+          .filter((entry) => entry.lane !== lane)
+          .every((entry) => entry.status === "passed"),
+      );
+      if (lane === "postgres") {
+        // Keep the runner-produced failure intact: an old revision's receipt
+        // cannot attribute an outcome to the revision being aggregated.
+        await command(root, "git", ["checkout", "-q", "--detach", f.head]);
+        const stale = await aggregate({ sha: f.head });
+        assert.notEqual(stale.status, 0);
+        assert.ok(hasIssue(stale, "source-sha-mismatch", lane));
+        assert.equal(hasIssue(stale, "lane-failed"), false);
+        assert.deepEqual(JSON.parse(stale.stdout).lanes, []);
+        await command(root, "git", ["checkout", "-q", "--detach", f.tested]);
+
+        // A misplaced real receipt likewise cannot fail its passing sibling.
+        const sibling = join(root, "results/checks-baseline-1.json");
+        const siblingOriginal = readFileSync(sibling);
+        cpSync(artifact, sibling);
+        const misfiled = await aggregate();
+        assert.notEqual(misfiled.status, 0);
+        assert.ok(hasIssue(misfiled, "lane-output-mismatch", "checks-baseline-1"));
+        const misplaced = JSON.parse(misfiled.stdout);
+        assert.deepEqual(
+          misplaced.issues
+            .filter((entry) => entry.code === "lane-failed")
+            .map((entry) => entry.lane),
+          [lane],
+        );
+        assert.deepEqual(
+          misplaced.lanes.map((entry) => entry.lane),
+          ["checks-baseline-2", lane],
+        );
+        writeFileSync(sibling, siblingOriginal);
+      }
+      needs["pr-safe"].result = "success";
+      assert.equal((await runGate(root, needs, mode)).status, 0);
       writeFileSync(artifact, original);
     }
     needs["pr-safe"].result = "failure";
@@ -2828,7 +2888,8 @@ test("a test-only selection without Checks and Conformance 1 passes the gate", a
     editTest("tests/integration/postgres-a.test.mjs"),
     '["postgres"]',
   );
-  assert.deepEqual(Object.keys(needs), ["impact", "static-checks", "postgres"]);
+  assert.deepEqual(Object.keys(needs), ["impact", "static-checks", "pr-safe"]);
+  assert.deepEqual(needs["pr-safe"].lanes, ["postgres"]);
 });
 
 test("tests mode flows through the gate to a source-bound aggregate of only its lanes", async (t) => {
@@ -3042,15 +3103,25 @@ test("full aggregate attributes image coverage to its consumer and producer jobs
       "image-lanes-same-sha": { result: "skipped" },
     });
     assert.equal(output["runtime-artifact"].result, result);
-    assert.equal(output["images-runtime-startup-2"].result, "skipped");
-    assert.equal(output.postgres.result, "success");
+    assert.equal(output["image-lanes-same-sha"].result, "skipped");
+    assert.ok(output["image-lanes-same-sha"].lanes.includes("images-runtime-startup-2"));
+    assert.equal(output["pr-safe-same-sha"].result, "success");
+    assert.ok(output["pr-safe-same-sha"].lanes.includes("postgres"));
   }
   const imageFailure = execute("all", { "image-lanes-same-sha": { result: "failure" } });
-  assert.equal(imageFailure["images-packaging"].result, "failure");
-  assert.equal(imageFailure["checks-baseline-1"].result, "success");
+  assert.equal(imageFailure["image-lanes-same-sha"].result, "failure");
+  assert.equal(imageFailure["pr-safe-same-sha"].result, "success");
   const unrelatedFailure = execute("all", { "pr-safe-same-sha": { result: "failure" } });
-  assert.equal(unrelatedFailure["images-packaging"].result, "success");
-  assert.equal(unrelatedFailure.postgres.result, "failure");
+  assert.equal(unrelatedFailure["image-lanes-same-sha"].result, "success");
+  assert.equal(unrelatedFailure["pr-safe-same-sha"].result, "failure");
+  assert.equal(unrelatedFailure.postgres, undefined);
+  assert.equal(unrelatedFailure["logging-collector"], undefined);
+  assert.ok(unrelatedFailure["pr-safe-same-sha"].lanes.includes("logging-collector"));
+  const logging = execute("logging-collector", { "logging-collector": { result: "failure" } });
+  assert.deepEqual(logging, {
+    preflight: { result: "success" },
+    "logging-collector": { result: "failure" },
+  });
   const targeted = execute("docker-model", {
     "runtime-artifact": { result: "skipped" },
     "image-lanes-same-sha": { result: "skipped" },

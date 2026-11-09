@@ -86,6 +86,7 @@ import {
   SECRET_NAME_CONFLICT,
   SERVICE_ACCOUNT_NAME_CONFLICT,
   ScopeViolationError,
+  RepositorySessionWithdrawnError,
 } from "../errors.ts";
 import type {
   AgentRepository,
@@ -920,6 +921,13 @@ function databaseError(error: unknown): Error {
     error.constraint === "held_authentication_session_is_current"
   ) {
     return new CallerStateDeniedError("The assigning session is no longer current.");
+  }
+  if (
+    code === "23514" &&
+    "constraint" in error &&
+    error.constraint === "repository_session_admission_not_withdrawn"
+  ) {
+    return new RepositorySessionWithdrawnError();
   }
   if (code === "23505") {
     const constraint =

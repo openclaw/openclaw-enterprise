@@ -2040,6 +2040,7 @@ test(
       [70, "preDefaultUsers"],
       [71, "preHarnessOverrides"],
       [72, "preAccountAdministrationPolicy"],
+      [73, "preFiniteRepositorySessionWithdrawal"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });

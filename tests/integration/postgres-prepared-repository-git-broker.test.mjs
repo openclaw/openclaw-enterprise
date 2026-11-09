@@ -14,6 +14,7 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
+import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import {
   createAuthenticatedControllerRequest,
   createTestAuthPrincipal,
@@ -194,9 +195,14 @@ function refusedOnceBy(b, response, reason, operation) {
   ]);
 }
 
-async function withdrawRepositoryBinding(t, { state, agent }) {
+async function withdrawRepositoryBinding(t, { state, agent, revision }) {
+  const original = await state.read((unit) =>
+    unit.operations.findWork(`agent_revision:${revision.id}:reconcile`),
+  );
+  assert.ok(original);
   const installation = await state.read((unit) => unit.installations.getInstallation());
   const auth = await createTestAuthPrincipal({ installationId: installation.id });
+  assert.notEqual(original.actorId, auth.seed.principal.id);
   const iam = new NativeIAMDriver({
     async loadNativeIAMState() {
       return {
@@ -227,6 +233,12 @@ async function withdrawRepositoryBinding(t, { state, agent }) {
   });
   assert.equal(result.status, 200, JSON.stringify(result.error));
   assert.deepEqual(result.data.repositoryBindings ?? [], []);
+  // Cleanup retains the original deployer, even when another principal removes Git.
+  const withdrawal = await state.read((unit) =>
+    unit.operations.findWork(repositoryRemovalWorkKey(revision.id)),
+  );
+  assert.ok(withdrawal);
+  assert.equal(withdrawal.actorId, original.actorId);
 }
 
 test(
@@ -236,7 +248,10 @@ test(
     timeout: 75000,
   },
   async (t) => {
-    const f = await fixture(t, { openBroker: (input) => startBroker(t, input) });
+    const f = await fixture(t, {
+      openBroker: (input) => startBroker(t, input),
+      recordDeploymentOperation: true,
+    });
     const b = f.broker;
     const repo = "/" + b.repository + ".git/";
     const discovery = repo + "info/refs?service=git-upload-pack";

@@ -363,20 +363,26 @@ process.stdout.write(JSON.stringify(JSON.parse(readFileSync(0, "utf8")).map(
     return contains(actual, normalized)
 
 
-def release_matches(state, rendered, values, release, namespace):
+def candidate_release_matches(state, rendered, values, release, namespace):
     require(state["name"] == release and state["namespace"] == namespace,
-            "Helm recovery identifies another release")
+            "Helm candidate identifies another release")
     require(state.get("config", {}) == documents(read(values))[0],
-            "Helm recovery values differ from the selected attempt")
+            "Helm candidate values differ from the selected attempt")
     expected = documents(read(rendered))
     ordinary = [item for item in expected if not item.get("metadata", {}).get("annotations", {}).get("helm.sh/hook")]
     require(resource_map(documents(state["manifest"].encode())) == resource_map(ordinary),
-            "Helm recovery manifest differs from the selected attempt")
+            "Helm candidate manifest differs from the selected attempt")
     hooks = state.get("hooks", [])
     expected_hooks = [item for item in expected if item not in ordinary]
     actual_hooks = [documents(item["manifest"].encode())[0] for item in hooks]
     require(resource_map(actual_hooks) == resource_map(expected_hooks),
-            "Helm recovery hook set differs from the selected attempt")
+            "Helm candidate hook set differs from the selected attempt")
+    return ordinary, actual_hooks
+
+
+def release_matches(state, rendered, values, release, namespace):
+    ordinary, actual_hooks = candidate_release_matches(state, rendered, values, release, namespace)
+    hooks = state.get("hooks", [])
     require(sum(item["kind"] == "Job" for item in actual_hooks) == 1
             and all(item["kind"] in ("Job", "ServiceAccount", "NetworkPolicy") for item in actual_hooks),
             "recovery requires one initializer Job and only ServiceAccount or NetworkPolicy companion hooks")
@@ -384,6 +390,50 @@ def release_matches(state, rendered, values, release, namespace):
                           and "pre-upgrade" in item.get("events", []) for item in hooks),
             "recovery requires only completed pre-upgrade hooks; other hook events are unsupported")
     return ordinary, actual_hooks
+
+
+def verify_hook(desired, actual, nonce, kube):
+    metadata = actual["metadata"]
+    require(metadata.get("uid") and not metadata.get("deletionTimestamp"),
+            "an initialization hook is missing or being deleted")
+    require(metadata.get("annotations", {}).get(ATTEMPT_ANNOTATION) == nonce,
+            "hook does not identify the original upgrade attempt")
+    expected_hook = json.loads(json.dumps(desired))
+    if desired["kind"] == "Job":
+        # Pod comparison below understands API quantity normalization.
+        expected_hook["spec"]["template"]["spec"] = {}
+    require(contains(actual, expected_hook), "live hook specification differs from its candidate")
+    if desired["kind"] == "Job":
+        require(pod_matches(actual["spec"]["template"]["spec"], desired["spec"]["template"]["spec"]),
+                "initializer Job execution differs from its candidate")
+        require(any(item.get("type") == "Complete" and item.get("status") == "True"
+                    for item in actual.get("status", {}).get("conditions", []))
+                and not actual.get("status", {}).get("active", 0)
+                and not actual.get("status", {}).get("failed", 0),
+                "initializer Job has not completed successfully")
+        pods = json.loads(command([*kube, "--namespace", metadata["namespace"],
+                                   "get", "pods", "--selector",
+                                   f"batch.kubernetes.io/controller-uid={metadata['uid']}",
+                                   "--output", "json"]))["items"]
+        require(len(pods) == 1, "initializer must retain exactly one successful Pod")
+        pod = pods[0]
+        require(not pod["metadata"].get("deletionTimestamp")
+                and pod["metadata"].get("annotations", {}).get(ATTEMPT_ANNOTATION) == nonce
+                and any(owner.get("uid") == metadata["uid"] and owner.get("controller") is True
+                        and owner.get("kind") == "Job" for owner in pod["metadata"].get("ownerReferences", []))
+                and pod.get("status", {}).get("phase") == "Succeeded"
+                and pod_matches(pod["spec"], desired["spec"]["template"]["spec"]),
+                "initializer Pod identity, specification or completion differs")
+        for field, spec_field in (("initContainerStatuses", "initContainers"),
+                                  ("containerStatuses", "containers")):
+            statuses = pod.get("status", {}).get(field, [])
+            require({item["name"] for item in statuses} ==
+                    {item["name"] for item in pod["spec"].get(spec_field, [])}
+                    and all(item.get("state", {}).get("terminated", {}).get("exitCode") == 0
+                            for item in statuses),
+                    "initializer container did not exit successfully")
+        return pod
+    return None
 
 
 def recover(directory, release, kubeconfig, context, namespace):
@@ -421,42 +471,8 @@ def recover(directory, release, kubeconfig, context, namespace):
         require(metadata.get("uid") and not metadata.get("deletionTimestamp"),
                 "a recovery resource is missing or being deleted")
         if desired in hooks:
-            require(metadata.get("annotations", {}).get(ATTEMPT_ANNOTATION) == record["nonce"],
-                    "hook does not identify the original upgrade attempt")
-            expected_hook = json.loads(json.dumps(desired))
-            if desired["kind"] == "Job":
-                # Pod comparison below understands API quantity normalization.
-                expected_hook["spec"]["template"]["spec"] = {}
-            require(contains(actual, expected_hook), "live hook specification differs from its candidate")
-            if desired["kind"] == "Job":
-                require(pod_matches(actual["spec"]["template"]["spec"], desired["spec"]["template"]["spec"]),
-                        "initializer Job execution differs from its candidate")
-                require(any(item.get("type") == "Complete" and item.get("status") == "True"
-                            for item in actual.get("status", {}).get("conditions", []))
-                        and not actual.get("status", {}).get("active", 0)
-                        and not actual.get("status", {}).get("failed", 0),
-                        "initializer Job has not completed successfully")
-                pods = json.loads(command([*kube, "--namespace", metadata["namespace"],
-                                           "get", "pods", "--selector",
-                                           f"batch.kubernetes.io/controller-uid={metadata['uid']}",
-                                           "--output", "json"]))["items"]
-                require(len(pods) == 1, "initializer must retain exactly one successful Pod")
-                pod = pods[0]
-                require(not pod["metadata"].get("deletionTimestamp")
-                        and pod["metadata"].get("annotations", {}).get(ATTEMPT_ANNOTATION) == record["nonce"]
-                        and any(owner.get("uid") == metadata["uid"] and owner.get("controller") is True
-                                and owner.get("kind") == "Job" for owner in pod["metadata"].get("ownerReferences", []))
-                        and pod.get("status", {}).get("phase") == "Succeeded"
-                        and pod_matches(pod["spec"], desired["spec"]["template"]["spec"]),
-                        "initializer Pod identity, specification or completion differs")
-                for field, spec_field in (("initContainerStatuses", "initContainers"),
-                                          ("containerStatuses", "containers")):
-                    statuses = pod.get("status", {}).get(field, [])
-                    require({item["name"] for item in statuses} ==
-                            {item["name"] for item in pod["spec"].get(spec_field, [])}
-                            and all(item.get("state", {}).get("terminated", {}).get("exitCode") == 0
-                                    for item in statuses),
-                            "initializer container did not exit successfully")
+            pod = verify_hook(desired, actual, record["nonce"], kube)
+            if pod is not None:
                 observed.append((pod, pod))
         else:
             annotations = metadata.get("annotations", {})
@@ -471,8 +487,12 @@ def recover(directory, release, kubeconfig, context, namespace):
         observed.append((desired, actual))
     # The Installation is not owned by Helm. Keep its original identity and exact
     # selected content, including unrelated data, across recovery admission.
-    secret = load(directory / "current-live-installation-secret.json")
-    observed.append((secret, secret))
+    versioned = installation_switch_secrets(directory, kubeconfig, context, namespace)
+    if versioned:
+        observed.extend(versioned)
+    else:
+        secret = load(directory / "current-live-installation-secret.json")
+        observed.append((secret, secret))
     target = directory / "helm-recovery"
     target.mkdir(mode=0o700)
     # The exclusive marker's parent entry must survive a host crash too.
@@ -496,6 +516,7 @@ def recover(directory, release, kubeconfig, context, namespace):
     require_absent(removed, kubeconfig, context, namespace)
     verify_custom_specs(custom_specs, kubeconfig, context, namespace)
     verify_workload_changes(changed_workloads, kubeconfig, context, namespace, retired_only=True)
+    installation_switch_secrets(directory, kubeconfig, context, namespace)
     # Stock rollback runs rollback-event hooks only. release_matches refused
     # those events, so this exact candidate has no hooks to suppress or rerun.
     with (target / "rollback.log").open("xb") as output:
@@ -519,8 +540,95 @@ def recover(directory, release, kubeconfig, context, namespace):
     require_absent(removed, kubeconfig, context, namespace)
     verify_custom_specs(custom_specs, kubeconfig, context, namespace)
     verify_workload_changes(changed_workloads, kubeconfig, context, namespace)
+    installation_switch_secrets(directory, kubeconfig, context, namespace)
     write_json(target / "acknowledged.json", {"intentSha256": sha(read(target / "intent.json")),
                                                "release": after})
+
+
+def verify_installation_mount(spec, component, secret, key):
+    containers = [item for field in ("containers", "initContainers")
+                  for item in spec.get(field, []) if item["name"] == component]
+    require(len(containers) == 1, "Installation consumer is missing or ambiguous")
+    container = containers[0]
+    config = "/etc/openclaw/installation/installation.yaml"
+    require([item for item in container.get("env", []) if item["name"] == "OCC_CONFIG_PATH"]
+            == [{"name": "OCC_CONFIG_PATH", "value": config}],
+            "Installation consumer selects another configuration path")
+    # A second mount covering the file can hide the selected Secret. Refuse
+    # subPath and other rewrites instead of guessing which data is mounted.
+    covering = [item for item in container.get("volumeMounts", [])
+                if config == os.path.normpath("/" + item["mountPath"].lstrip("/"))
+                or config.startswith(os.path.normpath("/" + item["mountPath"].lstrip("/")).rstrip("/") + "/")]
+    require(covering == [{"name": "installation-startup", "mountPath": "/etc/openclaw/installation",
+                          "readOnly": True}], "Installation consumer mount differs")
+    volumes = [item for item in spec.get("volumes", []) if item["name"] == "installation-startup"]
+    require(len(volumes) == 1 and set(volumes[0]) == {"name", "secret"}
+            and volumes[0]["secret"].get("secretName") == secret
+            and volumes[0]["secret"].get("items") == [{"key": key, "path": "installation.yaml"}],
+            "Installation consumer volume differs")
+
+
+def verify_installation_consumers(directory, release, kubeconfig, context, namespace):
+    root, record = attempt(directory)
+    current = json.loads(command(["helm", "status", release, "--kubeconfig", kubeconfig,
+                                  "--kube-context", context, "--namespace", namespace, "--output", "json"]))
+    expected_revision = load(directory / "helm-started")["expectedRevision"]
+    acknowledged = directory / "helm-recovery" / "acknowledged.json"
+    if acknowledged.exists():
+        require(current == load(acknowledged)["release"], "Helm recovery changed before Installation verification")
+        expected_revision += 1
+    require(current["version"] == expected_revision and current["info"]["status"] == "deployed",
+            "Installation consumers require the exact deployed candidate revision")
+    candidate_release_matches(current, root / "rendered.yaml", root / "values.yaml", release, namespace)
+    secret = read(directory / "installation-secret-name").decode().strip()
+    key = read(directory / "installation-secret-key").decode().strip()
+    for component in ("api", "worker"):
+        deployment = load(directory / f"after-{component}-deployment.json")
+        verify_installation_mount(deployment["spec"]["template"]["spec"], component, secret, key)
+        pods = [pod for pod in load(directory / f"after-{component}-installation-pods.json")["items"]
+                if not pod["metadata"].get("deletionTimestamp")
+                and pod.get("status", {}).get("phase") not in ("Succeeded", "Failed")]
+        require(pods, "Installation consumer has no serving Pods")
+        for pod in pods:
+            require(any(item.get("type") == "Ready" and item.get("status") == "True"
+                        for item in pod.get("status", {}).get("conditions", [])),
+                    "Installation consumer Pod is not ready")
+            verify_installation_mount(pod["spec"], component, secret, key)
+    jobs = [item for item in documents(read(root / "rendered.yaml")) if item["kind"] == "Job"
+            and "pre-upgrade" in item.get("metadata", {}).get("annotations", {}).get("helm.sh/hook", "").split(",")]
+    require(len(jobs) == 1, "expected exactly one candidate initialization Job")
+    job = get_resource(jobs[0], kubeconfig, context, namespace)
+    kube = ["kubectl", "--kubeconfig", kubeconfig, "--context", context]
+    pod = verify_hook(jobs[0], job, record["nonce"], kube)
+    for spec in (job["spec"]["template"]["spec"], pod["spec"]):
+        # The migration/bootstrap containers use database inputs; only this
+        # init container reads the Installation in the production chart.
+        verify_installation_mount(spec, "installation-check", secret, key)
+    stage_json(directory / "installation-initializer.json",
+               {"attempt": record["nonce"], "jobUid": job["metadata"]["uid"],
+                "podUid": pod["metadata"]["uid"]})
+
+
+def installation_switch_secrets(directory, kubeconfig, context, namespace):
+    successor = directory / "before-candidate-installation-secret.json"
+    if not successor.exists():
+        return []
+    observed = []
+    for path in (directory / "before-live-installation-secret.json", successor):
+        expected = load(path)
+        actual = get_resource(expected, kubeconfig, context, namespace)
+        require(actual["metadata"]["uid"] == expected["metadata"]["uid"]
+                and actual["metadata"]["name"] == expected["metadata"]["name"]
+                and actual["metadata"].get("namespace") == namespace
+                and not actual["metadata"].get("deletionTimestamp")
+                and actual.get("immutable") is True
+                and actual["metadata"].get("annotations", {}).get("openclaw.dev/installation-id")
+                    == expected["metadata"]["annotations"]["openclaw.dev/installation-id"]
+                and actual.get("type") == expected.get("type")
+                and actual.get("data") == expected.get("data"),
+                "a versioned Installation Secret identity or data changed")
+        observed.append((expected, actual))
+    return observed
 
 
 def verify_recovery(directory, release, kubeconfig, context, namespace):
@@ -543,6 +651,7 @@ def verify_recovery(directory, release, kubeconfig, context, namespace):
             and current["info"]["status"] == "deployed",
             "live Helm revision differs from the acknowledged recovery")
     release_matches(current, root / "rendered.yaml", root / "values.yaml", release, namespace)
+    installation_switch_secrets(directory, kubeconfig, context, namespace)
     require_absent(predecessor_only(submission, before, namespace), kubeconfig, context, namespace)
     verify_workload_changes(workload_changes(submission, before, namespace), kubeconfig, context, namespace)
     verify_custom_specs(changed_custom_specs(submission, before, namespace), kubeconfig, context, namespace)
@@ -572,6 +681,8 @@ def main():
         recover(directory, *args)
     elif action == "verify-recovery":
         verify_recovery(directory, *args)
+    elif action == "verify-installation":
+        verify_installation_consumers(directory, *args)
     else:
         raise ValueError("unsupported Helm evidence operation")
 

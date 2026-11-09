@@ -745,6 +745,10 @@
                     "label": "Image Upgrades"
                   },
                   {
+                    "page": "guides/deploy/immutable-installation-upgrade",
+                    "label": "Immutable Installation"
+                  },
+                  {
                     "page": "guides/deploy/production-installation-changes",
                     "label": "Installation Changes"
                   },

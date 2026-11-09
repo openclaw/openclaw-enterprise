@@ -91,7 +91,12 @@ fixed categories, counts, elapsed milliseconds, and nonzero exit counts. Retry
 attempts are counted individually; failure handling stays unchanged. Arguments, output, environment values, and
 resource names are excluded. Concurrent or nested commands can overlap, so do
 not sum these durations as wall time. Fixed setup milestones record offsets from
-startup to place these operations on the wall-clock timeline. Native Pod profiles
+startup to place these operations on the wall-clock timeline. OpenShell asset
+preparation reports its failed operation, such as chart acquisition, rollout,
+workspace rendering, or image import, with elapsed time measured from that
+operation’s start. Success reports the total preparation time. A failed operation
+may reflect cancellation by another setup task; it does not establish the primary
+cause. These records exclude error text, arguments, and output. Native Pod profiles
 report time from the
 deploy request to Pod creation and time from creation to scheduling,
 initialization, running, readiness, and observation. They retain no Pod identity

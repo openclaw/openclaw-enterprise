@@ -26,6 +26,59 @@ type ControllerImage = {
   revision: string;
 };
 
+type InstallationSecret = {
+  metadata: {
+    name: string;
+    uid: string;
+    annotations: Record<string, string>;
+    deletionTimestamp?: string;
+  };
+  immutable: boolean;
+  type: string;
+  data: Record<string, string> & { "installation.yaml": string };
+};
+
+export async function readImmutableInstallationSecret(
+  run: FixtureRun,
+  kubeArgs: string[],
+  name: string,
+) {
+  const secret = protectedJSON<InstallationSecret>(
+    await run("kubectl", [...kubeArgs, "get", `secret/${name}`, "-o", "json"], {
+      protectedInput: true,
+    }),
+  );
+  assert.equal(secret.metadata.name, name);
+  assert.ok(secret.metadata.uid && !secret.metadata.deletionTimestamp);
+  assert.equal(secret.immutable, true, "the Installation reference must be immutable");
+  return secret;
+}
+
+export function assertInstallationSecretRetained(
+  observed: InstallationSecret,
+  expected: InstallationSecret,
+) {
+  assert.equal(observed.metadata.uid, expected.metadata.uid, "Installation Secret was replaced");
+  assert.equal(observed.type, expected.type);
+  assert.equal(
+    observed.metadata.annotations["openclaw.dev/installation-id"],
+    expected.metadata.annotations["openclaw.dev/installation-id"],
+  );
+  assertProtectedEqual(observed.data, expected.data, "Installation Secret bytes changed");
+}
+
+export function assertInstallationVolume(
+  spec: { volumes?: { name: string; secret?: { secretName: string; items?: unknown } }[] },
+  name: string,
+) {
+  const volumes = spec.volumes?.filter((volume) => volume.name === "installation-startup");
+  assert.equal(volumes?.length, 1, "expected exactly one Installation volume");
+  const volume = volumes?.[0];
+  assert.ok(volume);
+  assert.equal(volume.secret?.secretName, name, "workload uses the wrong Installation Secret");
+  assert.deepEqual(volume.secret?.items, [{ key: "installation.yaml", path: "installation.yaml" }]);
+}
+
 type AgentIdentity = {
   id: string;
   namespaceId: string;
@@ -491,6 +544,7 @@ type Pod = {
     serviceAccountName: string;
     containers: { name: string; image: string }[];
     initContainers?: { name: string; image: string }[];
+    volumes?: { name: string; secret?: { secretName: string; items?: unknown } }[];
   };
   status: {
     phase: string;
@@ -610,15 +664,8 @@ export async function rehearsePopulatedReturn({
   ];
   const kube = (...args: string[]) => kubectl("--namespace", namespace, ...args);
   const get = async (resource: string) => JSON.parse(await kube("get", resource, "-o", "json"));
-  const startupSecret = async () =>
-    protectedJSON<{
-      metadata: { uid: string; annotations: Record<string, string> };
-      data: { "installation.yaml": string };
-    }>(
-      await run("kubectl", [...kubeArgs, "get", "secret/occ-installation-startup", "-o", "json"], {
-        protectedInput: true,
-      }),
-    );
+  const startupSecret = (name = "occ-installation-startup") =>
+    readImmutableInstallationSecret(run, kubeArgs, name);
   const installationPath = "/installation";
   const namespacePath = `/namespaces/${encodeURIComponent(namespaceId)}`;
   const agentPath = `${namespacePath}/agents`;
@@ -714,7 +761,7 @@ export async function rehearsePopulatedReturn({
       () => localCluster.runningConfigDigest(status.containerID, pod.metadata.uid),
     );
   };
-  const controlPlane = async (image: ControllerImage, database: string) => {
+  const controlPlane = async (image: ControllerImage, database: string, secretName: string) => {
     const currentPods = await pods();
     assert.equal(currentPods.length, components.length, "expected one API and one worker Pod");
     return Promise.all(
@@ -723,6 +770,7 @@ export async function rehearsePopulatedReturn({
         assert.equal(deployment.metadata.labels["app.kubernetes.io/instance"], release);
         assert.equal(deployment.spec.replicas, 1);
         assert.ok(deployment.metadata.uid);
+        assertInstallationVolume(deployment.spec.template.spec, secretName);
         assert.equal(
           deployment.spec.template.spec.containers.find(
             (container: { name: string }) => container.name === component,
@@ -740,6 +788,7 @@ export async function rehearsePopulatedReturn({
           pod.spec.containers.find((container) => container.name === component)?.image,
           image.reference,
         );
+        assertInstallationVolume(pod.spec, secretName);
         const status = pod.status.containerStatuses?.find((item) => item.name === component);
         assert.ok(status?.ready, `${component} container is not ready`);
         const imageDigest = await verifyPodImage(image, pod, status);
@@ -799,10 +848,6 @@ export async function rehearsePopulatedReturn({
   const candidateValues = JSON.parse(await readFile(join(directory, "values.json"), "utf8"));
   assert.equal(candidateValues.api.channelDirectoryProxyUrl, "http://198.51.100.25:3128");
   candidateValues.api.channelDirectoryProxyUrl = "";
-  await writeFile(candidateValuesPath, JSON.stringify(candidateValues), {
-    mode: 0o600,
-    flag: "wx",
-  });
   assert.equal(baselineRelease.info.status, "deployed");
   assert.ok(Number.isSafeInteger(baselineRelease.version) && baselineRelease.version > 0);
   await custody.assertRelease();
@@ -826,6 +871,34 @@ export async function rehearsePopulatedReturn({
     initialStartupSecret.metadata.annotations["openclaw.dev/installation-id"],
     installationId,
   );
+  // The operator stages a new immutable reference; neither the forward upgrade
+  // nor returning to the previous release may rewrite either Secret.
+  const successorName = "occ-installation-successor";
+  const successorObject = {
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: {
+      ...custody.metadata(successorName),
+      annotations: { "openclaw.dev/installation-id": installationId },
+    },
+    immutable: true,
+    type: initialStartupSecret.type,
+    data: initialStartupSecret.data,
+  };
+  const successorUID = await custody.create(successorObject);
+  const successor = await startupSecret(successorName);
+  assert.equal(successor.metadata.uid, successorUID, "staged Installation Secret was replaced");
+  assert.notEqual(successor.metadata.uid, initialStartupSecret.metadata.uid);
+  assertProtectedEqual(successor.data, initialStartupSecret.data, "staged configuration differs");
+  candidateValues.installation.secretName = successorName;
+  await writeFile(candidateValuesPath, JSON.stringify(candidateValues), {
+    mode: 0o600,
+    flag: "wx",
+  });
+  const retainInstallationSecrets = async () => {
+    assertInstallationSecretRetained(await startupSecret(), initialStartupSecret);
+    assertInstallationSecretRetained(await startupSecret(successorName), successor);
+  };
   const verifyInstallation = async () => {
     const installation = (await api("GET", installationPath)) as { id: string };
     assert.equal(installation.id, installationId);
@@ -833,7 +906,11 @@ export async function rehearsePopulatedReturn({
     assert.equal(saved.id, namespaceId);
     assert.equal(saved.status, "ready");
   };
-  const previousPods = await controlPlane(previous, originalDatabase);
+  const previousPods = await controlPlane(
+    previous,
+    originalDatabase,
+    initialStartupSecret.metadata.name,
+  );
   const writerIdentities = (observed: typeof previousPods) =>
     observed.map(({ deploymentUID, serviceAccountUID }) => ({ deploymentUID, serviceAccountUID }));
   const previousJob = (await get(`job/${release}-initialization`)).spec.template;
@@ -1108,6 +1185,8 @@ export async function rehearsePopulatedReturn({
           );
           await custody.bindPendingRelease(pending.version);
           const initializerUID = initializer.metadata.uid;
+          assertInstallationVolume(initializer.spec.template.spec, successorName);
+          await retainInstallationSecrets();
 
           // Kubernetes continues the real initialization while Helm is suspended.
           // A successful Job alone is insufficient: require its owned, successful
@@ -1142,6 +1221,7 @@ export async function rehearsePopulatedReturn({
               return false;
             }
             assert.ok(!pod.metadata.deletionTimestamp);
+            assertInstallationVolume(pod.spec, successorName);
             assert.ok(
               pod.metadata.ownerReferences?.some(
                 (owner) => owner.controller && owner.uid === job.metadata.uid,
@@ -1381,17 +1461,12 @@ export async function rehearsePopulatedReturn({
       (details) => record("Forward upgrade API availability observations", details),
     ),
   );
+  const candidateInitializerUID = (await get(`job/${release}-initialization`)).metadata.uid;
   const candidateRelease = await helmStatus();
   assert.equal(candidateRelease.info.status, "deployed");
   await custody.bindRelease(candidateRelease.version);
-  const recoveredStartupSecret = await startupSecret();
-  assert.equal(recoveredStartupSecret.metadata.uid, initialStartupSecret.metadata.uid);
-  assertProtectedEqual(
-    recoveredStartupSecret.data,
-    initialStartupSecret.data,
-    "recovery changed the retained Installation configuration",
-  );
-  const candidatePods = await controlPlane(candidate, originalDatabase);
+  await retainInstallationSecrets();
+  const candidatePods = await controlPlane(candidate, originalDatabase, successorName);
   assert.deepEqual(writerIdentities(candidatePods), writerIdentities(previousPods));
   assert.deepEqual(await readAgent(baseline.id), baseline);
   const accepted = await createAgent("acknowledged-after-upgrade");
@@ -1469,15 +1544,21 @@ export async function rehearsePopulatedReturn({
   assert.deepEqual(await claimIdentity(), claims);
   assert.equal((await get(`namespace/${namespace}`)).metadata.uid, namespaceUID);
   assert.equal((await get(`namespace/${tenant}`)).metadata.uid, tenantUID);
-  const returnedSecret = await startupSecret();
-  assert.equal(returnedSecret.metadata.uid, initialStartupSecret.metadata.uid);
-  assert.ok(
-    returnedSecret.data["installation.yaml"] === initialStartupSecret.data["installation.yaml"],
-    "the original installation startup Secret contents changed",
+  await retainInstallationSecrets();
+  assert.equal(
+    returned.config.installation.secretName ?? "occ-installation-startup",
+    initialStartupSecret.metadata.name,
   );
-  assert.equal(returnedSecret.metadata.annotations["openclaw.dev/installation-id"], installationId);
+  // Rollback has no initialization hook: retain the completed candidate Job.
+  const retainedInitializer = await get(`job/${release}-initialization`);
+  assert.equal(retainedInitializer.metadata.uid, candidateInitializerUID);
+  assertInstallationVolume(retainedInitializer.spec.template.spec, successorName);
   await custody.assertPostgres();
-  const returnedPods = await controlPlane(previous, restoredDatabase);
+  const returnedPods = await controlPlane(
+    previous,
+    restoredDatabase,
+    initialStartupSecret.metadata.name,
+  );
   assert.deepEqual(writerIdentities(returnedPods), writerIdentities(previousPods));
   for (const pod of returnedPods) {
     assert.ok(![...previousPods, ...candidatePods].some((earlier) => earlier.uid === pod.uid));
@@ -1526,5 +1607,13 @@ export async function rehearsePopulatedReturn({
     restoredDatabase,
     returnedHelmRevision: returned.version,
     returnedToHelmRevision: baselineRelease.version,
+    installationReferences: {
+      original: {
+        name: initialStartupSecret.metadata.name,
+        uid: initialStartupSecret.metadata.uid,
+      },
+      successor: { name: successorName, uid: successor.metadata.uid },
+      retained: true,
+    },
   });
 }
