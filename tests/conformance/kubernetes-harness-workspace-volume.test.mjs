@@ -34,7 +34,6 @@ function render(loginMode, node, initialSetup, environment = {}) {
     undefined,
     { loginMode, environment: [] },
     [],
-    [],
     undefined,
     [],
     initialSetup ? setup : undefined,

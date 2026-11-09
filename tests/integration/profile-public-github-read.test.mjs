@@ -57,9 +57,7 @@ function baseInput(overrides = {}) {
       gatewayNodeSelector: { "oce-role": "control" },
       transportSecretPrefix: "openclaw-agent-transport",
     },
-    channels: {
-      managedSlackProxy: true,
-    },
+    proxy: { bundled: true },
     ...overrides,
   };
 }

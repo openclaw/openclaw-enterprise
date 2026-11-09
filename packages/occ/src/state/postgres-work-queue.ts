@@ -1,3 +1,4 @@
+import { repositoryRemovalWorkKey, repositoryRetirementWorkKey } from "../repository-withdrawal.ts";
 import { isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { createHash, randomUUID } from "node:crypto";
 import { ResourceConflictError, ScopeViolationError } from "../errors.ts";
@@ -178,7 +179,8 @@ export function isRepositoryExpiryCleanupWork(
   return (
     revisionId !== undefined &&
     isRepositoryCleanupWork(work) &&
-    work.idempotencyKey === repositoryCleanupWorkKey(revisionId, "expiry")
+    (work.idempotencyKey === repositoryCleanupWorkKey(revisionId, "expiry") ||
+      work.idempotencyKey === repositoryRemovalWorkKey(revisionId))
   );
 }
 
@@ -190,9 +192,10 @@ function repositoryCleanupWorkKey(
   revisionId: string,
   purpose: "sessions" | "terminal-runtime" | "expiry",
 ): string {
-  return `agent_revision:${revisionId}:repository_cleanup:${purpose === "terminal-runtime" ? "retire:" : ""}${createHash(
-    "sha256",
-  )
+  if (purpose === "terminal-runtime") {
+    return repositoryRetirementWorkKey(revisionId);
+  }
+  return `agent_revision:${revisionId}:repository_cleanup:${createHash("sha256")
     .update(purpose === "expiry" ? REPOSITORY_EXPIRY_KEY_DOMAIN + revisionId : revisionId, "utf8")
     .digest("hex")}`;
 }
@@ -206,13 +209,16 @@ export function repositoryWithdrawalStateSql(revision: string): string {
   const id = `${revision}.revision_id`;
   const prefix = `'agent_revision:' || ${id} || ':repository_cleanup:'`;
   const digest = (input: string) => `encode(sha256(convert_to(${input}, 'UTF8')), 'hex')`;
-  return `(SELECT CASE WHEN cleanup.idempotency_key LIKE '%:retire:%' THEN 'retiring' ELSE 'expiry' END AS withdrawal
+  return `(SELECT CASE WHEN cleanup.idempotency_key LIKE '%:retire:%' THEN 'retiring'
+      WHEN cleanup.idempotency_key = ${prefix} || ${digest(`'removal:' || ${id}`)} THEN 'removal'
+      ELSE 'expiry' END AS withdrawal
     FROM occ.controller_work cleanup
     WHERE (cleanup.namespace_id, cleanup.agent_id, cleanup.revision_id) =
           (${revision}.namespace_id, ${revision}.agent_id, ${id})
       AND cleanup.agent_target IS NULL AND cleanup.namespace_target IS NULL
       AND cleanup.idempotency_key IN (
         ${prefix} || ${digest(`'${REPOSITORY_EXPIRY_KEY_DOMAIN}' || ${id}`)},
+        ${prefix} || ${digest(`'removal:' || ${id}`)},
         ${prefix} || 'retire:' || ${digest(id)})
     ORDER BY withdrawal DESC LIMIT 1)`;
 }
@@ -296,11 +302,16 @@ function transferRepositoryCleanupSql(
     ), cleanup_revisions AS MATERIALIZED (
       SELECT source.idempotency_key AS source_key, source.actor_id,
         revision.namespace_id, revision.agent_id, revision.id AS revision_id,
-        -- Only expiry of this running revision's own maintenance can leave its runtime in place.
-        -- Recovery has no worker observation, so establish the fixed deadline on the database clock.
+        -- Committed removal or expiry of this revision's maintenance can retain its runtime.
+        -- Recovery has no observation: require the durable removal or database-clock deadline.
+        -- Pending Stop owns runtime disposition; it cannot undo the active revision's removal.
         CASE WHEN source.revision_id = revision.id
           AND revision.admitted_spec->'repository_credentials' IS NOT NULL THEN
-          CASE WHEN (${mayHaveReachedRepositoryDeadline}) AND namespace.status = 'ready'
+          CASE WHEN namespace.status='ready' AND agent.status='active'
+            AND agent.active_revision_id=revision.id
+            AND ${repositoryWithdrawalStateSql("source")} = 'removal'
+            THEN 'removal'
+          WHEN (${mayHaveReachedRepositoryDeadline}) AND namespace.status = 'ready'
             AND agent.status = 'active' AND agent.desired_runtime_state = 'running'
             AND agent.active_revision_id = revision.id
             AND source.idempotency_key ~
@@ -371,7 +382,8 @@ function transferRepositoryCleanupSql(
         'agent_revision:' || revision.revision_id || ':repository_cleanup:' ||
           CASE WHEN revision.cleanup_purpose = 'retire' THEN 'retire:' ELSE '' END ||
           encode(sha256(convert_to(
-            CASE WHEN revision.cleanup_purpose = 'expiry' THEN '${REPOSITORY_EXPIRY_KEY_DOMAIN}' ELSE '' END ||
+            CASE WHEN revision.cleanup_purpose = 'expiry' THEN '${REPOSITORY_EXPIRY_KEY_DOMAIN}'
+              WHEN revision.cleanup_purpose = 'removal' THEN 'removal:' ELSE '' END ||
             revision.revision_id, 'UTF8')), 'hex'),
         revision.namespace_id, revision.agent_id, revision.revision_id, revision.actor_id,
         NULL, NULL, 'queued', statement_timestamp(), 0, statement_timestamp(), statement_timestamp()
@@ -989,10 +1001,10 @@ export class PostgresWorkQueue {
            ON source_revision.namespace_id = source.namespace_id
            AND source_revision.agent_id = source.agent_id AND source_revision.id = source.revision_id
          WHERE revision.namespace_id = $3 AND revision.agent_id = $4 AND revision.id = $5
-           -- An expiry cleanup that cannot prove withdrawal transfers to terminal retirement.
+           -- Withdrawal cleanup that cannot prove safe retention transfers to terminal retirement.
            -- No other cleanup can transfer, and retirement can never transfer back.
            AND (NOT ${repositoryCleanupSql("source")} OR
-             ($7::boolean AND NOT $8::boolean AND NOT $10::boolean AND source.idempotency_key = $9::text))
+             ($7::boolean AND NOT $8::boolean AND NOT $10::boolean AND source.idempotency_key IN ($9::text,$11::text)))
            -- The worker revalidated the denial under these Namespace and Agent locks. Only this
            -- active revision's own work can transfer standing Git to irreversible withdrawal.
            AND (NOT $10::boolean OR (source.agent_id = agent.id AND source.revision_id = revision.id
@@ -1049,6 +1061,7 @@ export class PostgresWorkQueue {
         purpose === "failed-preparation",
         repositoryCleanupWorkKey(revisionId, "expiry"),
         withdrawStanding,
+        repositoryRemovalWorkKey(revisionId),
       ],
     );
     const row = result.rows[0] as
@@ -1197,18 +1210,18 @@ export class PostgresWorkQueue {
   /**
    * Only these exact, durable obligations change maintenance of the still-active revision.
    * A terminal retirement always wins, even after completion. The application cannot delete or
-   * retarget either row; Agent deletion detaches both using the existing cleanup key grammar.
+   * retarget these rows; Agent deletion detaches them using the existing cleanup key grammar.
    */
   async repositoryExpiryState(
     owner: RepositoryRevisionOwner,
-  ): Promise<"expiry" | "retiring" | undefined> {
+  ): Promise<"expiry" | "removal" | "retiring" | undefined> {
     const { namespaceId, agentId, revisionId } = owner;
     const result = await this.client.query(
       `SELECT ${repositoryWithdrawalStateSql("owner")} AS withdrawal
        FROM (VALUES ($1::text, $2::text, $3::text)) AS owner(namespace_id, agent_id, revision_id)`,
       [namespaceId, agentId, revisionId],
     );
-    const row = result.rows[0] as { withdrawal: "expiry" | "retiring" | null };
+    const row = result.rows[0] as { withdrawal: "expiry" | "removal" | "retiring" | null };
     return row.withdrawal ?? undefined;
   }
 

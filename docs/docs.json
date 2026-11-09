@@ -753,12 +753,20 @@
                     "label": "Image Upgrades"
                   },
                   {
+                    "page": "guides/deploy/immutable-installation-upgrade",
+                    "label": "Immutable Installation"
+                  },
+                  {
                     "page": "guides/deploy/production-installation-changes",
                     "label": "Installation Changes"
                   },
                   {
                     "page": "guides/deploy/production-upgrade-recovery",
                     "label": "Upgrade Recovery"
+                  },
+                  {
+                    "page": "guides/deploy/production-helm-recovery",
+                    "label": "Helm Recovery"
                   },
                   {
                     "page": "guides/deploy/split-layout-upgrade",

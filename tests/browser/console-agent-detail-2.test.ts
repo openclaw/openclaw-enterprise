@@ -24,6 +24,7 @@ import { createNativeConsoleFixture, nativeBrowserSupported } from "./console-na
 import {
   apiRequests,
   detailUrl,
+  deploymentStatusResponse,
   holdRequests,
   login,
   nativeValues,
@@ -752,3 +753,109 @@ test("Agent sharing grants existing people exact discovery and native access, th
 });
 
 registerSharingCredentialsAndChannelsCases(detailApp);
+
+test("Deployment activity keeps keyboard focus when refresh discovers a newer version", async (t) => {
+  const fixture = await detailApp(t);
+  const namespace = await fixture.createNamespace("Deployment refresh focus", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Deployment refresh Agent",
+    nativeValues("v1"),
+  );
+  const first = await fixture.deployAgent(namespace.id, agent.id);
+  const firstUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, first.id);
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 1440, height: 1000 } },
+  });
+  // This controller fixture admits revisions but has no deployment worker. Supply
+  // its supported queued record only for v1; v2's read and all overview calls use the real API.
+  const queued = deploymentStatusResponse(first, { status: "queued" });
+  await page.route(firstUrl, (route) => route.fulfill(queued));
+  await page.clock.install();
+  const initial = page.waitForResponse((response) => response.url() === firstUrl);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, first.id, "deployment"));
+  const initialResponse = await initial;
+  assert.equal(initialResponse.status(), 200);
+  assert.deepEqual(await initialResponse.json(), queued.json);
+  const activity = await expectDeploymentOutcome(page, "Queued");
+  await activity.getByText("Most recent visible deployment · v1", { exact: true }).waitFor();
+  // A quiet update should leave a reader's folded evidence and control in place.
+  if ((await activity.locator("details[open]").count()) !== 0) {
+    await activity.getByText("Deployment details", { exact: true }).click();
+  }
+  const refresh = activity.getByRole("button", { name: "Refresh deployment", exact: true });
+  await refresh.focus();
+  const original = await refresh.elementHandle();
+  assert.ok(original);
+  const geometry = await refresh.boundingBox();
+  assert.ok(geometry);
+  const retainsOriginalFocus = () =>
+    refresh.evaluate(
+      (node, previous) => node === previous && node === document.activeElement,
+      original,
+    );
+  const hasRefreshFocus = () => refresh.evaluate((node) => node === document.activeElement);
+  const poll = await holdRequests(t, page, firstUrl, {
+    once: true,
+    method: "GET",
+    fulfill: queued,
+  });
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await poll.requested;
+  assert.equal(await refresh.isEnabled(), true);
+  assert.equal(await retainsOriginalFocus(), true);
+  assert.deepEqual(await refresh.boundingBox(), geometry);
+  await page.keyboard.press("Enter");
+  assert.equal(await refresh.getAttribute("aria-disabled"), "true");
+  assert.equal(await retainsOriginalFocus(), true);
+  assert.deepEqual(await refresh.boundingBox(), geometry);
+
+  // Admit a later revision while the original poll is held. The queued manual refresh
+  // rereads the real version list after the poll settles, then reads that exact new record.
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("v2"));
+  const second = await fixture.deployAgent(namespace.id, agent.id);
+  const secondUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, second.id);
+  const next = await holdRequests(t, page, secondUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  const pollResponse = page.waitForResponse((response) => response.url() === firstUrl);
+  poll.release();
+  const completedPoll = await pollResponse;
+  assert.equal(completedPoll.status(), 200);
+  assert.deepEqual(await completedPoll.json(), queued.json);
+  const nextResponse = await next.requested;
+  assert.ok(nextResponse);
+  assert.equal(nextResponse.status(), 503);
+  const failure: unknown = await nextResponse.json();
+  assertRecord(failure, "the controller's deployment read response");
+  assertRecord(failure.error, "the controller's deployment read error");
+  assert.equal(failure.error.code, "DEPENDENCY_UNAVAILABLE");
+  await refresh.waitFor({ state: "visible" });
+  assert.equal(await refresh.getAttribute("aria-disabled"), "true");
+  const focusDuringReplacement = await hasRefreshFocus();
+  assert.deepEqual(await refresh.boundingBox(), geometry);
+  next.release();
+  await activity
+    .getByText("Most recent visible deployment · v2", { exact: true })
+    .waitFor({ state: "attached" });
+  await activity
+    .getByRole("alert")
+    .getByText("Service unavailable. The read could not be completed. Try again.", { exact: true })
+    .waitFor();
+  await waitForEnabled(refresh);
+  await refresh.click({ trial: true });
+  assert.deepEqual(await refresh.boundingBox(), geometry);
+  const focusAfterReplacement = await hasRefreshFocus();
+  assert.equal(
+    focusDuringReplacement,
+    true,
+    "the focused Refresh deployment control survives panel replacement",
+  );
+  assert.equal(
+    focusAfterReplacement,
+    true,
+    "Refresh deployment keeps focus after the newer record appears",
+  );
+});

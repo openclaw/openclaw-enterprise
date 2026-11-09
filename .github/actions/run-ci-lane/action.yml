@@ -107,6 +107,15 @@ runs:
         appendFileSync(process.env.GITHUB_OUTPUT, `source-build=${Boolean(sourceBuild)}\n`);
         appendFileSync(process.env.GITHUB_OUTPUT, `first-agent=${selected}\n`);
         NODE
+    - name: Start memory sampling
+      id: memory-sampler
+      if: startsWith(inputs.lane, 'images-runtime-startup') || startsWith(inputs.lane, 'checks-browser')
+      continue-on-error: true
+      shell: bash
+      run: |
+        mkdir -p "$RUNNER_TEMP/memory"
+        nohup bash scripts/ci/memory-sampler.sh "$RUNNER_TEMP/memory/${{ inputs.lane }}.log" >"$RUNNER_TEMP/memory/${{ inputs.lane }}.summary.log" 2>&1 < /dev/null &
+        echo "pid=$!" >> "$GITHUB_OUTPUT"
     - id: pnpm-store
       uses: ./.github/actions/setup-pnpm-store-cache
       with:
@@ -136,7 +145,8 @@ runs:
       if: >-
         (inputs.profile == 'full' || inputs.profile == 'images' || inputs.profile == 'k3d') &&
         inputs.lane != 'docker-model' && inputs.lane != 'logging-collector' &&
-        !startsWith(inputs.lane, 'k3d-fixture-') && !startsWith(inputs.lane, 'k3d-observability')
+        !startsWith(inputs.lane, 'k3d-fixture-') && !startsWith(inputs.lane, 'k3d-observability') &&
+        (inputs.runtime-artifact-id == '' || !contains(fromJSON('["images-runtime-startup","images-runtime-startup-2","images-runtime-startup-3"]'), inputs.lane))
       with:
         # GitHub-hosted and Blacksmith runners are per-job VMs, so skip the builder
         # removal; a persistent runner would accumulate buildx_buildkit_* containers.
@@ -147,8 +157,9 @@ runs:
           ${{ steps.image-mode.outputs.source-build == 'true' && 'default-load=true' || '' }}
     - name: Set up CI tools
       id: setup-ci-tools
-      shell: bash
-      run: bash scripts/ci/setup-tools.sh "${{ inputs.profile }}"
+      uses: ./.github/actions/setup-ci-tools
+      with:
+        profile: ${{ inputs.profile }}
     - name: Install registry transport for image tests
       id: install-registry-transport
       if: inputs.lane == 'images-packaging' || inputs.runtime-artifact-id != ''
@@ -424,6 +435,17 @@ runs:
       if: always()
       shell: bash
       run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json"
+    - name: Stop memory sampling
+      if: always() && steps.memory-sampler.outputs.pid != ''
+      continue-on-error: true
+      shell: bash
+      env:
+        SAMPLER_PID: ${{ steps.memory-sampler.outputs.pid }}
+      run: |
+        if [[ "$SAMPLER_PID" =~ ^[1-9][0-9]*$ ]]; then
+          kill "$SAMPLER_PID" 2>/dev/null || true
+        fi
+        tail -n 20 "$RUNNER_TEMP/memory/${{ inputs.lane }}.summary.log" || true
     - name: Mark QA cleanup end
       id: qa-cleanup-end
       if: always() && inputs.lane == 'qa-matrix'
@@ -475,7 +497,7 @@ runs:
         retention-days: 7
     - name: Upload memory samples
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-      if: always() && inputs.lane == 'k3d-fixture-configuration'
+      if: always() && (inputs.lane == 'k3d-fixture-configuration' || steps.memory-sampler.outputs.pid != '')
       continue-on-error: true
       with:
         name: memory-${{ inputs.artifact-prefix }}-${{ inputs.lane }}-attempt-${{ github.run_attempt }}
@@ -529,6 +551,7 @@ runs:
         QA_SELECTION: ${{ inputs.test-file == '' && 'full' || 'focused' }}
       run: node scripts/ci/qa-phase-timing.ts summarize 2>/dev/null
     - name: Summarize OpenShell phase timing
+      id: openshell-phase-timing
       if: always() && inputs.lane == 'openshell'
       continue-on-error: true
       shell: bash
@@ -543,7 +566,16 @@ runs:
         OPENSHELL_RUN_OUTCOME: ${{ steps.run-lane.outcome }}
         OPENSHELL_CLEANUP_OUTCOME: ${{ steps.cleanup-lane.outcome }}
         OPENSHELL_SELECTION: ${{ inputs.test-file == '' && 'full' || 'focused' }}
-      run: node scripts/ci/openshell-phase-timing.ts summarize 2>/dev/null
+      run: node scripts/ci/openshell-phase-timing.ts summarize "$RUNNER_TEMP/openshell-phase-timing.json" 2>/dev/null
+    - name: Retain OpenShell phase timing
+      if: ${{ !cancelled() && inputs.lane == 'openshell' && steps.openshell-phase-timing.outcome == 'success' }}
+      continue-on-error: true
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: timing-${{ inputs.artifact-prefix }}-${{ inputs.lane }}-attempt-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/openshell-phase-timing.json
+        if-no-files-found: error
+        retention-days: 7
     - name: Summarize first lane failure
       if: failure() || cancelled()
       continue-on-error: true

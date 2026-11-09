@@ -1378,10 +1378,11 @@ test("full-integration lanes read NODE_BASE_IMAGE from a variable their environm
   }
 });
 
-test("full-integration uses ordinary CI runners for kernel, sandbox, and image lanes", () => {
+test("full-integration preserves qualified runners for kernel, sandbox, and image lanes", () => {
   // Hosted ubuntu-24.04 refuses Chromium's sandbox, which PostgreSQL Authentication's
   // sign-in cases turn on (finding 1383), and the k3d lanes need a kernel that enforces
-  // NetworkPolicy. These lanes must run where ci.yml runs them.
+  // NetworkPolicy. Keep the runner family; State retains its qualified eight-CPU
+  // Full Integration allocation while ordinary CI uses four CPUs.
   const jobs = loadYaml(".github/workflows/full-integration.yml").jobs;
   const job = jobs["pr-safe-same-sha"];
   const runnerFor = (target, lane) => {
@@ -1406,7 +1407,11 @@ test("full-integration uses ordinary CI runners for kernel, sandbox, and image l
     assert.ok(pinned.includes(lane), lane);
   }
   for (const lane of pinned) {
-    assert.equal(runnerFor(job, lane), ciRunners.get(lane), lane);
+    assert.equal(
+      runnerFor(job, lane),
+      lane === "k3d-fixture-state" ? "blacksmith-8vcpu-ubuntu-2404" : ciRunners.get(lane),
+      lane,
+    );
   }
   const images = jobs["image-lanes-same-sha"];
   for (const { lane } of images.strategy.matrix.include) {
@@ -1896,10 +1901,18 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     // The inventory checks above still require every production CI lane.
     assert.deepEqual(
       Object.keys(selectedNeeds).sort(),
-      ["impact", "static-checks", "runtime-artifact", ...expectedFullLanes].sort(),
+      Object.keys(passingGateNeeds("full")).sort(),
     );
-    for (const lane of expectedFullLanes) {
-      assert.equal(selectedNeeds[lane].result, "success", lane);
+    assert.deepEqual(
+      [
+        ...selectedNeeds["pr-safe"].lanes,
+        ...selectedNeeds["image-lanes"].lanes,
+        "runtime-image-fixture",
+      ].sort(),
+      [...expectedFullLanes].sort(),
+    );
+    for (const [name, state] of Object.entries(selectedNeeds)) {
+      assert.equal(state.result, "success", name);
     }
     const fixtureLanes = ["checks-baseline-1", "checks-baseline-2", "postgres"];
     const { runLane, aggregate } = syntheticLanes(root, f.tested, fixtureLanes, "");
@@ -1935,9 +1948,61 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
         `import test from "node:test"; test("case ${lane}", () => { throw new Error("failure"); });\n`,
       );
       assert.notEqual((await runLane(lane)).status, 0);
+      // A failed matrix job does not make its passing sibling lanes fail.
+      needs["pr-safe"].result = "failure";
+      assert.notEqual((await runGate(root, needs, mode)).status, 0);
       const failed = await aggregate();
       assert.notEqual(failed.status, 0);
       assert.ok(hasIssue(failed, "lane-failed", lane));
+      const summary = JSON.parse(failed.stdout);
+      assert.deepEqual(
+        summary.issues
+          .filter((entry) => entry.code === "need-not-success")
+          .map((entry) => entry.need),
+        ["pr-safe"],
+      );
+      assert.deepEqual(
+        summary.issues.filter((entry) => entry.code === "lane-failed").map((entry) => entry.lane),
+        [lane],
+      );
+      assert.ok(
+        summary.lanes
+          .filter((entry) => entry.lane !== lane)
+          .every((entry) => entry.status === "passed"),
+      );
+      if (lane === "postgres") {
+        // Keep the runner-produced failure intact: an old revision's receipt
+        // cannot attribute an outcome to the revision being aggregated.
+        await command(root, "git", ["checkout", "-q", "--detach", f.head]);
+        const stale = await aggregate({ sha: f.head });
+        assert.notEqual(stale.status, 0);
+        assert.ok(hasIssue(stale, "source-sha-mismatch", lane));
+        assert.equal(hasIssue(stale, "lane-failed"), false);
+        assert.deepEqual(JSON.parse(stale.stdout).lanes, []);
+        await command(root, "git", ["checkout", "-q", "--detach", f.tested]);
+
+        // A misplaced real receipt likewise cannot fail its passing sibling.
+        const sibling = join(root, "results/checks-baseline-1.json");
+        const siblingOriginal = readFileSync(sibling);
+        cpSync(artifact, sibling);
+        const misfiled = await aggregate();
+        assert.notEqual(misfiled.status, 0);
+        assert.ok(hasIssue(misfiled, "lane-output-mismatch", "checks-baseline-1"));
+        const misplaced = JSON.parse(misfiled.stdout);
+        assert.deepEqual(
+          misplaced.issues
+            .filter((entry) => entry.code === "lane-failed")
+            .map((entry) => entry.lane),
+          [lane],
+        );
+        assert.deepEqual(
+          misplaced.lanes.map((entry) => entry.lane),
+          ["checks-baseline-2", lane],
+        );
+        writeFileSync(sibling, siblingOriginal);
+      }
+      needs["pr-safe"].result = "success";
+      assert.equal((await runGate(root, needs, mode)).status, 0);
       writeFileSync(artifact, original);
     }
     needs["pr-safe"].result = "failure";
@@ -2066,7 +2131,7 @@ test("real shallow bootstrap reports exact safe reasons for each guard", async (
   mkdirSync(objects);
   await all(
     [
-      ["bootstrap_non_pr_event", { GITHUB_EVENT_NAME: "push" }],
+      ["bootstrap_non_pr_event", { GITHUB_EVENT_NAME: "workflow_dispatch" }],
       ["bootstrap_event_unavailable", { GITHUB_EVENT_PATH: join(f.dir, "missing") }],
       ["bootstrap_invalid_identity", { GITHUB_SHA: "invalid;$(touch injected)" }],
       ["bootstrap_checkout_mismatch", { GITHUB_SHA: f.head }],
@@ -2095,7 +2160,7 @@ test("selector distinguishes conservative inspection outcomes", async (t) => {
   await all(
     [
       [f, {}, "docs", "docs_only"],
-      [f, { GITHUB_EVENT_NAME: "push" }, "full", "non_pr_event"],
+      [f, { GITHUB_EVENT_NAME: "workflow_dispatch" }, "full", "non_pr_event"],
       [f, { GITHUB_SHA: "invalid" }, "full", "invalid_identity"],
       [f, { GITHUB_SHA: f.head }, "full", "checkout_mismatch"],
       [
@@ -2667,16 +2732,7 @@ test("the lane matrix runs every lane in full mode and only selected lanes in te
     // NetworkPolicy proofs need a runner kernel shown to enforce them.
     const netfilter = row.lane.startsWith("k3d-fixture-") || row.lane === "k3d-observability";
     if (netfilter) {
-      assert.equal(
-        row.runner,
-        row.lane === "k3d-observability" ||
-          row.lane === "k3d-fixture-network" ||
-          row.lane === "k3d-fixture-plugins" ||
-          row.lane === "k3d-fixture-configuration"
-          ? "blacksmith-4vcpu-ubuntu-2404"
-          : "blacksmith-8vcpu-ubuntu-2404",
-        row.lane,
-      );
+      assert.equal(row.runner, "blacksmith-4vcpu-ubuntu-2404", row.lane);
     }
   }
   const valid = [
@@ -2832,7 +2888,8 @@ test("a test-only selection without Checks and Conformance 1 passes the gate", a
     editTest("tests/integration/postgres-a.test.mjs"),
     '["postgres"]',
   );
-  assert.deepEqual(Object.keys(needs), ["impact", "static-checks", "postgres"]);
+  assert.deepEqual(Object.keys(needs), ["impact", "static-checks", "pr-safe"]);
+  assert.deepEqual(needs["pr-safe"].lanes, ["postgres"]);
 });
 
 test("tests mode flows through the gate to a source-bound aggregate of only its lanes", async (t) => {
@@ -2953,6 +3010,43 @@ test("shared runtime DAG selects only image consumers while other checks stay in
   }
 });
 
+test("shared runtime consumers omit idle builders and preserve source builders", () => {
+  const action = read(".github/actions/run-ci-lane/action.yml");
+  const expression = action
+    .match(/- id: builder[\s\S]*?\n {6}if: >-\n([\s\S]*?)\n {6}with:/)?.[1]
+    ?.trim()
+    .replaceAll("inputs.runtime-artifact-id", 'inputs["runtime-artifact-id"]');
+  assert.ok(expression, "the builder step has an explicit condition");
+  for (const [lane, profile, source, artifact] of [
+    ["images-runtime-startup", "full", true, false],
+    ["images-runtime-startup-2", "images", true, false],
+    ["images-runtime-startup-3", "images", true, false],
+    ["images-packaging", "full", true, true],
+    ["runtime-image-fixture", "full", true, true],
+    ["checks-browser", "baseline", false, false],
+    ["k3d-fixture-state", "k3d", false, false],
+    ["k3d-observability", "k3d", false, false],
+    ["docker-model", "full", false, false],
+    ["logging-collector", "images", false, false],
+  ]) {
+    for (const [id, expected] of [
+      ["", source],
+      ["123", artifact],
+    ]) {
+      assert.equal(
+        runInNewContext(expression, {
+          inputs: { lane, profile, "runtime-artifact-id": id },
+          startsWith: (value, prefix) => value.startsWith(prefix),
+          contains: (values, value) => values.includes(value),
+          fromJSON: JSON.parse,
+        }),
+        expected,
+        `${lane}: ${id ? "shared artifact" : "source build"}`,
+      );
+    }
+  }
+});
+
 test("full aggregate attributes image coverage to its consumer and producer jobs", (t) => {
   const workflow = loadYaml(".github/workflows/full-integration.yml");
   // This workflow uses !cancelled(), which disables GitHub's implicit success()
@@ -3009,15 +3103,25 @@ test("full aggregate attributes image coverage to its consumer and producer jobs
       "image-lanes-same-sha": { result: "skipped" },
     });
     assert.equal(output["runtime-artifact"].result, result);
-    assert.equal(output["images-runtime-startup-2"].result, "skipped");
-    assert.equal(output.postgres.result, "success");
+    assert.equal(output["image-lanes-same-sha"].result, "skipped");
+    assert.ok(output["image-lanes-same-sha"].lanes.includes("images-runtime-startup-2"));
+    assert.equal(output["pr-safe-same-sha"].result, "success");
+    assert.ok(output["pr-safe-same-sha"].lanes.includes("postgres"));
   }
   const imageFailure = execute("all", { "image-lanes-same-sha": { result: "failure" } });
-  assert.equal(imageFailure["images-packaging"].result, "failure");
-  assert.equal(imageFailure["checks-baseline-1"].result, "success");
+  assert.equal(imageFailure["image-lanes-same-sha"].result, "failure");
+  assert.equal(imageFailure["pr-safe-same-sha"].result, "success");
   const unrelatedFailure = execute("all", { "pr-safe-same-sha": { result: "failure" } });
-  assert.equal(unrelatedFailure["images-packaging"].result, "success");
-  assert.equal(unrelatedFailure.postgres.result, "failure");
+  assert.equal(unrelatedFailure["image-lanes-same-sha"].result, "success");
+  assert.equal(unrelatedFailure["pr-safe-same-sha"].result, "failure");
+  assert.equal(unrelatedFailure.postgres, undefined);
+  assert.equal(unrelatedFailure["logging-collector"], undefined);
+  assert.ok(unrelatedFailure["pr-safe-same-sha"].lanes.includes("logging-collector"));
+  const logging = execute("logging-collector", { "logging-collector": { result: "failure" } });
+  assert.deepEqual(logging, {
+    preflight: { result: "success" },
+    "logging-collector": { result: "failure" },
+  });
   const targeted = execute("docker-model", {
     "runtime-artifact": { result: "skipped" },
     "image-lanes-same-sha": { result: "skipped" },

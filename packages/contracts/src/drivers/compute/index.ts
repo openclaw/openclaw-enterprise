@@ -328,7 +328,9 @@ export interface ComputeDriver extends Driver {
     sources: readonly Readonly<import("../../index.ts").CredentialSource>[],
   ): void;
   /**
-   * Withdraw expired Git access or a standing grant durably withdrawn before its first deadline.
+   * Withdraw expired Git access or a durably withdrawn standing or finite grant.
+   * Finite withdrawal requires committed removal from the original admitted set, not merely
+   * changed configuration or unavailable Git evidence.
    * Observe that withdrawal again after a restart. Never grant
    * access, replace the runtime, or repeat an uncertain detach. Return `withdrawn` only after
    * verifying Git is revoked and the same independently authorized inference runtime is ready.
