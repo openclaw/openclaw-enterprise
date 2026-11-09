@@ -20,7 +20,6 @@ auth:
 agentNativeAdmin:
   enabled: true
   domain: agents.oce.example.internal
-  sharedCookieDomain: oce.example.internal
 
 bootstrap:
   adminEmail: admin@example.invalid

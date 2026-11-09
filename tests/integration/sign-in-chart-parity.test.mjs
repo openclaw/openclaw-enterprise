@@ -175,6 +175,7 @@ function jobEnvironment(baseUrl) {
     OCC_DATABASE_URL: unreachableDatabase,
     OCC_AUTH_SECRET: secrets["occ-auth/secret"],
     OCC_AUTH_BASE_URL: baseUrl,
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
     OCC_BOOTSTRAP_ADMIN_EMAIL: "admin@oce.example.internal",
   };
 }
@@ -367,7 +368,6 @@ const withNativeAdmin = (provider, values) => ({
   env: {
     OCC_AGENT_NATIVE_ADMIN_ENABLED: "true",
     OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
-    OCC_AUTH_COOKIE_DOMAIN: "oce.example.internal",
   },
 });
 
@@ -618,10 +618,6 @@ const invalid = [
     env: { OCC_AUTH_OIDC_DISPLAY_NAME: displayName },
     parser: /OCC_AUTH_OIDC_DISPLAY_NAME must be 1 to 40 printable characters/,
   })),
-  withNativeAdmin("OIDC", {
-    ...oidcUpgradeValues(recoveryUserId),
-    "agentNativeAdmin.enabled": "true",
-  }),
 ];
 const baseSettings = {
   github: githubUpgradeSettings(recoveryUserId),
@@ -1347,60 +1343,61 @@ describe("sign-in chart parity", { concurrency: true }, () => {
     },
   );
 
-  // With native admin, the API refuses at startup a console origin outside the shared cookie
-  // parent, or one without HTTPS (createControllerAuth, before any database read). The chart
-  // refuses the same values at render time, and still renders what the API accepts.
-  test("the chart refuses native admin base URLs the API refuses at startup", tooling, async () => {
-    const nativeAdmin = {
-      "gatewayRouting.enabled": "true",
-      "gatewayRouting.gatewayClassName": "private-envoy-gateway",
-      "gatewayRouting.apiKeySecretName": "occ-gateway-api-key",
-      "agentNativeAdmin.enabled": "true",
-      "agentNativeAdmin.domain": "agents.oce.example.com",
-      "agentNativeAdmin.sharedCookieDomain": "oce.example.com",
-    };
-    const apiRefusal = (baseUrl) => () =>
-      createControllerAuth({
-        mode: "production",
-        secret: "s".repeat(32),
-        baseURL: new URL(baseUrl).toString().replace(/\/$/, ""),
-        sharedCookieDomain: "oce.example.com",
-      });
-    const outsideParent = [
-      /agentNativeAdmin\.sharedCookieDomain must contain the auth\.baseUrl host/,
-      /OCC_AUTH_COOKIE_DOMAIN must contain the OCC_AUTH_BASE_URL host/,
-    ];
-    const refused = [
-      ["https://console.example.com", ...outsideParent],
-      ["https://console-oce.example.com", ...outsideParent],
-      [
-        "http://console.oce.example.com",
-        /agentNativeAdmin\.enabled requires an HTTPS auth\.baseUrl/,
-        /OCC_AUTH_COOKIE_DOMAIN requires secure HTTPS session cookies/,
-      ],
-    ].map(async ([baseUrl, chart, api]) => {
-      assert.throws(apiRefusal(baseUrl), api, baseUrl);
-      assert.match(await refusal({ ...nativeAdmin, "auth.baseUrl": baseUrl }), chart, baseUrl);
-    });
-    const accepted = [
-      "https://oce.example.com",
-      "https://Console.OCE.example.com",
-      "https://console.oce.example.com.",
-      "https://console.oce.example.com:8443",
-      " https://console.oce.example.com ",
-    ].map(async (baseUrl) => {
-      // The API's cookie checks pass; it stops later, at the Installation it was not given.
-      assert.throws(apiRefusal(baseUrl), /Better Auth issuer requires an Installation/, baseUrl);
-      const objects = await render({ ...nativeAdmin, "auth.baseUrl": baseUrl });
-      assert.ok(
-        deploymentEnv(objects, "api").some(
-          ({ name, value }) => name === "OCC_AUTH_BASE_URL" && value === baseUrl,
-        ),
-        baseUrl,
+  test(
+    "shared sessions derive DNS scope with native access enabled or disabled",
+    tooling,
+    async () => {
+      for (const enabled of ["true", "false"]) {
+        const values = {
+          "agentNativeAdmin.enabled": enabled,
+          "agentNativeAdmin.domain": "agents.oce.example.com",
+        };
+        for (const [baseUrl, domain] of [
+          ["https://console.oce.example.com", "oce.example.com"],
+          ["https://console.example.com", "example.com"],
+          ["https://Console.OCE.example.com.", "oce.example.com"],
+        ]) {
+          const auth = createControllerAuth({
+            mode: "production",
+            installationId: "ins_cookie_scope",
+            secret: "s".repeat(32),
+            baseURL: new URL(baseUrl).origin,
+            agentDomain: "agents.oce.example.com",
+          });
+          assert.equal(auth.sharedCookieDomain, domain);
+          await render({ ...values, "auth.baseUrl": baseUrl });
+        }
+        for (const baseUrl of ["http://console.oce.example.com", "https://console.other.net"]) {
+          assert.throws(
+            () =>
+              createControllerAuth({
+                mode: "production",
+                installationId: "ins_cookie_scope",
+                secret: "s".repeat(32),
+                baseURL: baseUrl,
+                agentDomain: "agents.oce.example.com",
+              }),
+            { message: /OCC_AUTH_BASE_URL|Console and Agent hostnames/ },
+          );
+          assert.match(
+            await refusal({ ...values, "auth.baseUrl": baseUrl }),
+            /HTTPS for shared browser sessions|must share a non-public DNS suffix/,
+          );
+        }
+        assert.match(
+          await refusal({ ...values, "agentNativeAdmin.sharedCookieDomain": "example.com" }),
+          /sharedCookieDomain is no longer supported/,
+        );
+      }
+      const oidc = { ...oidcUpgradeValues(recoveryUserId), "agentNativeAdmin.enabled": "true" };
+      const settings = resolveSecrets(signInSettings(deploymentEnv(await render(oidc), "api")));
+      await startsUp(settings, "OIDC and native browser access");
+      assert.equal(
+        await startupCode({ ...settings, OCC_AUTH_COOKIE_DOMAIN: "oce.example.internal" }),
+        "AUTH_BASE_URL_INVALID",
       );
-    });
-    await settle([...refused, ...accepted]);
-  });
+    },
+  );
 
   // The API refuses an auth base URL that is not an absolute HTTP(S) origin: startApi parses
   // OCC_AUTH_BASE_URL, and createControllerAuth (validHttpBaseURL, which the bootstrap Job also
@@ -1442,18 +1439,26 @@ describe("sign-in chart parity", { concurrency: true }, () => {
         }
         const normalized = parsed.toString().replace(/\/$/, "");
         try {
-          createControllerAuth({ mode: "production", secret: "s".repeat(32), baseURL: normalized });
+          createControllerAuth({
+            mode: "production",
+            secret: "s".repeat(32),
+            baseURL: normalized,
+            agentDomain: "agents.oce.example.internal",
+          });
         } catch (error) {
           if (/Better Auth issuer requires an Installation/.test(error.message)) {
             return true;
           }
-          assert.match(error.message, /^OCC_AUTH_BASE_URL must be an absolute HTTP origin URL\.$/);
+          assert.match(
+            error.message,
+            /OCC_AUTH_BASE_URL|Shared session cookies|Console and Agent hostnames/,
+          );
           return false;
         }
         assert.fail(`createControllerAuth accepted ${baseUrl} without an Installation`);
       };
-      const notOrigin = /auth\.baseUrl must be an absolute HTTP\(S\) origin/;
-      const plainHttp = /auth\.baseUrl must use HTTPS unless its host is 127\.0\.0\.1 or localhost/;
+      const notOrigin = /auth\.baseUrl must be an absolute HTTP\(S\) origin|unable to parse url/;
+      const plainHttp = /auth\.baseUrl must use HTTPS for shared browser sessions/;
       const unicodeEdge =
         /auth\.baseUrl must not begin or end with Unicode spaces or invisible characters/;
       const unicodeInside = /auth\.baseUrl must not contain spaces, invisible characters, < or >/;
@@ -1505,33 +1510,45 @@ describe("sign-in chart parity", { concurrency: true }, () => {
             "HTTPS://Console.OCE.example.internal",
             "https://console.oce.example.internal.",
             " https://console.oce.example.internal ",
-            "https://192.0.2.10",
             // A bare 0x, a full-width digit, or an ideographic dot inside a DNS name is not an
             // IPv4 host. Node keeps the name (mapping the borrowed characters) and the chart
             // must render it.
-            "https://0x.example.com",
-            "https://console\u3002example.com",
-            "https://\uFF11\uFF12\uFF17.example.com",
+            "https://0x.oce.example.internal",
+            "https://console\u3002oce.example.internal",
+            "https://\uFF11\uFF12\uFF17.oce.example.internal",
+            "https://bücher.oce.example.internal",
+            "https://console.例え.oce.example.internal",
+            // Only the last label decides whether a host is IPv4, after the parser maps
+            // compatibility characters (⑩ becomes 10, so this label is 10x).
+            "https://192.0.2.10.oce.example.internal",
+            "https://example.\u2469x.oce.example.internal",
+            // Helm reads http://[::1] as hostname ::1, which the bootstrap Job admits.
+          ],
+          undefined,
+          { api: true },
+        ),
+        ...urls(
+          [
+            "https://192.0.2.10",
             "https://192.168.10.1",
             "https://10.0.0.1",
             "https://[2001:db8::10]:8443",
             "https://localhost",
+          ],
+          /must share a non-public DNS suffix/,
+          { api: false, job: false },
+        ),
+        ...urls(
+          [
             "http://127.0.0.1",
             "http://127.0.0.1:8080/",
             "http://localhost:8080",
             "HTTP://LocalHost:8080",
             " http://localhost ",
-            "https://bücher.oce.example.internal",
-            "https://console.例え.テスト",
-            // Only the last label decides whether a host is IPv4, after the parser maps
-            // compatibility characters (⑩ becomes 10, so this label is 10x).
-            "https://192.0.2.10.example.com",
-            "https://example.\u2469x",
-            // Helm reads http://[::1] as hostname ::1, which the bootstrap Job admits.
             "http://[::1]:8080",
           ],
-          undefined,
-          { api: true },
+          plainHttp,
+          { api: false, job: false },
         ),
         // URL parsing strips only C0 controls and spaces from the ends, so other Unicode spaces
         // and invisible characters there reach the parser, which refuses them in the scheme or
@@ -1612,7 +1629,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
             "http://localhost.oce.example.internal",
           ],
           plainHttp,
-          { api: true, job: false },
+          { api: false, job: false },
         ),
         // Node repairs these degenerate spellings into an origin. They are not IPv4 hosts.
         ...urls(

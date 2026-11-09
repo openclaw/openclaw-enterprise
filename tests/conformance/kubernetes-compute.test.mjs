@@ -3409,7 +3409,7 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
   assert.deepEqual(renderedConfiguration.gateway.auth, {
     mode: "trusted-proxy",
     trustedProxy: {
-      requiredHeaders: ["x-real-ip"],
+      requiredHeaders: ["x-real-ip", "x-openclaw-scopes"],
       allowLoopback: false,
       userHeader: "x-occ-identity",
       allowUsers: ["occ-workspace-files"],
@@ -6591,7 +6591,7 @@ test("Kubernetes preserves explicit human proxy identities alongside workspace a
       driver.kubernetesGatewayConfigurationDocument(withAuth({ trustedProxy, identityScopes }))
         .gateway.auth.trustedProxy.requiredHeaders;
     // Operator-supplied required headers are kept, the Gateway matches names case-insensitively,
-    // and a machine-only allowlist keeps the existing route contract (no header required).
+    // and routed access requires a scope ceiling even with a machine-only allowlist.
     assert.deepEqual(renderedRequiredHeaders({ requiredHeaders: ["x-real-ip"] }), [
       "x-real-ip",
       "x-openclaw-scopes",
@@ -6609,16 +6609,16 @@ test("Kubernetes preserves explicit human proxy identities alongside workspace a
       ),
       ["x-openclaw-scopes"],
     );
-    assert.equal(
+    assert.deepEqual(
       renderedRequiredHeaders({ allowUsers: ["occ-workspace-files"] }, machineGrant),
-      undefined,
+      configure === routedOptions ? ["x-openclaw-scopes"] : undefined,
     );
     assert.deepEqual(
       renderedRequiredHeaders(
         { allowUsers: ["occ-workspace-files"], requiredHeaders: ["x-real-ip"] },
         machineGrant,
       ),
-      ["x-real-ip"],
+      configure === routedOptions ? ["x-real-ip", "x-openclaw-scopes"] : ["x-real-ip"],
     );
     // Header names the Gateway could never match would refuse every request; non-arrays
     // fail its schema at startup. Both are refused before rollout.
@@ -6818,6 +6818,94 @@ test("Kubernetes preserves explicit human proxy identities alongside workspace a
       /identityScopes/,
     );
   }
+});
+
+test("gateway chat routes enforce a distinct exact-Agent scope ceiling", () => {
+  const driver = createKubernetesComputeDriver(routedOptions());
+  const revision = routedRevision(driver);
+  assert.equal(driver.getGatewayChatEndpoint(revision), undefined);
+  revision.configuration.gateway.controlUi = {
+    enabled: true,
+    allowedOrigins: ["https://agent.example.test"],
+  };
+  revision.configuration.gateway.auth.trustedProxy.deviceAutoApprove = {
+    enabled: true,
+    scopes: ["operator.admin"],
+  };
+  // Old saved profiles do not promise fail-closed native scope admission.
+  assert.equal(driver.getGatewayChatEndpoint(revision), undefined);
+  revision.configuration.gateway.auth.trustedProxy.requiredHeaders = ["x-openclaw-scopes"];
+  assert.equal(
+    driver.getGatewayChatEndpoint(revision),
+    `wss://${gatewayRouting.hostname}/native-chat/namespaces/${tenant.id}/agents/${revision.agentId}`,
+  );
+  const ownership = { namespaceId: tenant.id, agentId: revision.agentId };
+  const namespace = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
+  const service = driver.service("chat-gateway", ownership, namespace, {});
+  const route = driver.gatewayRoute(revision, ownership, namespace, service);
+  const chatRules = route.spec.rules.filter((rule) =>
+    rule.matches.some(({ path }) => path.value.startsWith("/native-chat/")),
+  );
+  assert.equal(chatRules.length, 2);
+  assert.deepEqual(
+    chatRules.map(({ matches }) => matches),
+    [
+      [
+        {
+          path: {
+            type: "Exact",
+            value: `/native-chat/namespaces/${tenant.id}/agents/${revision.agentId}`,
+          },
+        },
+      ],
+      [
+        {
+          path: {
+            type: "PathPrefix",
+            value: `/native-chat/namespaces/${tenant.id}/agents/${revision.agentId}/`,
+          },
+        },
+      ],
+    ],
+  );
+  // HTTP assets and WebSocket upgrades share the same private Service and scope cap.
+  for (const rule of chatRules) {
+    const headers = rule.filters.find(
+      ({ type }) => type === "RequestHeaderModifier",
+    ).requestHeaderModifier;
+    assert.ok(
+      headers.set.some(
+        ({ name, value }) => name === "x-occ-identity" && value === "occ-workspace-files",
+      ),
+    );
+    assert.ok(
+      headers.set.some(
+        ({ name, value }) => name === "x-openclaw-scopes" && value === "operator.sessions.write",
+      ),
+    );
+    assert.ok(headers.remove.includes("authorization"));
+    assert.ok(headers.remove.includes("cookie"));
+    assert.deepEqual(rule.backendRefs, [
+      { group: "", kind: "Service", name: service.metadata.name, port: 8080 },
+    ]);
+  }
+  assert.deepEqual(
+    chatRules.map(({ filters }) => filters[0].urlRewrite.path),
+    [
+      { type: "ReplaceFullPath", replaceFullPath: "/" },
+      { type: "ReplacePrefixMatch", replacePrefixMatch: "/" },
+    ],
+  );
+  const unqualified = structuredClone(revision);
+  delete unqualified.configuration.gateway.auth.trustedProxy.requiredHeaders;
+  assert.equal(
+    driver.gatewayRoute(unqualified, ownership, namespace, service).spec.rules.length,
+    2,
+  );
+  assert.equal(
+    createKubernetesComputeDriver(options()).getGatewayChatEndpoint(revision),
+    undefined,
+  );
 });
 
 test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", async () => {
@@ -17883,7 +17971,7 @@ test("stopping a Kubernetes revision and retiring its predecessor retains Agent 
   });
   account.metadata.uid = "account-uid";
   const route = driver.gatewayRoute(
-    { id: revisionId, revision: 2, namespaceId: tenant.id, agentId },
+    revision,
     ownership,
     { name: namespace, plane: "execution" },
     service,
@@ -19775,7 +19863,7 @@ test("retirement preserves active storage and node routing and deletes exact own
   });
   agentAccount.metadata.uid = "agent-account-uid";
   const route = driver.gatewayRoute(
-    { id: "revision-2", revision: 2, namespaceId: tenant.id, agentId },
+    routedRevision(driver, { id: "revision-2", revision: 2, agentId }),
     ownership,
     { name: namespace, plane: "execution" },
     gatewayService,

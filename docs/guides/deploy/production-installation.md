@@ -247,12 +247,12 @@ before the checks:
   routing enabled with the reviewed GatewayClass and Secret names. Helm refuses an
   `auth.baseUrl` that breaks the
   [`OCC_AUTH_BASE_URL` rules](../../reference/settings/production.md#required-production-controller-environment)
-  (`http` only for `localhost` or `127.0.0.1`), even a bare `?` or `#`, Unicode
+  (HTTPS is required for browser sessions), even a bare `?` or `#`, Unicode
   spaces or invisible characters (outer ASCII spaces are ignored), or forms the
   API's URL parser refuses, such as full-width `？`.
-  IDNA-invalid joiners (U+200C, U+200D) pass Helm but fail the bootstrap Job. With
-  native admin, it must be `https` and its host inside
-  `agentNativeAdmin.sharedCookieDomain`.
+  IDNA-invalid joiners (U+200C, U+200D) pass Helm but fail the bootstrap Job.
+  Console and Agent hosts must share a non-public DNS suffix; OCC derives
+  the session cookie domain automatically.
 - `installation.yaml`: set cluster name, log level, DNS selectors,
   service-principal token settings, Secret prefixes, runtime storage class,
   immutable runtime image digests, and PluginDriver catalog. Set

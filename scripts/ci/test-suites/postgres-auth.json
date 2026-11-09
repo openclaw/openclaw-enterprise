@@ -38,11 +38,17 @@
         "PostgreSQL native admin shared session and HTTP proxy work across two OCC API replicas",
         "PostgreSQL native admin WebSocket lease closes at the next renewal after parent logout",
         "PostgreSQL native admin WebSocket lease closes at the next renewal after parent session expiry",
-        "PostgreSQL native admin WebSocket lease closes at the next renewal after IAM administer restriction",
+        "PostgreSQL native admin WebSocket lease closes at the next renewal after both browser permissions are restricted",
         "PostgreSQL native admin WebSocket lease closes as a dependency failure during an IAM outage",
         "PostgreSQL native admin WebSocket lease closes at the next renewal after Agent stop",
         "PostgreSQL native admin WebSocket lease closes at the next renewal after active revision replacement",
-        "PostgreSQL native admin WebSocket closes on API shutdown and disabled redeploy denies reuse"
+        "PostgreSQL native admin WebSocket closes on API shutdown and disabled redeploy denies reuse",
+        "PostgreSQL chat socket closes when operate-revoked",
+        "PostgreSQL chat socket closes when account-disabled",
+        "PostgreSQL admin downgrade closes the old socket and reconnects only through chat",
+        "PostgreSQL reconnect uses the new cookie while the original chat socket keeps its session",
+        "PostgreSQL native admin WebSocket lease closes as a dependency failure during an identity lookup outage",
+        "PostgreSQL native admin WebSocket lease closes as a dependency failure during a State outage"
       ]
     },
     {
@@ -64,7 +70,7 @@
     {
       "path": "tests/integration/postgres-github-session-cookie.test.mjs",
       "expectedTests": [
-        "production GitHub-profile sessions reject cookies planted by a sibling domain"
+        "guarded production sessions share the browser cookie with trusted Agent hosts"
       ]
     },
     {

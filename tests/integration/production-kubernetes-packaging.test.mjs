@@ -126,7 +126,6 @@ const agentNativeAdminValues = {
   ...gatewayRoutingValues,
   "agentNativeAdmin.enabled": "true",
   "agentNativeAdmin.domain": "agents.example.invalid",
-  "agentNativeAdmin.sharedCookieDomain": "example.invalid",
 };
 // The sandbox listener's wildcard TLS Secret, on top of gateway routing.
 const sandboxValues = {
@@ -1872,7 +1871,7 @@ test(
     );
     assert.deepEqual(
       apiEnvironment.filter(({ name }) => name === "OCC_AUTH_COOKIE_DOMAIN"),
-      [{ name: "OCC_AUTH_COOKIE_DOMAIN", value: "example.invalid" }],
+      [],
     );
     assert.ok(!workerEnvironment.some(({ name }) => name.startsWith("OCC_AGENT_NATIVE_ADMIN_")));
     assert.ok(!workerEnvironment.some(({ name }) => name === "OCC_AUTH_COOKIE_DOMAIN"));
@@ -1889,7 +1888,10 @@ test(
     const disabledApiEnvironment = disabledDeployment("api").spec.template.spec.containers[0].env;
     assert.deepEqual(
       disabledApiEnvironment.filter(({ name }) => name.startsWith("OCC_AGENT_NATIVE_ADMIN_")),
-      [{ name: "OCC_AGENT_NATIVE_ADMIN_ENABLED", value: "false" }],
+      [
+        { name: "OCC_AGENT_NATIVE_ADMIN_ENABLED", value: "false" },
+        { name: "OCC_AGENT_NATIVE_ADMIN_DOMAIN", value: "agents.example.invalid" },
+      ],
     );
     assert.ok(!disabledApiEnvironment.some(({ name }) => name === "OCC_AUTH_COOKIE_DOMAIN"));
   },
@@ -2349,6 +2351,7 @@ test(
       JSON.stringify({
         images: { controller: values["images.controller"] },
         gatewayRouting: { enabled: false },
+        agentNativeAdmin: { domain: values["agentNativeAdmin.domain"] },
         auth: {
           baseUrl: values["auth.baseUrl"],
           secretName: values["auth.secretName"],
@@ -5221,7 +5224,12 @@ test(
       ],
       [
         "Agent native admin enabled without a public DNS suffix",
-        { "agentNativeAdmin.enabled": "true" },
+        { "agentNativeAdmin.enabled": "true", "agentNativeAdmin.domain": "" },
+      ],
+      [
+        "retired shared cookie domain setting",
+        { "agentNativeAdmin.sharedCookieDomain": "example.invalid" },
+        /agentNativeAdmin.sharedCookieDomain is no longer supported/,
       ],
       [
         "Agent native admin configured with a wildcard DNS suffix",
@@ -5470,7 +5478,6 @@ test(
       "gatewayRouting.sandbox.ingressPeers[0].ipBlock.cidr": "0.0.0.0/0",
       "agentNativeAdmin.enabled": "true",
       "agentNativeAdmin.domain": "agents.example.invalid",
-      "agentNativeAdmin.sharedCookieDomain": "example.invalid",
       "executionCluster.enabled": "true",
       "executionCluster.apiCidrs[0]": "10.44.0.2/32",
     };

@@ -36,7 +36,10 @@ const fixture = await createTenantReaderFixture({
   ],
   computeDriver: compute,
   secretDriver: createTestSecretDriver(),
-  appOptions: () => ({ workspaceFilesAccess: access, publicOrigin: "http://127.0.0.1" }),
+  appOptions: () => ({
+    workspaceFilesAccess: access,
+    publicOrigin: "https://console.oce.localhost",
+  }),
 });
 const call = (path, options) => tenantRequest(fixture.app, path, options);
 assert.equal(
@@ -115,7 +118,6 @@ const path = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/USE
 const put = () =>
   call(path, {
     method: "PUT",
-    headers: { origin: "http://127.0.0.1" },
     body: { content: scenario.content },
   });
 const write = await put();

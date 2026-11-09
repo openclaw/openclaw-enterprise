@@ -55,6 +55,7 @@ test(
       mode: "production",
       installationId: installation.id,
       baseURL: origin,
+      agentDomain: "agents.oce.example.internal",
       secret: authSecret,
       pool,
     });

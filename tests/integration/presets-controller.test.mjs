@@ -439,14 +439,16 @@ describe("Presets", { concurrency: 2 }, () => {
       /[A-Za-z .]/g,
       (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
     );
-    const escaped = await fetch(fixture.origin + collection(namespace.id), {
-      method: "POST",
-      headers: {
-        ...authenticatedHeaders(await fixture.signIn()),
-        "content-type": "application/json",
-      },
-      body: encoded,
-    });
+    const escaped = await fixture.fetch(
+      new Request(fixture.origin + collection(namespace.id), {
+        method: "POST",
+        headers: {
+          ...authenticatedHeaders(await fixture.signIn()),
+          "content-type": "application/json",
+        },
+        body: encoded,
+      }),
+    );
     assert.equal(escaped.status, 201, await escaped.text());
 
     const oversized = structuredClone(template);
@@ -503,6 +505,7 @@ describe("Presets", { concurrency: 2 }, () => {
       const auditStart = fixture.audit.events.length;
       const refused = await partialWrite({
         origin: fixture.origin,
+        transportOrigin: `http://127.0.0.1:${fixture.app.server.address().port}`,
         method,
         path,
         session,

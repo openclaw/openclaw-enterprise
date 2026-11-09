@@ -128,10 +128,9 @@ auth:
 
 agentNativeAdmin:
   enabled: false
+  # Required even when browser access is disabled; shares a non-public DNS suffix
+  # with auth.baseUrl for automatically scoped browser session cookies.
   domain: ""
-  # Must not be a public suffix such as co.uk or github.io. Helm has no public suffix
-  # list: the installation profile renderer and API startup refuse one.
-  sharedCookieDomain: ""
 
 # Console and API runtime status and container log reads (Agent administer for text).
 # Grants pods/log get and events get,list to the tenant API and Gateway observer roles

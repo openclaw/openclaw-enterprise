@@ -32,7 +32,7 @@ session cookie before forwarding to the native gateway.
 | `OCC_DATABASE_URL`                         | Explicit PostgreSQL application-role URL.                                                                          | Must connect to the already migrated controller database. With TLS verification, an IP host must match an IP subjectAltName. |
 | `OCC_CONFIG_PATH`                          | Absolute path to trusted Installation startup YAML.                                                                | Selects Configuration, IAM, Compute, and optional account Drivers.                                                           |
 | `OCC_AUTH_SECRET`                          | Mounted high-entropy Better Auth secret.                                                                           | Signs and verifies session material without logging it.                                                                      |
-| `OCC_AUTH_BASE_URL`                        | HTTP(S) origin without path, query, fragment or user info; IPv4 as four decimal octets, no leading zeros.          | Defines the Better Auth base URL and cookie origin.                                                                          |
+| `OCC_AUTH_BASE_URL`                        | HTTPS DNS origin without path, query, fragment or user info; must share a non-public suffix with the Agent domain. | Defines the Better Auth base URL and cookie origin.                                                                          |
 | `OCC_GATEWAY_API_KEY_PATH`                 | Optional absolute path to the private gateway service-key file.                                                    | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.                  |
 | `OCC_PREPROVISIONED_NAMESPACE`             | Optional JSON `{"namespaceId","uid"}` binding one operator-created namespace; set by Helm.                         | API and worker. See [preprovisioned namespace](../drivers/kubernetes-compute/preprovisioned-namespace.md).                   |
 | `OCC_CHANNEL_DIRECTORY_PROXY_URL`          | Optional HTTP(S) proxy URL with one literal IPv4 address and explicit port, or the exact Helm-managed Service URL. | API only; routes Slack lookup and credential validation through an HTTP CONNECT tunnel. Invalid values fail startup.         |
@@ -52,13 +52,17 @@ lookup and credential validation require another approved network route.
 [Agent logs](../../guides/topics/agent-logs.md) routes; `false` makes them answer
 `501`. The chart sets it from `agentRuntimeLogs.enabled`.
 
-When the native admin pilot is enabled, the API also requires:
+All browser sessions require `OCC_AGENT_NATIVE_ADMIN_DOMAIN`, including the
+bootstrap process and installations with native access disabled. OCC derives the
+shared cookie domain from it and the HTTPS `OCC_AUTH_BASE_URL`. The removed
+`OCC_AUTH_COOKIE_DOMAIN` and `agentNativeAdmin.sharedCookieDomain` inputs are rejected.
 
-| Variable                         | Required value or format                                                                                                                                     | Behavior                                                                                                    |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| `OCC_AGENT_NATIVE_ADMIN_ENABLED` | `true`.                                                                                                                                                      | Enables the trusted-operator Agent native admin UI path.                                                    |
-| `OCC_AGENT_NATIVE_ADMIN_DOMAIN`  | Agent host suffix, such as `agents.oce.example.com`, without scheme, wildcard, port, or path.                                                                | Derives stable per-Agent browser hosts.                                                                     |
-| `OCC_AUTH_COOKIE_DOMAIN`         | Shared OCE session cookie parent, such as `oce.example.com`; not a public suffix and must contain the console host and Agent suffix on DNS-label boundaries. | Scopes the ordinary Better Auth session cookie to the console and Agent hosts when native admin is enabled. |
+Native browser access uses these settings:
+
+| Variable                         | Required value or format                                                                      | Behavior                                                                       |
+| -------------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `OCC_AGENT_NATIVE_ADMIN_ENABLED` | `true`.                                                                                       | Enables Agent chat and administration through native browser access.           |
+| `OCC_AGENT_NATIVE_ADMIN_DOMAIN`  | Agent host suffix, such as `agents.oce.example.com`, without scheme, wildcard, port, or path. | Required for shared cookie scope; also derives stable per-Agent browser hosts. |
 
 For changes to startup `logging.level`, follow the
 [log-level procedure](../../guides/observability.md#1-choose-the-log-level).
@@ -222,7 +226,8 @@ before another attempt.
 | Variable                          | Required value or format                                                                                |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | `OCC_AUTH_SECRET`                 | Same mounted Better Auth secret used by the API.                                                        |
-| `OCC_AUTH_BASE_URL`               | Same as the API; HTTPS unless the host is `localhost`, `127.0.0.1`, or `[::1]`.                         |
+| `OCC_AUTH_BASE_URL`               | Same HTTPS DNS origin as the API.                                                                       |
+| `OCC_AGENT_NATIVE_ADMIN_DOMAIN`   | Same Agent DNS suffix as the API; required for derived shared session cookies.                          |
 | `OCC_BOOTSTRAP_ADMIN_EMAIL`       | Email address for the first administrator account.                                                      |
 | `OCC_BOOTSTRAP_PASSWORD_FILE`     | New file path on protected operator-owned storage for the generated password.                           |
 | `OCC_BOOTSTRAP_INSTALLATION_NAME` | Installation display name; it must follow the API Name rule (`INSTALLATION_NAME_INVALID`).              |

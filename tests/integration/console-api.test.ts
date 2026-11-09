@@ -2,11 +2,8 @@ import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import {
-  request as httpRequest,
-  type IncomingHttpHeaders,
-  type OutgoingHttpHeaders,
-} from "node:http";
+import { type IncomingHttpHeaders, type OutgoingHttpHeaders } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { stripTypeScriptTypes } from "node:module";
 import test, { type TestContext } from "node:test";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
@@ -1647,9 +1644,14 @@ test("console scripts and styles are compressed when accepted; the shell and bin
       headers: IncomingHttpHeaders;
       rawPayload: Buffer;
     }>((resolve, reject) => {
-      const request = httpRequest(
+      const request = httpsRequest(
         new URL(url, fixture.origin),
-        { method, headers: { host, ...headers } },
+        {
+          hostname: "127.0.0.1",
+          servername: new URL(fixture.origin).hostname,
+          method,
+          headers: { host, ...headers },
+        },
         (response) => {
           const chunks: Buffer[] = [];
           response.on("data", (chunk: unknown) => {
@@ -1807,6 +1809,12 @@ test("console auth routes reject untrusted browser origins and issue production 
   assert.equal(accepted.response.status, 200, accepted.text);
   const setCookies: unknown = setCookieHeaders(accepted.response);
   assert.ok(Check(Type.Array(Type.String()), setCookies));
+  // Sign-in emits only the current session scope, not clearance for retired cookie names.
+  const sessionCookies = setCookies.filter((cookie) => /^[^=]+\.session_token=/.test(cookie));
+  assert.equal(sessionCookies.length, 1);
+  const activeSessionCookie = sessionCookies[0]!;
+  assert.match(activeSessionCookie, /^__Secure-openclaw_occ_shared\.session_token=[^;]/);
+  assert.match(activeSessionCookie, /; Domain=console\.oce\.localhost(?:;|$)/i);
   const setCookie = setCookies.join("\n");
   const requestCookie = cookieHeaderFromSetCookie(setCookies);
   assert.ok(requestCookie.length > 0);
@@ -1885,6 +1893,19 @@ test("console auth routes reject untrusted browser origins and issue production 
     headers: { cookie: requestCookie, origin: fixture.origin, "x-occ-session-key": sessionKey },
   });
   assert.equal(cliSignOut.response.status, 200, cliSignOut.text);
+  // Logout must still clear and revoke the current shared session after legacy cleanup removal.
+  const clearedSessions = setCookieHeaders(cliSignOut.response).filter((cookie: string) =>
+    /^[^=]+\.session_token=/.test(cookie),
+  );
+  assert.equal(clearedSessions.length, 1);
+  assert.match(clearedSessions[0]!, /^__Secure-openclaw_occ_shared\.session_token=;/);
+  assert.match(clearedSessions[0]!, /; Domain=console\.oce\.localhost(?:;|$)/i);
+  assert.match(clearedSessions[0]!, /; Max-Age=0(?:;|$)/i);
+  const signedOut = await fixture.rawRequest("GET", "/api/auth/session", {
+    headers: { cookie: requestCookie },
+  });
+  assert.equal(signedOut.response.status, 200, signedOut.text);
+  assert.equal(JSON.parse(signedOut.text).data, null);
 
   // A body that fails the sign-in schema is a 400 before any credential check.
   const malformedSignIn = await fixture.rawRequest("POST", "/api/auth/sign-in/email", {
@@ -2029,22 +2050,19 @@ test("public Agent revisions return the selected binding without private credent
   assert.deepEqual(historicalData.harnessAuth, agent.harnessAuth);
 });
 
-// The Agent page skips its native admin status probe when this answer is false (review of
-// #3600), so the answer must be the decision that probe makes: Agent administer on the exact
-// Agent, not any other Agent action. Each step proves the answer against the real probe.
-test("the Agent administer answer matches what native admin access checks", async (t) => {
+// Administration remains an exact-Agent permission even when operate admits browser chat.
+test("native browser access accepts operate while administer answers remain exact", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Administer answer", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Administered agent");
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  // Every other Agent action, so an answer that reports any of them instead is caught.
+  // Other lifecycle actions alone admit neither administration nor browser chat.
   const member = await fixture.createNamespaceMember("administer-answer", namespace.id, [
     ["read", "namespace"],
     ["read", "agent"],
     ["update", "agent"],
     ["deploy", "agent"],
-    ["operate", "agent"],
     ["delete", "agent"],
   ]);
   const session = await fixture.signIn(member.credentials);
@@ -2090,6 +2108,16 @@ test("the Agent administer answer matches what native admin access checks", asyn
     403,
     "FORBIDDEN",
   );
+
+  grantMember(fixture, "administer-answer", [["operate", "agent"]]);
+  const operatorSummary = await fixture.request("GET", `${otherPath}/permissions`, { session });
+  assert.equal(
+    checkedResponse(fixture, operatorSummary, AgentCallerPermissionsResponse).data.administer,
+    false,
+  );
+  const operatorProbe = await fixture.request("GET", `${otherPath}/native-admin`, { session });
+  assert.equal(operatorProbe.status, 200);
+  assert.deepEqual(operatorProbe.data, { status: "disabled" });
 
   grantMember(fixture, "administer-answer", [["administer", "agent"]]);
   assert.equal(await answer(), true);

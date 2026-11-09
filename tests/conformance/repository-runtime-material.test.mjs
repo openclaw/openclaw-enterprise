@@ -663,6 +663,8 @@ test("Dedicated repository custody and networking belong only to Codex", async (
   delete gatewayConfiguration.plugins.entries.codex.config.appServer.nativeHookRelay;
   const expectedGatewayConfiguration = JSON.parse(original);
   expectedGatewayConfiguration.agents.defaults.workspace = "/home/node/workspace";
+  // Compute requires explicit proxy scopes independently of repository material.
+  expectedGatewayConfiguration.gateway.auth.trustedProxy.requiredHeaders = ["x-openclaw-scopes"];
   // Compute translates the saved API-key destination into Codex's provider-qualified model.
   expectedGatewayConfiguration.agents.defaults.model = "codex/openai-compatible/gpt-5";
   expectedGatewayConfiguration.agents.defaults.models = {

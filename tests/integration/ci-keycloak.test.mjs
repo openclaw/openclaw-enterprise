@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { promisify } from "node:util";
 import { keycloakRealmFile, prepareKeycloak } from "../../scripts/ci/keycloak.mjs";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -105,4 +106,47 @@ test("cleanup removes the owned Keycloak container and its private directory", a
   ]);
   await assert.rejects(stat(directory), { code: "ENOENT" });
   await assert.rejects(stat(statePath), { code: "ENOENT" });
+});
+
+test("Keycloak preparation accepts dual loopback DNS but rejects remote and IPv6-only answers", async (t) => {
+  for (const [addresses, accepted] of [
+    [["127.0.0.1", "::1"], true],
+    [["127.0.0.1", "192.0.2.1"], false],
+    [["::1"], false],
+  ]) {
+    await t.test(addresses.join(","), async (t) => {
+      const root = await fixture(t);
+      const commands = [];
+      // Exercise real certificate preparation and host gating, stopping at the
+      // container boundary; the live lane separately proves HTTPS readiness.
+      await assert.rejects(
+        prepareKeycloak({
+          stateDirectory: root,
+          name: "openclaw-ci-kc-dns-test-0123456789ab",
+          ensureImage: async () => {},
+          portAccepts: async () => false,
+          reservePort: async () => 40443,
+          registerResource: async (details) => details,
+          saveState: async () => {},
+          lookupAll: async () => addresses.map((address) => ({ address })),
+          log: () => {},
+          execFile: async (command, args) => {
+            commands.push(command);
+            if (command === "openssl") {
+              return promisify(execFile)(command, args);
+            }
+            if (command === "sudo") {
+              return { stdout: "", stderr: "" };
+            }
+            throw new Error("test container boundary");
+          },
+        }),
+        accepted
+          ? /Keycloak start step failed: test container boundary/
+          : /Keycloak hosts step failed:.*not restricted to loopback/,
+      );
+      assert.equal(commands.includes("sudo"), !accepted);
+      assert.equal(commands.includes("docker"), accepted);
+    });
+  }
 });
