@@ -206,7 +206,7 @@ Linux manifest with matching config and content digests. Publication still consu
 this sealed archive; registry access is not needed during assembly.
 
 Before runtime smoke, `scripts/ci/prepare.mjs:prepareRuntimeImageSmoke` imports
-the loaded config ID into a disposable k3d cluster. It reuses the Images and
+the verified loaded image ID into a disposable k3d cluster. It reuses the Images and
 Packaging lane's reviewed Codex seccomp derivation and sandbox probes, then passes
 the resulting profile and ownership state to the Docker tests. This preparation
 does not rebuild the runtime. Cleanup removes the owned cluster and temporary
