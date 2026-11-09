@@ -1332,7 +1332,11 @@ renameSync(${JSON.stringify(`${pidFile}.tmp`)}, ${JSON.stringify(pidFile)});
 createInterface({ input: process.stdin }).on("line", line => {
   const request = JSON.parse(line);
   if (${JSON.stringify(mode)} !== "success" || !request.id) return;
-  const result = request.method === "account/read" ? { account: { type: "chatgpt" } } : request.method === "plugin/list" ? { marketplaces: [] } : {};
+  const result = request.method === "account/read"
+    ? { account: { type: "chatgpt", email: "fixture@example.test", planType: "team" }, requiresOpenaiAuth: true, workspaceRouting: null }
+    : request.method === "plugin/list"
+      ? { marketplaces: [], marketplaceLoadErrors: [], featuredPluginIds: [] }
+      : { userAgent: "codex-fixture", codexHome: process.env.CODEX_HOME, platformFamily: "unix", platformOs: process.platform === "darwin" ? "macos" : process.platform };
   console.log(JSON.stringify({ id: request.id, result }));
 });
 setInterval(() => {}, 1000);
