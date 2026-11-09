@@ -8,7 +8,7 @@ last_updated_session: authoring-run/0bed479f-9c58-4dbb-bb72-972d7dfe9790
 
 ## Overview
 
-Dedicated Codex uses prepared sessions without a Sandbox Driver;
+Dedicated Codex uses prepared sessions;
 [OpenShell sandboxes](../reference/repository-credentials/protected-openshell-git.md) receive placeholders.
 Workers authorize signed requests against live grants.
 See [mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
@@ -307,15 +307,14 @@ erases standing tokens after verified expiry plus skew; uncertain revocations re
 Under Namespace/Agent locks, [eligibility](../../packages/occ/src/repository-approval.ts) rejects withdrawal or scope changes with `REPOSITORY_STANDING_POLICY_CHANGED` before release.
 [GitHub](../../apps/controller/src/drivers/repo/github/credentials/registry.ts) fingerprints exact permissions and repository identity. Issuance/delivery recheck opt-ins and grant; standing delivery requires one binding.
 After hook acknowledgement, the [observer](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
-rechecks predecessor policy and recipient for renewal. It refuses expired requests,
-unacknowledged launches and observed-only previews.
-[Cold verification](../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts) checks workload and launch hash.
-[Predecessor evidence](../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts) accepts aggregate
-`WITHHELD/CREDENTIAL_EXPIRED` with matching generation, session, process and network,
-observed within 30 seconds.
-New installations and post-detach model completion require ready credentials.
+rechecks renewal policy and recipient. It refuses expiry, unacknowledged launches and observed-only previews.
+[Cold verification](../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts) and
+[predecessor observation](../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts)
+confirm expired launch identity through fresh Sandbox and main-process readback.
+[Freshness limits](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery)
+govern subtraction and succession. Installation and post-detach completion require ready credentials.
 
-After activation, `ControllerWorker.assertRepositoryGitMaterial` waits for committed tokens.
+`ControllerWorker.assertRepositoryGitMaterial` awaits committed tokens after activation.
 Quarantine/timeout fails deployment. For existing Agents, `continueRevisionWithoutGit`
 atomically records `REPOSITORY_GIT_TOKEN_QUARANTINED` or `REPOSITORY_GIT_TOKEN_PENDING`
 and maintenance, or retires the version ([first-token handling](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token)).
@@ -382,6 +381,8 @@ Verify live PR updates, denial before provider contact and continued chat separa
 - 2026-11-08 07:45: Preserve withdrawal across Stop. (authoring-run/0bed479f-9c58-4dbb-bb72-972d7dfe9790 - d9dc87c351a0046df90915d66cbcc931ec649bb6)
 
 - 2026-11-07 12:52: Trace removal supervision. (authoring-run/631f2612-7e8d-438d-a2bf-6ab23999c345 - 6d538feb96fa163d4b74e0dd4d21b29d1cedd641)
+
+- 2026-11-07 05:27: Reconcile predecessor identity and observation freshness. (authoring-run/6c9b5f78-aa31-4b52-9acc-f4b7b99f0dd6 - 8b62face5f6d3e8bda91f18e44755663542efcad)
 
 - 2026-11-07 03:14: Capture policy. (authoring-run/ca379ce8-200d-4822-9b71-87f49f7644dc - 8c600ad53844dca9d2f9eda87ba8733c628d28aa)
 - 2026-11-06 20:39: Distinguish terminal held-launch replacement from transient standing verification. (authoring-run/d966f693-ccc4-4b07-8fbc-f66738672284 - 21a933338904531c51a67f9aaf98c3401ceff025)

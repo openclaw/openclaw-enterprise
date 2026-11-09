@@ -111,6 +111,8 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
       const workspace = "team-workspace";
       const sandbox = "git-execution";
       const firstDeadline = credentials.deadlineWallMs;
+      let stopOnColdRead = false;
+      let coldSandboxReads = 0;
       const { client, world } = await gitExpiryGateway(t, {
         model,
         workspace,
@@ -120,6 +122,18 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
         platformProfile: false,
         trackGitExpiry: true,
         modelSourceId: auth.sourceId,
+        configure(methods) {
+          const getSandbox = methods.GetSandbox;
+          methods.GetSandbox = () => {
+            const result = getSandbox();
+            // The predecessor read is still READY. The following cold launch read
+            // sees a stop, while the provider report still names the same generation.
+            if (stopOnColdRead && ++coldSandboxReads === 2) {
+              result.sandbox.status.phase = "SANDBOX_PHASE_STOPPING";
+            }
+            return result;
+          };
+        },
       });
       let workload = "original-pods-and-containers";
       const continuity = { model, workload: async () => workload };
@@ -337,14 +351,21 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
         undefined,
         "another approval generation is not this route",
       );
+      // Expired aggregate evidence can identify the recorded predecessor, but a stop
+      // between reads or a different workload cannot establish that original identity.
+      stopOnColdRead = true;
+      await assert.rejects(probe(), /cannot retain this execution/);
+      stopOnColdRead = false;
       workload = "replacement-pods";
       assert.equal(await probe(), undefined, "matching names do not make a replacement our launch");
       workload = "original-pods-and-containers";
       assert.deepEqual(
         await probe(),
         execution,
-        "a cold worker verifies identity before normal prepare",
+        "fresh matching expired evidence identifies the original execution, not Git authority",
       );
+      assert.equal(world.writes, 1, "identity verification sends no successor credential");
+      assert.equal(world.detaches.length, 0, "identity verification does not detach Git");
       assert.deepEqual(
         await routes.standing(revision),
         original,
@@ -368,19 +389,27 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
         "one successor CAS after the predecessor actually reported expired",
       );
       assertReceived();
-      advance += 120_000;
-      candidate = 3;
+      // The warm owner established a fresh generation. A cold worker can now verify
+      // and adopt it; only after adoption may that owner perform the next succession.
+      workload = "replacement-pods";
+      assert.equal(await probe(), undefined, "matching names do not make a replacement our launch");
+      workload = "original-pods-and-containers";
       assert.deepEqual(await cold.verify(), execution);
       assert.equal(await cold.lookup(), undefined, "no adoption or route opened by identity read");
       const resumed = await cold.prepare();
       assert.equal(resumed.existingSandboxId, identity.sandboxId);
       await cold.bind();
       await cold.reconcile();
+      assert.equal((await cold.lookup())?.sessionId, "session-2");
+      assert.equal(world.writes, 2, "adoption does not replace the live credential");
+      advance += 120_000;
+      candidate = 3;
+      await cold.reconcile();
       assert.equal((await cold.lookup())?.sessionId, "session-3");
       assert.equal(
         world.writes,
         3,
-        "cold adoption installs the successor after the predecessor expired",
+        "the adopted owner installs the successor after the predecessor expired",
       );
       assertReceived();
       const fence = (await routes.standing(revision))!.route.fence;

@@ -125,6 +125,7 @@
     "tests/integration/harness-egress-probe-diagnostics.test.ts",
     "tests/conformance/openshell-prepared-git-provider.test.mjs",
     "tests/conformance/openshell-git-runtime.test.mjs",
+    "tests/conformance/openshell-git-denial.test.mjs",
     "tests/integration/openshell-observed-request-hook.test.ts",
     "tests/integration/credential-free-online-grant.test.mjs",
     "tests/integration/credential-free-metadata-grant.test.ts",
@@ -635,6 +636,19 @@
       ]
     },
     {
+      "path": "tests/conformance/openshell-git-denial.test.mjs",
+      "expectedTests": [
+        "Git denial receipt requires fresh evidence and retains the final millisecond bucket",
+        "Git denial receipt requires the adjacent endpoint-not-admitted warning",
+        "Git denial receipt refuses stale and differently attributed log records",
+        "Git denial receipt tolerates ring rollover only with unchanged retained history",
+        "Git denial receipt refuses foreign, incomplete, and ambiguous log histories",
+        "Git denial receipt rejects normalized or noncanonical event dates",
+        "Git denial receipt refuses a replaced supervisor before or during the read",
+        "Git denial command retains non-403 failure categories without output"
+      ]
+    },
+    {
       "path": "tests/conformance/openshell-prepared-git-provider.test.mjs",
       "expectedTests": [
         "prepared Git static token and rotation use released fields without returning credentials or readiness",
@@ -716,9 +730,6 @@
         "selected repository response requires exact IDs, names and permissions and refuses broader credentials",
         "ordinary fresh selections resolve one or N repositories without broadening explicit historical grants"
       ]
-    },
-    {
-      "path": "tests/conformance/openshell-git-denial.test.mjs"
     }
   ]
 }

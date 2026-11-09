@@ -13,7 +13,7 @@ QA Matrix Advisory is one workflow with three groups of test jobs:
 
 - **QA matrix:** Console Secret management with Standard Codex Agents on Compose
   and Kubernetes installations.
-- **OpenShell:** ten jobs with at most ten running at once for sandbox policy, credentials, plugins,
+- **OpenShell:** eleven jobs with at most ten running at once for sandbox policy, credentials, Git expiry, plugins,
   installation, and Agent redeployment.
 - **Local installation:** the hosted local setup tests.
 
@@ -262,7 +262,7 @@ time. Unknown or malformed records and other stdout remain private. Commands wit
 protected output produce no timing artifact.
 
 Artifacts expire after seven days. Each OpenShell job reports `scope: focused`
-because it runs one file; complete advisory OpenShell coverage requires all ten
+because it runs one file; complete advisory OpenShell coverage requires all eleven
 to pass.
 
 In `matrix.json`, `scope: full` means both installations and presets with the

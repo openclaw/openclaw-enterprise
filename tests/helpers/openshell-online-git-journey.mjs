@@ -187,8 +187,8 @@ export async function gitExpiryGateway(
     const name = req.provider;
     const git = name === gitName;
     const removed = world.detaches.length !== 0;
-    // Stock readiness describes the shared provider environment, including expired Git.
-    const expired = !removed && Date.now() >= world.gitExpiresAt;
+    // Readiness describes the whole provider environment, including on a model query.
+    const expired = !!gitName && !removed && Date.now() >= world.gitExpiresAt;
     const absent = git && removed;
     const profileChanged = retainedProfile.resource_version === "2";
     const snapshot = {
@@ -214,14 +214,15 @@ export async function gitExpiryGateway(
     receiptEnvironments.set(receiptId, desiredEnvironment);
     const metadata = providers[name].metadata;
     let state = "READY";
-    if (absent) {
+    if (supervisor && desiredEnvironment !== snapshot.provider_env_revision) {
+      state = "SUPERSEDED";
+    } else if (absent) {
       state = "REVOKED";
     } else if (expired) {
+      // Stock 0.1.6 withholds an expired credential without declaring installation failure.
       state = "WITHHELD";
     } else if (!git && world.modelFailed) {
       state = "FAILED";
-    } else if (supervisor && desiredEnvironment !== snapshot.provider_env_revision) {
-      state = "SUPERSEDED";
     }
     // Only the Sandbox resourceVersion changes between the expiry owner's first two reads.
     if (expired && world.version === 13) {
@@ -231,6 +232,12 @@ export async function gitExpiryGateway(
       world.reports.push([name, state, req.receipt_id ?? "OBSERVE"]);
     }
     const now = { seconds: Math.floor(Date.now() / 1000) };
+    let reason;
+    if (state === "SUPERSEDED") {
+      reason = "PROVIDER_READINESS_REASON_DESIRED_STATE_CHANGED";
+    } else if (expired) {
+      reason = "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED";
+    }
     return {
       status: {
         state: "PROVIDER_READINESS_STATE_" + state,
@@ -243,7 +250,7 @@ export async function gitExpiryGateway(
             completed_time: supervisor.started,
           },
         }),
-        ...(expired && { reason: "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED" }),
+        ...(reason && { reason }),
         receipt: {
           workspace,
           provider: name,
@@ -321,19 +328,19 @@ export async function gitExpiryGateway(
           },
           status: {
             phase: "SANDBOX_PHASE_READY",
-            ...(supervisor && {
-              configuration_activated: true,
-              main_process_started_time: supervisor.started,
-              main_process_instance_id: repositoryGitRecipient.networkInstanceId,
-              configuration_admission: {
-                state: 2,
-                instance_id: "configuration",
-                policy_version: 1,
-                config_revision: "3",
-                provider_env_revision: supervisor.providerEnvRevision || String(6 + world.writes),
-                policy_hash: "original-policy",
-              },
-            }),
+            main_process_instance_id: repositoryGitRecipient.networkInstanceId,
+            configuration_activated: true,
+            configuration_admission: {
+              state: 2,
+              instance_id: "configuration",
+              policy_version: 1,
+              config_revision: "3",
+              provider_env_revision: supervisor
+                ? supervisor.providerEnvRevision || String(6 + world.writes)
+                : "6",
+              policy_hash: "original-policy",
+            },
+            ...(supervisor && { main_process_started_time: supervisor.started }),
           },
         },
       },
