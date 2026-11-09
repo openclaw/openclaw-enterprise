@@ -1,4 +1,5 @@
 import {
+  assertChatStreamStopAndResume,
   submitChatTurnWithAssistantProof,
   textFromFrame,
   waitForStockUi,
@@ -1606,10 +1607,12 @@ export async function runOidcAgentChatScenario(context) {
   assert.equal(status.status, 200);
   assert.equal(status.data.mode, "chat");
   const frames = [];
+  const sentFrames = [];
   operatorPage.context().on("page", (page) =>
     page.on("websocket", (socket) => {
       if (new URL(socket.url()).origin === status.data.origin.replace(/^http/, "ws")) {
         socket.on("framereceived", (frame) => frames.push({ ...frame, socket, page }));
+        socket.on("framesent", (frame) => sentFrames.push({ ...frame, socket, page }));
       }
     }),
   );
@@ -1617,7 +1620,24 @@ export async function runOidcAgentChatScenario(context) {
     new URL(agentDetailPath({ agent: created.data, revision: deployed.data }), ingress.origin).href,
   );
   const nativePage = await openNativeAdminConsole(operatorPage, status.data.origin, "chat");
-  await submitChatTurnWithAssistantProof(nativePage, `oidc-chat-${randomUUID()}`, frames, waitFor);
+  const initialMarker = `oidc-chat-${randomUUID()}`;
+  const initialReply = await submitChatTurnWithAssistantProof(
+    nativePage,
+    initialMarker,
+    frames,
+    waitFor,
+  );
+  const lifecycle = await assertChatStreamStopAndResume({
+    page: nativePage,
+    initialReply,
+    initialMarker,
+    receivedFrames: frames,
+    sentFrames,
+    waitFor,
+  });
+  context.diagnostic(
+    `OIDC chat: ${lifecycle.deltaCount} incremental model frames, exact-run Stop acknowledged and aborted, same persisted session reconnected and completed another real reply.`,
+  );
   await assertChatAdministrationDenied(nativePage);
   const siblingTarget = expectedNativeAdminTarget(topology, ingress.origin, nativeDomain);
   const probe = await operatorPage.context().newPage();
