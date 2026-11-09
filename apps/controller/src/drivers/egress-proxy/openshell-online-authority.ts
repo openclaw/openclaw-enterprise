@@ -60,9 +60,9 @@ export interface OpenShellOnlineHttpAuthorityOptions {
   /**
    * Resolve exactly one current execution and admitted binding from the signed sandbox ID and
    * opaque binding ID, then check current source, grant, method and path authority. The signed
-   * sandbox ID does not identify a supervisor instance: qualification requires a never-reused
-   * sandbox identity dedicated to one execution, restart disabled, and prevention of stop/start
-   * or replacement under its admitted authority. Refuse release if these cannot be enforced.
+   * sandbox ID identifies the ongoing authorized execution, not a supervisor process.
+   * Automatic recovery must reverify current readiness. Explicit Agent stop or revision
+   * replacement ends that authority; a later start cannot revive its binding.
    * Independently establish a mandatory, fail-closed TLS-only path: the reported scheme does not
    * prove TLS. Deny unknown, ambiguous, withdrawn or unsupported state. Never persist or reuse an
    * allow. Stock cannot distinguish an absent query from a bare trailing query delimiter; allow

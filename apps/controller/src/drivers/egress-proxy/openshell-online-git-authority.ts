@@ -79,8 +79,8 @@ export type OpenShellOnlineGitAuthorityOptions = Omit<
   /** This branch can only refuse the reserved pre-material challenge, never authorize Git. */
   readonly previewDenial?: (request: OpenShellOnlineHttpRequest) => string | undefined;
   /** Resolve exactly one live admitted workspace/execution from the authenticated sandbox and
-   * binding. Require a never-reused sandbox identity dedicated to that execution. Recheck
-   * replacement fencing, the revision’s admitted middleware assurance, TLS-only routing and the
+   * binding. A retained Sandbox needs a fresh binding for each admitted execution. Recheck
+   * revision ownership, the revision’s admitted middleware assurance, TLS-only routing and the
    * installed provider generation. Neither RPC config nor workspace metadata is this proof. */
   readonly lookupBinding: (
     identity: OpenShellOnlineGitIdentity,

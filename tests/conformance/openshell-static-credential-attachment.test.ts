@@ -123,6 +123,7 @@ test("startup composes both OpenShell members from one Backend for static source
   };
   const client: OpenShellGatewayClient = {
     health: unexpected,
+    attachSandboxProvider: unexpected,
     getWorkspace: unexpected,
     createWorkspace: unexpected,
     deleteWorkspace: unexpected,

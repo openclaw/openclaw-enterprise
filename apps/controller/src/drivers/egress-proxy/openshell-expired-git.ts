@@ -118,8 +118,6 @@ function launch(
       Number.isFinite(Date.parse(box.mainProcessStartedAt)) &&
       !!epoch &&
       [2, "SANDBOX_PHASE_READY"].includes(box.phase as string | number) &&
-      (box.restartCount ?? 0) === 0 &&
-      [1, "SANDBOX_RESTART_POLICY_NEVER"].includes(spec.restart_policy as string | number) &&
       positive.test(box.resourceVersion ?? "") &&
       !!modelId &&
       modelId !== git.providerId &&
@@ -132,6 +130,11 @@ function launch(
   const present = providers.includes(git.provider);
   requireIdentity(present === (epoch === git.attachmentEpoch));
   const retained = { ...spec, providers: providers.filter((p) => p !== git.provider) };
+  // OpenShell rotates its internal runtime/authentication metadata on recovery.
+  // Current Provider readiness verifies that runtime; retain caller annotations here.
+  const annotations = Object.fromEntries(
+    Object.entries(box.annotations).filter(([key]) => !key.startsWith("internal.openshell.ai/")),
+  );
   const hash = createHash("sha256")
     .update(
       JSON.stringify(
@@ -141,7 +144,7 @@ function launch(
           box.name,
           box.workspace,
           box.labels,
-          box.annotations,
+          annotations,
           retained,
           owner.model,
           modelId,

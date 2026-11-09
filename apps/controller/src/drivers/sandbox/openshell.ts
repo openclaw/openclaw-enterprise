@@ -3342,7 +3342,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             workspace,
             sandbox.resourceName,
             context.signal,
-            sandboxDataMount(this.options, context.requirements).mount_path,
+            this.workspaceInitializationPath(context),
             sandboxProviders(this.options, context.requirements),
             this.options.policy.networkPolicies.flatMap((policy) =>
               policy.endpoints.map((endpoint) => endpoint.host),
@@ -3472,7 +3472,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
       const readOnly = create.spec.policy.filesystem.read_only;
       readOnly.push(...git.readOnlyPaths.filter((path) => !readOnly.includes(path)));
-      create.spec.restart_policy = "SANDBOX_RESTART_POLICY_NEVER";
+      // The observed-only preview cannot requalify mandatory enforcement after recovery.
+      // Ordinary Git uses the same automatic recovery policy as the rest of the Sandbox.
+      if (context.revision.egressPlan?.repositoryGitAuthorization === "request-hook-observed") {
+        create.spec.restart_policy = "SANDBOX_RESTART_POLICY_NEVER";
+      }
       const continuity = this.gitContinuity(context);
       // Only the independent model attachment selected by this revision can survive Git expiry.
       const auth = context.revision.harnessAuth;
@@ -3817,10 +3821,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           box.annotations["openclaw.dev/agent-id"] !== revision.agentId ||
           box.annotations["openclaw.dev/revision-id"] !== revision.id ||
           ![2, "SANDBOX_PHASE_READY"].includes(box.phase as string | number) ||
-          (box.restartCount ?? 0) !== 0 ||
-          ![1, "SANDBOX_RESTART_POLICY_NEVER"].includes(
-            box.spec?.restart_policy as string | number,
-          ) ||
           !box.mainProcessInstanceId ||
           box.mainProcessInstanceId !== expected.mainProcessInstanceId ||
           !box.mainProcessStartedAt ||
@@ -3829,16 +3829,14 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         ) {
           return;
         }
-        // Reconnects retain these identities; replacements cannot inherit the prior proof.
-        // Session and process identities from Provider readiness are checked by the Git owner.
+        // Authorization belongs to this revision's ongoing Sandbox execution. The double
+        // read above and Provider readiness separately verify the current runtime.
         return JSON.stringify([
           workspace,
           box.id,
           context.namespace.id,
           revision.agentId,
           revision.id,
-          box.mainProcessInstanceId,
-          box.mainProcessStartedAt,
         ]);
       },
     };

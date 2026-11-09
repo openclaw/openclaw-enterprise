@@ -44,7 +44,10 @@ import {
   nodeProgramArguments,
   withoutLineComments,
 } from "../../apps/controller/src/drivers/compute/node-program.ts";
-import { OpenShellSandboxDriver, workspaceLabels } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import {
+  OpenShellSandboxDriver,
+  workspaceLabels,
+} from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   assertNoManagedMcpRouteOverlap,
   managedMcpNetwork,
@@ -564,7 +567,6 @@ async function assertGitExecutionContinuity(driver, context, box, managed) {
     ["name", ["another-sandbox"]],
     ["workspace", ["another-workspace"]],
     ["phase", ["SANDBOX_PHASE_STOPPED", "SANDBOX_PHASE_PROVISIONING"]],
-    ["restartCount", [1]],
     ["mainProcessInstanceId", [undefined]],
     ["mainProcessStartedAt", [undefined, "invalid"]],
   ]) {
@@ -582,13 +584,11 @@ async function assertGitExecutionContinuity(driver, context, box, managed) {
     const previous = structuredClone(box);
     box[key] = value;
     assert.equal(await read(previous), undefined, "replacement during observation cannot qualify");
-    assert.notEqual(await read(), original, "a replacement execution changes the startup proof");
+    assert.equal(await read(), original, "automatic recovery retains the same execution authority");
     box[key] = previous[key];
   }
-  const restartPolicy = box.spec.restart_policy;
-  box.spec.restart_policy = "SANDBOX_RESTART_POLICY_ON_FAILURE";
-  assert.equal(await read(), undefined, "automatic restart must remain disabled");
-  box.spec.restart_policy = restartPolicy;
+  assert.equal(box.spec.restart_policy, "SANDBOX_RESTART_POLICY_ALWAYS");
+  box.restartCount = 1;
   assert.equal(await read(), original);
 }
 
@@ -1003,9 +1003,7 @@ test("managed Harness rendering submits no PVC and keeps the bootstrap outside p
     request === undefined ? undefined : storedSandbox(request, { phase, resourceVersion: "7" });
   client.getService = async () =>
     harnessService(request.name, "", "http://codex.example.test:8080/");
-  const { context, revision, requirements } = runtimeSandboxFixture(driver, {
-    nodeSetupUrl: () => "ws://gateway.example.test/node",
-  });
+  const { context, revision, requirements } = runtimeSandboxFixture(driver);
   requirements.environment = requirements.environment.filter(
     ({ name }) => name !== "OPENCLAW_NODE_CA_PEM",
   );
@@ -9020,10 +9018,13 @@ test(
           });
           assert.equal(trust.status, 0, trust.stderr);
           assert.equal(trust.stdout.trim(), sandbox.options.kubernetes.sandboxDataMount.mountPath);
-          await subtest.test("Git negotiates shared history before pushing", async (gitTest) => {
-            await verifyOpenShellPushNegotiation(gitTest, gitEnvironment);
-          });
-          await subtest.test(
+          await protectedTest.test(
+            "Git negotiates shared history before pushing",
+            async (gitTest) => {
+              await verifyOpenShellPushNegotiation(gitTest, gitEnvironment);
+            },
+          );
+          await protectedTest.test(
             "Git trusts only the selected root-owned workspace",
             imageTestOptions,
             async () => {

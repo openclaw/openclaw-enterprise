@@ -10,7 +10,7 @@ last_updated_session: authoring-run/7e421486-330f-4f04-b3b8-2b00f30f5647
 
 Kubernetes Compute provisions dedicated Codex/OpenClaw Harnesses through
 operator-mode OpenShell, using [credential sources](credential-source-lifecycle.md).
-See the [managed lifecycle](openshell-managed-workload.md) for managed Workspaces.
+For managed Workspaces, see [managed provisioning](openshell-managed-workload.md).
 
 ## Entry Points
 

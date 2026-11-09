@@ -968,6 +968,7 @@
               "testing/plugins",
               "testing/openshell",
               "testing/openshell-git-replacement",
+              "testing/openshell-managed",
               "testing/openshell-oauth",
               "testing/openshell-coverage",
               "testing/ci/openshell-execution",

@@ -100,6 +100,7 @@ type NarrowJourney = {
   admissionId: string;
   removeBinding: () => Promise<unknown>;
   withdraw: () => Promise<unknown>;
+  recover: () => Promise<void>;
 };
 
 type NarrowPreparation = Pick<
@@ -536,9 +537,16 @@ async function repositoryGitJourney(
             t,
             revision,
             {
-              sandbox: { id, implementation: "openshell", configuration: sandbox["options"] },
+              sandbox: {
+                id,
+                implementation: "openshell",
+                configuration: { ...sandbox["options"] },
+              },
               createSandbox: (configuration, selection) =>
-                new OpenShellSandboxDriver(configuration as (typeof sandbox)["options"], selection),
+                new OpenShellSandboxDriver(
+                  configuration as unknown as (typeof sandbox)["options"],
+                  selection,
+                ),
               backend: {
                 ...backend,
                 client: { ...backend.client, close: async () => {} },
@@ -1019,6 +1027,13 @@ async function repositoryGitJourney(
     assert.equal(runtime.previewReleased(revision.id), false);
     const blocked = await evaluate(probe);
     assert.equal(blocked.decision, 2, "no request can use installed material before launcher ACK");
+    // A later Compute readiness pass reads the same installation before releasing it.
+    assert.equal(
+      await runtime.observeHeldPreview(revision.id, startupId, t.signal, async () => {
+        assert.fail("the confirmed startup probe must not be repeated");
+      }),
+      "installed",
+    );
     await runtime.releasePreview(revision.id, startupId, async () => {
       assert.ok(lastCustody);
       const installed = await release.current(context, lastCustody, async () => true);
@@ -1755,6 +1770,53 @@ async function repositoryGitJourney(
           grantId: binding.grant.grantId,
           installed,
           evaluate,
+          recover: async () => {
+            const admission = await lastCustody!.currentEgressInstallation!();
+            const writes = wire.world.writes;
+            wire.world.processInstanceId = "recovered-process";
+            wire.world.networkInstanceId = "recovered-network";
+            wire.world.supervisorSessionId = "recovered-supervisor";
+            wire.world.runtimeGeneration = "recovered-runtime";
+            state.started = { seconds: Math.floor(Date.now() / 1000) };
+            assert.equal(
+              (await evaluate(probe)).decision,
+              2,
+              "old readiness cannot authorize recovery",
+            );
+            await reconcile();
+            assert.equal(runtime.previewReleased(revision.id), false);
+            const recoveredStartup = randomUUID();
+            await runtime.observeHeldPreview(
+              revision.id,
+              recoveredStartup,
+              t.signal,
+              async (path) => ({
+                startupId: recoveredStartup,
+                probePath: path,
+                reasonCode: (await evaluate({ ...probe, target: { ...probe.target, path } }))
+                  .reason_code,
+              }),
+            );
+            await reconcile();
+            await runtime.releasePreview(revision.id, recoveredStartup, async () => {
+              const current = await release.current(context, lastCustody!, async () => true);
+              assert.deepEqual(
+                current,
+                admission,
+                "recovery retains the committed execution authorization",
+              );
+              const signed = signComputeExecutionRelease(
+                keys.privateKey,
+                recoveredStartup,
+                current,
+              );
+              assert.equal(signed.challenge.startupId, recoveredStartup);
+              return true;
+            });
+            assert.equal(wire.world.writes, writes, "recovery does not replay credential writes");
+            assert.equal(peer.gh.issuesOfTokens.length, 1, "recovery does not issue a new token");
+          },
+
           withLookupFault,
           // Read-only provider observation; this is not a dispatch permit.
           heldCredentialStatus: async () => (await peer.send(heldCredential, false)).status,

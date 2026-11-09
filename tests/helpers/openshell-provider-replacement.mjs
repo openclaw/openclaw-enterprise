@@ -187,6 +187,34 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
         entry.metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
     );
     assert.ok(pod, "The active revision must have a Gateway Pod");
+    // Git can recover before the launcher releases Codex. Wait for its authenticated
+    // transport without submitting a model turn that might then be retried.
+    await wait("Codex Harness WebSocket readiness", async () => {
+      try {
+        await fixture.kubectl(
+          "exec",
+          pod.metadata.name,
+          "--namespace",
+          input.gatewayNamespace,
+          "--",
+          "node",
+          "-e",
+          `
+            const WebSocket = require("ws");
+            const socket = new WebSocket(process.env.APP_SERVER_URL, {
+              headers: { authorization: "Bearer " + process.env.APP_SERVER_TOKEN },
+              handshakeTimeout: 5000,
+            });
+            socket.on("open", () => process.exit(0));
+            socket.on("error", () => process.exit(1));
+            socket.on("close", () => process.exit(1));
+          `,
+        );
+        return true;
+      } catch {
+        return undefined;
+      }
+    });
     const nonce = `replacement-${randomUUID()}`;
     const result = await fixture.requestCodexTurnFromGatewayPod({
       namespace: input.gatewayNamespace,
@@ -265,6 +293,66 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
       await denied(input.git.additionalUrl),
       0,
       "Unselected repository must be denied",
+    );
+    await turn(agents[0], first);
+    await turn(agents[1], peer);
+    // Terminate only the run-owned Harness supervisor through OpenShell exec. This is
+    // automatic runtime recovery, not StopSandbox/StartSandbox or an OCE revision change.
+    const beforeRecovery = await sandbox(agents[0]);
+    assert.equal(beforeRecovery.spec.restart_policy, "SANDBOX_RESTART_POLICY_ALWAYS");
+    const terminate = String.raw`
+      const fs = require("node:fs");
+      // OpenShell exec cannot read the Harness's protected /proc/<pid>/exe links.
+      const argumentsFor = pid => fs.readFileSync("/proc/" + pid + "/cmdline", "utf8").split("\0");
+      // Node names its main thread "MainThread", so /proc/<pid>/comm is unsuitable too.
+      const name = pid => argumentsFor(pid)[0].split("/").at(-1);
+      const serving = fs.readdirSync("/proc").filter(pid => /^\d+$/.test(pid)).filter(pid => {
+        try {
+          const args = argumentsFor(pid);
+          return name(pid) === "codex" &&
+            args.includes("app-server") && args.includes("--ws-token-sha256");
+        } catch { return false; }
+      });
+      if (serving.length !== 1) process.exit(2);
+      const parent = pid => Number(fs.readFileSync("/proc/" + pid + "/status", "utf8").match(/^PPid:\s+(\d+)$/m)[1]);
+      // Walk past the Codex CLI and startup wrappers to the supervisor under tini.
+      let supervisor = parent(serving[0]);
+      for (let depth = 0; ; depth++) {
+        if (depth >= 8 || supervisor <= 1 || name(supervisor) !== "node") process.exit(3);
+        const ancestor = parent(supervisor);
+        if (ancestor > 1 && name(ancestor) === "tini") break;
+        supervisor = ancestor;
+      }
+      process.kill(supervisor, "SIGTERM");
+    `;
+    // The exec channel can close as its Sandbox exits. Never resend the signal;
+    // the changed main-process identity below is the independent outcome check.
+    const termination = await execute(agents[0], ["node", "-e", terminate]).catch(() => undefined);
+    if (termination !== undefined) {
+      assert.equal(termination, 0, "The test must signal the Harness supervisor");
+    }
+    await wait("Git Harness automatic recovery", async () => {
+      const current = await sandbox(agents[0]);
+      assert.equal(current.id, beforeRecovery.id, "Recovery retains the Sandbox");
+      if (
+        !current.mainProcessInstanceId ||
+        current.mainProcessInstanceId === beforeRecovery.mainProcessInstanceId
+      ) {
+        return undefined;
+      }
+      try {
+        return (await execute(agents[0], ["/usr/bin/git", "ls-remote", input.git.url])) === 0
+          ? current
+          : undefined;
+      } catch {
+        return undefined;
+      }
+    });
+    assert.equal((await api("GET", `${base}/agents/${agents[0].id}`)).activeRevisionId, first.id);
+    assert.notEqual(
+      await denied(input.git.additionalUrl),
+      0,
+      "Recovery must retain repository restrictions",
     );
     await turn(agents[0], first);
     await turn(agents[1], peer);

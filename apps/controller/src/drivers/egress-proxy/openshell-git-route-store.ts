@@ -505,11 +505,30 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
       "networkInstanceId",
     ];
     const hook = observed?.observedHook;
+    const enrollment = observed?.enrollment;
+    if (
+      enrollment &&
+      (Object.keys(enrollment).some(
+        (key) => !["configurationId", "bootstrapRevision", "hook", "release"].includes(key),
+      ) ||
+        !/^[a-f0-9]{64}$/.test(enrollment.configurationId) ||
+        !/^[1-9]\d*$/.test(enrollment.bootstrapRevision) ||
+        !["held", "sending", "acknowledged"].includes(enrollment.release) ||
+        (enrollment.release !== "held" && !enrollment.hook) ||
+        (enrollment.hook &&
+          (Object.keys(enrollment.hook).length !== 2 ||
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+              enrollment.hook.startupId,
+            ) ||
+            !/^[a-f0-9]{64}$/.test(enrollment.hook.observationId))))
+    ) {
+      throw new Error("Invalid OpenShell launcher enrollment.");
+    }
     if (
       observed &&
       (fields.some((field) => !(field in observed)) ||
         Object.keys(observed).some(
-          (field) => !fields.includes(field) && field !== "observedHook",
+          (field) => !fields.includes(field) && field !== "observedHook" && field !== "enrollment",
         ) ||
         ("observedHook" in observed &&
           (!hook ||

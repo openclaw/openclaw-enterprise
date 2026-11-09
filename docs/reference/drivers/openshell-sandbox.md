@@ -180,9 +180,7 @@ accepts `operator` or `managed`; managed mode selects the experimental
 namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels`
 listing `openclaw.dev/*`, `app.kubernetes.io/name`, and
 `app.kubernetes.io/managed-by`; otherwise deployment fails with
-`SANDBOX_POD_LABELS_NOT_PERMITTED`. An OpenShell Workspace
-name must equal its pre-provisioned Kubernetes namespace: `oce-` plus a
-15-character digest, within the 19-character limit.
+`SANDBOX_POD_LABELS_NOT_PERMITTED`. Workspace names match pre-provisioned namespaces: `oce-` plus a 15-character digest.
 
 The [development profile](../../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile) installs one Gateway with workspace resources disabled in `oce-system` (Kubernetes-only) or `openshell-system` (Compose). Agent Sandbox runs in `agent-sandbox-system`. The launcher renders `openshell-workspace` once into trusted Installation configuration. The Driver applies it before each OCC Namespace's Workspace creation, without per-Namespace Helm releases.
 

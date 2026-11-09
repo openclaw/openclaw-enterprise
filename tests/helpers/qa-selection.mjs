@@ -261,7 +261,7 @@ export function selectQaMatrix(env = process.env) {
       exclusions.length === 0 &&
       installation === "all" &&
       preset === "all" &&
-      scenarios.length === allScenarios.length - 7
+      scenarios.length === allScenarios.length - 8
         ? "full"
         : "partial:selected",
   };

@@ -350,8 +350,10 @@ async function heldGit(t: TestContext) {
     },
     {
       model: "openai",
-      workload: async (sandboxId) => {
-        assert.equal(sandboxId, f.sandbox.id);
+      runtime: runtimeFilesProvider,
+      policy: async () => sourcePolicy,
+      execution: async (box) => {
+        assert.equal(box.id, f.sandbox.id);
         return "original-pods";
       },
     },
@@ -1290,28 +1292,18 @@ test("selected v5 refuses unproven aggregate lag and an independently changed Gi
   }
 });
 
-test("selected v5 never reuses the held proof across a changed supervisor session", async (t) => {
-  const { f, entry, store, revision, activity, lookup, reconcile } = await heldReleased(t);
-  const originalSession = f.supervisor.supervisorSessionId;
-  assert.equal(entry.supervisor?.supervisorSessionId, originalSession);
-  assert.equal((await lookup())?.executionId, revision.id);
+test("selected v5 rechecks a reconnected supervisor session without rotating credentials", async (t) => {
+  const { f, entry, store, revision, activity, lookup, reconcile, preview } = await heldReleased(t);
   const before = { ...activity };
+  const startup = preview.hook;
   f.supervisor.supervisorSessionId = "replacement-control-session";
-  assert.equal(await lookup(), undefined);
+  assert.equal(await lookup(), undefined, "requests cannot adopt a changed observation");
   await reconcile();
-  assert.deepEqual(f.runtime.route(revision.id), {
-    state: "blocked",
-    reason: "supervisor_replaced",
-  });
-  assert.equal(store.rows.get(revision.id)?.blocked, "supervisor_replaced");
-  assert.equal(f.denials().at(-1)?.reason, "route_blocked");
-  f.supervisor.supervisorSessionId = originalSession;
-  await reconcile();
-  assert.equal(
-    await lookup(),
-    undefined,
-    "a past witnessed session cannot reopen the closed route",
-  );
+  assert.deepEqual(f.runtime.route(revision.id), { state: "installed" });
+  assert.equal(entry.supervisor?.supervisorSessionId, "replacement-control-session");
+  assert.equal(store.rows.get(revision.id)?.blocked, undefined);
+  assert.equal((await lookup())?.executionId, revision.id);
+  assert.deepEqual(preview.hook, startup, "the Harness process itself has not restarted");
   assert.deepEqual(activity, before);
 });
 
@@ -1533,7 +1525,7 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
       assert.deepEqual(row.generation, originalRow.generation);
       assert.deepEqual(row.material, originalRow.material);
     };
-    const owner = { model: "openai", workload: async () => "original-pods" };
+    const owner = entry.continuity!;
     let detach: { requestId: string; resourceVersion: string; epoch?: string } | undefined;
     let intents = 0;
     let sends = 0;
@@ -1818,14 +1810,14 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
         expiry,
         saved,
         client,
-        { ...owner, workload: async () => "replacement-pods" },
+        { ...owner, execution: async () => "replacement-execution" },
         t.signal,
         async () => assert.fail("replacement launch must fail before profile validation"),
         (outcome, check) => negative.push(outcome + ":" + check),
       ),
       "retire-runtime",
     );
-    assert.deepEqual(negative, ["retire-runtime:original-launch-and-pods"]);
+    assert.deepEqual(negative, ["retire-runtime:original-launch-and-execution"]);
     assert.equal(intents, 0);
     assert.equal(sends, 0);
     const cleanup = (runtime = f.runtime, observer = owner) => {
@@ -1867,7 +1859,7 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
       await cleanup(
         f.runtime,
         fault === "replacement Pod"
-          ? { ...owner, workload: async () => "replacement-pods" }
+          ? { ...owner, execution: async () => "replacement-execution" }
           : owner,
       ),
       first,
@@ -2149,7 +2141,7 @@ for (const outcome of [
   "local withdrawal",
   "durable withdrawal",
   "replacement holder",
-  "same-name Sandbox restart",
+  "Sandbox identity replaced",
 ] as const) {
   test(`selected v5 late second update: ${outcome}`, async (t) => {
     const {
@@ -2273,9 +2265,9 @@ for (const outcome of [
         assert.notEqual(row.workerInstance, before.workerInstance);
         assert.equal(row.blocked, "worker_replaced");
         moved = { fence: row.fence, workerInstance: row.workerInstance };
-      } else if (outcome === "same-name Sandbox restart") {
-        f.sandbox.restartCount = 1;
+      } else if (outcome === "Sandbox identity replaced") {
         assert.equal(entry.sandboxId, f.sandbox.id);
+        f.sandbox.id = "replacement-sandbox-id";
         assert.equal(entry.binding.sandbox, f.sandbox.name);
       }
     } finally {
@@ -2290,7 +2282,7 @@ for (const outcome of [
     assert.equal(preview.recipient, recipient);
     assert.equal(entry.retainedLaunchHash, launchHash);
     assert.deepEqual(entry.authorization, authorization);
-    if (outcome === "same-name Sandbox restart") {
+    if (outcome === "Sandbox identity replaced") {
       assert.ok(acceptedVersion);
       assert.equal(entry.binding.resourceVersion, acceptedVersion);
       assert.equal(after.blocked, "execution_replaced");
@@ -2346,7 +2338,7 @@ for (const outcome of [
     assert.equal((await lookup()) !== undefined, outcome === "accepted");
     assert.deepEqual(
       f.errors().map(({ code, reason }) => [code, reason]),
-      outcome === "same-name Sandbox restart"
+      outcome === "Sandbox identity replaced"
         ? [["OPENSHELL_GIT_RECONCILIATION_REQUIRED", "execution_replaced"]]
         : [],
     );
@@ -2454,12 +2446,10 @@ for (const state of [
           time.mock.restore();
         }
       } else {
-        assert.equal(
-          await f.runtime.observeHeldPreview(revision.id, randomUUID(), t.signal, async () => {
-            assert.fail("a replacement startup must not challenge again");
-          }),
-          undefined,
-        );
+        // A different Sandbox is a terminal identity change, even though automatic
+        // Harness recovery inside the original Sandbox is supported.
+        f.sandbox.id = "replacement-sandbox-id";
+        await reconcile();
       }
       assert.ok(firstCommit, "actual runtime must request closure");
       assert.equal(await firstCommit, committed ? "confirmed" : undefined);

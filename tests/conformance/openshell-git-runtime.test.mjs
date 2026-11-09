@@ -54,6 +54,7 @@ async function observedGitRoute(
   mandatoryPolicy,
   {
     managed = false,
+    releaseCrash = false,
     legacy = false,
     removeBinding = false,
     changedStartup = false,
@@ -137,6 +138,9 @@ async function observedGitRoute(
     !!mandatoryPolicy,
   );
   f.entry.preview = preview;
+  if (!mandatoryPolicy) {
+    f.sandbox.spec.restart_policy = "SANDBOX_RESTART_POLICY_NEVER";
+  }
   f.store.rows.get(revision.id).workerInstance = f.runtime.instance;
   f.entry.binding.provider = "oce-github-installation-" + "a".repeat(32);
   f.entry.binding.executionId = revision.id;
@@ -201,6 +205,7 @@ async function observedGitRoute(
     ...(await sandbox(...args)),
     configurationAdmission: admission(),
   });
+  const gatewayInfo = f.client.getGatewayInfo;
   f.client.getGatewayInfo = async () => {
     assert.fail("recipient proof must not fetch gateway release information");
   };
@@ -311,7 +316,7 @@ async function observedGitRoute(
   assert.equal(f.calls.rotate, 0, "ACCEPTED and effective config cannot release material");
   assert.equal(preview.hook, undefined);
   assert.ok(preview.recipient, "the original bootstrap observation qualifies the recipient");
-  const startupId = randomUUID();
+  let startupId = randomUUID();
   const signal = AbortSignal.timeout(5000);
   let probePath;
   const probe = async (path) => {
@@ -465,7 +470,10 @@ async function observedGitRoute(
   assert.equal(f.entry.fence, 2);
   assert.equal(f.store.rows.get(revision.id).writePending, undefined);
 
-  f.sandbox.annotations = { "openclaw.dev/revision-id": revision.id };
+  f.sandbox.annotations = {
+    "openclaw.dev/revision-id": revision.id,
+    "internal.openshell.ai/runtime-generation": "initial-runtime",
+  };
   f.sandbox.labels = {};
   f.sandbox.resourceVersion = "1";
   const getProvider = f.client.getProvider;
@@ -516,6 +524,45 @@ async function observedGitRoute(
   f.faults.observe = false;
   await f.reconcile();
   assert.ok(f.entry.installed, "active generation completes its original launch witness");
+  if (releaseCrash) {
+    const sent = Promise.withResolvers();
+    const response = Promise.withResolvers();
+    const releasing = f.runtime.releasePreview(revision.id, startupId, async () => {
+      sent.resolve();
+      return response.promise;
+    });
+    const failed = assert.rejects(releasing, { message: "release response lost" });
+    await sent.promise;
+    assert.equal(f.store.rows.get(revision.id).observed.enrollment.release, "sending");
+    // The replacement finds durable send intent while the original response is still unknown.
+    f.client.getGatewayInfo = gatewayInfo;
+    const replacement = new OpenShellGitRuntime(f.runtime.configuration, resolve);
+    replacement.owner = f.owner;
+    replacement.routes = f.store;
+    await assert.rejects(
+      replacement.prepare(
+        revision,
+        f.client,
+        f.sandbox.workspace,
+        f.sandbox.name,
+        signal,
+        "/sandbox/enterprise",
+        ["openai"],
+      ),
+      { reason: "worker_replaced" },
+    );
+    response.reject(new Error("release response lost"));
+    await failed;
+    assert.equal(replacement.previewReleased(revision.id), false);
+    assert.equal(f.calls.rotate, 1);
+    return;
+  }
+  // Compute can observe the installed launcher again before sending its release.
+  // That equivalent fresh observation must not leave the installed ACK state stale.
+  assert.equal(
+    await f.runtime.observeHeldPreview(revision.id, startupId, signal, probe),
+    "installed",
+  );
   await f.runtime.releasePreview(revision.id, startupId, async () => true);
   assert.ok(await f.lookup(), "first read after held launch ACK");
   if (afterRelease) {
@@ -611,8 +658,63 @@ async function observedGitRoute(
     );
   }
 
-  // Cold adoption closes healthy preview custody and preserves an existing terminal reason.
-  const coldReason = changedMaterial || changedDelivery ? "material_mismatch" : "worker_replaced";
+  if (!changedMaterial && !changedDelivery && mandatoryPolicy) {
+    const context = { revision, plan: revision.egressPlan, signal };
+    const admission = await f.runtime.mandatoryEnforcement(context, f.sandbox.id);
+    assert.equal(admission.instanceId, f.sandbox.id);
+    assert.equal(admission.repositoryGitRecipient.processInstanceId, undefined);
+    // The recovered runtime has fresh readiness, but cannot inherit the old launcher's ACK.
+    f.supervisor.processInstanceId = "process-recovered";
+    f.supervisor.networkInstanceId = "network-recovered";
+    f.supervisor.supervisorSessionId = "session-recovered";
+    f.sandbox.mainProcessInstanceId = f.supervisor.networkInstanceId;
+    f.sandbox.mainProcessStartedAt = new Date().toISOString();
+    f.sandbox.restartCount = 1;
+    // OpenShell also rotates its internal runtime metadata when it restarts the workload.
+    f.sandbox.annotations["internal.openshell.ai/runtime-generation"] = "recovered-runtime";
+    await expectDenied(f, "installation_changed");
+    await f.reconcile();
+    assert.equal(preview.release, undefined);
+    assert.equal(await f.lookup(), undefined);
+    startupId = randomUUID();
+    await f.runtime.observeHeldPreview(revision.id, startupId, signal, probe);
+    await f.reconcile();
+    assert.deepEqual(
+      await f.runtime.mandatoryEnforcement(context, f.sandbox.id),
+      admission,
+      "a new process preserves the same execution authorization",
+    );
+    assert.equal(await f.lookup(), undefined, "fresh readiness alone cannot release a launcher");
+    await f.runtime.releasePreview(revision.id, startupId, async () => true);
+    assert.ok(await f.lookup());
+    assert.equal(f.calls.rotate, 1, "recovery never replays the credential write");
+
+    // The OCE wrapper can also restart only its Harness child in the same supervisor.
+    startupId = randomUUID();
+    await f.runtime.observeHeldPreview(revision.id, startupId, signal, probe);
+    assert.equal(f.runtime.previewReleased(revision.id), false);
+    await f.reconcile();
+    await f.runtime.releasePreview(revision.id, startupId, async () => true);
+    assert.ok(await f.lookup());
+
+    if (managed) {
+      // Caller-owned launch metadata still forbids recovery under changed configuration.
+      f.sandbox.annotations["operator.example/launch-policy"] = "changed";
+      f.supervisor.processInstanceId = "another-process";
+      f.supervisor.networkInstanceId = "another-network";
+      f.sandbox.mainProcessInstanceId = f.supervisor.networkInstanceId;
+      f.entry.nextRefreshAt = 0;
+      await f.reconcile();
+      assert.equal(f.entry.blocked, "execution_replaced");
+    }
+  }
+  // Worker replacement still closes custody, even after successful Harness recovery.
+  const coldReason =
+    changedMaterial || changedDelivery
+      ? "material_mismatch"
+      : managed
+        ? "execution_replaced"
+        : "worker_replaced";
   const replacement = new OpenShellGitRuntime(f.runtime.configuration, resolve);
   replacement.owner = f.owner;
   replacement.routes = f.store;
@@ -903,14 +1005,14 @@ test("held-launch Git expiry requires a fresh original predecessor and a revoked
             const owner = entry.continuity;
             const statusReader = client.getSandboxProviderStatus;
             const sandboxReader = client.getSandbox;
-            const workloadReader = owner.workload;
+            const workloadReader = owner.execution;
             for (const changed of ["missing", "elapsed", "replacement"]) {
               const original = structuredClone(box);
               const originalBefore = structuredClone(original);
               let current = structuredClone(box);
               const readOrder = [];
               if (changed === "replacement") {
-                owner.workload = async (...args) => {
+                owner.execution = async (...args) => {
                   const workload = await workloadReader(...args);
                   readOrder.push("workload");
                   return workload;
@@ -964,7 +1066,7 @@ test("held-launch Git expiry requires a fresh original predecessor and a revoked
               } finally {
                 client.getSandboxProviderStatus = statusReader;
                 client.getSandbox = sandboxReader;
-                owner.workload = workloadReader;
+                owner.execution = workloadReader;
               }
               assert.equal(f.calls.material, before.material);
               assert.equal(f.calls.rotate, before.rotate);
@@ -1197,5 +1299,9 @@ test("cold held-launch verification requires typed redeployment before supplier 
 });
 
 test("managed Git startup uses exact Providers and current policy after replacement", async () => {
-  await observedGitRoute(2, { narrowRepository: "allowed", managed: true });
+  await observedGitRoute(2, { narrowRepository: "healthy", managed: true });
+});
+
+test("a worker cannot replay a launcher release whose response was lost", async () => {
+  await observedGitRoute(2, { releaseCrash: true });
 });

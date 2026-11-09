@@ -263,6 +263,8 @@ interface Entry extends OpenShellGitObservationEntry {
   fence: number;
   /** The snapshot last persisted for this fence, so the row is written only on change. */
   persisted?: OpenShellGitRouteSnapshot | undefined;
+  /** Enrollment and reconciliation share one route row; an older write cannot erase release intent. */
+  persisting?: Promise<void> | undefined;
   /** Why the owner last had no material: the session is gone, or none is usable (finding 2149). */
   absent?: "withdrawn" | "unprepared" | undefined;
   /** A closed route's next Sandbox read, the reads that found it, whether the last found none,
@@ -868,10 +870,35 @@ export class OpenShellGitRuntime {
   /** The route as this worker now holds it, written when it differs from the last write.
    * A stale fence means another worker adopted the route: this one closes it. */
   private async persist(entry: Entry, signal: AbortSignal): Promise<void> {
+    const writing = (entry.persisting ?? Promise.resolve())
+      .catch(() => {})
+      .then(() => this.persistSnapshot(entry, signal));
+    entry.persisting = writing;
+    try {
+      await writing;
+    } finally {
+      if (entry.persisting === writing) {
+        entry.persisting = undefined;
+      }
+    }
+  }
+
+  private async persistSnapshot(entry: Entry, signal: AbortSignal): Promise<void> {
     const routes = this.routes;
     const fence = entry.fence;
     if (routes === undefined) {
       return;
+    }
+    if (entry.supervisor && entry.preview?.mandatory) {
+      const { enrollment: _previous, ...observed } = entry.supervisor;
+      const enrollment = entry.preview.enrollment();
+      const current = { ...observed, ...(enrollment && { enrollment }) };
+      // A fresh readiness read can replace the observation with an equivalent value.
+      // Keep that installation's launcher acknowledgement in step with the saved state.
+      if (isDeepStrictEqual(entry.installed, entry.supervisor)) {
+        entry.installed = current;
+      }
+      entry.supervisor = current;
     }
     const snapshot: OpenShellGitRouteSnapshot = {
       generation: generationOf(entry.binding),
@@ -994,6 +1021,23 @@ export class OpenShellGitRuntime {
     if (!preview || !entry || entry.blocked || !preview.recipient || !entry.supervisor) {
       return;
     }
+    if (
+      preview.mandatory &&
+      preview.hook?.startupId !== startupId &&
+      preview.release === "acknowledged"
+    ) {
+      // Enrollment can reach the new launcher before the periodic observer sees recovery.
+      // Wait for current readiness; never interpret its new challenge as a new execution.
+      await this.fenced(entry, signal);
+      const current = await this.observation(entry, signal);
+      if (!current) {
+        return;
+      }
+      preview.recover();
+      entry.installed = undefined;
+      entry.supervisor = { ...current, enrollment: preview.enrollment()! };
+      await this.persist(entry, signal);
+    }
     if (preview.hook && preview.hook.startupId !== startupId) {
       try {
         this.reportContinuity(entry, [
@@ -1013,7 +1057,13 @@ export class OpenShellGitRuntime {
       return;
     }
     if (!preview.hook) {
-      if (entry.material || entry.binding.credentialState !== "bootstrap" || entry.fence !== 1) {
+      const recovery = preview.mandatory && entry.binding.credentialState === "active";
+      if (
+        !recovery &&
+        (entry.material ||
+          entry.binding.credentialState !== "bootstrap" ||
+          (!preview.mandatory && entry.fence !== 1))
+      ) {
         return;
       }
       await this.fenced(entry, signal);
@@ -1063,13 +1113,14 @@ export class OpenShellGitRuntime {
     ) {
       return;
     }
+    entry.supervisor = observed;
+    await this.persist(entry, signal);
     if (observed.credentialState === "active") {
+      // Reconcile must recheck current material before releasing the new launcher.
       return entry.installed && isDeepStrictEqual(entry.installed, observed)
         ? "installed"
         : undefined;
     }
-    entry.supervisor = observed;
-    await this.persist(entry, signal);
     return "held";
   }
 
@@ -1095,10 +1146,22 @@ export class OpenShellGitRuntime {
     }
     preview.release = "sending";
     try {
-      if (!(await deliver()) || entry.blocked) {
+      const signal = AbortSignal.any([
+        this.stopped.signal,
+        AbortSignal.timeout(this.observeTimeoutMs),
+      ]);
+      await this.fenced(entry, signal);
+      await this.persist(entry, signal);
+      if (
+        !(await deliver()) ||
+        entry.blocked ||
+        preview.hook?.startupId !== startupId ||
+        preview.release !== "sending"
+      ) {
         throw new Error("The preview release was not acknowledged.");
       }
       preview.release = "acknowledged";
+      await this.persist(entry, signal);
     } catch (error) {
       this.block(entry, "preview_release_unconfirmed");
       throw error;
@@ -1152,17 +1215,15 @@ export class OpenShellGitRuntime {
     if (!recipient || entry.preview.recipient !== recipient) {
       return;
     }
-    const { providerId, attachmentEpoch, processInstanceId, networkInstanceId } = current;
+    const { providerId, attachmentEpoch } = current;
     return {
-      instanceId: networkInstanceId,
+      instanceId: sandboxId,
       policyHash: current.policyHash,
       authorityScope: "execution" as const,
       configurationId: recipient,
       repositoryGitRecipient: {
         providerId,
         attachmentEpoch,
-        processInstanceId,
-        networkInstanceId,
         authorization: "online-request" as const,
         ...(entry.authorization.binding.profile === "github-repository" && {
           deliveryProfile: "github_repository" as const,
@@ -2159,8 +2220,8 @@ export class OpenShellGitRuntime {
               entry &&
               entry.sandboxId === q.sandboxId &&
               !entry.blocked &&
-              !entry.material &&
-              entry.binding.credentialState === "bootstrap"
+              ((!entry.material && entry.binding.credentialState === "bootstrap") ||
+                (entry.preview.mandatory && entry.preview.release === undefined))
             ) {
               return entry.preview.deny(q, entry.sandboxId);
             }

@@ -1,4 +1,3 @@
-
 import { ConfigurationFailure, OwnershipFailure } from "./failures.ts";
 import {
   createHarnessRuntime,
@@ -336,7 +335,6 @@ import {
   repositoryNativeConfiguration,
 } from "./repository-native-configuration.ts";
 import { harnessWorkspacePreparationScript } from "./harness/workspace-preparation.ts";
-
 
 export { harnessWorkspacePreparationScript } from "./harness/workspace-preparation.ts";
 
@@ -11830,7 +11828,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
                     )) +
                   (nativeRuntime === undefined
                     ? (input.pluginRuntime?.entrypoint ??
-                      (input.provider ? AGENT_RUNTIME_ENTRYPOINT : COMPUTE_AGENT_RUNTIME_ENTRYPOINT))
+                      (input.provider
+                        ? AGENT_RUNTIME_ENTRYPOINT
+                        : COMPUTE_AGENT_RUNTIME_ENTRYPOINT))
                     : NATIVE_WORKER_ENTRYPOINT),
               ),
             ],

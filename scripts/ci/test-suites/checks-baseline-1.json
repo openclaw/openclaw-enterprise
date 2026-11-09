@@ -281,7 +281,6 @@
     },
     {
       "path": "tests/conformance/oauth-connection.test.mjs"
-
     },
     {
       "path": "tests/conformance/openshell-managed-bootstrap.test.mjs"
