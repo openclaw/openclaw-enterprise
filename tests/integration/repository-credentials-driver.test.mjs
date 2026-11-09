@@ -693,7 +693,7 @@ test(
       await new Promise((resolve) => receiptServer.close(resolve));
     });
     const probe = new URL(
-      "../../apps/controller/src/drivers/repo/github/credentials/admission-probe.mjs",
+      "../../apps/controller/src/drivers/repo/github/access/admission-probe.mjs",
       import.meta.url,
     ).pathname;
     for (const [mode, outcome] of [

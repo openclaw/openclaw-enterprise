@@ -13,13 +13,13 @@ import { OpenClawController } from "../../packages/occ/src/index.ts";
 import defaultCodexPreset from "../../deploy/presets/default-codex.json" with { type: "json" };
 
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
-import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { withNativeAdminGateway } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { isRecord, nativeValues, pathRequests } from "./console-agents-browser-helpers.ts";
 
-import type { GitHubRepositoryRegistration } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import type { GitHubRepositoryRegistration } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type OriginFixture = Pick<Fixture, "origin">;

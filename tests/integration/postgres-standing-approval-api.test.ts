@@ -18,7 +18,7 @@ import {
   composeRepositoryPolicy,
   repositoryPolicyOwner,
 } from "../../apps/controller/src/composition/repository-credentials/policy.ts";
-import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   repositoryApprovalFingerprint,
