@@ -357,6 +357,10 @@ export const requestExamples = {
     secretRef: { name: "model-api-key", key: "value" },
   },
   createIAMRole: { name: role.name, permissions: role.permissions },
+  updateIAMRuntimeRole: {
+    runtimeRole: "reviewer",
+    runtimeRoleConfiguration: { id: configurationId, generation: 1 },
+  },
   createIAMAccessBinding: {
     subjectKind: "identity",
     subjectId: principal.id,
@@ -670,6 +674,12 @@ export const responseExamples = {
   getServiceAccount: account,
   createServiceAccountCredential: { ...account, credential: { kind: "access_token" } },
   updateServiceAccountCredential: { ...account, credential: { kind: "api_key" } },
+  listAgentRuntimeRoles: {
+    configuration: { id: configurationId, generation: 1 },
+    desiredRuntimeState: "stopped",
+    roles: [{ id: "reviewer", permissions: { scopes: ["operator.read"] } }],
+  },
+  updateIAMRuntimeRole: { ...binding, runtimeRole: "reviewer" },
   listIAMRoles: [role],
   getIAMRole: role,
   createIAMRole: role,

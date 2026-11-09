@@ -83,7 +83,9 @@ type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
       status: "observed" | "undeployed" | "unsupported";
       images: readonly RuntimeImage[];
     };
-    nativeAdmin?: "available" | "stopped" | "unsupported" | "denied";
+    nativeAdmin?: "available" | "stopped" | "unsupported" | "denied" | "disabled";
+    nativeAdminReason?: string;
+    nativeAssignmentPrincipal?: string;
     nativeAdminUrl?: string;
     observabilityUrl?: string;
     observabilityDenied?: boolean;
@@ -412,7 +414,7 @@ const authoredScenarios = {
     description:
       "Agent panels retain loaded controls on tab and page returns. This preview uses simulated API data.",
     steps: [
-      "Wait for Native admin UI, then open Credentials and return to Configuration. The native access result remains visible.",
+      "Wait for OpenClaw, then open Credentials and return to Configuration. The access result remains visible.",
       "Expand View admitted native configuration, visit Workspace files, then return. The disclosure stays expanded.",
       "Return to Agents and use browser Back. Native admin access and expanded panels remain loaded after admission succeeds.",
       "Click Refresh access to explicitly check the native endpoint again. Page Refresh reloads all panels.",
@@ -1286,6 +1288,88 @@ const authoredScenarios = {
       "Open Deployment and expand Deployment details, then use Open Agent UI directly. Compare Denied and hidden: there is no launch or access warning there.",
     ],
   } satisfies LocalScenario,
+  nativeReadError: {
+    group: "Components/Native admin",
+    name: "Status read failure",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "available",
+    rules: [{ suffix: "/native-admin", method: "GET", status: 503, once: true }],
+    description: "A failed access read keeps its error and Refresh access visible.",
+    steps: [
+      "Confirm the OpenClaw card shows Service unavailable and no launch link.",
+      "Click Refresh access. The error clears and Open Agent UI becomes available.",
+    ],
+    gap: "Simulated status recovery; deployment-triggered refresh is covered by the Console browser integration.",
+  } satisfies LocalScenario,
+  nativeReadRecovery: {
+    group: "Components/Native admin",
+    name: "Recovery on Back",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "available",
+    rules: [{ suffix: "/native-admin", method: "GET", status: 503, once: true }],
+    description: "Back rechecks a failed access read and replaces the error after recovery.",
+    steps: [
+      "Confirm the OpenClaw card shows Service unavailable and no launch link.",
+      "Open Namespaces, then use Back. The error clears and Open Agent UI becomes available.",
+    ],
+    gap: "Simulated status recovery; the browser integration uses the real role catalog after its outage ends.",
+  } satisfies LocalScenario,
+  nativeUiConfiguration: {
+    group: "Components/Native admin",
+    name: "UI Configuration Required",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "unsupported",
+    nativeAdminReason: "ui_configuration",
+    description: "UI enablement or allowed origin must be corrected before launch.",
+    steps: ["Confirm the reason names UI configuration and the launch link is absent."],
+  } satisfies LocalScenario,
+  nativeRoleUnavailable: {
+    group: "Components/Native admin",
+    name: "Assigned Role Missing",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "unsupported",
+    nativeAdminReason: "role_unavailable",
+    description: "An assignment survives a deployment that removes its role definition.",
+    steps: ["Confirm the message directs an administrator to Sharing or restoring the role."],
+  } satisfies LocalScenario,
+  nativeDeviceApproval: {
+    group: "Components/Native admin",
+    name: "Pairing Permissions Required",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "unsupported",
+    nativeAdminReason: "device_approval_required",
+    description: "Pairing cannot approve every scope required by the assigned role.",
+    steps: ["Confirm the pairing permissions message is distinct from a disabled UI."],
+  } satisfies LocalScenario,
+  nativeAdministratorAssignment: {
+    group: "Components/Native admin",
+    name: "Administrator Needs Assignment",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "available",
+    nativeAssignmentPrincipal: "prn_00000000-0000-4000-8000-000000000003",
+    description:
+      "An Installation administrator needs an explicit OpenClaw role. Simulated UI proof.",
+    steps: [
+      "Confirm the OpenClaw card shows assignment guidance and no launch link.",
+      "In Share Agent, enter prn_00000000-0000-4000-8000-000000000003, select platform-administrator, acknowledge the permissions and select Share Agent.",
+      "Select Refresh access. Open Agent UI becomes available in the same tab.",
+    ],
+  } satisfies LocalScenario,
+  nativeDisabled: {
+    group: "Components/Native admin",
+    name: "Disabled and hidden",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "disabled",
+    description:
+      "A disabled Installation hides OpenClaw without suggesting an assignment. Simulated UI proof.",
+  } satisfies LocalScenario,
   nativeStopped: {
     group: "Components/Native admin",
     name: "Stopped",
@@ -1304,15 +1388,22 @@ const authoredScenarios = {
     path: revision,
     deployed: true,
     nativeAdmin: "unsupported",
-    description: "The selected runtime does not expose a supported native admin endpoint.",
+    nativeAdminReason: "transport_unsupported",
+    description: "The selected Compute Driver does not support OpenClaw browser admission.",
   } satisfies LocalScenario,
   nativeDenied: {
     group: "Components/Native admin",
     name: "Denied and hidden",
     path: revision,
     deployed: true,
-    nativeAdmin: "denied",
-    description: "Denied native-admin access hides the whole panel.",
+    observabilityDenied: true,
+    rules: [{ suffix: "/native-admin", method: "GET", status: 403 }],
+    description:
+      "A person without an OpenClaw assignment can retain their Agent page while access is denied.",
+    steps: [
+      "Confirm the OpenClaw card is hidden.",
+      "Open Namespaces, then use Back. The cached Agent page returns with OpenClaw still hidden.",
+    ],
   } satisfies LocalScenario,
   nativeRefreshing: {
     group: "Components/Native admin",

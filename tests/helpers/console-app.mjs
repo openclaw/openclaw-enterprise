@@ -868,6 +868,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     memoryDatabase,
     provisionedAccounts,
     policy,
+    state: platformState,
     // The sink State and the API audit to: `options.auditSink`, or one the fixture made.
     auditSink,
     // The real Native IAM Driver, for tests that simulate an IAM outage at its boundary.

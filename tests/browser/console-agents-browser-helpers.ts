@@ -646,7 +646,10 @@ export async function expectNoText(page: Page, pattern: string | RegExp, settled
 }
 
 export async function revealNativeConfiguration(page: Page, label: string) {
-  await page.getByText(label).click();
+  const summary = page.getByText(label, { exact: true });
+  if ((await summary.locator("..").getAttribute("open")) === null) {
+    await summary.click();
+  }
 }
 
 export function detailUrl(

@@ -458,6 +458,7 @@ of creators here.
 - `role_id`
 - `resource_kind`
 - `resource_id`
+- `runtime_role`: optional exact human/Agent runtime assignment; unique per person and Agent.
 
 ### `iam_restrictions`
 

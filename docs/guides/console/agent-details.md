@@ -197,7 +197,7 @@ The console has no chat panel. To give an Agent a task:
 - Message it in a channel its Configuration sets up, such as Slack. The
   [channel settings](channels-and-credentials.md#slack-editor), not OCE grants,
   decide who may mention it.
-- With Agent `administer`, use the [native admin panel](#conditional-native-admin-panel)
+- With Agent `use` and an assigned role, use the [OpenClaw panel](#conditional-native-admin-panel)
   when the Installation enables it. It is unavailable under GitHub, Google, or
   OIDC sign-in.
 - Otherwise ask someone who can edit the Agent's Configuration to let you into
@@ -207,6 +207,10 @@ The console has no chat panel. To give an Agent a task:
 <span id="conditional-native-admin-panel"></span>
 
 ## Open the Agent UI
+
+When enabled by the Installation and permitted for your account, **OpenClaw**
+near the top provides **Refresh access** and **Open OpenClaw**. The latter opens
+the active gateway in a new tab, even while you view a draft or older version.
 
 When enabled by the Installation and permitted for your account, **Open Agent UI**
 in the header opens the Agent interface directly in a new tab. Its description

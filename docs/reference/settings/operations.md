@@ -44,23 +44,20 @@ Other database errors remain redacted as `MIGRATION_FAILED`.
 
 ## Migration history
 
-Set `OCC_MIGRATION_DATABASE_URL` privately for `occ_migrator`. `occ_app` is the
+Set `OCC_MIGRATION_DATABASE_URL` for `occ_migrator`. `occ_app` is the
 application login. Neither may be a superuser, create roles or databases,
 replicate, or bypass row security. The migrator needs database `CREATE` and owns
 `occ` and `drizzle`; `occ_app` must neither inherit it nor have database/schema `CREATE`.
 
-From the release checkout, inspect history without applying SQL:
+Inspect history without applying SQL:
 
 ```sh
 pnpm db:migrate --check
 ```
 
 Exit 0 and `migration.checked` identify `empty`, a stage below, or `completed`.
-`prePresetsMain` ends at `0023_runtime_failure_timestamp_validation`;
-`main` also includes `0024_agent_presets`. `repositoryCredentials` adds
-`0025_repository_credentials` and `0026_privileged_function_search_paths`.
-`repositoryRetention`, `workspaceSetup`, and `agentProvisioning` add migrations
-through `0029_agent_provisioning_work`. `backendCompleted` and `providerCompleted`
+See the [canonical manifest](../../../migrations/meta/_canonical-history.json)
+for the initial `prePresetsMain`, `main`, repository and workspace histories. `backendCompleted` and `providerCompleted`
 are the respective 31-receipt Backend and Provider histories before compatibility.
 `backendTerminology` has the 32 receipts
 through `0031_backend_terminology_compatibility`; `prePluginApprovers` adds
@@ -82,16 +79,17 @@ has 46 through `0046_model_probe_failure_cause`;
 `0047_provisioning_configuration_release`; `preCodexPatSources` has 48 through
 `0048_administrator_credential_source_grants`; `preAgentCredentialSources` has 49
 through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
-through `0050_agent_credential_sources`; later `pre*` shapes add one each, through
+through `0050_agent_credential_sources`; later shapes add one, through
 `preCredentialProxy` (59) and `prePreparedAttemptSettlement` (62, through
 `0062_credential_delivery_custody`). After `0063_prepared_attempt_settlement`,
-63 receipts mean `preGatewayManagedMode`; `0064_gateway_managed_mode` is pending.
-Rerun `--check` after migration and require `completed` from the same release.
-The [canonical manifest](../../../migrations/meta/_canonical-history.json) records
-accepted source and catalog hashes. Never delete or relabel unsupported preview
-receipts. Empty schemas may be absent or owner-only, with no objects or
-unexpected default privileges. An empty Drizzle ledger after a rolled-back
-first migration is also supported.
+63 receipts mean `preGatewayManagedMode`; 64 mean `preSelectedRepositorySet`,
+65 mean `preAgentDeployIntent`; 66 mean `preAgentCredentialSourceLimit`;
+67 mean `preAgentPluginDriver`; 68 mean `preConnectionTemplates`;
+69 mean `preSavedConnections`; 70 mean `preDefaultUsers`; 71 mean `preHarnessOverrides`; 72 mean `preAccountAdministrationPolicy`; 73 mean `preFiniteRepositorySessionWithdrawal`; and 74 mean `preRuntimeRoles`.
+`--check` must report `completed` afterward.
+Hashes: [canonical manifest](../../../migrations/meta/_canonical-history.json).
+Never delete or relabel unsupported receipts. Empty schemas may be absent or owner-only, without objects or
+unexpected default privileges. Rollback may leave an empty Drizzle ledger.
 
 For a [logical restore](../../guides/deploy/upgrade-baseline.md#record-the-database),
 the manifest pairs the PostgreSQL 18.6 restored catalog with its exact native

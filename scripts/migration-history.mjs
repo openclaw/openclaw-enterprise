@@ -277,6 +277,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 59) {
     return "preCredentialProxy";
   }
+  if (count === 74) {
+    return "preRuntimeRoles";
+  }
   if (count === 62) {
     return "prePreparedAttemptSettlement";
   }

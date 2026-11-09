@@ -149,13 +149,12 @@ path records mutations and denials without template or variable contents.
 `apps/controller/src/console/agents/presets.mts:createPresetFields`
 
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mts)
-lists readable Preset summaries, requiring Namespace read, then reads the selection
-once. **Start with default Preset** reads the listed `default-codex` resource.
-Variable-free templates apply immediately; customized variables keep the chooser
-and its shortcut origin. Missing defaults or failed reads do not open a hardcoded
-starter; other readable Presets remain selectable. **Start without Preset** opens
-the form without a Preset read, not as a fallback for a denied selection. Normal
-creation authorization applies.
+lists Namespace-readable summaries and reads the selection once with
+`revalidate: false`. **Start with default Preset** reads `default-codex`.
+Variable-free templates apply immediately; otherwise chooser and shortcut origin remain.
+Missing defaults or failed reads never open hardcoded starters; readable Presets remain selectable. **Start without Preset** opens
+the form without a Preset read, not as a fallback for denial.
+Creation authorization applies.
 
 `console-assets.ts:readConsoleAsset` serves the public
 [`default-codex`](../../deploy/presets/default-codex.json) as

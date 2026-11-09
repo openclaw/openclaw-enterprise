@@ -36,6 +36,23 @@ type PermissionSnapshot =
 
 type AgentDetailScenario = {
   group: "Pages/Agent detail";
+  runtimeRolePolicyChanged?: true;
+  runtimeRolesUnavailable?: true;
+  sharingRoles?: readonly {
+    id: string;
+    namespaceId: string;
+    permissions: readonly { action: string; resourceKind: string }[];
+  }[];
+  sharingBindings?: readonly {
+    id: string;
+    namespaceId: string;
+    subjectKind: string;
+    subjectId: string;
+    roleId: string;
+    resourceKind: string;
+    resourceId: string;
+    runtimeRole: string;
+  }[];
   name: string;
   path: string;
   description: string;
@@ -239,7 +256,7 @@ export function createAgentDetailScenarios({
   };
 
   const shareExistingPerson = [
-    { selector: "#share-principal-id", value: "prn_person-demo" },
+    { selector: "#share-principal-id", value: "prn_00000000-0000-4000-8000-000000000003" },
     { selector: ".agent-access-consent input", click: true },
     click("Share Agent"),
   ] satisfies StoryAction[];
@@ -484,12 +501,47 @@ export function createAgentDetailScenarios({
         name: "Share an Agent",
         path: `${draft}&tab=access`,
         description:
-          "Grant an existing person access to this Agent's full native Gateway. Other Agents and OCE administration remain separate.",
+          "Choose an OpenClaw role for an existing person. Administrators also assign themselves a role to open OpenClaw.",
         steps: [
-          "Enter prn_person-demo as the existing Principal ID.",
-          "Review the native-access disclosure, acknowledge it, and share.",
+          "Check the hint explaining that administrators assign themselves a role to open OpenClaw.",
+          "Enter prn_00000000-0000-4000-8000-000000000003 as the existing Principal ID.",
+          "Choose an OpenClaw role, review its permissions, acknowledge shared access, and share.",
           "Remove the direct binding with the red-edged destructive Remove binding button (it acts at once, with no confirmation); Namespace discovery remains available.",
         ],
+      },
+      agentSharingBeforeDeployment: {
+        group: "Pages/Agent detail",
+        name: "Share before first deployment",
+        path: `${draft}&tab=access`,
+        actions: [
+          ...shareExistingPerson,
+          { selector: ".agent-access details > summary", click: true },
+        ],
+        description:
+          "Save an assignment before deployment. The role has no deployed permissions yet; native access awaits deployment. Simulated UI proof.",
+      },
+      agentSharingStopped: {
+        group: "Pages/Agent detail",
+        name: "Share while stopped",
+        path: `${draft}&tab=access`,
+        deployed: true,
+        stopped: true,
+        actions: [
+          ...shareExistingPerson,
+          { selector: ".agent-access-grant select", value: "reviewer" },
+        ],
+        description:
+          "Change a saved assignment while stopped. OpenClaw access resumes after deployment. Simulated UI proof.",
+      },
+      agentSharingPolicyChanged: {
+        group: "Pages/Agent detail",
+        name: "Configured and deployed role permissions",
+        path: `${draft}&tab=access`,
+        deployed: true,
+        runtimeRolePolicyChanged: true,
+        actions: [{ selector: ".agent-access details > summary", click: true }],
+        description:
+          "The configured researcher role has fewer permissions than the deployed version. Saving assignments does not deploy edited policy. Simulated UI proof.",
       },
       agentSharingGranted: {
         group: "Pages/Agent detail",
@@ -497,7 +549,7 @@ export function createAgentDetailScenarios({
         path: `${draft}&tab=access`,
         actions: shareExistingPerson,
         description:
-          "Namespace discovery and the selected Agent grant are present. Removing the direct grant does not remove other effective access.",
+          "Namespace discovery and the selected Agent grant are present. Removing the runtime assignment revokes OpenClaw entry; other grants may still provide OCE management access.",
       },
       agentSharingHoldsNavigation: {
         group: "Pages/Agent detail",
@@ -567,6 +619,51 @@ export function createAgentDetailScenarios({
         actions: [...shareExistingPerson, click("Remove binding")],
         description:
           "The selected direct Agent binding was removed. Namespace discovery and unrelated grants are preserved.",
+      },
+      agentSharingRoleChanged: {
+        group: "Pages/Agent detail",
+        name: "Change OpenClaw role",
+        path: `${draft}&tab=access`,
+        actions: [
+          ...shareExistingPerson,
+          { selector: ".agent-access-grant select", value: "reviewer" },
+        ],
+        description:
+          "Change the selected role and inspect the success feedback. This simulated preview does not verify backend atomicity or native connection closure.",
+      },
+      agentSharingRolesUnavailable: {
+        group: "Pages/Agent detail",
+        name: "OpenClaw roles unavailable",
+        path: `${draft}&tab=access`,
+        runtimeRolesUnavailable: true,
+        sharingRoles: [
+          {
+            id: "role-demo-entry",
+            namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+            permissions: [
+              { action: "read", resourceKind: "agent" },
+              { action: "use", resourceKind: "agent" },
+            ],
+          },
+        ],
+        sharingBindings: [
+          {
+            id: "binding-demo-entry",
+            namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+            subjectKind: "identity",
+            subjectId: "prn_00000000-0000-4000-8000-000000000003",
+            roleId: "role-demo-entry",
+            resourceKind: "agent",
+            resourceId: "agt_00000000-0000-4000-8000-000000000001",
+            runtimeRole: "reviewer",
+          },
+        ],
+        description:
+          "Sharing remains disabled while the configured role catalog is unavailable; existing assignments can be removed.",
+        steps: [
+          "Open Namespaces, then use Back. Confirm role choices remain disabled and the existing assignment can still be removed.",
+          "Remove the binding and confirm Namespace discovery remains available.",
+        ],
       },
       agentSharingDenied: {
         group: "Pages/Agent detail",

@@ -210,10 +210,13 @@ hostname and same-namespace Service:
 
 - The exact Agent path rewrites to `/`, preserving workspace-file WSS access.
 - A prefix rule below that Agent path rewrites the prefix to `/` and retains
-  the suffix for native UI assets, deep links, and WebSocket paths.
+  the suffix for service HTTP and WebSocket requests.
 
-OCC bounds proxy requests to the selected Agent base. Public native UI browser
-traffic enters through OCC; Envoy and gateway Services remain private. See
+Humans use `wss://<hostname>/people/namespaces/<namespaceId>/agents/<agentId>`
+through `-people`, preserving identity/role/policy-digest/scope headers.
+Missing/unaccepted routes cannot match service paths. Device auto-approval caps assigned scopes.
+
+Browser requests stay within that base; see
 [Agent native admin UI](../../agent-native-admin.md#agent-host-identity).
 Namespaces receive the Gateway membership label used by `allowedRoutes`.
 Runtime-enabled dedicated versions receive a `/node` route and a
@@ -226,7 +229,7 @@ The Service and route stay stable across versions; see
 or denied worker permissions fail reconciliation rather than disabling routing
 silently.
 
-Envoy authenticates the OCC service key and the route rewrites identity headers
+Envoy authenticates the OCC service key and the service route rewrites identity headers
 ([service key and native identity](../../gateway-routing.md#service-key-and-native-identity)).
 Native `allowRealIpFallback` accepts Envoy's direct downstream address when OCC
 and Envoy share a Pod CIDR. Loopback port-forwarding alone cannot supply native attribution.

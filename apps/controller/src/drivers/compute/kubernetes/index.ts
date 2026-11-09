@@ -44,6 +44,19 @@ import {
   X509Certificate,
   type KeyObject,
 } from "node:crypto";
+import {
+  agentRuntimeRoles,
+  hasRuntimeRoleConfiguration,
+  humanRuntimeAccess,
+  managedRuntimeRoles,
+  RUNTIME_ROLE_HEADER,
+  RUNTIME_ROLE_POLICY_HEADER,
+  RUNTIME_PERSON_IDENTITY_PREFIX,
+  RUNTIME_SERVICE_IDENTITY,
+  RUNTIME_SERVICE_ROLE,
+  RUNTIME_SERVICE_POLICY,
+  runtimeRolePolicyHash,
+} from "./runtime-access.ts";
 import { BlockList, isIP } from "node:net";
 import { isAbsolute, posix } from "node:path";
 import { isKubernetesNamespaceName, isKubernetesResourceName } from "./resource-name.ts";
@@ -140,6 +153,7 @@ import type {
   OpenClawConfigurationValue,
 } from "@openclaw-enterprise/contracts";
 import {
+  ADMINISTRATOR_RUNTIME_ROLE,
   admittedLoggingLevel,
   credentialSourceMatchesSnapshot,
   revisionCredentialSourceSnapshot,
@@ -4851,7 +4865,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // Deployment admission refuses the rest of the gateway shape in its own order.
     const trustedProxy = asRecord(asRecord(asRecord(configuration.gateway)?.auth)?.trustedProxy);
     if (trustedProxy !== undefined) {
-      refuseInvalidTrustedProxyIdentities(trustedProxy, callerSettingError, options);
+      refuseInvalidTrustedProxyIdentities(
+        trustedProxy,
+        callerSettingError,
+        options,
+        managedRuntimeRoles(configuration) !== undefined,
+      );
     }
     if (dedicatedCodex && this.appliesWorkspaceNodeAtRuntime()) {
       requireWorkspaceNodeGatewayPassword(configuration, callerSettingError);
@@ -4875,6 +4894,30 @@ export class KubernetesComputeDriver implements ComputeDriver {
       validateGatewayToolPolicy(configuration, callerSettingError, options);
       refuseKubernetesPluginEntryKeyVariants(configuration);
     }
+  }
+
+  listAgentRuntimeRoles(configuration: OpenClawConfigurationDocument) {
+    return agentRuntimeRoles(configuration);
+  }
+
+  getAgentRuntimeAccess(revision: AgentRevision, principalId: string, runtimeRole: string) {
+    const endpoint = this.getGatewayEndpoint(revision);
+    const humanEndpoint = endpoint === undefined ? undefined : new URL(endpoint);
+    if (humanEndpoint !== undefined) {
+      humanEndpoint.pathname = this.gatewayRoutePath(revision, "people");
+    }
+    return humanRuntimeAccess(
+      {
+        ...revision,
+        configuration: this.kubernetesGatewayConfigurationDocument(revision.configuration),
+      },
+      runtimeRole === ADMINISTRATOR_RUNTIME_ROLE &&
+        !hasRuntimeRoleConfiguration(revision.configuration)
+        ? endpoint
+        : humanEndpoint?.toString(),
+      principalId,
+      runtimeRole,
+    );
   }
 
   getGatewayEndpoint(revision: AgentRevision): string | undefined {
@@ -9151,7 +9194,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revisionId: string,
   ): Promise<void> {
     // Remove the endpoint before deleting its route-specific authentication policy.
-    for (const suffix of ["node", "sandbox"]) {
+    for (const suffix of ["people", "node", "sandbox"]) {
       const name = `${gatewayName}-${suffix}`;
       await this.deleteGatewayRoutingResource("HTTPRoute", name, ownership, namespace, revisionId);
       await this.deleteGatewayRoutingResource(
@@ -13489,6 +13532,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       throw new GatewaySettingFailure("gateway", "must be an object");
     }
     const gateway = (gatewayRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
+    let roles;
+    try {
+      roles = managedRuntimeRoles(configuration);
+    } catch (error) {
+      throw new ConfigurationFailure(
+        error instanceof Error ? error.message : "Invalid Gateway roles.",
+      );
+    }
     validateRoutableNativeListener(
       configuration,
       (setting, requirement) => new GatewaySettingFailure(setting, requirement),
@@ -13559,10 +13610,35 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         `must be ${TRUSTED_PROXY_HEADER} when set`,
       );
     }
-    refuseInvalidTrustedProxyIdentities(
-      trustedProxy,
-      (setting, requirement) => new GatewaySettingFailure(setting, requirement),
-    );
+    for (const [field, expected] of [
+      ["managedIdentityPrefixes", [RUNTIME_PERSON_IDENTITY_PREFIX]],
+      ["managedIdentities", [RUNTIME_SERVICE_IDENTITY]],
+    ] as const) {
+      if (
+        trustedProxy[field] !== undefined &&
+        (roles === undefined || !isDeepStrictEqual(trustedProxy[field], expected))
+      ) {
+        throw new ConfigurationFailure(
+          `Kubernetes native trustedProxy.${field} must match the Driver's managed identities and requires gateway.roles.`,
+        );
+      }
+    }
+    if (
+      roles !== undefined &&
+      trustedProxy.allowUsers !== undefined &&
+      !isDeepStrictEqual(trustedProxy.allowUsers, [])
+    ) {
+      throw new GatewaySettingFailure(
+        "gateway.auth.trustedProxy.allowUsers",
+        "must be empty when gateway.roles is configured",
+      );
+    }
+    if (roles === undefined) {
+      refuseInvalidTrustedProxyIdentities(
+        trustedProxy,
+        (setting, requirement) => new GatewaySettingFailure(setting, requirement),
+      );
+    }
     const allowUsers = trustedProxy.allowUsers;
     if (trustedProxy.allowLoopback !== undefined && trustedProxy.allowLoopback !== false) {
       throw new GatewaySettingFailure(
@@ -13580,7 +13656,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       );
     }
     const admittedIdentities = new Set(
-      Array.isArray(allowUsers) ? allowUsers : [TRUSTED_PROXY_IDENTITY],
+      roles !== undefined || !Array.isArray(allowUsers) ? [TRUSTED_PROXY_IDENTITY] : allowUsers,
     );
     if (
       identityScopes !== undefined &&
@@ -13650,11 +13726,27 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const requiredHeadersWithScopes = (requiredHeaders as readonly string[] | undefined)?.some(
       (header) => header.toLowerCase() === TRUSTED_PROXY_SCOPES_HEADER,
     )
-      ? requiredHeaders
+      ? [...(requiredHeaders as readonly string[])]
       : [
           ...((requiredHeaders as readonly string[] | undefined) ?? []),
           TRUSTED_PROXY_SCOPES_HEADER,
         ];
+    const proxy: Record<string, OpenClawConfigurationValue> = {
+      ...trustedProxy,
+      userHeader: TRUSTED_PROXY_HEADER,
+    };
+    if (roles === undefined) {
+      proxy.allowUsers = allowUsers ?? [TRUSTED_PROXY_IDENTITY];
+      if (admitsHumans) {
+        proxy.requiredHeaders = requiredHeadersWithScopes;
+      }
+    } else {
+      proxy.allowUsers = [];
+      proxy.roleHeader = RUNTIME_ROLE_HEADER;
+      proxy.rolePolicyHashHeader = RUNTIME_ROLE_POLICY_HEADER;
+      proxy.managedIdentityPrefixes = [RUNTIME_PERSON_IDENTITY_PREFIX];
+      proxy.managedIdentities = [RUNTIME_SERVICE_IDENTITY];
+    }
     // OpenClaw binds its MCP Apps sandbox listener on mcp.apps.sandboxPort, else
     // gatewayPort + 1: at startup when MCP Apps are enabled, lazily otherwise. The private
     // status listener binds first, so the Gateway would fail with EADDRINUSE on 18791.
@@ -13684,15 +13776,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         bind: gateway.bind === "custom" ? "custom" : "lan",
         trustedProxies: [...this.options.network.gatewayTrustedProxyCidrs],
         allowRealIpFallback: true,
+        ...(roles === undefined ? {} : { roles }),
         auth: {
           ...auth,
           mode: "trusted-proxy",
-          trustedProxy: {
-            ...trustedProxy,
-            ...(admitsHumans ? { requiredHeaders: requiredHeadersWithScopes } : {}),
-            userHeader: TRUSTED_PROXY_HEADER,
-            allowUsers: allowUsers ?? [TRUSTED_PROXY_IDENTITY],
-          },
+          trustedProxy: proxy,
           identityScopes: identityScopes ?? { [TRUSTED_PROXY_IDENTITY]: ["operator.admin"] },
         },
       },
@@ -13710,7 +13798,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       auth?.mode === "trusted-proxy" &&
       trustedProxy?.userHeader === "x-occ-identity" &&
       Array.isArray(trustedProxy.allowUsers) &&
-      trustedProxy.allowUsers.includes("occ-workspace-files") &&
+      (trustedProxy.allowUsers.includes("occ-workspace-files") ||
+        (trustedProxy.allowUsers.length === 0 &&
+          trustedProxy.roleHeader === RUNTIME_ROLE_HEADER)) &&
       Array.isArray(identityScopes) &&
       identityScopes.includes("operator.admin") &&
       deviceAutoApprove?.enabled === true &&
@@ -13828,15 +13918,20 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return `gateway-${sha256Hex(agentId, 12)}`;
   }
 
-  private gatewayRoutePath(revision: AgentRevision): string {
-    return `/namespaces/${required(revision.namespaceId, "AgentRevision Namespace ID")}/agents/${required(
+  private gatewayRoutePath(
+    revision: AgentRevision,
+    access: "operator" | "people" = "operator",
+  ): string {
+    // Human routes must remain outside the privileged service prefix even when
+    // their HTTPRoute is missing or has not been accepted by Envoy.
+    return `${access === "people" ? "/people" : ""}/namespaces/${required(revision.namespaceId, "AgentRevision Namespace ID")}/agents/${required(
       revision.agentId,
       "Agent ID",
     )}`;
   }
 
   private gatewayRouteHeaderFilter(
-    access: "operator" | "node" | "node-transfer",
+    access: "operator" | "people" | "node" | "node-transfer",
   ): KubernetesRecord {
     return {
       type: "RequestHeaderModifier",
@@ -13848,6 +13943,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                 // The machine identity's exact grant. The Gateway requires this header
                 // once humans are admitted, and a client value must never cap or widen it.
                 { name: TRUSTED_PROXY_SCOPES_HEADER, value: "operator.admin" },
+                { name: RUNTIME_ROLE_HEADER, value: RUNTIME_SERVICE_ROLE },
+                {
+                  name: RUNTIME_ROLE_POLICY_HEADER,
+                  value: runtimeRolePolicyHash(RUNTIME_SERVICE_POLICY),
+                },
               ]
             : []),
           {
@@ -13864,6 +13964,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             ? [
                 TRUSTED_PROXY_SCOPES_HEADER,
                 "x-occ-identity",
+                RUNTIME_ROLE_HEADER,
+                RUNTIME_ROLE_POLICY_HEADER,
                 "x-api-key",
                 "tailscale-user-login",
                 "tailscale-user-name",
@@ -13934,7 +14036,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
     if (
       !Array.isArray(trustedProxy.allowUsers) ||
-      !trustedProxy.allowUsers.includes("occ-workspace-files")
+      !(
+        trustedProxy.allowUsers.includes("occ-workspace-files") ||
+        (trustedProxy.allowUsers.length === 0 && trustedProxy.roleHeader === RUNTIME_ROLE_HEADER)
+      )
     ) {
       throw new ConfigurationFailure(
         "Gateway routing requires native trustedProxy.allowUsers to include occ-workspace-files.",
@@ -13967,7 +14072,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     ownership: Ownership,
     namespace: KubernetesNamespaceAddress,
     service: ManagedKubernetesObject<"Service">,
-    access: "operator" | "node" | "sandbox" = "operator",
+    access: "operator" | "people" | "node" | "sandbox" = "operator",
   ): ManagedKubernetesObject<"HTTPRoute"> | undefined {
     const routing = this.options.gatewayRouting;
     if (routing === undefined) {
@@ -14045,7 +14150,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                     {
                       path: {
                         type: "Exact",
-                        value: `${this.gatewayRoutePath(revision)}${access === "node" ? "/node" : ""}`,
+                        value: `${this.gatewayRoutePath(revision, access === "people" ? "people" : "operator")}${access === "node" ? "/node" : ""}`,
                       },
                     },
                   ],
@@ -14136,14 +14241,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                       })),
                     ]
                   : []),
-                ...(access === "operator"
+                ...(access === "operator" || access === "people"
                   ? [
                       {
                         matches: [
                           {
                             path: {
                               type: "PathPrefix",
-                              value: `${this.gatewayRoutePath(revision)}/`,
+                              value: `${this.gatewayRoutePath(revision, access)}/`,
                             },
                           },
                         ],
@@ -14182,10 +14287,31 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (route !== undefined) {
       await this.reconcile(route, ownership, namespace);
     }
+    const gateway = await this.getOwned("Deployment", name, namespace, ownership);
+    if (hasRuntimeRoleConfiguration(revision.configuration)) {
+      const peopleRoute = this.gatewayRoute(revision, ownership, namespace, service, "people");
+      if (peopleRoute !== undefined) {
+        // A candidate may prepare while its predecessor still serves. Keep the
+        // human endpoint owned by that Gateway until activation replaces it.
+        if (gateway !== undefined) {
+          peopleRoute.metadata.annotations = {
+            ...peopleRoute.metadata.annotations,
+            [AGENT_REVISION_ID_ANNOTATION]: required(
+              gateway.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION],
+              "Serving Gateway revision ID",
+            ),
+            [AGENT_REVISION_ANNOTATION]: required(
+              gateway.metadata.annotations?.[AGENT_REVISION_ANNOTATION],
+              "Serving Gateway revision",
+            ),
+          };
+        }
+        await this.reconcile(peopleRoute, ownership, namespace);
+      }
+    }
     if (this.options.runtime === undefined || revision.harness.mode !== "dedicated") {
       return;
     }
-    const gateway = await this.getOwned("Deployment", name, namespace, ownership);
     if (gateway === undefined) {
       return;
     }

@@ -557,13 +557,15 @@ function proxyIdentityMatchKey(identity: string): string {
 export function trustedProxyIdentitiesProblem(
   trustedProxy: Readonly<Record<string, unknown>>,
   pending?: (key: "allowUsers" | "deviceAutoApprove") => boolean,
+  managedRoles = false,
 ): { readonly setting: string; readonly requirement: string } | undefined {
   const allowUsers = trustedProxy.allowUsers;
   if (
     allowUsers !== undefined &&
     pending?.("allowUsers") !== true &&
     (!Array.isArray(allowUsers) ||
-      !allowUsers.includes(TRUSTED_PROXY_IDENTITY) ||
+      (!(managedRoles && allowUsers.length === 0) &&
+        !allowUsers.includes(TRUSTED_PROXY_IDENTITY)) ||
       allowUsers.some(
         (user) =>
           typeof user !== "string" ||

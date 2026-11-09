@@ -15,7 +15,7 @@ import defaultCodexPreset from "../../deploy/presets/default-codex.json" with { 
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
-import { withNativeAdminGateway } from "../helpers/harness-configuration.mjs";
+import { nativeRolesGateway } from "../helpers/runtime-roles.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { isRecord, nativeValues, pathRequests } from "./console-agents-browser-helpers.ts";
 
@@ -341,7 +341,7 @@ function repositoryPolicyDriver(
 }
 
 export function nativeAdminValues(marker: string, origin: string) {
-  return withNativeAdminGateway(nativeValues(marker), origin);
+  return nativeRolesGateway(nativeValues(marker), origin);
 }
 
 // Without a caller-permission summary the console keeps controls enabled, so the API's own

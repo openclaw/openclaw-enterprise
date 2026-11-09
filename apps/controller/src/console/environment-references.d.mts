@@ -37,4 +37,6 @@ export declare function pluginEntryKeyVariantProblem(
 ): { readonly setting: string; readonly requirement: string } | undefined;
 export declare function trustedProxyIdentitiesProblem(
   trustedProxy: Readonly<Record<string, unknown>>,
+  pending?: (key: "allowUsers" | "deviceAutoApprove") => boolean,
+  managedRoles?: boolean,
 ): { readonly setting: string; readonly requirement: string } | undefined;
