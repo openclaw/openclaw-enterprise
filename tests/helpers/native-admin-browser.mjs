@@ -1456,16 +1456,12 @@ export async function runOidcAgentChatScenario(context) {
   const browser = await launchBrowser(context, ingress);
   const namespacePath = `/namespaces/${topology.agent.namespaceId}`;
   const policyPath = `${namespacePath}/iam`;
-  const noInstallationRole = `oidc-member-${randomUUID()}`;
-  await topology.observerPool.query(
-    "INSERT INTO occ.iam_roles (id, name, permissions) VALUES ($1, $2, $3)",
-    [noInstallationRole, "OIDC member", "[]"],
-  );
+  // The supported account API enrolls both people in the configured Default
+  // user group, which permits creation in this fresh default Namespace.
   const enroll = async (username, subject) => {
     const account = await topology.adminRequest("POST", "/api/auth/accounts", {
       email: `${username}@example.test`,
       password: randomUUID() + randomUUID(),
-      roleId: noInstallationRole,
     });
     assert.equal(account.status, 201, JSON.stringify(account.error));
     const current = await topology.adminRequest("GET", `/api/auth/accounts/${account.data.id}`);
@@ -1501,12 +1497,6 @@ export async function runOidcAgentChatScenario(context) {
     });
     assert.equal(result.status, 201, JSON.stringify(result.error));
   };
-  const creatorRole = await role("OIDC creator", [
-    { action: "read", resourceKind: "namespace" },
-    { action: "create", resourceKind: "configuration" },
-    { action: "create", resourceKind: "agent" },
-  ]);
-  await bind(alice, creatorRole, "namespace", topology.agent.namespaceId);
   const secretRole = await role("Use selected model", [
     { action: "operate", resourceKind: "secret" },
   ]);
@@ -1586,14 +1576,10 @@ export async function runOidcAgentChatScenario(context) {
   assert.equal(ownerStatus.data.status, "available");
   assert.equal(ownerStatus.data.mode, "admin");
 
-  const discoveryRole = await role("OIDC discovery", [
-    { action: "read", resourceKind: "namespace" },
-  ]);
   const operatorRole = await role("OIDC chat operator", [
     { action: "read", resourceKind: "agent" },
     { action: "operate", resourceKind: "agent" },
   ]);
-  await bind(carol, discoveryRole, "namespace", topology.agent.namespaceId);
   await bind(carol, operatorRole, "agent", created.data.id);
   const operatorPage = await signIn("carol");
   const operatorRequest = requestFor(operatorPage);
