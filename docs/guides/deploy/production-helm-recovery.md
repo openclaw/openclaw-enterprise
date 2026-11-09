@@ -62,6 +62,10 @@ UID throughout the interruption. The attempt UUID does not detect a privileged
 actor copying the same values and annotations; exclusive ownership remains
 required.
 
+An [immutable Installation reference switch](immutable-installation-upgrade.md)
+also rechecks both retained Secrets against their prepared UIDs and full data.
+Recovery keeps the candidate reference; it does not return to the original Secret.
+
 Resources present only in the recorded predecessor must be absent, including
 resources marked `helm.sh/resource-policy: keep`. For example, clearing
 `api.channelDirectoryProxyUrl` retires its egress NetworkPolicy and API container
