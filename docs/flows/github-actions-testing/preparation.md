@@ -94,8 +94,9 @@ expected durations. Both commands also respect the remaining lane deadline less
 the test reserve, recalculated before each command. Without a valid lane deadline,
 the finite command limits still apply. Unsupported timer values are rejected.
 An exhausted budget reports the stage that could not start. On POSIX, timeouts
-terminate the command's owned process group, including local descendants; an
-early leader exit does not cancel forced termination. Windows retains direct-child
+terminate the command's owned process group, including local descendants. The
+shared `scripts/ci/cleanup-command.mjs` supervisor anchors the group ID through
+its last signal; after it exits, preparation sends no further group signals. Windows retains direct-child
 termination. The timeout reports the failed stage without printing captured output. The owned image tag is recorded before
 building and becomes ready only after success, so failed preparation remains
 available to cleanup.

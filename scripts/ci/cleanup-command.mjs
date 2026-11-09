@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 
 // This process leads the detached POSIX group. Its private IPC channel belongs
-// only to the cleanup caller, so even that caller's SIGKILL or process.exit()
+// only to its preparation or cleanup caller, so even that caller's SIGKILL or process.exit()
 // closes the channel. Descendants inherit output pipes, never this channel.
 function stopGroup() {
   process.kill(-process.pid, "SIGKILL");

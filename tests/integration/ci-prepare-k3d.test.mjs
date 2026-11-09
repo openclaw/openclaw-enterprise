@@ -107,8 +107,8 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     test(`fixture preparation bounds ${stage} before publishing test inputs`, async (t) => {
       const version = stage === "fixture-engine-version";
       const commands = await fixtureImageCommands(t, "success", "k3d-fixture-network", {
-        OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: version ? "500" : "30000",
-        OPENCLAW_CI_COMMAND_KILL_GRACE_MS: "100",
+        OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: version ? "1000" : "30000",
+        OPENCLAW_CI_COMMAND_KILL_GRACE_MS: version ? "3000" : "100",
         OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS: "2000",
         // Invalid deadlines still need a finite engine-probe limit. The build uses
         // the real remaining lane budget rather than waiting for its ten-minute cap.
@@ -177,6 +177,15 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       );
       assertStderrMatch(result.stderr, new RegExp(`"stage":"${stage}","status":"started"`));
       assertStderrMatch(result.stderr, new RegExp(`"stage":"${stage}","status":"failed"`));
+      if (version) {
+        const failed = result.stderr
+          .split("\n")
+          .find((line) => line.includes(`"stage":"${stage}","status":"failed"`));
+        const { elapsedMs } = JSON.parse(failed.slice(failed.indexOf("{")));
+        // A prompt child exit releases its supervisor; do not wait on a stale
+        // group number for the three-second escalation timer to fire.
+        assert.ok(elapsedMs < 3000, `prompt timeout settlement took ${elapsedMs} ms`);
+      }
       assert.doesNotMatch(result.stderr, /private build output/);
       const state = await commands.readState();
       const image = state.resources.find(({ kind }) => kind === "image-tag");
@@ -575,10 +584,10 @@ registerHooks({
       timings.map(({ stage, status }) => `${stage}:${status}`),
       ["k3d-create:failed", "k3d-create-discard:passed", "k3d-create:passed"],
     );
-    // SIGTERM is ignored: SIGKILL follows after the 1 s grace, and the held
-    // pipes are abandoned 1 s later.
+    // SIGTERM is ignored: SIGKILL follows after the 1 s grace. Killing the
+    // supervisor closes its output even while an escaped child holds its input.
     assert.ok(
-      timings[0].elapsedMs >= 5_500,
+      timings[0].elapsedMs >= 5_000,
       `first attempt ended after ${timings[0].elapsedMs} ms`,
     );
     for (const pid of await hungK3dProcesses(commands)) {

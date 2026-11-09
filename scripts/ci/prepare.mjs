@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { fork, spawn } from "node:child_process";
 import { createServer, isIPv4 } from "node:net";
 import {
   appendFile,
@@ -408,22 +408,42 @@ const commandKillGraceMs =
 
 function execFile(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const processGroup = options.processGroup === true && process.platform !== "win32";
+    const spawnOptions = {
       cwd: options.cwd ?? repositoryRoot,
       env: { ...process.env, ...(options.env ?? {}) },
-      stdio: options.stdio ?? [options.input ? "pipe" : "ignore", "pipe", "pipe"],
-      // Its own process group lets a timeout reach every descendant, not only
-      // the direct child (finding 840).
-      detached: options.processGroup === true,
-    });
+    };
+    // Reuse cleanup's supervisor to anchor the group ID until its last signal.
+    const child = processGroup
+      ? fork(new URL("./cleanup-command.mjs", import.meta.url), [], {
+          ...spawnOptions,
+          detached: true,
+          execArgv: [],
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+        })
+      : spawn(command, args, {
+          ...spawnOptions,
+          stdio: options.stdio ?? [options.input ? "pipe" : "ignore", "pipe", "pipe"],
+        });
+    let commandResult;
+    let signalError;
+    if (processGroup) {
+      child.on("message", (result) => {
+        commandResult = result;
+      });
+    }
     const signalCommand = (signal) => {
-      if (options.processGroup === true && child.pid) {
+      if (processGroup) {
         try {
-          process.kill(-child.pid, signal);
-          return;
-        } catch {
-          // The group is gone; signal the child alone.
+          if (child.pid > 1 && child.exitCode === null && child.signalCode === null) {
+            process.kill(-child.pid, signal);
+          }
+        } catch (error) {
+          if (error.code !== "ESRCH") {
+            signalError ??= error;
+          }
         }
+        return;
       }
       child.kill(signal);
     };
@@ -435,7 +455,7 @@ function execFile(command, args, options = {}) {
       signalCommand(signal);
       process.kill(process.pid, signal);
     };
-    const forwardedSignals = options.processGroup === true ? ["SIGINT", "SIGTERM"] : [];
+    const forwardedSignals = processGroup ? ["SIGINT", "SIGTERM"] : [];
     const stopForwardingSignals = () => {
       for (const signal of forwardedSignals) {
         process.removeListener(signal, forwardSignal);
@@ -485,7 +505,7 @@ function execFile(command, args, options = {}) {
       stderr = (stderr + chunk.toString()).slice(-(options.maxOutputChars ?? Infinity));
     });
     function commandError(message, properties = {}) {
-      const error = new Error(message);
+      const error = new Error(message, signalError ? { cause: signalError } : undefined);
       error.command = command;
       error.args = args;
       error.stdout = stdout;
@@ -519,23 +539,45 @@ function execFile(command, args, options = {}) {
         timedOut: true,
       });
     }
-    child.on("error", (error) =>
+    child.on("error", (error) => {
+      if (processGroup && child.pid !== undefined) {
+        // An IPC or signal error is not a failed fork. Keep ownership and the
+        // timeout until the supervisor exits or the pipe-abandonment bound.
+        signalError ??= error;
+        return;
+      }
       finish(() => {
         error.command = command;
         error.args = args;
         error.stdout = stdout;
         error.stderr = stderr;
         reject(preparationError(error, "spawn"));
-      }),
-    );
+      });
+    });
     // Exit can precede pipe drain; callers need complete diagnostics to classify failures.
     child.on("close", (code, signal) => {
-      // A timed-out group leader can exit while a descendant ignores TERM and
-      // holds no pipes. Keep the KILL escalation and its settlement grace alive.
-      if (timedOut && options.processGroup === true) {
-        return;
-      }
       finish(() => {
+        if (processGroup && !timedOut) {
+          if (!commandResult) {
+            reject(commandError("Preparation command supervisor exited without a result."));
+            return;
+          }
+          ({ code, signal } = commandResult);
+          if (commandResult.error) {
+            const error = Object.assign(
+              new Error(commandResult.error.message),
+              commandResult.error,
+              {
+                command,
+                args,
+                stdout,
+                stderr,
+              },
+            );
+            reject(preparationError(error, "spawn"));
+            return;
+          }
+        }
         if (timedOut) {
           reject(timedOutError(code, signal));
         } else if (code === 0) {
@@ -552,6 +594,9 @@ function execFile(command, args, options = {}) {
         }
       });
     });
+    if (processGroup) {
+      child.send({ command, args });
+    }
   });
 }
 
