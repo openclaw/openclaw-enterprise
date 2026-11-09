@@ -2,6 +2,8 @@ package occdev
 
 import (
 	"context"
+	"encoding/json/v2"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,22 +27,25 @@ func TestSandboxNetworkPolicyRejectsInvalidInputBeforeProvisioning(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, input := range map[string]string{
-		"unknown root":             "filesystem: {}\n" + pythonNetworkPolicy,
-		"unknown endpoint":         strings.Replace(pythonNetworkPolicy, "tls: skip", "tls: skip\n        hostname: ignored", 1),
-		"unknown binary":           strings.Replace(pythonNetworkPolicy, "path: /usr/bin/python3.11", "path: /usr/bin/python3.11\n        executable: ignored", 1),
-		"invalid port":             strings.Replace(pythonNetworkPolicy, "443", "70000", 1),
-		"invalid TLS":              strings.Replace(pythonNetworkPolicy, "tls: skip", "tls: invalid", 1),
-		"reserved rule":            strings.Replace(pythonNetworkPolicy, "python-web", "workspace-node-enrollment", 1),
-		"generated rule collision": strings.Replace(pythonNetworkPolicy, "python-web", "source-control", 1),
-		"duplicate rule":           pythonNetworkPolicy + strings.TrimPrefix(pythonNetworkPolicy, "networkPolicies:\n"),
-		"multiple documents":       pythonNetworkPolicy + "---\n" + pythonNetworkPolicy,
-		"empty list":               "networkPolicies: []\n",
+	for name, tc := range map[string]struct {
+		input, path, code, message string
+		yamlError                  bool
+	}{
+		"unknown root":             {input: "filesystem: {}\n" + pythonNetworkPolicy, yamlError: true},
+		"unknown endpoint":         {input: strings.Replace(pythonNetworkPolicy, "tls: skip", "tls: skip\n        hostname: ignored", 1), path: "/policy/networkPolicies/1/endpoints/0", code: "UNKNOWN_FIELD"},
+		"unknown binary":           {input: strings.Replace(pythonNetworkPolicy, "path: /usr/bin/python3.11", "path: /usr/bin/python3.11\n        executable: ignored", 1), path: "/policy/networkPolicies/1/binaries/0", code: "UNKNOWN_FIELD"},
+		"invalid port":             {input: strings.Replace(pythonNetworkPolicy, "443", "70000", 1), code: "INVALID_VALUE"},
+		"invalid TLS":              {input: strings.Replace(pythonNetworkPolicy, "tls: skip", "tls: invalid", 1), path: "/policy/networkPolicies/1/endpoints/0/tls", code: "INVALID_VALUE"},
+		"reserved rule":            {input: strings.Replace(pythonNetworkPolicy, "python-web", "workspace-node-enrollment", 1), path: "/policy/networkPolicies/1/name", code: "INVALID_VALUE"},
+		"generated rule collision": {input: strings.Replace(pythonNetworkPolicy, "python-web", "source-control", 1), path: "/policy/networkPolicies/1/name", code: "INVALID_VALUE"},
+		"duplicate rule":           {input: pythonNetworkPolicy + strings.TrimPrefix(pythonNetworkPolicy, "networkPolicies:\n"), path: "/policy/networkPolicies/2/name", code: "INVALID_VALUE"},
+		"multiple documents":       {input: pythonNetworkPolicy + "---\n" + pythonNetworkPolicy, message: "requires one document with a nonempty networkPolicies list"},
+		"empty list":               {input: "networkPolicies: []\n", message: "requires one document with a nonempty networkPolicies list"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
 			path := filepath.Join(root, "policy.yaml")
-			if err := os.WriteFile(path, []byte(input), 0600); err != nil {
+			if err := os.WriteFile(path, []byte(tc.input), 0600); err != nil {
 				t.Fatal(err)
 			}
 			state := filepath.Join(root, "state")
@@ -48,10 +53,32 @@ func TestSandboxNetworkPolicyRejectsInvalidInputBeforeProvisioning(t *testing.T)
 			t.Setenv("OCC_DEVELOPMENT_STATE_DIRECTORY", state)
 			// Invalid policy must fail before startup creates its owned directory
 			// or contacts a container engine. Validation uses the real Driver.
-			if err := Up(context.Background(), Options{Repository: repository, SandboxNetworkPolicyFile: path}); err == nil {
+			err := Up(context.Background(), Options{Repository: repository, SandboxNetworkPolicyFile: path})
+			if err == nil {
 				t.Fatal("startup accepted invalid policy")
-			} else if !strings.Contains(err.Error(), "network policy") {
-				t.Fatalf("startup failed for an unrelated reason: %v", err)
+			}
+			if tc.yamlError {
+				var decodeError *yaml.TypeError
+				if !errors.As(err, &decodeError) {
+					t.Fatalf("startup did not reject the YAML field: %v", err)
+				}
+			} else if tc.code == "" {
+				if !strings.Contains(err.Error(), tc.message) {
+					t.Fatalf("startup failed for an unrelated reason: %v", err)
+				}
+			} else {
+				// A missing or incompatible Node runtime also refuses startup. Only
+				// the Driver's structured error proves it evaluated this policy.
+				payload := strings.TrimPrefix(err.Error(), "Sandbox network policy validation failed: ")
+				payload = strings.TrimSuffix(payload, ": exit status 1")
+				var result map[string][]map[string]string
+				if json.Unmarshal([]byte(payload), &result) != nil {
+					t.Fatalf("startup did not return a Driver validation error: %v", err)
+				}
+				details := result["details"]
+				if len(details) != 1 || details[0]["path"] != tc.path || details[0]["code"] != tc.code {
+					t.Fatalf("unexpected validation details: %v; want path %q, code %q", details, tc.path, tc.code)
+				}
 			}
 			if _, err := os.Stat(state); !os.IsNotExist(err) {
 				t.Fatalf("invalid policy created development state: %v", err)
