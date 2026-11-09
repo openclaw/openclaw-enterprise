@@ -445,9 +445,9 @@ function assertCredentials(credentials: unknown): asserts credentials is Credent
 // a file app (fileConsoleApp) signed in as its administrator loads the file's session cookies
 // instead, so the file makes one password sign-in rather than one a test. A tab that has
 // already loaded a page signs in through the form, so a test that signs in again on the same tab
-// keeps that tab's session storage and history across the sign-in. So does a fixture served
-// over TLS or under another host name, whose cookies are what such a test checks. Tests about
-// the sign-in page itself use the form directly or loginThroughForm.
+// keeps that tab's session storage and history across the sign-in. A fixture under a custom
+// host also uses the form, for tests of its cookie boundary. Tests about the sign-in page
+// itself use the form directly or loginThroughForm.
 
 export async function login(
   page: Page,
@@ -459,8 +459,8 @@ export async function login(
   const origin = new URL(fixture.origin);
   if (
     page.url() !== "about:blank" ||
-    origin.protocol !== "http:" ||
-    origin.hostname !== "127.0.0.1"
+    origin.protocol !== "https:" ||
+    origin.hostname !== "console.oce.localhost"
   ) {
     await loginForm(page, fixture, path, credentials);
     return;

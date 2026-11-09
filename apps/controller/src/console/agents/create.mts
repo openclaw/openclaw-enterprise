@@ -2934,9 +2934,6 @@ function renderAgentForm(
       "Open this Agent in the browser after deployment. Agent operate permission allows chat; Agent administer permission also allows native administration.";
     if (!capabilityDiscoveryDone) {
       nativeAdminHint = "Browser chat availability depends on installation capabilities.";
-    } else if (!nativeAdminAvailable && capabilitiesUnreadable) {
-      nativeAdminHint =
-        "Browser chat availability could not be checked. Retry the capability check.";
     } else if (!nativeAdminAvailable) {
       nativeAdminHint =
         "Browser chat is not enabled on this installation. Ask an Installation administrator to enable it.";

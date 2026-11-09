@@ -186,7 +186,9 @@ export async function startHttpsIngress({
           "-out",
           certPath,
           "-subj",
-          `/CN=${originHost}`,
+          // Concurrent self-signed roots need distinct subjects. OpenSSL otherwise
+          // selects one of the same-subject/key certificates and rejects the others.
+          `/CN=${originHost}/OU=${randomUUID()}`,
           "-addext",
           `subjectAltName=DNS:${originHost}`,
         ],
@@ -209,11 +211,18 @@ export async function startHttpsIngress({
         headers: incoming.headers,
       },
       (response) => {
+        response.on("error", (error) => outgoing.destroy(error));
         outgoing.writeHead(response.statusCode, response.headers);
         response.pipe(outgoing);
       },
     );
-    upstream.on("error", () => outgoing.writeHead(502).end());
+    // Preserve deliberate connection-loss cases through the fixture TLS hop.
+    upstream.on("error", (error) => outgoing.destroy(error));
+    outgoing.on("close", () => {
+      if (!outgoing.writableFinished) {
+        upstream.destroy();
+      }
+    });
     incoming.pipe(upstream);
   });
   ingress.listen({ port, host: "127.0.0.1", reusePort });

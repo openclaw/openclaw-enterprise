@@ -77,11 +77,12 @@ Open **Pages / Create Agent / Member browser chat setup** and repeat the choice.
 The ordinary create request includes `nativeAdmin: true` and the saved
 Configuration generation, without Installation administration.
 **Browser chat selected** shows the checked state; **Browser chat unavailable**
-shows the disabled control and installation setup guidance. Also inspect the
+shows the disabled control and installation setup guidance. In **Member with
+Agent create**, the successful Namespace capability response gives the same
+setup guidance, without a capability-retry instruction. Also inspect the
 existing capability-loading, permission-denied, missing-credential, and create
 failure stories. Capture the checkbox and its explanation at desktop and phone
 widths. These fixtures prove UI behavior, not deployment or native authentication.
-
 
 ## Operator chat access
 

@@ -2280,6 +2280,7 @@ export const createAgentProvisioningScenarios = {
     steps: [
       'Above the form, "Your access" says you can create Agents in Engineering and that deploying the new Agent gives it access to the Secrets and credential sources it uses.',
       "The request log shows GET /installation refused and GET /namespaces/…/agent-capabilities answered.",
+      "Enable browser chat is disabled. Its hint says browser chat is not enabled on this installation and asks an Installation administrator to enable it, without offering a capability retry.",
       'The form starts with the badge "From Preset · default-codex", and no mid-form note asks for Installation access.',
     ],
     gap: "The member creation browser test uses a member account and the real Installation permission check.",
