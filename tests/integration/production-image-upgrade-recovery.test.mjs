@@ -654,6 +654,34 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       }
     }
   } else if (tool === "kubectl") {
+    if (args.includes("create") && args.includes("--raw")) {
+      assert.equal(fileArg("--raw"), "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews");
+      const review = JSON.parse(await io.readInput());
+      assert.deepEqual(review, {
+        apiVersion: "authorization.k8s.io/v1",
+        kind: "SelfSubjectAccessReview",
+        spec: {
+          resourceAttributes: {
+            namespace: "system",
+            verb: "update",
+            group: "",
+            resource: "secrets",
+            name: state.secret.metadata.name,
+          },
+        },
+      });
+      state.installationUpdateReviews = (state.installationUpdateReviews ?? 0) + 1;
+      save();
+      if (state.reviewUnavailable) {
+        return fail(1, "private self-review diagnostic");
+      }
+      delete review.spec.resourceAttributes.group; // Kubernetes omits the empty core API group.
+      out({
+        ...review,
+        status: { allowed: !state.denyInstallationUpdate, reason: "private self-review reason" },
+      });
+      return io.exit(0);
+    }
     if (
       !state.recoveryResources &&
       state.installationInitializer &&
@@ -1089,6 +1117,9 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       log("scale-" + component);
     } else if (args.includes("replace")) {
       const secret = JSON.parse(await io.readInput());
+      if (state.denyInstallationUpdate) {
+        return fail(1, "fixture denied named Secret update");
+      }
       if (secret.metadata.resourceVersion !== state.secret.metadata.resourceVersion) {
         return fail(11);
       }
@@ -2746,6 +2777,43 @@ test("controller compatibility requires a value and an explicit controller selec
   assert.deepEqual(await f.events(), []);
 });
 
+for (const preflightOnly of [true, false]) {
+  test(`mutable Installation update denial on fresh ${preflightOnly ? "preflight" : "apply"}`, async (t) => {
+    const f = await fixture(t);
+    const state = await f.state();
+    state.denyInstallationUpdate = true;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    const installation = join(f.directory, "installation.json");
+    const before = await readFile(installation);
+    await assert.rejects(f.run(...(preflightOnly ? ["--preflight-only"] : [])), (error) => {
+      assert.match(
+        error.stderr,
+        /Kubernetes denied update on Installation Secret system\/occ-installation-startup/,
+      );
+      assert.doesNotMatch(error.stderr, /private self-review reason/);
+      return true;
+    });
+    assert.deepEqual(await f.events(), []);
+    const after = await f.state();
+    assert.equal(after.installationUpdateReviews, 1);
+    assert.equal(after.api, 1);
+    assert.equal(after.worker, 1);
+    assert.deepEqual(after.secret, state.secret);
+    assert.deepEqual(await readFile(installation), before);
+  });
+}
+
+test("unavailable mutable Installation update review warns and permits the actual update", async (t) => {
+  const f = await fixture(t);
+  const state = await f.state();
+  state.reviewUnavailable = true;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  const result = await f.run();
+  assert.match(result.stderr, /Could not verify update access to the Installation Secret/);
+  assert.doesNotMatch(result.stderr, /private self-review diagnostic/);
+  assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "secret-replaced", "migration"]);
+});
+
 for (const preflightOnly of [false, true]) {
   test(`immutable Installation Secret refuses changed data before ${preflightOnly ? "preflight-only succeeds" : "stopping writers"}`, async (t) => {
     const f = await fixture(t);
@@ -2774,6 +2842,7 @@ test("immutable Installation Secret permits an upgrade with equivalent YAML", as
   await f.run();
   assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "migration"]);
   assert.deepEqual((await f.state()).secret, state.secret);
+  assert.equal((await f.state()).installationUpdateReviews ?? 0, 0);
 });
 
 test("resume refuses a pending Installation write if the Secret became immutable", async (t) => {
@@ -2788,6 +2857,7 @@ test("resume refuses a pending Installation write if the Secret became immutable
   await assert.rejects(f.run("--resume"), /Installation Secret .* is immutable/);
   assert.deepEqual(await f.events(), events);
   assert.equal((await f.state()).helmSubmissions ?? 0, 0);
+  assert.equal((await f.state()).installationUpdateReviews, 1);
 });
 
 async function immutableInstallationSwitch(t, options = {}) {
@@ -2830,6 +2900,7 @@ async function immutableInstallationSwitch(t, options = {}) {
 
 async function assertImmutableInstallationRetained(f) {
   const state = await f.state();
+  assert.equal(state.installationUpdateReviews ?? 0, 0);
   assert.deepEqual(state.secret, f.original);
   assert.deepEqual(state.installationSuccessor, f.successor);
   assert.ok(!(await f.events()).includes("secret-replaced"));

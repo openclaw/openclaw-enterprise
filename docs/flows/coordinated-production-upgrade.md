@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-09"
-last_updated_session: "authoring-run/cfc73629-f188-4fd0-8ff4-f3b3fbf6843f"
+last_updated_session: "authoring-run/f98ccc9d-c174-4103-a385-d4d24950e54d"
 ---
 
 # Production image upgrade flow
@@ -115,7 +115,10 @@ stays fixed. For restart recovery, see the [broker procedure](../guides/reposito
 
 For immutable reference switches, `prepare_upgrade` validates both identities, unrelated data
 and candidate YAML, then hashes the staged bytes. `upgrade-evidence.py` binds both snapshots.
-Without a successor, changed immutable data is refused.
+Changed immutable data requires a successor. For changed mutable data, a Kubernetes
+self-review checks update access to the named Secret. A completed denial stops
+preparation. An inconclusive review warns and continues. Replacement still
+requires update permission.
 After Helm's server dry run, `scripts/upgrade-startup-preflight.mjs` copies
 API/worker images, environment, mounts and service accounts into single-completion,
 single-Pod Jobs with the candidate Installation Secret, no retries and the selected
@@ -348,6 +351,8 @@ Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-09 07:05: Check named Secret update access before quiescence. (authoring-run/f98ccc9d-c174-4103-a385-d4d24950e54d - 09fe300b1ede4b59741b527a3b45199b435d7d6c)
+
 - 2026-11-09 05:02: Bind staged immutable Installation references through upgrade recovery. (authoring-run/cfc73629-f188-4fd0-8ff4-f3b3fbf6843f - 3b898fdc4a27c5cfcc6cbeb7196d96b02368da8b)
 
 - 2026-11-09 03:26: Check immutable Installation Secrets before stopping writers. (authoring-run/8664c38b-fe94-43f6-8922-8aa139b809e6 - ce1d22e17a)
@@ -381,13 +386,5 @@ Agents or Secrets.
 - 2026-11-04 07:14: Validate YAML comparisons. (authoring-run/47f197fd-9f98-4dfb-8162-36589ab6194e - e122eaced28cdaff6cbf9d78e0fab4d038f9c380)
 
 - 2026-11-04 06:40: Diagnose unusable YAML. (authoring-run/1320ca1e-663f-449a-aab9-29102e0c482f - f150505ae48988083ddeebdaffd45978be48d588)
-
-- 2026-11-04 00:26: Record completion after final evidence capture and refuse resuming completed upgrades. (authoring-run/a85b1fc7-d58e-4c10-b80c-6464a0aaaa4f - c8a9b55bd67175e0d1ae3fbb7fefe1a0de44f573)
-
-- 2026-11-03 10:46: Document stock chart verification. (authoring-run/1308615d-068b-473e-8062-2baec5b66ab0 - 11099b579a5c197e0ec5c342bffb78036c321a32)
-
-- 2026-11-03 02:34: Preserve journaled replacements when evidence is restored. (authoring-run/a4cf6a1b-e333-44d4-8e78-138caa5c190a - 19f63529413d4a530ac4eb65204980720d6d8ce9)
-
-- 2026-11-02 23:23: Bind directory identity; preserve evidence paths. (authoring-run/1d065972-0bb5-4523-81d3-7d83a64ff8f3 - cf67413c378cce3989d28fa8178ed29a405b9ce6)
 
 [Production image upgrade flow documentation history](coordinated-production-upgrade/history.md) preserves the older dated entries.
