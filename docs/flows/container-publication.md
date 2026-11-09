@@ -77,33 +77,26 @@ docker build -f deploy/runtime/Dockerfile \
   "${openclaw_build_args[@]}" --target openclaw-bridge-tests .
 ```
 
-Runtime jobs first build the explicit `openclaw-bridge-tests` target, which runs
-the broad bridge suites, CUA tests, and source typechecks. The subsequent image
-assembly uses the same checkout, source build arguments, base, and platform.
-Verification failure prevents assembly, smoke checks, and artifact upload through
-the normal required-step failure path. Local image assembly has no dependency on
-this target; see [local source verification](../../deploy/runtime/README.md#verify-runtime-source).
+Runtime jobs run bridge suites, CUA tests and source typechecks in `openclaw-bridge-tests`.
+Failure blocks assembly, smoke and upload. Assembly uses the same checkout, build arguments,
+base and platform. Local assembly can run independently of
+[local source verification](../../deploy/runtime/README.md#verify-runtime-source).
 
-Each job checks its architecture and logs CPU, memory, and available disk.
-The reported runner label alone is not evidence of allocated capacity.
-`scripts/ci/setup-tools.sh` installs checksum-pinned kubectl, k3d, Helm, and yq
-for both native Linux architectures before runtime smoke tests.
-The standard AMD64 override requires 36 GiB free and, only below that, runs
-guarded toolchain cleanup that checks required roots and skips unsafe paths.
-Larger runners do not depend on deleting preinstalled SDKs.
+Each job checks its architecture and logs actual CPU, memory and free disk.
+Before runtime smoke, `scripts/ci/setup-tools.sh` installs checksum-pinned kubectl, k3d,
+Helm and yq on either architecture. The standard AMD64 override requires 36 GiB free.
+Below that threshold, cleanup checks required roots and skips unsafe paths.
+Larger runners need no SDK cleanup.
 
-Each Buildx builder runs at most two steps concurrently. The default Blacksmith
-runners retain BuildKit layers on a sticky disk scoped by image and architecture,
-so builds do not export the large intermediate cache over the network. A custom
-non-Blacksmith runner uses the GitHub Actions cache with the same scope.
-Maintainers can also dispatch `container-check.yml`, or a manual `CI` run that
-calls it, on a branch for native image verification. It has no publication job or
-package-write permission. Standalone checks use the source's CI base; publication
-and manual `CI` use the approved repository base. Publication verifies it matches
-the source. Builds export OCI directories without registry credentials.
-Before Buildx runs, the workflow derives `SOURCE_DATE_EPOCH` from the exact
-OCE source commit. BuildKit rewrites image and filesystem timestamps to that epoch,
-so wall-clock time does not change the image manifests on a cold-cache rebuild.
+Buildx runs at most two steps concurrently. Default Blacksmith runners cache BuildKit
+layers on local sticky disks scoped by image and architecture. Other runners use the
+GitHub Actions cache with the same scope. Maintainers can dispatch `container-check.yml`
+directly or through manual `CI` to verify a branch without package-write permission
+or publication. Standalone checks use the source's CI base. Manual `CI` and publication
+use the approved repository base, which publication verifies against the source.
+Builds export OCI directories without registry credentials. BuildKit normalizes image
+and filesystem timestamps to `SOURCE_DATE_EPOCH` from the exact OCE commit, including
+on cold-cache rebuilds.
 
 `scripts/lib/openclaw-source.mjs:readOpenclawSource` resolves the runtime's commit,
 archive checksum, and build timestamp from `deploy/runtime/openclaw-source.json`.
@@ -118,30 +111,27 @@ frozen lockfiles and upstream's selected-plugin manifests, retaining required
 bundled plugins plus Codex and Slack. The standalone Codex command links to the
 plugin's installation. Build stages use full Bookworm; final images use separately
 pinned slim bases. The controller requires Node 24.22.1+ within the 24 series.
-The runtime's `node-source` stage instead requires matching Node 24.22.1
-Bookworm bases, verifies `deploy/runtime/node/source.json` archive and patch
-digests, and applies the worker-termination repair. `node-compiled` builds the
-native executable with full ICU and runs the owning Node regression and adjacent
-loader cases. Runtime assembly copies that executable and repeats the checks in
-slim Bookworm. Missing shared libraries, changed ABI, or a failed regression
-stops assembly. Repository-credential service stages keep their original base.
-Both bases apply available Debian updates; image digests do not freeze Debian
-repositories. Every package-index refresh uses `apt-get update --error-on=any`,
-so any failed index download stops the build before installation or upgrade
-can use stale indexes.
+The runtime requires matching Node 24.22.1 Bookworm bases. Its `node-source` stage checks
+the archive and patch digests in `deploy/runtime/node/source.json` before applying the
+worker-termination repair. `node-compiled` builds native Node with full ICU and runs
+the worker regression and adjacent loader tests. Slim Bookworm repeats the tests
+with the copied executable. Missing libraries, ABI changes or regression failures
+stop assembly. The repository-credential service retains its original base.
+Both bases apply updates from mutable Debian repositories, even with pinned image digests.
+Every index refresh uses
+`apt-get update --error-on=any` to stop builds on incomplete downloads.
 
-`deploy/runtime/node/build.sh` records the source, patch, ABI and executable
-digest. `scripts/build-runtime-assets.mjs:inventory` verifies that digest against
-its running executable before adding `node` to final runtime provenance. The
-startup image test compares this record with the selected checkout and the
-installed executable. Native qualification also requires packaged Gateway restart tests.
+`deploy/runtime/node/build.sh` records the source, patch, ABI and executable digest.
+`scripts/build-runtime-assets.mjs:inventory` checks its running executable's digest
+before recording `node` in final runtime provenance. Image startup compares that
+record with the checkout and installed executable. Native qualification requires
+packaged Gateway restart tests.
 
-`deploy/runtime/Dockerfile` and
-`deploy/runtime/repository-credentials/Dockerfile.client` retry pinned GitHub CLI
-archive and manifest downloads at most six times, including partial transfers
-and permanent errors; exhaustion fails the build. Curl resets partial files.
-Both checksums must pass before extraction or execution: the pinned manifest
-digest, then its archive checksum. Checksum failures are not retried.
+`deploy/runtime/Dockerfile` and `deploy/runtime/repository-credentials/Dockerfile.client`
+retry pinned GitHub CLI archive and manifest downloads up to six times, including partial
+transfers and permanent errors. Curl resets partial files. Before extraction or execution,
+both recipes check the pinned manifest digest, then its archive checksum.
+Exhausted retries or a checksum failure stop the build immediately.
 
 Publication builds use the default package registries. Operators building from
 source can [configure a package registry mirror](../guides/deploy/production-installation.md#build-through-a-package-registry-mirror)
