@@ -55,7 +55,6 @@ function controller(audit, extra = {}) {
     baseURL,
     agentDomain: "agents.oce.localhost",
     secret,
-    secureCookies: true,
     memoryDatabase,
     passwordSignInAudit: audit,
     ...extra,
@@ -271,7 +270,6 @@ test("guarded profile: a wrong password whose denial audit fails is 503 and stil
     baseURL,
     agentDomain: "agents.oce.localhost",
     secret: "password-sign-in-audit-secret-at-least-32-bytes",
-    secureCookies: true,
     database: memoryAdapter({ user: [], session: [], account: [], verification: [], apikey: [] }),
     humanLogin,
     onOperationalEvent: (event) => events.push(event),
@@ -316,7 +314,6 @@ test("guarded profile: a spent provider result budget says to wait a minute, wit
     baseURL,
     agentDomain: "agents.oce.localhost",
     secret,
-    secureCookies: true,
     database: memoryAdapter({ user: [], session: [], account: [], verification: [], apikey: [] }),
     humanLogin,
   });
@@ -422,7 +419,6 @@ test("an email no account can hold is a 400 that spends the password budget", as
     baseURL,
     agentDomain: "agents.oce.localhost",
     secret,
-    secureCookies: true,
     database: nulRefusingDatabase(memoryDatabase),
     passwordSignInAudit: {
       accepted: async (userId) => outcomes.push(["accepted", userId]),
@@ -497,7 +493,6 @@ test("guarded profile: an email no account can hold is a 400 that spends the pas
     baseURL,
     agentDomain: "agents.oce.localhost",
     secret,
-    secureCookies: true,
     database: memoryAdapter({ user: [], session: [], account: [], verification: [], apikey: [] }),
     humanLogin,
     passwordSlowLaneFloors: { floorMs: 1, maxFloorMs: 1 },
@@ -565,7 +560,6 @@ for (const profile of ["password-only", "guarded", "recovery-only"]) {
       baseURL,
       agentDomain: "agents.oce.localhost",
       secret,
-      secureCookies: true,
       database: memoryAdapter({ user: [], session: [], account: [], verification: [], apikey: [] }),
       ...(humanLogin
         ? { humanLogin }
@@ -667,7 +661,6 @@ for (const passwordSignIn of ["all", "recovery-only"]) {
       baseURL,
       agentDomain: "agents.oce.localhost",
       secret,
-      secureCookies: true,
       database: memoryAdapter({ user: [], session: [], account: [], verification: [], apikey: [] }),
       humanLogin,
     });

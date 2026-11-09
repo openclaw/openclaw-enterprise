@@ -746,24 +746,8 @@ function sourceCidrs(controlPlane, key, diagnostics, { warnWide = false } = {}) 
   return cidrs;
 }
 
-// The API refuses a public-suffix shared cookie domain at startup (deriveSharedCookieDomain)
-// with tldts and its bundled list. Resolve the controller's pinned copy so both use the same
-// list without a new root dependency.
-function isPublicSuffix(hostname) {
-  const require = createRequire(new URL("../apps/controller/package.json", import.meta.url));
-  let tldts;
-  try {
-    tldts = require("tldts");
-  } catch {
-    return undefined;
-  }
-  const parsed = tldts.parse(hostname, { allowPrivateDomains: true, validateHostname: true });
-  return parsed.isIp || parsed.domain === null || parsed.publicSuffix === hostname;
-}
-
 function validateNativeAdminDomains(domain, authBaseUrl, diagnostics) {
-  const lowerDomain = domain.toLowerCase();
-  if (!dnsHostname.test(lowerDomain)) {
+  if (!dnsHostname.test(domain.toLowerCase())) {
     diagnostics.errors.push(
       "controlPlane.agentNativeAdminDomain must be a DNS hostname without a wildcard, port, scheme, or path.",
     );
@@ -772,33 +756,28 @@ function validateNativeAdminDomains(domain, authBaseUrl, diagnostics) {
   if (diagnostics.errors.some((error) => error.startsWith("controlPlane.authBaseUrl"))) {
     return;
   }
-  let baseUrl;
+  // Load the auth owner lazily so a plain checkout still writes a useful preflight refusal.
+  let deriveSharedCookieDomain;
   try {
-    baseUrl = new URL(authBaseUrl);
-  } catch {
-    return;
-  }
-  if (baseUrl.protocol !== "https:") {
-    diagnostics.errors.push("controlPlane.authBaseUrl must use HTTPS for shared browser sessions.");
-  }
-  const consoleLabels = baseUrl.hostname.toLowerCase().replace(/\.$/, "").split(".").reverse();
-  const agentLabels = lowerDomain.split(".").reverse();
-  const common = [];
-  for (let index = 0; index < Math.min(consoleLabels.length, agentLabels.length); index += 1) {
-    if (consoleLabels[index] !== agentLabels[index]) {
-      break;
+    ({ deriveSharedCookieDomain } = createRequire(import.meta.url)(
+      "../apps/controller/src/auth/configuration.ts",
+    ));
+  } catch (error) {
+    if (error.code !== "MODULE_NOT_FOUND" && error.code !== "ERR_MODULE_NOT_FOUND") {
+      throw error;
     }
-    common.unshift(consoleLabels[index]);
-  }
-  const suffix = common.join(".");
-  const publicSuffix = isPublicSuffix(suffix);
-  if (publicSuffix === undefined) {
     diagnostics.errors.push(
       "Shared browser sessions need the public suffix list: run pnpm install first.",
     );
-  } else if (!dnsHostname.test(baseUrl.hostname.replace(/\.$/, "")) || !suffix || publicSuffix) {
+    return;
+  }
+  try {
+    deriveSharedCookieDomain(authBaseUrl, domain);
+  } catch {
     diagnostics.errors.push(
-      "controlPlane.authBaseUrl and controlPlane.agentNativeAdminDomain must share a non-public DNS suffix.",
+      new URL(authBaseUrl).protocol !== "https:"
+        ? "controlPlane.authBaseUrl must use HTTPS for shared browser sessions."
+        : "controlPlane.authBaseUrl and controlPlane.agentNativeAdminDomain must share a non-public DNS suffix.",
     );
   }
 }

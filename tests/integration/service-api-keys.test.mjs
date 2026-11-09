@@ -43,7 +43,6 @@ test("service API keys authenticate scoped automation without replacing sessions
     agentDomain: "agents.oce.localhost",
     secret: `test-secret-${randomUUID()}`,
     memoryDatabase,
-    secureCookies: true,
   };
   const auth = createControllerAuth(authOptions);
   const credentials = { email: "admin@example.invalid", password: `test-password-${randomUUID()}` };
@@ -1320,7 +1319,6 @@ test("service key issuance cannot exceed the caller's own IAM grants", async (t)
     agentDomain: "agents.oce.localhost",
     secret: `test-secret-${randomUUID()}`,
     memoryDatabase,
-    secureCookies: true,
   });
   const adminCredentials = {
     email: "admin@example.invalid",

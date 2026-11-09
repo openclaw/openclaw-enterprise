@@ -2153,9 +2153,9 @@ test(
   },
 );
 
-// Operators render from a plain checkout: installation-profiles.md asks for `pnpm install`
-// only with native admin, whose public suffix check loads tldts. Copy the sources the renderer
-// can import, without any node_modules, into a directory outside the repository.
+// A plain checkout must emit preflight diagnostics when shared-session validation
+// dependencies are missing. Copy the renderer sources without node_modules outside
+// the repository.
 function checkoutWithoutDependencies() {
   const root = mkdtempSync(join(tmpdir(), "oce-profile-checkout-"));
   const sources = [

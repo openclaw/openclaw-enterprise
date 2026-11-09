@@ -198,7 +198,6 @@ async function createApi(t, label, upstreamPort, options = {}) {
       displayName: "Test SSO",
       recoveryUserId: recovery.rows[0].id,
     },
-    secureCookies: true,
     agentDomain: nativeDomain,
   });
   const computeDriver = nativeComputeDriver(upstreamPort);

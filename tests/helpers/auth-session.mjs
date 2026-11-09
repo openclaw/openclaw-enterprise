@@ -94,7 +94,6 @@ export async function createTestAuthPrincipal({
   password = `generated-password-${randomUUID()}`,
   name = "Test Administrator",
   secret = `test-auth-secret-${randomUUID()}-${randomUUID()}`,
-  secureCookies = true,
   agentDomain = "agents.oce.localhost",
 } = {}) {
   const auth = createControllerAuth({
@@ -103,7 +102,6 @@ export async function createTestAuthPrincipal({
     baseURL,
     agentDomain,
     secret,
-    secureCookies,
   });
   const account = await auth.createAccount({ email, password, name });
   const seed = auth.principalSeed(account, { grant: "administrator" });

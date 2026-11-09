@@ -89,7 +89,6 @@ export async function createNativeConsoleFixture<Options extends object>(
       development: { enabled: false },
       https: true,
       ingressTLS,
-      authSecureCookies: true,
       nativeAdmin: { enabled: true, domain: nativeDomain },
     });
     t.after(remove);

@@ -335,10 +335,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       throw new Error("Native admin UI access requires an Agent domain.");
     }
     const sharedCookieDomain = options.auth.sharedCookieDomain;
-    if (
-      sharedCookieDomain === undefined ||
-      !hostnameMatchesSharedCookieDomain(new URL(publicOrigin).hostname, sharedCookieDomain)
-    ) {
+    if (!hostnameMatchesSharedCookieDomain(new URL(publicOrigin).hostname, sharedCookieDomain)) {
       throw new Error("Native admin UI access requires a shared cookie domain containing OCC.");
     }
     if (!hostnameMatchesSharedCookieDomain(nativeAdminDomain, sharedCookieDomain)) {

@@ -30,7 +30,6 @@ test("browser sessions derive their narrowest shared DNS scope and require HTTPS
     { agentDomain: "agents.other.com" },
     { agentDomain: "com" },
     { baseURL: "https://console.github.io", agentDomain: "agents.github.io" },
-    { secureCookies: false },
     { sharedCookieDomain: "example.com" },
   ]) {
     assert.throws(

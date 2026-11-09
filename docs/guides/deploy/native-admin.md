@@ -117,9 +117,9 @@ OCC_AGENT_NATIVE_ADMIN_DOMAIN=agents.oce.example.com
 
 Verify that the session cookie is emitted once at the derived domain as
 `__Secure-openclaw_occ_shared.session_token`, with `Secure`, `HttpOnly`, and
-the configured `SameSite` behavior. Sign-in and sign-out clear known prior cookie
-names at the current domain and host-only scope. They cannot clear an unknown
-historical cookie domain. See [shared sessions](../../reference/authentication.md#native-admin-shared-sessions).
+the configured `SameSite` behavior. Sign-out revokes the current session and
+expires this cookie. Clear stale OCE cookies manually if the browser reports
+a duplicate-cookie refusal. See [shared sessions](../../reference/authentication.md#native-admin-shared-sessions).
 
 Kubernetes Compute renders baseline gateway trust from Installation settings.
 Native admin availability still checks the explicit Agent policy below; keep

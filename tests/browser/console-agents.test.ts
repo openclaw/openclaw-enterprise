@@ -2686,7 +2686,6 @@ test("Create Agent offers browser chat only on an enabled installation and submi
     development: { enabled: false },
     originHost: "console.example.test",
     publicOrigin: true,
-    authSecureCookies: true,
     nativeAdmin: {
       enabled: true,
       domain: "agents.example.test",

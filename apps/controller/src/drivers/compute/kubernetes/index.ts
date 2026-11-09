@@ -13913,6 +13913,30 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     };
   }
 
+  private gatewayRootRouteRule(
+    service: ManagedKubernetesObject<"Service">,
+    path: string,
+    access: "operator" | "chat" | "node",
+    match: "Exact" | "PathPrefix",
+  ): KubernetesRecord {
+    return {
+      matches: [{ path: { type: match, value: path } }],
+      filters: [
+        {
+          type: "URLRewrite",
+          urlRewrite: {
+            path:
+              match === "Exact"
+                ? { type: "ReplaceFullPath", replaceFullPath: "/" }
+                : { type: "ReplacePrefixMatch", replacePrefixMatch: "/" },
+          },
+        },
+        this.gatewayRouteHeaderFilter(access),
+      ],
+      backendRefs: [this.gatewayRouteBackendRef(service)],
+    };
+  }
+
   private gatewayRoutingHostname(routing: KubernetesGatewayRoutingOptions): string {
     if (routing.hostname !== undefined && routing.hostname.length > 0) {
       return routing.hostname;
@@ -14068,64 +14092,26 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                 },
               ]
             : [
-                {
-                  matches: [
-                    {
-                      path: {
-                        type: "Exact",
-                        value: `${this.gatewayRoutePath(revision)}${access === "node" ? "/node" : ""}`,
-                      },
-                    },
-                  ],
-                  filters: [
-                    {
-                      type: "URLRewrite",
-                      urlRewrite: { path: { type: "ReplaceFullPath", replaceFullPath: "/" } },
-                    },
-                    this.gatewayRouteHeaderFilter(access),
-                  ],
-                  backendRefs: [this.gatewayRouteBackendRef(service)],
-                },
+                this.gatewayRootRouteRule(
+                  service,
+                  `${this.gatewayRoutePath(revision)}${access === "node" ? "/node" : ""}`,
+                  access,
+                  "Exact",
+                ),
                 ...(access === "operator" && this.getGatewayChatEndpoint(revision) !== undefined
                   ? [
-                      {
-                        matches: [
-                          {
-                            path: {
-                              type: "Exact",
-                              value: `/native-chat${this.gatewayRoutePath(revision)}`,
-                            },
-                          },
-                        ],
-                        filters: [
-                          {
-                            type: "URLRewrite",
-                            urlRewrite: { path: { type: "ReplaceFullPath", replaceFullPath: "/" } },
-                          },
-                          this.gatewayRouteHeaderFilter("chat"),
-                        ],
-                        backendRefs: [this.gatewayRouteBackendRef(service)],
-                      },
-                      {
-                        matches: [
-                          {
-                            path: {
-                              type: "PathPrefix",
-                              value: `/native-chat${this.gatewayRoutePath(revision)}/`,
-                            },
-                          },
-                        ],
-                        filters: [
-                          {
-                            type: "URLRewrite",
-                            urlRewrite: {
-                              path: { type: "ReplacePrefixMatch", replacePrefixMatch: "/" },
-                            },
-                          },
-                          this.gatewayRouteHeaderFilter("chat"),
-                        ],
-                        backendRefs: [this.gatewayRouteBackendRef(service)],
-                      },
+                      this.gatewayRootRouteRule(
+                        service,
+                        `/native-chat${this.gatewayRoutePath(revision)}`,
+                        "chat",
+                        "Exact",
+                      ),
+                      this.gatewayRootRouteRule(
+                        service,
+                        `/native-chat${this.gatewayRoutePath(revision)}/`,
+                        "chat",
+                        "PathPrefix",
+                      ),
                     ]
                   : []),
                 ...(access === "node"
@@ -14208,26 +14194,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                   : []),
                 ...(access === "operator"
                   ? [
-                      {
-                        matches: [
-                          {
-                            path: {
-                              type: "PathPrefix",
-                              value: `${this.gatewayRoutePath(revision)}/`,
-                            },
-                          },
-                        ],
-                        filters: [
-                          {
-                            type: "URLRewrite",
-                            urlRewrite: {
-                              path: { type: "ReplacePrefixMatch", replacePrefixMatch: "/" },
-                            },
-                          },
-                          this.gatewayRouteHeaderFilter(access),
-                        ],
-                        backendRefs: [this.gatewayRouteBackendRef(service)],
-                      },
+                      this.gatewayRootRouteRule(
+                        service,
+                        `${this.gatewayRoutePath(revision)}/`,
+                        access,
+                        "PathPrefix",
+                      ),
                     ]
                   : []),
               ],

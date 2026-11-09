@@ -373,7 +373,6 @@ test(
       baseURL: origin,
       agentDomain: "agents.oce.localhost",
       secret: authSecret,
-      secureCookies: true,
       memoryDatabase: { user: [], account: [], session: [], verification: [], apikey: [] },
       knownDeviceState: async () => {
         reads += 1;
@@ -466,7 +465,6 @@ test(
       baseURL: origin,
       agentDomain: "agents.oce.localhost",
       secret,
-      secureCookies: true,
       memoryDatabase: { user: [], account: [], session: [], verification: [], apikey: [] },
       knownDeviceState: async () => {
         reads += 1;
@@ -532,7 +530,6 @@ async function globalProofHandler(lookup) {
     baseURL: origin,
     agentDomain: "agents.oce.localhost",
     secret: key,
-    secureCookies: true,
     memoryDatabase: { user: [], account: [], session: [], verification: [], apikey: [] },
     knownDeviceState: lookup,
     passwordAdmission: admission,

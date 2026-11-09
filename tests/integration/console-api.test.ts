@@ -1809,6 +1809,12 @@ test("console auth routes reject untrusted browser origins and issue production 
   assert.equal(accepted.response.status, 200, accepted.text);
   const setCookies: unknown = setCookieHeaders(accepted.response);
   assert.ok(Check(Type.Array(Type.String()), setCookies));
+  // Sign-in emits only the current session scope, not clearance for retired cookie names.
+  const sessionCookies = setCookies.filter((cookie) => /^[^=]+\.session_token=/.test(cookie));
+  assert.equal(sessionCookies.length, 1);
+  const activeSessionCookie = sessionCookies[0]!;
+  assert.match(activeSessionCookie, /^__Secure-openclaw_occ_shared\.session_token=[^;]/);
+  assert.match(activeSessionCookie, /; Domain=console\.oce\.localhost(?:;|$)/i);
   const setCookie = setCookies.join("\n");
   const requestCookie = cookieHeaderFromSetCookie(setCookies);
   assert.ok(requestCookie.length > 0);
@@ -1887,6 +1893,19 @@ test("console auth routes reject untrusted browser origins and issue production 
     headers: { cookie: requestCookie, origin: fixture.origin, "x-occ-session-key": sessionKey },
   });
   assert.equal(cliSignOut.response.status, 200, cliSignOut.text);
+  // Logout must still clear and revoke the current shared session after legacy cleanup removal.
+  const clearedSessions = setCookieHeaders(cliSignOut.response).filter((cookie: string) =>
+    /^[^=]+\.session_token=/.test(cookie),
+  );
+  assert.equal(clearedSessions.length, 1);
+  assert.match(clearedSessions[0]!, /^__Secure-openclaw_occ_shared\.session_token=;/);
+  assert.match(clearedSessions[0]!, /; Domain=console\.oce\.localhost(?:;|$)/i);
+  assert.match(clearedSessions[0]!, /; Max-Age=0(?:;|$)/i);
+  const signedOut = await fixture.rawRequest("GET", "/api/auth/session", {
+    headers: { cookie: requestCookie },
+  });
+  assert.equal(signedOut.response.status, 200, signedOut.text);
+  assert.equal(JSON.parse(signedOut.text).data, null);
 
   // A body that fails the sign-in schema is a 400 before any credential check.
   const malformedSignIn = await fixture.rawRequest("POST", "/api/auth/sign-in/email", {

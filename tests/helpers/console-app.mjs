@@ -310,9 +310,6 @@ export async function createConsoleAppFixture(t, options = {}) {
     agentDomain: options.nativeAdmin?.domain ?? `agents.${new URL(authBaseURL).hostname}`,
     secret: `console-test-secret-${randomUUID()}-${randomUUID()}`,
     memoryDatabase,
-    ...(options.authSecureCookies === undefined
-      ? {}
-      : { secureCookies: options.authSecureCookies }),
   });
   const credentials = {
     email: `console-admin-${randomUUID()}@example.com`,

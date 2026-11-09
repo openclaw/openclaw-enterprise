@@ -3194,23 +3194,7 @@ export class OpenClawController {
     namespaceId: string,
     agentId: string,
   ): Promise<{ readonly agent: Readonly<Agent>; readonly mode: "admin" | "chat" }> {
-    this.namespaceIdentity(namespaceId);
-    if (!isNonEmptyString(agentId)) {
-      throw new ScopeViolationError("The exact Agent identity is missing.");
-    }
-    const administrative = await this.authorizationDecision(principalId, "administer", {
-      kind: "agent",
-      id: agentId,
-      namespaceId,
-    });
-    const mode = administrative.decision.allowed ? "admin" : "chat";
-    const agent = await this.getAuthorizedAgent(
-      principalId,
-      namespaceId,
-      agentId,
-      mode === "admin" ? "administer" : "operate",
-    );
-    return { agent, mode };
+    return this.getAuthorizedAgent(principalId, namespaceId, agentId, "browser");
   }
 
   async getBrowserAccessibleActiveAgentRevision(
@@ -3218,34 +3202,51 @@ export class OpenClawController {
     namespaceId: string,
     agentId: string,
   ): Promise<ActiveAgentRevisionSelection & { readonly mode: "admin" | "chat" }> {
-    const { mode } = await this.getAgentBrowserAccess(principalId, namespaceId, agentId);
-    const selection = await this.getAuthorizedActiveAgentRevision(
-      principalId,
-      namespaceId,
-      agentId,
-      mode === "admin" ? "administer" : "operate",
-      true,
-    );
-    return { ...selection, mode };
+    return this.getAuthorizedActiveAgentRevision(principalId, namespaceId, agentId, "browser");
   }
 
-  private async getAuthorizedAgent(
+  private async authorizeAgentAccess(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    action: PermissionAction | "browser",
+  ): Promise<PermissionAction> {
+    this.namespaceIdentity(namespaceId);
+    if (!isNonEmptyString(agentId)) {
+      throw new ScopeViolationError("The exact Agent identity is missing.");
+    }
+    const resource: ResourceRef = { kind: "agent", id: agentId, namespaceId };
+    if (action === "browser") {
+      if (
+        (await this.authorizationDecision(principalId, "administer", resource)).decision.allowed
+      ) {
+        return "administer";
+      }
+      action = "operate";
+    }
+    await this.authorize(principalId, action, resource);
+    return action;
+  }
+
+  private getAuthorizedAgent(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    action: "browser",
+  ): Promise<{ readonly agent: Readonly<Agent>; readonly mode: "admin" | "chat" }>;
+  private getAuthorizedAgent(
     principalId: string,
     namespaceId: string,
     agentId: string,
     action: PermissionAction,
-  ): Promise<Readonly<Agent>> {
-    if (!isNonEmptyString(namespaceId)) {
-      throw new ScopeViolationError("The exact Namespace identity is missing.");
-    }
-    if (!isNonEmptyString(agentId)) {
-      throw new ScopeViolationError("The exact Agent identity is missing.");
-    }
-    await this.authorize(principalId, action, {
-      kind: "agent",
-      id: agentId,
-      namespaceId,
-    });
+  ): Promise<Readonly<Agent>>;
+  private async getAuthorizedAgent(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    access: PermissionAction | "browser",
+  ) {
+    const action = await this.authorizeAgentAccess(principalId, namespaceId, agentId, access);
     return this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
       const agent = await state.agents.findAgent(namespace.id, agentId);
@@ -3254,7 +3255,8 @@ export class OpenClawController {
           "The Agent does not belong to the exact Installation and Namespace.",
         );
       }
-      return agent;
+      const mode = action === "administer" ? "admin" : "chat";
+      return access === "browser" ? { agent, mode } : agent;
     });
   }
 
@@ -6215,24 +6217,26 @@ export class OpenClawController {
     return this.getAuthorizedActiveAgentRevision(principalId, namespaceId, agentId, "administer");
   }
 
-  private async getAuthorizedActiveAgentRevision(
+  private getAuthorizedActiveAgentRevision(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    action: "browser",
+  ): Promise<ActiveAgentRevisionSelection & { readonly mode: "admin" | "chat" }>;
+  private getAuthorizedActiveAgentRevision(
     principalId: string,
     namespaceId: string,
     agentId: string,
     action: PermissionAction,
-    browserAccess = false,
-  ): Promise<ActiveAgentRevisionSelection> {
-    if (!isNonEmptyString(namespaceId)) {
-      throw new ScopeViolationError("The exact Namespace identity is missing.");
-    }
-    if (!isNonEmptyString(agentId)) {
-      throw new ScopeViolationError("The exact Agent identity is missing.");
-    }
-    await this.authorize(principalId, action, {
-      kind: "agent",
-      id: agentId,
-      namespaceId,
-    });
+  ): Promise<ActiveAgentRevisionSelection>;
+  private async getAuthorizedActiveAgentRevision(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    access: PermissionAction | "browser",
+  ) {
+    const action = await this.authorizeAgentAccess(principalId, namespaceId, agentId, access);
+    const browserAccess = access === "browser";
     return this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
       const agent = await state.agents.findAgent(namespace.id, agentId);
@@ -6278,7 +6282,13 @@ export class OpenClawController {
         newest === undefined
           ? undefined
           : await state.revisions.findRevision(namespace.id, agent.id, newest.id);
-      return Object.freeze({ agent, revision, ...(successor === undefined ? {} : { successor }) });
+      const selection = Object.freeze({
+        agent,
+        revision,
+        ...(successor === undefined ? {} : { successor }),
+      });
+      const mode = action === "administer" ? "admin" : "chat";
+      return browserAccess ? { ...selection, mode } : selection;
     });
   }
 

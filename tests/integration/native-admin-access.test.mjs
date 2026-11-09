@@ -159,7 +159,6 @@ async function createNativeAdminFixture(t, options = {}) {
     ...(options.state === undefined ? {} : { state: options.state }),
     publicOrigin: options.publicOrigin ?? publicOrigin,
     authBaseURL: options.authBaseURL ?? authBaseURL,
-    authSecureCookies: options.authSecureCookies ?? true,
     development: options.development ?? { enabled: false },
     auditSink: options.auditSink,
     ...(options.recordOperations === undefined
@@ -1300,7 +1299,6 @@ for (const changedField of [undefined, "id", "implementation"]) {
       secret: `native-restart-test-${randomUUID()}-${randomUUID()}`,
       memoryDatabase: fixture.memoryDatabase,
       agentDomain: nativeDomain,
-      secureCookies: true,
     });
     const logLines = [];
     const app = createFastifyApp({

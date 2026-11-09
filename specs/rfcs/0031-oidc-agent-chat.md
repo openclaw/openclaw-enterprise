@@ -91,12 +91,11 @@ Use the existing shared session name,
 `SameSite=Lax`, `Path=/` and the validated `Domain`. A shared cookie cannot use
 `__Host-`. OIDC attempt, receipt and known-device cookies stay host-only on the
 Console origin; only the OCE session needs to reach Agent hosts. The callback,
-session reader, logout and cookie clearance must agree on the active name and
-scope. Automatic clearance covers known host-only variants, including `__Host-`
-names, and known cookies at the current derived domain. OCC cannot discover or
-clear arbitrary former shared domains. If a hostname change leaves duplicate
-session cookies, the person clears the old OCE browser cookies and signs in
-again. Keep duplicate-cookie rejection; do not choose one ambiguous cookie.
+session reader and logout must agree on the active name and scope. Logout
+revokes the current session and expires its shared cookie. Do not retain cleanup
+for obsolete cookie names or scopes. If stale cookies cause a duplicate-cookie
+refusal, the person clears the OCE browser cookies and signs in again. Keep
+duplicate-cookie rejection; do not choose one ambiguous cookie.
 
 The shared domain expands trust to every endpoint that receives the cookie.
 All matching hosts must terminate at trusted OCE ingress. Agent content remains

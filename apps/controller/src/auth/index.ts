@@ -176,7 +176,6 @@ export {
   OCC_BETTER_AUTH_ISSUER_PREFIX,
 } from "./configuration.ts";
 
-export const OCC_AUTH_COOKIE_PREFIX = "openclaw_occ";
 const LOCAL_PASSWORD_MIN_LENGTH = 12;
 const LOCAL_PASSWORD_MAX_LENGTH = 128;
 export const OCC_SHARED_AUTH_COOKIE_PREFIX = "openclaw_occ_shared";
@@ -207,7 +206,6 @@ export interface ControllerAuthOptions {
   readonly secret: string;
   readonly database?: BetterAuthOptions["database"];
   readonly memoryDatabase?: MemoryDB;
-  readonly secureCookies?: boolean;
   readonly agentDomain: string;
   readonly humanLogin?: ReturnType<typeof createHumanLogin>;
   /** Trusted proxies whose client-address header keys sign-in admission. */
@@ -305,7 +303,7 @@ export interface ControllerAuth {
   readonly auth: ControllerBetterAuth;
   readonly issuer: string;
   readonly sessionCookieName: string;
-  readonly sharedCookieDomain?: string;
+  readonly sharedCookieDomain: string;
   readonly admissionVerifier: ControllerAdmissionVerifier;
   readonly githubEnabled: boolean;
   /** Provider-instance key for GitHub identities; set only while GitHub sign-in is configured. */
@@ -445,38 +443,11 @@ function sessionHeaders(
   return prepared;
 }
 
-function sessionCookieNames(prefix: string): readonly string[] {
-  return ["", "__Secure-", "__Host-"].map((variant) => `${variant}${prefix}.session_token`);
-}
-
-function obsoleteSessionCookieClearance(domain: string, activeName: string): readonly string[] {
-  const names = [
-    ...sessionCookieNames(OCC_AUTH_COOKIE_PREFIX),
-    ...sessionCookieNames(OCC_SHARED_AUTH_COOKIE_PREFIX),
-  ];
-  // Clear known host-only cookies, including the former guarded __Host- session.
-  // Domain cookies are removable only at the current derived domain; never guess old scopes.
-  return names.flatMap((name) => {
-    const attributes = "; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax";
-    const hostOnly = `${name}=${attributes}`;
-    return name === activeName || name.startsWith("__Host-")
-      ? [hostOnly]
-      : [hostOnly, `${name}=${attributes}; Domain=${domain}`];
-  });
-}
-
-function setAuthHeaders(
-  reply: FastifyReply,
-  headers?: Headers | null,
-  additionalCookies: readonly string[] = [],
-): void {
+function setAuthHeaders(reply: FastifyReply, headers?: Headers | null): void {
   if (!headers) {
-    if (additionalCookies.length > 0) {
-      reply.header("set-cookie", [...additionalCookies]);
-    }
     return;
   }
-  const cookies: string[] = [...additionalCookies];
+  const cookies: string[] = [];
   headers.forEach((value, name) => {
     if (name.toLowerCase() === "set-cookie") {
       cookies.push(...splitSetCookieHeader(value));
@@ -813,11 +784,10 @@ async function sendAuthEndpoint(
   } | null>,
   data: (response: unknown) => unknown,
   failureText: AuthEndpointFailure,
-  additionalCookies: readonly string[] = [],
 ): Promise<void> {
   try {
     const result = await run();
-    setAuthHeaders(reply, result?.headers, additionalCookies);
+    setAuthHeaders(reply, result?.headers);
     reply.status(result?.status ?? 200).send({
       data: data(result?.response ?? null),
       meta: { requestId: request.id },
@@ -997,16 +967,9 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     );
   }
   const sharedCookieDomain = deriveSharedCookieDomain(options.baseURL, options.agentDomain);
-  if (options.secureCookies === false) {
-    throw new Error("Shared session cookies require secure HTTPS cookies.");
-  }
   const humanLogin = options.humanLogin;
   const cookiePrefix = OCC_SHARED_AUTH_COOKIE_PREFIX;
   const sessionCookieName = `__Secure-${cookiePrefix}.session_token`;
-  const obsoleteSessionCookieCleanup = obsoleteSessionCookieClearance(
-    sharedCookieDomain,
-    sessionCookieName,
-  );
   const issuer = betterAuthIssuer(options.installationId);
   const withSessionAuthority = sessionAuthority();
   if (humanLogin !== undefined && typeof options.database !== "function") {
@@ -1384,7 +1347,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
             throw new Error(`${label} sign-in unavailable.`);
           }
           const result = await runPrivateEndpoint(request, `/oce/providers/${name}/callback`);
-          setAuthHeaders(reply, result.headers, obsoleteSessionCookieCleanup);
+          setAuthHeaders(reply, result.headers);
           reply.redirect("/console/");
         } catch (error) {
           // A refusal keeps its reason. A callback that failed inside OCE (its database or
@@ -1565,7 +1528,6 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         refused: "The caller did not provide valid authentication credentials.",
         action: "Sign-in",
       },
-      obsoleteSessionCookieCleanup,
     );
   }
 
@@ -1610,7 +1572,6 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       },
       (response) => response,
       { refused: "The controller session could not be revoked.", action: "Sign-out" },
-      obsoleteSessionCookieCleanup,
     );
   }
 

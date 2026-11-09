@@ -145,11 +145,11 @@ admission remains in `apps/controller/src/index.ts`.
 `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
 `packages/occ/src/index.ts:getBrowserAccessibleActiveAgentRevision`
 
-After the authorization and existence checks above, enabled access requires a public origin/domain and `getBrowserAccessibleActiveAgentRevision`.
+`getAgentBrowserAccess` handles disabled access; `getBrowserAccessibleActiveAgentRevision` handles enabled access. Both select authority through `authorizeAgentAccess` and read the Agent once. Enabled access also requires the public origin, Agent domain and selected version. IAM failures propagate instead of selecting chat mode.
 
-`ResourceConflictError` for an authorized stopped Agent without a selected version becomes only `status: "stopped"`, including new Agents and completed stops. `NoActiveAgentRevisionError` for a running Agent awaiting activation returns `unavailable`. Other dependencies, including IAM/State outages, remain `503` before gateway routing. The console offers deployment checks and refresh.
+`ResourceConflictError` becomes only `status: "stopped"` for an authorized stopped Agent without a selected version, or for an operator whose Agent is stopping. `NoActiveAgentRevisionError` for a running Agent awaiting activation returns `unavailable`. Other dependencies, including IAM/State outages, remain `503` before gateway routing.
 
-With a selected version, OCC derives its native target. Non-running Agents return `stopped` with host/origin; a newer exclusive replacement returns `unavailable`. Unsupported trusted-proxy auth, machine admin grants/device auto-approval, `controlUi.enabled`, exact `allowedOrigins`, or host-header/device-auth settings return `unsupported` with the target.
+With a selected version, OCC derives its native target. An administrator viewing a non-running Agent with a selected version receives `stopped` with host/origin; a newer exclusive replacement returns `unavailable`. Unsupported trusted-proxy auth, machine admin grants/device auto-approval, `controlUi.enabled`, exact `allowedOrigins`, or host-header/device-auth settings return `unsupported` with the target.
 
 Compute `id` and `implementation` must match `revision.compute`; changing selection does not migrate versions. A mismatch raises `503 DEPENDENCY_UNAVAILABLE` before endpoint/key/transport. Chat selects `getGatewayChatEndpoint`, administration selects `getGatewayEndpoint`. Missing or unclean private `wss:` endpoints return `unsupported`; chat never falls back to administration. Only `available` carries `gatewayBase`, omitted from browser responses by `nativeAdminAvailabilityData`.
 
@@ -172,9 +172,7 @@ Native-host admission resolves the hash through platform state. Unknown, deleted
 HTTPS Console origin and Agent domain. It rejects IP addresses, missing hosts,
 and public suffixes. This shared cookie configuration applies even when native
 access is disabled and uses `__Secure-openclaw_occ_shared.session_token`.
-Password and external sign-in share the format. Known old cookie names are
-cleared at the current domain and host-only scope; unknown historical domains
-cannot be cleared by this response. See the [session contract](../reference/authentication.md#native-admin-shared-sessions).
+Sign-out revokes the current session and expires its shared cookie. There is no obsolete-cookie cleanup. See the [session contract](../reference/authentication.md#native-admin-shared-sessions).
 
 ### 6. OCC intercepts native-host HTTP requests
 
@@ -210,7 +208,7 @@ both sockets.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminHttp`
 
-The HTTP proxy validates and normalizes the request URL, which must not exceed 4,096 characters, rejects missing or nonmatching `Origin` on non-GET/HEAD requests, strips browser cookies, service keys, forwarding headers, native identity, native scopes, and upstream `Set-Cookie`, rejects service-worker script requests, rewrites same-upstream `Location` values to the Agent origin, appends `worker-src 'none'` to proxied Content Security Policy, and forwards to the private `https:` gateway base. A `502` from the gateway's user-photo route (`/api/users/<id>/avatar`) becomes an empty `404`: it means OpenClaw could not fetch a Gravatar fallback, which a dedicated Gateway without internet egress never can, and the UI shows initials for both. The native gateway never receives the OCE session cookie. OCC selects the administrative route or the chat route. Both use `occ-workspace-files`; the chat route overwrites `x-openclaw-scopes` with `operator.sessions.write`. The runtime intersects that ceiling with the identity and device grants. Client headers cannot widen it.
+The HTTP proxy validates and normalizes the request URL, which must not exceed 4,096 characters, rejects missing or nonmatching `Origin` on non-GET/HEAD requests, strips browser cookies, service keys, forwarding headers, native identity, native scopes, and upstream `Set-Cookie`, rejects service-worker script requests, rewrites same-upstream `Location` values to the Agent origin, appends `worker-src 'none'` to proxied Content Security Policy, and forwards to the private `https:` gateway base. A `502` from `/api/users/<id>/avatar` becomes an empty `404`, preserving the initials fallback when Gravatar is unreachable. Both administrative and chat routes use `occ-workspace-files`; the chat route overwrites `x-openclaw-scopes` with `operator.sessions.write`. The runtime intersects that ceiling with the identity and device grants. Client headers cannot widen it.
 
 ### 7. OCC proxies native WebSocket upgrades
 
@@ -281,6 +279,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-09 14:07: Consolidate browser authorization and document current-cookie logout. (authoring-run/f217fd51-af6b-4d6a-a888-b2be4880aa91 - e39be9803)
 
 - 2026-11-09 12:12: Added OIDC sessions and scoped chat. (codex/oidc-agent-chat - f1ebda062)
 

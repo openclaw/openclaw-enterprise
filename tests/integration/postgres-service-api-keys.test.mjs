@@ -40,7 +40,6 @@ test(
       baseURL: "https://console.oce.localhost",
       agentDomain: "agents.oce.localhost",
       secret: `storage-test-${randomUUID()}`,
-      secureCookies: true,
     };
     const issuer = await createPostgresControllerAuth(options);
     const verifier = await createPostgresControllerAuth(options);

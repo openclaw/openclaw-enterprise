@@ -241,10 +241,10 @@ endpoint. Public preview hosts must remain outside it. The cookie uses
 and the existing SameSite and CSRF protections. Password, OIDC, GitHub and Google
 sign-in share this format. Duplicate session-cookie values are rejected.
 
-Successful sign-in and sign-out clear known prior host-only names and names at
-the current derived domain. OCE cannot clear cookies at an unknown historical
-domain; remove those cookies in the browser if they cause duplicate-cookie
-refusals. External-provider attempt cookies remain host-only.
+Sign-out revokes the current session and expires its shared cookie. OCE does not
+clear obsolete cookie names or scopes. Remove stale OCE cookies in the browser
+if they cause duplicate-cookie refusals. External-provider attempt cookies
+remain host-only.
 
 Native-host requests authenticate the shared OCE session, resolve the exact
 Agent represented by the requested host, authorize exact Agent `operate` or `administer`, and
