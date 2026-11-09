@@ -6605,9 +6605,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       this.verifyGatewayRoutingConfiguration(admittedRevision),
     );
     const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
-    if (protectedWorkspace !== undefined) {
-      await this.requireRetainedProtectedWorkspaceNode(revision, namespace);
-    }
     const sourceNamespace =
       this.options.executionCluster === undefined
         ? namespace
@@ -6630,6 +6627,28 @@ export class KubernetesComputeDriver implements ComputeDriver {
     this.verifyNamespaceOwnership(observed, tenantOwnership, external);
     if (observed.status?.phase !== "Active") {
       return result;
+    }
+    const gatewayOwnership = { ...tenantOwnership, agentId: revision.agentId };
+    const prepareGatewayState = () =>
+      this.prepareRevisionStage("gateway_private_state_claim", () =>
+        this.reconcile(
+          this.gatewayPrivateStateClaim(revision.agentId, gatewayOwnership, gatewayNamespace),
+          gatewayOwnership,
+          gatewayNamespace,
+        ),
+      );
+    if (protectedWorkspace !== undefined) {
+      // The first node setup is issued against this Gateway's durable pairing store.
+      if (observed.metadata.deletionTimestamp !== undefined) return result;
+      if (
+        this.nodeEnrollment === undefined ||
+        this.options.runtime === undefined ||
+        this.getGatewayEndpoint(revision) === undefined
+      ) {
+        throw new DependencyUnavailableError("Protected workspace node enrollment is unavailable.");
+      }
+      await prepareGatewayState();
+      await this.requireRetainedProtectedWorkspaceNode(revision, namespace);
     }
     await this.revokeUnavailablePublicGithubRead(revision, namespace);
     const policyNamespaces =
@@ -6655,7 +6674,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const agentName = `agent-${sha256Hex(revision.agentId, 12)}`;
     const gatewayName = `gateway-${sha256Hex(revision.agentId, 12)}`;
-    const gatewayOwnership = { ...tenantOwnership, agentId: revision.agentId };
     const agentOwnership = {
       ...tenantOwnership,
       agentId: revision.agentId,
@@ -6989,14 +7007,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ),
       );
     }
-    if (this.options.runtime !== undefined) {
-      await this.prepareRevisionStage("gateway_private_state_claim", () =>
-        this.reconcile(
-          this.gatewayPrivateStateClaim(revision.agentId, gatewayOwnership, gatewayNamespace),
-          gatewayOwnership,
-          gatewayNamespace,
-        ),
-      );
+    if (this.options.runtime !== undefined && protectedWorkspace === undefined) {
+      await prepareGatewayState();
     }
     const deliveredHarnessAuth = await this.prepareRevisionStage("harness_auth", () =>
       this.deliverHarnessAuth(
@@ -12343,13 +12355,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
   ): Promise<void> {
-    if (
-      this.nodeEnrollment === undefined ||
-      this.options.runtime === undefined ||
-      this.getGatewayEndpoint(revision) === undefined
-    ) {
-      throw new DependencyUnavailableError("Protected workspace node enrollment is unavailable.");
-    }
     // The provider launches with this Agent-owned node setup. A fresh setup would
     // require an unbound Gateway to be serving before the provider can launch.
     const existing = await this.getOwned(

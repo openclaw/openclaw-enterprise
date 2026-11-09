@@ -327,20 +327,34 @@ test("Compute binds the reserved original before enrollment and activates only a
     /set only by Compute for a protected workspace/,
   );
   assert.equal(fixture.provisions.length, 0);
-  await assert.rejects(
-    driver.prepareRevision(revision, {
-      ...context,
-      workspaceSetup: {
-        id: "fresh-workspace-setup",
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        files: { "AGENTS.md": "Initial workspace instructions" },
-        completed: false,
-      },
-    }),
-    /requires retained Agent-owned node setup before provisioning/,
-  );
   assert.equal(fixture.writes.length, 0);
+  const gatewayNs = fixture.read("Namespace", fixture.gatewayNamespace);
+  fixture.save({ ...gatewayNs, metadata: { ...gatewayNs.metadata, labels: {} } });
+  await assert.rejects(driver.prepareRevision(revision, context), /ownership|refusing/i);
+  assert.equal(fixture.writes.length, 0);
+  fixture.save(gatewayNs);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(
+      driver.prepareRevision(revision, {
+        ...context,
+        workspaceSetup: {
+          id: "fresh-workspace-setup",
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          files: { "AGENTS.md": "Initial workspace instructions" },
+          completed: false,
+        },
+      }),
+      /requires retained Agent-owned node setup before provisioning/,
+    );
+
+    const claim = driver["gatewayPrivateStateClaim"](
+      revision.agentId,
+      { namespaceId: revision.namespaceId, agentId: revision.agentId },
+      { name: fixture.gatewayNamespace, plane: "control" },
+    );
+    assert.deepEqual(fixture.writes, [claim]);
+  }
   assert.equal(fixture.provisions.length, 0);
   assert.equal(fixture.gateway(), undefined);
   assert.equal(events.length, 0);
