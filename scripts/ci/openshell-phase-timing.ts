@@ -1,4 +1,5 @@
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { isOpenShellLane } from "./openshell-full-integration.ts";
 
 type Stamp = number | null;
 
@@ -61,12 +62,13 @@ export function phaseTiming(env: NodeJS.ProcessEnv, end: number) {
   const elapsedMs = elapsed(entry, end);
   const measuredMs = Object.values(phases).reduce((sum, phase) => sum + (phase.elapsedMs ?? 0), 0);
   const selection = env.OPENSHELL_SELECTION;
+  const lane = env.OPENSHELL_LANE;
   return {
     runId: identity(env.GITHUB_RUN_ID, /^[0-9]{1,20}$/),
     attempt: identity(env.GITHUB_RUN_ATTEMPT, /^[0-9]{1,10}$/),
     sha: identity(env.GITHUB_SHA, /^[0-9a-f]{40}$/),
     job: identity(env.GITHUB_JOB, /^[A-Za-z_][A-Za-z0-9_-]{0,99}$/),
-    lane: "openshell",
+    lane: lane !== undefined && isOpenShellLane(lane) ? lane : null,
     selection: selection === "full" || selection === "focused" ? selection : null,
     elapsedMs,
     residualMs: elapsedMs === null ? null : elapsedMs - measuredMs,

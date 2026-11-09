@@ -49,9 +49,10 @@ prepare their required cluster, database server, routing, and images; their imag
 builds now read the same cache. The runner enforces both lane-wide and per-file `requiredEnv`
 inputs, expected cases, and cleanup. A failed shard does not cancel the
 others. Each result has `scope: focused`; require every shard to pass before
-claiming full advisory OpenShell coverage. The manual Full Integration lane
-continues to run the full manifest serially and prepares the shared resources
-needed by its other files. First-Agent files do not request a separate CI database
+claiming full advisory OpenShell coverage. Full Integration runs two complete OpenShell lanes on separate VMs.
+Each prepares its own shared resources and runs its assigned manifest files
+serially. The Full Integration Aggregate requires both results for the same
+checkout revision. First-Agent files do not request a separate CI database
 in either mode.
 
 ## Cache and runner limits
@@ -135,6 +136,13 @@ expected case, and cleanup to pass at the same checkout revision. Include tool
 setup, image builds/imports, tests, cleanup, and artifact upload in elapsed time.
 Report runner allocation and protected-environment waiting separately, and keep
 failed or canceled runs separate from successful runtime measurements.
+
+The job summary records phase timings for each physical lane: `openshell`,
+`openshell-policy`, or `openshell-installers`. Use the receipt's lane, source SHA,
+run ID, and attempt to compare matching jobs. The same JSON is retained for seven
+days as `timing-<artifact-prefix>-<lane>-attempt-<attempt>`. Its elapsed time
+covers the lane action through result artifact upload; it excludes earlier checkout and runner or
+environment waiting. Missing checkpoints remain missing measurements.
 
 Parallel workflows repeat installation setup and can use more runner minutes
 even when wall time falls. The OpenShell job cap bounds concurrent VMs; each
