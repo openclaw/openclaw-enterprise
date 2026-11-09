@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"text/template"
@@ -155,7 +156,7 @@ func agentSandboxTestRunner(t *testing.T) (*runner, *developmentState, *bytes.Bu
 	output := new(bytes.Buffer)
 	r := newRunner(Options{Repository: state.Repository, Err: output})
 	r.engine = "docker"
-	chart := filepath.Join(directory, "chart")
+	chart := filepath.Join(directory, "PRIVATE-CHART")
 	if err := os.Mkdir(chart, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -220,12 +221,17 @@ func readAgentSandboxRecord(t *testing.T, output *bytes.Buffer) agentSandboxDiag
 
 func TestAgentSandboxRolloutDiagnosticsBeforeReturn(t *testing.T) {
 	r, state, output, directory := agentSandboxTestRunner(t)
+	var timings bytes.Buffer
+	r.opts.Out = &timings
 	// Exercise the preparation/cleanup boundary with inert subprocesses. This
 	// does not run the launcher's earlier cluster provisioning steps.
 	_, err := r.prepareOpenShell(context.Background(), state, 7*time.Second)
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != 42 || err.Error() != "kubectl failed: exit status 42" {
 		t.Fatalf("rollout error changed: %v", err)
+	}
+	if !regexp.MustCompile(`(?m)^\[occ-dev-timing\] stage=openshell-agent-sandbox-rollout elapsed_ms=[0-9]+ failed=true$`).Match(timings.Bytes()) {
+		t.Fatalf("missing failed preparation operation: %s", timings.String())
 	}
 	record := readAgentSandboxRecord(t, output)
 	if record.Deployment.Status != "ok" || len(record.ReplicaSets.Items) != 1 || len(record.Pods.Items) != 1 || len(record.Warnings.Items) != 1 {
@@ -258,11 +264,17 @@ func TestAgentSandboxRolloutDiagnosticsBeforeReturn(t *testing.T) {
 }
 func TestAgentSandboxRolloutSuccessDoesNotRead(t *testing.T) {
 	r, state, output, directory := agentSandboxTestRunner(t)
+	var timings bytes.Buffer
+	r.opts.Out = &timings
 	r.env["OCC_TEST_SANDBOX_ROLLOUT"] = "success"
 	_, err := r.prepareOpenShell(context.Background(), state, time.Second)
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != 41 {
 		t.Fatalf("did not reach later chart rendering: %v", err)
+	}
+	// The successful rollout must not hide the later real Helm subprocess failure.
+	if !strings.Contains(err.Error(), "PRIVATE-CHART") || strings.Contains(timings.String(), "PRIVATE-CHART") || !regexp.MustCompile(`(?m)^\[occ-dev-timing\] stage=openshell-workspace-render elapsed_ms=[0-9]+ failed=true$`).Match(timings.Bytes()) {
+		t.Fatalf("lost or unsafe preparation operation: %s", timings.String())
 	}
 	log, _ := os.ReadFile(filepath.Join(directory, "commands.log"))
 	if output.Len() != 0 || strings.Contains(string(log), " get ") {

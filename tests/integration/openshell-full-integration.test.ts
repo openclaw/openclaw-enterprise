@@ -91,9 +91,10 @@ test("Full Integration partitions OpenShell without changing the default focused
   const timingDirectory = temporaryDirectorySync(t, "openshell-view-timing-");
   for (const lane of ["openshell", ...shards]) {
     const summary = join(timingDirectory, `${lane}.md`);
+    const artifact = join(timingDirectory, `${lane}.json`);
     const timing = spawnSync(
       process.execPath,
-      ["scripts/ci/openshell-phase-timing.ts", "summarize"],
+      ["scripts/ci/openshell-phase-timing.ts", "summarize", artifact],
       {
         cwd: root,
         encoding: "utf8",
@@ -103,6 +104,7 @@ test("Full Integration partitions OpenShell without changing the default focused
           GITHUB_STEP_SUMMARY: summary,
           GITHUB_SHA: testedSha,
           GITHUB_JOB: "openshell",
+          GITHUB_RUN_ATTEMPT: "2",
           OPENSHELL_LANE: lane,
           OPENSHELL_SELECTION: "full",
           OPENSHELL_ENTRY: "0.00",
@@ -122,6 +124,8 @@ test("Full Integration partitions OpenShell without changing the default focused
     assert.equal(timing.status, 0, timing.stderr);
     const json = present(readFileSync(summary, "utf8").split("```json\n")[1]);
     const receipt = JSON.parse(present(json.split("\n```")[0]));
+    assert.deepEqual(JSON.parse(readFileSync(artifact, "utf8")), receipt);
+    assert.equal(receipt.attempt, "2");
     assert.equal(receipt.lane, lane);
     assert.equal(receipt.sha, testedSha);
     assert.equal(receipt.selection, "full");
@@ -198,7 +202,7 @@ test("both complete OpenShell receipts are required by targeted and full aggrega
   const [policy, installers] = lanes;
   assert.ok(policy && installers);
   const needs = join(directory, "needs.json");
-  writeJson(needs, Object.fromEntries(lanes.map((lane) => [lane, { result: "success" }])));
+  writeJson(needs, { openshell: { result: "success", lanes } });
   writeJson(join(directory, `${policy}.json`), makeReceipt(policy));
   const receiptPath = join(directory, `${installers}.json`);
   const aggregate = (group: string) =>

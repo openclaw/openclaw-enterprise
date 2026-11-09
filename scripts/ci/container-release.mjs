@@ -495,7 +495,26 @@ async function smoke(directory, env) {
   let prepared;
   try {
     const [loaded] = JSON.parse(execFileSync("docker", ["image", "inspect", tag]));
-    assert.equal(loaded.Id, manifest.config.digest);
+    if (loaded.Descriptor) {
+      // The containerd store's Id identifies a manifest/index, not its config.
+      // Export and hash-check that immutable target before trusting its config.
+      assert.match(loaded.Descriptor.digest ?? "", digestPattern);
+      assert.equal(loaded.Id, loaded.Descriptor.digest);
+      const verified = JSON.parse(
+        execFileSync("python3", [
+          "scripts/upgrade-image-identity.py",
+          `${tag}@${loaded.Id}`,
+          `linux/${arch}`,
+        ]),
+      );
+      assert.equal(
+        verified.configDigest,
+        manifest.config.digest,
+        "Loaded image configuration differs from the sealed OCI export.",
+      );
+    } else {
+      assert.equal(loaded.Id, manifest.config.digest);
+    }
     assert.equal(loaded.Os, "linux");
     assert.equal(loaded.Architecture, arch);
     if (env.IMAGE === "runtime") {

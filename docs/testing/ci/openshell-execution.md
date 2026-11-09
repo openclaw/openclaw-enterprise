@@ -92,7 +92,12 @@ fixed categories, counts, elapsed milliseconds, and nonzero exit counts. Retry
 attempts are counted individually; failure handling stays unchanged. Arguments, output, environment values, and
 resource names are excluded. Concurrent or nested commands can overlap, so do
 not sum these durations as wall time. Fixed setup milestones record offsets from
-startup to place these operations on the wall-clock timeline. Native Pod profiles
+startup to place these operations on the wall-clock timeline. OpenShell asset
+preparation reports its failed operation, such as chart acquisition, rollout,
+workspace rendering, or image import, with elapsed time measured from that
+operation’s start. Success reports the total preparation time. A failed operation
+may reflect cancellation by another setup task; it does not establish the primary
+cause. These records exclude error text, arguments, and output. Native Pod profiles
 report time from the
 deploy request to Pod creation and time from creation to scheduling,
 initialization, running, readiness, and observation. They retain no Pod identity
@@ -134,8 +139,9 @@ failed or canceled runs separate from successful runtime measurements.
 
 The job summary records phase timings for each physical lane: `openshell`,
 `openshell-policy`, or `openshell-installers`. Use the receipt's lane, source SHA,
-run ID, and attempt to compare matching jobs. Its elapsed time covers the lane
-action through artifact retention; it excludes earlier checkout and runner or
+run ID, and attempt to compare matching jobs. The same JSON is retained for seven
+days as `timing-<artifact-prefix>-<lane>-attempt-<attempt>`. Its elapsed time
+covers the lane action through result artifact upload; it excludes earlier checkout and runner or
 environment waiting. Missing checkpoints remain missing measurements.
 
 Parallel workflows repeat installation setup and can use more runner minutes
