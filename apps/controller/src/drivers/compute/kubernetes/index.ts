@@ -82,6 +82,7 @@ import type {
   ErrorDetail,
   AgentDeploymentDiagnostics,
   AgentRevision,
+  RepositoryCredentialMaterialRef,
   SandboxHarnessObservation,
   AgentRuntimeContainerStatus,
   AgentRuntimeDescribeOptions,
@@ -295,6 +296,7 @@ import {
 import {
   REPOSITORY_MATERIAL_GENERATION,
   repositoryMaterialCurrent,
+  repositoryMaterialGeneration,
   repositoryMaterialSpec,
   repositoryMaterialDeployment,
   type RepositoryMaterialSpec,
@@ -8580,6 +8582,239 @@ export class KubernetesComputeDriver implements ComputeDriver {
       AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
     );
     return owned ? owned.access.retireExpired(owned.context) : ("retire-runtime" as const);
+  }
+
+  /** Join the worker's disposed-session evidence with the native runtime it still serves. */
+  async observeRepositoryWithdrawal(
+    revision: Readonly<AgentRevision>,
+    disposedSessions: readonly RepositoryCredentialMaterialRef[] | undefined,
+    signal: AbortSignal,
+  ): Promise<"verified" | "unknown" | "unsupported"> {
+    const admitted = revision.repositoryCredentials;
+    if (
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation ||
+      revision.harness.mode !== "dedicated" ||
+      revision.harness.id !== "codex" ||
+      revision.sandboxDriverId !== undefined ||
+      this.sandboxDriver !== undefined ||
+      revision.egressPlan !== undefined ||
+      this.options.executionCluster !== undefined ||
+      this.options.gatewayRouting === undefined ||
+      !this.preparedRepositoryIngress ||
+      admitted === undefined ||
+      admitted.standingApprovalId !== undefined
+    ) {
+      return "unsupported";
+    }
+    if (disposedSessions === undefined || disposedSessions.length === 0) {
+      return "unknown";
+    }
+    const enrollment = this.nodeEnrollment;
+    const endpoint = this.getGatewayEndpoint(revision);
+    if (
+      enrollment === undefined ||
+      endpoint === undefined ||
+      this.options.runtime === undefined ||
+      this.options.network.repositoryCredentials === undefined
+    ) {
+      return "unknown";
+    }
+    const operation = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
+    return withComputeAbortSignal(operation, async (): Promise<"verified" | "unknown"> => {
+      const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
+      const generation = repositoryMaterialGeneration(disposedSessions);
+      const observe = async () => {
+        const observedNamespace = await this.getNamespace(namespace);
+        if (
+          observedNamespace?.status?.phase !== "Active" ||
+          observedNamespace.metadata.deletionTimestamp !== undefined ||
+          !isNonEmptyString(observedNamespace.metadata.uid)
+        ) {
+          return undefined;
+        }
+        this.verifyNamespaceOwnership(
+          observedNamespace,
+          { namespaceId: revision.namespaceId },
+          external,
+        );
+        const workloads = await Promise.all(
+          (["agent", "gateway"] as const).map((role) =>
+            this.repositoryWithdrawalWorkload(revision, namespace, role, generation),
+          ),
+        );
+        if (workloads.some((workload) => workload === undefined)) {
+          return undefined;
+        }
+        return { namespaceUid: observedNamespace.metadata.uid, workloads };
+      };
+      const before = await observe();
+      if (before === undefined || !(await this.workspaceNodeEnrolled(revision, namespace))) {
+        return "unknown";
+      }
+      const deviceId = await this.workspaceNodeDeviceId(revision, namespace);
+      if (
+        deviceId === undefined ||
+        !(await this.gatewayReady(
+          { namespaceId: revision.namespaceId, agentId: revision.agentId },
+          `gateway-${sha256Hex(revision.agentId, 12)}`,
+          this.gatewayNamespace(revision, namespace),
+        )) ||
+        !(await enrollment.isConnected(endpoint, deviceId, operation)) ||
+        (this.usesWorkspaceNodeBinding(revision) &&
+          !(await this.pollWorkspaceNodeBindingAck(
+            revision,
+            namespace,
+            this.gatewayConfiguration(revision, deviceId, namespace),
+            this.now(),
+            operation,
+          )))
+      ) {
+        return "unknown";
+      }
+      // A rollout or node replacement during the observation cannot settle the old generation.
+      const after = await observe();
+      const sameNode =
+        (await this.workspaceNodeEnrolled(revision, namespace)) &&
+        (await this.workspaceNodeDeviceId(revision, namespace)) === deviceId;
+      operation.throwIfAborted();
+      return after !== undefined && isDeepStrictEqual(before, after) && sameNode
+        ? "verified"
+        : "unknown";
+    });
+  }
+
+  private async repositoryWithdrawalWorkload(
+    revision: Readonly<AgentRevision>,
+    namespace: KubernetesNamespaceAddress,
+    role: "agent" | "gateway",
+    generation: string,
+  ) {
+    const consumer = this.repositoryConsumer(revision);
+    const serviceName = `${role}-${sha256Hex(revision.agentId, 12)}`;
+    const name = role === "agent" ? consumer.name : serviceName;
+    const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+    const owner = role === "agent" ? consumer.owner : ownership;
+    const serviceOwner =
+      role === "agent"
+        ? { ...ownership, servicePrincipalId: revision.servicePrincipalId }
+        : ownership;
+    const target = role === "agent" ? namespace : this.gatewayNamespace(revision, namespace);
+    const selector =
+      role === "agent"
+        ? this.agentServiceSelector(revision, name)
+        : this.gatewayServiceSelector(revision, name);
+    const [deployment, service] = await Promise.all([
+      this.getOwned("Deployment", name, target, owner),
+      this.getOwned("Service", serviceName, target, serviceOwner),
+    ]);
+    const template = asRecord(asRecord(deployment?.spec?.template)?.metadata);
+    const port = role === "agent" ? AGENT_TRANSPORT_PORT : this.options.network.gatewayPort;
+    const ports = Array.isArray(service?.spec?.ports) ? service.spec.ports : [];
+    if (
+      deployment === undefined ||
+      service === undefined ||
+      !isNonEmptyString(deployment.metadata.uid) ||
+      !isNonEmptyString(service.metadata.uid) ||
+      deployment.metadata.deletionTimestamp !== undefined ||
+      service.metadata.deletionTimestamp !== undefined ||
+      deployment.spec?.replicas !== 1 ||
+      !this.deploymentReady(deployment) ||
+      !this.deploymentRolledOut(deployment) ||
+      asRecord(template?.labels)?.["openclaw.dev/revision"] !== revision.id ||
+      !isDeepStrictEqual(service.spec?.selector, selector) ||
+      !ports.some((entry) => {
+        const selected = asRecord(entry);
+        return (
+          selected?.port === port &&
+          selected.targetPort === port &&
+          (selected.protocol === undefined || selected.protocol === "TCP")
+        );
+      }) ||
+      (role === "gateway" &&
+        deployment.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] !== revision.id) ||
+      (role === "agent" &&
+        (deployment.metadata.annotations?.[REPOSITORY_MATERIAL_GENERATION] !== generation ||
+          asRecord(template?.annotations)?.[REPOSITORY_MATERIAL_GENERATION] !== generation))
+    ) {
+      return undefined;
+    }
+    const route =
+      role === "gateway"
+        ? await this.getOwned(
+            "HTTPRoute",
+            this.gatewayRouteName(revision.agentId),
+            target,
+            ownership,
+          )
+        : undefined;
+    if (role === "gateway") {
+      const backend = this.gatewayRouteBackendRef(service);
+      const rules = route?.spec?.rules;
+      if (
+        route === undefined ||
+        route.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] !== revision.id ||
+        !isNonEmptyString(route.metadata.uid) ||
+        route.metadata.deletionTimestamp !== undefined ||
+        !Array.isArray(rules) ||
+        rules.length === 0 ||
+        rules.some((rule) => {
+          const refs = asRecord(rule)?.backendRefs;
+          const ref = Array.isArray(refs) && refs.length === 1 ? asRecord(refs[0]) : undefined;
+          return (
+            ref === undefined ||
+            Object.entries(backend).some(([key, value]) => ref[key] !== value) ||
+            (ref.namespace !== undefined && ref.namespace !== target.name)
+          );
+        })
+      ) {
+        return undefined;
+      }
+    }
+    const clients = await this.clients(target.plane);
+    const pods = completeKubernetesList(
+      await this.request(() =>
+        clients.core.listNamespacedPod({
+          namespace: target.name,
+          labelSelector: labelsToSelector(selector),
+        }),
+      ),
+    ).filter((pod) => pod.metadata?.deletionTimestamp === undefined);
+    if (pods.length !== 1) {
+      return undefined;
+    }
+    const pod = observedPodMatchingSelector(pods[0], target.name, {
+      ...selector,
+      "openclaw.dev/revision": revision.id,
+    });
+    const metadata = asRecord(pod?.metadata);
+    const status = asRecord(pod?.status);
+    const containerId = this.podContainerId(pod, role);
+    if (
+      pod === undefined ||
+      !isNonEmptyString(metadata?.uid) ||
+      !isNonEmptyString(containerId) ||
+      status?.phase !== "Running" ||
+      !Array.isArray(status.conditions) ||
+      !status.conditions.some(
+        (condition) =>
+          asRecord(condition)?.type === "Ready" && asRecord(condition)?.status === "True",
+      ) ||
+      (role === "agent" &&
+        asRecord(metadata.annotations)?.[REPOSITORY_MATERIAL_GENERATION] !== generation)
+    ) {
+      return undefined;
+    }
+    return {
+      deploymentUid: deployment.metadata.uid,
+      deploymentGeneration: deployment.metadata.generation,
+      serviceUid: service.metadata.uid,
+      serviceVersion: service.metadata.resourceVersion,
+      routeUid: route?.metadata.uid,
+      routeVersion: route?.metadata.resourceVersion,
+      podUid: metadata.uid,
+      containerId,
+    };
   }
 
   async stopRevision(revision: AgentRevision): Promise<void> {

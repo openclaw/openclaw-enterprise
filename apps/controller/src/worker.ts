@@ -150,6 +150,7 @@ import {
 import {
   RepositoryCredentialAuthorityError,
   repositoryCleanupFailureCode,
+  disposedRepositorySessions,
   RepositoryCredentialLifecycle,
   StandingRepositorySessionDisposingError,
 } from "./worker/repository-credentials.ts";
@@ -1209,6 +1210,7 @@ export class ControllerWorker {
   private readonly nativeRepositorySender: NativeRepositorySender | undefined;
   private readonly repositoryPolicy: RepositoryPolicyDriver | undefined;
   private readonly repositoryAdmission: InstallationRuntimeDrivers["repositoryAdmission"];
+  private readonly observeRepositoryWithdrawal: InstallationRuntimeDrivers["observeRepositoryWithdrawal"];
   private readonly repositoryCleanupRetryMs: number;
   private readonly pluginDrivers: readonly PluginDriver[];
   private readonly repositoryCredentials: RepositoryCredentialLifecycle;
@@ -1380,6 +1382,7 @@ export class ControllerWorker {
     this.repositoryGitMaterial = options.repositoryGitMaterial;
     this.repositoryPolicy = drivers?.repositoryPolicy;
     this.repositoryAdmission = drivers?.repositoryAdmission;
+    this.observeRepositoryWithdrawal = drivers?.observeRepositoryWithdrawal;
     this.nativeRepositorySender = drivers?.nativeRepositorySender;
     this.repositoryCleanupRetryMs = positiveInteger(
       this.nativeRepositorySender?.maintenanceIntervalMs ?? 30_000,
@@ -2277,6 +2280,7 @@ export class ControllerWorker {
     let expiryRevision: Readonly<AgentRevision> | undefined;
     let withdrawal: "withdrawn" | "pending" | "retire-runtime" | undefined;
     let denial: RevisionDispatchResult | undefined;
+    let disposedSessions: readonly RepositoryCredentialMaterialRef[] | undefined;
     let cause: string | undefined;
     let stoppedRevision: Readonly<AgentRevision> | undefined;
     const cleanupRevisionId = withdrawnRevision?.id ?? repositoryCleanupRevisionId(claim);
@@ -2325,7 +2329,7 @@ export class ControllerWorker {
           }
           // Session service outages cannot delay exact workload/material retirement.
           if (expiryRevision !== undefined) {
-            ({ withdrawal, denial } = await this.withdrawExpiredRepositoryAccess(
+            ({ withdrawal, denial, disposedSessions } = await this.withdrawExpiredRepositoryAccess(
               claim,
               revision,
               resources,
@@ -2404,6 +2408,9 @@ export class ControllerWorker {
           complete = true;
           return;
         }
+        if (disposedSessions !== undefined && expiry !== "removal") {
+          complete = false;
+        }
         if (waitingForStop) {
           // Stopped intent cannot authorize retirement, including after denied Stop.
           // Keep cleanup responsible for later running intent without repeating Git effects.
@@ -2420,6 +2427,13 @@ export class ControllerWorker {
               agentId: claim.agentId,
               revisionId: cleanupRevisionId,
             });
+      if (
+        disposedSessions !== undefined &&
+        expiryRevision !== undefined &&
+        !isDeepStrictEqual(disposedSessions, disposedRepositorySessions(expiryRevision, attempts))
+      ) {
+        complete = false;
+      }
       if (complete) {
         complete =
           expiryRevision === undefined
@@ -2513,6 +2527,7 @@ export class ControllerWorker {
   ): Promise<{
     withdrawal: "withdrawn" | "pending" | "retire-runtime";
     denial?: RevisionDispatchResult;
+    disposedSessions?: readonly RepositoryCredentialMaterialRef[];
   }> {
     const compute = this.compute;
     if (
@@ -2533,32 +2548,9 @@ export class ControllerWorker {
       if (expiry === undefined || expiry === "retiring") {
         return { withdrawal: "pending" };
       }
-      // These facts are independent. A failed read cannot erase a definite authority loss
-      // established by the other read, and mutable Gateway readiness cannot hide a withdrawal.
-      const [authorization, modelWithdrawn] = await Promise.allSettled([
-        this.authorizeRevision(claim, agent, revision),
-        this.requiredModelCredentialWithdrawn(revision),
-      ]);
-      signal.throwIfAborted();
-      if (
-        (authorization.status === "fulfilled" &&
-          authorization.value !== undefined &&
-          ["AUTHORIZATION_DENIED", "ACTOR_REVOKED", "INVALID_AGENT_PRINCIPAL"].includes(
-            authorization.value.code,
-          )) ||
-        (modelWithdrawn.status === "fulfilled" && modelWithdrawn.value) ||
-        (revision.egressPlan?.policyReductionVersion !== 2 &&
-          compute.retireExpiredRepositoryAccess === undefined)
-      ) {
-        // The caller matched Compute to this revision. Missing withdrawal capability is
-        // definitive too, even when an independent dependency cannot report its state.
-        return {
-          withdrawal: "retire-runtime",
-          ...(authorization.status === "fulfilled" &&
-          authorization.value?.authorization !== undefined
-            ? { denial: authorization.value }
-            : {}),
-        };
+      const authority = await this.repositoryWithdrawalAuthority(claim, agent, revision, signal);
+      if (authority?.withdrawal === "retire-runtime") {
+        return authority;
       }
       if (agent.desiredRuntimeState !== "running" && expiry !== "removal") {
         return { withdrawal: "pending" };
@@ -2568,27 +2560,62 @@ export class ControllerWorker {
       if (agent.desiredRuntimeState === "running") {
         await this.recoverPendingCredentialWithdrawals(claim, revision);
       }
-      if (
-        authorization.status === "rejected" ||
-        authorization.value !== undefined ||
-        modelWithdrawn.status === "rejected"
-      ) {
-        return { withdrawal: "pending" };
+      if (authority !== undefined) {
+        return authority;
       }
-      const secrets = await this.resolveRevisionSecretContext(revision);
-      if ("result" in secrets) {
-        // Only the independently required Harness source produces this result. Optional
-        // withdrawn sources remain detached and cannot require retirement of a healthy Agent.
-        return {
-          withdrawal: secrets.result.code === "CREDENTIAL_WITHDRAWN" ? "retire-runtime" : "pending",
-        };
-      }
-      if ((await this.resolveRevisionBackend(revision)) !== undefined) {
-        return { withdrawal: "pending" };
+      const resources = await this.repositoryWithdrawalResources(revision);
+      if (resources !== undefined) {
+        return resources;
       }
       // Expiry recovery observes the original operation; it must not replay source detaches.
       signal.throwIfAborted();
       try {
+        if (
+          expiry === "removal" &&
+          revision.repositoryCredentials?.standingApprovalId === undefined &&
+          this.observeRepositoryWithdrawal !== undefined
+        ) {
+          let disposedSessions: readonly RepositoryCredentialMaterialRef[] | undefined;
+          try {
+            disposedSessions = await this.state.read(async (view) =>
+              disposedRepositorySessions(
+                revision,
+                await view.repositorySessions.listRevisionAttempts({
+                  namespaceId,
+                  agentId,
+                  revisionId,
+                }),
+              ),
+            );
+          } catch (error) {
+            if (signal.aborted || error instanceof WorkClaimLostError) {
+              throw error;
+            }
+            // Unavailable disposal evidence cannot suppress another topology's withdrawal owner.
+          }
+          const observed = await this.observeRepositoryWithdrawal(
+            revision,
+            disposedSessions,
+            signal,
+          );
+          if (observed !== "unsupported") {
+            if (observed !== "verified" || disposedSessions === undefined) {
+              return { withdrawal: "pending" };
+            }
+            const currentAuthority = await this.repositoryWithdrawalAuthority(
+              claim,
+              agent,
+              revision,
+              signal,
+            );
+            if (currentAuthority !== undefined) {
+              return currentAuthority;
+            }
+            const currentResources = await this.repositoryWithdrawalResources(revision);
+            signal.throwIfAborted();
+            return currentResources ?? { withdrawal: "withdrawn", disposedSessions };
+          }
+        }
         const result =
           revision.egressPlan?.policyReductionVersion === 2
             ? await reduceCredentialPolicy(
@@ -2610,6 +2637,71 @@ export class ControllerWorker {
         return { withdrawal: "pending" };
       }
     });
+  }
+
+  private async repositoryWithdrawalAuthority(
+    claim: ClaimedWork,
+    agent: Readonly<Agent>,
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<
+    | {
+        withdrawal: "pending" | "retire-runtime";
+        denial?: RevisionDispatchResult;
+      }
+    | undefined
+  > {
+    // These facts are independent. A failed read cannot erase a definite authority loss
+    // established by the other read, and mutable Gateway readiness cannot hide a withdrawal.
+    const [authorization, modelWithdrawn] = await Promise.allSettled([
+      this.authorizeRevision(claim, agent, revision),
+      this.requiredModelCredentialWithdrawn(revision),
+    ]);
+    signal.throwIfAborted();
+    if (
+      (authorization.status === "fulfilled" &&
+        authorization.value !== undefined &&
+        ["AUTHORIZATION_DENIED", "ACTOR_REVOKED", "INVALID_AGENT_PRINCIPAL"].includes(
+          authorization.value.code,
+        )) ||
+      (modelWithdrawn.status === "fulfilled" && modelWithdrawn.value) ||
+      (revision.egressPlan?.policyReductionVersion !== 2 &&
+        this.compute.retireExpiredRepositoryAccess === undefined)
+    ) {
+      // The caller matched Compute to this revision. Missing withdrawal capability is
+      // definitive too, even when an independent dependency cannot report its state.
+      return {
+        withdrawal: "retire-runtime",
+        ...(authorization.status === "fulfilled" && authorization.value?.authorization !== undefined
+          ? { denial: authorization.value }
+          : {}),
+      };
+    }
+    if (
+      authorization.status === "rejected" ||
+      authorization.value !== undefined ||
+      modelWithdrawn.status === "rejected"
+    ) {
+      return { withdrawal: "pending" };
+    }
+    return undefined;
+  }
+
+  private async repositoryWithdrawalResources(
+    revision: Readonly<AgentRevision>,
+  ): Promise<{ withdrawal: "pending" | "retire-runtime" } | undefined> {
+    const secrets = await this.resolveRevisionSecretContext(revision);
+    if ("result" in secrets) {
+      // Only the independently required Harness source produces this result. Optional
+      // withdrawn sources remain detached and cannot require retirement of a healthy Agent.
+      return {
+        withdrawal: secrets.result.code === "CREDENTIAL_WITHDRAWN" ? "retire-runtime" : "pending",
+      };
+    }
+    if ((await this.resolveRevisionBackend(revision)) !== undefined) {
+      return { withdrawal: "pending" };
+    }
+    return undefined;
   }
 
   /** Log a stuck cleanup's cause once per work item and cause, not on every recheck. */

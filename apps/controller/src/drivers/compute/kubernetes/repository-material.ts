@@ -3,6 +3,7 @@
 import type { V1Volume, V1VolumeMount } from "@kubernetes/client-node";
 import type {
   AgentRevision,
+  RepositoryCredentialMaterialRef,
   RepositoryCredentialRuntimeBinding,
   RepositoryCredentialSessionFiles,
 } from "@openclaw-enterprise/contracts";
@@ -109,6 +110,22 @@ function record(value: unknown): Record<string, unknown> {
 
 function digest(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+/** Material identity remains observable after the credential deadline has passed. */
+export function repositoryMaterialGeneration(
+  bindings: readonly RepositoryCredentialMaterialRef[],
+): string {
+  return digest(
+    [...bindings]
+      .sort((left, right) => {
+        if (left.repositoryRef < right.repositoryRef) {
+          return -1;
+        }
+        return left.repositoryRef > right.repositoryRef ? 1 : 0;
+      })
+      .map(({ repositoryRef, sessionId }) => [repositoryRef, sessionId]),
+  );
 }
 
 export function repositoryMaterialSecretName(
@@ -322,9 +339,7 @@ export function repositoryMaterialSpec(
           : 0,
     );
   return Object.freeze({
-    generation: digest(
-      materialBindings.map(({ repositoryRef, sessionId }) => [repositoryRef, sessionId]),
-    ),
+    generation: repositoryMaterialGeneration(materialBindings),
     bindings: Object.freeze(materialBindings),
   });
 }

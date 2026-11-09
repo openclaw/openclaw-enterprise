@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
+import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import {
   KubernetesComputeDriver,
   kubernetesGatewayNamespaceName,
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
-  tenant,
   authContext,
   options,
   digest,
@@ -34,6 +34,15 @@ type FixtureObject = {
 type Address = { name: string; namespace?: string | undefined };
 type DeleteRequest = Address & { body: { preconditions: { uid: string } } };
 type PodRequest = { namespace: string; labelSelector?: string };
+type RuntimeDeployment = FixtureObject & {
+  spec: {
+    replicas?: number;
+    template: {
+      metadata?: { labels?: Record<string, string>; annotations?: Record<string, string> };
+      spec: { containers: { name: string }[] };
+    };
+  };
+};
 // This view exposes only the existing transport seam used by the fixture.
 export type FixtureDriver = Omit<KubernetesComputeDriver, never> & {
   options: KubernetesComputeDriver["options"];
@@ -51,7 +60,15 @@ export function workspaceSetupFixture(
   network: Record<string, unknown> | undefined = undefined,
   computeOptions: Record<string, unknown> = {},
   driverDependencies = {},
-  { adopted = false } = {},
+  {
+    adopted = false,
+    revisionOverrides = {},
+    observedRuntimePods = false,
+  }: {
+    adopted?: boolean;
+    revisionOverrides?: Partial<AgentRevision>;
+    observedRuntimePods?: boolean;
+  } = {},
 ) {
   const state: {
     ready: boolean;
@@ -111,15 +128,17 @@ export function workspaceSetupFixture(
     harness: embedded
       ? { id: "openclaw", version: "1.0.0", mode: "embedded" }
       : { id: "codex", version: "1.0.0", mode: "dedicated" },
+    ...revisionOverrides,
   });
+  const namespaceId = revision.namespaceId;
   // An adopted Installation keeps its released storage namespace as the tenant namespace.
   const namespace = adopted
-    ? kubernetesGatewayNamespaceName(tenant.id)
-    : kubernetesNamespaceName(tenant.id);
+    ? kubernetesGatewayNamespaceName(namespaceId)
+    : kubernetesNamespaceName(namespaceId);
   const control =
     computeOptions.executionCluster === undefined
       ? namespace
-      : kubernetesGatewayNamespaceName(tenant.id);
+      : kubernetesGatewayNamespaceName(namespaceId);
   const objects = new Map<string, FixtureObject>();
   const records: FixtureObject[] = [];
   const key = (kind: string, name: string, target = namespace) =>
@@ -146,15 +165,15 @@ export function workspaceSetupFixture(
     return object;
   };
   const tenantNamespace = driver.manifest("v1", "Namespace", namespace, {
-    namespaceId: tenant.id,
+    namespaceId,
   });
   if (adopted) {
-    tenantNamespace.metadata.labels!["openclaw.dev/gateway-namespace"] = tenant.id;
+    tenantNamespace.metadata.labels!["openclaw.dev/gateway-namespace"] = namespaceId;
   }
   save({ ...tenantNamespace, status: { phase: "Active" } });
   if (!adopted) {
     save({
-      ...driver.gatewayNamespaceManifest({ namespaceId: tenant.id }),
+      ...driver.gatewayNamespaceManifest({ namespaceId }),
       status: { phase: "Active" },
     });
   }
@@ -163,7 +182,7 @@ export function workspaceSetupFixture(
       "v1",
       "Secret",
       `transport-${digest(revision.agentId)}`,
-      { namespaceId: tenant.id, agentId: revision.agentId },
+      { namespaceId, agentId: revision.agentId },
       { name: embedded ? namespace : control, plane: "control" },
     ),
     type: "Opaque",
@@ -172,7 +191,7 @@ export function workspaceSetupFixture(
         "v1",
         "Secret",
         `transport-${digest(revision.agentId)}`,
-        { namespaceId: tenant.id, agentId: revision.agentId },
+        { namespaceId, agentId: revision.agentId },
         {
           name: embedded ? namespace : control,
           plane: "control",
@@ -197,11 +216,11 @@ export function workspaceSetupFixture(
     data: { value: Buffer.from("fixture-model-key").toString("base64") },
   });
   for (const target of [
-    { name: namespace, plane: "execution" },
-    { name: control, plane: "control" },
+    { name: namespace, plane: "execution" as const },
+    { name: control, plane: "control" as const },
   ]) {
-    for (const policy of driver.networkPolicies({ namespaceId: tenant.id }, target)) {
-      save(policy);
+    for (const policy of driver.networkPolicies({ namespaceId }, target)) {
+      save({ ...policy });
     }
   }
   const read =
@@ -238,6 +257,23 @@ export function workspaceSetupFixture(
     records.push(structuredClone(body));
     return save(body);
   };
+  const list =
+    (kind: string) =>
+    async ({ namespace: target, labelSelector }: PodRequest) => {
+      const labels = labelSelector === undefined ? {} : labelSelectorLabels(labelSelector);
+      return {
+        items: [...objects.values()]
+          .filter(
+            (object) =>
+              object.kind === kind &&
+              object.metadata.namespace === target &&
+              Object.entries(labels).every(
+                ([name, value]) => object.metadata.labels?.[name] === value,
+              ),
+          )
+          .map((object) => structuredClone(object)),
+      };
+    };
   const remove =
     (kind: string) =>
     async ({ name, namespace: target, body }: DeleteRequest) => {
@@ -252,8 +288,55 @@ export function workspaceSetupFixture(
       return { items: adopted ? [structuredClone(objects.get(key("Namespace", namespace)))] : [] };
     },
     readNamespace: read("Namespace"),
+    listNamespacedSecret: list("Secret"),
     async listNamespacedPod({ namespace: target, labelSelector }: PodRequest) {
       const labels = labelSelectorLabels(labelSelector);
+      if (observedRuntimePods) {
+        // Project Pods from the workloads written by the real Compute Driver. Keeping the
+        // template's labels and annotations lets observation detect a stale or replaced Pod.
+        const deployments = [...objects.values()].filter((object) => {
+          if (object.kind !== "Deployment" || object.metadata.namespace !== target) {
+            return false;
+          }
+          const candidate = object as RuntimeDeployment;
+          return (
+            candidate.spec.replicas === 1 &&
+            Object.entries(labels).every(
+              ([name, value]) => candidate.spec.template.metadata?.labels?.[name] === value,
+            )
+          );
+        }) as RuntimeDeployment[];
+        return {
+          items: deployments.map((deployment) => {
+            const template = deployment.spec.template;
+            const gatewayPod =
+              template.metadata?.labels?.["openclaw.dev/workload-role"] === "gateway";
+            const revisionId = template.metadata?.labels?.["openclaw.dev/revision"];
+            return {
+              apiVersion: "v1",
+              kind: "Pod",
+              metadata: {
+                name: gatewayPod ? `gateway-pod-${revisionId}` : `${deployment.metadata.name}-pod`,
+                namespace: target,
+                uid: gatewayPod ? `gateway-uid-${revisionId}` : `${deployment.metadata.uid}-pod`,
+                labels: template.metadata?.labels,
+                annotations: template.metadata?.annotations,
+              },
+              spec: structuredClone(template.spec),
+              status: {
+                phase: "Running",
+                podIP: gatewayPod ? "10.42.0.14" : "10.42.0.15",
+                conditions: [{ type: "Ready", status: state.ready ? "True" : "False" }],
+                containerStatuses: template.spec.containers.map(({ name }) => ({
+                  name,
+                  ready: state.ready,
+                  containerID: `containerd://${deployment.metadata.uid}-${name}`,
+                })),
+              },
+            };
+          }),
+        };
+      }
       const gateway = objects.get(key("Deployment", `gateway-${digest(revision.agentId)}`, target));
       const revisionId = labels["openclaw.dev/revision"];
       if (
@@ -350,8 +433,14 @@ export function workspaceSetupFixture(
   Object.assign(core, { createNamespacedSecret: write });
   Object.assign(core, { replaceNamespacedSecret: write });
   const clients = {
+    version: {
+      async getCode() {
+        return { gitVersion: "v1.35.0" };
+      },
+    },
     core,
     apps: {
+      listNamespacedDeployment: list("Deployment"),
       readNamespacedDeployment: read("Deployment"),
       patchNamespacedDeployment: write,
       deleteNamespacedDeployment: remove("Deployment"),
@@ -382,6 +471,7 @@ export function workspaceSetupFixture(
     },
     networking: {
       readNamespacedNetworkPolicy: read("NetworkPolicy"),
+      replaceNamespacedNetworkPolicy: write,
       patchNamespacedNetworkPolicy: write,
       deleteNamespacedNetworkPolicy: remove("NetworkPolicy"),
     },
@@ -405,7 +495,7 @@ export function workspaceSetupFixture(
   Object.assign(driver, { apiClients: Promise.resolve(clients) });
   const setup = {
     id: "setup-private",
-    namespaceId: tenant.id,
+    namespaceId,
     agentId: revision.agentId,
     files: { "AGENTS.md": "private-create-documents", "USER.md": "" },
     completed: false,

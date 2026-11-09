@@ -139,6 +139,38 @@ function settleCleanup(attempts: readonly Readonly<RepositorySessionAttempt>[]):
     : { settled: true };
 }
 
+/** The complete disposed generation, only when retained history identifies it unambiguously. */
+export function disposedRepositorySessions(
+  revision: Revision,
+  attempts: readonly Attempt[],
+): readonly RepositoryCredentialMaterialRef[] | undefined {
+  const snapshot = revision.repositoryCredentials;
+  if (
+    snapshot === undefined ||
+    snapshot.standingApprovalId !== undefined ||
+    snapshot.bindings.length === 0 ||
+    attempts.length !== snapshot.bindings.length
+  ) {
+    return undefined;
+  }
+  const refs = new Set(snapshot.bindings.map(({ repositoryRef }) => repositoryRef));
+  const sessions: RepositoryCredentialMaterialRef[] = [];
+  for (const attempt of attempts) {
+    if (
+      attempt.brokerProtocol !== 3 ||
+      attempt.phase !== "disposed" ||
+      attempt.sessionId === undefined ||
+      !refs.delete(attempt.repositoryRef)
+    ) {
+      return undefined;
+    }
+    sessions.push({ repositoryRef: attempt.repositoryRef, sessionId: attempt.sessionId });
+  }
+  return refs.size === 0
+    ? sessions.sort((left, right) => left.repositoryRef.localeCompare(right.repositoryRef))
+    : undefined;
+}
+
 /** Owns only persisted session correlations; material remains ephemeral until Compute accepts it. */
 export class RepositoryCredentialLifecycle {
   private readonly dependencies: Dependencies;
