@@ -108,6 +108,7 @@ async function request(
   return {
     status: response.status,
     text,
+    hasNullData: isRecord(payload) && payload.data === null,
     hasTopLevelSessionKey: isRecord(payload) && Object.hasOwn(payload, "sessionKey"),
     cookies: response.headers.getSetCookie(),
     data: isRecord(payload) && isRecord(payload.data) ? payload.data : {},
@@ -142,8 +143,8 @@ function collect(api: Api, login: Login) {
   });
 }
 
-async function readSession(api: Api, login: Login, userId: string) {
-  const session = await request(api, "/api/auth/session", { cookie: login.cookie });
+async function readSession(api: Api, cookie: string, userId: string) {
+  const session = await request(api, "/api/auth/session", { cookie });
   assert.equal(session.status, 200);
   assert.equal(session.data.authenticated, true);
   assert.ok(isRecord(session.data.user));
@@ -167,12 +168,15 @@ function assertCollected(result: Awaited<ReturnType<typeof request>>, sessionKey
   );
 }
 
-function assertDenied(result: Awaited<ReturnType<typeof request>>, sessionKey: string) {
+function assertDenied(
+  result: Awaited<ReturnType<typeof request>>,
+  ...sessionKeys: [string, ...string[]]
+) {
   assert.equal(result.status, 401);
   assert.ok(
     !result.hasTopLevelSessionKey &&
       !Object.hasOwn(result.data, "sessionKey") &&
-      !result.text.includes(sessionKey),
+      sessionKeys.every((key) => !result.text.includes(key)),
     "Denied collection must omit the session key",
   );
 }
@@ -224,18 +228,46 @@ test(
     // processes must compete for one durable result, rather than separate memory sets.
     await t.test("concurrent collectors return exactly one original session key", async () => {
       const login = await callback(a);
-      const session = await readSession(a, login, recoveryUserId);
+      const session = await readSession(a, login.cookie, recoveryUserId);
       const results = await Promise.all([collect(a, login), collect(b, login)]);
       const [collected, denied] = results.sort((left, right) => left.status - right.status);
       assertCollected(collected, session);
       assertDenied(denied, session);
     });
 
+    await t.test("a different active session cannot take the outstanding result", async () => {
+      const login = await callback(a);
+      const originalKey = await readSession(a, login.cookie, recoveryUserId);
+      const foreignKey = await readSession(b, adminCookie, recoveryUserId);
+      assert.ok(originalKey !== foreignKey, "the same account must have two distinct sessions");
+      const receipt = login.cookie
+        .split("; ")
+        .find((item) => item.startsWith("__Host-occ_login_receipt="));
+      assert.ok(receipt, "callback must issue the receipt");
+      const foreign = { attemptId: login.attemptId, cookie: `${adminCookie}; ${receipt}` };
+      assertDenied(await collect(b, foreign), originalKey, foreignKey);
+      assertCollected(await collect(b, login), originalKey);
+    });
+
+    await t.test("the peer denies an outstanding result after committed sign-out", async () => {
+      const login = await callback(a);
+      const originalKey = await readSession(b, login.cookie, recoveryUserId);
+      const signedOut = await request(a, "/api/auth/sign-out", {
+        method: "POST",
+        cookie: login.cookie,
+      });
+      assert.equal(signedOut.status, 200);
+      const revoked = await request(b, "/api/auth/session", { cookie: login.cookie });
+      assert.equal(revoked.status, 200);
+      assert.ok(revoked.hasNullData, "the peer must observe revocation before collection");
+      assertDenied(await collect(b, login), originalKey);
+    });
+
     const spent = await callback(a);
-    const spentSession = await readSession(a, spent, recoveryUserId);
+    const spentSession = await readSession(a, spent.cookie, recoveryUserId);
     assertCollected(await collect(a, spent), spentSession);
     const outstanding = await callback(a);
-    const outstandingSession = await readSession(a, outstanding, recoveryUserId);
+    const outstandingSession = await readSession(a, outstanding.cookie, recoveryUserId);
     const before = await pool.query(
       "SELECT id, expires_at FROM occ.session WHERE user_id = $1 ORDER BY id",
       [recoveryUserId],
@@ -243,7 +275,7 @@ test(
     // Observe the issuer's actual process exit before asking its independent peer.
     await a.stop();
     await t.test("a result consumed by the exited issuer stays spent", async () => {
-      const stillCurrent = await readSession(b, spent, recoveryUserId);
+      const stillCurrent = await readSession(b, spent.cookie, recoveryUserId);
       assert.ok(stillCurrent === spentSession, "the original session must remain current");
       assertDenied(await collect(b, spent), spentSession);
     });
