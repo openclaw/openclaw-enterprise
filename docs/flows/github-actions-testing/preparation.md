@@ -28,6 +28,19 @@ fail setup; verified cache hits do not rewrite the cache. PostgreSQL, image and
 Kubernetes profiles share the cache. Keys include OS, architecture and installer
 source. Direct callers can reuse verified installed bytes without a cache.
 
+`scripts/ci/image-pull.ts:pullImage` logs each failed pull attempt before deciding
+whether to retry, including the final attempt. It reports elapsed time, whether
+the command timed out, and up to eight layer states from the captured output tails.
+Only known Docker phases and hexadecimal layer IDs enter this progress summary;
+unmatched output and a leading partial line at the tail cutoff are omitted.
+The First Agent smoke adapter forwards both captured streams to this parser.
+Diagnostic emission is best effort and cannot replace the terminal pull error.
+Docker suppresses numeric progress on non-terminal
+output, so these states provide partial evidence, not the current transfer phase. If no progress matches, the
+summary says so. These diagnostics retain reported download and extraction
+activity without changing timeouts, backoff, concurrency, or digest verification.
+They do not establish registry health or explain why an attempt stalled.
+
 The PR advisory OpenShell job uses Ubuntu 24.04 for Landlock and selects packaged Google Chrome through `OCC_TEST_BROWSER_EXECUTABLE`. The OpenShell manifest lists this optional input so test children receive it. Before image builds, `scripts/ci/setup-tools.sh:install_browser_dependencies` checks a headless sandboxed renderer and logs its version; errors fail setup. The browser inherits only `PATH`, with private `HOME` and `TMPDIR`. Ubuntu’s existing AppArmor profile permits its user namespaces. Without an override, Playwright uses its default headless shell.
 
 `scripts/ci/prepare.mjs:validateLaneInputsBeforeSideEffects` requires the optional
