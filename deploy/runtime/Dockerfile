@@ -221,6 +221,11 @@ COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-r
 RUN echo 'b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
+# Issue first-install node setup from the Gateway's own pairing store before it starts.
+COPY deploy/runtime/openclaw-node-only-setup.patch /tmp/openclaw-node-only-setup.patch
+RUN echo 'b19f0c262ddd437e3f0958aba577ac5ccf13241148c0436f4a7455b45f300d34  /tmp/openclaw-node-only-setup.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-node-only-setup.patch
+
 # Broad source verification is an explicit target, separate from image assembly.
 # Native container CI requires this target before exporting and smoking the image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
@@ -241,6 +246,8 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/cli/node-cli/register.test.ts \
     src/cli/node-cli/gateway-options.test.ts \
     src/cli/connect-cli.test.ts \
+    src/cli/qr-cli.test.ts \
+    src/cli/qr-node-only.test.ts \
     src/cli/connect-cli.reconnect.test.ts \
     packages/gateway-client/src/client.device-auth.test.ts \
     packages/gateway-client/src/client.node-invocation.test.ts \
