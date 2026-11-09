@@ -6175,6 +6175,8 @@ test("a failed local setup reports only paired outcomes", async (t) => {
     { routingController: "private-outcome-canary" },
     { routingController: null },
     { routingController: "cert-manager" },
+    { routingOperation: "node-pod-cidr", routingController: "cert-manager" },
+    { routingOperation: "node-pod-cidr", routingController: "envoy-gateway" },
     { primaryStage: "rollback", routingOperation: "manifest-apply" },
     { primaryStage: "rollback", routingController: "cert-manager" },
   ]) {
@@ -6311,6 +6313,7 @@ else if (scenario === "operation-only") process.stdout.write(legacyRecord.trimEn
 else if (scenario === "invalid-operation") process.stdout.write(record.replace("controller-rollout", "private-outcome-canary"));
 else if (scenario === "invalid-controller") process.stdout.write(record.replace("envoy-gateway", "private-outcome-canary"));
 else if (scenario === "controller-only") process.stdout.write(record.replace(" routing_operation=controller-rollout", ""));
+else if (scenario === "node-cidr-controller") process.stdout.write(record.replace("controller-rollout", "node-pod-cidr"));
 else if (scenario === "nonrouting") process.stdout.write(record.replace("primary_stage=routing", "primary_stage=rollback"));
 else if (scenario === "stderr") process.stderr.write(record);
 else if (scenario === "duplicate") process.stdout.write(record + record);
@@ -6347,7 +6350,7 @@ test("reject ambiguous or non-failure startup records", async (t) => {
   process.env.OPENAI_API_KEY = "invented-fixture-input";
   delete process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
   delete process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
-  for (const scenario of ["invalid-operation", "invalid-controller", "controller-only", "nonrouting", "stderr", "duplicate", "malformed", "early", "truncated", "incomplete", "overflow", "signal", "success"]) {
+  for (const scenario of ["invalid-operation", "invalid-controller", "controller-only", "node-cidr-controller", "nonrouting", "stderr", "duplicate", "malformed", "early", "truncated", "incomplete", "overflow", "signal", "success"]) {
     process.env.OCC_FIXTURE_STARTUP_CASE = scenario;
     if (scenario === "success") await localFirstAgentStack(t);
     else await assert.rejects(localFirstAgentStack(t), /Start Local Setup/);
@@ -6356,13 +6359,15 @@ test("reject ambiguous or non-failure startup records", async (t) => {
     ["valid", { routingOperation: "controller-rollout", routingController: "envoy-gateway" }],
     ["operation-only", { routingOperation: "node-pod-cidr" }],
     ["legacy", {}],
+    // Check intake directly so reporter rejection cannot hide an invalid pair.
+    ["node-cidr-controller", null],
   ]) {
     process.env.OCC_FIXTURE_STARTUP_CASE = scenario;
     await assert.rejects(promisify(execFile)(${JSON.stringify(join(root, "bin/occ"))}, ["dev", "up"]), (error) => {
       const observation = startupFailureObservation();
       // Deliberately split the genuine stdout across every boundary.
       for (const character of error.stdout) observation.write(character);
-      assert.deepEqual(observation.finish(error.code, error.signal, error.killed), {
+      assert.deepEqual(observation.finish(error.code, error.signal, error.killed), details === null ? undefined : {
         kind: "local-first-agent-startup-failure", primaryStage: "routing", cleanupFailed: true, parentContextDone: false,
         ...details,
       });

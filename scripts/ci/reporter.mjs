@@ -296,6 +296,7 @@ function safeMeasurement(value) {
           ].includes(value.routingOperation))) ||
       (value.routingController !== undefined &&
         (value.routingOperation === undefined ||
+          value.routingOperation === "node-pod-cidr" ||
           !["cert-manager", "envoy-gateway"].includes(value.routingController)))
     ) {
       return undefined;

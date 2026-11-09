@@ -141,7 +141,11 @@ export function startupFailureObservation() {
           /^\[occ-dev-startup\] primary_stage=(unknown|canceled|deadline|routing|network-verification|network-cleanup|registry-detach|platform-namespace|openshell-preparation|rollback) cleanup_failed=(true|false) parent_context_done=(true|false)(?: routing_operation=(manifest-download|gateway-api-readiness|manifest-filter|manifest-write|manifest-apply|controller-crd-readiness|controller-rollout|gateway-class-apply|gateway-class-readiness|node-pod-cidr)(?: routing_controller=(cert-manager|envoy-gateway))?)?$/.exec(
             line,
           );
-        if (match && (!match[4] || match[1] === "routing")) {
+        if (
+          match &&
+          (!match[4] || match[1] === "routing") &&
+          !(match[4] === "node-pod-cidr" && match[5])
+        ) {
           final = {
             kind: "local-first-agent-startup-failure",
             primaryStage: match[1],
