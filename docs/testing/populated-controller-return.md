@@ -107,6 +107,10 @@ pause between observations during the upgrade. The evidence includes timestamps,
 request durations, actual gaps, received HTTP status even for invalid response
 bodies, and outcomes. Only
 HTTP 200 with the original Installation ID counts as a successful observation.
+A successful sample includes `requestId` when the `x-request-id` header and
+`meta.requestId` match and have the controller’s request ID format. The client omits
+the ID if it contains a known protected value. To identify the serving Pod, find
+that ID in a corresponding `http.completed` record from a known Pod. Samples without the ID still count as successful.
 Response bodies and credentials are omitted. If recording fails, the test reports
 the write failure alongside any upgrade failure, preserving the upgrade as the
 primary cause.
