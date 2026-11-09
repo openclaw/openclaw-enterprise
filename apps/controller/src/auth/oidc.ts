@@ -321,7 +321,6 @@ export async function exchangeOidcSubject(
       jwks,
       now: Date.now(),
     });
-<<<<<<< HEAD
     if (claims === undefined) {
       return { denial: "EXTERNAL_IDENTITY_REJECTED" };
     }

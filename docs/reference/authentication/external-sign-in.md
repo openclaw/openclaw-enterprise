@@ -124,13 +124,12 @@ Attach an identity explicitly to a manually created account, or use OIDC enrollm
 
 Password, Google and OIDC sessions share admission rules: an eight-hour lifetime without refresh, current account and
 method checks, and required audit before a cookie is released or, on logout,
-cleared. Older sessions without account/method binding are rejected; users sign in again.
+cleared. Older sessions without account/method binding are rejected.
 An external session authenticates only while its provider instance is configured: removing
 a provider, or changing its client ID (or OIDC issuer), ends that instance's sessions on their
 next request, audited once as `authentication.session.end` with reason
-`PROVIDER_NOT_CONFIGURED`. Password sessions are unaffected. Activation is one-way:
-removing every provider fails startup, and the database refuses sessions from older
-binaries. Returning to password-only sign-in needs [stopped maintenance](../../guides/deploy/auth-maintenance.md#deactivate-external-sign-in).
+`PROVIDER_NOT_CONFIGURED`. Password sessions are unaffected. Activation is one-way: removing every
+provider fails startup, and the database refuses sessions from older binaries. Returning to password-only sign-in needs [stopped maintenance](../../guides/deploy/auth-maintenance.md#deactivate-external-sign-in).
 
 The recovery user needs one local password, its Installation Principal, and
 native IAM Installation `administer`; disabling it returns `409`. Keep its password

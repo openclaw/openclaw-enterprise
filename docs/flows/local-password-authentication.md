@@ -64,11 +64,9 @@ graph TD
 [`scripts/bootstrap-installation.mjs`](../../scripts/bootstrap-installation.mjs)
 loads the singleton Installation. Existing Installations verify the administrator's
 immutable account/IAM identity without issuing keys, changing output, or repairing
-grants, including Installations predating service-administrator bootstrap.
+grants.
 `verifiedWithoutAuth` checks the administrator's `occ."user"` row and IAM Principal
-before loading Better Auth. Success logs `installation.already-bootstrapped` with
-`step: "fast-path"`; a miss or error runs the full Better Auth check. Both paths
-check the base URL first.
+before loading Better Auth; a miss or error runs the full Better Auth check.
 
 For fresh setup, production creates a Better Auth account with a random password;
 development creates the configured `OPENCLAW_DEV_EMAIL`/`OPENCLAW_DEV_PASSWORD`
@@ -179,7 +177,7 @@ result and its two-minute deadline with the session. The signed `SameSite=Strict
 v3 receipt binds provider, session and attempt. With matching origin, attempt
 and session cookie, any compatible instance can consume the result through State.
 After commit, the handler clears the receipt and returns the current session’s
-key without extending it. Incompatible receipts require fresh sign-in. Password sign-in returns that key directly.
+key without extending it. Password sign-in returns that key.
 `refuseUnmatched` rejects malformed, unbound, replayed or expired callbacks without
 audit, incrementing
 [`occ_sign_in_unmatched_callbacks_total`](../reference/metrics.md#application-families).
@@ -195,18 +193,15 @@ including `hd` and `email_verified` when allowed domains are set, and returns
 `sub`. It does not use the OIDC enrollment policy.
 
 With the experimental OIDC trust claim configured
-([settings](../reference/settings/oidc.md)),
-`apps/controller/src/auth/oidc.ts:exchangeOidcSubject` also matches the verified
-token's named claim exactly; only a match returns `trusted` and the token's
-email claim. An unattached match falls back to
-`packages/occ/src/state/human-authentication.ts:provisionTrustedExternalAccount`:
-one transaction writes the user, identity-only method, grantless Principal, and
-enrolment, auditing `authentication.account.self-enrol` before
-`authentication.login`. A savepoint wraps the writes: a uniqueness conflict —
-a concurrent enrolment or a held email — fails closed after rolling back;
-locks are user-first, and the attempt's creation time travels in, so an
-identity appearing or changing after the attempt began refuses like an
-attached one.
+([settings](../reference/settings/oidc.md)), `exchangeOidcSubject` returns
+`trusted` and the token's email only on an exact verified-claim match; the
+[external sign-in reference](../reference/authentication/external-sign-in.md)
+owns the claim rules. An unattached match runs
+`human-authentication.ts:provisionTrustedExternalAccount`: one transaction
+writes the user, identity-only method, grantless Principal and enrolment,
+auditing `authentication.account.self-enrol` before `authentication.login`.
+A savepoint fails closed on uniqueness conflicts; locks stay user-first, and
+the attempt's creation time preserves currentness.
 
 `apps/controller/src/auth/client-address.ts:clientAddressConfiguration` canonicalizes
 IPv4-mapped addresses before prefix validation, refusing entries covering every
@@ -224,12 +219,11 @@ for start, callback and result admission (`keyedAdmission`), keyed on
 client addresses behind trusted proxies and browser cookies otherwise. Provider
 HTTP shares a deadline and response-byte cap; State bounds pending attempts and
 expired cleanup, persists attempt and session deadlines, and subtracts monotonic
-elapsed work from cookie Max-Age. Expired completion releases no cookie.
+elapsed work from cookie Max-Age.
 
 `scripts/auth-maintain.mjs` parses arguments with
-`scripts/lib/auth-maintain-arguments.mjs:parseAuthMaintainArguments` before
-configuration or database access. Undeclared commands, including inherited object
-properties, exit `64` with usage. The
+`parseAuthMaintainArguments` before configuration or database access.
+Undeclared commands, including inherited object properties, exit `64` with usage. The
 [maintenance procedure](../guides/deploy/auth-maintenance.md) lists supported operations
 and exit codes.
 
@@ -331,9 +325,11 @@ Run `tests/integration/` files with `node --test`.
   rollback, lost COMMIT replies and password-only logout under contention. Its
   fresh-bootstrap case verifies service identity, output and access, skipping
   existing Installations.
+- `node --test tests/integration/postgres-oidc-trusted-claim.test.mjs` with
+  `OCC_TEST_DATABASE_URL` proves claim-gated enrolment, held-email refusal,
+  revocation-before-callback refusal and concurrent-callback recovery.
 - `node --test tests/integration/bootstrap-output.test.mjs` covers exclusive
-  output and rejected unsafe paths. Failed writes retain any created file.
-  Database cases require the [disposable PostgreSQL setup](../testing/postgresql.md#postgresql-test-environment);
+  output and rejected unsafe paths. Database cases require the [disposable PostgreSQL setup](../testing/postgresql.md#postgresql-test-environment);
   an unconfigured/skipped suite is not runtime proof.
 - `postgres-bootstrap-failures.test.mjs` with `OCC_BOOTSTRAP_FAILURE_DATABASE_URL`
   uses a dedicated loopback database to verify concurrent production bootstrap,
