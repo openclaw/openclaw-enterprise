@@ -24,7 +24,7 @@ export async function repositoryRestartInventory(
   input: Parameters<typeof createOpenShellCapabilities>[0],
   fixture: Pick<
     Awaited<ReturnType<typeof standingExecutionPlatform>>,
-    "database" | "observerPool" | "state" | "installation" | "actor"
+    "database" | "observerPool" | "state" | "installation" | "actor" | "controller"
   >,
 ) {
   const capabilities = createOpenShellCapabilities(input);
@@ -109,6 +109,30 @@ export async function repositoryRestartInventory(
     fixture.installation.id,
     betterAuthIssuer(fixture.installation.id),
   ).provisionPasswordAccount(prepared, seed);
+  // Additional accounts have Installation-only grants. Bind the exact Namespace
+  // and Agent needed by this inventory read, including its retained revisions.
+  const inventoryRole = await fixture.controller.createIAMRole(fixture.actor.id, {
+    namespaceId: revision.namespaceId,
+    permissions: [
+      { action: "read", resourceKind: "namespace" },
+      { action: "read", resourceKind: "agent" },
+      { action: "deploy", resourceKind: "agent" },
+      { action: "read", resourceKind: "agent_revision" },
+    ],
+  });
+  for (const [resourceKind, resourceId] of [
+    ["namespace", revision.namespaceId],
+    ["agent", revision.agentId],
+  ] as const) {
+    await fixture.controller.createIAMAccessBinding(fixture.actor.id, {
+      namespaceId: revision.namespaceId,
+      subjectKind: "identity",
+      subjectId: seed.principal.id,
+      roleId: inventoryRole.id,
+      resourceKind,
+      resourceId,
+    });
+  }
 
   // Register the same selected owner in Compute and API composition. No exchange or
   // repository sender is configured on this read-only API instance.
