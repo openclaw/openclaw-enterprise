@@ -158,7 +158,18 @@ both commits.
 
 `scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
 
-The runner discovers active test files and verifies one lane assignment per file. Different prerequisites require separate files. It invokes whole files with invocation-scoped environment inputs. A custom Node reporter publishes case names, locations and outcomes, excluding arbitrary output. The runner also keeps each failure's error message (at most 600 characters) and top stack frame (240), with the repository path stripped, every nonpublic environment value of eight or more characters (from the job and from the test process) replaced by `[env:NAME]`, and common token, key, URL-password and `password=`-style values replaced by `[redacted]`; the runner prints the same line per failed case to the job log. Values a test generates at run time are redacted only when they match those shapes. Controller HTTP assertion diagnostics can also retain numeric actual and expected status codes, an allowlisted OCC error code, and the upstream ChatGPT operation and status when available. Denied-traffic failures retain only an allowlisted traffic category, without target addresses or response data. Plugin-status fixture failures retain an allowlisted readiness or rollout stage. Rollout diagnostics include allowed Pod phases, readiness and scheduling flags, container restart counts and exit codes, and allowlisted reasons. These structured diagnostics exclude response bodies, credentials, and identities.
+The runner assigns each active test file to one lane and invokes whole files
+with invocation-scoped inputs. Different prerequisites require separate files.
+The Node reporter publishes case names, locations and outcomes without arbitrary
+output. Failure messages (600 characters) and frames (240) omit repository paths,
+nonpublic job/child environment values of eight or more characters, and known
+credential shapes. Job logs use the same redacted text; unrecognized runtime
+values can remain. HTTP diagnostics retain numeric statuses and allowlisted OCC
+errors or ChatGPT operations. Traffic diagnostics retain allowlisted categories.
+Plugin diagnostics retain readiness/rollout stages, Pod phases, readiness and
+scheduling flags, restart counts, exit codes and allowlisted reasons. Structured
+diagnostics exclude addresses, response bodies, credentials and identities.
+See the [CI guide](../testing/ci.md).
 
 Required cases must pass; every skip or TODO fails the lane. There are no counterpart-skip lists or CI name filters. Synthetic file-wrapper success, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Lane results retain failure, timeout and cleanup outcomes.
 
