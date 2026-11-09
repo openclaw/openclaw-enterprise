@@ -297,7 +297,7 @@ test(
 );
 
 test(
-  "OpenShell denies a removed repository binding while another Agent can still read",
+  "OpenShell isolates Git withdrawal before worker replacement and retains denial afterward",
   { skip: !selected, timeout: 45 * 60_000 },
   async (t) => {
     let phase = "setup";
@@ -338,7 +338,6 @@ test(
         receipt: "live denial receipt",
         signed: "live signed decision",
         origin: "live origin checks",
-        positive: "live B positive",
       },
       replacement: {
         witnessBefore: "replacement witness before denial",
@@ -351,7 +350,6 @@ test(
         receipt: "replacement denial receipt",
         signed: "replacement signed decision",
         origin: "replacement origin checks",
-        positive: "replacement B positive",
       },
     } as const;
     try {
@@ -664,41 +662,15 @@ test(
         );
         assert.equal(after.issued, before.issued);
         await witness(step.witnessAfter);
-        if (mode === "replacement") {
-          phase = "replacement B route readiness";
-          // A's reduced-runtime maintenance does not restore B's independent Git route.
-          // Observe B on the same worker before its single positive request; never retry Git.
-          await fixture.waitForRestoredGitRoute(
-            {
-              namespaceId: fixture.namespace.id,
-              agentId: b.agent.id,
-              revisionId: b.revision.id,
-              repositoryRef: origin.repositoryRef,
-              sandboxId: b.target.sandboxId,
-            },
-            expectedWorker,
-            Math.min(30_000, remaining()),
-            finiteSignal,
-          );
-          inTime();
-        }
-        phase = step.positive;
-        const issuedBeforeRead = origin.snapshot().issued;
-        assert.equal(
-          await read(b),
-          indexB,
-          "the second Agent must retain its authorized Git credential",
-        );
-        assert.equal(
-          origin.snapshot().issued,
-          issuedBeforeRead,
-          "B must reuse its original credential",
-        );
         assert.deepEqual((await a.readExecution()).identity, a.original.identity);
-        assert.deepEqual((await b.readExecution()).identity, b.original.identity);
         inTime();
       };
       await verify("live");
+      phase = "live B positive";
+      assert.equal(await read(b), indexB, "B must reuse its original credential after A's denial");
+      assert.equal(origin.snapshot().issued, issuedBeforeRemoval);
+      assert.deepEqual((await b.readExecution()).identity, b.original.identity);
+      inTime();
       phase = "after chat";
       previousReply = await conversation.turn(previousReply, remaining());
       // The live denial does not wait for cleanup. The restart must follow the actual

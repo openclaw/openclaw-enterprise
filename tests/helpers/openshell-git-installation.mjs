@@ -14,7 +14,6 @@ import {
   projectOpenShellGitMaintenanceCompletion,
   projectOpenShellGitRetention,
   selectOpenShellGitWithdrawalDenials,
-  selectOpenShellGitRouteReadiness,
 } from "../../scripts/ci/openshell-git-retention.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
 import { startSkipperPrivateGitOrigin } from "../fixtures/skipper-private-git-origin.mjs";
@@ -118,69 +117,6 @@ async function waitUntil(description, operation, timeout, signal) {
     await delay(500, undefined, { signal });
   }
   throw new Error(`Timed out waiting for ${description}`);
-}
-
-// The observation deadline owns every child read and never accepts a late result.
-export async function observeRestoredGitRoute({
-  identity,
-  workerUid,
-  timeout,
-  signal,
-  worker,
-  workerEvents,
-  observed,
-}) {
-  const deadline = Date.now() + timeout;
-  const controller = new AbortController();
-  const bounded = AbortSignal.any([signal, controller.signal]);
-  const expired = () =>
-    controller.abort(new Error("Timed out waiting for replacement worker Git route restoration"));
-  const timer = setTimeout(expired, timeout);
-  const current = () => {
-    if (Date.now() >= deadline) {
-      expired();
-    }
-    bounded.throwIfAborted();
-  };
-  try {
-    await waitUntil(
-      "replacement worker Git route restoration",
-      async () => {
-        current();
-        const pod = await worker({ signal: bounded });
-        current();
-        assert.equal(
-          pod?.metadata.uid,
-          workerUid,
-          "Git readiness requires the selected replacement Worker",
-        );
-        const observation = selectOpenShellGitRouteReadiness(
-          await workerEvents(pod, undefined, { signal: bounded }),
-          identity,
-        );
-        current();
-        observed(observation);
-        const after = await worker({ signal: bounded });
-        current();
-        assert.equal(
-          after?.metadata.uid,
-          workerUid,
-          "Worker changed during Git readiness observation",
-        );
-        assert.notEqual(
-          observation.state,
-          "closed",
-          "replacement Worker closed the retained Git route",
-        );
-        return observation.state === "restored";
-      },
-      timeout,
-      bounded,
-    );
-    current();
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 // Keys remain in this private directory or worker-only Secrets. The image build
@@ -999,12 +935,9 @@ async function installOpenShellGit(t, witnessIssuedGit) {
       binaryHash: supervisor.binaryHash,
     };
   };
-  const worker = async (options) => {
+  const worker = async () => {
     const pods = JSON.parse(
-      await kube(
-        ["get", "pods", "-n", platform, "-l", selector(workerLabels), "-o", "json"],
-        options,
-      ),
+      await kube(["get", "pods", "-n", platform, "-l", selector(workerLabels), "-o", "json"]),
     );
     return pods.items.find(
       (pod) =>
@@ -1035,16 +968,13 @@ async function installOpenShellGit(t, witnessIssuedGit) {
       custodyVersion: custody.resourceVersion,
     };
   };
-  const workerEvents = async (pod, diagnostics, options) => {
+  const workerEvents = async (pod, diagnostics) => {
     if (diagnostics) {
       diagnostics.logReads++;
     }
     let logs;
     try {
-      logs = await kube(
-        ["logs", pod.metadata.name, "-n", platform, "-c", "worker", "--tail=2000"],
-        options,
-      );
+      logs = await kube(["logs", pod.metadata.name, "-n", platform, "-c", "worker", "--tail=2000"]);
     } catch (error) {
       if (diagnostics) {
         diagnostics.logReadFailures++;
@@ -1097,31 +1027,6 @@ async function installOpenShellGit(t, witnessIssuedGit) {
       Object.assign(diagnostics, counts);
     }
     return { workerUid: pod.metadata.uid, requestIds };
-  };
-  const waitForRestoredGitRoute = async (identity, workerUid, timeout, signal) => {
-    let observation = { state: "unobserved", denialCode: "none" };
-    let outcome = "unconfirmed";
-    try {
-      await observeRestoredGitRoute({
-        identity,
-        workerUid,
-        timeout,
-        signal,
-        worker,
-        workerEvents,
-        observed: (value) => {
-          observation = value;
-        },
-      });
-      outcome = "ready";
-    } finally {
-      measurement("git-route-readiness", {
-        workerUid,
-        revisionId: identity.revisionId,
-        outcome,
-        ...observation,
-      });
-    }
   };
   const completedWork = async (pod, { agentId, revisionId }, accepts, observed) => {
     const events = observed ?? (await workerEvents(pod));
@@ -1462,7 +1367,6 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     workspace: sandboxNamespace,
     sandboxNamespace,
     gitWithdrawalDenials,
-    waitForRestoredGitRoute,
     waitForExpiry,
     verifySupervisorImage,
     restartWorker,

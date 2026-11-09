@@ -74,12 +74,12 @@ runtime. Finally, withdrawing required model authority must clear the active
 revision and remove the original Sandbox and Agent Pods before the same deadline.
 Queued retirement and fixture teardown do not satisfy this final assertion.
 
-`openshell-git-retention-real.test.ts` keeps the separate natural-expiry and
-two-Agent peer-read cases. Exact-scope `retire-runtime` fails immediately, retaining
-only the check, failure category and available numeric gRPC status. The single-Agent result does not establish another
-Agent's authorized Git use after worker replacement. Local fixture, receipt and
-source checks do not establish installed acceptance: retain the selected image
-digests, case result and cleanup evidence from an actual matched-image run.
+`openshell-git-retention-real.test.ts` tests natural expiry separately. In its
+two-Agent case, B reads with its original grant after A's live denial, before
+worker replacement. After replacement, A must remain denied before origin and
+continue its conversation on the same runtime. This case does not qualify B's
+grant after replacement. Exact-scope `retire-runtime` fails expiry immediately;
+retain the selected image digests, case results and cleanup evidence.
 
 Conversation failures in the finite-removal and two-Agent cases identify the
 failed check: `execution identity`, `target discovery`, `gateway identity`,

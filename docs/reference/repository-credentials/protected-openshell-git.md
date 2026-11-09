@@ -311,15 +311,14 @@ model and workspace connections despite runtime, conversation and authorization
 retention. Inspect uncertain turn outcomes before retrying.
 
 Transient observation failures close access until the same installation verifies
-(1–10 s retry backoff). Replacement workers cannot adopt held launches
+(1–10 s retry backoff). Withdrawal preserves peers’ independent grants. Replacement workers cannot adopt held launches
 (`github-repository`, protected `git-write` and installation preview).
 Redeploy after `worker_replaced` or terminal `bootstrap_failed`.
-After verified replacement of v5 held launches, deployment detail preserves history
-and reports `repositoryAccess.state: redeploy-required` and
+After verified v5 held-launch replacement, deployment detail retains history and reports `repositoryAccess.state: redeploy-required` and
 `REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`. OCE verifies withdrawal and model authority. Historical v4 and installation-wide v5 cannot
 prepare, issue or renew credentials. Installation-wide issuance requires observed-hook preview.
-Replacement workers use recorded custody to finish detach. Never replay uncertain writes. See [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
-For prepared-material expiry, quarantine and retirement, see
+Replacement workers finish detach using recorded custody. Never replay uncertain writes. See [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
+For prepared-material expiry, quarantine and retirement:
 [Token Service lifecycle](../repository-credentials.md#token-service-lifecycle) and
 its [source flow](../../flows/credential-source-refresh.md#6-oce-prepared-github-core).
 

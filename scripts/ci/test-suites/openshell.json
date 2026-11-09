@@ -179,7 +179,7 @@
       "path": "tests/integration/openshell-git-retention-real.test.ts",
       "expectedTests": [
         "OpenShell retains its runtime after Git expiry and worker restart",
-        "OpenShell denies a removed repository binding while another Agent can still read"
+        "OpenShell isolates Git withdrawal before worker replacement and retains denial afterward"
       ]
     },
     {

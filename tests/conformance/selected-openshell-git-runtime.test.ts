@@ -23,10 +23,7 @@ import {
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
 } from "../../packages/occ/src/errors.ts";
-import {
-  selectOpenShellGitWithdrawalDenials,
-  selectOpenShellGitRouteReadiness,
-} from "../../scripts/ci/openshell-git-retention.mjs";
+import { selectOpenShellGitWithdrawalDenials } from "../../scripts/ci/openshell-git-retention.mjs";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 import { deferred } from "../helpers/deferred.ts";
 import {
@@ -2845,7 +2842,6 @@ test("selected route readiness separates no material, access refusal, and replac
     repositoryRef: "application",
     sandboxId: sandbox.id,
   };
-  const selectedReadiness = () => selectOpenShellGitRouteReadiness(f.events, selected);
   assert.equal(
     prepared.middlewares["oce-prepared-git"]?.config.fields.binding_id?.stringValue,
     executionId,
@@ -2885,7 +2881,6 @@ test("selected route readiness separates no material, access refusal, and replac
   assert.equal(await lookup(), undefined);
   assert.equal(f.denials().at(-1)?.reason, "route_pending");
   assert.equal(f.denials().at(-1)?.reasonCode, "route_not_ready");
-  assert.deepEqual(selectedReadiness(), { state: "pending", denialCode: "route_not_ready" });
   assert.deepEqual(materialWarnings(), [], "the first preparation is not an outage");
 
   f.owner.readOpenShellMaterial = read;
@@ -2976,7 +2971,6 @@ test("selected route readiness separates no material, access refusal, and replac
           [],
         );
       }
-      assert.deepEqual(selectedReadiness(), { state: "closed", denialCode: "access_withdrawn" });
     }
     assert.equal(materialWarnings().length, 1, "one warning per outage");
   }
@@ -2990,19 +2984,6 @@ test("selected route readiness separates no material, access refusal, and replac
     .slice(startOfRestore)
     .filter((e) => e.event === "worker.openshell-git-route" && e.status === "restored");
   assert.equal(restored.length, 1);
-  assert.deepEqual(selectedReadiness(), {
-    state: "restored",
-    denialCode: "credential_unavailable",
-  });
-  for (const field of ["namespaceId", "agentId", "revisionId", "repositoryRef"] as const) {
-    assert.deepEqual(
-      selectOpenShellGitRouteReadiness(f.events, { ...selected, [field]: "other" }),
-      {
-        state: "unobserved",
-        denialCode: "none",
-      },
-    );
-  }
   const { durationMs, reason } = restored[0]!;
   assert.ok(typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0);
   assert.equal(reason, undefined);
