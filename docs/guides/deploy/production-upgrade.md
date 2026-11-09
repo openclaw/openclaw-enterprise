@@ -21,8 +21,8 @@ runtime image and redeploys every running Agent concurrently. Each upgrade
 stops the API and worker during migration and rollout. Allow capacity for old
 and replacement versions to overlap.
 
-The helper verifies committed chart files before cluster access.
 Keep the unchanged checkout exclusive and evidence/baselines outside the chart.
+Chart files are verified before cluster access.
 
 Configure endpoint and TLS settings in the selected kubeconfig.
 Unset `HELM_KUBEAPISERVER`, `HELM_KUBECAFILE`, `HELM_KUBETLS_SERVER_NAME` and
@@ -130,9 +130,7 @@ target=(--kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>'
 
 ### Include reviewed settings
 
-Keep `--values` and `--installation` as the current live baseline. For desired
-configuration changes, make separate owner-only copies and review the complete
-diff against that baseline:
+Keep `--values` and `--installation` as the current live baseline. For configuration changes, make owner-only copies and review their diff:
 
 ```bash
 cp /secure/occ/values.yaml /secure/occ/candidate-values.yaml
@@ -140,6 +138,7 @@ cp /secure/occ/installation.yaml /secure/occ/candidate-installation.yaml
 chmod 600 /secure/occ/candidate-values.yaml /secure/occ/candidate-installation.yaml
 ```
 
+Candidate values may also select a [staged immutable Installation Secret](immutable-installation-upgrade.md).
 These copies may change the
 [Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies)
 and select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
@@ -147,9 +146,8 @@ An explicit candidate may also wrap an existing single `drivers.plugin`
 registration in a one-element array, preserving its `id` and `configuration`.
 The helper does not convert the baseline automatically. Other configuration
 changes are not supported by this upgrade command.
-Review compatibility with the selected images, Agent drafts and credentials
-before the maintenance window; the startup preflight below does not prove
-external access.
+Review image, draft and credential compatibility before maintenance; startup
+preflight does not prove external access.
 The command does not change IAM, authentication, Installation identity, database,
 bootstrap, native administration, Compute identity or cluster trust, or repository
 settings through these candidate files. Repository settings include the GitHub
@@ -170,10 +168,10 @@ Add either or both flags:
 --candidate-installation /secure/occ/candidate-installation.yaml
 ```
 
-The helper saves the reviewed inputs in its private evidence, applies the image
-selections and preserved broker endpoint, and writes the final candidate to the
-baseline paths during the upgrade. An Installation change also updates its
-Secret and restarts OCC with the new checksum. Retain unchanged candidate files
+The helper saves inputs in private evidence, applies image selections and the
+preserved broker endpoint, then writes the candidate to the
+baseline paths during the upgrade. An Installation change updates its mutable
+Secret or selects the staged immutable successor, and restarts OCC with the new checksum. Retain unchanged candidate files
 at these paths for recovery.
 
 ### Apply other Installation changes
@@ -219,8 +217,8 @@ Helm's server dry run, and startup in temporary API/worker Jobs.
 Their controller-owned Pods retain chart security and NetworkPolicy labels.
 Unconfirmed Job or child cleanup blocks Secret/policy removal and the upgrade.
 
-With an immutable Installation Secret, preserve the live Installation YAML configuration
-or defer the upgrade.
+With an immutable Installation Secret, keep the live configuration or
+[stage an immutable successor](immutable-installation-upgrade.md) before preflight.
 
 After [cleanup](production-upgrade-recovery.md#clean-up-preflight-resources),
 omit `--preflight-only` and use the unused `"$UPGRADE_EVIDENCE"`. Live checks
@@ -320,7 +318,8 @@ such Agents by ID, name, and Namespace. Stop or delete each such Agent, or
 deploy it until it succeeds, then start again with a new evidence directory.
 
 The command writes the runtime digest to both Kubernetes Compute image fields,
-updates the Installation Secret after quiescing OCC, and runs Helm with the
+updates the mutable Installation Secret or selects its staged immutable successor,
+and runs Helm after quiescing OCC with the
 current controller image.
 The Installation checksum restarts the API and worker so they load the new
 configuration; their software version does not change.
