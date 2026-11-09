@@ -184,7 +184,8 @@ const historicalCatalogs = new Map([
   [71, "preHarnessOverrides"],
   [72, "preAccountAdministrationPolicy"],
   [73, "preFiniteRepositorySessionWithdrawal"],
-  [74, "preProxyHarnessSnapshot"],
+  [74, "preHumanAuthenticationResults"],
+  [75, "preProxyHarnessSnapshot"],
 ]);
 
 function catalogAtMigrationCount(count, completedCount) {

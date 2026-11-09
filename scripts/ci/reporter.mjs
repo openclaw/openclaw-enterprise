@@ -279,7 +279,25 @@ function safeMeasurement(value) {
         "rollback",
       ].includes(value.primaryStage) ||
       typeof value.cleanupFailed !== "boolean" ||
-      typeof value.parentContextDone !== "boolean"
+      typeof value.parentContextDone !== "boolean" ||
+      (value.routingOperation !== undefined &&
+        (value.primaryStage !== "routing" ||
+          ![
+            "manifest-download",
+            "gateway-api-readiness",
+            "manifest-filter",
+            "manifest-write",
+            "manifest-apply",
+            "controller-crd-readiness",
+            "controller-rollout",
+            "gateway-class-apply",
+            "gateway-class-readiness",
+            "node-pod-cidr",
+          ].includes(value.routingOperation))) ||
+      (value.routingController !== undefined &&
+        (value.routingOperation === undefined ||
+          value.routingOperation === "node-pod-cidr" ||
+          !["cert-manager", "envoy-gateway"].includes(value.routingController)))
     ) {
       return undefined;
     }
@@ -288,6 +306,10 @@ function safeMeasurement(value) {
       primaryStage: value.primaryStage,
       cleanupFailed: value.cleanupFailed,
       parentContextDone: value.parentContextDone,
+      ...(value.routingOperation !== undefined ? { routingOperation: value.routingOperation } : {}),
+      ...(value.routingController !== undefined
+        ? { routingController: value.routingController }
+        : {}),
     };
   }
   if (isRecord(value) && value.kind === "local-first-agent-setup-point") {

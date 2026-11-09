@@ -171,27 +171,27 @@ func (r *runner) installDevelopmentRoutingControllers(ctx context.Context, state
 		steps = append(steps, func(ctx context.Context, r *runner) error {
 			data, err := downloadDevelopmentManifest(ctx, r.opts.Err, controller.name, controller.url, controller.sha256, developmentManifestRetry)
 			if err != nil {
-				return fmt.Errorf("%s: %w", controller.name, err)
+				return routingError("manifest-download", controller.name, fmt.Errorf("%s: %w", controller.name, err))
 			}
 			if controller.name == "envoy-gateway" {
 				if err := r.waitDevelopmentGatewayAPICRDs(ctx, timeout); err != nil {
-					return err
+					return routingError("gateway-api-readiness", controller.name, err)
 				}
 				data, err = removeDevelopmentGatewayAPICRDs(data)
 				if err != nil {
-					return err
+					return routingError("manifest-filter", controller.name, err)
 				}
 			}
 			path := filepath.Join(state.directory, controller.name+"-controller.yaml")
 			if err := exclusiveWrite(path, data, 0600); err != nil {
-				return err
+				return routingError("manifest-write", controller.name, err)
 			}
 			args := []string{"apply", "-f", path}
 			if controller.name == "envoy-gateway" {
 				args = []string{"apply", "--server-side", "-f", path}
 			}
 			if err := r.run(ctx, "kubectl", args...); err != nil {
-				return err
+				return routingError("manifest-apply", controller.name, err)
 			}
 			crds := []string{"certificates.cert-manager.io", "issuers.cert-manager.io", "clusterissuers.cert-manager.io"}
 			namespace := "cert-manager"
@@ -203,12 +203,12 @@ func (r *runner) installDevelopmentRoutingControllers(ctx context.Context, state
 			}
 			for _, crd := range crds {
 				if err := r.waitDevelopmentCRDEstablished(ctx, crd, timeout); err != nil {
-					return fmt.Errorf("wait for controller CRD %s to be established: %w", crd, err)
+					return routingError("controller-crd-readiness", controller.name, fmt.Errorf("wait for controller CRD %s to be established: %w", crd, err))
 				}
 			}
 			for _, deployment := range deployments {
 				if err := r.run(ctx, "kubectl", "-n", namespace, "rollout", "status", "deployment/"+deployment, "--timeout", timeout.String()); err != nil {
-					return err
+					return routingError("controller-rollout", controller.name, err)
 				}
 			}
 			return nil
@@ -219,14 +219,14 @@ func (r *runner) installDevelopmentRoutingControllers(ctx context.Context, state
 	}
 	class := map[string]any{"apiVersion": "gateway.networking.k8s.io/v1", "kind": "GatewayClass", "metadata": map[string]any{"name": "eg", "labels": map[string]string{"app.kubernetes.io/managed-by": "openclaw-development"}}, "spec": map[string]string{"controllerName": "gateway.envoyproxy.io/gatewayclass-controller"}}
 	if err := r.writeAndApply(ctx, state, "development-gateway-class", class); err != nil {
-		return "", err
+		return "", routingError("gateway-class-apply", "envoy-gateway", err)
 	}
 	if err := r.run(ctx, "kubectl", "wait", "--for=condition=Accepted", "gatewayclass/eg", "--timeout", timeout.String()); err != nil {
-		return "", err
+		return "", routingError("gateway-class-readiness", "envoy-gateway", err)
 	}
 	prefix, err := r.developmentNodePodCIDR(ctx, "k3d-"+state.Cluster+"-server-0", 32)
 	if err != nil {
-		return "", err
+		return "", routingError("node-pod-cidr", "", err)
 	}
 	return prefix.String(), nil
 }

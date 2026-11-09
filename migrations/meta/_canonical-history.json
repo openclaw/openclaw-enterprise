@@ -598,7 +598,15 @@
       "idx": 75,
       "version": "7",
       "when": 1787000000075,
-      "tag": "0075_proxy_harness_snapshot",
+      "tag": "0075_human_authentication_results",
+      "breakpoints": true,
+      "sha256": "d8a027626a89246efdb5a49e173bd19a1bac87401850ff136723becbfea4c20f"
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1787000000076,
+      "tag": "0076_proxy_harness_snapshot",
       "breakpoints": true,
       "sha256": "a80a81c7c5980eeeff4d5129960ad09d9799aea3e08f7a3a4342264944206404"
     }
@@ -683,9 +691,15 @@
       "ff76815181a0cb39335474ed1ed8f50e701e80d665423dd56bf3dc6efee27ed2",
       "a2a3c52041ca2aa225251fb643895d1c60a928723e18f68c4453ce7bccc5c9e2"
     ],
-    "18063696df61dde3ca3cb6ca0e6031822de446cd67682f5a2b4c16b2cfb3df0d": [
-      "7e9ba4c4a7328d478898a276972fb8e7f729d7c8d640ebc701454ae00bdb73f7",
-      "f1d886ebf9ed0b9e10ec0a918dd5814595ed73cf44e62f17cff08c5d4d1fb06f"
+    "d2bd6eeba2ea3063bd043a75e52699dbd79dd35187fa3ff1f2f111dfa71946f5": [
+      "6c519dd29ab8fd881584b88418eed28efd8b2a78e50ce3a4b0d0cdc979f42a4b",
+      "a26adb245177854014f7a6a8a20820910e781305e0ffd31481be828c13fdfbe6",
+      "cb091d1434a85f484fe9c0ea40e215c51b9b80f04c1544376a9991c0d5d28078"
+    ],
+    "debf6d2c1042ad2ae2659871996227113a26d0d9a8ce173d87560c98158188bc": [
+      "4f6cd7325bd188b0443447d15f61c8ad4ee7add09ca477a1b7f5054074bbe0b5",
+      "4b04a6d7ed917674dd87a94a98c1851700303bd5f34f9bbe7c9bc8b3c5ce01ff",
+      "d121d0f51f365afb9d237d0a86d90ebc0dd519611a1844773426b9ebe23237d4"
     ]
   },
   "catalogs": {
@@ -694,7 +708,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "18063696df61dde3ca3cb6ca0e6031822de446cd67682f5a2b4c16b2cfb3df0d",
+    "completed": "debf6d2c1042ad2ae2659871996227113a26d0d9a8ce173d87560c98158188bc",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -739,7 +753,8 @@
     "preHarnessOverrides": "451fc5103dcacb194c7decfd419da6444995d78ddbd4f44ee4f69217b4cb6c5b",
     "preAccountAdministrationPolicy": "c1e2e44e89e14f9408c939d4e2caf72d49dabc200df617f52b11a7050c36828c",
     "preFiniteRepositorySessionWithdrawal": "c806edfa92f7889a92783f40ea6d0dbed281250ebdc632a363d724f12a2d1d33",
-    "preProxyHarnessSnapshot": "9398601c17f3ae475fc41fafd162e6da4383fe37ac25318bd03efc7dfb161600"
+    "preHumanAuthenticationResults": "9398601c17f3ae475fc41fafd162e6da4383fe37ac25318bd03efc7dfb161600",
+    "preProxyHarnessSnapshot": "d2bd6eeba2ea3063bd043a75e52699dbd79dd35187fa3ff1f2f111dfa71946f5"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",
@@ -748,7 +763,7 @@
   "catalogEvidence": {
     "postgres": "18.6",
     "drizzleOrm": "0.45.4",
-    "method": "Historical catalogs retain their recorded qualification. The completed catalog was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for completed canonical and Provider histories and an upgraded historical canonical restore."
+    "method": "Historical catalogs retain their recorded qualification. The completed catalog was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for completed canonical and Provider histories and upgraded canonical restores from prefixes 51 and 74."
   },
   "compatibleLineages": {
     "providerCompleted": {

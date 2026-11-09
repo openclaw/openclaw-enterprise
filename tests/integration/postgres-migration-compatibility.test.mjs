@@ -1604,6 +1604,25 @@ async function seedAccountPolicy(db, installation, namespace, user) {
   );
 }
 
+async function seedPendingSignInResult(db, installation, user) {
+  const session = `ses_${randomUUID()}`;
+  await db.app.query(
+    `INSERT INTO occ.session(id,expires_at,token,created_at,updated_at,user_id)
+     VALUES($1,now()+interval '1 day',$2,now(),now(),$3)`,
+    [session, randomUUID(), user],
+  );
+  await db.app.query(
+    `INSERT INTO occ.human_authentication_sessions(session_id,user_id,method_id,version,method_version)
+     SELECT $1,user_id,id,1,authentication_version FROM occ.account WHERE user_id=$2 AND provider_id='oidc'`,
+    [session, user],
+  );
+  await db.app.query(
+    `INSERT INTO occ.human_authentication_results(installation_id,attempt_id,session_id,provider_id,expires_at)
+     VALUES($1,$2,$3,'oidc',now()+interval '1 minute')`,
+    [installation, "r".repeat(43), session],
+  );
+}
+
 async function accountPolicyData(db) {
   const data = {};
   for (const table of [
@@ -1637,7 +1656,11 @@ async function assertAccountAdministrationPolicy(db) {
     await db.app.query("SELECT id,subject FROM occ.iam_identities WHERE issuer='migration-fixture'")
   ).rows[0];
   const sessionId = (
-    await db.app.query("SELECT id FROM occ.session WHERE user_id=$1", [identity.subject])
+    await db.app.query(
+      `SELECT s.session_id AS id FROM occ.human_authentication_sessions s
+       JOIN occ.account a ON a.id=s.method_id WHERE s.user_id=$1 AND a.provider_id='credential'`,
+      [identity.subject],
+    )
   ).rows[0].id;
   assert.deepEqual(
     (
@@ -1787,6 +1810,7 @@ async function seedCanonicalData(
     executionAdmission = false,
     harnessSettings = false,
     accountPolicy = false,
+    signInResult = false,
   } = {},
 ) {
   const installation = `ins_${randomUUID()}`;
@@ -1903,6 +1927,9 @@ async function seedCanonicalData(
   }
   if (accountPolicy) {
     await seedAccountPolicy(db, installation, namespace, user);
+  }
+  if (signInResult) {
+    await seedPendingSignInResult(db, installation, user);
   }
   return namespace;
 }
@@ -2079,7 +2106,7 @@ async function seedProviderCompletedData(db) {
 // Migration 0037 adds authentication-version columns, the identity-only CHECK
 // and the method guard trigger to occ.account. Populated upgrades must default
 // the new columns onto stored methods and enforce both rules on those rows.
-async function assertUpgradedAuthentication(db) {
+async function assertUpgradedAuthentication(db, expectedSessions = 1) {
   assert.deepEqual(
     (
       await db.app.query(
@@ -2093,7 +2120,7 @@ async function assertUpgradedAuthentication(db) {
   );
   assert.equal(
     (await db.app.query("SELECT count(*)::integer AS sessions FROM occ.session")).rows[0].sessions,
-    1,
+    expectedSessions,
   );
   assert.deepEqual(
     (
@@ -2116,6 +2143,52 @@ async function assertUpgradedAuthentication(db) {
       )
     ).rows,
     [{ authentication_version: 2 }],
+  );
+}
+
+async function assertSignInResultStorage(app) {
+  // An upgraded Better Auth session can own a result only after State binds it.
+  const insert = `INSERT INTO occ.human_authentication_results
+    (installation_id,attempt_id,session_id,provider_id,expires_at)
+    SELECT i.id,$1,s.id,'oidc',clock_timestamp() + $2::interval
+    FROM occ.installation i CROSS JOIN occ.session s`;
+  const expired = "e".repeat(43);
+  const live = "v".repeat(43);
+  await assert.rejects(app.query(insert, [live, "1 minute"]), { code: "23503" });
+  await app.query(
+    `INSERT INTO occ.iam_identities(id,kind,issuer,subject)
+     SELECT 'migration-human','principal','migration-fixture',id FROM occ."user"`,
+  );
+  await app.query(
+    `INSERT INTO occ.human_authentication_accounts(user_id,installation_id,principal_id)
+     SELECT u.id,i.id,'migration-human' FROM occ."user" u CROSS JOIN occ.installation i`,
+  );
+  await app.query(
+    `INSERT INTO occ.human_authentication_sessions(session_id,user_id,method_id,version,method_version)
+     SELECT s.id,s.user_id,a.id,1,a.authentication_version FROM occ.session s
+     JOIN occ.account a ON a.user_id=s.user_id AND a.provider_id='oidc'`,
+  );
+
+  await app.query(insert, [expired, "-1 minute"]);
+  await app.query(insert, [live, "1 minute"]);
+  await assert.rejects(app.query(insert, [live, "1 minute"]), { code: "23505" });
+  await assert.rejects(app.query("UPDATE occ.human_authentication_results SET expires_at=now()"), {
+    code: "42501",
+  });
+  assert.deepEqual(
+    (
+      await app.query(
+        `DELETE FROM occ.human_authentication_results
+         WHERE installation_id=(SELECT id FROM occ.installation) AND expires_at <= clock_timestamp()
+         RETURNING attempt_id`,
+      )
+    ).rows,
+    [{ attempt_id: expired }],
+  );
+  await app.query("DELETE FROM occ.session");
+  assert.equal(
+    (await app.query("SELECT attempt_id FROM occ.human_authentication_results")).rowCount,
+    0,
   );
 }
 
@@ -2242,7 +2315,7 @@ async function assertUpgradedRevisionReadable(db) {
 }
 
 async function canonicalData(db) {
-  const result = { presets: [] };
+  const result = { presets: [], human_authentication_results: [] };
   const migrationOwnedColumns = {
     account: ["authentication_version", "identity_only"],
     agents: [
@@ -2258,6 +2331,9 @@ async function canonicalData(db) {
     agent_revisions: ["gateway_managed_mode"],
     controller_work: ["work_kind"],
   };
+  const hasSignInResults =
+    (await db.app.query("SELECT to_regclass('occ.human_authentication_results') AS relation"))
+      .rows[0].relation !== null;
   const hasPresets =
     (await db.app.query("SELECT to_regclass('occ.presets') AS relation")).rows[0].relation !== null;
   for (const table of [
@@ -2278,6 +2354,7 @@ async function canonicalData(db) {
     "account",
     "session",
     ...(hasPresets ? ["presets"] : []),
+    ...(hasSignInResults ? ["human_authentication_results"] : []),
   ]) {
     result[table] = (
       await db.app.query(
@@ -2354,6 +2431,21 @@ test(
         },
       );
     }
+    void context.test("sign-in result storage for an upgraded unbound session", async (child) => {
+      const db = await historyDatabase(child, fixture, "signinresult", { prefix: 74 });
+      await seedCanonicalData(db, {
+        preset: true,
+        computeAdmission: true,
+        executionAdmission: true,
+        harnessSettings: true,
+      });
+      assert.deepEqual(await runHistoryMigration(db), {
+        ok: true,
+        history: "preHumanAuthenticationResults",
+      });
+      await assertUpgradedAuthentication(db);
+      await assertSignInResultStorage(db.app);
+    });
     for (const [prefix, history] of [
       [24, "prePresetsMain"],
       [25, "main"],
@@ -2401,7 +2493,8 @@ test(
       [71, "preHarnessOverrides"],
       [72, "preAccountAdministrationPolicy"],
       [73, "preFiniteRepositorySessionWithdrawal"],
-      [74, "preProxyHarnessSnapshot"],
+      [74, "preHumanAuthenticationResults"],
+      [75, "preProxyHarnessSnapshot"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2412,6 +2505,7 @@ test(
           executionAdmission: prefix >= 62,
           harnessSettings: prefix >= 72,
           accountPolicy: prefix >= 72,
+          signInResult: prefix === 75,
         });
         const assertProxyReader =
           prefix >= 72 ? await prepareProxyHarnessUpgrade(db, namespaceId) : undefined;
@@ -2444,7 +2538,7 @@ test(
           assert.deepEqual(await accountPolicyData(db), policyBefore);
           await assertAccountAdministrationPolicy(db);
         }
-        await assertUpgradedAuthentication(db);
+        await assertUpgradedAuthentication(db, prefix === 75 ? 2 : 1);
         await assertProxyReader?.();
         if (history === "preConnectionTemplates") {
           // An Installation-wide template cannot present a Namespace client's credentials,
@@ -2922,6 +3016,15 @@ test(
   },
 );
 
+async function dumpHistoryArchive(fixture, database) {
+  const { stdout } = await execFileAsync(
+    "docker",
+    ["exec", fixture.container, "pg_dump", "-U", "postgres", "-Fc", database.name],
+    { encoding: "buffer", timeout: 180_000, maxBuffer: 32 * 1024 * 1024 },
+  );
+  return stdout;
+}
+
 async function restoreHistoryArchive(context, fixture, archive) {
   const restored = await historyDatabase(context, fixture, "restore", { schemas: false });
   const command = ["exec", "-i", fixture.container, "pg_restore", "-U", "postgres"];
@@ -2957,7 +3060,8 @@ test(
       ["canonical51", 51, "preProvisioningDeploymentOutcome"],
       ["canonical72", 72, "preAccountAdministrationPolicy"],
       ["canonical73", 73, "preFiniteRepositorySessionWithdrawal"],
-      ["canonical74", 74, "preProxyHarnessSnapshot"],
+      ["canonical74", 74, "preHumanAuthenticationResults"],
+      ["canonical75", 75, "preProxyHarnessSnapshot"],
     ]) {
       const source = await historyDatabase(context, fixture, "dump");
       if (lineage === "provider") {
@@ -2974,6 +3078,7 @@ test(
           executionAdmission: prefix >= 62,
           harnessSettings: prefix >= 72,
           accountPolicy: prefix >= 72,
+          signInResult: prefix === 75,
         });
         assertProxyReader =
           prefix >= 72 ? await prepareProxyHarnessUpgrade(source, namespaceId) : undefined;
@@ -3000,11 +3105,7 @@ test(
       }
 
       // Restore a real archive into a distinct database, preserving ownership and grants atomically.
-      const { stdout: archive } = await execFileAsync(
-        "docker",
-        ["exec", fixture.container, "pg_dump", "-U", "postgres", "-Fc", source.name],
-        { encoding: "buffer", timeout: 180_000, maxBuffer: 32 * 1024 * 1024 },
-      );
+      const archive = await dumpHistoryArchive(fixture, source);
       const restored = await restoreHistoryArchive(context, fixture, archive);
       const accepted = await logicalRestoreSnapshot(restored);
       const restoredDigest = catalogDigest(accepted.occ);
@@ -3476,16 +3577,16 @@ test(
         await assertHistoryRefused(db);
       });
     }
-    for (const slot of [71, 72, 73, 74]) {
+    for (const slot of [71, 72, 73, 74, 75]) {
       void context.test(`draft snapshot at occupied migration slot ${slot}`, async (child) => {
         const db = await historyDatabase(child, fixture, "snapshotpreview");
         const journal = JSON.parse(
           await readFile(join(migrationsDirectory, "meta/_journal.json"), "utf8"),
         );
         // Recreate the draft's SQL and original receipt, not a forged canonical receipt.
-        // Published default-users and Harness-settings prefixes are accepted above.
+        // The published migration at the same slot is accepted above.
         const snapshot = journal.entries.find(
-          (entry) => entry.tag === "0075_proxy_harness_snapshot",
+          (entry) => entry.tag === "0076_proxy_harness_snapshot",
         );
         const entries = [
           ...journal.entries.slice(0, slot - 1),
