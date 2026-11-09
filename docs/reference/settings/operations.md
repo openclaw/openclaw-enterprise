@@ -101,15 +101,18 @@ the new schema. A match cannot establish backup completeness or provenance.
 Confirm the target and authorization before `pnpm db:migrate`
 (development) or `pnpm db:migrate:production`. Both check source, roles, receipts,
 definitions and effective privileges under one advisory lock; Drizzle applies SQL
-and receipts transactionally. Production also accepts `--check`.
+and receipts transactionally. Production accepts `--check` for any recognized
+history. `--require-current` verifies the same receipts, catalog and grants
+without applying SQL and requires the complete candidate history. A recognized
+predecessor returns `MIGRATION_HISTORY_PENDING`; drift returns
+`MIGRATION_HISTORY_UNSUPPORTED`. Neither flag establishes that old binaries
+can read or write a newer schema.
 
 On first install, Helm adds `--expect-empty`. `MIGRATION_HISTORY_NOT_EMPTY`
 means migration stopped before changing recognized OCE history, not that the
 history is corrupt. Inspect the original attempt and confirm the target.
 `empty` describes OCE schemas, not the whole database or its identity.
-`--check` inspects without migrating; it cannot authorize a retry. Upgrades,
-recovery, and unflagged migrations are unchanged. Older controller images
-reject the unknown option.
+`--check` inspects without migrating; it cannot authorize a retry. Older controller images reject unknown options.
 
 Compatibility appends a receipt without rewriting either published 31-receipt
 history. On Provider terminology databases, it renames owned relational columns,

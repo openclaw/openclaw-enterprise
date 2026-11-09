@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-09"
-last_updated_session: "authoring-run/f98ccc9d-c174-4103-a385-d4d24950e54d"
+last_updated_session: "authoring-run/7af6f256-ebf7-4a66-8e78-6a769781d94f"
 ---
 
 # Production image upgrade flow
@@ -45,7 +45,10 @@ graph TD
     D -->|No| VQ{"Both writers valid?"}
     VQ -->|No| X
     VQ -->|Yes| E["Stop API and worker Pods"]
-    E --> F["Select Installation and run Helm migration"]
+    E --> DBP{"Separate database deployment?"}
+    DBP -->|Yes| PAUSE["Pause for migration and completed-history check"]
+    PAUSE -->|Resume with checked history| F["Select Installation and run Helm hook"]
+    DBP -->|No| F
     F --> G{"Helm completes?"}
     G -->|No| H["Inspect migration and release before retry"]
     H --> C
@@ -213,7 +216,9 @@ remain operator attestations.
 Validate both Deployments before stopping either. Sequential JSON patches test
 UID, resource version and replicas; later conflicts can leave the API stopped.
 Pods must disappear and original Deployments remain at zero. Operators stop other
-writers/autoscalers and keep nodes reachable.
+writers/autoscalers and keep nodes reachable. With `database.upgradeMigration: separate`,
+the helper exits 3 here until the operator runs the candidate migrator and resumes
+with checked history. Resume re-observes the writers and repeats quiescence.
 
 Protected files adopt the candidate atomically. Mutable Secret updates use a resource-version
 precondition and preserve unrelated data. A reference switch retains both Secrets unchanged;
@@ -223,7 +228,10 @@ both OCC templates select the successor and its checksum.
 fresh `installation.upgradeAttemptId`, copied to hooks and the initializer Pod.
 `record_submission` saves intent and predecessor before publishing `helm-started`.
 Identical interrupted staging can finish; staged retries cannot replace published
-intent. Initialization checks Installation, migrates and bootstraps before rollout.
+intent. Initialization checks Installation before bootstrap and rollout. In separate mode,
+`scripts/migration-history.mjs:migrateWithHistory` verifies the completed candidate
+ledger, catalog and grants under the migration lock. Pending or unsupported history
+fails the hook. In hook mode the migrator applies pending SQL.
 
 ### 4. Verify control-plane recovery
 
@@ -350,6 +358,8 @@ Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-09 23:49: Separate database deployment from service replacement under writer quiescence. (authoring-run/7af6f256-ebf7-4a66-8e78-6a769781d94f - ef18e491453481577c607a4c78574cbbce594263)
 
 - 2026-11-09 07:05: Check named Secret update access before quiescence. (authoring-run/f98ccc9d-c174-4103-a385-d4d24950e54d - 09fe300b1ede4b59741b527a3b45199b435d7d6c)
 

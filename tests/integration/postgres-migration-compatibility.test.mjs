@@ -1195,7 +1195,7 @@ const migrationScripts = readFile(join(repositoryRoot, "package.json"), "utf8").
   (text) => JSON.parse(text).scripts,
 );
 
-// flag is one migration command option (--check or --expect-empty) or undefined; refusal,
+// flag is a migration command option or undefined; refusal,
 // when set, must match the command's MIGRATION_HISTORY_UNSUPPORTED message.
 async function runHistoryCommand(db, mode = "development", flag, refusal) {
   const script = (await migrationScripts)[
@@ -1203,7 +1203,7 @@ async function runHistoryCommand(db, mode = "development", flag, refusal) {
   ];
   assert.equal(typeof script, "string");
   const args = ["-c", `${script} "$@"`, "sh", ...(flag === undefined ? [] : [flag])];
-  const checkOnly = flag === "--check";
+  const checkOnly = flag === "--check" || flag === "--require-current";
   try {
     const { stdout } = await execFileAsync("sh", args, {
       cwd: repositoryRoot,
@@ -1230,6 +1230,9 @@ async function runHistoryCommand(db, mode = "development", flag, refusal) {
         assert.match(output, refusal);
       }
       return { ok: false, code: "MIGRATION_HISTORY_UNSUPPORTED" };
+    }
+    if (error.code === 1 && output.includes('"code":"MIGRATION_HISTORY_PENDING"')) {
+      return { ok: false, code: "MIGRATION_HISTORY_PENDING" };
     }
     if (error.code === 1 && output.includes('"code":"MIGRATION_HISTORY_NOT_EMPTY"')) {
       assert.ok(
@@ -1976,6 +1979,29 @@ async function canonicalData(db) {
   }
   return result;
 }
+
+test(
+  "Separate database deployment verifies the exact candidate history without applying pending SQL",
+  requiresHistoryPostgres,
+  async (context) => {
+    const db = await historyDatabase(context, await migrationHistoryFixture(), "separate", {
+      prefix: 73,
+    });
+    const verify = () => runHistoryCommand(db, "production", "--require-current");
+    const predecessor = await historySnapshot(db);
+    assert.deepEqual(await verify(), { ok: false, code: "MIGRATION_HISTORY_PENDING" });
+    assert.deepEqual(await historySnapshot(db), predecessor);
+    assert.deepEqual(await runHistoryCommand(db, "production"), {
+      ok: true,
+      history: "preFiniteRepositorySessionWithdrawal",
+    });
+    const current = await historySnapshot(db);
+    assert.deepEqual(await verify(), { ok: true, history: "completed" });
+    assert.deepEqual(await historySnapshot(db), current);
+    await db.migrator.query("REVOKE SELECT ON occ.iam_identities FROM occ_app");
+    assert.deepEqual(await verify(), { ok: false, code: "MIGRATION_HISTORY_UNSUPPORTED" });
+  },
+);
 
 test(
   "First installation requires empty migration history under the migration lock",
