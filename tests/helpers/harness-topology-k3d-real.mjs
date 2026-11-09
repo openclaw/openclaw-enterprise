@@ -361,6 +361,22 @@ async function createScopedController(context, identifier, platformNamespace, ku
     "--verb=get,create,update,patch,delete",
     "--resource=secrets",
   );
+  // Match Helm's tenant-api role: credential creation verifies that this exact
+  // Agent has no existing Deployment before creating its runtime Secrets.
+  await kubectl(
+    "patch",
+    "clusterrole",
+    apiSecretRole,
+    "--type=json",
+    "--patch",
+    JSON.stringify([
+      {
+        op: "add",
+        path: "/rules/-",
+        value: { apiGroups: ["apps"], resources: ["deployments"], verbs: ["list"] },
+      },
+    ]),
+  );
   await kubectl(
     "create",
     "clusterrole",
