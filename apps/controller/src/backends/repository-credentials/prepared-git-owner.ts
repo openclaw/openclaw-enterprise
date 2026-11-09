@@ -11,28 +11,28 @@ import type {
   PreparedGitHubPullResult,
 } from "@openclaw-enterprise/contracts";
 import type { PostgresPool } from "@openclaw-enterprise/occ";
-import type { Clock } from "../../drivers/repo/credentials/backend-contracts.ts";
-import { createSystemClock } from "../../drivers/repo/credentials/clock.ts";
+import type { Clock } from "../../drivers/repo/access/backend-contracts.ts";
+import { createSystemClock } from "../../drivers/repo/access/clock.ts";
 import {
   githubProviderOrigin,
   preparationIssuerAuthority,
-} from "../../drivers/repo/github/credentials/origin.ts";
-import { createGitHubKeyOwner } from "../../drivers/repo/github/credentials/material.ts";
-import { createGitHubPreparationOwner } from "../../drivers/repo/github/credentials/prepared-owner.ts";
-import { retirePreparedGitHubToken } from "../../drivers/repo/github/credentials/prepared-retirement.ts";
-import { PreparedRepositoryGitStore } from "../../drivers/repo/github/credentials/prepared-repository-git.ts";
+} from "../../drivers/repo/github/access/origin.ts";
+import { createGitHubKeyOwner } from "../../drivers/repo/github/access/material.ts";
+import { createGitHubPreparationOwner } from "../../drivers/repo/github/access/prepared-owner.ts";
+import { retirePreparedGitHubToken } from "../../drivers/repo/github/access/prepared-retirement.ts";
+import { PreparedRepositoryGitStore } from "../../drivers/repo/github/access/prepared-repository-git.ts";
 import {
   validateGitHubRepositoryRegistry,
   resolveGitHubRepositoryBinding,
   resolveSelectedRepositoryGrant,
   resolveGitHubStandingApprovalScope,
   type GitHubRepositoryRegistry,
-} from "../../drivers/repo/github/credentials/registry.ts";
+} from "../../drivers/repo/github/access/registry.ts";
 import {
   protectedGitAdoption,
   installationGitAdoption,
   selectedGitAdoption,
-} from "../../drivers/repo/credentials/protected-repository-git-installation.ts";
+} from "../../drivers/repo/access/protected-repository-git-installation.ts";
 import { TokenService } from "../token-service/service.ts";
 import { servePrivateRepositoryRequest } from "./private-request-server.ts";
 

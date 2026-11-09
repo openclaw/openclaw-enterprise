@@ -159,7 +159,7 @@ test(
       [privateMount + ",readonly"],
       `
     const fs = require("node:fs");
-    import("/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/manifest.js").then(async ({readRuntimeRepositoryManifest}) => {
+    import("/opt/oce/repository-credentials/dist/drivers/repo/github/access/client/manifest.js").then(async ({readRuntimeRepositoryManifest}) => {
       const manifest = await readRuntimeRepositoryManifest();
       require("node:assert/strict").equal(manifest.bindings.length, 1);
       require("node:assert/strict").match(fs.readFileSync("/run/oce/repository-credentials/gitconfig", "utf8"), /git-helper/);

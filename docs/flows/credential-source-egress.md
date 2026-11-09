@@ -188,7 +188,7 @@ extend the lifetime.
 GitHub acquisition validation, transport and metadata injection share a wire check:
 1–16,384 bytes of nonspace printable ASCII, not authentication.
 
-`apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts:resolve` checks the registered source and the token's remaining lifetime. It reads only ciphertext for the selected issuer, attempt and version. The store rechecks the caller’s deadline and cancellation before decryption. If issuance cannot supply an eligible token in time, OCC releases no header. Background cleanup retains access to retired material.
+`apps/controller/src/drivers/repo/github/access/prepared-lifecycle.ts:resolve` checks the registered source and the token's remaining lifetime. It reads only ciphertext for the selected issuer, attempt and version. The store rechecks the caller’s deadline and cancellation before decryption. If issuance cannot supply an eligible token in time, OCC releases no header. Background cleanup retains access to retired material.
 
 Before send, `packages/occ/src/state/prepared-github-state.ts:postgresPreparedGitHubProof`
 queries current material metadata in the active platform transaction, without another
