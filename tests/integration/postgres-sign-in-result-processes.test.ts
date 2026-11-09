@@ -4,7 +4,11 @@ import { once } from "node:events";
 import test, { type TestContext } from "node:test";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
-import { bootstrapProductionInstallation, consoleOrigin } from "../helpers/production-sign-in.mjs";
+import {
+  bootstrapProductionInstallation,
+  consoleOrigin,
+  sessionCookieName,
+} from "../helpers/production-sign-in.mjs";
 
 type Api = { url: string };
 type Login = { attemptId: string; cookie: string };
@@ -237,14 +241,19 @@ test(
 
     await t.test("a different active session cannot take the outstanding result", async () => {
       const login = await callback(a);
-      const originalKey = await readSession(a, login.cookie, recoveryUserId);
-      const foreignKey = await readSession(b, adminCookie, recoveryUserId);
+      const other = await callback(b);
+      const identity = other.cookie
+        .split("; ")
+        .find((item) => item.startsWith(`${sessionCookieName}=`));
+      assert.ok(identity, "the second callback must issue a session cookie");
+      const originalKey = await readSession(b, login.cookie, recoveryUserId);
+      const foreignKey = await readSession(b, identity, recoveryUserId);
       assert.ok(originalKey !== foreignKey, "the same account must have two distinct sessions");
       const receipt = login.cookie
         .split("; ")
         .find((item) => item.startsWith("__Host-occ_login_receipt="));
       assert.ok(receipt, "callback must issue the receipt");
-      const foreign = { attemptId: login.attemptId, cookie: `${adminCookie}; ${receipt}` };
+      const foreign = { attemptId: login.attemptId, cookie: `${identity}; ${receipt}` };
       assertDenied(await collect(b, foreign), originalKey, foreignKey);
       assertCollected(await collect(b, login), originalKey);
     });
