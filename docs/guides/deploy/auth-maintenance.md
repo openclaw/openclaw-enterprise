@@ -219,7 +219,7 @@ accounts' passwords instead, so they still cannot sign in. Deactivation also
 removes the database fence on unbound sessions, so the older image and plain
 password sign-in work again.
 
-Then, in the protected values, set `auth.google.enabled` and `auth.oidc.enabled` to `false`, clear both `auth.oidc.caSecretName` and
+Then, in the protected values, set `auth.google.enabled` and `auth.oidc.enabled` to `false`, remove `auth.oidc.enrollment`, clear both `auth.oidc.caSecretName` and
 `auth.oidc.caSecretKey`, remove `auth.recoveryUserId`, and reset
 `auth.passwordSignIn` to `all`. Run `helm upgrade`, which also restores the
 replicas. Without Helm, remove every `OCC_AUTH_GOOGLE_*` and `OCC_AUTH_OIDC_*` variable,
