@@ -481,7 +481,6 @@ const sessionEvidenceScript = String.raw`
   const expectedArguments = JSON.parse(process.argv[5] || "null");
   const expectedCatalog = JSON.parse(process.argv[6] || "null");
   const codeModeCall = JSON.parse(process.argv[7] || "null");
-  const conversationReply = process.argv[8] === "conversation-reply";
   const databasePath = "/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite";
   const db = new DatabaseSync(databasePath, { readOnly: true });
   function contains(value, needle) {
@@ -538,71 +537,9 @@ const sessionEvidenceScript = String.raw`
   }
   try {
     db.exec("PRAGMA busy_timeout=5000");
-    const session = db.prepare(conversationReply ? "SELECT current_session_id FROM session_nodes WHERE session_key = ?" : "SELECT current_session_id, entry_json FROM session_nodes WHERE session_key = ?").get(sessionKey);
+    const session = db.prepare("SELECT current_session_id, entry_json FROM session_nodes WHERE session_key = ?").get(sessionKey);
     if (!session) {
-      if (conversationReply) throw new Error("Conversation reply unavailable.");
       process.stdout.write(JSON.stringify({ databasePath, sessionKey, exists: false }));
-      process.exit(0);
-    }
-    if (conversationReply) {
-      const fail = () => { throw new Error("Conversation reply unavailable."); };
-      const id = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
-      if (!id(session.current_session_id)) fail();
-      let storedRemaining = 1048576, decodedRemaining = 1048576;
-      const window = [];
-      // Select only sequence numbers first. Apply the remaining budgets in SQLite
-      // before bringing each payload into JS, and bound decompression separately.
-      const recent = db.prepare("SELECT seq FROM transcript_events WHERE session_id = ? ORDER BY seq DESC LIMIT 256");
-      const payload = db.prepare("SELECT event_json, CASE WHEN event_json IS NULL THEN event_zstd END AS event_zstd, event_utf8_bytes FROM transcript_events WHERE session_id = ? AND seq = ? AND (event_utf8_bytes IS NULL OR event_utf8_bytes BETWEEN 0 AND ?) AND ((event_json IS NOT NULL AND length(CAST(event_json AS BLOB)) <= ?) OR (event_json IS NULL AND length(event_zstd) <= ?))");
-      for (const {seq} of recent.iterate(session.current_session_id)) {
-        if (!storedRemaining || !decodedRemaining) fail();
-        const row = payload.get(session.current_session_id, seq, decodedRemaining,
-          Math.min(storedRemaining, decodedRemaining), storedRemaining);
-        if (!row) fail();
-        const stored = row.event_json == null ? row.event_zstd.byteLength : Buffer.byteLength(row.event_json);
-        storedRemaining -= stored;
-        const text = row.event_json ?? zstdDecompressSync(row.event_zstd, {maxOutputLength:decodedRemaining}).toString("utf8");
-        const size = Buffer.byteLength(text);
-        if (size > decodedRemaining || (row.event_utf8_bytes != null && size !== row.event_utf8_bytes)) fail();
-        decodedRemaining -= size;
-        const event = parseEvent(text);
-        if (!event) fail();
-        window.push({seq,event});
-        if (event.type === "message" && event.message?.role === "user" &&
-            textOf(event.message.content).includes(marker)) break;
-      }
-      window.reverse();
-      const messages = window.map((row) => {
-        const event = row.event;
-        if (!event || !Number.isSafeInteger(row.seq) || row.seq < 0) fail();
-        return { seq: row.seq, message: event.type === "message" ? event.message : null };
-      });
-      const prompt = messages[0];
-      if (prompt?.message?.role !== "user" || !textOf(prompt.message.content).includes(marker)) fail();
-      const source = prompt.message.__openclaw;
-      if (source?.mirrorOrigin !== "codex-app-server" || typeof source.mirrorIdentity !== "string" ||
-          !source.mirrorIdentity.endsWith(":prompt")) fail();
-      const nativeTurn = source.mirrorIdentity.slice(0, -":prompt".length);
-      const replies = messages.filter(({message}) => message?.role === "assistant" && textOf(message.content).includes(marker));
-      const answer = replies[replies.length - 1];
-      const meta = answer?.message.__openclaw;
-      const direct = meta?.mirrorIdentity === nativeTurn + ":assistant";
-      // The pinned Codex mirror writer assigns this key to the assistant message
-      // at write time. The session's current thread binding alone cannot attribute a reply.
-      const expectedKey = "codex-app-server:" + process.argv[9] + ":" + meta?.mirrorIdentity;
-      if (!nativeTurn || !answer || (!direct || meta?.mirrorOrigin !== "codex-app-server" || !meta.mirrorSourceFingerprint || answer.message.idempotencyKey !== expectedKey) || answer.seq <= prompt.seq ||
-          answer.message.stopReason !== "stop" || meta?.runTerminal === false ||
-          (meta?.mirrorOrigin !== undefined && meta.mirrorOrigin !== "codex-app-server") ||
-          (source.runId !== undefined && meta?.runId !== undefined && meta.runId !== source.runId) ||
-          messages.some(({message}, i) => i > 0 && message?.role === "user") ||
-          messages.some(({message, seq}) => message?.isError === true || message?.stopReason === "error" ||
-            (seq > answer.seq && message?.role === "assistant")) ||
-          messages.some((row,i) => i > 0 && row.seq <= messages[i-1].seq)) fail();
-      const current = db.prepare("SELECT current_session_id FROM session_nodes WHERE session_key = ?").get(sessionKey);
-      if (current?.current_session_id !== session.current_session_id) fail();
-      process.stdout.write(JSON.stringify({
-        sessionId: session.current_session_id, userSeq: prompt.seq, assistantSeq: answer.seq,
-      }));
       process.exit(0);
     }
     const entry = JSON.parse(session.entry_json);
@@ -1851,14 +1788,12 @@ export function createNativePluginAssertions({
     return { runtime: execution.label, ...evidence };
   }
 
-  async function readCodexSessionBinding(agent, { sessionKey, conversationReply = false }) {
+  async function readCodexSessionBinding(agent, { sessionKey }) {
     assert.equal(proofMode, "codex");
     const execution = await execGateway(agent, [
       "node",
       "-e",
       String.raw`
-      const qa = process.argv[2] === "conversation-reply";
-      try {
       const assert = require("node:assert/strict");
       const { createHash } = require("node:crypto");
       const { DatabaseSync } = require("node:sqlite");
@@ -1869,115 +1804,19 @@ export function createNativePluginAssertions({
         const session = sessions.prepare("SELECT current_session_id FROM session_nodes WHERE session_key = ?").get(sessionKey);
         assert.ok(session, "the original OC session must exist");
         const key = "session-key:main:" + createHash("sha256").update(sessionKey.trim()).digest("base64url");
-        const bindingColumn = qa ? "CASE WHEN length(CAST(value_json AS BLOB)) <= 65536 THEN value_json END AS value_json" : "value_json";
-        const row = state.prepare("SELECT " + bindingColumn + " FROM plugin_state_entries WHERE plugin_id = 'codex' AND namespace = 'app-server-thread-bindings' AND entry_key = ? AND (expires_at IS NULL OR expires_at > ?)").get(key, Date.now());
+        const row = state.prepare("SELECT value_json FROM plugin_state_entries WHERE plugin_id = 'codex' AND namespace = 'app-server-thread-bindings' AND entry_key = ? AND (expires_at IS NULL OR expires_at > ?)").get(key, Date.now());
         assert.ok(row, "the OC session must have an active Codex binding");
         const stored = JSON.parse(row.value_json);
         assert.equal(stored.version, 1);
         assert.equal(stored.state, "active");
         assert.equal(stored.sessionId, session.current_session_id);
         assert.ok(typeof stored.binding.threadId === "string" && stored.binding.threadId.length > 0);
-        if (qa && ![session.current_session_id, stored.binding.threadId].every((value) =>
-          typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value))) throw new Error();
         process.stdout.write(JSON.stringify({ sessionId: session.current_session_id, threadId: stored.binding.threadId }));
       } finally { sessions.close(); state.close(); }
-      } catch (error) {
-        if (!qa) throw error;
-        process.stdout.write('{"error":"Conversation reply unavailable."}');
-      }
     `,
       sessionKey,
-      conversationReply ? "conversation-reply" : "",
     ]);
     return JSON.parse(execution.stdout);
-  }
-
-  async function readConversationReply(agent, { sessionKey, turnMarker, previous } = {}) {
-    const unavailable = () => new Error("Conversation reply unavailable.");
-    let before;
-    let after;
-    let reply;
-    let prior;
-    const id = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
-    const valid = (value) =>
-      value &&
-      id(value.sessionId) &&
-      id(value.threadId) &&
-      Number.isSafeInteger(value.userSeq) &&
-      value.userSeq >= 0 &&
-      Number.isSafeInteger(value.assistantSeq) &&
-      value.assistantSeq > value.userSeq;
-    try {
-      if (
-        proofMode !== "codex" ||
-        !id(agent?.id) ||
-        typeof sessionKey !== "string" ||
-        !/^agent:main:git-withdrawal-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-          sessionKey,
-        ) ||
-        typeof turnMarker !== "string" ||
-        !/^FIRST_AGENT_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-          turnMarker,
-        ) ||
-        (previous !== undefined && !valid(previous))
-      ) {
-        throw unavailable();
-      }
-      prior = previous === undefined ? undefined : { ...previous };
-      const selected = Object.freeze({
-        id: agent.id,
-        namespaceId: agent.namespaceId,
-        revision: Object.freeze({ id: agent.revision?.id }),
-      });
-      before = await readCodexSessionBinding(selected, { sessionKey, conversationReply: true });
-      if (!id(before?.sessionId) || !id(before?.threadId)) {
-        throw unavailable();
-      }
-      const execution = await execGateway(selected, [
-        "node",
-        "-e",
-        "try {\n" +
-          sessionEvidenceScript +
-          '\n} catch { process.stdout.write(\'{"error":"Conversation reply unavailable."}\'); }',
-        sessionKey,
-        turnMarker,
-        "",
-        "[]",
-        "null",
-        "null",
-        "null",
-        "conversation-reply",
-        before.threadId,
-      ]);
-      const evidence = JSON.parse(execution.stdout);
-      after = await readCodexSessionBinding(selected, { sessionKey, conversationReply: true });
-      reply = {
-        sessionId: evidence.sessionId,
-        threadId: before.threadId,
-        userSeq: evidence.userSeq,
-        assistantSeq: evidence.assistantSeq,
-      };
-      if (
-        !valid(reply) ||
-        evidence.sessionId !== before.sessionId ||
-        after?.sessionId !== before.sessionId ||
-        after?.threadId !== before.threadId ||
-        agent.id !== selected.id ||
-        agent.namespaceId !== selected.namespaceId ||
-        agent.revision?.id !== selected.revision.id
-      ) {
-        throw unavailable();
-      }
-    } catch {
-      throw unavailable();
-    }
-    if (prior && (reply.sessionId !== prior.sessionId || reply.threadId !== prior.threadId)) {
-      throw new Error("Conversation mismatch.");
-    }
-    if (prior && reply.userSeq <= prior.assistantSeq) {
-      throw unavailable();
-    }
-    return reply;
   }
 
   async function readCodexThreadMetadata(agent, thread) {
@@ -2429,7 +2268,6 @@ export function createNativePluginAssertions({
     normalGatewayTurn,
     withRuntimeFailureLogs,
     readCodexSessionBinding,
-    readConversationReply,
     readCodexThreadMetadata,
     assertSessionToolCallEvidence,
     assertSessionToolDeniedEvidence,

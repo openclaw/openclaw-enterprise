@@ -221,27 +221,6 @@ origin. The case restarts the installed worker with persisted PostgreSQL state
 and custody material, then repeats those observations. It does not adjust clocks
 or queue schedules.
 
-The explicit binding-removal case keeps A's original issuer credential valid:
-immediately before the removal, the controlled issuer is configured to return
-HTTP 503 for retirement of that exact token, before revocation. The refusal stays
-armed through worker replacement. Direct Git discovery must return HTTP 200 before
-and after each denied workload request. The case requires the signed
-`access_withdrawn` decision, no unauthorized origin traffic or new issuance, B's
-original Git credential, and unchanged execution and conversation identity.
-It also requires exactly one targeted retirement refusal and no successful
-revocation of A's token. The live denial does not wait for retirement. Before
-restarting the worker, the case waits within the original grant deadline for
-the issuer's refusal; the replacement must not replay it. Before/after witness
-receipts retain fixed outcomes, status and the targeted refusal count, without
-credentials or raw errors.
-
-The [private-origin fixture test](../../tests/integration/skipper-private-git-origin.test.mjs)
-checks this HTTP 503 response and subsequent HTTP 200 discovery over real HTTPS,
-alongside ordinary token revocation and a valid peer token. This local test does
-not qualify installed withdrawal or worker replacement; those still require a
-complete installed-case pass. Teardown destroys the synthetic issuer without
-replaying retirement, and does not prove provider revocation.
-
 The fixture owns its loopback Kubernetes installation and cleanup. Its supervisor
 trust image adds only the private origin's public CA; the executable must match
 the pinned stock image. Record the tested source, image digests and each

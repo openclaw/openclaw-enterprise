@@ -170,7 +170,7 @@ function readItems(output) {
   return data.items;
 }
 
-async function findGateway(kubectl, namespaceId, agentId, revisionId, signal) {
+async function findGateway(kubectl, namespaceId, agentId, revisionId) {
   const deadline = Date.now() + readinessTimeout;
   const configMap = `gateway-${idHash(agentId)}-rev-${idHash(revisionId)}`;
   const selector = [
@@ -182,7 +182,6 @@ async function findGateway(kubectl, namespaceId, agentId, revisionId, signal) {
   let state = "cluster";
 
   while (Date.now() < deadline) {
-    signal?.throwIfAborted();
     let namespaces;
     try {
       namespaces = readItems(
@@ -202,7 +201,6 @@ async function findGateway(kubectl, namespaceId, agentId, revisionId, signal) {
       state = "cluster";
     }
 
-    signal?.throwIfAborted();
     if (namespaces?.length > 1) {
       throw new Error(
         "More than one Kubernetes namespace matches this Agent's gateway placement. Inspect their labels before retrying.",
@@ -239,10 +237,9 @@ async function findGateway(kubectl, namespaceId, agentId, revisionId, signal) {
       }
     }
 
-    signal?.throwIfAborted();
     const remaining = deadline - Date.now();
     if (remaining > 0) {
-      await delay(Math.min(readinessInterval, remaining), undefined, { signal });
+      await delay(Math.min(readinessInterval, remaining));
     }
   }
 
@@ -250,7 +247,7 @@ async function findGateway(kubectl, namespaceId, agentId, revisionId, signal) {
 }
 
 // This function is serialized to stdin and executed inside the gateway container.
-async function probeInGateway({ nonce, prompt, expectProviderKey, sessionKey }) {
+async function probeInGateway({ nonce, prompt, expectProviderKey }) {
   const emit = (value) => process.stdout.write(JSON.stringify(value));
   const failure = (code, status) => ({ error: code, ...(status === undefined ? {} : { status }) });
   try {
@@ -277,9 +274,6 @@ async function probeInGateway({ nonce, prompt, expectProviderKey, sessionKey }) 
       const headers = { "content-type": "application/json" };
       if (authorized) {
         headers.authorization = `Bearer ${password}`;
-        if (sessionKey !== undefined) {
-          headers["x-openclaw-session-key"] = sessionKey;
-        }
       }
       try {
         return await fetch(url, {
@@ -378,22 +372,10 @@ async function probeInGateway({ nonce, prompt, expectProviderKey, sessionKey }) 
   }
 }
 
-/**
- * @param {{ namespaceId: string, agentId: string, revisionId: string,
- *   prompt?: string | undefined, apiKey?: string | undefined, expectProviderKey?: boolean | undefined,
- *   sessionKey?: string | undefined, signal?: AbortSignal | undefined }} options
- */
-export async function verifyFirstAgentModel(kubectl, options) {
-  const {
-    namespaceId,
-    agentId,
-    revisionId,
-    prompt,
-    apiKey,
-    expectProviderKey = true,
-    sessionKey,
-    signal,
-  } = options;
+export async function verifyFirstAgentModel(
+  kubectl,
+  { namespaceId, agentId, revisionId, prompt, apiKey, expectProviderKey = true },
+) {
   if (
     !isKubernetesLabel(namespaceId) ||
     !isKubernetesLabel(agentId) ||
@@ -404,17 +386,6 @@ export async function verifyFirstAgentModel(kubectl, options) {
       "A valid namespace ID, Agent ID, and deployed revision ID are required to check the model.",
     );
   }
-  // Limit this internal QA selector to synthetic git-withdrawal conversations.
-  if (
-    sessionKey !== undefined &&
-    (typeof sessionKey !== "string" ||
-      sessionKey.length !== 62 ||
-      !/^agent:main:git-withdrawal-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
-        sessionKey,
-      ))
-  ) {
-    throw new Error("The QA session key must be a synthetic git-withdrawal UUID key.");
-  }
   if (prompt !== undefined && (typeof prompt !== "string" || !prompt.trim())) {
     throw new Error("The model prompt must contain text.");
   }
@@ -424,9 +395,9 @@ export async function verifyFirstAgentModel(kubectl, options) {
     );
   }
 
-  const { namespace, pod } = await findGateway(kubectl, namespaceId, agentId, revisionId, signal);
+  const { namespace, pod } = await findGateway(kubectl, namespaceId, agentId, revisionId);
   const nonce = `FIRST_AGENT_${randomUUID()}`;
-  const script = `await (${probeInGateway.toString()})(${JSON.stringify({ nonce, prompt, expectProviderKey, sessionKey })});`;
+  const script = `await (${probeInGateway.toString()})(${JSON.stringify({ nonce, prompt, expectProviderKey })});`;
   let result;
   try {
     const output = await kubectl(

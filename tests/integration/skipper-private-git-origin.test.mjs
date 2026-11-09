@@ -53,7 +53,6 @@ test(
   { timeout: 120000 },
   async (t) => {
     const fixture = await startSkipperPrivateGitOrigin({
-      witnessIssuedGit: true,
       repositoryRef: "qualification-private",
       approvalRef: "refs/heads/qualification/approved",
       teamReview: true,
@@ -124,16 +123,7 @@ test(
       ).code,
       0,
     );
-    // Identify the credential Git actually used; issuance order alone is not evidence.
-    const usedIndex = (priorCount) => {
-      const indices = [...new Set(fixture.gitAttemptIndices().slice(priorCount))];
-      assert.equal(indices.length, 1);
-      return indices[0];
-    };
-    const beforeA = fixture.gitAttemptIndices().length;
     await git(["clone", fixture.cloneUrl, "client"], token);
-    const indexA = usedIndex(beforeA);
-    assert.equal(await fixture.probeIssuedGit(indexA), 200);
     const client = join(directory, "client");
     assert.equal(
       await readFile(join(client, "README.md"), "utf8"),
@@ -164,22 +154,7 @@ test(
       statuses: "read",
     });
     assert.equal(reader.status, 201);
-    const beforeB = fixture.gitAttemptIndices().length;
     await git(["clone", fixture.cloneUrl, "read-only"], reader.body.token);
-    const indexB = usedIndex(beforeB);
-    assert.notEqual(indexA, indexB);
-    const beforeProbe = fixture.snapshot();
-    const beforeProbeAttempts = fixture.gitAttemptIndices().length;
-    assert.equal(await fixture.probeIssuedGit(indexB), 200);
-    assert.equal(usedIndex(beforeProbeAttempts), indexB);
-    assert.equal(
-      fixture.snapshot().endpoints["upload-advertise:200"],
-      beforeProbe.endpoints["upload-advertise:200"] + 1,
-    );
-    assert.equal(fixture.snapshot().issued, beforeProbe.issued);
-    const beforeUnknown = fixture.snapshot();
-    await assert.rejects(fixture.probeIssuedGit(0), /unknown issued Git index/);
-    assert.deepEqual(fixture.snapshot(), beforeUnknown);
     assert.notEqual(
       (
         await git(["push", "origin", `HEAD:${fixture.approvalRef}`], reader.body.token, {
@@ -281,31 +256,6 @@ test(
     assert.equal((await fixture.readRefs())[fixture.approvalRef], sha);
     await fixture.deleteApprovalRef(sha);
     assert.deepEqual(await fixture.readRefs(), { "refs/heads/main": fixture.initialSha });
-    // An issuer refusal leaves this separate credential valid. Other tokens must still retire
-    // normally below; closing the fixture destroys this synthetic issuer without replaying DELETE.
-    const retained = await issue();
-    assert.equal(retained.status, 201);
-    const beforeRetained = fixture.gitAttemptIndices().length;
-    await git(["ls-remote", fixture.cloneUrl, "refs/heads/main"], retained.body.token);
-    const retainedIndex = usedIndex(beforeRetained);
-    fixture.refuseTokenRetirement(retainedIndex);
-    assert.equal(
-      (await api(fixture, "DELETE", "/installation/token", "Bearer invalid")).status,
-      401,
-    );
-    assert.equal(fixture.snapshot().targetedRetirementRefusals, 0);
-    assert.equal(
-      (await api(fixture, "DELETE", "/installation/token", "Bearer " + retained.body.token)).status,
-      503,
-    );
-    assert.equal(fixture.snapshot().targetedRetirementRefusals, 1);
-    assert.equal(await fixture.probeIssuedGit(retainedIndex), 200);
-    assert.equal(
-      fixture.snapshot().tokens.find(({ index }) => index === retainedIndex).revoked,
-      false,
-    );
-    assert.equal(await fixture.probeIssuedGit(indexB), 200);
-
     // Qualify the exact installed withdrawal oracle on a real Git protocol-v2 connection.
     // Hold authenticated discovery, revoke the synthetic token, release discovery. The native
     // client must see its authenticated POST refused, never infer a denial from a timeout.
@@ -367,18 +317,14 @@ test(
       (await api(fixture, "DELETE", "/installation/token", `Bearer ${token}`)).status,
       401,
     );
-    assert.equal(await fixture.probeIssuedGit(indexA), 401);
-    assert.equal(await fixture.probeIssuedGit(indexB), 200);
-
     const snapshot = fixture.snapshot();
-    assert.equal(snapshot.issued, 6);
+    assert.equal(snapshot.issued, 5);
     assert.ok(snapshot.endpoints["upload-pack:200"] >= 2);
     assert.ok(snapshot.endpoints["receive-pack:200"] >= 4);
     assert.ok(snapshot.endpoints["other:404"] >= 1);
     assert.equal(JSON.stringify(snapshot).includes(token), false);
     assert.equal(JSON.stringify(snapshot).includes(jwt), false);
     await fixture.close();
-    await assert.rejects(fixture.probeIssuedGit(indexB), /origin closed/);
     await fixture.close();
     await assert.rejects(api(fixture, "POST", issuePath, jwt, {}), { code: "ECONNREFUSED" });
   },

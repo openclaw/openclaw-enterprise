@@ -324,11 +324,11 @@ async function trustedSupervisor({ command, cleanup, directory, cluster, ca, che
 }
 
 /** Installs the supported model + selected-repository path in its own k3d cluster. */
-export function createOpenShellGitInstallation(t, { witnessIssuedGit = false } = {}) {
-  return ownFirstAgentWork(t)(installOpenShellGit(t, witnessIssuedGit));
+export function createOpenShellGitInstallation(t) {
+  return ownFirstAgentWork(t)(installOpenShellGit(t));
 }
 
-async function installOpenShellGit(t, witnessIssuedGit) {
+async function installOpenShellGit(t) {
   const eventually = (description, operation, timeout = 120_000) =>
     waitUntil(description, operation, timeout, t.signal);
   let tearingDown = false;
@@ -496,7 +496,6 @@ async function installOpenShellGit(t, witnessIssuedGit) {
   const origin = await startSkipperPrivateGitOrigin({
     host: bridge,
     advertisedHost: originHost,
-    witnessIssuedGit,
     tls: { ...tls.origin, ca: tls.ca },
   });
   cleanup.push(() => origin.close());
@@ -953,27 +952,19 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     };
   };
   const workerEvents = async (pod, diagnostics) => {
-    if (diagnostics) {
-      diagnostics.logReads++;
-    }
+    diagnostics.logReads++;
     let logs;
     try {
       logs = await kube(["logs", pod.metadata.name, "-n", platform, "-c", "worker", "--tail=2000"]);
     } catch (error) {
-      if (diagnostics) {
-        diagnostics.logReadFailures++;
-      }
+      diagnostics.logReadFailures++;
       throw error;
     }
-    if (diagnostics) {
-      diagnostics.logReadSuccesses++;
-    }
+    diagnostics.logReadSuccesses++;
     const lines = logs.split("\n").filter((line) => line.length > 0);
-    if (diagnostics) {
-      diagnostics.linesRead += lines.length;
-      if (lines.length >= 2000) {
-        diagnostics.tailLimitReads++;
-      }
+    diagnostics.linesRead += lines.length;
+    if (lines.length >= 2000) {
+      diagnostics.tailLimitReads++;
     }
     const events = [];
     for (const line of lines) {
@@ -981,43 +972,16 @@ async function installOpenShellGit(t, witnessIssuedGit) {
         const event = JSON.parse(line);
         if (event !== null && typeof event === "object") {
           events.push(event);
-          if (diagnostics) {
-            diagnostics.parsedEvents++;
-          }
+          diagnostics.parsedEvents++;
         }
       } catch {
         // Container startup can write non-JSON lines; only structured events qualify.
-        if (diagnostics) {
-          diagnostics.parseFailures++;
-        }
+        diagnostics.parseFailures++;
       }
     }
     return events;
   };
-  const gitWithdrawalDenials = async ({ sandboxId, revisionId }, replacement) => {
-    const pod = await worker();
-    assert.ok(pod, "expected ready Worker for Git denial observation");
-    const events = await workerEvents(pod);
-    return {
-      workerUid: pod.metadata.uid,
-      requestIds: events
-        .filter(
-          (event) =>
-            event.event === "worker.openshell-git-denied" &&
-            event.sandboxId === sandboxId &&
-            event.revisionId === revisionId &&
-            event.reasonCode === "access_withdrawn" &&
-            ((event.reason === "session_closed" && event.operation === "advertise-upload-pack") ||
-              (replacement &&
-                (event.reason === "route_blocked" || event.reason === "material_unavailable"))) &&
-            typeof event.requestId === "string" &&
-            event.requestId.length > 0,
-        )
-        .map((event) => event.requestId),
-    };
-  };
-  const completedWork = async (pod, { agentId, revisionId }, accepts, observed) => {
-    const events = observed ?? (await workerEvents(pod));
+  const completedWork = (pod, { agentId, revisionId }, accepts, events) => {
     for (const event of events) {
       if (
         event.event === "worker.completed" &&
@@ -1161,7 +1125,7 @@ async function installOpenShellGit(t, witnessIssuedGit) {
         if (!expiry) {
           return undefined;
         }
-        const completion = await completedWork(
+        const completion = completedWork(
           pod,
           identity,
           (event) => event.code === "REPOSITORY_ACCESS_WITHDRAWN",
@@ -1299,7 +1263,6 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     gatewayClient,
     workspace: sandboxNamespace,
     sandboxNamespace,
-    gitWithdrawalDenials,
     waitForExpiry,
     verifySupervisorImage,
     restartWorker,
