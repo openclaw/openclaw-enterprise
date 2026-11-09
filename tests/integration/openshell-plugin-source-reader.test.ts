@@ -78,7 +78,8 @@ test("OpenShell source discovery uses the selected Backend reader with no Gatewa
   type PeerCall = { role: string; request: unknown };
   const observed: PeerCall[] = [];
   const peerErrors: unknown[] = [];
-  let providerName = name;
+  const ownedProvider = { name, type: name, managedBy: "openclaw-enterprise", sourceId };
+  let returnedProvider = ownedProvider;
   // Hold the actual operator RPC at the verified peer, after observing its identity.
   let holdExport: ((finish: () => void) => void) | undefined;
   const receive = (
@@ -116,13 +117,13 @@ test("OpenShell source discovery uses the selected Backend reader with no Gatewa
     GetProvider: receive("ordinary", ordinary, () => ({
       provider: {
         metadata: {
-          name: providerName,
+          name: returnedProvider.name,
           labels: {
-            "app.kubernetes.io/managed-by": "openclaw-enterprise",
-            "openclaw.dev/credential-source-id": sourceId,
+            "app.kubernetes.io/managed-by": returnedProvider.managedBy,
+            "openclaw.dev/credential-source-id": returnedProvider.sourceId,
           },
         },
-        type: name,
+        type: returnedProvider.type,
         config: {
           [CODEX_ACCOUNT_CONFIG]: JSON.stringify({
             accountId: "synthetic-account",
@@ -357,18 +358,24 @@ test("OpenShell source discovery uses the selected Backend reader with no Gatewa
   assert.equal(allowed.data.nextCursor, "second-page");
   assert.equal(JSON.stringify(allowed.body).includes(accessToken), false);
 
-  providerName = openShellProviderName(randomUUID());
-  const denied = await request();
-  assert.notEqual(denied.status, 200);
-  assert.equal(JSON.stringify(denied.body).includes(accessToken), false);
+  const otherSourceId = randomUUID();
+  const otherName = openShellProviderName(otherSourceId);
+  for (const mismatch of [
+    { name: otherName },
+    { type: otherName },
+    { managedBy: "other-manager" },
+    { sourceId: otherSourceId },
+  ]) {
+    returnedProvider = { ...ownedProvider, ...mismatch };
+    const before: number = observed.length;
+    const denied = await request();
+    assert.equal(denied.status, 404, JSON.stringify(mismatch));
+    assert.equal(JSON.stringify(denied.body).includes(accessToken), false);
+    assert.deepEqual(observed.slice(before), [metadataObservation]);
+    assert.equal(catalogCalls, 1, "a rejected lookup must not reach the plugin catalog");
+  }
   assert.deepEqual(peerErrors, []);
-  assert.deepEqual(
-    observed,
-    [metadataObservation, exportObservation, metadataObservation],
-    "the mismatched returned name must stop discovery before a second export",
-  );
-  assert.equal(catalogCalls, 1, "a rejected lookup must not reach the plugin catalog");
-  providerName = name;
+  returnedProvider = ownedProvider;
 
   const remove = (binding: (typeof sourceBindings)[number]) => {
     const index = fixture.policy.bindings.indexOf(binding);
