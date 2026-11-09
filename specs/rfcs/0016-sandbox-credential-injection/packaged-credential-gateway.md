@@ -51,13 +51,18 @@ opaque attachment reference. The Sandbox accepts the reference only from its
 paired owner for the original revision and configured model destination.
 The trusted sender holds the upstream model credential outside the workload.
 Codex receives a nonsecret placeholder and uses the saved HTTPS model route.
-An unavailable or mismatched attachment fails closed. Repository withdrawal
-ends fresh Git authorization and leaves the independent model attachment in
-place. The existing [online Git authorization](../0023-egress-proxy-credential-lifecycle/online-authorization.md)
+An unavailable or mismatched attachment fails closed. Verified Git-only
+withdrawal ends fresh Git authorization. The model attachment stays in place
+while it remains independently authorized. If the recipient changes,
+observation fails, or withdrawal is uncertain, the Worker follows the existing
+[reconciliation and retirement rules](../../../docs/reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery).
+The existing [online Git authorization](../0023-egress-proxy-credential-lifecycle/online-authorization.md)
 and protected inference admission rules still apply.
 
-Dashed arrows show the proposed packaged lifecycle. Withdrawing the repository
-grant ends fresh Git authorization while the admitted model source stays attached.
+Dashed arrows show the proposed path after verified Git-only withdrawal, with
+independent model authorization still in place. See the
+[request lifecycle](packaged-credential-gateway/request-lifecycle.svg) and its
+[editable Mermaid source](packaged-credential-gateway/request-lifecycle.mmd).
 
 ```mermaid
 ---
@@ -88,14 +93,14 @@ flowchart TB
     Model["<b>Trusted model sender</b><br/>Admitted source and route"]
     Git["<b>Repository authority</b><br/>Current grant for each request"]
   end
-  Chat["<b>Chat replies</b><br/>Model source stays attached"]
-  Denied["<b>Fresh Git write denied</b><br/>Repository grant withdrawn"]
+  Chat["<b>Chat replies</b><br/>Model access still authorized"]
+  Denied["<b>Fresh Git write denied</b><br/>Git-only withdrawal verified"]
 
   Enroll -.->|add repository Proxy| Revision
   Revision -.->|model request with placeholder| Model
   Revision -.->|fresh Git request| Git
   Model -.->|serve model response| Chat
-  Git -.->|deny after withdrawal| Denied
+  Git -.->|after verified removal| Denied
 
   classDef state fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
   classDef authority fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
@@ -116,6 +121,8 @@ bundled OpenShell selection still loads.
 
 On one installed protected revision, receive an ordinary chat reply, complete
 the granted repository action, and deny an unassigned repository. After
-effective Git withdrawal, deny a fresh write and receive a reply in the same
-conversation. Verify that provider material remains outside the workload.
+verified Git-only withdrawal, confirm a fresh write is denied and sends no new
+request to the origin. With model access still independently authorized,
+receive a reply in the same conversation on the same revision. Verify that
+provider material remains outside the workload.
 Startup package tests cannot establish these installed outcomes.
