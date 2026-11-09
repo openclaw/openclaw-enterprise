@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-11-08"
-last_updated_session: authoring-run/0bed479f-9c58-4dbb-bb72-972d7dfe9790
+updated: "2026-11-09"
+last_updated_session: authoring-run/d127ba8f-38a1-4e53-bcb9-644a68253422
 ---
 
 # Agent repository credential flow
@@ -330,13 +330,20 @@ Work records `REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`; `getDeploymentStatus` pro
 `apps/controller/src/worker.ts:ControllerWorker.processRepositoryCleanup` consumes
 owner-bound Work without admission or delivery. Terminal Work closes attempts and calls `stopRevision`, preserving replacements. Compute mismatch or stop failure retries. Completion requires disposal and retirement; missing sessions prove neither. Attempts survive deletion.
 
-`ControllerWorker.withdrawExpiredRepositoryAccess` retires the original version for IAM
-refusal, confirmed actor or Agent-principal absence, required model-source withdrawal,
-or unsupported Git withdrawal. Model withdrawal precedes Gateway readiness.
-Failed reads stay pending unless independent facts prove authority loss. Optional withdrawals cannot justify retirement. `recoverPendingCredentialWithdrawals` recovers exhausted original/companion work, preserving manual-replay holds.
-See [tests](../../tests/integration/postgres-standing-expiry-authority.test.ts).
+`ControllerWorker.withdrawExpiredRepositoryAccess` retires for independent authority loss
+or unsupported Git withdrawal, before Gateway readiness. Uncertain reads stay pending;
+optional withdrawals cannot force retirement ([tests](../../tests/integration/postgres-standing-expiry-authority.test.ts)).
+`recoverPendingCredentialWithdrawals` preserves manual-replay holds.
 
-`updateAgent` commits finite removal under Namespace/Agent locks through `withdrawFinite`: irreversible session closure and cleanup with original deployment authority. The [guard](../../migrations/0074_finite_repository_session_withdrawal.sql) rejects sessions. Re-add, Stop supersession and stale-lease transfer cannot restore Git. Pending or denied Stop permits Git detachment, not retirement or running maintenance. Cleanup waits for running intent; authority loss, replacement and terminal retirement win.
+`updateAgent` calls `withdrawFinite` under admission locks, closing sessions and queuing
+cleanup with original authority. Its [fence](../../migrations/0074_finite_repository_session_withdrawal.sql)
+survives re-add, Stop supersession and lease transfer. Pending/denied Stop permits
+Git detachment; completion awaits running intent unless authority loss, replacement or retirement wins.
+
+For [native removal](../reference/repository-credentials/prepared-native-git.md#install-and-check),
+`repositorySessionDisposal` requires disposed protocol-3 history; legacy retains its owner. `KubernetesComputeDriver.observeRepositoryWithdrawal` matches mounted
+Secret references, generation and serving endpoints. Inconclusive observations
+also recheck authority. Finalization rechecks owner, removal and history.
 
 `PostgresWorkQueue.repositoryExpiryState` prioritizes retirement. `completeActivatedRevision` preserves active removal supervision; `REPOSITORY_ACCESS_WITHDRAWN` is not activation proof. `PostgresOpenShellGitRouteStore.adopt` blocks removed Git. Its `expire` and V2 `reduceCredentialPolicy` require committed finite removal while stopped. Stopped maintenance defers its claim. Git cleanup may observe pending source effects without replay or completing source withdrawal, then awaits detachment. Other withdrawals remain running-only.
 
@@ -377,6 +384,8 @@ Verify live PR updates, denial before provider contact and continued chat separa
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-09 13:46: Trace native runtime retention. (authoring-run/d127ba8f-38a1-4e53-bcb9-644a68253422 - aa7c6a65b81ce628fb6e3c7dd9a844d777f5776b)
 
 - 2026-11-08 07:45: Preserve withdrawal across Stop. (authoring-run/0bed479f-9c58-4dbb-bb72-972d7dfe9790 - d9dc87c351a0046df90915d66cbcc931ec649bb6)
 

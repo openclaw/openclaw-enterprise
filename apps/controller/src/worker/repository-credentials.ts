@@ -139,6 +139,51 @@ function settleCleanup(attempts: readonly Readonly<RepositorySessionAttempt>[]):
     : { settled: true };
 }
 
+/** Classifies complete finite history without guessing which generation is mounted. */
+export function repositorySessionDisposal(
+  revision: Revision,
+  attempts: readonly Attempt[],
+):
+  | { readonly kind: "legacy" }
+  | { readonly kind: "disposed"; readonly sessions: readonly RepositoryCredentialMaterialRef[] }
+  | undefined {
+  const snapshot = revision.repositoryCredentials;
+  if (
+    snapshot === undefined ||
+    snapshot.standingApprovalId !== undefined ||
+    snapshot.bindings.length === 0
+  ) {
+    return undefined;
+  }
+  const refs = new Set(snapshot.bindings.map(({ repositoryRef }) => repositoryRef));
+  const observedRefs = new Set(attempts.map(({ repositoryRef }) => repositoryRef));
+  if (refs.size !== observedRefs.size || [...refs].some((ref) => !observedRefs.has(ref))) {
+    return undefined;
+  }
+  if (attempts.every((attempt) => attempt.brokerProtocol === 1)) {
+    return { kind: "legacy" };
+  }
+  const sessions: RepositoryCredentialMaterialRef[] = [];
+  for (const attempt of attempts) {
+    if (
+      attempt.brokerProtocol !== 3 ||
+      attempt.phase !== "disposed" ||
+      attempt.sessionId === undefined
+    ) {
+      return undefined;
+    }
+    sessions.push({ repositoryRef: attempt.repositoryRef, sessionId: attempt.sessionId });
+  }
+  return {
+    kind: "disposed",
+    sessions: sessions.sort(
+      (left, right) =>
+        left.repositoryRef.localeCompare(right.repositoryRef) ||
+        left.sessionId.localeCompare(right.sessionId),
+    ),
+  };
+}
+
 /** Owns only persisted session correlations; material remains ephemeral until Compute accepts it. */
 export class RepositoryCredentialLifecycle {
   private readonly dependencies: Dependencies;

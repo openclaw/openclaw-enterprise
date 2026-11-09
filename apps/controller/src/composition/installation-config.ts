@@ -41,6 +41,7 @@ import { createHash, X509Certificate } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
+  AgentRevision,
   Backend,
   GitHubRepositoryCredentialBackendDefinition,
   ComputeDriver,
@@ -56,6 +57,7 @@ import type {
   PresetDraftDefinition,
   BackendSummary,
   RepositoryPolicyDriver,
+  RepositoryCredentialMaterialRef,
   NativeRepositorySender,
   PluginDriver,
   SandboxDriver,
@@ -240,6 +242,12 @@ export interface InstallationRuntimeDrivers {
   readonly bundledPresetVersions?: readonly BundledPresetVersion[];
   readonly installation: InstallationStartupConfiguration;
   readonly computeDriver: ComputeDriver;
+  /** Built-in composition proof; third-party Compute contracts are unchanged. */
+  readonly observeRepositoryWithdrawal?: (
+    revision: Readonly<AgentRevision>,
+    disposedSessions: readonly RepositoryCredentialMaterialRef[] | undefined,
+    signal: AbortSignal,
+  ) => Promise<"verified" | "unknown" | "unsupported">;
   readonly configurationDriver: ConfigurationDriver;
   readonly secretDriver: SecretDriver;
   readonly sandboxDriver?: SandboxDriver;
@@ -1514,6 +1522,7 @@ export async function loadInstallationConfiguration(options: {
   // actual recipient and enforcement before release or the first eligible material read.
   repositoryGitDriver?.requireRepositoryGitTransport();
   let computeDriver: ComputeDriver;
+  let observeRepositoryWithdrawal: InstallationRuntimeDrivers["observeRepositoryWithdrawal"];
   if (computePackage !== undefined) {
     computeDriver = createExternalDriver(
       computePackage.module,
@@ -1530,7 +1539,7 @@ export async function loadInstallationConfiguration(options: {
       },
     );
   } else {
-    computeDriver = new KubernetesComputeDriver(
+    const kubernetes = new KubernetesComputeDriver(
       compute.configuration as unknown as KubernetesComputeDriverOptions,
       {
         id: compute.id,
@@ -1566,6 +1575,9 @@ export async function loadInstallationConfiguration(options: {
         readNodeCa: () => readHarnessNodeCa(environment),
       },
     );
+    computeDriver = kubernetes;
+    observeRepositoryWithdrawal = (revision, sessions, signal) =>
+      kubernetes.observeRepositoryWithdrawal(revision, sessions, signal);
   }
   const createIAMDriver = (state: NativeIAMStateStore): IAMDriver => {
     return iamPackage === undefined
@@ -1588,6 +1600,7 @@ export async function loadInstallationConfiguration(options: {
     bundledPresetVersions,
     installation,
     computeDriver,
+    ...(observeRepositoryWithdrawal === undefined ? {} : { observeRepositoryWithdrawal }),
     configurationDriver,
     secretDriver,
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),

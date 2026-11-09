@@ -71,6 +71,16 @@
     {
       "path": "tests/integration/postgres-worker-repository-roles.test.ts",
       "expectedTests": [
+        "finite native Git withdrawal: ready",
+        "finite native Git withdrawal: repaired history",
+        "finite native Git withdrawal: changed material",
+        "finite native Git withdrawal: stale gateway endpoint",
+        "finite native Git withdrawal: stale harness endpoint",
+        "finite native Git withdrawal: revoked deployer",
+        "finite native Git withdrawal: deployer revoked during observation",
+        "finite native Git withdrawal: deployer revoked during unknown observation",
+        "finite native Git withdrawal: deployer revoked during failed observation",
+        "finite native Git withdrawal: invalidated history",
         "worker refuses repository credentials when repositoryPolicy is present with the wrong id",
         "worker refuses repository credentials when repositoryPolicy is present with the wrong implementation",
         "worker refuses repository credentials when repositoryPolicy is absent",
