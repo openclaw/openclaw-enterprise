@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { basename, resolve } from "node:path";
 import { teamReviewProof } from "../../tests/fixtures/skipper-team-review-journey.mjs";
 
 export const skipperImageScope = "checkout-images-with-synthetic-model-trust-layer";
@@ -21,6 +22,52 @@ export function skipperInstalledProof(teamReview: boolean): string[] {
 function record(value: unknown): Record<string, unknown> {
   assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
   return value as Record<string, unknown>;
+}
+
+/** Keep the selected failure's location and category together, without publishing its text. */
+export function skipperFailureSummary(resultText: string, root: string, fallback: string): string {
+  let text = fallback;
+  let site;
+  let category;
+  try {
+    const files = record(JSON.parse(resultText)).files;
+    assert.ok(Array.isArray(files));
+    const path = "tests/integration/skipper-prepared-git-installed.test.mjs";
+    const file = files.map(record).find((entry) => entry.path === path);
+    assert.ok(file && Array.isArray(file.tests));
+    const failed = file.tests.map(record).find((entry) => entry.status === "failed");
+    const error = record(failed?.error ?? record(file.fileFailure).error);
+    // Do not pair one case's location with another case's error from the lane output.
+    text = [error.message, error.frame].filter((value) => typeof value === "string").join("\n");
+    const cause = record(error.cause ?? {});
+    if (cause.code === "ERR_ASSERTION") {
+      category = "ERR_ASSERTION";
+    } else if (error.code === "ERR_TEST_FAILURE") {
+      category = "ERR_TEST_FAILURE";
+    }
+    const location = record(error.location ?? {});
+    const source = [path, "tests/helpers/skipper-prepared-compute.mjs"].find(
+      (name) => location.file === resolve(root, name),
+    );
+    const coordinate = (value: unknown): value is number =>
+      typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= 1_000_000;
+    if (source && coordinate(location.line) && coordinate(location.column)) {
+      site = `${basename(source)}:${location.line}:${location.column}`;
+    }
+  } catch {
+    // Missing or malformed diagnostics must not replace the original test failure.
+  }
+  site ??= text.match(
+    /(?:skipper-prepared-compute|skipper-prepared-git-installed\.test)\.mjs:\d+:\d+/,
+  )?.[0];
+  // Prefer a specific signal in this error to the generic Node test wrapper.
+  category =
+    text.match(
+      /RTM_NEWADDR|bwrap|native command failed|missing-env|test-timeout|selected-zero|timed out:/,
+    )?.[0] ??
+    category ??
+    text.match(/ERR_ASSERTION|expected-test-not-passed/)?.[0];
+  return `${site ?? "location unavailable"}, ${category ?? "unclassified"}`;
 }
 
 function digest(value: unknown): string {
