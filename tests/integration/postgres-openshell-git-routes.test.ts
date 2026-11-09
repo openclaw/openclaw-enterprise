@@ -14,7 +14,7 @@ import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-dat
 // The persisted OpenShell Git route (migration 0062) as the application role
 // writes it: identity and custody facts only, one holder named by a fence, a pending write
 // and a tombstone that outlive the worker. The runtime's use of it is covered by
-// tests/conformance/openshell-git-runtime.test.mjs with the in-memory store.
+// tests/conformance/selected-openshell-git-runtime.test.ts with the in-memory store.
 const observed = {
   workspace: "team-workspace",
   sandbox: "git-execution",
@@ -104,43 +104,16 @@ test(
       observed: undefined,
     };
     assert.equal(await store.record(revision.id, 1, snapshot), true);
-    // Once bootstrap is settled, replacement can adopt its immutable observation.
-    const adopted = await store.adopt(revision.id, workers[1]!);
-    assert.deepEqual(adopted, {
-      ...route,
-      fence: 2,
-      ...snapshot,
-      writePending: undefined,
-      blocked: undefined,
-    });
-    assert.equal(
-      await store.record(revision.id, 1, snapshot),
-      false,
-      "a stale fence writes nothing",
-    );
-    assert.equal(await store.owns(revision.id, 1), false);
-    assert.equal(await store.writing(revision.id, 1, "rotate"), undefined);
-    assert.equal(await store.block(revision.id, 1, "unknown"), false);
-    assert.equal(await store.owns(revision.id, 2), true);
-    assert.equal(await store.record(revision.id, 2, snapshot), true);
-    assert.deepEqual(await store.adopt(revision.id, workers[2]!), {
-      ...route,
-      fence: 3,
-      generation: { ...generation, ...bootstrapping },
-      material: undefined,
-      observed: undefined,
-      writePending: undefined,
-      blocked: undefined,
-    });
+    assert.equal(await store.owns(revision.id, 1), true);
     // A provider write in flight stays visible to the next worker with the facts before it.
     const candidate = { materialVersion: randomUUID(), preparationAttemptId: randomUUID() };
     assert.equal(
-      await store.writing(revision.id, 3, "rotate"),
+      await store.writing(revision.id, 1, "rotate"),
       undefined,
       "rotation cannot reserve an absent material target",
     );
-    assert.equal(await store.writing(revision.id, 3, "rotate", candidate), 4);
-    assert.equal(await store.writing(revision.id, 4, "rotate", candidate), undefined);
+    assert.equal(await store.writing(revision.id, 1, "rotate", candidate), 2);
+    assert.equal(await store.writing(revision.id, 2, "rotate", candidate), undefined);
     const { rows: pending } = await pool.query(
       "SELECT target_material_version, target_preparation_attempt_id FROM occ.credential_deliveries WHERE revision_id=$1",
       [revision.id],
@@ -151,7 +124,7 @@ test(
         target_preparation_attempt_id: candidate.preparationAttemptId,
       },
     ]);
-    assert.equal(await store.owns(revision.id, 4), true);
+    assert.equal(await store.owns(revision.id, 2), true);
     const expiresAt = new Date(Date.now() + 600_000).toISOString();
     const active: OpenShellGitRouteSnapshot = {
       generation: { ...generation, resourceVersion: "12", credentialState: "active", expiresAt },
@@ -159,17 +132,17 @@ test(
       observed,
     };
     assert.equal(
-      await store.record(revision.id, 4, active),
+      await store.record(revision.id, 2, active),
       false,
       "C cannot substitute for the pending B operation",
     );
     assert.equal(
-      await store.writing(revision.id, 4, "rotate", active.material),
+      await store.writing(revision.id, 2, "rotate", active.material),
       undefined,
       "uncertain B consumes the installation opportunity",
     );
     assert.equal(
-      await store.record(revision.id, 4, {
+      await store.record(revision.id, 2, {
         ...active,
         material: {
           ...candidate,
@@ -180,33 +153,24 @@ test(
       "the original attempt with a different version is also refused",
     );
     const installedB = { ...active, material: candidate };
-    assert.equal(await store.record(revision.id, 4, installedB), true);
-    assert.equal((await store.adopt(revision.id, workers[0]!))?.fence, 5);
-    const held = await store.adopt(revision.id, workers[1]!);
-    assert.deepEqual(held, {
-      ...route,
-      fence: 6,
-      ...installedB,
-      writePending: undefined,
-      blocked: undefined,
-    });
+    assert.equal(await store.record(revision.id, 2, installedB), true);
     // Only the known identity keys fit the observation; a material version is a uuid.
     await assert.rejects(
-      store.record(revision.id, 6, {
+      store.record(revision.id, 2, {
         ...active,
         observed: Object.assign({}, observed, { token: "x" }),
       }),
       /Invalid OpenShell delivery observation/,
     );
     await assert.rejects(
-      store.record(revision.id, 6, {
+      store.record(revision.id, 2, {
         ...active,
         material: { materialVersion: "version-one", preparationAttemptId: randomUUID() },
       }),
       /invalid input syntax for type uuid/,
     );
     await assert.rejects(
-      store.record(revision.id, 6, {
+      store.record(revision.id, 2, {
         ...active,
         generation: { ...active.generation, resourceVersion: "rv-12" },
       }),
@@ -216,24 +180,28 @@ test(
       "SELECT * FROM occ.credential_deliveries WHERE revision_id = $1",
       [revision.id],
     );
-    assert.equal(stored[0].worker_instance, workers[1]!);
+    assert.equal(stored[0].worker_instance, workers[0]!);
     assert.equal(JSON.stringify(stored).includes("token"), false);
 
-    // The first tombstone stays: no later adoption moves the fence, no later block or
-    // withdrawal changes the reason, and a stale or current fence writes nothing more.
-    assert.equal(await store.block(revision.id, 6, "supervisor_replaced"), true);
-    assert.equal(await store.block(revision.id, 6, "unknown"), false);
-    assert.deepEqual(await store.adopt(revision.id, workers[2]!), {
-      ...held,
+    // A replacement cannot inherit the observed hook. It atomically takes the fence and
+    // closes the route; neither the old holder nor its replacement can install material.
+    const held = await store.adopt(revision.id, workers[1]!);
+    assert.deepEqual(held, {
+      ...route,
+      fence: 3,
+      ...installedB,
       writePending: undefined,
-      blocked: "supervisor_replaced",
+      blocked: "worker_replaced",
     });
-    // Closed at the holder's fence, the route answers its reason, not a replacement.
-    assert.equal(await store.owns(revision.id, 6), "supervisor_replaced");
-    assert.equal(await store.owns(revision.id, 5), false);
-    assert.equal(await store.record(revision.id, 6, active), false);
+    assert.equal(await store.owns(revision.id, 2), false);
+    assert.equal(await store.owns(revision.id, 3), "worker_replaced");
+    assert.equal(await store.record(revision.id, 2, active), false);
+    assert.equal(await store.record(revision.id, 3, active), false);
+    assert.equal(await store.writing(revision.id, 3, "rotate", candidate), undefined);
+    assert.equal(await store.block(revision.id, 3, "unknown"), false);
+    assert.deepEqual(await store.adopt(revision.id, workers[2]!), held);
     await store.withdraw({ revisionId: revision.id });
-    assert.equal((await store.adopt(revision.id, workers[2]!))?.blocked, "supervisor_replaced");
+    assert.deepEqual(await store.adopt(revision.id, workers[2]!), held);
 
     // Withdrawal of a revision or a whole Namespace tombstones its open routes, whoever
     // holds them.
@@ -245,17 +213,13 @@ test(
     };
     await store.open(second, workers[0]!);
     await store.withdraw({ namespaceId: revision.namespaceId });
-    assert.equal(
-      (await store.adopt(other.id, workers[1]!))?.blocked,
-      undefined,
-      "another Namespace",
-    );
+    assert.equal(await store.owns(other.id, 1), true, "another Namespace");
     await store.withdraw({ namespaceId: other.namespaceId });
     // Withdrawal leaves the fence: its holder reads the reason (finding 2218).
-    assert.equal(await store.owns(other.id, 2), "withdrawn");
+    assert.equal(await store.owns(other.id, 1), "withdrawn");
     assert.deepEqual(await store.adopt(other.id, workers[1]!), {
       ...second,
-      fence: 2,
+      fence: 1,
       generation: undefined,
       material: undefined,
       observed: undefined,
@@ -479,65 +443,6 @@ test(
   },
 );
 
-test(
-  "a bootstrap refused before its write is cleared and reserved again at the next fence",
-  requiresPostgres,
-  async (t) => {
-    // Finding 2210: the worker that opened the route proves its bootstrap write unsent and
-    // clears it; the next pass adopts the empty route and reserves the bootstrap again.
-    const pool = testPool(t, { connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
-    const { revision } = await seedSessionRevision(state);
-    const store = new PostgresOpenShellGitRouteStore(pool);
-    const route = {
-      revisionId: revision.id,
-      namespaceId: revision.namespaceId,
-      agentId: revision.agentId,
-      bindingId: "r".repeat(32),
-      workspace: observed.workspace,
-      sandbox: observed.sandbox,
-    };
-    await store.open(route, randomUUID());
-    assert.equal(await store.cancelWriting(revision.id, 1), true);
-    const empty = {
-      generation: undefined,
-      material: undefined,
-      observed: undefined,
-      writePending: undefined,
-      blocked: undefined,
-    };
-    assert.deepEqual(await store.adopt(revision.id, randomUUID()), {
-      ...route,
-      fence: 2,
-      ...empty,
-    });
-    assert.equal(await store.writing(revision.id, 1, "bootstrap"), undefined, "a stale fence");
-    assert.equal(await store.writing(revision.id, 2, "bootstrap"), 3);
-    assert.equal(
-      await store.cancelWriting(revision.id, 1),
-      false,
-      "a stale clear cannot clear the new reservation",
-    );
-    const generation = {
-      credentialState: "bootstrap" as const,
-      expiresAt: "",
-      providerId: observed.providerId,
-      resourceVersion: "1",
-      profileVersion: "1",
-    };
-    assert.equal(
-      await store.record(revision.id, 3, { generation, material: undefined, observed: undefined }),
-      true,
-    );
-    assert.deepEqual(await store.adopt(revision.id, randomUUID()), {
-      ...route,
-      fence: 4,
-      ...empty,
-      generation,
-    });
-  },
-);
-
 for (const operation of ["bootstrap", "rotate"] as const) {
   test(
     `a replacement lease cannot settle or replay an uncertain ${operation} installation`,
@@ -623,7 +528,7 @@ for (const operation of ["bootstrap", "rotate"] as const) {
         target_preparation_attempt_id: operation === "rotate" ? b.preparationAttemptId : null,
         target_material_version: operation === "rotate" ? b.materialVersion : null,
         write_pending: operation,
-        blocked: "withdrawn",
+        blocked: "worker_replaced",
       });
     },
   );

@@ -39,6 +39,8 @@ logging:
 installation:
   # Set by occ installation install to bind retained initialization evidence.
   attemptId: ""
+  # Set by upgrade-production-images for one actual Helm submission.
+  upgradeAttemptId: ""
   name: openclaw-enterprise
   secretName: occ-installation-startup
   key: installation.yaml

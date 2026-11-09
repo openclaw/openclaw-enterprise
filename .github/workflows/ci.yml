@@ -58,10 +58,17 @@ jobs:
           trap 'rm -f "$policy"' EXIT
           trusted_policy() {
             reason=bootstrap_non_pr_event
-            [ "${GITHUB_EVENT_NAME:-}" = pull_request ] || return 1
-            reason=bootstrap_event_unavailable
-            base=$(jq -er '.pull_request.base.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
-            head=$(jq -er '.pull_request.head.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+            if [ "${GITHUB_EVENT_NAME:-}" = push ]; then
+              [ "${GITHUB_REPOSITORY:-}" = openclaw/openclaw-enterprise ] && [ "${GITHUB_REF:-}" = refs/heads/main ] || return 1
+              reason=bootstrap_event_unavailable
+              base=$(jq -er '.before | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+              head=$(jq -er '.after | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+            else
+              [ "${GITHUB_EVENT_NAME:-}" = pull_request ] || return 1
+              reason=bootstrap_event_unavailable
+              base=$(jq -er '.pull_request.base.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+              head=$(jq -er '.pull_request.head.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+            fi
             reason=bootstrap_invalid_identity
             oid='^([0-9a-f]{40}|[0-9a-f]{64})$'
             [[ $base =~ $oid && $head =~ $oid && ${GITHUB_SHA:-} =~ $oid ]] || return 1
@@ -70,18 +77,25 @@ jobs:
             reason=bootstrap_checkout_mismatch
             [ "$actual" = "$GITHUB_SHA" ] || return 1
             reason=bootstrap_git_inspection_failed
-            parents=$(git show -s --format=%P "$GITHUB_SHA") || return 1
-            reason=bootstrap_checkout_mismatch
-            [[ $parents =~ ^([0-9a-f]{40}|[0-9a-f]{64})\ ([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
-            [ "${BASH_REMATCH[2]}" = "$head" ] || return 1
-            merge_base=${BASH_REMATCH[1]}
-            reason=bootstrap_git_inspection_failed
-            git cat-file -e "$merge_base^{commit}" && git cat-file -e "$head^{commit}" || return 1
-            # GitHub merges onto the base tip at merge time; base.sha lags it
-            # when the base moved after the push and is then not fetched.
-            reason=bootstrap_checkout_mismatch
-            if [ "$base" != "$merge_base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
-              git merge-base --is-ancestor "$base" "$merge_base" || return 1
+            if [ "${GITHUB_EVENT_NAME:-}" = push ]; then
+              reason=bootstrap_checkout_mismatch
+              [ "$head" = "$GITHUB_SHA" ] || return 1
+              git cat-file -e "$base^{commit}" && git merge-base --is-ancestor "$base" "$head" || return 1
+              merge_base=$base
+            else
+              parents=$(git show -s --format=%P "$GITHUB_SHA") || return 1
+              reason=bootstrap_checkout_mismatch
+              [[ $parents =~ ^([0-9a-f]{40}|[0-9a-f]{64})\ ([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
+              [ "${BASH_REMATCH[2]}" = "$head" ] || return 1
+              merge_base=${BASH_REMATCH[1]}
+              reason=bootstrap_git_inspection_failed
+              git cat-file -e "$merge_base^{commit}" && git cat-file -e "$head^{commit}" || return 1
+              # GitHub merges onto the base tip at merge time; base.sha lags it
+              # when the base moved after the push and is then not fetched.
+              reason=bootstrap_checkout_mismatch
+              if [ "$base" != "$merge_base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+                git merge-base --is-ancestor "$base" "$merge_base" || return 1
+              fi
             fi
             reason=bootstrap_git_inspection_failed
             entry=$(git ls-tree "$merge_base" -- scripts/ci/impact.mjs) || return 1
@@ -128,6 +142,8 @@ jobs:
       # k3d keeps Blacksmith's kernel for NetworkPolicy checks. Runtime image lanes
       # retain 8 CPUs / 30.4 GiB for their measured 15-20 GiB peaks. Browser
       # lanes use 8 CPUs with their existing eight-file concurrency.
+      # Ordinary Conformance 1 uses 4 CPUs; Full Integration keeps 8 for its
+      # additional static checks. The test runner caps files to available CPUs.
       - id: matrix
         name: Build lane matrix
         env:
@@ -135,7 +151,7 @@ jobs:
           SELECT_LANES: ${{ steps.select.outputs.lanes }}
           LANE_TABLE: |
             [
-              {"lane": "checks-baseline-1", "title": "Checks and Conformance 1", "profile": "baseline", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "checks-baseline-1", "title": "Checks and Conformance 1", "profile": "baseline", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "checks-baseline-2", "title": "Checks and Conformance 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "checks-browser", "title": "Console Browser", "profile": "baseline", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "checks-browser-2", "title": "Console Browser 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
@@ -147,8 +163,8 @@ jobs:
               {"lane": "images-runtime-startup", "title": "Image Runtime Startup", "profile": "full", "timeout": 30, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup-2", "title": "Image Runtime Startup 2", "profile": "images", "timeout": 30, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup-3", "title": "Image Runtime Startup 3", "profile": "images", "timeout": 30, "runner": "blacksmith-8vcpu-ubuntu-2404"},
-              {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "blacksmith-8vcpu-ubuntu-2404"},
-              {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-network", "title": "k3d Network Isolation", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
@@ -554,10 +570,17 @@ jobs:
           trap 'rm -f "$policy"' EXIT
           trusted_policy() {
             reason=bootstrap_non_pr_event
-            [ "${GITHUB_EVENT_NAME:-}" = pull_request ] || return 1
-            reason=bootstrap_event_unavailable
-            base=$(jq -er '.pull_request.base.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
-            head=$(jq -er '.pull_request.head.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+            if [ "${GITHUB_EVENT_NAME:-}" = push ]; then
+              [ "${GITHUB_REPOSITORY:-}" = openclaw/openclaw-enterprise ] && [ "${GITHUB_REF:-}" = refs/heads/main ] || return 1
+              reason=bootstrap_event_unavailable
+              base=$(jq -er '.before | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+              head=$(jq -er '.after | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+            else
+              [ "${GITHUB_EVENT_NAME:-}" = pull_request ] || return 1
+              reason=bootstrap_event_unavailable
+              base=$(jq -er '.pull_request.base.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+              head=$(jq -er '.pull_request.head.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+            fi
             reason=bootstrap_invalid_identity
             oid='^([0-9a-f]{40}|[0-9a-f]{64})$'
             [[ $base =~ $oid && $head =~ $oid && ${GITHUB_SHA:-} =~ $oid ]] || return 1
@@ -566,18 +589,25 @@ jobs:
             reason=bootstrap_checkout_mismatch
             [ "$actual" = "$GITHUB_SHA" ] || return 1
             reason=bootstrap_git_inspection_failed
-            parents=$(git show -s --format=%P "$GITHUB_SHA") || return 1
-            reason=bootstrap_checkout_mismatch
-            [[ $parents =~ ^([0-9a-f]{40}|[0-9a-f]{64})\ ([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
-            [ "${BASH_REMATCH[2]}" = "$head" ] || return 1
-            merge_base=${BASH_REMATCH[1]}
-            reason=bootstrap_git_inspection_failed
-            git cat-file -e "$merge_base^{commit}" && git cat-file -e "$head^{commit}" || return 1
-            # GitHub merges onto the base tip at merge time; base.sha lags it
-            # when the base moved after the push and is then not fetched.
-            reason=bootstrap_checkout_mismatch
-            if [ "$base" != "$merge_base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
-              git merge-base --is-ancestor "$base" "$merge_base" || return 1
+            if [ "${GITHUB_EVENT_NAME:-}" = push ]; then
+              reason=bootstrap_checkout_mismatch
+              [ "$head" = "$GITHUB_SHA" ] || return 1
+              git cat-file -e "$base^{commit}" && git merge-base --is-ancestor "$base" "$head" || return 1
+              merge_base=$base
+            else
+              parents=$(git show -s --format=%P "$GITHUB_SHA") || return 1
+              reason=bootstrap_checkout_mismatch
+              [[ $parents =~ ^([0-9a-f]{40}|[0-9a-f]{64})\ ([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
+              [ "${BASH_REMATCH[2]}" = "$head" ] || return 1
+              merge_base=${BASH_REMATCH[1]}
+              reason=bootstrap_git_inspection_failed
+              git cat-file -e "$merge_base^{commit}" && git cat-file -e "$head^{commit}" || return 1
+              # GitHub merges onto the base tip at merge time; base.sha lags it
+              # when the base moved after the push and is then not fetched.
+              reason=bootstrap_checkout_mismatch
+              if [ "$base" != "$merge_base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+                git merge-base --is-ancestor "$base" "$merge_base" || return 1
+              fi
             fi
             reason=bootstrap_git_inspection_failed
             entry=$(git ls-tree "$merge_base" -- scripts/ci/impact.mjs) || return 1

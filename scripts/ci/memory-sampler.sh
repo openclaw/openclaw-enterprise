@@ -27,7 +27,7 @@ pressure() {
 
 top_rss() {
   # comm is the executable name (at most 15 bytes); args may hold secrets.
-  ps -eo rss=,comm= --sort=-rss 2>/dev/null | head -n "$1"
+  ps -eo rss=,pid=,ppid=,comm= --sort=-rss 2>/dev/null | head -n "$1"
 }
 
 # Stop promptly, with no stray sleep left holding the job log open.
@@ -54,14 +54,14 @@ while true; do
       echo "psi_memory ${psi:-unavailable}"
       echo "loadavg $(cut -d ' ' -f 1-3 /proc/loadavg 2>/dev/null)"
       echo "disk_root_available ${disk:-?}"
-      echo "top_rss_kib comm"
+      echo "top_rss_kib pid ppid comm"
       top_rss 10
       echo "containers name mem_usage mem_percent"
       timeout 10 docker stats --no-stream --format '{{.Name}} {{.MemUsage}} {{.MemPerc}}' 2>/dev/null | head -n 10
     } >>"$output" 2>/dev/null
   fi
   if ((sample % 4 == 1)); then
-    top=$(top_rss 3 | awk '{ printf "%s%s:%dMiB", sep, $2, $1 / 1024; sep = "," }')
+    top=$(top_rss 3 | awk '{ printf "%s%s:%dMiB", sep, $4, $1 / 1024; sep = "," }')
     echo "memory-sampler $now available=${available}MiB swap_used=${swap_used}MiB disk_available=${disk:-?} ${psi}top=${top}"
   fi
   sleep "$interval" &

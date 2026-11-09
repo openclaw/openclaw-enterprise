@@ -1,4 +1,8 @@
 import { failureInputLimit } from "./failure-redaction.mjs";
+import {
+  openShellGitRetentionKind,
+  projectOpenShellGitRetention,
+} from "./openshell-git-retention.mjs";
 
 const safeOccErrorCodes = new Set([
   "INVALID_REQUEST",
@@ -108,15 +112,6 @@ const nativePolicyCleanupChecks = new Set([
   "cleanup.remove-directory",
   "cleanup.resume-worker",
 ]);
-const openShellMeasurementKinds = new Set([
-  openShellStageMeasurementKind,
-  openShellSandboxMeasurementKind,
-  openShellPolicyCheckKind,
-  openShellFixtureTeardownKind,
-  openShellGatewayTurnFailureKind,
-  openShellNativePolicyCheckKind,
-  openShellInitialTurnoverKind,
-]);
 const openShellPolicyChecks = new Set([
   "installation-discovery",
   "cluster-target-reachability",
@@ -172,6 +167,9 @@ function parseMeasurement(message) {
 }
 
 function safeMeasurement(value) {
+  if (isRecord(value) && value.kind === openShellGitRetentionKind) {
+    return projectOpenShellGitRetention(value);
+  }
   if (isRecord(value) && value.kind === openShellInitialTurnoverKind) {
     return safeOpenShellInitialTurnoverMeasurement(value);
   }
@@ -265,6 +263,32 @@ function safeMeasurement(value) {
     return ["passed", "failed", "incomplete"].includes(value.outcome)
       ? { kind: value.kind, outcome: value.outcome }
       : undefined;
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-startup-failure") {
+    if (
+      ![
+        "unknown",
+        "canceled",
+        "deadline",
+        "routing",
+        "network-verification",
+        "network-cleanup",
+        "registry-detach",
+        "platform-namespace",
+        "openshell-preparation",
+        "rollback",
+      ].includes(value.primaryStage) ||
+      typeof value.cleanupFailed !== "boolean" ||
+      typeof value.parentContextDone !== "boolean"
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      primaryStage: value.primaryStage,
+      cleanupFailed: value.cleanupFailed,
+      parentContextDone: value.parentContextDone,
+    };
   }
   if (isRecord(value) && value.kind === "local-first-agent-setup-point") {
     if (
@@ -1682,7 +1706,7 @@ export default async function* jsonLinesReporter(source) {
       const value = parseMeasurement(message);
       // Per-test diagnostics name their file; the run summary counts do not.
       // OpenShell measurements belong only in the projected record, even on failure.
-      if (typeof event.data.file === "string" && !openShellMeasurementKinds.has(value?.kind)) {
+      if (typeof event.data.file === "string" && !message.startsWith(measurementPrefix)) {
         output.diagnostic(message);
       }
       // Node diagnostics can quote thrown errors; retain only this fixed failure category.

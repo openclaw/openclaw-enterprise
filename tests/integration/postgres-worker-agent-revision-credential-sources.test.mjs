@@ -25,25 +25,10 @@ import {
   makeWorkDue,
   removeAccessBindings,
   repositoryAttempts,
-  repositoryBoundary,
   withUnavailableIAM,
 } from "../helpers/postgres-worker-revision-support.mjs";
-import { gitCommandBodies, gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
-import { onlineGitAllow, openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
-import { invoke, token } from "../helpers/openshell-online-wire.mjs";
-import {
-  OpenShellGitRuntime,
-  openShellRepositoryAccess,
-} from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
-import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
-import {
-  createGitHubRepositoryDeliveryResolver,
-  resolveGitHubRepositoryBinding,
-  validateGitHubRepositoryRegistry,
-} from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import { gitCommandBodies } from "../helpers/openshell-online-git-journey.mjs";
+import { narrowOnlineGitJourney } from "../helpers/postgres-repository-set-journey.ts";
 
 // Credential sources on revision work: withdrawals (retries, replays, denials and maintenance
 // re-queues), and listed sources that lose their grant or readiness after admission. Deployment,
@@ -2968,424 +2953,190 @@ test(
 
 function attachedGitExpires({ newHost, platformProfile = false }) {
   return async (t) => {
-    const backendId = "github-primary";
-    const repository = repositoryBoundary({ backendId });
-    // This registered controlled sender qualifies finite v5 installation access. Stock
-    // OpenShell does not offer nonpreview installation-wide admission; this is not that claim.
-    const protectedGit = protectedRepositoryGitRelease(
-      () => openShellRepositoryAccess(runtime, () => ({ client, continuity, workspace, sandbox })),
-      async () => ({ close: async () => {} }),
-    );
-    const f = await setup(t, {
-      repoDriver: repository.driver,
-      driverSelections: { sandbox: protectedGit.sandboxConfiguration },
-    });
-    const gateway = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/bin/codex"] },
-      {
-        id: CREDENTIAL_GATEWAY_FIXTURE_ID,
-        backend: {
-          id: "finite-expiry-gateway",
-          drivers: { credential_gateway: CREDENTIAL_GATEWAY_FIXTURE_ID },
-          client: { placement: () => undefined, clientForNamespace: () => client },
-        },
-      },
-    );
-    f.controller.installDriver(protectedGit.owner, ["sandbox", "credential_proxy"]);
-    f.controller.registerDriver(gateway);
-    f.controller.selectDriver("credential_gateway", gateway.id);
-    const routes = new PostgresOpenShellGitRouteStore(f.observerPool);
-    const namespaceId = f.namespace.id;
-    const pushRef = "refs/heads/review/task";
-    const project = "example/application";
-    const registry = validateGitHubRepositoryRegistry(
-      {
-        version: 1,
-        backendId,
-        providerInstanceId: "github-com-primary",
-        appId: "12345",
-        githubInstallationId: "67890",
-        maximumDurationSeconds: 86400,
-        installationAccess: {
-          repositoryRef: "installation",
-          namespaces: [{ namespaceId, accessMode: "installation" }],
-        },
-        repositories: [],
-      },
-      backendId,
-    );
-    const binding = resolveGitHubRepositoryBinding(registry, {
-      namespaceId,
-      repositoryRef: "installation",
-      profile: "github-installation",
-    });
-    // Repository and Compute must resolve the same registry grant throughout this test.
-    repository.driver.resolve = (input) => ({
-      bindings: input.bindings.map((item) =>
-        resolveGitHubRepositoryBinding(registry, { namespaceId: input.namespaceId, ...item }),
-      ),
-      sessionDurationSeconds: 60,
-    });
-    const registrationName = "oce-prepared-git";
-    const sandboxId = "fixture-original";
-    const workspace = "git-expiry";
-    const sandbox = "git-agent";
-    const events = [];
-    const approved = [];
-    const stopped = [];
-    let sessionId;
-    let identity;
-    let runtime;
-    let senderRuntime;
-    const bodies = await gitCommandBodies(t, pushRef);
-    const { client: middleware, keys } = await openShellOnlineGitWire(t, {
-      registrationName,
-      budgetMs: 3000,
-      async lookupBinding(id, signal) {
-        let refused;
-        const found = await senderRuntime.lookup(id, signal, (reason) => {
-          refused = reason;
-        });
-        return found ?? (refused && { refused });
-      },
-      async authorizeOnlineRequest(request, installed) {
-        assert.equal(request.sessionId, sessionId);
-        assert.equal(request.scope, "github-installation");
-        approved.push(request.operation);
-        assert.equal(installed.route.revisionId, revision.id);
-        return {
-          ...onlineGitAllow(request, installed),
-          scope: request.scope,
-          revisionId: installed.route.revisionId,
-          fence: installed.route.fence,
-        };
-      },
-    });
-    // Allocate the Agent and independent model grant before starting the short Git clock.
-    const agent = await f.agent("attached-git-expires", {
-      auth: "credential_source",
-      executionMode: "dedicated",
-    });
-    await f.observerPool.query("UPDATE occ.agents SET repository_bindings=$1 WHERE id=$2", [
-      JSON.stringify([{ repositoryRef: binding.repositoryRef, profile: binding.profile }]),
-      agent.id,
-    ]);
-    // The preinstalled model provider and its retained profile remain the original expiry
-    // fixture's. Enrollment must not replace that profile and erase its overlap controls.
-    const model = agent.harnessAuth.sourceId;
-    const continuity = { model, workload: async () => "original-workload-and-supervisor" };
-    const deadlineWallMs = Date.now() + 6_000;
-    const revision = await f.revision(agent, 1, {
-      protectedRepositoryDriver: protectedGit.owner,
-      repositoryCredentials: { ...repository.snapshot, deadlineWallMs, bindings: [binding] },
-    });
-    assert.deepEqual(revision.executionAdmission, { version: 5, mode: "protected" });
-    assert.equal(revision.egressPlan.repositoryGitAuthorization, "online-request");
-    assert.deepEqual(revision.egressPlan.repositoryGit, revision.repositoryCredentials);
-    assert.equal(revision.repositoryCredentials.standingApprovalId, undefined);
-    assert.equal(revision.repositoryCredentials.deadlineWallMs, deadlineWallMs);
-    assert.deepEqual(revision.egressPlan.harnessCredentialSource, revision.harnessAuth);
-    const { client, world } = await gitExpiryGateway(t, {
-      model,
-      workspace,
-      sandbox,
-      revisionId: revision.id,
-      platformProfile,
-      deadline: deadlineWallMs,
-    });
-    const material = {
-      ...binding.grant,
-      value: "synthetic-installation-token",
-      expiresAt: new Date(deadlineWallMs + 600_000).toISOString(),
-      scope: "github-installation",
-      installationId: registry.githubInstallationId,
-      preparationAttemptId: randomUUID(),
-      materialVersion: randomUUID(),
-      apiOrigin: "https://api.github.com",
-    };
-    function releaseRuntime() {
-      const git = new OpenShellGitRuntime(
-        { registrationName, authority: {} },
-        createGitHubRepositoryDeliveryResolver(registry),
-      );
-      // Keep the original controlled supplier and TLS authority. Enrollment and route custody
-      // are real; this material is released only after the worker has committed activation.
-      git.routes = routes;
-      git.owner = {
-        async readOpenShellMaterial(_revisionId, _signal, route, scope) {
-          assert.equal(_revisionId, revision.id);
-          assert.equal(route.revisionId, revision.id);
-          assert.equal(scope, "github-installation");
-          if ((await f.currentAgent(agent)).activeRevisionId !== revision.id) {
-            return { absent: "unprepared" };
+    const bodies = await gitCommandBodies(t, "refs/heads/review");
+    await narrowOnlineGitJourney(
+      t,
+      import.meta.url,
+      async ({ revision, evaluate, peer, maintenance: controls }) => {
+        const { fixture: f, agent, world, events, stopped, restart } = controls;
+        assert.equal(revision.executionAdmission.version, 5);
+        assert.equal(revision.executionAdmission.mode, "protected");
+        assert.equal(revision.egressPlan.repositoryGitAuthorization, "online-request");
+        assert.deepEqual(revision.egressPlan.repositoryGit, revision.repositoryCredentials);
+        assert.equal(revision.repositoryCredentials.standingApprovalId, undefined);
+        const [{ sessionId }] = await repositoryAttempts(f, revision);
+        const deadlineWallMs = revision.repositoryCredentials.deadlineWallMs;
+        let originRequests = 0;
+        let originBytes = 0;
+        async function fetchFromPrivateOrigin() {
+          const result = await evaluate({
+            target: {
+              scheme: "https",
+              host: "github.com",
+              port: 443,
+              method: "POST",
+              path: "/fixture/repository.git/git-upload-pack",
+            },
+            headers: [{ name: "content-type", value: "application/x-git-upload-pack-request" }],
+            body: bodies.fetch,
+          });
+          if (result.decision !== 1) {
+            return result;
           }
-          return { ...material, sessionId };
-        },
-      };
-      git.emit = (e) => events.push(e);
-      return git;
-    }
-    senderRuntime = runtime = releaseRuntime();
-    const kube = createTestKubernetesComputeDriver(f.compute.id, {
-      repositoryCredentials: true,
-      protectedDriver: protectedGit.owner,
-      credentialGatewayDriver: gateway,
-    });
-    const compute = {
-      ...f.compute,
-      validateExecutionAdmission: kube.validateExecutionAdmission.bind(kube),
-      validateRepositoryCredentials(harness, selected) {
-        assert.equal(harness.id, "codex");
-        assert.equal(harness.mode, "dedicated");
-        assert.equal(selected, protectedGit.owner.ref.id);
-        kube.validateRepositoryCredentials(harness, selected);
-      },
-      async prepareRevision(r, context) {
-        assert.equal(r.id, revision.id);
-        assert.equal(r.agentId, agent.id);
-        assert.equal(r.harnessAuth.sourceId, model);
-        assert.equal(context.harnessAuth.method, "credential_source");
-        assert.equal(context.harnessAuth.source.id, model);
+          originRequests++;
+          originBytes += bodies.fetch.length;
+          assert.ok(bodies.uploadPack(bodies.fetch).includes(Buffer.from("PACK")));
+          return result;
+        }
+        assert.deepEqual(await fetchFromPrivateOrigin(), { decision: 1 });
+        const remaining = deadlineWallMs - Date.now();
+        assert.ok(remaining > 0, "use Git before its legitimately admitted deadline");
+        // Let the admitted finite grant expire. Only queue due times move; the real worker
+        // creates expiry work and disposes the live session without an injected withdrawal.
+        await delay(remaining + 10);
+        const nextExpiry = async (code) => {
+          const event = await completion(
+            events,
+            code,
+            (e) =>
+              e.event === "worker.completed" &&
+              e.revisionId === revision.id &&
+              e.workId?.includes(":repository_cleanup:"),
+          );
+          assert.equal(
+            event.code,
+            code,
+            JSON.stringify(events.filter((event) => event.event === "worker.openshell-git-expiry")),
+          );
+          if (code !== "REPOSITORY_RUNTIME_RETIREMENT_QUEUED") {
+            assert.equal((await f.currentAgent(agent)).activeRevisionId, revision.id);
+            assert.deepEqual(stopped, []);
+          }
+          events.length = 0;
+        };
+        assert.equal((await f.advanceMaintenance(revision)).rowCount, 1);
+        await nextExpiry("REPOSITORY_CLEANUP_PENDING");
+        assert.equal(world.version, 14);
+        assert.deepEqual(world.detaches, [], "no detach at the stale resource version");
+        const refused = await fetchFromPrivateOrigin();
+        assert.deepEqual(refused, { decision: 2, reason_code: "access_withdrawn" });
+        assert.deepEqual([originRequests, originBytes, world.writes], [1, bodies.fetch.length, 1]);
+        const attempts = await repositoryAttempts(f, revision);
+        assert.deepEqual(
+          attempts.map((a) => [a.phase, a.sessionId]),
+          [["disposed", sessionId]],
+        );
+        const originalAdmission = attempts[0].admissionId;
+        assert.ok(originalAdmission);
+        const assertOriginalSession = async () => {
+          assert.deepEqual(
+            (await repositoryAttempts(f, revision)).map(({ admissionId, sessionId, phase }) => [
+              admissionId,
+              sessionId,
+              phase,
+            ]),
+            [[originalAdmission, sessionId, "disposed"]],
+            "settlement never creates a second durable admission",
+          );
+        };
+        await advanceCleanupRetries(f, revision);
+        await nextExpiry("REPOSITORY_CLEANUP_PENDING");
         assert.equal(
-          world.id,
-          undefined,
-          "the worker must not prepare or replace the running revision after expiry",
+          world.detaches.length,
+          1,
+          "one conditional detach committed, but its reply was lost",
         );
-        const [open] = await repositoryAttempts(f, r);
-        assert.equal(open.phase, "open");
-        sessionId = open.sessionId;
-        const signal = AbortSignal.timeout(4000);
-        const git = await runtime.prepare(
-          r,
-          client,
-          workspace,
-          sandbox,
-          signal,
-          "/sandbox/enterprise",
-          world.retainedProviders,
+        await f.stop();
+        world.addRetainedEndpoint(newHost);
+        await advanceCleanupRetries(f, revision);
+        await restart(); // fresh runtime and authority server, same PostgreSQL and Gateway
+        const coldRefusal = { decision: 2, reason_code: "online_authorization_denied" };
+        if (newHost === "uploads.github.com") {
+          await nextExpiry("REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
+          if (platformProfile) {
+            assert.deepEqual(
+              world.profileReads,
+              ["platform"],
+              "read the effective profile, not its workspace namesake",
+            );
+          }
+          await waitFor("retained GitHub endpoint retires the exact revision", async () =>
+            (await f.currentAgent(agent)).activeRevisionId === undefined ? true : undefined,
+          );
+          assert.deepEqual(stopped, [revision.id]);
+          assert.deepEqual(await fetchFromPrivateOrigin(), coldRefusal);
+          assert.deepEqual([originRequests, originBytes], [1, bodies.fetch.length]);
+          assert.deepEqual(
+            [world.detaches.length, world.writes],
+            [1, 1],
+            "no replay or replacement",
+          );
+          await assertOriginalSession();
+          return;
+        }
+        await nextExpiry("REPOSITORY_ACCESS_WITHDRAWN");
+        assert.deepEqual(
+          world.reports.slice(-2).map(([, state, receipt]) => [state, receipt]),
+          [
+            ["REVOKED", "OBSERVE"],
+            ["READY", "OBSERVE"],
+          ],
         );
-        world.id = sandboxId;
-        identity = git.middlewares[registrationName].config;
-        assert.equal(identity.fields.binding_id.stringValue, r.egressPlan.execution.executionId);
-        await runtime.bind(r.id, (box) => assert.equal(box.id, sandboxId), continuity);
-        const entry = await runtime.entries.get(r.id);
-        await runtime.reconcile(entry);
-        await protectedGit.enroll(
-          r,
-          context,
-          git.middlewares,
-          workspace,
-          sandboxId,
-          world.repositoryGitRecipient,
+        const {
+          rows: [next],
+        } = await f.advanceMaintenance(revision);
+        const maintenance = { ...revision, idempotencyKey: next.idempotency_key };
+        await f.work(maintenance, "succeeded");
+        assert.equal(
+          (await f.workResult(maintenance)).rows[0].reason_code,
+          "REPOSITORY_ACCESS_WITHDRAWN",
         );
-        return f.compute.prepareRevision(r, context);
-      },
-      retireExpiredRepositoryAccess: (r, signal) =>
-        runtime.retireExpiredRepositoryAccess(r, client, workspace, sandbox, continuity, signal),
-      stopRevision(r) {
-        stopped.push(r.id);
-        return f.compute.stopRevision(r);
-      },
-    };
-    const start = () =>
-      f.start(compute, {
-        emit: (e) => events.push(e),
-        transformDrivers: (drivers) => protectedGit.selectDrivers(drivers, gateway),
-      });
-    let originRequests = 0;
-    let originBytes = 0;
-    async function fetchFromPrivateOrigin() {
-      const result = await invoke(
-        middleware,
-        "EvaluateHttpRequest",
-        {
-          phase: 1,
-          middleware_name: registrationName,
-          config: identity,
-          context: { request_id: randomUUID(), sandbox_id: sandboxId, workspace },
-          target: {
-            scheme: "https",
-            host: "github.com",
-            port: 443,
-            method: "POST",
-            path: "/" + project + ".git/git-upload-pack",
-          },
-          headers: [{ name: "content-type", value: "application/x-git-upload-pack-request" }],
-          body: bodies.fetch,
-        },
-        token(keys, "supervisor", sandboxId),
-      );
-      if (result.decision !== 1) {
-        return result;
-      }
-      originRequests++;
-      originBytes += bodies.fetch.length;
-      assert.ok(
-        bodies.uploadPack(bodies.fetch).includes(Buffer.from("PACK")),
-        "Git returned the requested pack",
-      );
-      return result;
-    }
-    await start();
-    await f.work(revision, "succeeded").catch(async (cause) => {
-      const {
-        rows: [work],
-      } = await f.workResult(revision);
-      throw Error("Git-enabled revision did not activate: " + work?.reason_code, { cause });
-    });
-    const { rows: installations } = await f.observerPool.query(
-      "SELECT installation FROM occ.egress_installations WHERE revision_id=$1",
-      [revision.id],
-    );
-    assert.equal(installations.length, 1);
-    assert.deepEqual(installations[0].installation.plan, revision.egressPlan);
-    assert.equal(installations[0].installation.sandboxId, sandboxId);
-    const entry = await runtime.entries.get(revision.id);
-    entry.nextObserveAt = 0;
-    entry.nextRefreshAt = 0;
-    await runtime.reconcile(entry);
-    assert.deepEqual(await fetchFromPrivateOrigin(), { decision: 1 });
-    assert.deepEqual(approved, ["upload-pack"]);
-    const remaining = deadlineWallMs - Date.now();
-    assert.ok(remaining > 0, "use Git before its legitimately admitted deadline");
-    // Await the real grant deadline; move only queue due times. Neither the binding nor its
-    // live session is removed by the test, and no expiry or cleanup work is inserted by it.
-    await delay(remaining + 10);
-    const nextExpiry = async (code) => {
-      const event = await completion(
-        events,
-        code,
-        (e) =>
-          e.event === "worker.completed" &&
-          e.revisionId === revision.id &&
-          e.workId?.includes(":repository_cleanup:"),
-      );
-      assert.equal(event.code, code);
-      if (code !== "REPOSITORY_RUNTIME_RETIREMENT_QUEUED") {
         assert.equal((await f.currentAgent(agent)).activeRevisionId, revision.id);
         assert.deepEqual(stopped, []);
-      }
-      events.length = 0;
-    };
-    assert.equal((await f.advanceMaintenance(revision)).rowCount, 1);
-    await nextExpiry("REPOSITORY_CLEANUP_PENDING");
-    assert.equal(world.version, 14);
-    assert.deepEqual(world.detaches, [], "no detach at the stale resource version");
-    const refused = await fetchFromPrivateOrigin();
-    assert.deepEqual(refused, { decision: 2, reason_code: "access_withdrawn" });
-    assert.deepEqual(
-      [originRequests, originBytes, approved, world.writes],
-      [1, bodies.fetch.length, ["upload-pack"], 1],
-    );
-    const attempts = await repositoryAttempts(f, revision);
-    assert.deepEqual(
-      attempts.map((a) => [a.phase, a.sessionId]),
-      [["disposed", sessionId]],
-    );
-    const originalAdmission = attempts[0].admissionId;
-    assert.ok(originalAdmission);
-    const assertOriginalSession = async () => {
-      assert.deepEqual(
-        (await repositoryAttempts(f, revision)).map(({ admissionId, sessionId, phase }) => [
-          admissionId,
-          sessionId,
-          phase,
-        ]),
-        [[originalAdmission, sessionId, "disposed"]],
-        "settlement never creates a second durable admission",
-      );
-      assert.equal(repository.calls.filter((c) => c.operation === "open").length, 0);
-    };
-    await advanceCleanupRetries(f, revision);
-    await nextExpiry("REPOSITORY_CLEANUP_PENDING");
-    assert.equal(
-      world.detaches.length,
-      1,
-      "one conditional detach committed, but its reply was lost",
-    );
-    await f.stop();
-    world.addRetainedEndpoint(newHost);
-    runtime = releaseRuntime(); // empty in-process route, same PostgreSQL and gateway
-    await advanceCleanupRetries(f, revision);
-    await start();
-    if (newHost === "uploads.github.com") {
-      await nextExpiry("REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
-      if (platformProfile) {
-        assert.deepEqual(
-          world.profileReads,
-          ["platform"],
-          "read the effective profile, not its workspace namesake",
+        // The durable fence also rejects requests through the fresh sender after restart.
+        assert.deepEqual(await fetchFromPrivateOrigin(), coldRefusal);
+        assert.equal(
+          originBytes,
+          bodies.fetch.length,
+          "the late fetch never reached the Git origin",
         );
-      }
-      await waitFor("retained GitHub endpoint retires the exact revision", async () =>
-        (await f.currentAgent(agent)).activeRevisionId === undefined ? true : undefined,
-      );
-      assert.deepEqual(stopped, [revision.id]);
-      assert.deepEqual(await fetchFromPrivateOrigin(), refused);
-      assert.deepEqual(
-        [originRequests, originBytes, approved],
-        [1, bodies.fetch.length, ["upload-pack"]],
-      );
-      assert.deepEqual([world.detaches.length, world.writes], [1, 1], "no replay or replacement");
-      await assertOriginalSession();
-      return;
-    }
-    await nextExpiry("REPOSITORY_ACCESS_WITHDRAWN");
-    assert.deepEqual(
-      world.reports.slice(-2).map(([, state, receipt]) => [state, receipt]),
-      [
-        ["REVOKED", "OBSERVE"],
-        ["READY", "OBSERVE"],
-      ],
+        assert.equal(peer.gh.issuesOfTokens.length, 1);
+        assert.deepEqual(
+          [world.detaches.length, world.writes],
+          [1, 1],
+          "no replay or replacement Git material",
+        );
+        await assertOriginalSession();
+        // Losing the evidence for safe retention on the next ordinary maintenance retires this revision.
+        if (platformProfile) {
+          assert.deepEqual(
+            world.profileReads,
+            ["platform", "platform"],
+            "rechecked after confirming withdrawal",
+          );
+          world.profileReads.length = 0;
+          world.denyPlatformProfile = true;
+        } else {
+          world.modelFailed = true;
+        }
+        await f.advanceMaintenance(revision);
+        await waitFor("loss of verified provider access retires the revision", async () =>
+          (await f.currentAgent(agent)).activeRevisionId === undefined ? true : undefined,
+        );
+        assert.deepEqual(stopped, [revision.id]);
+        if (platformProfile) {
+          assert.deepEqual(
+            world.profileReads,
+            ["platform"],
+            "permission denied; never try the workspace namesake",
+          );
+          assert.equal((await fetchFromPrivateOrigin()).decision, 2);
+          assert.deepEqual([originRequests, world.detaches.length, world.writes], [1, 1, 1]);
+          assert.equal(peer.gh.issuesOfTokens.length, 1);
+          await assertOriginalSession();
+        }
+      },
+      { draftPull: false, sessionDurationSeconds: 15, platformProfile },
     );
-    const {
-      rows: [next],
-    } = await f.advanceMaintenance(revision);
-    const maintenance = { ...revision, idempotencyKey: next.idempotency_key };
-    await f.work(maintenance, "succeeded");
-    assert.equal(
-      (await f.workResult(maintenance)).rows[0].reason_code,
-      "REPOSITORY_ACCESS_WITHDRAWN",
-    );
-    assert.equal((await f.currentAgent(agent)).activeRevisionId, revision.id);
-    assert.deepEqual(stopped, []);
-    // The original sender remains fenced, and the cold worker cannot supply a replacement.
-    assert.deepEqual(await fetchFromPrivateOrigin(), refused);
-    senderRuntime = runtime;
-    assert.equal((await fetchFromPrivateOrigin()).decision, 2);
-    assert.equal(originBytes, bodies.fetch.length, "neither late fetch reached the Git origin");
-    assert.deepEqual(approved, ["upload-pack"]);
-    await assertOriginalSession();
-    assert.deepEqual(
-      [world.detaches.length, world.writes],
-      [1, 1],
-      "no replay or replacement Git material",
-    );
-    // Losing the evidence for safe retention on the next ordinary maintenance retires this revision.
-    if (platformProfile) {
-      assert.deepEqual(
-        world.profileReads,
-        ["platform", "platform"],
-        "rechecked after confirming withdrawal",
-      );
-      world.profileReads.length = 0;
-      world.denyPlatformProfile = true;
-    } else {
-      world.modelFailed = true;
-    }
-    await f.advanceMaintenance(revision);
-    await waitFor("loss of verified provider access retires the revision", async () =>
-      (await f.currentAgent(agent)).activeRevisionId === undefined ? true : undefined,
-    );
-    assert.deepEqual(stopped, [revision.id]);
-    if (platformProfile) {
-      assert.deepEqual(
-        world.profileReads,
-        ["platform"],
-        "permission denied; never try the workspace namesake",
-      );
-      assert.equal((await fetchFromPrivateOrigin()).decision, 2);
-      assert.deepEqual([originRequests, world.detaches.length, world.writes], [1, 1, 1]);
-    }
   };
 }
