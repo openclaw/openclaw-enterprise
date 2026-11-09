@@ -27,14 +27,33 @@ function observation(record) {
   if (record.type !== "line" || record.contentClass !== "operational") {
     return undefined;
   }
-  // The public runtime API has already classified and redacted these messages.
-  // Activity/content records and unstructured text are not diagnostic evidence.
-  if (
-    ["codex", "openclaw"].includes(record.kind) &&
-    ["warn", "error"].includes(record.level) &&
-    typeof record.message === "string"
-  ) {
-    return `${record.level}: ${record.message.slice(0, 512).replace(/\p{C}/gu, " ")}`;
+  // Runtime log redaction is not a no-provider-body guarantee. Keep only fixed
+  // observations from known Codex formats; never forward message text or URLs.
+  if (record.kind === "codex" && typeof record.message === "string") {
+    const message = record.message;
+    if (record.subsystem === "codex_api::endpoint::responses_websocket") {
+      const status = /^failed to connect to websocket: HTTP error: ([1-5]\d{2})\b/.exec(message);
+      if (status) {
+        return `codex.connection httpStatus=${status[1]}`;
+      }
+      if (message.startsWith("failed to connect to websocket: IO error: ")) {
+        return "codex.connection failureClass=network";
+      }
+      if (message.startsWith("failed to connect to websocket: TLS error: ")) {
+        return "codex.connection failureClass=tls";
+      }
+    }
+    if (record.subsystem === "codex_core::client" && message === "falling back to HTTP") {
+      return "codex.connection fallback=http";
+    }
+    if (
+      record.subsystem === "codex_core::responses_retry" &&
+      (message === "stream connection failed; waiting to retry" ||
+        message === "remote compaction v2 stream failed; retrying request after delay" ||
+        message.startsWith("stream disconnected - retrying sampling request ("))
+    ) {
+      return "codex.connection retrying";
+    }
   }
   if (record.kind !== "wrapper" || !events.has(record.message)) {
     return undefined;
@@ -92,19 +111,20 @@ export async function collectFirstAgentDiagnostics(
       if (role === "agent" && sources.length === 0) {
         continue;
       }
-      const pods = description.pods.filter((pod) => pod.role === role);
+      const pods = description.pods.filter(
+        (pod) =>
+          pod.role === role &&
+          (role !== "gateway" || (pod.name === gateway.pod && pod.uid === gateway.uid)),
+      );
+      if (role === "gateway" && (!gateway.uid || pods.length === 0)) {
+        lines.push("gateway: original Pod unavailable or replaced; logs omitted.");
+        continue;
+      }
       if (sources.length !== 1 || pods.length !== 1) {
         lines.push(`${role}: runtime evidence unavailable (no unique owned Pod).`);
         continue;
       }
       const pod = pods[0];
-      if (
-        role === "gateway" &&
-        (!gateway.uid || pod.name !== gateway.pod || pod.uid !== gateway.uid)
-      ) {
-        lines.push("gateway: original Pod unavailable or replaced; logs omitted.");
-        continue;
-      }
       if (
         !namePattern.test(pod.name) ||
         !Array.isArray(pod.containers) ||
@@ -115,8 +135,14 @@ export async function collectFirstAgentDiagnostics(
       lines.push(`${role}: ready=${pod.ready === true}`);
       // The API orders main containers before init containers. Bound work even for malformed responses.
       const targets = sources[0].pods.filter(
-        (target) => target.name === pod.name && target.uid === pod.uid,
+        (target) =>
+          target.name === pod.name &&
+          target.uid === pod.uid &&
+          (role !== "gateway" || target.container === "gateway"),
       );
+      if (targets.length === 0) {
+        lines.push(`${role}: container evidence unavailable.`);
+      }
       if (targets.length > 2) {
         lines.push(`${role}: additional container evidence omitted.`);
       }
@@ -132,10 +158,7 @@ export async function collectFirstAgentDiagnostics(
           lines.push(`${role}: container evidence unavailable.`);
           continue;
         }
-        if (
-          role === "gateway" &&
-          (target.container !== "gateway" || target.restartCount !== gateway.restartCount)
-        ) {
+        if (role === "gateway" && target.restartCount !== gateway.restartCount) {
           lines.push("gateway: original container unavailable or restarted; logs omitted.");
           continue;
         }
@@ -158,7 +181,9 @@ export async function collectFirstAgentDiagnostics(
             !sameStream(page.stream, role, target) ||
             !Array.isArray(page.records) ||
             page.records.some(
-              (record) => !sameStream(record.stream, role, target) || record.type === "gap",
+              (record) =>
+                !sameStream(record.stream, role, target) ||
+                (record.type === "gap" && record.reason === "stream_replaced"),
             )
           ) {
             lines.push(`${role}: log stream unavailable or replaced.`);
@@ -171,7 +196,9 @@ export async function collectFirstAgentDiagnostics(
           const incomplete =
             page.truncated ||
             page.withheld > 0 ||
-            page.records.some((record) => record.type === "withheld" || record.truncated) ||
+            page.records.some(
+              (record) => record.type === "withheld" || record.type === "gap" || record.truncated,
+            ) ||
             observed.size > 8;
           lines.push(
             `${role}: ${incomplete ? "incomplete log evidence" : "bounded log sample"}${observed.size === 0 ? "; no classified observation" : ""}.`,

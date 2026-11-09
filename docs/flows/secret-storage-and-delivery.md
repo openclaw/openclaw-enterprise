@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: "2026-10-29"
-last_updated_session: "authoring-run/d5feb6ab-c39d-4b0f-9af9-d6aec0acfb42"
+updated: "2026-11-09"
+last_updated_session: "authoring-run/9e4bd520-55c8-4edd-bde2-4c149544135a"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -202,11 +202,14 @@ After a model failure, the CLI prints the original error before a bounded
 [diagnostic snapshot](../../scripts/first-agent-diagnostics.mjs) from the existing
 revision-scoped runtime status and log API. The API resolves both Kubernetes and
 OpenShell Harness ownership. The snapshot checks the selected Gateway Pod UID
-and restart count; changed identities suppress log attribution. It prints container state, admitted startup event fields, and bounded operational
-warnings/errors already classified and redacted by the API; it never reads raw
-container logs or provider bodies. Collection is limited to ten seconds, 64 KiB per response, and two container
-streams per role. Unavailable or incomplete evidence does not change the original
-failure; startup observations do not establish the failed request's cause.
+and restart count; changed identities suppress log attribution. It prints container
+state, admitted startup event fields, and fixed classifications of known Codex
+connection failures, fallback and retry messages. It never forwards free-form log
+text or provider bodies. Collection is limited to ten seconds, 64 KiB per response,
+and two container streams per role. Same-stream history gaps retain valid
+observations and mark the sample incomplete. Unavailable or incomplete evidence
+does not change the original failure; startup observations do not establish the
+failed request's cause.
 The tool retains installation resources on exit.
 
 <span id="4-render-only-the-exact-gateways-projection"></span>
@@ -328,6 +331,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-09 22:31: Document bounded first-Agent failure evidence, fixed diagnostic classifications, and exact Gateway stream ownership. (authoring-run/9e4bd520-55c8-4edd-bde2-4c149544135a - 3eae65fcdfe89b0ee7c1d6eaf757c8dddcdfefb9)
 
 - 2026-11-01: A Secret create refused as not sent runs no cleanup read and keeps its `503`. (fix-3108, finding 3108)
 
