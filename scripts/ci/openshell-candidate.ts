@@ -18,6 +18,7 @@ interface OpenShellCandidate {
 interface CandidateCommands {
   execFile: ExecuteFile;
   docker: string;
+  helm: string;
 }
 
 type GitMode = "040000" | "100644" | "100755";
@@ -170,8 +171,8 @@ async function verifyChart(
 
 export async function verifyOpenShellCandidate(
   candidate: OpenShellCandidate,
-  { execFile, docker }: CandidateCommands,
-): Promise<OpenShellCandidate> {
+  { execFile, docker, helm }: CandidateCommands,
+): Promise<OpenShellCandidate & { gatewayAppVersion: string }> {
   const { sourceRevision, gatewayChart, workspaceChart, images } = candidate;
   const root = dirname(dirname(dirname(gatewayChart)));
   try {
@@ -242,5 +243,19 @@ export async function verifyOpenShellCandidate(
       );
     }
   }
-  return candidate;
+  const metadata = await readCommand(
+    execFile,
+    helm,
+    ["show", "chart", gatewayChart],
+    "OpenShell candidate gateway chart metadata could not be read.",
+  );
+  // Helm reads the chart's YAML and prints normalized metadata. The gateway
+  // chart uses appVersion as a Kubernetes label, so require a usable label value.
+  const gatewayAppVersion = metadata.match(
+    /^appVersion: (["']?)([A-Za-z0-9](?:[A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?)\1$/mu,
+  )?.[2];
+  if (!gatewayAppVersion) {
+    throw new Error("OpenShell candidate gateway chart must set a label-safe appVersion.");
+  }
+  return { ...candidate, gatewayAppVersion };
 }

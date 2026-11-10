@@ -613,9 +613,10 @@ async function validateOpenShellSelection(env, execFile) {
   }
   const candidate = selectOpenShellCandidate(env, releasedImages);
   if (candidate) {
-    await verifyOpenShellCandidate(candidate, {
+    return await verifyOpenShellCandidate(candidate, {
       execFile,
       docker: env.OCC_DOCKER_BIN ?? "docker",
+      helm: env.OCC_HELM_BIN ?? "helm",
     });
   }
   return candidate;
@@ -698,9 +699,8 @@ async function prepareOpenShell({ cluster, execFile, registerImage, env = proces
     OCC_TEST_OPENSHELL_HELM: helm,
     OCC_TEST_OPENSHELL_HELM_CHART: charts.gateway,
     OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART: charts.workspace,
-    ...(candidate
-      ? { OCC_TEST_OPENSHELL_SOURCE_REVISION: candidate.sourceRevision }
-      : { OCC_TEST_OPENSHELL_CHART_VERSION: openShellVersion }),
+    OCC_TEST_OPENSHELL_CHART_VERSION: candidate?.gatewayAppVersion ?? openShellVersion,
+    ...(candidate && { OCC_TEST_OPENSHELL_SOURCE_REVISION: candidate.sourceRevision }),
     OCC_TEST_OPENSHELL_GATEWAY_IMAGE: gatewayImage,
     OCC_TEST_OPENSHELL_SANDBOX_IMAGE: sandboxImage,
     OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: supervisorImage,

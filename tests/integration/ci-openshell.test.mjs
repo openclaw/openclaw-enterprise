@@ -1221,7 +1221,7 @@ test("prepareOpenShell rejects mutable OpenShell image overrides before kubectl 
 
 const execFileAsync = promisify(execFileCallback);
 
-async function candidateCheckout(t) {
+async function candidateCheckout(t, { gatewayAppVersion = "0.0.0" } = {}) {
   const root = await fixture(t, "openshell-candidate");
   const gatewayChart = join(root, "deploy", "helm", "openshell");
   const workspaceChart = join(root, "deploy", "helm", "openshell-workspace");
@@ -1232,7 +1232,7 @@ async function candidateCheckout(t) {
     await mkdir(directory, { recursive: true });
     await writeFile(
       join(directory, "Chart.yaml"),
-      `apiVersion: v2\nname: ${name}\nversion: 0.1.6\n`,
+      `apiVersion: v2\nname: ${name}\nversion: 0.1.6\n${directory === gatewayChart && gatewayAppVersion ? `appVersion: "${gatewayAppVersion}"\n` : ""}`,
     );
     await writeFile(join(directory, "values.yaml"), "replicaCount: 1\n");
   }
@@ -1332,8 +1332,11 @@ test("OpenShell candidate selection verifies committed chart bytes and all image
     if (command === "git") {
       return execFileAsync(command, args);
     }
-    // Only Docker's image metadata is simulated. Git tree and on-disk chart
-    // comparisons run for real; this does not prove image build provenance.
+    if (command === "helm") {
+      assert.deepEqual(args, ["show", "chart", env.OCC_TEST_OPENSHELL_HELM_CHART]);
+      return { stdout: await readFile(join(args[2], "Chart.yaml"), "utf8") };
+    }
+    // Docker reports fixture metadata. Git tree and on-disk chart comparisons run for real.
     assert.equal(command, "docker");
     assert.deepEqual(args.slice(0, 2), ["image", "inspect"]);
     inspected.push(args.at(-1));
@@ -1350,6 +1353,32 @@ test("OpenShell candidate selection verifies committed chart bytes and all image
   assert.equal(candidate.sourceRevision, env.OCC_TEST_OPENSHELL_SOURCE_REVISION);
   assert.equal(candidate.gatewayChart, env.OCC_TEST_OPENSHELL_HELM_CHART);
   assert.equal(candidate.workspaceChart, env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART);
+  assert.equal(candidate.gatewayAppVersion, "0.0.0");
+});
+
+test("prepareOpenShell rejects a verified gateway chart without an application version", async (t) => {
+  const { env } = await candidateCheckout(t, { gatewayAppVersion: "" });
+  const root = await fixture(t, "openclaw-k8s-openshell-test");
+  await assert.rejects(
+    prepareOpenShell({
+      cluster: ownedCluster(root),
+      async execFile(command, args) {
+        if (command === "git") {
+          return execFileAsync(command, args);
+        }
+        if (command === "docker") {
+          assert.deepEqual(args.slice(0, 2), ["image", "inspect"]);
+          return { stdout: `${env.OCC_TEST_OPENSHELL_SOURCE_REVISION}\n` };
+        }
+        assert.equal(command, "helm");
+        assert.deepEqual(args, ["show", "chart", env.OCC_TEST_OPENSHELL_HELM_CHART]);
+        return { stdout: await readFile(join(args[2], "Chart.yaml"), "utf8") };
+      },
+      registerImage: async () => assert.fail("invalid candidate must not register images"),
+      env,
+    }),
+    /must set a label-safe appVersion/,
+  );
 });
 
 test("prepareOpenShell rejects source, chart, and image mismatches before cluster commands", async (t) => {

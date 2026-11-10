@@ -3071,7 +3071,13 @@ if (args[0] === "pull") {
     };
     for (const [name, version] of [
       ["stock", { OCC_TEST_OPENSHELL_CHART_VERSION: "0.1.6" }],
-      ["candidate", { OCC_TEST_OPENSHELL_SOURCE_REVISION: sourceRevision }],
+      [
+        "candidate",
+        {
+          OCC_TEST_OPENSHELL_SOURCE_REVISION: sourceRevision,
+          OCC_TEST_OPENSHELL_CHART_VERSION: "0.0.0",
+        },
+      ],
     ]) {
       const statePath = join(root, name + ".json");
       const env = { ...preparedInputs, ...version };

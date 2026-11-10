@@ -91,9 +91,12 @@ These checks establish source consistency; retain the image builder's provenance
 and smoke-test receipts separately.
 
 Preparation rejects an incomplete or mismatched selection before changing the
-cluster. It then uses the selected charts and records
-`OCC_TEST_OPENSHELL_SOURCE_REVISION` in the prepared environment. Without a
-candidate selection, preparation uses the pinned release charts and images.
+cluster. It records the source revision and the gateway chart's `appVersion` in
+the prepared environment. The gateway scenario uses `appVersion` to verify the
+installed StatefulSet's version label. This selection applies to scenarios that
+consume lane-prepared charts. Scenarios that run their own installer prepare
+their own inputs. Without a candidate selection, preparation uses the pinned
+release charts and images.
 A mirror reference with the same released image digest keeps this release path.
 An image with a different digest requires the complete candidate selection.
 
