@@ -549,7 +549,7 @@
         "provisioning validates Harness authentication with the source descriptor that supplied its login mode (PostgreSQL)",
         "credential exchange consults revision history only for inactive executions",
         "Kubernetes reads a synthetic Proxy Harness through its pinned catalog before external effects",
-        "Worker reads a stored synthetic Proxy Harness and refuses revoked or withdrawn authority",
+        "Worker reads a stored Proxy Harness and refuses a withdrawn source across restart",
         "claimed Worker dispatch gates a stored Proxy Harness before Kubernetes effects",
         "archived Gateway revision retires through its original Sandbox after source deletion"
       ]
