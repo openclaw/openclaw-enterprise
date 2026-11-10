@@ -100,6 +100,7 @@
     "tests/conformance/console-design-tokens.test.ts",
     "tests/conformance/audit.test.mjs",
     "tests/conformance/compute-lifecycle-hooks.test.mjs",
+    "tests/conformance/model-discovery.test.mjs",
     "tests/conformance/utils.test.mjs",
     "tests/conformance/workspace-node-setup.test.ts",
     "tests/conformance/console-api-client.test.ts",
@@ -146,6 +147,9 @@
     },
     {
       "path": "tests/conformance/compute-lifecycle-hooks.test.mjs"
+    },
+    {
+      "path": "tests/conformance/model-discovery.test.mjs"
     },
     {
       "path": "tests/conformance/codex-seccomp-profile.test.mjs"
