@@ -388,6 +388,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
             // fixture probe before this delay ends; PostgreSQL completes normally.
             return (
               `printf '%s\\n' "$$" >> ${bashString(pidFile)}; ` +
+              `printf '%s\\n' 'private build output' >&2; ` +
               `"$__sleep" 6; exec ${bashString(original)} ${args.map(bashString).join(" ")}`
             );
           }
