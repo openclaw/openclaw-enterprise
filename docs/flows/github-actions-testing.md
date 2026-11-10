@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-10
-last_updated_session: authoring-run/62ff26b1-e2b9-4035-a938-e86a07a423b7
+last_updated_session: authoring-run/9f72faf1-4740-48d3-8519-5d38e749b961
 ---
 
 # GitHub Actions testing flow
@@ -36,11 +36,14 @@ graph TD
   G -->|full or tests| L["Aggregate same-source lane results"]
   G -->|docs| M["Documentation coverage result"]
   L --> R["Full CI coverage result"]
-  C["Integration dispatch or exact cutover push"] --> P["Source and environment preflight"]
-  P -->|eligible source and environment| E["Protected test jobs"]
-  P -->|all or dev-up-k3d| U["Credential-free installation job"]
+  C["Main push or approved dispatch"] --> P["Source and environment preflight"]
+  P -->|docs only| D["Finish without execution lock"]
+  P -->|eligible| V["Acquire execution lock and revalidate"]
+  V --> E["Protected test jobs"]
+  V -->|all or dev-up-k3d| U["Credential-free installation job"]
   U --> T
   P -->|missing protection| X["Failed check"]
+  V -->|missing protection| X
   E --> T["Owned preparation, tests, cleanup and aggregation"]
 ```
 
@@ -51,6 +54,7 @@ graph TD
 ### 1. Select one source commit and coverage group
 
 `.github/workflows/ci.yml:jobs`, `.github/workflows/full-integration.yml:jobs`,
+`.github/workflows/full-integration-execution.yml:jobs`,
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
 `scripts/ci/test-suites.mjs:loadTestSuites`
 
@@ -85,12 +89,13 @@ evidence is reported as unavailable.
 
 For full-mode PRs, `affected-packages` verifies the checkout and reports dependents; it does not select tests or gate CI. Base-loaded policy cannot prevent PR changes to the workflow itself.
 
-Full Integration checks out `github.sha`. Verified docs-only main pushes omit runtime lanes; other pushes select `all`. Manual dispatches
-require `integration-main-approval` and verified dispatcher, team and environment policy.
+Full Integration checks out `github.sha`: verified docs-only main pushes omit runtime lanes; other pushes select `all`. Manual dispatch requires `integration-main-approval` and verified dispatcher, team and environment policy.
 A push may reuse same-SHA CI results after the [bounded admission and publication checks](../testing/ci/full-integration.md#results-and-limits);
 otherwise it runs fresh. Credentialed lanes do not wait for reuse.
 
-Main pushes share a queue; dispatches await approval separately. Slack Live serializes channel/app access. Installation and installed Skipper Git serialize per branch. These queues retain waiting jobs. Jobs verify repository, branch and event. Push retries retain their source; manual retries require a new [approved dispatch](../testing/ci/configuration.md#environments).
+Preflight precedes the main-push execution lock; docs-only pushes never enter it.
+Eligible pushes share one pending slot. The same-commit reusable workflow revalidates
+after waiting, then admits and runs lanes. Dispatch locks are run-specific. Slack Live serializes channel/app access. Installation and installed Skipper Git serialize per branch. These resource queues retain waiting jobs. Jobs verify repository, branch and event. Push retries retain their source; manual retries require a new [approved dispatch](../testing/ci/configuration.md#environments).
 
 `all` selects every suite. QA waits for Slack even after failure. Cancellation
 stops QA. Aggregation requires the selected results.
@@ -258,6 +263,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 17:37: Admit eligible Full Integration work before acquiring its execution lock. (authoring-run/9f72faf1-4740-48d3-8519-5d38e749b961 - c6541831756ae40d0485d16d8f0ffeab9851372d)
 
 - 2026-11-10 16:48: Consolidate native proof diagnostics and clarify observation limits. (authoring-run/62ff26b1-e2b9-4035-a938-e86a07a423b7 - faf4426fba16f164353970c5eaebd4b6b41b60f4)
 
