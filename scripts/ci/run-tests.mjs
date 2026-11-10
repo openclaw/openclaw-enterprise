@@ -281,6 +281,7 @@ function normalizeManifest(raw, manifestPath) {
       env: envObject(lane.env, `lanes.${laneName}.env`, issues),
       requiredEnv: stringArray(lane.requiredEnv, `lanes.${laneName}.requiredEnv`, issues),
       optionalEnv: stringArray(lane.optionalEnv, `lanes.${laneName}.optionalEnv`, issues),
+      focusedEnv: stringArray(lane.focusedEnv, `lanes.${laneName}.focusedEnv`, issues),
       fileConcurrency: fileConcurrencyLimit(
         lane.fileConcurrency,
         `lanes.${laneName}.fileConcurrency`,
@@ -1743,6 +1744,7 @@ function selectLane(manifest, laneName, selectedFile) {
       lane = {
         ...lane,
         files: [selected],
+        optionalEnv: [...lane.optionalEnv, ...lane.focusedEnv],
         parallelFiles: lane.parallelFiles.filter((path) => path === selected.path),
       };
     }

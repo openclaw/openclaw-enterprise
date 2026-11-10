@@ -2853,7 +2853,9 @@ async function prepareProductionInstallation(
       ({ mountPath }) => mountPath === "/sandbox/enterprise",
     );
     assert.ok(workspaceMount, "the original Agent workspace must remain mounted");
-    assert.equal(workspaceMount.subPath, bridgedWorkspaceSubPath);
+    // This workflow sends Compute's native mounts directly to OpenShell; the
+    // compatibility bridge's workspace/openshell-home layout is not involved.
+    assert.equal(workspaceMount.subPath, "workspace");
     assert.notEqual(workspaceMount.readOnly, true);
     assert.equal(
       harnessPod.spec.volumes.find(({ name }) => name === workspaceMount.name).persistentVolumeClaim

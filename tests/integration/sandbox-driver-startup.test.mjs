@@ -6651,11 +6651,15 @@ test("OpenShell refuses repository provision and enrollment before any gateway o
 // These cases invoke the production Driver over controlled Kubernetes/Gateway
 // transports. They prove cleanup selection, fencing and completion ordering, not
 // Kubernetes garbage collection, filesystem isolation, or live Pod termination.
-async function orphanedNativePreparation({ scratch = false } = {}) {
+async function orphanedNativePreparation({
+  scratch = false,
+  dataMountPath = "/sandbox/enterprise",
+} = {}) {
   const gateway = workspaceGatewayClient();
   gateway.deleteSandbox = async () => gateway.calls.push(["deleteSandbox"]);
   const configuration = sandboxInstallation().drivers.sandbox.configuration;
   configuration.kubernetes.userNamespaces = false;
+  configuration.kubernetes.sandboxDataMount.mountPath = dataMountPath;
   const driver = openShellDriver(gateway, configuration);
   const fixture = runtimeSandboxFixture(driver, { harnessId: "openclaw" });
   // Revision cleanup confirms an absent Sandbox through the Workspace ensureNamespace created.
@@ -6692,44 +6696,7 @@ async function orphanedNativePreparation({ scratch = false } = {}) {
   return { driver, gateway, api, resource, deployment, context, requirements };
 }
 
-test("OpenShell native preparation exits cleanly on SIGTERM after readiness", async (t) => {
-  // Capture the production manifest through the existing transport fixture, then
-  // execute its preparation process. Live Pod deletion is proved separately.
-  const { deployment } = await orphanedNativePreparation({ scratch: true });
-  const spec = deployment.spec.template.spec;
-  const container = spec.containers[0];
-  const directory = await temporaryDirectory(t, "openshell-preparation-stop-");
-  for (const mount of container.volumeMounts) {
-    await mkdir(join(directory, mount.mountPath), { recursive: true });
-  }
-  const claimRoot = (claimName) => {
-    const volume = spec.volumes.find(
-      (entry) => entry.persistentVolumeClaim?.claimName === claimName,
-    );
-    assert.ok(volume);
-    return join(
-      directory,
-      container.volumeMounts.find(({ name }) => name === volume.name).mountPath,
-    );
-  };
-  const scratchRoot = claimRoot("operator-scratch");
-  // fsGroup-backed volumes commonly inherit setgid; a new private child must
-  // still become 0700 without changing pre-existing operator state.
-  await chmod(scratchRoot, 0o2770);
-  const workspaceRoot = claimRoot("harness-workspace-codex");
-  // Only OCE's durable workspace participates in legacy directory migration.
-  // An operator may own this identically named sibling on the separate scratch PVC.
-  const sibling = join(scratchRoot, ".scratch.kubelet-created");
-  await mkdir(sibling, { mode: 0o750 });
-  await writeFile(join(sibling, "operator-data"), "keep operator data");
-  const siblingBefore = await stat(sibling);
-  const legacyWorkspace = join(workspaceRoot, ".workspace.kubelet-created");
-  await mkdir(legacyWorkspace);
-  await writeFile(join(legacyWorkspace, "notes.md"), "keep durable workspace");
-  // Only relocate mount paths; keep the generated preparation and signal code.
-  const program = container.command[2]
-    .replaceAll("/workspace-preparation", join(directory, "workspace-preparation"))
-    .replaceAll("/preparation-status", join(directory, "preparation-status"));
+async function runNativePreparation(t, program, directory) {
   const child = spawn(process.execPath, ["-e", program], {
     cwd: directory,
     env: { PATH: dirname(process.execPath) },
@@ -6770,6 +6737,47 @@ test("OpenShell native preparation exits cleanly on SIGTERM after readiness", as
   child.kill("SIGTERM");
   assert.deepEqual(await exited, { code: 0, signal: null });
   assert.equal(await readFile(marker, "utf8"), "ready");
+}
+
+test("OpenShell native preparation exits cleanly on SIGTERM after readiness", async (t) => {
+  // Capture the production manifest through the existing transport fixture, then
+  // execute its preparation process. Live Pod deletion is proved separately.
+  const { deployment } = await orphanedNativePreparation({ scratch: true });
+  const spec = deployment.spec.template.spec;
+  const container = spec.containers[0];
+  const directory = await temporaryDirectory(t, "openshell-preparation-stop-");
+  for (const mount of container.volumeMounts) {
+    await mkdir(join(directory, mount.mountPath), { recursive: true });
+  }
+  const claimRoot = (claimName) => {
+    const volume = spec.volumes.find(
+      (entry) => entry.persistentVolumeClaim?.claimName === claimName,
+    );
+    assert.ok(volume);
+    return join(
+      directory,
+      container.volumeMounts.find(({ name }) => name === volume.name).mountPath,
+    );
+  };
+  const scratchRoot = claimRoot("operator-scratch");
+  // fsGroup-backed volumes commonly inherit setgid; a new private child must
+  // still become 0700 without changing pre-existing operator state.
+  await chmod(scratchRoot, 0o2770);
+  const workspaceRoot = claimRoot("harness-workspace-codex");
+  // Only OCE's durable workspace participates in legacy directory migration.
+  // An operator may own this identically named sibling on the separate scratch PVC.
+  const sibling = join(scratchRoot, ".scratch.kubelet-created");
+  await mkdir(sibling, { mode: 0o750 });
+  await writeFile(join(sibling, "operator-data"), "keep operator data");
+  const siblingBefore = await stat(sibling);
+  const legacyWorkspace = join(workspaceRoot, ".workspace.kubelet-created");
+  await mkdir(legacyWorkspace);
+  await writeFile(join(legacyWorkspace, "notes.md"), "keep durable workspace");
+  // Only relocate mount paths; keep the generated preparation and signal code.
+  const program = container.command[2]
+    .replaceAll("/workspace-preparation", join(directory, "workspace-preparation"))
+    .replaceAll("/preparation-status", join(directory, "preparation-status"));
+  await runNativePreparation(t, program, directory);
   assert.equal(await readFile(join(sibling, "operator-data"), "utf8"), "keep operator data");
   const siblingAfter = await stat(sibling);
   assert.equal(siblingAfter.ino, siblingBefore.ino);
@@ -6802,6 +6810,37 @@ test("OpenShell native preparation exits cleanly on SIGTERM after readiness", as
   assert.equal((await stat(scratchDirectory)).mode & 0o7777, 0o750);
   assert.equal(await readFile(join(scratchDirectory, "retained"), "utf8"), "existing scratch data");
   assert.equal(await readFile(join(sibling, "operator-data"), "utf8"), "keep operator data");
+});
+
+test("OpenShell preserves legacy workspace recovery when its data mount uses the scratch path", async (t) => {
+  const { deployment } = await orphanedNativePreparation({ dataMountPath: "/sandbox/scratch" });
+  const spec = deployment.spec.template.spec;
+  const container = spec.containers[0];
+  const directory = await temporaryDirectory(t, "openshell-workspace-path-");
+  for (const mount of container.volumeMounts) {
+    await mkdir(join(directory, mount.mountPath), { recursive: true });
+  }
+  const volume = spec.volumes.find(
+    ({ persistentVolumeClaim }) => persistentVolumeClaim?.claimName === "harness-workspace-codex",
+  );
+  const root = join(
+    directory,
+    container.volumeMounts.find(({ name }) => name === volume.name).mountPath,
+  );
+  // This is the existing durable claim: its configured destination does not
+  // turn it into operator scratch or remove normal legacy workspace recovery.
+  const saved = join(root, ".workspace.kubelet-created");
+  await mkdir(saved);
+  await writeFile(join(saved, "notes.md"), "durable workspace data");
+  const program = container.command[2]
+    .replaceAll("/workspace-preparation", join(directory, "workspace-preparation"))
+    .replaceAll("/preparation-status", join(directory, "preparation-status"));
+  await runNativePreparation(t, program, directory);
+  assert.equal(
+    await readFile(join(root, "workspace", "notes.md"), "utf8"),
+    "durable workspace data",
+  );
+  await assert.rejects(stat(saved), { code: "ENOENT" });
 });
 
 test("OpenShell resumes an SDK-decoded preparer after losing its create response", async () => {

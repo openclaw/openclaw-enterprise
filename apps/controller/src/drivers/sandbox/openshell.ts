@@ -1672,9 +1672,13 @@ async function prepareNativeWorkspace(
   const paths = workspace.mounts
     .filter((mount) => !mount.read_only)
     .map((mount) => `/workspace-preparation/${mount.name}/${mount.sub_path}`);
-  const scratchPaths = workspace.mounts
-    .filter((mount) => !mount.read_only && mount.mount_path === SCRATCH_WORKSPACE_PATH)
-    .map((mount) => `/workspace-preparation/${mount.name}/${mount.sub_path}`);
+  const scratchPaths = context.requirements.workspaceMounts
+    .filter(
+      (mount) => !mount.readOnly && posix.normalize(mount.mountPath) === SCRATCH_WORKSPACE_PATH,
+    )
+    .map(
+      (mount) => `/workspace-preparation/${workspaceVolumeName(mount.claimName)}/${mount.subPath}`,
+    );
   const managedPaths = paths.filter((path) => !scratchPaths.includes(path));
   const name = `${sandbox.resourceName}-workspace`;
   const labels = workspacePreparationLabels(context.revision);
