@@ -145,7 +145,7 @@ probe and subsequent build share the remaining `CI_RUNNER_DEADLINE_MS` budget,
 reserving three minutes for preparation and tests. Exhaustion reports `Image
 build out of lane time`, starts no further build, and leaves owned-tag removal to
 job cleanup. Local runs and main's cache warmer have no lane deadline. The warmer
-gives runtime first-stage verification and assembly one shared 180-minute budget;
+gives the OpenClaw build and final runtime assembly one shared 180-minute budget;
 controller builds retain 20 minutes. Each export has a separate 20-minute limit
 within the 210-minute job. These are cancellation limits, not expected durations;
 cold Node compilation exceeded the former 20-minute build limit.
