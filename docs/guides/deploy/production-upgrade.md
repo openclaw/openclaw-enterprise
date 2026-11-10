@@ -64,8 +64,8 @@ Prepare:
   on the configured config Secret in the release namespace.
   [Refresh its config Secret](../observability.md#refresh-the-collector-configuration-on-upgrade)
   from the release checkout and restart the Collector even for image-only
-  releases. Drift stops preparation unless you pass `--collector-config-reviewed`
-  for reviewed settings.
+  releases. Differences in `collector.yaml` or `kubernetes.yaml` stop preparation.
+  Use `--collector-config-reviewed` only for intentional, reviewed differences.
 - PostgreSQL backups for controller migrations and Agent-volume backups for
   runtime releases that can require data restoration.
 
@@ -93,8 +93,9 @@ changes, prepare again. Check
 [Git session continuity](upgrade-checklist.md#record-the-starting-state) and
 [apply the release in order](upgrade-checklist.md#apply-the-release-in-dependency-order).
 
-For runtime upgrades, review drafts and grant Configuration and replacement
-AgentRevision `read`. Allow replacement Pod reads and gateway exec for Doctor.
+For runtime upgrades, review drafts. The OCC key needs Configuration and
+replacement AgentRevision `read`. Doctor needs Kubernetes reads of replacement
+Pods and gateway exec.
 
 For OpenShell, changed Harness commands require fresh Agent revisions. Existing
 Sandboxes require the original launch specification. Plan an authorized
@@ -108,8 +109,8 @@ unsafe. Follow the
 [broker recovery procedure](../repository-credentials/installation.md#install-and-verify).
 
 Freeze other Helm changes and disable automation that restarts or scales OCC
-Deployments, including autoscalers. Stop other database writers, including
-independent APIs, workers and maintenance processes. Confirm nodes are reachable.
+Deployments, including autoscalers. Stop other writers to this Installation’s OCC
+database, including independent APIs, workers and maintenance processes. Confirm nodes are reachable.
 Do not force-delete OCC Pods. Verify that a partitioned process stopped even if
 its Pod is gone. The helper stops only the selected release's API and worker.
 Freeze Agent deployments and settle queued or running work. Freeze draft edits
@@ -179,10 +180,11 @@ Add either or both flags:
 --candidate-installation /secure/occ/candidate-installation.yaml
 ```
 
-The helper saves inputs in private evidence, applies selected images and the
-preserved broker endpoint, then writes candidate baseline files. Installation changes update the mutable Secret or select its staged immutable
-successor and restart OCC with the new checksum. Keep candidate files unchanged
-at these paths for recovery.
+The helper saves private evidence, applies selected images and the preserved
+broker endpoint, then writes to `--values` and, if changed, `--installation`.
+Installation changes update the mutable Secret or select its staged immutable
+successor and restart OCC with the new checksum. Keep supplied candidate files
+unchanged for recovery.
 
 ### Apply other Installation changes
 
@@ -334,8 +336,7 @@ configuration; their software version does not change.
 After OCC recovers, the command deploys every recorded running Agent, waits for
 durable success, confirms each new selected version, and requires its Pods to be
 `Running` and `Ready` on the requested runtime digest. If OCC refuses an
-Agent's deployment, such as for a saved setting the new release refuses, the
-command names the Agent and the refusal; correct it and
+Agent's deployment, the command names the Agent and the refusal; correct it and
 [resume](production-upgrade-recovery.md#correct-a-refused-agent-deployment).
 Stopped and deleting Agents remain untouched. An empty fleet updates the saved
 runtime selection without proving image startup.
