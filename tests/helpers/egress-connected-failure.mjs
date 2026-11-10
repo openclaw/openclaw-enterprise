@@ -16,6 +16,61 @@ const signals = new Set(Object.keys(constants.signals));
 const outcomes = new Set(["exit", "signal", "cancelled", "deadline", "transport"]);
 const failedOperations = new WeakMap();
 const kubectlOutcomes = new WeakMap();
+export const nativeFailureMarker = "OCC_NATIVE_FAILURE_V1 ";
+const acknowledgementsByPhase = new Map([
+  ["connect", [null]],
+  ["initialize", [null, "initialize"]],
+  ["thread/start", [null, "initialize", "thread/start"]],
+  ["turn/start", ["thread/start"]],
+  ["turn", ["turn/start"]],
+]);
+
+function readNativeFailure(stderr, tag, clientExit) {
+  const marker = nativeFailureMarker + tag;
+  const start = stderr?.indexOf(marker) ?? -1;
+  if (start === -1) {
+    return { status: "absent" };
+  }
+  const invalid = { status: "invalid" };
+  const payload = start + marker.length + 1;
+  const end = stderr.indexOf("\n", payload);
+  if (
+    !clientExit ||
+    stderr[start - 1] !== "\n" ||
+    stderr[payload - 1] !== " " ||
+    end === -1 ||
+    end - payload > 512 ||
+    stderr.includes(marker, payload - 1)
+  ) {
+    return invalid;
+  }
+  try {
+    const encoded = stderr.slice(payload, end);
+    const { phase, lastAcknowledged, pendingRequests, receivedMessages, actionSeen } =
+      JSON.parse(encoded);
+    if (
+      !acknowledgementsByPhase.get(phase)?.includes(lastAcknowledged) ||
+      !Array.isArray(pendingRequests) ||
+      pendingRequests.length > 1 ||
+      !pendingRequests.every(
+        (method) =>
+          method === phase && phase !== "connect" && phase !== "turn" && lastAcknowledged !== phase,
+      ) ||
+      !Number.isSafeInteger(receivedMessages) ||
+      receivedMessages < 0 ||
+      receivedMessages > 1_000_000 ||
+      typeof actionSeen !== "boolean"
+    ) {
+      return invalid;
+    }
+    const record = { phase, lastAcknowledged, pendingRequests, receivedMessages, actionSeen };
+    // Re-encode only the closed schema. Unknown or duplicate keys and noncanonical
+    // values must never survive a mixed stderr stream.
+    return JSON.stringify(record) === encoded ? { status: "recorded", ...record } : invalid;
+  } catch {
+    return invalid;
+  }
+}
 
 export async function observeConnectedOperation(operation, action) {
   try {
@@ -31,13 +86,20 @@ export async function observeConnectedOperation(operation, action) {
 export function rememberKubectlOutcome(
   error,
   { outcome, exitCode, signal, killed, signalAborted },
+  nativeFailure,
 ) {
   kubectlOutcomes.set(error, {
-    outcome: outcomes.has(outcome) ? outcome : "transport",
-    exitCode: Number.isInteger(exitCode) && exitCode >= 0 && exitCode <= 255 ? exitCode : null,
-    signal: signals.has(signal) ? signal : null,
-    killed: typeof killed === "boolean" ? killed : null,
-    signalAborted: signalAborted === true,
+    kubectl: {
+      outcome: outcomes.has(outcome) ? outcome : "transport",
+      exitCode: Number.isInteger(exitCode) && exitCode >= 0 && exitCode <= 255 ? exitCode : null,
+      signal: signals.has(signal) ? signal : null,
+      killed: typeof killed === "boolean" ? killed : null,
+      signalAborted: signalAborted === true,
+    },
+    nativeExec:
+      nativeFailure === undefined
+        ? undefined
+        : readNativeFailure(nativeFailure.stderr, nativeFailure.tag, nativeFailure.clientExit),
   });
   return error;
 }
@@ -52,17 +114,20 @@ export async function safeConnectedFailure(error, stage, recordFailure) {
   const location = frame ? `${frame[1]}.mjs:${frame[2]}:${frame[3]}` : "external-operation";
   const kind = error?.code === "ERR_ASSERTION" ? "assertion" : "operation";
   const operation = failedOperations.get(error) ?? null;
-  const kubectl = kubectlOutcomes.get(error) ?? null;
+  const local = kubectlOutcomes.get(error);
+  const kubectl = local?.kubectl ?? null;
+  const nativeExec = operation === "gateway-codex-exec" ? local?.nativeExec : undefined;
   if (operation !== null || kubectl !== null) {
     try {
-      await recordFailure?.({ kind, operation, kubectl });
+      await recordFailure?.({ kind, operation, kubectl, ...(nativeExec && { nativeExec }) });
     } catch {
       // A diagnostic write must not replace the triggering failure or interrupt cleanup.
     }
   }
   const step = operation === null ? "" : ` / ${operation}`;
   const process = kubectl === null ? "" : ` kubectl=${JSON.stringify(kubectl)}`;
+  const native = nativeExec === undefined ? "" : ` nativeExec=${JSON.stringify(nativeExec)}`;
   return new Error(
-    `Connected egress ${kind} failed at ${stage}${step} (${location})${process}; inspect the per-run ledger`,
+    `Connected egress ${kind} failed at ${stage}${step} (${location})${process}${native}; inspect the per-run ledger`,
   );
 }

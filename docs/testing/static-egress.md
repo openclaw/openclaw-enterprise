@@ -318,45 +318,45 @@ Killing a local client does not establish remote termination. Never replay an un
 
 ### Read evidence and retain cleanup custody
 
-The test creates resources through public APIs, deploys through the real worker,
-reads its persisted installation, and checks the authenticated supplier receipt.
-It uses the packaged Codex app-server caller from the Agent Gateway Pod. It
-explicitly adopts its fresh unbound source with `adoption: "live"` and
-`authorityScope: "execution"`. The origin observes nineteen requests: one
-normal startup probe, seventeen measured Codex sends (including seven hostile
-responses and recovery), and one managed request from an ordinary sibling.
-The upgrade path adds one retained-revision turn after B becomes ready.
-For that sibling and the direct TCP probe, the operator uses the supplier's
-authenticated [workload launch path](./protected-repository-custody.md) so both
-inherit the installed connection mediation. Kubernetes exec remains suitable for
-independent process inspection, but cannot establish managed workload traffic.
-Each measured exchange must join the supervisor's resolve, permit and response
-transitions. IAM revocation must produce no permit or upstream request. A raw
-TCP bypass to the same live listener must produce no connection, with independent
-reachability controls immediately before and after. Hostile responses must give
-Codex an empty HTTP 502, no partial assistant output, and a private
-`response_blocked` transition after the authorized provider send. The test
-checks that the synthetic provider credential is absent from the ordinary Agent
-and running Codex process environments, observed responses, bounded logs,
-diagnostics, audit, Pod specs and ConfigMaps.
+The test creates resources through public APIs, deploys through the worker,
+reads the saved installation and checks the authenticated supplier receipt.
+The Agent Gateway Pod runs the packaged Codex app-server caller. The test adopts
+a fresh unbound source with `adoption: "live"` and `authorityScope: "execution"`.
+The origin sees one startup probe, seventeen Codex sends (including seven
+hostile responses and recovery), and one ordinary sibling request. An upgrade adds one retained-revision turn after B becomes ready.
 
-Retain `.build/egress-connected/runtime-<uuid>/` for atomic phase checkpoints, resource
-IDs and bounded observations, without raw requests or credentials. Each controller
-attempt starts with an operation ID and unknown outcome. A response does not establish
-the effect. Failures retain the phase and source location.
-The deployed checkpoint identifies the public owner capability of the source selected
-by the admitted Harness, while sender evidence independently shows protected sends.
+Use the supplier's authenticated [workload launch path](./protected-repository-custody.md)
+for the sibling and direct TCP probe so both inherit connection mediation.
+Kubernetes exec provides independent process inspection. Each measured exchange must match the supervisor's resolve,
+permit and response transitions. IAM revocation must yield no permit or upstream
+request. The raw TCP bypass must fail against the same listener, with independent
+reachability checks before and after. After an authorized send, a hostile
+response must give Codex an empty HTTP 502, suppress partial assistant output
+and record `response_blocked` privately. The test checks ordinary Agent and
+running Codex process environments, responses, bounded logs, diagnostics, audit,
+Pod specs and ConfigMaps for synthetic provider credential leaks.
+
+Retain `.build/egress-connected/runtime-<uuid>/`. It records atomic checkpoints,
+resource IDs and bounded observations. Each controller attempt starts with an
+operation ID and unknown outcome. A response alone leaves the effect uncertain.
+`failure` records the operation and local kubectl outcome when available. Bounded
+Gateway exec reports `failure.nativeExec` as `recorded`, `absent` or `invalid`.
+Its phase is a local client step and its last acknowledged RPC identifies
+confirmed progress. Missing evidence leaves remote startup uncertain.
+Diagnostics omit raw output and never authorize replay. The terminal error
+preserves these facts if ledger writing fails. The deployed checkpoint
+identifies the admitted source's public owner capability.
 
 Cleanup removes the owned Agent, confirms API, Sandbox and workload Pod absence,
 then removes supporting resources and closes the provider. Reconcile missing Sandbox
 identities or unconfirmed creates from the ledger. The parent owns interrupted cleanup
 and disposal of the prepared Namespace, database, cluster, controller and gateway.
 
-A passing selected run establishes only this static-inference slice at its
-recorded inputs. Source checks are not runtime proof. The scenario does not
-prove real-provider usefulness, all workload credential/control-API containment,
+A passing run covers this static-inference slice at its recorded inputs.
+Real-provider usefulness, full workload credential and control API containment,
 revocation between Resolve and AuthorizeSend, mixed-version activation, HA,
-dynamic credentials, long-lived streaming or complete Egress MVP delivery.
+dynamic credentials, long-lived streaming and full Egress MVP delivery require
+separate proof.
 
 ## Installed repository response and dispatch custody
 

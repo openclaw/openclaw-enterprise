@@ -3,6 +3,7 @@ import { DEPLOYMENT_FAILURE_STEPS } from "../../packages/occ/src/deployment-fail
 import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -19,7 +20,11 @@ import {
   withinDiagnosticDeadline,
 } from "./kubernetes-real.mjs";
 
-import { observeConnectedOperation, rememberKubectlOutcome } from "./egress-connected-failure.mjs";
+import {
+  nativeFailureMarker,
+  observeConnectedOperation,
+  rememberKubectlOutcome,
+} from "./egress-connected-failure.mjs";
 
 const execute = promisify(execFile);
 const kubectlKillSignal = "SIGKILL";
@@ -104,7 +109,7 @@ const harnessPort = 18790;
 const gatewayPort = 8080;
 const transportSecretPrefix = "openclaw-agent-transport";
 
-function safeKubectlFailure(error, child, signal) {
+function safeKubectlFailure(error, child, signal, nativeTag) {
   // execFile's error.killed includes attempted kills, even after the child exits
   // while inherited pipes remain open. Require the private child's confirmation
   // that a kill was sent. Buffer overflow and cancellation have their own codes.
@@ -122,13 +127,24 @@ function safeKubectlFailure(error, child, signal) {
   }
   // Keep raw command, output, and AbortSignal reason out of the new Error.
   const description = outcome === "exit" ? `exit ${exitCode}` : outcome;
-  return rememberKubectlOutcome(new Error(`OpenShell fixture kubectl failed (${description})`), {
-    outcome,
-    exitCode,
-    signal: terminationSignal,
-    killed: child?.killed ?? error.killed,
-    signalAborted: signal?.aborted === true,
-  });
+  return rememberKubectlOutcome(
+    new Error(`OpenShell fixture kubectl failed (${description})`),
+    {
+      outcome,
+      exitCode,
+      signal: terminationSignal,
+      killed: child?.killed ?? error.killed,
+      signalAborted: signal?.aborted === true,
+    },
+    nativeTag === undefined
+      ? undefined
+      : {
+          stderr: error.stderr,
+          tag: nativeTag,
+          clientExit:
+            outcome === "exit" && (exitCode === 1 || exitCode === modelAtCapacityExitCode),
+        },
+  );
 }
 
 // The pinned Kubernetes driver, not policy.process, owns workload identity.
@@ -875,28 +891,26 @@ export function createOpenShellKubernetesFixture({
   if (commandTimeoutMs !== undefined) {
     assert.ok(Number.isSafeInteger(commandTimeoutMs) && commandTimeoutMs > 0);
   }
+  async function boundedKubectl(args, nativeTag) {
+    let execution;
+    try {
+      execution = execute("kubectl", original.kubectlArguments(args), {
+        timeout: commandTimeoutMs,
+        killSignal: kubectlKillSignal,
+        signal,
+        maxBuffer: 4 * 1024 * 1024,
+      });
+      const { stdout } = await execution;
+      return stdout;
+    } catch (error) {
+      throw safeKubectlFailure(error, execution?.child, signal, nativeTag);
+    }
+  }
   const base = {
     ...original,
     ...(commandTimeoutMs === undefined
       ? {}
-      : createKubernetesClient({
-          selection,
-          async kubectl(...args) {
-            let execution;
-            try {
-              execution = execute("kubectl", original.kubectlArguments(args), {
-                timeout: commandTimeoutMs,
-                killSignal: kubectlKillSignal,
-                signal,
-                maxBuffer: 4 * 1024 * 1024,
-              });
-              const { stdout } = await execution;
-              return stdout;
-            } catch (error) {
-              throw safeKubectlFailure(error, execution?.child, signal);
-            }
-          },
-        })),
+      : createKubernetesClient({ selection, kubectl: (...args) => boundedKubectl(args) })),
   };
   assert.ok(
     Number.isSafeInteger(codexCommandGraceMs) &&
@@ -1543,7 +1557,11 @@ export function createOpenShellKubernetesFixture({
     timeoutMs = 300_000,
   }) {
     assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 300_000);
+    // Keep the tag out of RPC payloads and separate from the marker in script source
+    // so Node's own startup diagnostics cannot accidentally contain a valid frame.
+    const nativeTag = gatewayTurn && commandTimeoutMs !== undefined ? randomUUID() : undefined;
     const script = String.raw`
+      const nativeTag = ${JSON.stringify(nativeTag)};
       const appServerUrl = ${JSON.stringify(appServerUrl)} ?? process.env.APP_SERVER_URL;
       const appServerToken = ${
         appServerTokenPath === undefined
@@ -1565,6 +1583,7 @@ export function createOpenShellKubernetesFixture({
       let assistant = "";
       let finished = false;
       let phase = "connect";
+      let lastAcknowledged = null;
       let receivedMessages = 0;
       let completedCommands = 0;
       let failedCommands = 0;
@@ -1622,6 +1641,21 @@ export function createOpenShellKubernetesFixture({
       // Diagnostics only: the caller never decides from stderr whether to run the turn again.
       function writeFailure(error, retrySafe) {
         clearTimeout(timeout);
+        if (nativeTag !== undefined) {
+          // Write the entire bounded frame before process.exit. Never mix a remote
+          // error or stack with this record, even when a provider supplies the error.
+          try {
+            const marker = ${JSON.stringify(nativeFailureMarker)} + nativeTag;
+            const record = {
+              phase, lastAcknowledged, pendingRequests: [...pending.values()].map(({ method }) => method),
+              receivedMessages: Math.min(receivedMessages, 1000000), actionSeen,
+            };
+            require("node:fs").writeSync(2, "\n" + marker + " " + JSON.stringify(record) + "\n");
+          } catch {
+            // Failure to write diagnostics does not change the turn exit.
+          }
+          return;
+        }
         process.stderr.write(${observeFailure}
             ? "Codex harness failed before its terminal result"
             : (error?.stack || String(error)));
@@ -1801,6 +1835,9 @@ export function createOpenShellKubernetesFixture({
               turnId = id;
               phase = "turn";
             }
+            if (message.result && typeof message.result === "object" && !Array.isArray(message.result)) {
+              lastAcknowledged = entry.method;
+            }
             entry.resolve(message.result);
           }
         } else if (method === "item/completed") {
@@ -1860,20 +1897,20 @@ export function createOpenShellKubernetesFixture({
       });
     `;
     const containerArguments = container === undefined ? [] : ["--container", container];
+    const args = [
+      "exec",
+      pod,
+      "--namespace",
+      namespace,
+      ...containerArguments,
+      "--",
+      "node",
+      "-e",
+      script,
+    ];
     const run = async () => {
       const output = await retryModelAtCapacity(
-        () =>
-          kubectl(
-            "exec",
-            pod,
-            "--namespace",
-            namespace,
-            ...containerArguments,
-            "--",
-            "node",
-            "-e",
-            script,
-          ),
+        () => (nativeTag === undefined ? kubectl(...args) : boundedKubectl(args, nativeTag)),
         modelAtCapacityRetry,
       );
       try {
