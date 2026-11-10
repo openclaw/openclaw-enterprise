@@ -14,7 +14,10 @@ Select the Credential Proxy Driver only with a Kubernetes Compute and OpenShell 
 enforces the whole-execution profile below. The security principal is one freshly
 admitted Agent execution. Its parent, a sibling and an ordinary client can use the
 same allowed operation. A different execution, even of the same Agent, cannot
-inherit that authority. There is no caller binary allowlist or client hook.
+inherit that authority. The generated model routes use OpenShell's `/**` binary
+matcher to accept any verified absolute executable path in that execution.
+OpenShell still checks process identity, and credential middleware checks the
+admitted operation. Clients need no hook.
 
 The bundled legacy OpenShell release cannot enforce this profile. Before using a
 candidate pair, [qualify its installed dispatch and response custody](../../testing/protected-repository-custody.md)

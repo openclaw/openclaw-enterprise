@@ -577,7 +577,9 @@ test("protected admission requires the actual counterpart and exact loaded polic
   // Inspect the production attachment before protobuf can erase an explicit zero.
   // OpenShell requires omission for automatic TLS termination, not TERMINATE or SKIP.
   for (const [index, route] of f.context.plan.routes.entries()) {
-    const endpoints = f.attachment.configuration.network_policies[`oce-egress-${index}`].endpoints;
+    const { binaries, endpoints } =
+      f.attachment.configuration.network_policies[`oce-egress-${index}`];
+    assert.deepEqual(binaries, [{ path: "/**" }]);
     assert.equal(Object.hasOwn(endpoints[0], "tls"), false);
     const origin = new URL(route.origin);
     assert.deepEqual(endpoints, [
@@ -660,6 +662,18 @@ test("protected admission requires the actual counterpart and exact loaded polic
     false,
     "verification cannot discover a missing installation Sandbox identity",
   );
+  // A previously generated route without a binary matcher cannot stand in for
+  // the canonical attachment or establish a new installation.
+  const oldConfiguration = structuredClone(f.attachment.configuration);
+  delete oldConfiguration.network_policies["oce-egress-0"].binaries;
+  await assert.rejects(
+    f.egress.wiringStatus(f.context, { ...f.attachment, configuration: oldConfiguration }),
+    /changed protected egress routes/,
+  );
+  delete f.observed.policy.network_policies["oce-egress-0"].binaries;
+  await assert.rejects(f.egress.wiringStatus(f.context, f.attachment), /differs/);
+  assert.equal(await f.egress.verifyInstallation(f.context, f.installation), false);
+  f.observed.policy = structuredClone(expectedPolicy);
   // A reported TLS bypass must fail both initial installation and receipt revalidation,
   // even when the supplier still reports the original loaded-enforcement evidence.
   f.observed.policy.network_policies["oce-egress-0"].endpoints[0].tls = "NETWORK_TLS_MODE_SKIP";
