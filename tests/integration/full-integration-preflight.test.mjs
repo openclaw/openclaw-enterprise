@@ -716,6 +716,55 @@ test("full integration workflow carries QA and installation outcomes into select
       }
     }
   }
+  const { loadYaml } = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  )("@kubernetes/client-node");
+  const aggregate = loadYaml(workflow).jobs["full-aggregate"].steps.find(
+    (item) => item.name === "Aggregate targeted runtime results",
+  );
+  // A rejected reusable-workflow string still reaches failure aggregation.
+  // It must remain data even when it contains shell command substitution.
+  const context = {
+    needs: { preflight: { outputs: { selected_lane: "" } } },
+    inputs: { lane: '$(touch "$RUNNER_TEMP/rejected-lane-command")' },
+  };
+  await assert.rejects(
+    validateFullIntegrationPreflight({
+      env: {
+        ...mainRun,
+        GITHUB_EVENT_NAME: "workflow_dispatch",
+        INPUT_LANE: context.inputs.lane,
+      },
+    }),
+    /Unknown lane/,
+  );
+  const result = spawnSync(
+    "/bin/sh",
+    [
+      "-c",
+      aggregate.run.replace(/\$\{\{.*?\}\}/g, (expression) =>
+        workflowCondition(expression, context),
+      ),
+    ],
+    {
+      cwd: fileURLToPath(new URL("../../", import.meta.url)),
+      env: {
+        PATH: `${dirname(process.execPath)}:${process.env.PATH}`,
+        RUNNER_TEMP: directory,
+        ...Object.fromEntries(
+          Object.entries(aggregate.env ?? {}).map(([name, expression]) => [
+            name,
+            workflowCondition(expression, context),
+          ]),
+        ),
+      },
+      encoding: "utf8",
+      timeout: 30_000,
+    },
+  );
+  assert.equal(result.error, undefined);
+  assert.notEqual(result.status, 0, "The unknown lane must fail aggregation");
+  await assert.rejects(stat(join(directory, "rejected-lane-command")), { code: "ENOENT" });
 });
 
 test("full integration plans fresh fallback and attributes only published reuse to successful needs", async (t) => {
@@ -1381,6 +1430,39 @@ test("verified docs pushes omit runtime lanes while keeping environment policy c
       workflowCondition(execute.if, { github, needs: { preflight }, cancelled: () => true }),
       false,
     );
+  }
+  assert.equal(
+    workflowCondition(execute.if, {
+      github,
+      needs: { preflight: { result: "success", outputs: { selected_lane: "" } } },
+    }),
+    false,
+    "Missing selection cannot take the execution lock",
+  );
+  const validate = dispatcher.jobs.preflight.steps.find(
+    (step) => step.name === "Validate selected lane",
+  );
+  // Run the shipped output check: missing/unknown selections must fail the
+  // preflight job, while docs and every supported manual selection stay valid.
+  for (const selectedLane of [
+    "",
+    "unknown-lane",
+    "docs",
+    ...dispatcher.on.workflow_dispatch.inputs.lane.options,
+  ]) {
+    const result = spawnSync("/bin/sh", ["-c", validate.run], {
+      cwd: fileURLToPath(new URL("../../", import.meta.url)),
+      env: {
+        PATH: `${dirname(process.execPath)}:${process.env.PATH}`,
+        SELECTED_LANE: workflowCondition(validate.env.SELECTED_LANE, {
+          steps: { select: { outputs: { selected_lane: selectedLane } } },
+        }),
+      },
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, ["", "unknown-lane"].includes(selectedLane) ? 1 : 0, result.stderr);
   }
 });
 

@@ -21,7 +21,7 @@ Verified documentation-only main pushes select no runtime lanes. Other pushes
 to `main` select `all`. Missing history or uncertain impact retains full execution. Manual dispatch selects one supported `lane` or
 `all` on `main` and requires the dispatcher's [team approval](configuration.md#environments).
 Manual reruns fail preflight; start a new approved dispatch instead.
-Source and environment preflight runs before queue admission. Verified docs-only
+Source, environment and selection validation run before queue admission. Verified docs-only
 pushes never enter the execution queue, so they cannot replace pending full work.
 Eligible automatic runs still share one running and one pending slot; the next
 run to enter the group replaces the pending one. A scheduled advisory run does not run this workflow.

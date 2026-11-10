@@ -678,7 +678,9 @@ jobs:
           NODE
       - name: Aggregate targeted runtime results
         if: needs.preflight.outputs.run_all != 'true'
-        run: node scripts/ci/run-tests.mjs aggregate "${{ needs.preflight.outputs.selected_lane || inputs.lane }}" --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
+        env:
+          SELECTED_LANE: ${{ needs.preflight.outputs.selected_lane || inputs.lane }}
+        run: node scripts/ci/run-tests.mjs aggregate "$SELECTED_LANE" --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
       - name: Aggregate full suite
         id: aggregate-full
         if: needs.preflight.outputs.run_all == 'true'
