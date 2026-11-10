@@ -160,7 +160,8 @@ stateDiagram-v2
 - **`succeeded`:** The Namespace or Agent operation completed. Namespace transitions
   commit with their audit. Agent activation selects the version and enables its
   route before committing activation audit and queue completion together. These
-  records remain for idempotency. Agent deletion instead removes work rows after
+  records remain for idempotency. Agent deletion rechecks the actor's delete
+  permission in its finalizing transaction, then removes work rows after
   recording lifecycle success. Its [status read](../agents/deletion.md#follow-deletion)
   reports `deleted` from that transaction, never from missing Agent or work rows.
 - **`failed_permanent`:** Processing stopped because authorization failed, an

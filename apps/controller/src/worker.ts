@@ -3189,8 +3189,27 @@ export class ControllerWorker {
       if (claim.agentId === undefined) {
         throw new Error("The worker Agent deletion context is unavailable.");
       }
+      const agent = result.agent;
+      if (agent === undefined) {
+        throw new Error("The worker Agent deletion context is unavailable.");
+      }
       const abandoned = result.abandonedProvisioningEffect;
-      const completed = await this.state.transactWithQueue(async (unit, queue) => {
+      const finalized = await this.state.transactWithQueue(async (unit, queue) => {
+        // The finalizer records this claim's actor on AGENT_DELETED, and that record is what
+        // later shows the actor its deletion completed. Recheck the actor's delete grant here,
+        // not only before teardown: an administrator can revoke it while teardown runs. As in
+        // provisioning's fence, hold the IAM configuration lock shared, then the Namespace lock
+        // that every Namespace policy write takes, so a revocation commits before this check
+        // (which then sees it) or waits until this transaction ends. Native IAM reads policy on
+        // this transaction. An IAM Driver that decides outside this database cannot be fenced:
+        // a revocation it accepts during the one decision round trip and this commit is missed.
+        // Identity removal is classified ACTOR_REVOKED by the same check.
+        await unit.installations.holdIAMConfiguration("shared");
+        await unit.namespaces.lockNamespace(claim.namespaceId);
+        const denied = await this.authorizeAgentAction(claim, agent, "delete");
+        if (denied !== undefined) {
+          return { denied, completed: undefined };
+        }
         if (abandoned !== undefined) {
           // Committed only with the finalizer's claim check in this transaction.
           await unit.provisioning.settleEffect(abandoned.workId, abandoned.receipt);
@@ -3203,9 +3222,19 @@ export class ControllerWorker {
         if (completed === "cleanup-pending") {
           await queue.defer(claim, { code: "REPOSITORY_CLEANUP_PENDING" });
         }
-        return completed;
+        return { denied: undefined, completed };
       }, this.queueOptions);
-      if (completed === "cleanup-pending") {
+      if (finalized.denied !== undefined) {
+        // Teardown already ran; a retry or an authorized takeover repeats it idempotently.
+        await this.finalizeAgentDeletion(claim, {
+          ...finalized.denied,
+          namespace: result.namespace,
+          agent,
+          revisions: result.revisions,
+        });
+        return;
+      }
+      if (finalized.completed === "cleanup-pending") {
         this.passOutcome = "pending";
         this.emit({
           event: "worker.completed",
