@@ -47,8 +47,7 @@ as the reason Dedicated OpenClaw is disabled.
    token in [OpenAI admin](https://admin.openai.com/) → workspace → **Service accounts**.
    Choose a model Secret or **Create new Secret...** unless a Preset binds one
    or you use ChatGPT OAuth.
-   Choose the default model or **Enter model ID manually**. Returning to the list
-   clears unlisted IDs. Select **Additional models** to allow session switches.
+   Built-in providers support **Enter model ID manually**. Returning to the list clears unlisted IDs. Select **Additional models** to allow session switches.
    For a Preset that sets models only on individual roster entries, edit each entry's model policy
    under **Advanced settings** or set a shared `agents.defaults.model` to use the picker.
    Choosing a checked model as the default retains the previous one.

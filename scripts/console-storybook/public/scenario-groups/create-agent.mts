@@ -2558,13 +2558,12 @@ export const createAgentOutcomeScenarios = {
       ...form,
       { selector: "#model-provider", value: "mpr_00000000-0000-4000-8000-000000000001" },
       { selector: "#provider-key-credential", value: "crs_00000000-0000-4000-8000-000000000009" },
-      { selector: ".model-selection details summary", click: true },
-      { selector: 'input[type="checkbox"][value="qwen3-32b"]', click: true },
+      { selector: 'input[aria-label="Use qwen3-32b"]', click: true },
     ],
     description:
       "Use the Internal vLLM provider and its approved key. The Agent can use both offered models and starts with qwen3-8b.",
     steps: [
-      "Change the default to qwen3-32b. The previous default stays checked under Additional models.",
+      "Change the default to qwen3-32b. The previous default stays checked.",
       "Remove qwen3-8b. In Advanced settings, check the provider catalog and the model allowlist.",
     ],
   },

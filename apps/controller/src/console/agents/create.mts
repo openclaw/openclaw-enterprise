@@ -16,7 +16,7 @@ import type {
   SecretMetadata,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
-import { namedProviderChoices } from "./named-provider-choices.mjs";
+import { namedProviderChoices, providerModelTable } from "./named-provider-choices.mjs";
 import type { Static } from "typebox";
 import { type RequestOptions, requestFailure, responseFields } from "../api-client.mjs";
 import { sameValue } from "../carry.mjs";
@@ -284,8 +284,8 @@ function configurationTemplate(
   nativeProvider: string,
   providerModel: string,
   alternateIds: readonly string[] = [],
+  providerId = harnessId === "codex" ? "codex" : nativeProvider,
 ) {
-  const providerId = harnessId === "codex" ? "codex" : nativeProvider;
   const ids = [...new Set([providerModel, ...alternateIds])];
   const references = ids.map((id) => `${providerId}/${id}`);
   let baseUrl =
@@ -1198,12 +1198,14 @@ function renderAgentForm(
     "Choose a model your credential can access, or enter another model ID manually.",
   );
   const additional = additionalModelChoices(changeAdditionalModel);
+  const offeredModels = providerModelTable(toggleOfferedModel, chooseDefaultModel);
   const modelSection = element(
     "section",
     { className: "model-selection" },
     ...(useModelChoices ? [choiceField, toggleModel] : []),
     modelField,
     additional.section,
+    offeredModels.fields,
   );
   function resetModelChoices(
     resetTransport = false,
@@ -1458,11 +1460,27 @@ function renderAgentForm(
     focusConfiguration();
     return "invalid-allow";
   }
+  function configuredProviderKey(
+    values: ReturnType<typeof readModelConfiguration>,
+    resetTransport = false,
+  ) {
+    if (harness.value !== "codex") {
+      return providerFamily();
+    }
+    // A saved provider can route openai/<id> through Codex in an authored Configuration.
+    const previous =
+      typeof values === "string"
+        ? undefined
+        : (modelPrimary(configuredModelSelection(values)) ?? pendingPrimaryModel);
+    return !resetTransport && namedProviders.named() && previous?.startsWith("openai/")
+      ? "openai"
+      : "codex";
+  }
   function canMergeModelCatalog(
     values: ReturnType<typeof readModelConfiguration>,
     selectedModel: string,
     resetTransport = false,
-    providerId = harness.value === "codex" ? "codex" : providerFamily(),
+    providerId = configuredProviderKey(values, resetTransport),
   ): boolean {
     // Transport replacement and clearing a selection do not read the existing catalog.
     if (typeof values === "string" || resetTransport || !selectedModel.trim()) {
@@ -1486,17 +1504,18 @@ function renderAgentForm(
   function changeAdditionalModel(id: string, add: boolean) {
     const values = readModelConfiguration();
     if (typeof values === "string") {
-      return;
+      renderConfigurationEditors();
+      return false;
     }
     const defaults = objectFields(objectFields(values.agents).defaults);
     const primary = modelPrimary(defaults.model);
     if (!primary || !model.value.trim()) {
-      return;
+      return false;
     }
     const providerId = primary.slice(0, primary.indexOf("/"));
     if (!canMergeModelCatalog(values, id, false, providerId)) {
       renderConfigurationEditors();
-      return;
+      return false;
     }
     const reference = `${providerId}/${id}`;
     const providers = objectFields(objectFields(values.models).providers);
@@ -1521,7 +1540,7 @@ function renderAgentForm(
       );
       focusConfiguration();
       renderConfigurationEditors();
-      return;
+      return false;
     }
     const allow = Array.isArray(policy.allow) ? policy.allow : [];
     const catalog = Array.isArray(provider.models) ? provider.models : [];
@@ -1567,13 +1586,52 @@ function renderAgentForm(
     configuration.value = JSON.stringify(values, null, 2);
     edited = true;
     renderConfigurationEditors();
+    return true;
+  }
+
+  function chooseDefaultModel(id: string) {
+    if (!model.value) {
+      if (resetModelChoices(false, id)) {
+        changeAdditionalModel(id, true);
+      }
+    } else if (id !== model.value && changeAdditionalModel(id, true)) {
+      // Selecting the new model before promotion preserves the previous default as a session choice.
+      resetModelChoices(false, id);
+    }
+  }
+
+  function toggleOfferedModel(id: string, checked: boolean) {
+    if (checked && !model.value) {
+      chooseDefaultModel(id);
+      return;
+    }
+    if (checked || id !== model.value) {
+      changeAdditionalModel(id, checked);
+      return;
+    }
+    const choices = switchableModelIds(parseObject(configuration)).selected;
+    const next = modelChoices().find((choice) => choice !== id && choices.includes(choice));
+    if (next) {
+      if (resetModelChoices(false, next)) {
+        changeAdditionalModel(id, false);
+      }
+    } else if (changeAdditionalModel(id, false)) {
+      resetModelChoices(false, "");
+    }
   }
   function updateModelConfiguration(resetTransport = false, values = readModelConfiguration()) {
     if (typeof values === "string" || !canMergeModelCatalog(values, model.value, resetTransport)) {
       return;
     }
     retainPendingModel(values);
-    const next = configurationTemplate(harness.value, providerFamily(), model.value.trim());
+    const providerId = configuredProviderKey(values, resetTransport);
+    const next = configurationTemplate(
+      harness.value,
+      providerFamily(),
+      model.value.trim(),
+      [],
+      providerId,
+    );
     const agents = objectFields(values.agents);
     const defaults = objectFields(agents.defaults);
     const models = objectFields(values.models);
@@ -1730,7 +1788,6 @@ function renderAgentForm(
       delete providers.codex;
       Object.assign(providers, next.models?.providers);
     } else if (selectedModel) {
-      const providerId = harness.value === "codex" ? "codex" : providerFamily();
       const templateProvider = next.models?.providers[providerId];
       const provider = providers[providerId] ?? templateProvider;
       const existingProvider = objectFields(provider);
@@ -2779,9 +2836,16 @@ function renderAgentForm(
     const values = parseObject(configuration);
     // Keep the last valid choices and normal tab order while the operator repairs a JSON draft.
     additional.fields.inert = values === undefined;
+    offeredModels.fields.inert = values === undefined;
     if (values) {
       const { primary, selected } = switchableModelIds(values);
-      additional.update(primary, modelChoices(), selected);
+      if (namedProviders.named()) {
+        additional.section.hidden = true;
+      } else {
+        additional.update(primary, modelChoices(), selected);
+      }
+      const entryOnly = !primary && Boolean(modelPrimary(configuredModelSelection(values)));
+      offeredModels.update(selectedProvider(), primary, selected, entryOnly);
     }
     if (values === undefined) {
       channelEditor.replaceChildren(
@@ -3451,23 +3515,19 @@ function renderAgentForm(
     // Shown only while it can act, so no unavailable action sits in the refusal.
     changePresetVariables.hidden = startOver.disabled;
     if (useModelChoices) {
-      choiceField.querySelector("label")!.textContent = named
-        ? "Models offered by this provider"
-        : "Model";
-      choiceField.querySelector(".hint")!.textContent = named
-        ? "Choose a model offered by this provider."
-        : "Choose a model your credential can access, or enter another model ID manually.";
       toggleModel.hidden = named;
-      choiceField.hidden = manualModel;
-      modelField.hidden = !manualModel;
-      model.required = manualModel;
-      modelChoice.required = !manualModel;
+      choiceField.hidden = named || manualModel;
+      modelField.hidden = named || !manualModel;
+      model.required = !named && manualModel;
+      modelChoice.required = !named && !manualModel;
       toggleModel.textContent = manualModel
         ? "Choose a model from the list"
         : "Enter model ID manually";
       toggleModel.disabled ||= Boolean(savedConfiguration);
     }
     additional.fields.disabled = planLocked || Boolean(savedConfiguration);
+    offeredModels.fields.disabled =
+      Boolean(offeredModels.fields.hidden) || planLocked || Boolean(savedConfiguration);
     reloadRepositories.disabled = pending || outcomeUnknown;
     startNewDraft.disabled = pending || outcomeUnknown;
     repositories.setDisabled(planLocked || repositoryRetryLocked());
@@ -3774,6 +3834,7 @@ function renderAgentForm(
           ...modelChoices().map((id) => element("option", { value: id }, id)),
         );
         modelChoice.value = model.value;
+        renderConfigurationEditors();
       }
       updateControls();
     });

@@ -39,6 +39,7 @@ import { restrict } from "../helpers/iam-grants.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { consoleStorage } from "../helpers/console-storage.ts";
+import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
@@ -136,12 +137,46 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
   await page.getByLabel("Agent name").fill("Research assistant");
   await providerPicker.selectOption({ label: "Research inference" });
   await page.getByLabel("Inference credential", { exact: true }).selectOption({ label: key.name });
+  const models = page.getByRole("table", { name: "Models offered by this provider" });
+  const defaultSmall = models.getByRole("radio", { name: "Default research-model", exact: true });
+  const defaultLarge = models.getByRole("radio", { name: "Default research-large", exact: true });
+  const useSmall = models.getByRole("checkbox", { name: "Use research-model", exact: true });
+  const useLarge = models.getByRole("checkbox", { name: "Use research-large", exact: true });
+  assert.equal(await defaultSmall.isChecked(), true);
+  assert.equal(await useSmall.isChecked(), true);
+  assert.equal(await useLarge.isChecked(), false);
+
+  // Removing the last model leaves a required choice. The first model added becomes the default.
+  await useSmall.uncheck();
+  assert.equal(await defaultSmall.isChecked(), false);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByText("Choose at least one model from this provider.", { exact: true }).waitFor();
+  await useLarge.check();
+  assert.equal(await defaultLarge.isChecked(), true);
+
+  // Making an unchecked model the default includes it. Removing it promotes the remaining model.
+  await defaultSmall.check();
+  assert.equal(await useSmall.isChecked(), true);
+  assert.equal(await useLarge.isChecked(), true);
+  await useSmall.uncheck();
+  assert.equal(await defaultLarge.isChecked(), true);
+  await useSmall.check();
+
+  // Authored Codex configurations may route through openai/<id>. The picker preserves the
+  // provider key when a user promotes another checked model.
+  await openAdvancedSettings(page);
+  const editorJson = page.getByLabel("Configuration JSON");
+  const standard = await editorJson.inputValue();
+  const authored = JSON.parse(standard.replaceAll('"codex/research-', '"openai/research-'));
+  authored.models.providers = { openai: authored.models.providers.codex };
+  await editorJson.fill(JSON.stringify(authored));
+  await defaultSmall.check();
   assert.equal(
-    await page.getByLabel("Models offered by this provider").inputValue(),
-    "research-model",
+    JSON.parse(await editorJson.inputValue()).agents.defaults.model,
+    "openai/research-model",
   );
-  await page.getByText("Additional models", { exact: true }).click();
-  await page.getByRole("checkbox", { name: "research-large", exact: true }).check();
+  assert.equal(await useLarge.isChecked(), true);
+  await editorJson.fill(standard);
   const savedAgent = responseTo(
     page,
     "POST",
@@ -158,10 +193,10 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
     "/namespaces/" + namespace.id + "/configurations/" + agent.configurationId,
   );
   assert.deepEqual(config.data.values.agents.defaults.modelPolicy.allow, [
-    "codex/research-model",
     "codex/research-large",
+    "codex/research-model",
   ]);
-  assert.equal(config.data.values.agents.defaults.model, "codex/research-model");
+  assert.equal(config.data.values.agents.defaults.model, "codex/research-large");
 });
 
 async function createFromConsole(page: Page, name: string, value: string) {

@@ -4496,6 +4496,43 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .harness-auth-fields > .form-field:has(#provider-api-key) {
   grid-column: 1 / -1;
 }
+.provider-model-table {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.provider-model-table legend {
+  font-weight: var(--weight-semibold);
+}
+.provider-model-table table {
+  width: min(100%, 42rem);
+  margin-top: var(--space-2);
+  border-collapse: collapse;
+}
+.provider-model-table th,
+.provider-model-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.provider-model-table th:last-child,
+.provider-model-table td {
+  width: 6rem;
+  white-space: nowrap;
+  text-align: center;
+}
+.provider-model-table tbody label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+}
+.provider-model-table th .hint {
+  display: block;
+}
 .additional-models fieldset {
   display: grid;
   gap: var(--space-2);

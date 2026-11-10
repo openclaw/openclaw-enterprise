@@ -24,7 +24,7 @@ a refused request; uncertain registration reuses the same request. Switching to 
 
 ## Choose several models for an Agent
 
-Open **Pages/Create Agent → Choose additional session models**. Change the default to the checked alternate model. The old default stays available. Clear its checkbox and inspect **Advanced settings**. The Configuration lists only the new default for session selection and adds no automatic fallback.
+Open **Pages/Create Agent → Choose additional session models**. In the model table, set the checked alternate as **Default**. Both models stay checked. Clear the old default and inspect **Advanced settings**. The Configuration lists only the new default for session selection and adds no automatic fallback.
 
 ## Correct an edited model catalog
 
