@@ -858,6 +858,8 @@ for (const readback of ["stop status", "deployment"]) {
     await page.getByRole("dialog").getByRole("button", { name: "Stop Agent", exact: true }).click();
     await stopRegion.getByText(STOP_REQUESTED_FIRST_DEPLOYMENT, { exact: true }).waitFor();
     await stopRegion.getByRole("button", { name: "Refresh stop status" }).click();
+    // The cancellation notice stays visible during the read; wait before another actor deploys.
+    await waitForEnabled(stopRegion.getByRole("button", { name: "Refresh stop status" }));
     await stopRegion.getByText(STOP_REQUESTED_FIRST_DEPLOYMENT, { exact: true }).waitFor();
 
     // Another actor deploys. A lifecycle read must retire this viewer's earlier Stop result,
@@ -1060,7 +1062,7 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
     harnessError: Error | undefined;
   } = sandbox.state;
   const { fixture, namespace } = await readyNamespace(t, "Lost Sandbox", {
-    computeDriver: createRuntimeLogComputeDriver({ sandboxNamespace: "tenant-console" }),
+    computeDriver: createRuntimeLogComputeDriver({ sandboxNamespaceName: () => "tenant-console" }),
     sandboxDriver,
   });
   const agent = await fixture.createAgent(
@@ -2058,7 +2060,7 @@ test("Every failed deployment code has its own message and next step", async () 
       "RUNTIME_STARTUP_FAILED",
       "UNKNOWN_FAILURE",
     ],
-    // A setting, grant or stored record must change first; no runtime logged anything.
+    // A setting, grant or stored record must change first.
     change: [
       "AUTHORIZATION_DENIED",
       "BACKEND_UNAVAILABLE",
@@ -2085,6 +2087,8 @@ test("Every failed deployment code has its own message and next step", async () 
       "REPOSITORY_RUNTIME_UNSUPPORTED",
       "REPOSITORY_STANDING_APPROVAL_REMOVED",
       "REPOSITORY_STANDING_POLICY_CHANGED",
+      "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+      "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE",
       "SANDBOX_GATEWAY_UNAUTHORIZED",
       "SANDBOX_HARNESS_UNSUPPORTED",
       "SANDBOX_POD_LABELS_NOT_PERMITTED",
@@ -3282,7 +3286,7 @@ for (const viewport of [
     await page.route(`**/agents/${agent.id}/native-admin`, (route) =>
       route.fulfill({
         json: {
-          data: { status: "available", url: "https://admin.example.test/" },
+          data: { status: "available", mode: "admin", url: "https://admin.example.test/" },
           meta: { requestId: "req_test_failing_deploy" },
         },
       }),

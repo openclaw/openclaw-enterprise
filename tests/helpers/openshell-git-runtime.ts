@@ -5,7 +5,7 @@ import {
   createGitHubRepositoryDeliveryResolver,
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
-} from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import {
   openShellProfileEndpoint,
   type OpenShellProviderCreateRequest,

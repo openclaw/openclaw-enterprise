@@ -147,11 +147,12 @@ async function load(owner, configuration, mode = "production") {
 
 async function authenticatedApplication(t, drivers) {
   const installationId = `ins_${randomUUID()}`;
-  const authOrigin = "http://127.0.0.1";
+  const authOrigin = "https://console.oce.localhost";
   const authFixture = await createTestAuthPrincipal({
     installationId,
     mode: "production",
     baseURL: authOrigin,
+    agentDomain: "agents.oce.localhost",
     email: `driver-plugin-admin-${randomUUID()}@example.test`,
     password: `driver-plugin-password-${randomUUID()}`,
     name: "Driver Plugin Administrator",
@@ -208,8 +209,14 @@ async function authenticatedApplication(t, drivers) {
         state: new InMemoryPlatformState({ auditSink }),
         driverConfigurations: installationDriverConfigurations(drivers.installation),
         backends: drivers.installation.backend,
+        namespaceLifecycleBindings: drivers.namespaceLifecycleBindings,
         recordOperations: false,
       });
+      if (drivers.protectedDriver !== undefined) {
+        // Keep the shared registration owner, as production composition does. Registering
+        // its Sandbox view again would discard the owner of its Namespace binding.
+        controller.installDriver(drivers.protectedDriver, ["sandbox", "credential_proxy"]);
+      }
       if (drivers.credentialGatewayDriver !== undefined) {
         controller.registerDriver(drivers.credentialGatewayDriver);
         controller.selectDriver("credential_gateway", drivers.credentialGatewayDriver.id);
@@ -220,7 +227,7 @@ async function authenticatedApplication(t, drivers) {
     computeDriver: drivers.computeDriver,
     configurationDriver: drivers.configurationDriver,
     secretDriver: drivers.secretDriver,
-    sandboxDriver: drivers.sandboxDriver,
+    sandboxDriver: drivers.protectedDriver === undefined ? drivers.sandboxDriver : undefined,
     resolveHarness: resolveApprovedProductionHarness,
     auditSink,
     development: {
@@ -232,6 +239,7 @@ async function authenticatedApplication(t, drivers) {
   t.after(async () => app.close());
 
   const signedIn = await injectJson(app, "POST", "/api/auth/sign-in/email", {
+    host: new URL(authOrigin).host,
     body: { email: authFixture.email, password: authFixture.password },
   });
   assert.equal(signedIn.statusCode, 200, signedIn.body);
@@ -239,7 +247,7 @@ async function authenticatedApplication(t, drivers) {
   const cookie = cookieHeaderFromSetCookie(
     Array.isArray(setCookie) ? setCookie : setCookie === undefined ? [] : [setCookie],
   );
-  assert.match(cookie, /(?:^|; )openclaw_occ\.session_token=/);
+  assert.match(cookie, /(?:^|; )__Secure-openclaw_occ_shared\.session_token=/);
 
   return {
     app,
@@ -275,6 +283,7 @@ async function request(fixture, method, url, body) {
   const { cookie, authOrigin } = fixture.config;
   const response = await injectJson(fixture.app, method, url, {
     session: { cookie, origin: authOrigin },
+    host: new URL(authOrigin).host,
     body,
   });
   return { status: response.statusCode, ...response.json() };
@@ -511,6 +520,7 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
         [{ authorization: "Bearer invalid-production-token" }, AUTHORIZATION_HEADER_REFUSED],
       ]) {
         const unauthenticated = await injectJson(fixture.app, "POST", "/installation/bootstrap", {
+          host: new URL(fixture.config.authOrigin).host,
           headers,
           body: { name: "Unauthenticated Driver selection" },
         });
@@ -518,6 +528,7 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
         assert.equal(unauthenticated.json().error.message, message);
       }
       const publicSignup = await injectJson(fixture.app, "POST", "/api/auth/sign-up/email", {
+        host: new URL(fixture.config.authOrigin).host,
         body: {
           email: "public-driver-plugin@example.test",
           password: "public-driver-plugin-password",

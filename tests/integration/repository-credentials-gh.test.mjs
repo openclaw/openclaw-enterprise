@@ -137,9 +137,7 @@ test("pinned gh uses selected development token routing for repository, issue an
   const originalHosts = await readFile(hostsPath, "utf8");
   const mismatchedHosts = originalHosts.replace(fixture.opened.bearer, "x".repeat(48));
   assert.ok(mismatchedHosts !== originalHosts, "fixture bearer must appear in gh material");
-  const { routeRepositoryClient } = await appModule(
-    "drivers/repo/github/credentials/client/router",
-  );
+  const { routeRepositoryClient } = await appModule("drivers/repo/github/access/client/router");
   const spawn = childProcess.spawn;
   const spawnSync = childProcess.spawnSync;
   const now = Date.now;
@@ -173,7 +171,7 @@ test("pinned gh uses selected development token routing for repository, issue an
     syncBuiltinESMExports();
     await writeFile(hostsPath, originalHosts);
   }
-  const router = join(appRoot, `drivers/repo/github/credentials/client/router.${appExtension}`);
+  const router = join(appRoot, `drivers/repo/github/access/client/router.${appExtension}`);
   const pullInput = await client.json("routed-pull.json", {
     title: "Routed pull request",
     head: "native-feature",

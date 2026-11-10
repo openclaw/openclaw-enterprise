@@ -221,11 +221,11 @@ Removal during incomplete activation can fail deployment while retaining the ind
 verified runtime; workspace setup stays pending.
 See [withdrawal and retained supervision](../../flows/agent-repository-credentials.md#6-maintain-recover-and-retire-ownership).
 
-For `git-write` grants permitting draft pull requests, `draftPullLimit: one-per-grant` allows one
-draft, and every Agent and version that has the grant shares it. To let Agents open a new
-draft from the same review ref, set `draftPullLimit: none` in the Namespace policy. OCE then
-records each draft use without spending an allowance; the draft-only, head and base checks
-still apply. This changes the grant identity: deploy a new version to use it.
+With `git-write`, the allowed draft POST to `api.github.com` accepts one
+`Time-Zone: Etc/UTC` header. `draftPullLimit: one-per-grant` allows one draft
+across Agents and versions sharing the grant. To allow more drafts from the same
+ref, set `draftPullLimit: none` in the Namespace policy and deploy a new version.
+OCE still records each draft use and checks draft status, head and base.
 
 A one-draft grant spends its allowance at authorization, before
 OCE knows whether GitHub created a draft. On an uncertain push or draft outcome,
