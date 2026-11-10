@@ -179,26 +179,41 @@ does not prove that deployed NetworkPolicies or admission webhooks work; retain
 the network and certificate checks above.
 
 <a id="configure-the-protected-copies-and-install"></a>
+
+[Configure protected database inputs](eks-openshell-installation.md#configure-the-protected-copies-and-install) in the installation guide.
+
 <a id="2.-install-openshell-and-bootstrap-occ"></a>
 <a id="2-install-openshell-and-bootstrap-occ"></a>
 
-[Continue to installation](eks-openshell-installation.md#configure-the-protected-copies-and-install) in the installation guide.
+[Install OpenShell and bootstrap OCC](eks-openshell-installation.md#2-install-openshell-and-bootstrap-occ) in the installation guide.
 
 <a id="set-the-production-browser-origins-before-installing-occ"></a>
+
+[Set browser origins before installing OCC](eks-openshell-installation.md#set-the-production-browser-origins-before-installing-occ) in the installation guide.
+
 <a id="configure-browser-access"></a>
-<a id="read-the-protected-initial-owner-files"></a>
-<a id="install-the-loopback-tls-listener"></a>
 
 [Configure browser access](eks-openshell-installation.md#configure-browser-access) in the installation guide.
 
+<a id="read-the-protected-initial-owner-files"></a>
+
+[Read the protected initial owner files](eks-openshell-installation.md#read-the-protected-initial-owner-files) in the installation guide.
+
+<a id="install-the-loopback-tls-listener"></a>
+
+[Install the loopback TLS listener](eks-openshell-installation.md#install-the-loopback-tls-listener) in the installation guide.
+
 <a id="3.-authenticate-and-prepare-the-namespace"></a>
 <a id="3-authenticate-and-prepare-the-namespace"></a>
+
+[Authenticate and prepare the Namespace](eks-openshell-installation.md#3-authenticate-and-prepare-the-namespace) in the installation guide.
+
 <a id="4-enroll-linear-and-protected-git"></a>
 <a id="5-deploy-and-open-the-owners-agent"></a>
 <a id="4.-prepare-the-operator-session"></a>
 <a id="4-prepare-the-operator-session"></a>
 
-[Authenticate and prepare the operator session](eks-openshell-installation.md#3-authenticate-and-prepare-the-namespace) in the installation guide.
+[Prepare the operator session](eks-openshell-installation.md#4-prepare-the-operator-session) in the installation guide.
 
 <a id="verify-workspace-routing"></a>
 

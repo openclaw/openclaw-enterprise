@@ -248,13 +248,13 @@ Selectors filter discovery, not RBAC. Sandbox `list`/`watch` exposes Pod templat
 literal values and Secret references, without granting Secret payload access.
 
 The [stock chart](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/deploy/helm/openshell/templates/clusterrole.yaml#L66-L99)
-also permits cluster-wide Sandbox/Pod mutations. Review rendered RBAC;
-`rbac.clusterScoped.create=false` omits creation, without narrowing existing grants.
+also permits cluster-wide Sandbox/Pod mutations. Review rendered RBAC.
 Namespace labels/NetworkPolicies do not limit this authority.
 OCE does not support upstream's namespaced `shared` mode.
 
 OCE controller/worker grants remain separate: Compute access, namespace-scoped
 policy apply and Gateway readiness, without Sandbox custom-resource permission.
+Do not grant wildcard tenant permissions.
 
 Kubernetes Compute retains default-deny policies. In the development profile,
 provider transport grants the Agent Gateway egress only to the configured
