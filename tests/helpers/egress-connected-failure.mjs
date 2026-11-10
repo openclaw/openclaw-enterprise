@@ -368,7 +368,7 @@ export function rememberCustodyOutcome(error, value) {
   custodyOutcomes.set(error, {
     readAttempts: count(value.readAttempts),
     successfulReads: count(value.successfulReads),
-    lastRead: choice(value.lastRead, ["pending", "returned", "deadline", "error"]),
+    lastRead: choice(value.lastRead, ["unobserved", "pending", "returned", "deadline", "error"]),
     ring: choice(value.ring, [
       "unobserved",
       "valid",

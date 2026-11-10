@@ -41,7 +41,7 @@ export function createCustodyTransitions(
   const diagnostic = {
     readAttempts: 0,
     successfulReads: 0,
-    lastRead: "pending",
+    lastRead: "unobserved",
     ring: "unobserved",
     lineCount: null,
     bufferTotal: null,
@@ -49,6 +49,24 @@ export function createCustodyTransitions(
     labels: [],
     sequence: "unobserved",
   };
+  function describeSequence(before, expected) {
+    const fresh = events.slice(before.length);
+    const id = fresh[0]?.id;
+    const unique = !id || !before.some((entry) => entry.id === id);
+    const ordered =
+      fresh.length <= expected.length &&
+      fresh.every((entry, i) => entry.id === id && entry.event === expected[i]);
+    diagnostic.freshCount = fresh.length;
+    diagnostic.labels = fresh.map(({ event }) => event).slice(0, 9);
+    if (!unique || !ordered) {
+      diagnostic.sequence = "invalid";
+    } else if (fresh.length === expected.length) {
+      diagnostic.sequence = "complete";
+    } else {
+      diagnostic.sequence = fresh.length ? "partial" : "none";
+    }
+    return { fresh, id, unique, ordered };
+  }
   async function diagnose(action) {
     try {
       return await action();
@@ -165,31 +183,20 @@ export function createCustodyTransitions(
             snapshots.has(before) && expected.length > 0,
             "snapshot from this enrolled Sandbox",
           );
+          // Reusing a baseline after a pending response must retain the known
+          // prefix even when the next log read fails before returning a ring.
+          if (events !== before) {
+            describeSequence(before, expected);
+          }
           await observeConnectedOperation("after-custody-supervisor-get", sameSupervisor);
           const deadline = performance.now() + deliveryTimeoutMs;
           while (performance.now() < deadline) {
             await observeConnectedOperation("after-custody-log-read", () =>
               read(Math.max(1, Math.ceil(deadline - performance.now()))),
             );
-            const fresh = events.slice(before.length);
-            diagnostic.freshCount = fresh.length;
-            diagnostic.labels = fresh.map(({ event }) => event).slice(0, 9);
-            diagnostic.sequence = "invalid";
-            const id = fresh[0]?.id;
-            assert.ok(
-              !id || !before.some((entry) => entry.id === id),
-              "supplier reused an earlier request ID",
-            );
-            assert.ok(
-              fresh.length <= expected.length &&
-                fresh.every((entry, i) => entry.id === id && entry.event === expected[i]),
-              "unexpected, missing, or ambiguous supplier custody transition",
-            );
-            if (fresh.length === expected.length) {
-              diagnostic.sequence = "complete";
-            } else {
-              diagnostic.sequence = fresh.length ? "partial" : "none";
-            }
+            const { fresh, id, unique, ordered } = describeSequence(before, expected);
+            assert.ok(unique, "supplier reused an earlier request ID");
+            assert.ok(ordered, "unexpected, missing, or ambiguous supplier custody transition");
             if (fresh.length === expected.length) {
               await observeConnectedOperation("after-custody-supervisor-recheck", sameSupervisor);
               return id;
