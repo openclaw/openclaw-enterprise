@@ -74,7 +74,7 @@ It confirms directory creation, then exclusively creates a private copy of
 SQL readable by the container user and passes it to Compose as
 `OPENCLAW_CI_POSTGRES_INIT_SQL`. The checkout is unchanged.
 
-`scripts/ci/cleanup.mjs:cleanupComposePostgres` checks the exact directory path
+`scripts/ci/cleanup.ts:cleanupComposePostgres` checks the exact directory path
 against the opened state file. Without directory confirmation, it preserves any
 directory at that path and retains state. Without SQL confirmation, it removes
 only an empty confirmed directory. After Compose teardown, it removes the
@@ -120,7 +120,7 @@ the test reserve, recalculated before each command. Without a valid lane deadlin
 the finite command limits still apply. Unsupported timer values are rejected.
 An exhausted budget reports the stage that could not start. On POSIX, timeouts
 terminate the command's owned process group, including local descendants. The
-shared `scripts/ci/cleanup-command.mjs` supervisor anchors the group ID through
+shared `scripts/ci/cleanup-command.ts` supervisor anchors the group ID through
 its last signal, including when preparation receives SIGINT cancellation; after
 it exits, preparation sends no further group signals. Windows retains direct-child
 termination. A failed build reports up to eight numbered FROM, RUN or COPY steps

@@ -166,7 +166,7 @@ Required cases must pass; every skip or TODO fails the lane. There are no counte
 
 ### 4. Clean up and report results
 
-`scripts/ci/cleanup.mjs:main` and `scripts/ci/run-tests.mjs:main`
+`scripts/ci/cleanup.ts:main` and `scripts/ci/run-tests.mjs:main`
 
 `.github/actions/run-ci-lane/action.yml` uploads one sanitized result artifact
 per lane and run. A retry replaces that lane's artifact, preventing aggregation
@@ -213,8 +213,8 @@ for [hosted QA image warnings](github-actions-testing/preparation.md). Private s
 on its original runner and path. User databases, contexts, unrelated containers and other
 image references remain untouched.
 
-`scripts/ci/cleanup.mjs:execFile` awaits exit and drained output. On POSIX,
-`scripts/ci/cleanup-command.mjs` kills its group on caller IPC closure, including caller SIGKILL.
+`scripts/ci/cleanup.ts:execFile` awaits exit and drained output. On POSIX,
+`scripts/ci/cleanup-command.ts` kills its group on caller IPC closure, including caller SIGKILL.
 Completion drains output, kills grouped descendants and returns command status.
 At [timeout](../testing/ci/configuration.md#runner-overrides), TERM then KILL still apply after
 direct-child exit. Escaped groups are unsignaled; retained streams close after grace.
