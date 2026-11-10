@@ -728,9 +728,9 @@ func developmentKeycloakEgressCIDRs(data []byte) ([]string, error) {
 
 // developmentKeycloakSignInValues derives the second Helm pass from the first:
 // OIDC sign-in against the development Keycloak, the bootstrap administrator as
-// the recovery account, and passwords for that account only. OIDC supports
-// host-only cookies only, so the chart requires native Agent administration,
-// and its shared cookie domain, to be off. Every key is an existing chart value.
+// the recovery account, and passwords for that account only. It preserves native
+// Agent administration and the hosts used to derive the shared session cookie scope.
+// Every key is an existing chart value.
 func developmentKeycloakSignInValues(first []byte, cluster, recoveryUserID string, service []byte) ([]byte, error) {
 	if !developmentRecoveryUserID.MatchString(recoveryUserID) {
 		return nil, fmt.Errorf("the development administrator's user ID is not a valid auth.recoveryUserId")
