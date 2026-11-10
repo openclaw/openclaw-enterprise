@@ -1,18 +1,16 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-10"
-last_updated_session: authoring-run/a84609c2-f340-4cbc-b986-39550c4c7b2e
+last_updated_session: "authoring-run/38bf80b2-72d7-4de5-8ae3-6f161a5a5296"
 ---
 
 # Agent repository credential flow
 
 ## Overview
 
-Dedicated Codex uses prepared sessions;
-[OpenShell sandboxes](../reference/repository-credentials/protected-openshell-git.md) receive placeholders.
-Workers authorize signed requests against live grants.
-See [mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
-[service lifecycle](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
+Codex uses prepared sessions; [OpenShell](../reference/repository-credentials/protected-openshell-git.md)
+receives placeholders. Workers authorize signed requests against live grants.
+[Enrollment](../guides/repository-credentials/openshell-enrollment.md); [qualification](../testing/repository-credentials.md).
 
 ## Entry Points
 
@@ -171,13 +169,13 @@ revoked/expired counts for `DISPOSED`, but no outstanding obligations. Only crea
 `apps/controller/src/drivers/repo/github/access/client/config.ts:encodeRepositoryCredentialSessionFiles`
 encodes files; the worker records the session ID before passing them to Compute.
 
-Confirmed open sessions yield `retained` bindings without files. `recoverOnly` finds or
-fences unfinished admissions and closes recovered sessions. Fresh material requires
-confirmed disposal or a missing opening without a recorded session ID. Invalidated known
-sessions block replacement. Closing raises `REPOSITORY_CLEANUP_PENDING`, subject to Work
-bounds and the revision deadline. Cleanup uses the configured interval while any session
-closes. Otherwise, an unsettled obligation retains its code and retries at `age / 40`,
-bounded by the configured interval and ten minutes.
+Confirmed open sessions yield `retained` bindings without files. `recoverOnly` finds or fences
+unfinished admissions and closes recovered sessions. Fresh material requires
+confirmed disposal or a missing opening with no recorded session. Invalidated
+sessions block replacement. Closing raises `REPOSITORY_CLEANUP_PENDING` under Work
+bounds and the revision deadline. Closing cleanup uses the configured interval;
+otherwise obligations keep their code and retry at `age / 40`, bounded by that
+interval and ten minutes.
 `apps/controller/src/worker.ts:processRepositoryCleanup` logs
 `worker.repository-cleanup-warning` with `cause` once per worker.
 
@@ -318,6 +316,10 @@ and maintenance, or retires the version ([first-token handling](../reference/rep
 
 Missing standing evidence closes Git. Within five seconds, the worker rechecks model authority, withdrawal, stop and replacement without preparation or activation ([test](../../tests/integration/postgres-standing-session-worker.test.ts)).
 
+`OpenShellGitRuntime.repositoryWorkerRestartDisposition` reports supported
+held/preview execution `original-worker-required`; unsupported legacy routes `unknown`.
+[Preflight](coordinated-production-upgrade.md#1-prepare-the-candidate) cannot authorize execution.
+
 `OpenShellGitRuntime.verifyExecution` reports `RepositoryExecutionRequiresRedeployError`
 when persisted v5 owner, binding and stable fence prove non-adoptable replacement. `ControllerWorker.completeStandingRepositoryWithdrawal` rechecks
 ownership, closes sessions and queues withdrawal atomically.
@@ -375,6 +377,8 @@ Verify live PR updates, denial before provider contact and continued chat separa
 
 ## Changelog
 
+- 2026-11-10 07:56: Merge repository flow. (authoring-run/38bf80b2-72d7-4de5-8ae3-6f161a5a5296 - 71d4ad6cdb9587a86c46c64c661a9009d413e51f)
+
 - 2026-11-10 02:09: Trace built-in repository policy. (authoring-run/a84609c2-f340-4cbc-b986-39550c4c7b2e - 83c78fb0c2ed8524d906cca60845bc9141424000)
 
 - 2026-11-08 07:45: Preserve withdrawal across Stop. (authoring-run/0bed479f-9c58-4dbb-bb72-972d7dfe9790 - d9dc87c351a0046df90915d66cbcc931ec649bb6)
@@ -382,6 +386,8 @@ Verify live PR updates, denial before provider contact and continued chat separa
 - 2026-11-07 12:52: Trace removal supervision. (authoring-run/631f2612-7e8d-438d-a2bf-6ab23999c345 - 6d538feb96fa163d4b74e0dd4d21b29d1cedd641)
 
 - 2026-11-07 05:27: Reconcile predecessor identity and observation freshness. (authoring-run/6c9b5f78-aa31-4b52-9acc-f4b7b99f0dd6 - 8b62face5f6d3e8bda91f18e44755663542efcad)
+
+- 2026-11-07 08:06: Assess repository worker replacement before stopping writers. (authoring-run/dc361ab2-8dc2-4ed3-872d-220eb9cce3c1 - d84756d04bec6aa6499364548cd21a07bbbc86d7)
 
 - 2026-11-07 03:14: Capture policy. (authoring-run/ca379ce8-200d-4822-9b71-87f49f7644dc - 8c600ad53844dca9d2f9eda87ba8733c628d28aa)
 - 2026-11-06 20:39: Distinguish terminal held-launch replacement from transient standing verification. (authoring-run/d966f693-ccc4-4b07-8fbc-f66738672284 - 21a933338904531c51a67f9aaf98c3401ceff025)

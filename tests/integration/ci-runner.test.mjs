@@ -14,6 +14,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
 import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
@@ -726,6 +727,210 @@ test(
     assert.equal(result.counts.failed, 2);
   },
 );
+
+test(
+  "run reports bounded OpenShell progress before the test file finishes",
+  { timeout: 30_000 },
+  async (t) => {
+    const root = await fixture(t);
+    const file = "tests/integration/progress.test.mjs";
+    const resultsPath = join(root, "results/progress.json");
+    await writeSingleLaneManifest(root, "progress", [{ path: file }], {});
+    await writeFile(
+      join(root, file),
+      `import { watch } from "node:fs";
+import test from "node:test";
+import { emitOpenShellProgress, openShellProgressPrefix } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/openshell-progress.mjs")).href)};
+const write = (text) => new Promise((resolve, reject) => process.stdout.write(text, (error) => error ? reject(error) : resolve()));
+const record = (value) => openShellProgressPrefix + JSON.stringify(value) + "\\n";
+// The legitimate start/pass record also crosses many reporter pipe chunks.
+test("live progress " + "x".repeat(1024 * 1024), async (context) => {
+  const stage = { kind: "openshell-stage", stage: "installation", outcome: "started" };
+  for (const invalid of [
+    { ...stage, kind: "private-kind-canary" },
+    { ...stage, stage: "private-stage-canary" },
+    { ...stage, outcome: "private-outcome-canary" },
+    { ...stage, detail: "private-detail-canary" },
+    { ...stage, elapsedMs: 1 },
+    { ...stage, file: "private-file-canary" },
+    null,
+    [stage],
+  ]) await write(record(invalid));
+  // A prefix and invalid payload can span writes; oversized lines must be dropped through newline.
+  const split = record({ ...stage, detail: "private-fragment-canary" });
+  await write(split.slice(0, 8));
+  await write(split.slice(8));
+  await write(openShellProgressPrefix + "private-oversized-canary".repeat(50000));
+  await write(record(stage));
+  await write(openShellProgressPrefix + "private-malformed-canary\\n");
+  // Subscribe before the actual producer runs: only live progress releases the test.
+  let watcher;
+  const released = new Promise((resolve) => {
+    watcher = watch(${JSON.stringify(root)}, (_event, name) => {
+      if (name === "release") { watcher.close(); resolve(); }
+    });
+  });
+  context.after(() => watcher.close());
+  // Fill the tail through its batch boundary, retaining a real blank and an unfinished line.
+  await write(Array.from({ length: 798 }, (_, i) => "useful line " + i).join("\\n") + "\\n\\nunfinished ordinary output");
+  emitOpenShellProgress("installation", "started");
+  await released;
+  emitOpenShellProgress("installation", "passed");
+  context.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ ...stage, outcome: "passed", elapsedMs: 123 }));
+});
+test("failed stage", async () => {
+  emitOpenShellProgress("initial-model", "started");
+  try { throw new Error("expected stage failure"); }
+  finally {
+    emitOpenShellProgress("initial-model", "failed");
+    // An unterminated record is neither live progress nor raw failure output.
+    await write(record({ kind: "openshell-stage", stage: "replacement", outcome: "started" }).slice(0, -1));
+  }
+});
+`,
+    );
+    const child = spawn(
+      process.execPath,
+      [runnerPath, ...laneArgs(root, "progress", "state/progress.jsonl", resultsPath)],
+      {
+        cwd: repositoryRoot,
+        env: runnerEnv({ CI_RUNNER_TEST_TIMEOUT_MS: "10000" }),
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    const progress = [];
+    const label = `[run:progress] ${file}: `;
+    const lines = createInterface({ input: child.stderr });
+    const closed = new Promise((resolve, reject) =>
+      child.once("error", reject).once("close", resolve),
+    );
+    const live = new Promise((resolve) => {
+      lines.on("line", (line) => {
+        if (line === `${label}openshell-stage installation started`) {
+          resolve(true);
+        }
+      });
+      child.once("close", () => resolve(false));
+    });
+    t.after(() => {
+      lines.close();
+      if (child.exitCode === null) {
+        child.kill("SIGTERM");
+      }
+    });
+    lines.on("line", (line) => {
+      if (!line.startsWith(label)) {
+        return;
+      }
+      progress.push(line.slice(label.length));
+    });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    // A final buffered transcript cannot satisfy this handshake.
+    assert.ok(await live, "progress must arrive while the child waits for its release file");
+    assert.equal(child.exitCode, null);
+    await writeFile(join(root, "release"), "");
+    const code = await closed;
+    assert.equal(code, 1);
+    assert.deepEqual(progress, [
+      "openshell-stage installation started",
+      "openshell-stage installation passed",
+      "openshell-stage initial-model started",
+      "openshell-stage initial-model failed",
+    ]);
+    const artifact = await readFile(resultsPath, "utf8");
+    const summary = JSON.parse(artifact);
+    assert.equal(summary.counts.passed, 1);
+    assert.equal(summary.counts.failed, 1);
+    assert.deepEqual(summary.files[0].measurements, [
+      { kind: "openshell-stage", stage: "installation", outcome: "passed", elapsedMs: 123 },
+    ]);
+    const diagnostics = await readFile(join(root, "state/progress.jsonl.diagnostics.json"), "utf8");
+    const tail = JSON.parse(diagnostics).failures[0].output;
+    assert.deepEqual(tail.lines, [
+      ...Array.from({ length: 398 }, (_, index) => `stdout: useful line ${index + 400}`),
+      "stdout: ",
+      "stdout: unfinished ordinary output",
+    ]);
+    assert.equal(tail.omittedLines, 400);
+    for (const output of [stdout, stderr, artifact, diagnostics]) {
+      assert.doesNotMatch(output, /private-\w+-canary/);
+    }
+  },
+);
+
+test("run finishes file accounting and cleanup after a reporter pipe read error", async (t) => {
+  const root = await fixture(t);
+  await writePrepare(root);
+  const file = "tests/integration/pipe.test.mjs";
+  const state = join(root, "state/pipe.jsonl");
+  const resultPath = join(root, "results/pipe.json");
+  await writeSingleLaneManifest(root, "pipe", [{ path: file }], {});
+  const injected = join(root, "injected");
+  // Hold the real child until its reporter pipe closes so the fault precedes completion.
+  await writeFile(
+    join(root, file),
+    `import test from "node:test";
+import { watch } from "node:fs";
+import { emitOpenShellProgress } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/openshell-progress.mjs")).href)};
+test("case", async () => {
+  const released = new Promise((resolve) => {
+    const watcher = watch(${JSON.stringify(root)}, (_event, name) => {
+      if (name === "injected") { watcher.close(); resolve(); }
+    });
+  });
+  emitOpenShellProgress("installation", "started");
+  await released;
+});
+`,
+  );
+  const preload = join(root, "pipe-error.mjs");
+  // Fault the real child pipe; spawning, reporting, result accounting and cleanup stay real.
+  await writeFile(
+    preload,
+    `import cp from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const spawn = cp.spawn;
+cp.spawn = (...args) => {
+  const child = spawn(...args);
+  if (args[1]?.includes("--test-reporter")) {
+    child.stdout.once("data", () => {
+      child.stdout.once("close", () => writeFileSync(${JSON.stringify(injected)}, "faulted"));
+      child.stdout.destroy(Object.assign(new Error("private-pipe-canary"), { code: "EIO" }));
+    });
+  }
+  return child;
+};
+syncBuiltinESMExports();
+`,
+  );
+  const result = spawnSync(
+    process.execPath,
+    ["--import", preload, runnerPath, ...laneArgs(root, "pipe", state, resultPath)],
+    {
+      cwd: repositoryRoot,
+      env: runnerEnv(),
+      encoding: "utf8",
+      timeout: 15_000,
+    },
+  );
+  assert.equal(await readFile(injected, "utf8"), "faulted");
+  const summary = JSON.parse(await readFile(resultPath, "utf8"));
+  assert.equal(summary.files[0].cleanup.status, "passed");
+  assert.equal(await readFile(state, "utf8"), `${file}\n`);
+  // The runner preserves native child exit codes, including failures other than 1.
+  assert.notEqual(result.status, 0);
+  assert.equal(result.status, summary.files[0].nodeExitCode);
+  assert.equal(result.status, summary.exitCode);
+  assert.doesNotMatch(result.stderr, /private-pipe-canary|Unhandled.*error/);
+});
 
 test("run records a sanitized file failure after all reported cases pass", async (t) => {
   const root = await fixture(t);
@@ -2853,6 +3058,36 @@ test("the reporter forwards a failed file's output tail and whole stack only", a
   assert.equal(tail.lines.at(-1), "stdout: no newline");
   assert.equal(tail.lines[0], "stdout: bulk 601");
   assert.equal(tail.omitted, 605);
+
+  // A split marker can arrive after stderr has already pushed its separator out
+  // of the tail. Only an ordinary blank contributes to the omitted-line count.
+  for (const marker of [true, false]) {
+    const events = [
+      { type: "test:stdout", data: { message: marker ? "\nopenclaw-ci-" : "\n" } },
+      {
+        type: "test:stderr",
+        data: { message: Array.from({ length: 801 }, (_, i) => `err ${i}\n`).join("") },
+      },
+      {
+        type: "test:stdout",
+        data: {
+          message: marker
+            ? 'progress {"kind":"openshell-stage","stage":"installation","outcome":"started"}\n'
+            : "resumed\n",
+        },
+      },
+      { type: "test:fail", data: { name: "case" } },
+    ];
+    const result = (await render(events)).at(-1).data;
+    assert.deepEqual(result.lines, [
+      ...Array.from(
+        { length: marker ? 400 : 399 },
+        (_, i) => `stderr: err ${i + (marker ? 401 : 402)}`,
+      ),
+      ...(marker ? [] : ["stdout: resumed"]),
+    ]);
+    assert.equal(result.omitted, marker ? 401 : 403);
+  }
 
   const secrets = failureSecrets([{ JOB_ONLY_KEY: "jobonlyopaque123" }]);
   const decisive = `${"x".repeat(700)}\nAuthorization: Basic c2hvcnQ=\nprobe code MODEL_PROBE_CPU_STARVED key jobonlyopaque123`;
