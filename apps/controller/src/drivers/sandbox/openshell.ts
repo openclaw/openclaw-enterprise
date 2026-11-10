@@ -1313,10 +1313,11 @@ function privateInferenceHold(revision: Readonly<AgentRevision>) {
     return undefined;
   }
   const provider = savedModelProvider(revision.harness.configuration);
-  if (!provider)
+  if (!provider) {
     throw new OpenShellSandboxConfigurationFailure(
       "The private inference revision has no admitted model endpoint.",
     );
+  }
   const { host, port, method, path } = inferenceKeyDestination(provider.baseUrl, provider.protocol);
   return {
     name: PRIVATE_INFERENCE_HOLD,
@@ -1337,8 +1338,9 @@ function privateInferenceHold(revision: Readonly<AgentRevision>) {
 
 function privateInferenceReleasedPolicy(policy: Readonly<Record<string, unknown>>) {
   const networks = asRecord(policy.network_policies);
-  if (!networks)
+  if (!networks) {
     throw new OpenShellSandboxConfigurationFailure("The private inference policy is missing.");
+  }
   const { [PRIVATE_INFERENCE_HOLD]: _hold, ...released } = networks;
   return { ...policy, network_policies: released };
 }
@@ -4590,10 +4592,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
 
   async releasePrivateInference(context: SandboxHarnessContext): Promise<boolean> {
     const expected = privateInferenceHold(context.revision);
-    if (!expected)
+    if (!expected) {
       throw new OpenShellSandboxConfigurationFailure(
         "The revision has no ordinary private inference hold.",
       );
+    }
     const { client, request, sandbox } = await this.policyTarget(context);
     const baseline = asRecord(sandbox.spec?.policy);
     if (
@@ -4621,10 +4624,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       return false;
     }
     const rules = asRecord(status.policy.network_policies);
-    if (!rules)
+    if (!rules) {
       throw new OpenShellSandboxConfigurationFailure(
         "OpenShell did not report the loaded private inference policy.",
       );
+    }
     if (Object.hasOwn(rules, PRIVATE_INFERENCE_HOLD)) {
       if (!sameOpenShellPolicy(rules[PRIVATE_INFERENCE_HOLD], expected)) {
         throw new OpenShellSandboxConfigurationFailure(
@@ -4662,10 +4666,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       },
       context.signal,
     );
-    if (result !== 0)
+    if (result !== 0) {
       throw new OpenShellSandboxConfigurationFailure(
         "OpenShell could not release the verified private inference Harness.",
       );
+    }
     return true;
   }
 
@@ -4704,10 +4709,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     let verifiedBase = baseline;
     if (privateInferenceHold(context.revision)) {
-      if (!client.getPolicyStatus)
+      if (!client.getPolicyStatus) {
         throw new OpenShellSandboxConfigurationFailure(
           "Private inference requires observed policy updates.",
         );
+      }
       const status = await client.getPolicyStatus(request, context.signal);
       if (!Object.hasOwn(asRecord(status.policy.network_policies) ?? {}, PRIVATE_INFERENCE_HOLD)) {
         verifiedBase = privateInferenceReleasedPolicy(baseline);
