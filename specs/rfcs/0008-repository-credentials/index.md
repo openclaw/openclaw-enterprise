@@ -20,6 +20,8 @@ for current permissions and REST and GraphQL boundaries, see
 Use the [testing guide](../../../docs/testing/repository-credentials.md) to qualify
 current source.
 
+See the proposal to [retire the public Repo Driver](retire-repo-driver.md).
+
 ## Decision
 
 An API-created ordinary Agent clones or fetches an approved repository, edits and tests, commits, pushes a branch, and creates a same-repository PR when explicitly assigned `git-full`. A separate credential process authenticates upstream requests. The Agent receives private gateway-bearer/client files and public trust material; GitHub App keys, JWTs, installation tokens and provider renewal secrets stay outside its workload.
