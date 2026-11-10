@@ -92,10 +92,11 @@ export async function discoverHarnessModels(input: {
       const page = await readDiscoveryResponse(
         await fetch(url.href, { headers, signal, redirect: "error" }),
       );
-      let entries = pat ? page.models : page.data;
-      if (!Array.isArray(entries) || entries.length > MAX_MODELS) {
+      const pageEntries = pat ? page.models : page.data;
+      if (!Array.isArray(pageEntries) || pageEntries.length > MAX_MODELS) {
         throw new ModelDiscoveryError("invalid_response");
       }
+      let entries: readonly unknown[] = pageEntries;
       if (pat) {
         // The operator catalog command lists visibility "list" and does not read
         // priority. A hidden row, or a listed row without a number, is not an
