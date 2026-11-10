@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-10
-last_updated_session: authoring-run/9f72faf1-4740-48d3-8519-5d38e749b961
+last_updated_session: authoring-run/0336b456-2d89-4535-9e04-eeb36c2970d9
 ---
 
 # GitHub Actions testing flow
@@ -166,7 +166,11 @@ both commits.
 
 `scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
 
-The runner verifies one lane per active file and runs whole files with scoped environments. Different prerequisites require separate files. Its Node reporter publishes case names, locations and outcomes. Failure lines retain messages (600 characters) and top stack frames (240). Redaction removes repository paths, replaces nonpublic job and child environment values of eight or more characters with `[env:NAME]`, and masks common tokens, keys, URL passwords and `password=` values as `[redacted]`. The job log uses the same lines. Generated values are masked only when they match those shapes. HTTP assertions retain numeric actual/expected statuses, an allowlisted OCC error code and available upstream ChatGPT operation/status. Denied-traffic failures retain only an allowlisted category. Plugin-status fixture failures retain an allowlisted readiness or rollout stage. Rollout diagnostics include allowed Pod phases, readiness and scheduling flags, container restart counts and exit codes, and allowlisted reasons. These structured diagnostics exclude response bodies, credentials, and identities.
+Whole files run with scoped environments and one owning lane each; differing prerequisites require separate files. The reporter records case names, locations and outcomes. Results and logs retain failure messages (600 characters) and top frames (240). Redaction removes repository paths, replaces nonpublic job/child environment values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` values as `[redacted]`; generated values require a matching shape.
+
+HTTP diagnostics retain numeric actual/expected statuses, allowlisted OCC codes and available ChatGPT operation/status. Denied traffic retains an allowlisted category and plugin failures an allowlisted readiness/rollout stage. Rollouts retain allowed Pod phases, readiness/scheduling flags, restart counts, exit codes and allowlisted reasons.
+
+For captured Skipper failures, `skipper-release.ts:runSkipperOperation` provides the reporter and `skipperFailureSummary` with an operation label, bounded exit code and allowlisted signal/error code. Structured diagnostics exclude response bodies, credentials and identities.
 
 `scripts/ci/openshell-progress.mjs:emitOpenShellProgress` emits fixed lifecycle
 categories; `run-tests.mjs:runNode` adds lane/file labels. Installation ordinals
@@ -263,6 +267,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 18:32: Preserve safe Installed Skipper operation details for asynchronous failures. (authoring-run/0336b456-2d89-4535-9e04-eeb36c2970d9 - b4528e53458339a1df59473f068142675b1982a5)
 
 - 2026-11-10 17:37: Admit eligible Full Integration work before acquiring its execution lock. (authoring-run/9f72faf1-4740-48d3-8519-5d38e749b961 - c6541831756ae40d0485d16d8f0ffeab9851372d)
 
